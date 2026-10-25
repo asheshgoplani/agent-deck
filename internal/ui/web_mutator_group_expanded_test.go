@@ -12,8 +12,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/session"
-	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
 func homeWithGroups(t *testing.T, paths ...string) *Home {
@@ -82,8 +82,8 @@ func TestWebMutatorSetGroupExpandedUnknownGroup(t *testing.T) {
 	m := &WebMutator{h: home}
 
 	err := m.SetGroupExpanded("ghost", false)
-	if !errors.Is(err, web.ErrGroupNotFound) {
-		t.Fatalf("expected web.ErrGroupNotFound, got %v", err)
+	if !errors.Is(err, menudata.ErrGroupNotFound) {
+		t.Fatalf("expected menudata.ErrGroupNotFound, got %v", err)
 	}
 }
 

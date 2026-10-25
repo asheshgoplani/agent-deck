@@ -133,6 +133,7 @@ func markCLINoop() {
 // non-zero (no-op without consent; the telemetry package checks consent, TTY
 // and every kill switch).
 func finishCLITelemetry(code int) {
+	finishCLITiming(code)
 	cliOutcome.mu.Lock()
 	pending, f := cliOutcome.pending, cliOutcome.feature
 	cliOutcome.pending = false

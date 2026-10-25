@@ -631,6 +631,11 @@ func (s *StateDB) Migrate() error {
 		return err
 	}
 
+	// Watcher delivery refusals: additive table, SchemaVersion unchanged.
+	if err := migrateWatcherDeliveryRefusals(tx); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(claudeStatuslineSchema); err != nil {
 		return fmt.Errorf("statedb: create Claude statusline cache: %w", err)
 	}
@@ -1973,11 +1978,17 @@ func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
 			}
 		}
 
-		// No live primary exists: claim it
-		if _, err := tx.Exec(
-			"UPDATE instance_heartbeats SET is_primary = 1 WHERE pid = ?",
-			s.pid,
-		); err != nil {
+		// No live primary exists: claim it. Upsert rather than UPDATE: our
+		// heartbeat row can be missing (RegisterInstance failed, or another
+		// instance's CleanDeadInstances deleted it after a missed heartbeat),
+		// and an UPDATE matching zero rows would report us primary without
+		// recording it, letting the next instance win too.
+		now := time.Now().Unix()
+		if _, err := tx.Exec(`
+			INSERT INTO instance_heartbeats (pid, started, heartbeat, is_primary)
+			VALUES (?, ?, ?, 1)
+			ON CONFLICT(pid) DO UPDATE SET is_primary = 1
+		`, s.pid, now, now); err != nil {
 			return fmt.Errorf("statedb: claim primary: %w", err)
 		}
 

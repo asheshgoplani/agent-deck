@@ -42,7 +42,8 @@ SOAK_PATHS=(
   ':(glob)internal/ui/update_*'
   internal/ui/binary_watch.go
   internal/ui/restart.go
-  internal/ui/home.go
+  ':(glob)internal/ui/home*.go'
+  ':(glob)internal/session/instance_restart.go'
   internal/session/ssh.go
   cmd/agent-deck/remote_cmd.go
   cmd/agent-deck/update_cli.go

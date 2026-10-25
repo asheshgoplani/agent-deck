@@ -117,7 +117,7 @@ sleep 30
 	if err != nil {
 		t.Fatalf("read respawned pane command: %v", err)
 	}
-	if count := strings.Count(string(paneCmd), "OPENCODE_RESTART_MARKER"); count != 1 {
+	if count := strings.Count(expandLaunchEnvSources(string(paneCmd)), "OPENCODE_RESTART_MARKER"); count != 1 {
 		t.Errorf("one-shot restart environment prefix count = %d, want 1:\n%s", count, paneCmd)
 	}
 }

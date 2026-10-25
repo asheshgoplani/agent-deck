@@ -71,13 +71,48 @@ Nothing is ever written into the project directory: no `AGENTS.md`,
 | `claude` | `--append-system-prompt-file <file>` (Claude's own prompt is kept) | yes, incl. `--resume` and forks | custom `[claude].command` wrappers, `claude <subcommand>` passthrough: env var only |
 | `codex` | `-c developer_instructions="<block>"`, the block inlined as a TOML basic string (lossless for any title/path); a `developer_instructions` you configured in that launch's `CODEX_HOME/config.toml` is placed first so it is never replaced. `model_instructions_file` would replace the base prompt and is not used | yes, incl. `resume` / `fork` | custom codex commands (`-c "codex --flag"`): env var only |
 | `pi` | `--append-system-prompt <file>` | yes, incl. `session fork` | |
-| `omp` | `--append-system-prompt <file>` (Oh My Pi, same shape as `pi`; upstream docs `docs/cli-reference.md`) | yes, incl. `session fork` | |
+| `omp` | `--append-system-prompt <file>` (Oh My Pi, same shape as `pi`; see `docs/cli-reference.md` in the [oh-my-pi repo](https://github.com/can1357/oh-my-pi)) | yes, incl. `session fork` | |
 | `gemini` | `--include-directories <dir>` with `GEMINI.md` inside, loaded as project memory next to the project's own | yes, incl. `--resume` | see folder trust below |
-| custom `--cmd`, opencode, cursor, copilot, crush, hermes, deepseek | `AGENTDECK_IDENTITY_FILE` in the environment | yes | no prompt injection; the command decides whether to read the file |
+| `opencode` | `OPENCODE_CONFIG_CONTENT={"instructions":["<file>"]}`: opencode merges this config layer into yours and unions every layer's `instructions`, so your own `opencode.json` instructions stay | yes | an `OPENCODE_CONFIG_CONTENT` you already export is left alone (it holds one JSON value) and the session gets the env var only; with an opencode 2 shared service that was started elsewhere, that service's config applies |
+| `copilot` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` gains `<session dir>/copilot`, which holds the block as `AGENTS.md`; appended with a comma to any value you set | yes | |
+| custom `--cmd`, cursor, crush, hermes, deepseek | `AGENTDECK_IDENTITY_FILE` in the environment | yes | no prompt injection; the command decides whether to read the file. hermes' only knob (`HERMES_EPHEMERAL_SYSTEM_PROMPT`) replaces your `agent.system_prompt`, cursor-agent only takes a local plugin dir (`--plugin-dir`) that team policy can block, and crush has no additive option, so none is used |
 | plain shell session (`shell`, no command) | `AGENTDECK_IDENTITY_FILE` exported into the pane shell by one line typed at start, together with `AGENTDECK_INSTANCE_ID`, `AGENTDECK_PROFILE`, `AGENTDECK_TOOL` and `AGENTDECK_TITLE` (the pane shell was already running when tmux's session environment was set, so an export is the only way to reach it) | yes | the line is visible in the pane; it is space-prefixed so a history that ignores such lines skips it |
 
-SSH (`--ssh`) and Docker-sandboxed sessions are skipped entirely: the file
-lives on the controller host and would not be visible where the harness runs.
+SSH (`--ssh`) and Docker-sandboxed sessions get the block too. Their
+harness runs where the controller's file is not visible, so the launch
+command carries the block itself:
+
+- claude, pi and omp get it as inline text, `--append-system-prompt "<block>"`
+  (decoded by the remote/container shell from a single-line, shell-quoted
+  `printf '%b'` argument, so quotes, backticks, `$()`, newlines and unicode
+  in titles stay literal);
+- codex gets the same inline `-c developer_instructions=...` override as a
+  local session. Over SSH, the remote's own codex config is not readable from
+  the controller, so a `developer_instructions` set in the remote's
+  `config.toml` is not merged and is overridden for that spawn (use
+  `--no-identity` for such a session). A sandbox mounts this host's codex
+  home, so it merges as a local spawn does;
+- before the harness starts, the same command writes the file where the
+  harness runs, atomically (temp file + `mv`), to
+  `$XDG_RUNTIME_DIR/agent-deck/identity/<session-id>/identity.md` (falling
+  back to `~/.local/share/agent-deck/identity/<session-id>/`, directory mode 0700, never the project
+  dir) and exports `AGENTDECK_IDENTITY_FILE` to it, so env-only tools get a
+  path that exists there. If that write fails the variable is left unset and
+  the launch goes on; the inline flags do not depend on it;
+- the whole SSH payload runs under `bash -c` on the remote (it already did
+  when an account or wrapper was set), so a fish or csh login shell there
+  works; the remote needs `bash`. Known limit: a remote with only `sh`
+  (Alpine, busybox images) cannot start SSH sessions this way; install bash
+  there;
+- the identity payload of an SSH/sandboxed launch is capped at 8 KB so the
+  pane command stays under tmux's ~16 KB limit: above it codex drops its
+  `-c` override first (the file and `AGENTDECK_IDENTITY_FILE` stay), and a
+  block too big to carry at all (dozens of attached skills, say) is not
+  injected on that spawn; agent-deck logs `identity_remote_block_too_large` /
+  `identity_codex_override_too_large`;
+- gemini stays env-only over SSH and in a sandbox: its folder-trust state
+  there cannot be checked from the controller, and an untrusted
+  `--include-directories` dialog would swallow the first message.
 
 A session created on a remote through `remote <name> add` or the TUI dialog
 is spawned by that remote's own agent-deck, so it gets the block like a local
@@ -204,8 +239,10 @@ It is at $AGENTDECK_IDENTITY_FILE and is regenerated on every start/restart.
 ```
 
 `--json` gives the same fields programmatically (`context_level`, `source`,
-`active`, `identity_file`, `text`, and `skip_reason` when injection is
-skipped for an SSH/sandboxed session or the level is `none`). `source` is one
+`active`, `identity_file`, `text`, and `skip_reason` when the level is
+`none`; `delivery` is `file`, or for an SSH/sandboxed session `inline (...)`
+naming where the file is written on the host where the harness runs, with
+`identity_file` empty). `source` is one
 of `session`, `session (--no-identity)`, `group:<path>`, `global`,
 `global (inject_identity=false)`, or `default`. Fields that are unset on the
 session record render as `(none)` (or `(none: this is a root session)` for

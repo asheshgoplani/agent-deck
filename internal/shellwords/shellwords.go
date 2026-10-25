@@ -9,9 +9,10 @@ import (
 )
 
 // Split separates a command line into words while honoring single quotes,
-// double quotes, and backslash escapes. It deliberately performs no expansion
-// (variables, globs, command substitutions, or operators). The boolean is false
-// for an unterminated quote or trailing escape.
+// double quotes, and backslash escapes; inside double quotes a backslash only
+// escapes $, `, ", \ and newline, as in POSIX sh. It deliberately performs no
+// expansion (variables, globs, command substitutions, or operators). The
+// boolean is false for an unterminated quote or trailing escape.
 func Split(command string) ([]string, bool) {
 	var words []string
 	var word strings.Builder
@@ -29,9 +30,20 @@ func Split(command string) ([]string, bool) {
 
 	for _, r := range command {
 		if escaped {
-			word.WriteRune(r)
-			inWord = true
 			escaped = false
+			inWord = true
+			if quote == '"' {
+				// Inside double quotes a backslash is special only before
+				// $ ` " \ and newline; an escaped newline is removed.
+				switch r {
+				case '\n':
+					continue
+				case '$', '`', '"', '\\':
+				default:
+					word.WriteRune('\\')
+				}
+			}
+			word.WriteRune(r)
 			continue
 		}
 		if quote == '\'' {

@@ -397,3 +397,75 @@ func TestQuiesceAttachInput_BackstopFires(t *testing.T) {
 		t.Errorf("returned after %v, far past the backstop", elapsed)
 	}
 }
+
+// ASK-92: a lone Ctrl+V is reported to OnCtrlV (the TUI's "paste images from
+// your own machine" hint over plain ssh) after it is forwarded, so the key
+// reaches the program first; Ctrl+V inside other input is not a paste.
+func TestAttachStdinPump_LoneCtrlVIsForwardedThenReported(t *testing.T) {
+	var mu sync.Mutex
+	var forwardedFirst []bool
+	reported := make(chan struct{}, 4)
+	var out *bytes.Buffer // the pump's output, assigned before the pump runs
+	opts := AttachOptions{DetachByte: 17, OnCtrlV: func() {
+		mu.Lock()
+		forwardedFirst = append(forwardedFirst, bytes.HasSuffix(out.Bytes(), []byte{0x16}))
+		mu.Unlock()
+		reported <- struct{}{}
+	}}
+	pump, w, pumpOut := newTestPump(t, opts)
+	out = pumpOut
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte{0x16}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case <-reported:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a lone Ctrl+V was not reported to OnCtrlV")
+	}
+	if _, err := w.Write([]byte("a\x16b")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(4 * AttachStdinPollInterval)
+	if _, err := w.Write([]byte{0x11}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pump did not detach")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(forwardedFirst) != 1 || !forwardedFirst[0] {
+		t.Fatalf("one report, after the key was forwarded: %v", forwardedFirst)
+	}
+	if got := out.String(); got != "\x16a\x16b" {
+		t.Fatalf("Ctrl+V reaches the program unchanged: %q", got)
+	}
+}
+
+// ASK-92 review: with tmux extended-keys on, the terminal can send Ctrl+V as
+// modifyOtherKeys or CSI u; those count as a lone Ctrl+V too, and Ctrl+V
+// inside other input or Ctrl+Shift+V does not.
+func TestIsLoneCtrlV_RawAndExtendedKeyForms(t *testing.T) {
+	for in, want := range map[string]bool{
+		"\x16":           true,
+		"\x1b[27;5;118~": true,
+		"\x1b[118;5u":    true,
+		"a\x16":          false,
+		"\x16\x16":       false,
+		"\x1b[118;6u":    false, // Ctrl+Shift+V
+		"\x1b[27;6;118~": false,
+		"\x1b[118;5uabc": false,
+		"":               false,
+	} {
+		if got := isLoneCtrlV([]byte(in)); got != want {
+			t.Errorf("isLoneCtrlV(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

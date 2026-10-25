@@ -78,7 +78,7 @@ const maxInboxLineBytes = 16 * 1024 * 1024
 // consumed ledger must be on disk before the WAL is dropped.
 func writeFileDurable(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
@@ -186,7 +186,7 @@ func WriteInboxEventIfNew(parentSessionID string, event TransitionNotificationEv
 		return false, errors.New("inbox: empty parent session id")
 	}
 	path := InboxPathFor(parentSessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return false, err
 	}
 	fileLock, err := AcquireConfigFileLock(path)
@@ -257,7 +257,7 @@ func atomicAppendInboxLineLocked(path string, line []byte) error {
 	}
 	data = append(data, line...)
 	data = append(data, '\n')
-	return writeFileDurable(path, data, 0o644)
+	return writeFileDurable(path, data, 0o600)
 }
 
 func maxInt() int { return int(^uint(0) >> 1) }
@@ -563,7 +563,7 @@ func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent
 	}
 
 	tmp := path + ".sweep.tmp"
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return dropped, err
 	}

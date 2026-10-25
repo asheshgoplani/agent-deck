@@ -130,12 +130,30 @@ func handleSessionMove(profile string, args []string) {
 	oldPath := inst.ProjectPath
 	oldGroup := inst.GroupPath
 
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	moveCfg, _ := session.LoadUserConfig()
+	if moveCfg != nil {
+		session.ReconcileDeclarativeGroups(groupTree, moveCfg)
+	}
+
 	// Resolve the target group (empty when --group wasn't passed) BEFORE
 	// migrating, so the destination config dir below reflects where the
 	// session will live after this invocation, not where it lives now.
+	// The selector resolves exactly as for add/launch/fork, and a new group
+	// is created up front so the config dir is looked up by its real path.
 	targetGroupPath := *group
 	if targetGroupPath == "root" {
 		targetGroupPath = session.DefaultGroupPath
+	} else if targetGroupPath != "" {
+		resolved, gErr := resolveGroupPathForAdd(groupTree, targetGroupPath)
+		if gErr != nil {
+			out.Error(gErr.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		targetGroupPath = resolved
+		if _, ok := groupTree.Groups[targetGroupPath]; !ok && targetGroupPath != session.DefaultGroupPath {
+			targetGroupPath = groupTree.CreateGroup(targetGroupPath).Path
+		}
 	}
 
 	// Resolve the effective Claude config dirs the way launch/start do rather
@@ -155,14 +173,7 @@ func handleSessionMove(profile string, args []string) {
 
 	inst.ProjectPath = newPath
 
-	groupTree := session.NewGroupTreeWithGroups(instances, groups)
-	moveCfg, _ := session.LoadUserConfig()
-	groupTree.DefaultMaxConcurrent = moveCfg.GroupDefaults.MaxConcurrent
 	if targetGroupPath != "" {
-		if _, ok := groupTree.Groups[targetGroupPath]; !ok && targetGroupPath != session.DefaultGroupPath {
-			created := groupTree.CreateGroup(targetGroupPath)
-			targetGroupPath = created.Path
-		}
 		groupTree.MoveSessionToGroup(inst, targetGroupPath)
 	}
 

@@ -82,6 +82,12 @@ const (
 	// have the bare key can set [hotkeys].agents_panel = "a" and move
 	// quick_approve.
 	hotkeyAgentsPanel = "agents_panel"
+	// hotkeyReportProblem opens the "Report a problem" form: a bug
+	// or idea becomes a structured GitHub issue through internal/issuereport,
+	// shown in full and filed only after an explicit confirm. "Z" is the one
+	// letter the overview dispatcher does not already use (every lowercase
+	// letter and A-Y are taken); ctrl+e stays the version-rating dialog.
+	hotkeyReportProblem = "report_problem"
 	// Session switcher. While attached it is intercepted in the tmux attach
 	// loop (see internal/tmux/pty.go AttachOptions); on the home screen it is
 	// dispatched like any other hotkey. Must resolve to a "ctrl+<letter>" chord.
@@ -148,6 +154,7 @@ var hotkeyActionOrder = []string{
 	hotkeyCopyInfo,
 	hotkeyContextInspector,
 	hotkeySendOutput,
+	hotkeySessionRef,
 	hotkeyExecShell,
 	hotkeyOpenShellHere,
 	hotkeyEditNotes,
@@ -168,6 +175,7 @@ var hotkeyActionOrder = []string{
 	hotkeyDeadLetters,
 	hotkeyTriggers,
 	hotkeyAgentsPanel,
+	hotkeyReportProblem,
 	hotkeySwitchSession,
 	hotkeyAltSession,
 	hotkeyMRUBack,
@@ -206,6 +214,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyCopyInfo:         "B",
 	hotkeyContextInspector: "C",
 	hotkeySendOutput:       "x",
+	hotkeySessionRef:       "alt+l",
 	hotkeyExecShell:        "E",
 	hotkeyOpenShellHere:    "H",
 	hotkeyEditNotes:        "e",
@@ -226,6 +235,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyDeadLetters:      "alt+d",
 	hotkeyTriggers:         "alt+t",
 	hotkeyAgentsPanel:      "alt+a",
+	hotkeyReportProblem:    "Z",
 	hotkeySwitchSession:    "ctrl+s",
 	hotkeyAltSession:       "`",
 	hotkeyMRUBack:          "alt+left",

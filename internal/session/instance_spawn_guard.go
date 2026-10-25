@@ -35,11 +35,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // agentDeckDirOverride lets tests redirect ~/.agent-deck without colliding
@@ -136,11 +139,17 @@ const instanceSpawnStampSkewTolerance = 2 * time.Second
 // spawnStampClockAnomalyLogFn is a test seam for the clock anomaly warning.
 var spawnStampClockAnomalyLogFn = func(instanceID string, mtime, now time.Time) {
 	slog.Warn("spawn_stamp_future_dated",
-		slog.String("instance", instanceID),
+		slog.String("instance", spawnGuardLogValue(instanceID)),
 		slog.Time("stamp_mtime", mtime),
 		slog.Time("now", now),
 		slog.String("hint", "clock was corrected backwards after a spawn; stamp mtime ignored"),
 	)
+}
+
+// spawnGuardLogValue strips line breaks from a logged instance id
+// (go/log-injection): the id can come from the command line.
+func spawnGuardLogValue(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(s), "\n", ""), "\r", "")
 }
 
 // spawnStampClockAnomalySeen dedupes the warning per stamp (path + mtime),
@@ -199,8 +208,13 @@ func readSpawnGeneration(instanceID string) (uint64, error) {
 }
 
 // recordInstanceSpawn bumps the stamp's generation and sets its mtime to
-// now. Best-effort: stamp errors are silent; they just turn the gate into
-// a no-op for the next storm sibling (no worse than current behavior).
+// when this spawn began: the acquisition time of the spawn lock this process
+// holds (its file's mtime), else now. Not the time Start returns:
+// StartWithMessage keeps the lock through message delivery (up to the agent
+// ready timeout), and HookDeadFromEarlierSpawn must not count the new
+// process's own exit in that window as an earlier one's (issue #2853).
+// Best-effort: stamp errors are silent; they just turn the gate into a no-op
+// for the next storm sibling (no worse than current behavior).
 // The body is written to a sibling temp file and renamed so a pre-lock
 // snapshot never observes a half-written generation.
 func recordInstanceSpawn(instanceID string) {
@@ -217,21 +231,120 @@ func recordInstanceSpawn(instanceID string) {
 		_ = os.Remove(tmp)
 		return
 	}
-	now := nowFn()
-	_ = os.Chtimes(stamp, now, now)
+	began := nowFn()
+	if acquired, ok := ownSpawnLockAcquiredAt(instanceID); ok && acquired.Before(began) {
+		began = acquired
+	}
+	_ = os.Chtimes(stamp, began, began)
+}
+
+// ownSpawnLockAcquiredAt is the mtime of the instance's spawn lock when this
+// process holds it (the marker carries our pid): when the spawn began.
+func ownSpawnLockAcquiredAt(instanceID string) (time.Time, bool) {
+	path, err := instanceSpawnLockPath(instanceID)
+	if err != nil {
+		return time.Time{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if pid, err := parseInstanceSpawnLockPID(string(data)); err != nil || pid != os.Getpid() {
+		return time.Time{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+// spawnBeganAt is when the instance's newest spawn began, from any process:
+// the spawn lock's mtime (its acquisition) while a live holder has it, else
+// the stamp's mtime (recordInstanceSpawn dates it to the same moment). False
+// when neither is known or the time is ahead of now (a clock stepped back):
+// no evidence either way.
+func spawnBeganAt(instanceID string) (time.Time, bool) {
+	path, err := instanceSpawnStampPath(instanceID)
+	if instanceSpawnLockHeld(instanceID) {
+		path, err = instanceSpawnLockPath(instanceID)
+	}
+	if err != nil {
+		return time.Time{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.ModTime().After(nowFn().Add(instanceSpawnStampSkewTolerance)) {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+// HookDeadFromEarlierSpawn reports whether a "dead" hook record (Claude's
+// SessionEnd, written when a stop kills the agent) belongs to a process of
+// the instance older than its newest spawn (issue #2853): the record is from
+// a second before that spawn began (spawnBeganAt). A record from after the
+// spawn began is the new process's own exit and is kept, including one
+// written while a slow start still holds the lock. The hook ts has
+// whole-second resolution, so a record from the same second as the spawn's
+// start is kept too: a stop and start inside one second reads as before.
+func HookDeadFromEarlierSpawn(instanceID, hookStatus string, hookAt time.Time) bool {
+	if hookStatus != "dead" || hookAt.IsZero() || instanceID == "" {
+		return false
+	}
+	began, ok := spawnBeganAt(instanceID)
+	return ok && hookAt.Unix() < began.Unix()
+}
+
+// MarkInstanceSpawnedForTest records a finished spawn of instanceID that
+// began at began, as recordInstanceSpawn does (tests in other packages only).
+func MarkInstanceSpawnedForTest(instanceID string, began time.Time) {
+	recordInstanceSpawn(instanceID)
+	if stamp, err := instanceSpawnStampPath(instanceID); err == nil {
+		_ = os.Chtimes(stamp, began, began)
+	}
 }
 
 // instanceSpawnStampPath sits next to the lock file. Same dir, "-stamp"
 // suffix so an `ls` triages spawn activity per instance.
 func instanceSpawnStampPath(instanceID string) (string, error) {
+	return spawnGuardFilePath(instanceID, ".stamp")
+}
+
+// spawnGuardIDPattern is the allow-list for the instance component of a
+// spawn-guard file name. spawnLockSafeID already maps every other rune to
+// '_', so a valid id never fails it; the check is what keeps a crafted id
+// (path separators, "..") from ever reaching a filesystem call.
+var spawnGuardIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// validateSpawnGuardID refuses an id component that is not a single safe
+// file-name segment.
+func validateSpawnGuardID(id string) error {
+	if !spawnGuardIDPattern.MatchString(id) || strings.Contains(id, "..") {
+		return fmt.Errorf("invalid spawn guard instance id %q", spawnGuardLogValue(id))
+	}
+	return nil
+}
+
+// spawnGuardFilePath builds <locks>/instance-spawn-<safeID><suffix> from a
+// validated id and checks the result stays directly under the locks dir.
+func spawnGuardFilePath(instanceID, suffix string) (string, error) {
 	locks, err := resolveLocksDirForSpawnLock()
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(locks, 0o700); err != nil {
+	safeID := spawnLockSafeID(instanceID)
+	if err := validateSpawnGuardID(safeID); err != nil {
 		return "", err
 	}
-	return filepath.Join(locks, fmt.Sprintf("instance-spawn-%s.stamp", spawnLockSafeID(instanceID))), nil
+	base := filepath.Clean(locks)
+	path := filepath.Clean(filepath.Join(base, "instance-spawn-"+safeID+suffix))
+	if !strings.HasPrefix(path, base+string(os.PathSeparator)) || filepath.Dir(path) != base {
+		return "", fmt.Errorf("spawn guard path escapes %s", base)
+	}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // Tunables match the plugin-install lock budget (#735) so an unrelated
@@ -283,14 +396,7 @@ func defaultAcquireInstanceSpawnLock(instanceID string) (func(), error) {
 // The directory is created with 0700 (same permission as plugin_install
 // uses for the same locks/ dir).
 func instanceSpawnLockPath(instanceID string) (string, error) {
-	locks, err := resolveLocksDirForSpawnLock()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(locks, 0o700); err != nil {
-		return "", err
-	}
-	return filepath.Join(locks, fmt.Sprintf("instance-spawn-%s.lock", spawnLockSafeID(instanceID))), nil
+	return spawnGuardFilePath(instanceID, ".lock")
 }
 
 // spawnLockSafeID strips characters that would break a single-segment
@@ -355,6 +461,37 @@ func reclaimStaleInstanceSpawnLock(path string) bool {
 		return true
 	}
 	return false
+}
+
+// instanceSpawnLockHeld reports, without taking or reclaiming it, whether
+// a live holder has the instance's spawn lock: the marker exists and is
+// neither older than the stale TTL nor owned by a dead pid. An unreadable or
+// unparseable marker counts as held (a holder may be mid-write).
+func instanceSpawnLockHeld(instanceID string) bool {
+	path, err := instanceSpawnLockPath(instanceID)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if time.Since(info.ModTime()) > instanceSpawnLockLegacyStaleTTL {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return true
+	}
+	pid, err := parseInstanceSpawnLockPID(string(data))
+	if err != nil {
+		return true
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 func parseInstanceSpawnLockPID(content string) (int, error) {

@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/health"
+	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
@@ -39,14 +41,19 @@ func (deps Deps) sessionStop(ctx context.Context, in SessionStopIn) (SessionStop
 	// Capture tool conversation ids before Kill: show-environment fails on
 	// a dead tmux session.
 	inst.SyncSessionIDsFromTmux()
+	loaded := session.BeforeStopKill(d.storage, inst.ID)
 	if err := inst.Kill(); err != nil {
 		return SessionStopOut{}, &Error{Code: CodeInvalid, Message: fmt.Sprintf("failed to stop session: %v", err), Cause: err}
 	}
-
-	drained := drainGroupQueue(ctx, inst.GroupPath, d.instances, d.groups)
+	// Defect 317: write stopped now, so another process's error sample of
+	// this kill cannot refuse the save below.
+	session.WriteStoppedAfterKill(d.storage, inst, loaded)
+	// Saved before the drain: a drained start waits for its agent to be ready.
 	if err := d.saveOr("failed to save session state"); err != nil {
 		return SessionStopOut{}, err
 	}
+
+	drained := drainGroupQueue(ctx, d.storage, inst.GroupPath, d.instances, d.groups)
 
 	out := SessionStopOut{ID: inst.ID, Title: inst.Title}
 	if drained != nil {
@@ -66,22 +73,74 @@ func (deps Deps) sessionStop(ctx context.Context, in SessionStopIn) (SessionStop
 }
 
 // drainGroupQueue starts the oldest queued instance in groupPath when a slot
-// is free and returns it. Best-effort: a failed start is reported through
-// EventQueueDrainFailed and marks that instance errored.
-func drainGroupQueue(ctx context.Context, groupPath string, instances []*session.Instance, groups []*session.GroupData) *session.Instance {
+// is free and returns it. It persists only that instance's row
+// (session.Storage.StartQueued), which also puts its queued message on the
+// send queue. Best-effort: a failed start is reported through
+// EventQueueDrainFailed and marks that instance errored. A session another
+// drainer claimed first is left to it, and the next queued one is tried
+// while the group is below its cap.
+func drainGroupQueue(ctx context.Context, storage *session.Storage, groupPath string, instances []*session.Instance, groups []*session.GroupData) *session.Instance {
 	tree := session.NewGroupTreeWithGroups(instances, groups)
 	max := session.GroupMaxConcurrent(tree, groupPath)
-	if session.IsAtCap(session.CountRunningInGroup(instances, groupPath), max) {
-		return nil
+	// The cap is checked on every pass, counting starting sessions too: a
+	// claim lost to another drainer (or to a direct start) means that session
+	// now holds a slot, and its stale copy here is marked starting.
+	for !session.IsAtCap(session.CountOccupiedInGroup(instances, groupPath), max) {
+		next := session.FindNextQueued(instances, groupPath)
+		if next == nil {
+			return nil
+		}
+		started, err := storage.StartQueued(next)
+		if started.Warning != "" {
+			Warn(ctx, started.Warning)
+		}
+		if err != nil {
+			Emit(ctx, Event{Kind: EventQueueDrainFailed, ID: next.ID, Title: next.Title, Err: err})
+			return nil
+		}
+		if started.Started {
+			return next
+		}
+		// Claimed by another drainer: this copy is stale.
+		next.Status = session.StatusStarting
 	}
-	next := session.FindNextQueued(instances, groupPath)
-	if next == nil {
-		return nil
+	return nil
+}
+
+func init() { session.SetQueuedMessageSink(EnqueueQueuedStartMessage, sendqueue.DefaultRetryBudget) }
+
+// spawnSendWorker starts a target's send worker; tests replace it.
+var spawnSendWorker = sendqueue.SpawnWorker
+
+// SetSendWorkerSpawnForTest replaces the send-worker spawn of
+// EnqueueQueuedStartMessage and returns a restore func.
+func SetSendWorkerSpawnForTest(fn func(profile, sessionID string) error) func() {
+	prev := spawnSendWorker
+	spawnSendWorker = fn
+	return func() { spawnSendWorker = prev }
+}
+
+// EnqueueQueuedStartMessage is the session queued-message sink: it puts a
+// queued -m message on the durable send queue next to the profile's state.db
+// (profileDir) and starts the target's send worker for that profile, which
+// types it once the agent is ready. It returns at once: a drain runs under the profile mutation lock,
+// and waiting there for readiness (up to send.DefaultAgentReadyTimeout) would
+// block every other mutation.
+func EnqueueQueuedStartMessage(profile, profileDir string, inst *session.Instance, message string) error {
+	now := time.Now()
+	// It is queued before the spawn: the worker waits for the pane
+	// (WaitWhileStopped) and for the agent to be idle before typing.
+	s := sendqueue.Send{
+		SessionID: inst.ID, SessionTitle: inst.Title, Tool: inst.Tool, Running: true,
+		Message: message, Sender: "cli", Deadline: now.Add(sendqueue.DefaultRetryBudget),
+		WaitWhileStopped: true,
 	}
-	if err := next.Start(); err != nil {
-		next.Status = session.StatusError
-		Emit(ctx, Event{Kind: EventQueueDrainFailed, ID: next.ID, Title: next.Title, Err: err})
-		return nil
+	rec, err := sendqueue.Enqueue(profile, sendqueue.Dir(profileDir), s, now)
+	if err != nil {
+		return fmt.Errorf("queueing the queued message of %s: %w", inst.Title, err)
 	}
-	return next
+	if err := spawnSendWorker(profile, rec.SessionID); err != nil {
+		return fmt.Errorf("starting the send worker for %s (send %s stays queued): %w", inst.Title, rec.SendID, err)
+	}
+	return nil
 }

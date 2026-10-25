@@ -172,6 +172,18 @@ func (i *Instance) adoptConductorName(name string) {
 	i.conductorNameMu.Unlock()
 }
 
+// ListedConductorName is the conductor name a session listing reports: the
+// resolved name of a session flagged IsConductor, "" otherwise. A worker that
+// merely carries a conductor-shaped title is not named, so a listing consumer
+// (the conductor bridge) can match on this and fall back to the title only
+// for rows that carry no name. Never call it while holding i.mu.
+func (i *Instance) ListedConductorName() string {
+	if i == nil || !i.IsConductor {
+		return ""
+	}
+	return i.ResolveConductorNameThreadSafe()
+}
+
 // ConductorNameFromPath returns the conductor whose dir path is
 // (conductor/<name> with a meta.json), or "". The name is the one meta.json
 // records, so an alias dir (conductor/<alias> -> <name>) still names the real

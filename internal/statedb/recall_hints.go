@@ -192,7 +192,7 @@ func validHintToken(what, s string) error {
 
 // SetSessionHint writes one single-valued hint, replacing any existing value
 // for the same (scope, key). Correcting ticket=SB-412 to SB-413 therefore
-// yields one live row, not two.
+// yields one live row, not two; setting an unset key revives its row.
 func (s *StateDB) SetSessionHint(scopeKind, scopeID, key, value, source, author string) error {
 	if err := validHintScope(scopeKind, scopeID); err != nil {
 		return err
@@ -215,26 +215,30 @@ func (s *StateDB) SetSessionHint(scopeKind, scopeID, key, value, source, author 
 			  seq = session_hints.seq + 1,
 			  source = excluded.source,
 			  author = excluded.author,
-			  created_at = excluded.created_at`,
+			  created_at = excluded.created_at,
+			  superseded_at = 0`,
 			scopeKind, scopeID, key, value, source, author, time.Now().Unix())
 		return err
 	})
 }
 
-// UnsetSessionHint removes one hint key. Returns whether a row was removed.
+// UnsetSessionHint soft-deletes one hint key, like RemoveSessionTag, so the
+// recall change feed still sees the removal. Returns whether a live hint was
+// removed.
 func (s *StateDB) UnsetSessionHint(scopeKind, scopeID, key string) (bool, error) {
 	if err := validHintScope(scopeKind, scopeID); err != nil {
 		return false, err
 	}
-	return s.execAffected(`DELETE FROM session_hints WHERE scope_kind = ? AND scope_id = ? AND key = ?`,
-		scopeKind, scopeID, key)
+	return s.execAffected(`UPDATE session_hints SET superseded_at = ?
+		WHERE scope_kind = ? AND scope_id = ? AND key = ? AND superseded_at = 0`,
+		time.Now().Unix(), scopeKind, scopeID, key)
 }
 
-// ListSessionHints returns a scope's hints ordered by key.
+// ListSessionHints returns a scope's live hints ordered by key.
 func (s *StateDB) ListSessionHints(scopeKind, scopeID string) ([]SessionHint, error) {
 	rows, err := s.db.Query(`
 		SELECT scope_kind, scope_id, harness, key, value, seq, source, author, created_at
-		  FROM session_hints WHERE scope_kind = ? AND scope_id = ? ORDER BY key`, scopeKind, scopeID)
+		  FROM session_hints WHERE scope_kind = ? AND scope_id = ? AND superseded_at = 0 ORDER BY key`, scopeKind, scopeID)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +338,7 @@ func (s *StateDB) ListInstanceAnnotations() (map[string]*InstanceAnnotations, er
 
 	hintRows, err := s.db.Query(`
 		SELECT scope_id, key, value FROM session_hints
-		 WHERE scope_kind = ? ORDER BY scope_id, key`, HintScopeInstance)
+		 WHERE scope_kind = ? AND superseded_at = 0 ORDER BY scope_id, key`, HintScopeInstance)
 	if err != nil {
 		return nil, err
 	}
@@ -466,21 +470,22 @@ type HarnessRef struct {
 }
 
 // RecallChangedRefs returns the harness conversations whose hints, tags or
-// authoritative link were written at or after since (unix seconds): the
-// recall sweep re-projects exactly those cards instead of all of them.
+// authoritative link were written or removed at or after since (unix
+// seconds): the recall sweep re-projects exactly those cards instead of all
+// of them.
 // Rows scoped on the conversation id carry no harness (nothing writes the
 // column yet), so their Harness is "" and means "any harness".
 func (s *StateDB) RecallChangedRefs(since int64) ([]HarnessRef, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT l.harness, l.native_id FROM session_links l
 		 WHERE l.authoritative = 1 AND (l.last_seen >= ?
-		    OR EXISTS (SELECT 1 FROM session_hints h WHERE h.scope_kind = ? AND h.scope_id = l.session_id AND h.created_at >= ?)
+		    OR EXISTS (SELECT 1 FROM session_hints h WHERE h.scope_kind = ? AND h.scope_id = l.session_id AND (h.created_at >= ? OR h.superseded_at >= ?))
 		    OR EXISTS (SELECT 1 FROM session_tags t WHERE t.scope_kind = ? AND t.scope_id = l.session_id AND (t.created_at >= ? OR t.deleted_at >= ?)))
 		UNION
-		SELECT DISTINCT h.harness, h.scope_id FROM session_hints h WHERE h.scope_kind = ? AND h.created_at >= ?
+		SELECT DISTINCT h.harness, h.scope_id FROM session_hints h WHERE h.scope_kind = ? AND (h.created_at >= ? OR h.superseded_at >= ?)
 		UNION
 		SELECT DISTINCT '', t.scope_id FROM session_tags t WHERE t.scope_kind = ? AND (t.created_at >= ? OR t.deleted_at >= ?)`,
-		since, HintScopeInstance, since, HintScopeInstance, since, since, HintScopeHarnessSession, since, HintScopeHarnessSession, since, since)
+		since, HintScopeInstance, since, since, HintScopeInstance, since, since, HintScopeHarnessSession, since, since, HintScopeHarnessSession, since, since)
 	if err != nil {
 		return nil, err
 	}

@@ -14,15 +14,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/session"
-	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
 // menuSnapshotTitles returns the session titles present in a published snapshot.
-func menuSnapshotTitles(snap *web.MenuSnapshot) []string {
+func menuSnapshotTitles(snap *menudata.MenuSnapshot) []string {
 	var titles []string
 	for _, item := range snap.Items {
-		if item.Type == web.MenuItemTypeSession && item.Session != nil {
+		if item.Type == menudata.MenuItemTypeSession && item.Session != nil {
 			titles = append(titles, item.Session.Title)
 		}
 	}
@@ -54,7 +54,7 @@ func TestPublishWebMenuSnapshotExcludesArchivedSessions(t *testing.T) {
 
 	// nil fallback: the snapshot under test must come from the TUI publish path,
 	// never from the storage-backed loader that already filters correctly.
-	menuData := web.NewMemoryMenuData(nil)
+	menuData := menudata.NewMemoryMenuData(nil)
 	home.SetWebMenuData(menuData)
 	home.rebuildFlatItems()
 
@@ -117,7 +117,7 @@ func TestPublishWebMenuSnapshotOmitsRemoteSessions(t *testing.T) {
 	}
 	home.remoteSessionsMu.Unlock()
 
-	menuData := web.NewMemoryMenuData(nil)
+	menuData := menudata.NewMemoryMenuData(nil)
 	home.SetWebMenuData(menuData)
 	home.rebuildFlatItems()
 
@@ -161,7 +161,7 @@ func TestBuildMenuSnapshotStaysArchiveAgnostic(t *testing.T) {
 	archived := session.NewInstanceWithTool("archived", "/tmp/b", "claude")
 	archived.ArchivedAt = time.Now().UTC()
 
-	snap := web.BuildMenuSnapshot("default", []*session.Instance{archived}, nil, time.Now())
+	snap := menudata.BuildMenuSnapshot("default", []*session.Instance{archived}, nil, time.Now())
 
 	if snap.TotalSessions != 1 {
 		t.Fatalf("BuildMenuSnapshot dropped an archived instance (TotalSessions=%d, want 1); "+

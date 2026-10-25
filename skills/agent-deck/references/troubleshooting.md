@@ -89,12 +89,9 @@ Then restart the conductor:
 agent-deck session restart conductor-<name>
 ```
 
-If you use multiple profiles, set the same under the profile override:
-
-```toml
-[profiles.work.claude]
-allow_dangerous_mode = true
-```
+`[claude]` applies to every profile. There is no per-profile copy of these keys:
+`[profiles.<name>.claude]` takes only `config_dir` and `prompt_suggestions`, so
+`allow_dangerous_mode` or `dangerous_mode` there has no effect.
 
 ### Atuin Pty-Proxy Incompatibility
 
@@ -144,13 +141,14 @@ max_lines = 2000
 
 ### Global Search Not Working
 
-Check config:
+`G` searches the Recall index (`recall.db`). It is off unless Recall is on:
 ```toml
-[global_search]
+[recall]
 enabled = true
 ```
 
-Also verify `~/.claude/projects/` exists and has content.
+Then check the index with `agent-deck recall status`. With Recall off, `G`
+falls back to the local title search. See `docs/recall.md`.
 
 ### Shift+Enter Submits Instead of Inserting a Newline (Kitty)
 
@@ -363,60 +361,23 @@ Prepare clear answers to:
 
 ### Step 3: Create GitHub Issue
 
-Go to: **https://github.com/asheshgoplani/agent-deck/issues/new**
+Fastest route: `agent-deck feedback bug` asks for what happened, what you expected and the steps, fills the bug form below with version, OS, terminal and a scrubbed log tail, shows you the full text and files it after you answer `y` (`--dry-run` only prints it). Ideas go through `agent-deck feedback idea`.
 
-Use this template:
+By hand:
 
-```markdown
-## Description
+Blank issues are off in this repo, so use the **Bug report** form:
+**https://github.com/asheshgoplani/agent-deck/issues/new?template=bug.yml**
 
-[Brief description of the issue]
+Its fields, filled from Steps 1 and 2:
 
-## Steps to Reproduce
+- **agent-deck version**: output of `agent-deck version`
+- **OS and terminal**: OS, terminal, and `tmux -V`
+- **Steps to reproduce**: exact commands or TUI actions
+- **Expected vs actual**
+- **Logs (redacted)**: relevant log lines, `agent-deck status --json`, and a sanitized config
+- **Was this written with AI help?** and, if so, **which model**
 
-1. [First step]
-2. [Second step]
-3. [What happened]
-
-## Expected Behavior
-
-[What should have happened]
-
-## Environment
-
-- agent-deck version: [output of `agent-deck version`]
-- OS: [macOS/Linux/WSL]
-- tmux version: [output of `tmux -V`]
-
-## Debug Output
-
-<details>
-<summary>Status JSON</summary>
-
-```json
-[paste agent-deck status --json]
-```
-
-</details>
-
-<details>
-<summary>Config (sanitized)</summary>
-
-```toml
-[paste sanitized config]
-```
-
-</details>
-
-<details>
-<summary>Logs</summary>
-
-```
-[paste relevant log lines]
-```
-
-</details>
-```
+Questions and setup help go to [Discussions](https://github.com/asheshgoplani/agent-deck/discussions), not issues.
 
 ### Step 4: Follow Up
 
@@ -424,7 +385,7 @@ Use this template:
 - Test any suggested fixes
 - Update issue with results
 - Join [Discord](https://discord.gg/e4xSs6NBN8) for quick help and community support
-- Run `agent-deck feedback` to submit a rating and optional comment
+- Run `agent-deck feedback` to submit a rating and optional comment, or `agent-deck feedback bug` / `agent-deck feedback idea` to file an issue
 
 ## Recovery
 

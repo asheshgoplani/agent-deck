@@ -156,6 +156,9 @@ func TestExtractAllowRepoScriptsFlag(t *testing.T) {
 		{[]string{"launch", "--run-hooks=false", "."}, false, false, "launch ."},
 		// --trust is left alone without a run-hooks flag.
 		{[]string{"launch", "--trust", "."}, false, false, "launch --trust ."},
+		// Everything after "--" is data (a chat message, say), never a global flag.
+		{[]string{"session", "send", "s1", "--", "--run-hooks"}, false, false, "session send s1 -- --run-hooks"},
+		{[]string{"session", "send", "--run-hooks", "s1", "--", "--trust"}, true, false, "session send s1 -- --trust"},
 	} {
 		allow, trust, rest := extractAllowRepoScriptsFlag(tc.args)
 		if allow != tc.allow || trust != tc.trust || strings.Join(rest, " ") != tc.rest {

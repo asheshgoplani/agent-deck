@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/asheshgoplani/agent-deck/internal/termtext"
@@ -45,8 +47,9 @@ const sshWaitDelay = 100 * time.Millisecond
 // few seconds even on a saturated master, and racing it only adds a login.
 const sshMuxFallbackGrace = 8 * time.Second
 
-// sshControlDir is the directory for SSH ControlMaster sockets.
-const sshControlDir = "/tmp/agent-deck-ssh"
+// SSH ControlMaster sockets live in the per-user directory owned by
+// internal/sshcontrol (/tmp/agent-deck-ssh-<uid>, verified private on every
+// use) rather than the old shared /tmp/agent-deck-ssh.
 
 // staleSocketProbeTimeout bounds the per-socket liveness dial in
 // CleanStaleSSHSockets. It is deliberately short: a healthy master answers a
@@ -54,8 +57,8 @@ const sshControlDir = "/tmp/agent-deck-ssh"
 // that does not connect within this window is treated as unreachable.
 const staleSocketProbeTimeout = 250 * time.Millisecond
 
-// CleanStaleSSHSockets removes orphaned SSH ControlMaster sockets from
-// sshControlDir (#1421). When an SSH master process dies unexpectedly (remote
+// CleanStaleSSHSockets removes orphaned SSH ControlMaster sockets from the
+// control directory (#1421). When an SSH master process dies unexpectedly (remote
 // agent-deck update restarts sshd, network drop, remote reboot), its
 // ControlPath socket file is left behind on disk with no process listening on
 // it. Because agent-deck uses ControlMaster=auto, the NEXT ssh invocation tries
@@ -74,13 +77,20 @@ const staleSocketProbeTimeout = 250 * time.Millisecond
 // leaving a socket in place is strictly better than blocking the caller.
 // Non-socket files in the directory are ignored.
 func CleanStaleSSHSockets() {
-	cleanStaleSSHSocketsIn(sshControlDir)
+	if dir := sshcontrol.Dir(); dir != "" {
+		cleanStaleSSHSocketsIn(dir)
+	}
+	// Masters started by an older release still sit in the shared legacy
+	// directory. Sweep their stale sockets only when that directory is ours:
+	// another user's directory is never read or written.
+	if sshcontrol.OwnedByCurrentUser(sshcontrol.LegacyDir) {
+		cleanStaleSSHSocketsIn(sshcontrol.LegacyDir)
+	}
 }
 
 // cleanStaleSSHSocketsIn is the dir-parameterized core of CleanStaleSSHSockets,
 // split out so tests can exercise the probe/remove logic against a temp dir
-// instead of the process-global /tmp/agent-deck-ssh (which a live agent-deck
-// shares).
+// instead of the per-user control directory (which a live agent-deck shares).
 func cleanStaleSSHSocketsIn(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -265,7 +275,7 @@ func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteClo
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 
 	remoteCmd := r.buildRemoteCommand(args...)
 	sshArgs := r.sshBaseArgs(remoteCmd)
@@ -322,7 +332,7 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 
 	readOnly := remoteVerbReadOnly(args)
 	remoteCmd := r.buildRemoteCommand(args...)
@@ -576,11 +586,15 @@ func (r *SSHRunner) consumeLastStderr() []byte {
 // PTY in sync when the local terminal is resized, and sends SIGWINCH to
 // self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
+	done := optiming.StartResult("remote.attach")
 	cmd, transport, err := r.attachCommand("session", "attach", sessionID)
 	if err != nil {
+		done(true)
 		return err
 	}
-	return runRemoteAttach(cmd, transport, r.imagePaste(sessionID))
+	err = runRemoteAttach(cmd, transport, r.imagePaste(sessionID))
+	done(err != nil)
+	return err
 }
 
 // imagePaste is the Ctrl+V image route for one attached remote session
@@ -648,7 +662,7 @@ func (r *SSHRunner) attachCommand(args ...string) (*exec.Cmd, string, error) {
 	default:
 		return nil, "", fmt.Errorf("remote %q has unknown transport %q (use \"ssh\" or \"mosh\")", r.name, r.transport)
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 	// #nosec G204 -- fixed binary; the host was validated above and the
 	// remote command is built from shellQuote'd operands.
 	return exec.Command("ssh", r.sshAttachArgs(args...)...), RemoteTransportSSH, nil
@@ -665,6 +679,16 @@ func (r *SSHRunner) remoteHasMoshServer() bool {
 // runRemoteAttach runs an interactive transport command (ssh or mosh) in a
 // local PTY until it exits or the user detaches.
 func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) error {
+	// Save original terminal state and set raw mode before the transport
+	// starts. Bubble Tea hands the terminal over in cooked mode, where IXON
+	// makes the tty swallow Ctrl+Q (0x11 is START) before any reader sees it;
+	// same order as AttachWithOptions in internal/tmux/pty.go.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return fmt.Errorf("failed to set raw mode: %w", err)
+	}
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
+
 	// Start SSH with a local PTY pre-sized to the controlling terminal so the
 	// remote tmux client connects full-width from frame one (#1167). A bare
 	// pty.Start creates the PTY at the 80x24 default, which can size the remote
@@ -688,27 +712,30 @@ func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) e
 		return fmt.Errorf("failed to set pty raw mode: %w", err)
 	}
 
-	// Save original terminal state and set raw mode.
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return fmt.Errorf("failed to set raw mode: %w", err)
-	}
-	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
-
 	// Handle SIGWINCH to resize the PTY when the local terminal is resized.
 	sigwinch := make(chan os.Signal, 1)
 	signal.Notify(sigwinch, syscall.SIGWINCH)
 	sigwinchDone := make(chan struct{})
-	defer func() {
-		signal.Stop(sigwinch)
-		close(sigwinchDone)
-	}()
+	resizeDone := make(chan struct{})
+	// stopResize stops the resize goroutine and waits for it, so no resize
+	// touches the PTY after it is closed or handed off, or os.Stdin after the
+	// attach returns. Bounded: the goroutine only blocks in its select.
+	var stopResizeOnce sync.Once
+	stopResize := func() {
+		stopResizeOnce.Do(func() {
+			signal.Stop(sigwinch)
+			close(sigwinchDone)
+			<-resizeDone
+		})
+	}
+	defer stopResize()
 
 	var wg sync.WaitGroup
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(resizeDone)
 		for {
 			select {
 			case <-sigwinchDone:
@@ -734,9 +761,16 @@ func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) e
 	if paste != nil {
 		paste.write = func(p []byte) error { _, err := ptmx.Write(p); return err }
 		paste.bracketed = output.bracketed.enabled
-		paste.notice = func(text string) { output.notice(text, terminalRows()) }
+		paste.notice = output.progress
+		paste.alert = output.alert
 		input.paste = paste
 	}
+	// Every exit puts the owner's title back (stopRemoteAttach does it on
+	// the normal paths; this covers a panic). Registered before the sink so
+	// the sink is cleared first.
+	defer output.endNotices()
+	// Notices from the local TUI (tmux.ShowAttachNotice) take the same title.
+	defer tmux.SetAttachNoticeSink(output.notice)()
 
 	// Copy PTY output to stdout.
 	wg.Add(1)
@@ -827,6 +861,7 @@ func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) e
 	// closed PTY, losing it. Mirrors cleanupAttach in internal/tmux/pty.go,
 	// which cancels the pump before closing the PTY.
 	close(stdinReaderStop)
+	stopResize()
 	ptyHandedOff = stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, output, transport, exited, terminal.MoshQuitTimeout)
 	// Hand stdin back to the TUI: drop whatever the remote's teardown left in
 	// the input queue and arm the reply quarantine. The join-before-flush
@@ -865,6 +900,7 @@ func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, output
 		// network round trip, so finish it in the background with the output
 		// discarded and hand the terminal back now.
 		output.discard()
+		output.endNotices()
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		go func() {
 			select {
@@ -884,12 +920,18 @@ func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, output
 	case <-outputDone:
 	case <-time.After(50 * time.Millisecond):
 	}
+	// The terminal goes back to the TUI now: a Ctrl+V upload still in flight
+	// (remoteImagePaste.send) must not draw its notice over the dashboard,
+	// and the owner's title comes back.
+	output.discard()
+	output.endNotices()
 	return false
 }
 
 // attachOutput forwards attach output to the terminal until discard is
 // called, after which it swallows it so a transport winding down in the
-// background cannot draw over the dashboard.
+// background cannot draw over the dashboard. It also shows the attach's
+// notices in the terminal title (notice, progress, alert).
 type attachOutput struct {
 	mu        sync.Mutex
 	w         io.Writer
@@ -897,7 +939,34 @@ type attachOutput struct {
 	// bracketed follows the remote program's bracketed-paste mode (an image
 	// path typed by a Ctrl+V paste is wrapped like a paste when it is on).
 	bracketed *bracketedPasteTracker
+
+	// hold is how long a notice or an alert stays (0: attachNoticeHold).
+	hold time.Duration
+	// titleSaved: the owner's title was pushed (titlePush) and is popped
+	// when the notice clears, expires or the attach ends.
+	titleSaved bool
+	// noticeGen counts notices, so an older notice's timer leaves a newer
+	// one alone.
+	noticeGen uint64
+	// ended: the attach is over (endNotices); no notice is shown after it.
+	ended bool
+	// expiry restores the title after hold; stopped by each newer notice and
+	// by endNotices.
+	expiry *time.Timer
 }
+
+// attachNoticeHold is how long a notice stays in the title, the same 15 s a
+// local attach's notice stays on the tmux status line.
+const attachNoticeHold = 15 * time.Second
+
+// The owner's title is saved on the terminal's title stack before the first
+// notice (XTWINOPS 22;2) and put back after it (23;2). The pop is preceded
+// by an empty title: a terminal without a title stack (tmux among them) then
+// shows its default title instead of a stale notice.
+const (
+	titlePush = "\x1b[22;2t"
+	titlePop  = "\x1b]2;\x07\x1b[23;2t"
+)
 
 func (o *attachOutput) Write(p []byte) (int, error) {
 	o.mu.Lock()
@@ -911,31 +980,89 @@ func (o *attachOutput) Write(p []byte) (int, error) {
 	return o.w.Write(p)
 }
 
-// notice draws one line on the terminal's last row (tmux's status line in an
-// attach, which tmux repaints on its next status update); "" clears it.
-func (o *attachOutput) notice(text string, rows int) {
-	if rows < 1 {
-		return
-	}
+// notice shows one line in the terminal's title (OSC 2) for attachNoticeHold,
+// then puts the owner's title back; "" puts it back at once. The title is
+// used because no program in the attach draws over it and it leaves the
+// screen and its saved cursor alone. The local TUI's notices (the update
+// notice through tmux.SetAttachNoticeSink) come here.
+func (o *attachOutput) notice(text string) { o.show(text, false, true) }
+
+// progress is a notice that stays until the next notice replaces it (an
+// upload's "uploading…" line, replaced by its result).
+func (o *attachOutput) progress(text string) { o.show(text, false, false) }
+
+// alert is a notice that also rings the bell: where the title is not shown
+// (a local tmux pane, a terminal that hides it) the bell still says that
+// Ctrl+V did something.
+func (o *attachOutput) alert(text string) { o.show(text, true, true) }
+
+func (o *attachOutput) show(text string, bell, expire bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.discarded {
+	if o.discarded || o.ended {
 		return
 	}
-	line := fmt.Sprintf("\x1b7\x1b[%d;1H\x1b[2K", rows)
-	if text != "" {
-		line += "\x1b[7m " + text + " \x1b[0m"
+	o.noticeGen++
+	o.stopExpiryLocked()
+	if text == "" {
+		o.restoreTitleLocked()
+		return
 	}
-	_, _ = o.w.Write([]byte(line + "\x1b8"))
+	// Every notice is cleaned here: a BEL or ESC in it would end the OSC
+	// early and the rest would act in the owner's terminal.
+	seq := "\x1b]2;" + stripControls(text) + "\x07"
+	if !o.titleSaved {
+		seq = titlePush + seq
+		o.titleSaved = true
+	}
+	if bell {
+		seq += "\a"
+	}
+	_, _ = o.w.Write([]byte(seq))
+	if !expire {
+		return
+	}
+	hold := o.hold
+	if hold <= 0 {
+		hold = attachNoticeHold
+	}
+	// The timer is stopped by the next notice and by endNotices; a callback
+	// already running only takes the lock and, once the attach has ended or
+	// a newer notice came, does nothing.
+	gen := o.noticeGen
+	o.expiry = time.AfterFunc(hold, func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if o.noticeGen == gen && !o.discarded && !o.ended {
+			o.restoreTitleLocked()
+		}
+	})
 }
 
-// terminalRows is the owner's terminal height (0 when it cannot be read).
-func terminalRows() int {
-	_, rows, err := term.GetSize(int(os.Stdout.Fd())) // #nosec G115 -- fd is a small positive int
-	if err != nil {
-		return 0
+func (o *attachOutput) stopExpiryLocked() {
+	if o.expiry != nil {
+		o.expiry.Stop()
+		o.expiry = nil
 	}
-	return rows
+}
+
+func (o *attachOutput) restoreTitleLocked() {
+	if !o.titleSaved {
+		return
+	}
+	o.titleSaved = false
+	_, _ = o.w.Write([]byte(titlePop))
+}
+
+// endNotices puts the owner's title back when the attach ends, discarded
+// output or not, and turns every later notice into a no-op. Idempotent.
+func (o *attachOutput) endNotices() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ended = true
+	o.noticeGen++
+	o.stopExpiryLocked()
+	o.restoreTitleLocked()
 }
 
 func (o *attachOutput) discard() {
@@ -1760,7 +1887,7 @@ func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, er
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return "", "", err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 
 	// Run uname on the remote to detect OS and machine architecture
 	sshArgs := r.sshBaseArgs("uname -s -m")
@@ -1816,7 +1943,7 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 
 	sshArgs := r.sshBaseArgs(remoteCmd)
 	cmd := newSSHCommand(ctx, sshArgs...)
@@ -1849,18 +1976,23 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 // a saturated ControlMaster is retried on a dedicated connection as Run's
 // are (#2355).
 func (r *SSHRunner) runWithStdin(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
-	if r.runStdinFn != nil {
-		return r.runStdinFn(ctx, stdin, args...)
-	}
-	if r.runFn != nil {
-		return r.runFn(ctx, args...)
-	}
-	timeout := r.commandTimeout
+	return r.runWithStdinFor(ctx, r.commandTimeout, stdin, args...)
+}
+
+// runWithStdinFor is runWithStdin under its own deadline (an image upload
+// gets longer than the command timeout); 0 means the 30 s default.
+func (r *SSHRunner) runWithStdinFor(ctx context.Context, timeout time.Duration, stdin []byte, args ...string) ([]byte, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if r.runStdinFn != nil {
+		return r.runStdinFn(timeoutCtx, stdin, args...)
+	}
+	if r.runFn != nil {
+		return r.runFn(timeoutCtx, args...)
+	}
 	remoteCmd := r.buildRemoteCommand(args...)
 	if r.remoteExecFn != nil {
 		return r.remoteExecFn(timeoutCtx, remoteCmd, stdin)
@@ -1868,7 +2000,7 @@ func (r *SSHRunner) runWithStdin(ctx context.Context, stdin []byte, args ...stri
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 	return r.runExec(timeoutCtx, remoteCmd, stdin, remoteVerbReadOnly(args))
 }
 
@@ -2991,6 +3123,7 @@ type RemoteSessionInfo struct {
 	Path            string `json:"path"`
 	Group           string `json:"group"`
 	Tool            string `json:"tool"`
+	Command         string `json:"command,omitempty"`
 	Status          string `json:"status"`
 	CreatedAt       string `json:"created_at"`
 
@@ -3050,6 +3183,15 @@ type RemoteSessionInfo struct {
 
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
+}
+
+// DisplayTool preserves the remote OpenCode launcher label. Older remotes that
+// omit command retain their canonical tool label; Tool remains the dispatch key.
+func (r RemoteSessionInfo) DisplayTool() string {
+	if r.Tool == "opencode" && openCodeExecutableBase(r.Command) == "opencode2" {
+		return "opencode2"
+	}
+	return r.Tool
 }
 
 // ViewerList returns the remote session's viewers and whether the remote

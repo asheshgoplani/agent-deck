@@ -19,17 +19,58 @@ import (
 // (discovery.go) uses WorkDir for real session import.
 func TestDiscoverAllTmuxSessions_WorkDirWithColonSurvives(t *testing.T) {
 	skipIfNoTmuxBinary(t)
-
-	name := "agentdeck_colon-workdir-test_" + time.Now().Format("150405")
 	workDir := t.TempDir() + "/weird:path"
+	name := startColonWorkDirSession(t, "agentdeck_colon-workdir-test_", workDir, "-c", workDir, "sh", "-c", "sleep 3600")
+	assertDiscoveredWorkDirKeepsColon(t, name)
+}
+
+// TestDiscoverAllTmuxSessions_ColonWorkDirReachedLate covers a pane that
+// reaches its working directory after new-session returns. tmux 3.6 does
+// that on hosts with a systemd user manager (Ubuntu 26.04 CI runners): the
+// pane child moves itself into a systemd cgroup BEFORE its chdir (3.4 did the
+// move in the server), so for a moment pane_current_path is the server's own
+// cwd. The pane here cds late on purpose, to make that window reproducible.
+func TestDiscoverAllTmuxSessions_ColonWorkDirReachedLate(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	base := t.TempDir()
+	workDir := base + "/weird:path"
+	name := startColonWorkDirSession(t, "agentdeck_colon-late-cd_", workDir,
+		"-c", base, "sh", "-c", "sleep 0.3; cd 'weird:path' && exec sleep 3600")
+	assertDiscoveredWorkDirKeepsColon(t, name)
+}
+
+// startColonWorkDirSession creates workDir and a detached tmux session with
+// the given new-session arguments, waits until tmux reports the pane inside
+// workDir, and returns the session name. The wait reads pane_current_path on
+// its own (display-message, one field), so it shares nothing with the
+// list-sessions line parsing the tests check.
+func startColonWorkDirSession(t *testing.T, prefix, workDir string, args ...string) string {
+	t.Helper()
+	name := prefix + time.Now().Format("150405")
 	if err := exec.Command("mkdir", "-p", workDir).Run(); err != nil {
 		t.Fatalf("mkdir %q: %v", workDir, err)
 	}
-	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", workDir, "sh", "-c", "sleep 3600").CombinedOutput(); err != nil {
+	full := append([]string{"new-session", "-d", "-s", name}, args...)
+	if out, err := exec.Command("tmux", full...).CombinedOutput(); err != nil {
 		t.Fatalf("tmux new-session: %v (%s)", err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", name).Run() })
 
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		out, err := exec.Command("tmux", "display-message", "-p", "-t", name+":", "#{pane_current_path}").Output()
+		if err == nil && strings.HasSuffix(strings.TrimSpace(string(out)), "/weird:path") {
+			return name
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pane never reached %q (pane_current_path %q, err=%v)", workDir, strings.TrimSpace(string(out)), err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func assertDiscoveredWorkDirKeepsColon(t *testing.T, name string) {
+	t.Helper()
 	sessions, err := DiscoverAllTmuxSessions()
 	if err != nil {
 		t.Fatalf("DiscoverAllTmuxSessions: %v", err)

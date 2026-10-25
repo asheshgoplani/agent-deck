@@ -54,7 +54,7 @@ display-message) printf '0\n';;
 *) exit 0;;
 esac
 `
-	for name, data := range map[string]string{"tmux": script, "names": names.String(), "windows": windows.String(), "panes": panes.String(), "ps": "#!/bin/sh\ncase \"$*\" in *args=*) printf 'sh\\n';; *) printf '1 0 sh\\n';; esac\n"} {
+	for name, data := range map[string]string{"tmux": script, "names": names.String(), "windows": windows.String(), "panes": panes.String(), "ps": "#!/bin/sh\ncase \"$*\" in *-eo*) printf '1 0 sh\\n';; *args=*) printf 'sh\\n';; *) printf '1 0 sh\\n';; esac\n"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0755); err != nil {
 			t.Fatal(err)
 		}

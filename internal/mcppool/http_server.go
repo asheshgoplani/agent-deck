@@ -31,6 +31,7 @@ type HTTPServer struct {
 	startupTimeout time.Duration
 
 	process   *exec.Cmd
+	parentCtx context.Context // ctx is re-derived from it when Stop has cancelled ctx
 	ctx       context.Context
 	cancel    context.CancelFunc
 	logFile   string
@@ -60,8 +61,8 @@ type HTTPServer struct {
 }
 
 // NewHTTPServer creates a new HTTP server manager
-func NewHTTPServer(ctx context.Context, name, url, healthCheckURL, command string, args []string, env map[string]string, startupTimeout time.Duration) *HTTPServer {
-	ctx, cancel := context.WithCancel(ctx)
+func NewHTTPServer(parent context.Context, name, url, healthCheckURL, command string, args []string, env map[string]string, startupTimeout time.Duration) *HTTPServer {
+	ctx, cancel := context.WithCancel(parent)
 
 	// Use main URL for health check if not specified
 	if healthCheckURL == "" {
@@ -81,6 +82,7 @@ func NewHTTPServer(ctx context.Context, name, url, healthCheckURL, command strin
 		args:           args,
 		env:            env,
 		startupTimeout: startupTimeout,
+		parentCtx:      parent,
 		ctx:            ctx,
 		cancel:         cancel,
 		status:         StatusStopped,
@@ -197,13 +199,20 @@ func (s *HTTPServer) Start() error {
 		return fmt.Errorf("HTTP MCP %s: URL not reachable and no server command configured", s.name)
 	}
 
+	// Stop cancels s.ctx, and HTTPPool.Start calls Start again on the same
+	// server; spawning under the cancelled ctx fails with "context canceled".
+	// The fresh ctx still derives from the parent, so pool shutdown wins.
+	if s.ctx.Err() != nil {
+		s.ctx, s.cancel = context.WithCancel(s.parentCtx)
+	}
+
 	s.status = StatusStarting
 	s.mu.Unlock()
 
 	// Create log file
 	logDir, err := agentpaths.EffectiveDataPath(filepath.Join("logs", "http-servers"), "logs")
 	if err != nil {
-		logDir = filepath.Join(os.TempDir(), "agent-deck", "logs", "http-servers")
+		logDir = fallbackLogDir("http-servers")
 	}
 	_ = os.MkdirAll(logDir, 0700)
 	s.logFile = filepath.Join(logDir, fmt.Sprintf("%s.log", s.name))
@@ -295,8 +304,9 @@ func (s *HTTPServer) Start() error {
 
 	// Monitor process exit in background
 	go func() {
-		defer close(done)
 		err := proc.Wait()
+		// Close before taking mu: Stop waits on done while holding mu.
+		close(done)
 		if err != nil {
 			httpLog.Warn("process_exit_error", slog.String("mcp", s.name), slog.String("error", err.Error()))
 		} else {
@@ -360,18 +370,13 @@ func (s *HTTPServer) Stop() error {
 	}
 
 	// Only kill process if we started it
-	if s.process != nil && s.startedByUs {
-		// Context cancel triggers SIGTERM, WaitDelay handles escalation
-		done := make(chan error, 1)
-		go func() {
-			done <- s.process.Wait()
-		}()
-
+	if s.process != nil && s.startedByUs && s.processDone != nil {
+		// Context cancel triggers SIGTERM, WaitDelay handles escalation.
+		// Wait on processDone, not s.process.Wait(): monitorProcess already
+		// Waits on this Cmd, and a second Wait races it and can block forever.
+		done := s.processDone
 		select {
-		case err := <-done:
-			if err != nil {
-				httpLog.Warn("process_exit_error", slog.String("mcp", s.name), slog.String("error", err.Error()))
-			}
+		case <-done:
 		case <-time.After(5 * time.Second):
 			httpLog.Warn("process_wait_timeout", slog.String("mcp", s.name))
 			// #1163: SIGKILL the entire process group (negative pid), not just
@@ -456,10 +461,6 @@ func (s *HTTPServer) Restart() error {
 		httpLog.Error("stop_error", slog.String("mcp", s.name), slog.String("error", err.Error()))
 	}
 
-	// Create new context
-	s.mu.Lock()
-	s.ctx, s.cancel = context.WithCancel(context.Background())
-	s.mu.Unlock()
-
+	// Start re-derives the context Stop cancelled.
 	return s.Start()
 }

@@ -133,6 +133,13 @@ func TestGuardedSendAtSuggestionUsesTypedTextCheck(t *testing.T) {
 // transcript the fake appends its records to.
 func claudeLikeFake(t *testing.T, phase string) (*tmux.Session, string) {
 	t.Helper()
+	return claudeLikeFakeControl(t, phase, nil)
+}
+
+// claudeLikeFakeControl is claudeLikeFake with extra control-file fields,
+// e.g. "hold_queue" to keep queued input behind the turn.
+func claudeLikeFakeControl(t *testing.T, phase string, extra map[string]any) (*tmux.Session, string) {
+	t.Helper()
 	for _, tool := range []string{"tmux", "python3"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("requires %s", tool)
@@ -164,7 +171,11 @@ func claudeLikeFake(t *testing.T, phase string) (*tmux.Session, string) {
 		t.Fatal(err)
 	}
 	writeJSON(filepath.Join(dir, "fake-running.json"), map[string]string{dir: transcript})
-	writeJSON(transcript+".input-control.json", map[string]string{"id": phase, "phase": phase})
+	control := map[string]any{"id": phase, "phase": phase}
+	for k, v := range extra {
+		control[k] = v
+	}
+	writeJSON(transcript+".input-control.json", control)
 
 	sess := tmux.NewSession(fmt.Sprintf("guarded-busy-%d", time.Now().UnixNano()), dir)
 	if err := sess.Start("python3 -I " + filepath.Join(dir, "claude")); err != nil {
@@ -245,5 +256,50 @@ func TestGuardedSendLeavesBusyOperatorDraftAlone(t *testing.T) {
 	}
 	if strings.Contains(readGolden(t, transcript), msg) {
 		t.Fatal("the refused message reached the transcript")
+	}
+}
+
+// ASK-95: a busy Claude that already holds queued input shows "Press up to
+// edit queued messages" in its composer. That hint is not an operator draft:
+// the next send queues behind the first instead of failing composer_blocked.
+func TestGuardedSendDeliversToBusyComposerShowingQueuedHint(t *testing.T) {
+	pane := &mockSendRetryTarget{statuses: []string{"running", "active"}, panes: []string{busyClaudePane("Press up to edit queued messages")}}
+	res, err := executeSend(pane, "claude", "second message while the turn runs", true, guardedBusyTuning())
+	if err != nil || res.delivery == deliveryComposerBlocked || res.delivery == deliveryMenuOpen {
+		t.Fatalf("busy composer with the queued hint refused: delivery=%q err=%v", res.delivery, err)
+	}
+	if got := atomic.LoadInt32(&pane.sendKeysCalls); got != 1 {
+		t.Fatalf("message typed %d time(s), want 1", got)
+	}
+	if pane.sendEnterCalls != 0 || pane.sendCtrlCCalls != 0 {
+		t.Fatalf("extra keys after typing: enter=%d ctrlc=%d", pane.sendEnterCalls, pane.sendCtrlCCalls)
+	}
+}
+
+// ASK-95 end to end in a real tmux pane: two sends to a busy Claude-like pane
+// that keeps queued input for the whole turn both queue, in order, once each.
+func TestGuardedSendQueuesSecondMessageBehindQueuedHint(t *testing.T) {
+	sess, transcript := claudeLikeFakeControl(t, "busy", map[string]any{"hold_queue": true})
+	stamp := time.Now().UnixNano()
+	first := fmt.Sprintf("QUEUED_FIRST_%d first mid-turn message", stamp)
+	second := fmt.Sprintf("QUEUED_SECOND_%d second mid-turn message", stamp)
+	if res, err := executeSend(sess, "claude", first, true, sendTuning(true, true)); err != nil || res.delivery == deliveryComposerBlocked {
+		t.Fatalf("first send: delivery=%q err=%v", res.delivery, err)
+	}
+	waitForPane(t, sess, func(p string) bool { return strings.Contains(p, "❯ Press up to edit queued messages") })
+	res, err := executeSend(sess, "claude", second, true, sendTuning(true, true))
+	if err != nil || res.delivery == deliveryComposerBlocked || res.delivery == deliveryMenuOpen || res.delivery == deliveryTypedNotSubmitted {
+		t.Fatalf("second send behind the queued hint: delivery=%q err=%v", res.delivery, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for fakeQueued(t, transcript, second) == 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if a, b := fakeQueued(t, transcript, first), fakeQueued(t, transcript, second); a != 1 || b != 1 {
+		t.Fatalf("queued first=%d second=%d, want 1 each", a, b)
+	}
+	body := readGolden(t, transcript)
+	if strings.Index(body, first) > strings.Index(body, second) {
+		t.Fatal("second message queued before the first")
 	}
 }

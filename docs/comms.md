@@ -87,6 +87,16 @@ cannot serialise hook processes). Producers spool one small JSON file per
 observed edge under `<data>/runtime/comms/spool/<instance>/<ulid>.json`
 (tmp + fsync + rename) and the daemon drains it on its poll loop.
 
+The daemon reads an instance's entries in `t_signal` order (Unix ms). The
+ULID name only orders milliseconds: two hook-handler processes spooling in
+the same millisecond mint ids whose random parts sort either way (#2823).
+So each entry also carries `t_write`, the Unix ns at which the producer
+wrote it (stamped in `WriteCommsSpool`, just before the tmp + fsync +
+rename), and entries of one millisecond read in `t_write` order, with the
+file name as the last tie-break. An entry without `t_write` (from an older
+producer) keeps the name order, and sorts before stamped entries of the
+same millisecond.
+
 Two edges: `turn_end` (the harness's final assistant text, capped, plus
 the sha256/16 of the full text) and `prompt_start` (the prompt that started
 the turn, so the daemon knows why it ran; it is never stored on the record).

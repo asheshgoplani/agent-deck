@@ -287,3 +287,29 @@ func TestInboxConfig_Defaults(t *testing.T) {
 		t.Fatal("wake_on info")
 	}
 }
+
+// The comms ledger types "[agent-deck msg] N pending ..." into a parent's
+// pane; a turn it starts is an inbox wake, not a human prompt, and both
+// classifiers must agree on every machine prefix.
+func TestClassifyTrigger_MatchesCommsPromptTrigger(t *testing.T) {
+	for _, prompt := range []string{
+		"[agent-deck msg] 2 pending (1 urgent); ack with `agent-deck msg ack`",
+		"[agent-deck inbox] child finished",
+		"[INBOX #abc] child finished",
+		"[HEARTBEAT] check",
+		"[agent-deck from:conductor-x] please report",
+		"<task-notification>x</task-notification>",
+		"<system-reminder>y</system-reminder>",
+		"fix the bug",
+	} {
+		var rec transcriptTurnRecord
+		if err := json.Unmarshal([]byte(fxUser("u", prompt, nil)), &rec); err != nil {
+			t.Fatal(err)
+		}
+		gotT, gotF := classifyTrigger(rec)
+		wantT, wantF := commsPromptTrigger(prompt)
+		if gotT != wantT || gotF != wantF {
+			t.Errorf("classifyTrigger(%q) = %q,%q; commsPromptTrigger = %q,%q", prompt, gotT, gotF, wantT, wantF)
+		}
+	}
+}

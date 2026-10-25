@@ -11,18 +11,18 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
-	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-// Compile-time check: WebMutator must implement web.SessionMutator.
-var _ web.SessionMutator = (*WebMutator)(nil)
+// Compile-time check: WebMutator must implement menudata.SessionMutator.
+var _ menudata.SessionMutator = (*WebMutator)(nil)
 
 // WebMutator bridges the web HTTP handlers to the TUI session/group management
-// methods. It wraps the Home model and implements web.SessionMutator.
+// methods. It wraps the Home model and implements menudata.SessionMutator.
 //
 // The undoStack/undoWindow fields support the web's Chrome-style undo of
 // deletes (POST /api/sessions/undelete). The TUI maintains its own
@@ -50,9 +50,9 @@ type webDeletedEntry struct {
 }
 
 // NewWebMutator returns a WebMutator backed by the given Home. The undo
-// window defaults to web.DefaultUndoWindow (30s).
+// window defaults to menudata.DefaultUndoWindow (30s).
 func NewWebMutator(h *Home) *WebMutator {
-	return &WebMutator{h: h, undoWindow: web.DefaultUndoWindow}
+	return &WebMutator{h: h, undoWindow: menudata.DefaultUndoWindow}
 }
 
 // WithUndoWindow overrides the undo grace period (useful for tests that
@@ -190,9 +190,13 @@ func (m *WebMutator) StopSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
+	loaded := session.BeforeStopKill(m.h.storage, id)
 	if err := inst.Kill(); err != nil {
 		return err
 	}
+	// Defect 317: the stop's own verdict lands now, so the daemon's error
+	// sample of this kill cannot refuse the later full save.
+	session.WriteStoppedAfterKill(m.h.storage, inst, loaded)
 	inst.RecordTelemetryEndFrom(telemetry.EndStop, telemetry.SurfaceWeb)
 	return nil
 }
@@ -353,13 +357,13 @@ func (m *WebMutator) persistAllInstances() error {
 
 // UndoDelete restores the most-recently deleted session if its delete
 // timestamp is within the configured undo window. Returns the restored
-// session id. Returns web.ErrUndoNothing if the stack is empty, or
-// web.ErrUndoExpired if the most recent entry is older than the window.
+// session id. Returns menudata.ErrUndoNothing if the stack is empty, or
+// menudata.ErrUndoExpired if the most recent entry is older than the window.
 func (m *WebMutator) UndoDelete() (string, error) {
 	m.undoMu.Lock()
 	if len(m.undoStack) == 0 {
 		m.undoMu.Unlock()
-		return "", web.ErrUndoNothing
+		return "", menudata.ErrUndoNothing
 	}
 	entry := m.undoStack[len(m.undoStack)-1]
 	m.undoStack = m.undoStack[:len(m.undoStack)-1]
@@ -367,11 +371,11 @@ func (m *WebMutator) UndoDelete() (string, error) {
 	m.undoMu.Unlock()
 
 	if window == 0 {
-		window = web.DefaultUndoWindow
+		window = menudata.DefaultUndoWindow
 	}
 	if time.Since(entry.deletedAt) > window {
 		m.finalizeWebDeletes([]webDeletedEntry{entry})
-		return "", web.ErrUndoExpired
+		return "", menudata.ErrUndoExpired
 	}
 	id, err := m.restoreDeleted(entry)
 	if err != nil {
@@ -443,7 +447,7 @@ func (m *WebMutator) pushUndo(inst *session.Instance) {
 	m.undoMu.Lock()
 	window := m.undoWindow
 	if window == 0 {
-		window = web.DefaultUndoWindow
+		window = menudata.DefaultUndoWindow
 	}
 	var final []webDeletedEntry
 	kept := m.undoStack[:0]
@@ -474,7 +478,7 @@ func (m *WebMutator) sweepExpiredUndo() {
 	m.undoMu.Lock()
 	window := m.undoWindow
 	if window == 0 {
-		window = web.DefaultUndoWindow
+		window = menudata.DefaultUndoWindow
 	}
 	var final []webDeletedEntry
 	kept := m.undoStack[:0]
@@ -492,7 +496,7 @@ func (m *WebMutator) sweepExpiredUndo() {
 
 // FinalizePendingDeletes ends every delete still on the web undo stack: the
 // server is stopping, so they can no longer be undone and their deferred
-// sweep runs now. Called by web.Server.Shutdown and on a signal exit.
+// sweep runs now. Called by menudata.Server.Shutdown and on a signal exit.
 func (m *WebMutator) FinalizePendingDeletes() {
 	m.FinalizePendingDeletesWithin(0)
 }
@@ -677,6 +681,13 @@ func (m *WebMutator) CreateGroup(name, parentPath string) (string, error) {
 		return "", err
 	}
 	defer unlock()
+	// Refuse an unknown parent like the CLI does; CreateSubgroup would
+	// otherwise store an orphan "<parent>/<name>" row with no parent group.
+	if parentPath != "" {
+		if _, ok := m.h.groupTree.Groups[parentPath]; !ok {
+			return "", fmt.Errorf("parent group %q: %w", parentPath, menudata.ErrGroupNotFound)
+		}
+	}
 	// Seed the new-group default from [group_defaults].max_concurrent.
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
 		m.h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
@@ -768,7 +779,7 @@ func (m *WebMutator) SetGroupExpanded(groupPath string, expanded bool) error {
 	defer unlock()
 
 	if m.h == nil {
-		return web.ErrGroupNotFound
+		return menudata.ErrGroupNotFound
 	}
 	// Resolve the tree ONCE. beginHeadlessTx's hydrate replaces h.groupTree
 	// wholesale (home.go:5153-5157), and in live-TUI mode the Tea loop can
@@ -776,10 +787,10 @@ func (m *WebMutator) SetGroupExpanded(groupPath string, expanded bool) error {
 	// flip and the save could persist a tree that never saw the flip.
 	tree := m.h.groupTree
 	if tree == nil {
-		return web.ErrGroupNotFound
+		return menudata.ErrGroupNotFound
 	}
 	if _, ok := tree.Groups[groupPath]; !ok {
-		return web.ErrGroupNotFound
+		return menudata.ErrGroupNotFound
 	}
 	prior := tree.Groups[groupPath].Expanded
 	if expanded {
@@ -824,7 +835,7 @@ func (m *WebMutator) MoveSessionToGroup(id, groupPath string) (string, bool, err
 	inst := m.h.instanceByID[id]
 	if inst == nil {
 		m.h.instancesMu.Unlock()
-		return "", false, web.ErrSessionNotFound
+		return "", false, menudata.ErrSessionNotFound
 	}
 	// Seed the new-group default in case the target must be auto-created.
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
@@ -855,21 +866,21 @@ func (m *WebMutator) MoveSessionToGroup(id, groupPath string) (string, bool, err
 // cmd/agent-deck/worktree_cmd.go handleWorktreeFinish) — the
 // orchestration is duplicated rather than refactored to keep the
 // fix minimally invasive (issue #1126).
-func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (web.WorktreeFinishResult, error) {
+func (m *WebMutator) FinishWorktree(id string, opts menudata.WorktreeFinishOptions) (menudata.WorktreeFinishResult, error) {
 	defer suppressHookPromptForWeb()()
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
-		return web.WorktreeFinishResult{}, err
+		return menudata.WorktreeFinishResult{}, err
 	}
 	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return web.WorktreeFinishResult{}, web.ErrSessionNotFound
+		return menudata.WorktreeFinishResult{}, menudata.ErrSessionNotFound
 	}
 	if !inst.IsWorktree() {
-		return web.WorktreeFinishResult{}, web.ErrNotAWorktree
+		return menudata.WorktreeFinishResult{}, menudata.ErrNotAWorktree
 	}
 
 	repoRoot := inst.WorktreeRepoRoot
@@ -878,7 +889,7 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 
 	backend, err := vcsbackend.Detect(repoRoot)
 	if err != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("initialize VCS: %w", err)
+		return menudata.WorktreeFinishResult{}, fmt.Errorf("initialize VCS: %w", err)
 	}
 
 	if !opts.Force {
@@ -887,11 +898,11 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 			if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
 				dirty = false
 			} else {
-				return web.WorktreeFinishResult{}, fmt.Errorf("check worktree status: %w", dErr)
+				return menudata.WorktreeFinishResult{}, fmt.Errorf("check worktree status: %w", dErr)
 			}
 		}
 		if dirty {
-			return web.WorktreeFinishResult{}, fmt.Errorf("worktree has uncommitted changes (set force=true to override)")
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("worktree has uncommitted changes (set force=true to override)")
 		}
 	}
 
@@ -899,24 +910,24 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	if targetBranch == "" && !opts.NoMerge {
 		targetBranch, err = backend.GetDefaultBranch()
 		if err != nil {
-			return web.WorktreeFinishResult{}, fmt.Errorf("determine target branch: %w (set into=<branch>)", err)
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("determine target branch: %w (set into=<branch>)", err)
 		}
 	}
 	if !opts.NoMerge && targetBranch == worktreeBranch {
-		return web.WorktreeFinishResult{}, fmt.Errorf("cannot merge branch %q into itself", worktreeBranch)
+		return menudata.WorktreeFinishResult{}, fmt.Errorf("cannot merge branch %q into itself", worktreeBranch)
 	}
 
 	if !opts.NoMerge {
 		// Checkout target in main repo, then merge.
 		checkout := exec.Command("git", "-C", repoRoot, "checkout", targetBranch)
 		if out, cErr := checkout.CombinedOutput(); cErr != nil {
-			return web.WorktreeFinishResult{}, fmt.Errorf("checkout %s: %s", targetBranch, strings.TrimSpace(string(out)))
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("checkout %s: %s", targetBranch, strings.TrimSpace(string(out)))
 		}
 		if mErr := backend.MergeBranch(worktreeBranch); mErr != nil {
 			if backend.Type() == vcs.TypeGit {
 				_ = exec.Command("git", "-C", repoRoot, "merge", "--abort").Run()
 			}
-			return web.WorktreeFinishResult{}, fmt.Errorf("merge failed (aborted): %w", mErr)
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("merge failed (aborted): %w", mErr)
 		}
 	}
 
@@ -941,7 +952,7 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("open storage: %w", err)
+		return menudata.WorktreeFinishResult{}, fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
 
@@ -959,7 +970,7 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	// row; since #1550 SaveWithGroups is upsert-only and would not delete the
 	// row at all. Either way, removal requires the targeted DELETE.
 	if sErr := storage.RemoveSessionAndVerify(id, existing, m.h.groupTree); sErr != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
+		return menudata.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
 	}
 
 	// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
@@ -972,7 +983,7 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	if opts.NoMerge {
 		mergedInto = ""
 	}
-	return web.WorktreeFinishResult{
+	return menudata.WorktreeFinishResult{
 		SessionID:     id,
 		Branch:        worktreeBranch,
 		MergedInto:    mergedInto,

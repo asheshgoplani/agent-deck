@@ -15,6 +15,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -43,7 +45,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.16.30" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.16.33" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -377,6 +379,10 @@ func printCredsRefreshRemoved() {
 }
 
 func main() {
+	processStart := time.Now() // tui.first_frame start (optiming); one clock read
+	// Must run before the first config load (initUpdateSettings below).
+	configurePermissionWarnings(os.Args[1:])
+
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
 	// whose launchd PATH omits Homebrew's /opt/homebrew/bin). Must run before any
@@ -420,6 +426,8 @@ func main() {
 	// Remote arguments belong to the server, including its script-consent flag.
 	if len(args) > 0 && args[0] == "remote" {
 		beginCLITelemetry(args[0], args[1:])
+		enableTimingsFromConfig() // remote dispatches before the config block below
+		beginCLITiming(args[0], args[1:])
 		defer settleCLITelemetry()
 		handleRemote(profile, args[1:])
 		return
@@ -452,6 +460,7 @@ func main() {
 	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
 		session.ConfigureTmuxDisplay(cfg.Display)
 	}
+	enableTimingsFromConfig()
 
 	// Nudge macOS users whose tmux predates the upstream fix for the
 	// control-mode NULL-deref (tmux #4980, issue #737). Once per process,
@@ -467,6 +476,13 @@ func main() {
 	if len(args) > 0 && !storeRootQuietCommands[args[0]] {
 		session.WarnStoreRootDivergence(os.Stderr)
 	}
+	// LOC-8: tighten a group/other-accessible state root to 0700 once, with
+	// a stderr notice. Quiet commands (hook handlers, completion) skip it so
+	// the notice is printed by the next ordinary command instead of being
+	// swallowed.
+	if len(args) == 0 || !storeRootQuietCommands[args[0]] {
+		session.EnsureStateRootPrivate(os.Stderr)
+	}
 
 	var webEnabled bool
 	// webHeadless: true when --no-tui is passed to the `web` subcommand.
@@ -477,6 +493,7 @@ func main() {
 	// Handle subcommands
 	if len(args) > 0 {
 		beginCLITelemetry(args[0], args[1:])
+		beginCLITiming(args[0], args[1:])
 		defer settleCLITelemetry()
 		switch args[0] {
 		case "telemetry":
@@ -539,11 +556,14 @@ func main() {
 				fmt.Println("Usage: agent-deck mcp-proxy <socket-path>")
 				return
 			}
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "Usage: agent-deck mcp-proxy <socket-path>")
-				exitCLI(1)
+			// Bound the index explicitly: CodeQL does not model exitCLI as
+			// non-returning (go/index-out-of-bounds).
+			if socketPath, ok := mcpProxySocketArg(args); ok {
+				runMCPProxy(socketPath)
+				return
 			}
-			runMCPProxy(args[1])
+			fmt.Fprintln(os.Stderr, "Usage: agent-deck mcp-proxy <socket-path>")
+			exitCLI(1)
 			return
 		case "group":
 			handleGroup(profile, args[1:])
@@ -559,6 +579,9 @@ func main() {
 			return
 		case "doctor":
 			handleDoctor(args[1:])
+			return
+		case "perf":
+			handlePerf(args[1:])
 			return
 		case "accounts":
 			handleAccounts(args[1:])
@@ -1113,6 +1136,7 @@ func main() {
 	}
 
 	// Start TUI with the specified profile
+	ui.SetProcessStart(processStart)
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
 	setTelemetrySignalClose(homeModel.CloseTelemetry)
 	setWatcherEngineSignalStop(homeModel.StopWatcherEngine)
@@ -1173,7 +1197,7 @@ func main() {
 		// Set up budget checker
 		// An invalid costs timezone must not keep the TUI from starting:
 		// budgets then fall back to local time, as before.
-		budgetCfg, budgetErr := costBudgetConfig(userCfg)
+		budgetCfg, budgetErr := session.CostBudgetConfig(userCfg)
 		if budgetErr != nil {
 			slog.Warn("cost budgets use local time", "error", budgetErr)
 		}
@@ -1387,7 +1411,7 @@ func main() {
 			// coordinates before forwarding those events to the child tmux client.
 			tea.WithMouseAllMotion(),
 			tea.WithReportFocus(),
-			tea.WithInput(sessionInput),
+			tea.WithInput(ui.NewTUIRouterInput(sessionInput)),
 			tea.WithOutput(sessionOutput),
 		)
 	} else {
@@ -1397,7 +1421,7 @@ func main() {
 		programOptions = append(
 			programOptions,
 			tea.WithMouseCellMotion(),
-			tea.WithInput(ui.NewCSIuReader(os.Stdin)),
+			tea.WithInput(ui.NewTUIInput(os.Stdin)),
 		)
 	}
 	p := tea.NewProgram(homeModel, programOptions...)
@@ -1535,6 +1559,17 @@ func newHeadlessAutoInstaller(exe string, homebrewManaged func() bool) *update.I
 	}
 }
 
+// configurePermissionWarnings sends config-file permission warnings (an
+// unsafe config.toml, a skipped dir-local config) to stderr for plain CLI
+// commands. The TUI (no subcommand, or `web`) must not write over the screen
+// and quiet commands feed other programs; both keep them in the debug log.
+func configurePermissionWarnings(rawArgs []string) {
+	_, args := extractProfileFlag(rawArgs)
+	if len(args) > 0 && !storeRootQuietCommands[args[0]] && args[0] != "web" {
+		session.SetPermissionWarningWriter(os.Stderr)
+	}
+}
+
 // storeRootQuietCommands never print the profile store WARNING to stderr:
 // hook and completion handlers feed other programs, and doctor, health and
 // migrate-paths report the layout themselves.
@@ -1544,6 +1579,7 @@ var storeRootQuietCommands = map[string]bool{
 	"completion":    true,
 	"doctor":        true,
 	"health":        true,
+	"perf":          true,
 	"migrate-paths": true,
 	"telemetry":     true,
 	"version":       true,
@@ -1560,7 +1596,7 @@ var storeRootQuietCommands = map[string]bool{
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
 var commandRegistry = map[string]bool{
-	"add": true, "accounts": true, "harness": true, "limits": true, "doctor": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
+	"add": true, "accounts": true, "harness": true, "limits": true, "doctor": true, "perf": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
 	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
@@ -1643,14 +1679,19 @@ func extractAllowRepoScriptsFlag(args []string) (allow, trust bool, remaining []
 		}
 		return false, false
 	}
+	// Arguments after "--" are data (a message, say), never global flags.
+	flagArgs, rest := args, []string(nil)
+	if i := slices.Index(args, "--"); i >= 0 {
+		flagArgs, rest = args[:i], args[i:]
+	}
 	present := false
-	for _, a := range args {
+	for _, a := range flagArgs {
 		if ok, _ := isRunHooks(a); ok {
 			present = true
 		}
 	}
 	remaining = make([]string, 0, len(args))
-	for _, a := range args {
+	for _, a := range flagArgs {
 		if ok, v := isRunHooks(a); ok {
 			allow = v
 			continue
@@ -1661,7 +1702,7 @@ func extractAllowRepoScriptsFlag(args []string) (allow, trust bool, remaining []
 		}
 		remaining = append(remaining, a)
 	}
-	return allow, trust, remaining
+	return allow, trust, append(remaining, rest...)
 }
 
 // extractGroupFlag extracts -g or --group from args, returning the group path and remaining args.
@@ -1853,7 +1894,8 @@ func resolveAutoParentInstanceChecked(instances []*session.Instance) (*session.I
 		}
 	}
 	// The tmux probe runs last, only when the environment named no session.
-	if inst := resolve(strings.TrimSpace(GetCurrentSessionID())); inst != nil {
+	// The tmux name ends in a random suffix, so it is matched whole.
+	if inst := instanceOwningTmuxName(currentAgentDeckTmuxName(), instances); inst != nil {
 		return inst, ""
 	}
 	return nil, authoritative
@@ -1861,27 +1903,39 @@ func resolveAutoParentInstanceChecked(instances []*session.Instance) (*session.I
 
 // resolveGroupPathForAdd resolves a user-provided group selector to a stored group path.
 // It accepts exact paths, normalized paths, and case-insensitive group display names.
-func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) string {
+// A display name shared by several groups is an error listing the candidate
+// paths; the selector is still returned so callers that ignore it keep it as is.
+func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) (string, error) {
 	if groupTree == nil || groupSelector == "" {
-		return groupSelector
+		return groupSelector, nil
 	}
 
 	if _, exists := groupTree.Groups[groupSelector]; exists {
-		return groupSelector
+		return groupSelector, nil
 	}
 
 	normalized := strings.ToLower(strings.ReplaceAll(groupSelector, " ", "-"))
 	if _, exists := groupTree.Groups[normalized]; exists {
-		return normalized
+		return normalized, nil
 	}
 
+	// Groups is a map: taking the first name match would pick a random group
+	// when the same name exists under several parents.
+	var matches []string
 	for path, group := range groupTree.Groups {
 		if strings.EqualFold(group.Name, groupSelector) {
-			return path
+			matches = append(matches, path)
 		}
 	}
-
-	return groupSelector
+	switch len(matches) {
+	case 0:
+		return groupSelector, nil
+	case 1:
+		return matches[0], nil
+	default:
+		sort.Strings(matches)
+		return groupSelector, fmt.Errorf("group %q is ambiguous: %s; use the full path", groupSelector, strings.Join(matches, ", "))
+	}
 }
 
 // shouldLockTitle is the #1615-class chokepoint deciding whether a new CLI
@@ -2245,7 +2299,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 
 	// Resolve group selector to a canonical path when possible.
 	if sessionGroup != "" {
-		sessionGroup = resolveGroupPathForAdd(groupTree, sessionGroup)
+		sessionGroup, err = resolveGroupPathForAdd(groupTree, sessionGroup)
+		if err != nil {
+			NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
 	}
 
 	if explicitPathProvided {
@@ -3146,6 +3204,9 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 
 		// IntendedSwitch: see core.SessionRow (omitted when none or expired).
 		IntendedSwitch *session.IntendedSwitchJSON `json:"intended_switch,omitempty"`
+
+		// ConductorName: see core.SessionRow (absent for non-conductors).
+		ConductorName string `json:"conductor_name,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
 	transcripts := session.ListedTranscriptPaths(instances)
@@ -3201,6 +3262,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 			IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),
+			ConductorName:     inst.ListedConductorName(),
 		}
 		if cached[inst] {
 			sj.StatusSource = "cached"
@@ -3430,6 +3492,7 @@ func handleRemove(profile string, args []string) {
 	// Uses the synchronous variant so the SIGTERM→SIGKILL escalation finishes
 	// before this short-lived CLI exits — otherwise SIGHUP-immune claude
 	// processes survive as orphans (issue #59, v1.7.68).
+	saveStoppedBeforeRemoval(storage, inst)
 	if err := inst.KillAndWait(); err != nil {
 		// Only warn if the session actually existed (ignore "not found" errors)
 		if inst.Exists() && !*jsonOutput {
@@ -3618,16 +3681,23 @@ type statusCounts struct {
 	total   int
 }
 
+// statusInstances is the set `status` reports on: sessions that are not
+// archived. An archived session can keep a live tmux process (a conductor
+// archives finished workers; a superseded cross-harness source keeps its old
+// pane), but the operator filed it away, so it must not show up as waiting,
+// running or idle. This is stricter than `list --json`, which keeps normal
+// archives and flags them with "archived": true.
+func statusInstances(instances []*session.Instance) []*session.Instance {
+	return session.FilterInstancesByArchive(instances, false)
+}
+
 // countByStatus counts sessions by their status
 func countByStatus(instances []*session.Instance) statusCounts {
+	instances = statusInstances(instances)
 	// Warm tmux pane-title cache + load hook statuses so `status`/`status --json`
-	// reports the same counts the TUI and /api/menu do (issue #610).
+	// reports the same counts the TUI header and /api/menu do (issue #610).
+	// All three leave archived sessions out.
 	session.RefreshInstancesForCLIStatus(instances)
-	// Superseded/archived source rows (from cross-harness "Restart with new
-	// session ID") stay in storage with their old tmux session still
-	// reachable, but `list --json` hides them. Without this filter `status`
-	// counts them anyway, so its total silently exceeds `list --json`'s.
-	instances = session.VisibleInstances(instances)
 	var counts statusCounts
 	for _, inst := range instances {
 		_ = inst.UpdateStatus() // Refresh status from tmux
@@ -3721,10 +3791,8 @@ func handleStatus(profile string, args []string) {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		exitCLI(1)
 	}
-	// Same tracked set as `list --json`: hide archived cross-harness sources
-	// superseded by a "Restart with new session ID" so status totals never
-	// exceed the enumerable session list.
-	instances = session.VisibleInstances(instances)
+	// Archived sessions are not counted or listed; see statusInstances.
+	instances = statusInstances(instances)
 
 	if len(instances) == 0 {
 		if *jsonOutput {
@@ -3824,11 +3892,7 @@ func handleStatus(profile string, args []string) {
 			}
 			fmt.Printf("%s (%d):\n", label, len(matching))
 			for _, inst := range matching {
-				path := inst.ProjectPath
-				home, _ := os.UserHomeDir()
-				if strings.HasPrefix(path, home) {
-					path = "~" + path[len(home):]
-				}
+				path := FormatPath(inst.ProjectPath)
 				suffix := ""
 				sub := inst.Substate()
 				if lbl := SubstateLabel(sub); lbl != "" {
@@ -4597,6 +4661,7 @@ func printHelp() {
 	fmt.Println("  limits           Claude 5h/7d and Codex weekly usage per account [--json] ([macapp] plugins)")
 	fmt.Println("  doctor           Check accounts and runtime health")
 	fmt.Println("  health           Runtime health snapshots and budgets [--json] [--since 1h]")
+	fmt.Println("  perf             Operation timings vs targets (record with AGENTDECK_TIMINGS=1) [--json] [--since 24h]")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")
 	fmt.Println("  list, ls         List all sessions")
 	fmt.Println("  remove, rm       Remove a session")
@@ -4811,15 +4876,9 @@ func mergeFlags(long, short string) string {
 	return short
 }
 
-// truncate shortens a string to max length with ellipsis
+// truncate shortens a string to max display columns with ellipsis
 func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return s[:max]
-	}
-	return s[:max-3] + "..."
+	return truncateWidth(s, max)
 }
 
 // detectTool determines the tool type from a command string.

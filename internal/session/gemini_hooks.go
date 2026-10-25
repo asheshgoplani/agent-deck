@@ -18,6 +18,9 @@ type geminiHookEntry struct {
 	Command string `json:"command"`
 }
 
+// geminiHookMatcher is a read-only view (used by the installed check). The
+// install/uninstall rewrite goes through jsonObject and raw hook entries so
+// fields this struct does not model survive (ASK-102).
 type geminiHookMatcher struct {
 	Matcher string            `json:"matcher,omitempty"`
 	Hooks   []geminiHookEntry `json:"hooks"`
@@ -68,9 +71,10 @@ func InjectGeminiHooks(configDir string) (bool, error) {
 	var existingHooks map[string]json.RawMessage
 	if raw, ok := rawSettings["hooks"]; ok {
 		if err := json.Unmarshal(raw, &existingHooks); err != nil {
-			existingHooks = make(map[string]json.RawMessage)
+			return false, fmt.Errorf("parse hooks in settings.json: %w (refusing to modify)", err)
 		}
-	} else {
+	}
+	if existingHooks == nil {
 		existingHooks = make(map[string]json.RawMessage)
 	}
 
@@ -79,7 +83,11 @@ func InjectGeminiHooks(configDir string) (bool, error) {
 	}
 
 	for _, cfg := range geminiHookEventConfigs {
-		existingHooks[cfg.Event] = mergeGeminiHookEvent(existingHooks[cfg.Event], cfg.Matcher)
+		merged, err := mergeGeminiHookEvent(existingHooks[cfg.Event], cfg.Matcher)
+		if err != nil {
+			return false, fmt.Errorf("parse hooks.%s in settings.json: %w (refusing to modify)", cfg.Event, err)
+		}
+		existingHooks[cfg.Event] = merged
 	}
 
 	hooksRaw, err := json.Marshal(existingHooks)
@@ -225,56 +233,77 @@ func geminiEventHasAgentDeckHook(raw json.RawMessage) bool {
 	return false
 }
 
-func mergeGeminiHookEvent(existing json.RawMessage, matcher string) json.RawMessage {
-	var matchers []geminiHookMatcher
+// rawHookCommandContains reports whether a raw hook entry's "command" contains cmd.
+func rawHookCommandContains(raw json.RawMessage, cmd string) bool {
+	var h struct {
+		Command string `json:"command"`
+	}
+	return json.Unmarshal(raw, &h) == nil && strings.Contains(h.Command, cmd)
+}
+
+func mergeGeminiHookEvent(existing json.RawMessage, matcher string) (json.RawMessage, error) {
+	var matchers []jsonObject
 	if existing != nil {
 		if err := json.Unmarshal(existing, &matchers); err != nil {
-			matchers = nil
+			return nil, err
 		}
 	}
 
 	for i, m := range matchers {
-		if m.Matcher != matcher {
+		if m.getString("matcher") != matcher {
 			continue
 		}
-		for _, h := range m.Hooks {
-			if strings.Contains(h.Command, agentDeckGeminiHookCommand) {
-				return existing
+		var hooks []json.RawMessage
+		if raw, ok := m.get("hooks"); ok {
+			if err := json.Unmarshal(raw, &hooks); err != nil {
+				return nil, err
 			}
 		}
-		matchers[i].Hooks = append(matchers[i].Hooks, geminiAgentDeckHook())
-		result, _ := json.Marshal(matchers)
-		return result
+		for _, h := range hooks {
+			if rawHookCommandContains(h, agentDeckGeminiHookCommand) {
+				return existing, nil
+			}
+		}
+		hooks = append(hooks, mustMarshal(geminiAgentDeckHook()))
+		matchers[i].set("hooks", mustMarshal(hooks))
+		return json.Marshal(matchers)
 	}
 
-	matchers = append(matchers, geminiHookMatcher{
+	var added jsonObject
+	if err := json.Unmarshal(mustMarshal(geminiHookMatcher{
 		Matcher: matcher,
 		Hooks:   []geminiHookEntry{geminiAgentDeckHook()},
-	})
-	result, _ := json.Marshal(matchers)
-	return result
+	}), &added); err != nil {
+		return nil, err
+	}
+	return json.Marshal(append(matchers, added))
 }
 
 func removeAgentDeckFromGeminiEvent(raw json.RawMessage) (json.RawMessage, bool) {
-	var matchers []geminiHookMatcher
+	var matchers []jsonObject
 	if err := json.Unmarshal(raw, &matchers); err != nil {
 		return raw, false
 	}
 
 	removed := false
-	var cleaned []geminiHookMatcher
+	var cleaned []jsonObject
 
 	for _, m := range matchers {
-		var hooks []geminiHookEntry
-		for _, h := range m.Hooks {
-			if strings.Contains(h.Command, agentDeckGeminiHookCommand) {
+		var hooks, kept []json.RawMessage
+		if h, ok := m.get("hooks"); ok {
+			if err := json.Unmarshal(h, &hooks); err != nil {
+				return raw, false
+			}
+		}
+		for _, h := range hooks {
+			if rawHookCommandContains(h, agentDeckGeminiHookCommand) {
 				removed = true
 				continue
 			}
-			hooks = append(hooks, h)
+			kept = append(kept, h)
 		}
-		if len(hooks) > 0 {
-			m.Hooks = hooks
+		if len(kept) > 0 {
+			m.set("hooks", mustMarshal(kept))
 			cleaned = append(cleaned, m)
 		}
 	}

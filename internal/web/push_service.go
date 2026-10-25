@@ -270,6 +270,13 @@ type webPushSender interface {
 	Send(payload []byte, sub pushSubscription) (int, error)
 }
 
+// pushSendTimeout bounds one push gateway request. webpush-go falls back to
+// an http.Client with no timeout, and notifySubscribers sends serially, so a
+// gateway that never answers would block every later subscriber.
+const pushSendTimeout = 10 * time.Second
+
+var pushHTTPClient = &http.Client{Timeout: pushSendTimeout}
+
 type vapidPushSender struct {
 	subject    string
 	publicKey  string
@@ -289,6 +296,7 @@ func (s *vapidPushSender) Send(payload []byte, sub pushSubscription) (int, error
 		VAPIDPublicKey:  s.publicKey,
 		VAPIDPrivateKey: s.privateKey,
 		TTL:             3600,
+		HTTPClient:      pushHTTPClient,
 	})
 	if resp != nil {
 		defer resp.Body.Close()

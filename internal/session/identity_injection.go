@@ -25,7 +25,12 @@
 //	pi      --append-system-prompt <file>
 //	gemini  --include-directories <dir>   (the dir holds GEMINI.md; loaded
 //	        as hierarchical project memory alongside the project's own)
-//	other   AGENTDECK_IDENTITY_FILE=<file> in the environment only
+//	opencode OPENCODE_CONFIG_CONTENT={"instructions":["<file>"]} (merged
+//	        into the user's config; skipped when the user already sets it)
+//	copilot COPILOT_CUSTOM_INSTRUCTIONS_DIRS += <dir holding AGENTS.md>
+//	other   AGENTDECK_IDENTITY_FILE=<file> in the environment only (hermes,
+//	        cursor, crush: their only knobs replace user config, see
+//	        identityToolEnvExports)
 //
 // Nothing is ever written into the user's project directory (no AGENTS.md /
 // CLAUDE.md / GEMINI.md creation or edits). The block is regenerated from
@@ -33,9 +38,18 @@
 // reflected at the next start/restart, never stale.
 //
 // Opt-out: `[launch] inject_identity = false` in config.toml (global) or
-// `agent-deck add|launch --no-identity` (per session, persisted). SSH and
-// sandboxed (docker) sessions are skipped: the file lives on the controller
-// host and would not be visible where the harness actually runs.
+// `agent-deck add|launch --no-identity` (per session, persisted).
+//
+// SSH and sandboxed (docker) sessions run the harness where the controller's
+// file is not visible, so their launch command carries the block itself
+// (identityRunsElsewhere): its env prefix decodes the block into a shell
+// variable where the harness runs, writes the file there (under the
+// remote/container user's $XDG_RUNTIME_DIR, else ~/.local/share) and
+// exports AGENTDECK_IDENTITY_FILE to it, so env-only tools get it there too;
+// claude and pi/omp get the variable as inline --append-system-prompt text,
+// codex today's inline -c override.
+// gemini on a remote stays env-only: its folder-trust state there is unknown
+// and an untrusted --include-directories dialog would eat the first message.
 package session
 
 import (
@@ -158,19 +172,23 @@ func (i *Instance) EffectiveContextLevel() (level, source string) {
 // identityFileName is the canonical identity file inside the per-session
 // directory. geminiIdentityFileName is the same content under the name
 // gemini discovers as context when the directory is added to its workspace.
+// copilotIdentitySubdir/copilotIdentityFileName is where copilot finds the
+// block: COPILOT_CUSTOM_INSTRUCTIONS_DIRS names directories and copilot reads
+// AGENTS.md from each. It is a subdirectory so gemini, which may be configured
+// to read AGENTS.md too, never sees the block twice in the session dir.
 const (
-	identityFileName       = "identity.md"
-	geminiIdentityFileName = "GEMINI.md"
+	identityFileName        = "identity.md"
+	geminiIdentityFileName  = "GEMINI.md"
+	copilotIdentitySubdir   = "copilot"
+	copilotIdentityFileName = "AGENTS.md"
 )
 
 // identityInjectionEnabled reports whether this spawn should carry the
-// model-readable identity block. Global config, per-session opt-out, and the
-// remote/sandbox exclusions all gate here so every call site agrees.
+// model-readable identity block. Global config and the per-session opt-out
+// gate here so every call site agrees; local, SSH and sandboxed sessions all
+// inject (identityRunsElsewhere picks how).
 func (i *Instance) identityInjectionEnabled() bool {
 	if i == nil {
-		return false
-	}
-	if i.IsSSH() || i.IsSandboxed() {
 		return false
 	}
 	level, _ := i.EffectiveContextLevel()
@@ -178,11 +196,161 @@ func (i *Instance) identityInjectionEnabled() bool {
 }
 
 // ContextInjectionActive is the exported form of identityInjectionEnabled,
-// for `session primer`'s inspection output: whether a spawn actually writes
-// the identity/primer file (SSH and sandboxed sessions never do, regardless
-// of the resolved context level).
+// for `session primer`'s inspection output: whether a spawn carries the
+// identity/primer block at all.
 func (i *Instance) ContextInjectionActive() bool {
 	return i.identityInjectionEnabled()
+}
+
+// IdentityRunsElsewhere is the exported form of identityRunsElsewhere, for
+// `session primer`: the block travels inline in the launch command and the
+// file is written where the harness runs, not at IdentityFilePath.
+func (i *Instance) IdentityRunsElsewhere() bool {
+	return i.identityRunsElsewhere()
+}
+
+// identityRunsElsewhere reports whether the harness runs where files on the
+// controller host are not visible: on an SSH remote or inside a docker
+// sandbox. Those spawns never reference a controller path; the block rides
+// inline in the launch command instead.
+func (i *Instance) identityRunsElsewhere() bool {
+	return i != nil && (i.IsSSH() || i.IsSandboxed())
+}
+
+// identityText renders the block this spawn carries, or ok=false when
+// injection is off. It writes nothing.
+func (i *Instance) identityText() (string, bool) {
+	if !i.identityInjectionEnabled() {
+		return "", false
+	}
+	level, _ := i.EffectiveContextLevel()
+	return i.BuildContextPromptForLevel(level), true
+}
+
+// identityInlineMaxBytes caps the identity payload an SSH/sandboxed launch
+// command carries (the encoded block, plus codex's TOML override). tmux
+// refuses a pane command over ~16 KB, and the rest of a remote launch (env
+// exports, PATH prelude, quoting layers, the title in --name and
+// AGENTDECK_TITLE) needs room too. Over the cap the spawn degrades instead of
+// failing: codex drops its -c override first (the file stays), and a block
+// too big to carry at all is not injected on that spawn (as before ASK-105).
+const identityInlineMaxBytes = 8 << 10
+
+// identityRemoteText is identityText for an SSH/sandboxed spawn, or ok=false
+// when the encoded block alone exceeds identityInlineMaxBytes.
+func (i *Instance) identityRemoteText() (string, bool) {
+	text, ok := i.identityText()
+	if !ok {
+		return "", false
+	}
+	if n := len(identityPrintfArg(text)); n > identityInlineMaxBytes {
+		sessionLog.Warn("identity_remote_block_too_large",
+			slog.String("instance_id", i.ID),
+			slog.Int("bytes", n),
+			slog.Int("max", identityInlineMaxBytes))
+		return "", false
+	}
+	return text, true
+}
+
+// identityPrintfArg encodes s as one shell-quoted, single-line argument for
+// `printf '%b'` that reproduces s byte for byte: every backslash is doubled
+// first, then each newline becomes \n. The block's fields are already free of
+// other control characters (identityOneLine), so the launch command never
+// carries a raw newline and titles with quotes, backticks, $() or unicode
+// stay literal. identityLaunchSafe then keeps single quotes and "exec " out
+// of the encoded text.
+func identityPrintfArg(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return shellescape.Quote(identityLaunchSafe(s, `\0047`, `exec\0040`))
+}
+
+// identityLaunchSafe replaces, in an already escaped payload, the two
+// sequences that are costly or unsafe in a launch command, with the given
+// escapes (printf %b octal or TOML \u):
+//   - a single quote is re-escaped by every quoting layer of an SSH or
+//     sandboxed launch (bash -c, ssh, docker exec), growing ~20x per layer
+//     stack; a quote-heavy title then pushed the command past tmux's ~16 KB
+//     limit;
+//   - "exec " is what wrapExitToShell strips as the harness launcher; inside
+//     the block (a title such as "run exec tests") it would be stripped
+//     there instead, mangling the block and leaving the real launcher.
+func identityLaunchSafe(s, quote, execSpace string) string {
+	s = strings.ReplaceAll(s, "'", quote)
+	return strings.ReplaceAll(s, "exec ", execSpace)
+}
+
+// identityShellVar holds the decoded block in the shell that runs an SSH or
+// sandboxed harness. identityRemoteFileExport (in the env prefix) sets it once
+// and the harness flags expand it, so the block is in the launch command only
+// once: tmux refuses a pane command over ~16 KB ("command too long"), and the
+// quoting layers of a remote launch multiply every quote. Not exported, so it
+// never reaches the harness environment.
+const identityShellVar = "agentdeck_identity"
+
+// identityInlineText is the block as one shell word for a harness flag of an
+// SSH/sandboxed spawn. Unset (no env prefix) it expands to "", which leaves
+// the harness's own prompt as it was.
+func identityInlineText() string {
+	return `"$` + identityShellVar + `"`
+}
+
+// identityRemoteFileExport, for SSH and sandboxed spawns, decodes the block
+// into identityShellVar in the shell where the harness runs, writes it to a
+// file there and exports AGENTDECK_IDENTITY_FILE to it. The directory is the
+// remote/container user's $XDG_RUNTIME_DIR (never the project dir), falling
+// back to $HOME/.local/share (user-owned, unlike a shared /tmp); the leaf dir is made 0700 and the write is atomic
+// (tmp file + mv). A failed write leaves the variable unset and the launch
+// proceeds: the inline harness flags use identityShellVar, not the file.
+func identityRemoteFileExport(sessionID, tool, text string) string {
+	dir := `agentdeck_identity_dir="${XDG_RUNTIME_DIR:-$HOME/.local/share}"/agent-deck/identity/` + shellescape.Quote(sanitizeInboxName(sessionID))
+	tmp := `"$agentdeck_identity_dir/.` + identityFileName + `.$$"`
+	file := `"$agentdeck_identity_dir/` + identityFileName + `"`
+	copilotCopy := ""
+	if tool == "copilot" {
+		copilotDir := `"$agentdeck_identity_dir/` + copilotIdentitySubdir + `"`
+		copilotCopy = " && mkdir -p " + copilotDir + " && cp -f " + file + " " + copilotDir + "/" + copilotIdentityFileName
+	}
+	// $(...) drops the block's trailing newline; the file write restores it.
+	out := identityShellVar + "=$(printf '%b' " + identityPrintfArg(text) + ")" +
+		" && { { " + dir +
+		` && mkdir -p "$agentdeck_identity_dir" && chmod 700 "$agentdeck_identity_dir"` +
+		` && printf '%s\n' "$` + identityShellVar + `" > ` + tmp +
+		" && mv -f " + tmp + " " + file + copilotCopy +
+		" && export " + IdentityFileEnv + "=" + file + "; } || unset " + IdentityFileEnv + "; }"
+	// The file exists only if the write above worked, so the harness-native
+	// exports are gated on the variable it sets.
+	if native := identityToolEnvExports(tool, `"$agentdeck_identity_dir/`+copilotIdentitySubdir+`"`, `"{\"instructions\":[\"$`+IdentityFileEnv+`\"]}"`); native != "" {
+		out += ` && { [ -z "${` + IdentityFileEnv + `:-}" ] || ` + native + "; }"
+	}
+	return out
+}
+
+// identityToolEnvExports returns the environment-only native mechanism of a
+// harness that has no instruction flag, as one shell statement, or "":
+//
+//	opencode  OPENCODE_CONFIG_CONTENT={"instructions":["<file>"]}: merged
+//	          into the user's config (instructions arrays are unioned across
+//	          layers). An OPENCODE_CONFIG_CONTENT the user already exports is
+//	          left alone (it holds one JSON value; overwriting it would drop
+//	          theirs), and the session falls back to env-only.
+//	copilot   COPILOT_CUSTOM_INSTRUCTIONS_DIRS gains the dir holding AGENTS.md,
+//	          appended (comma-separated) to any value already set.
+//
+// hermes, cursor and crush stay env-only: hermes' ephemeral system prompt
+// replaces the user's own agent.system_prompt, cursor-agent only takes a
+// local plugin dir that team policy can block, and crush has no additive
+// option at all (each would replace or hide user configuration).
+// copilotDir and opencodeJSON are shell words.
+func identityToolEnvExports(tool, copilotDir, opencodeJSON string) string {
+	switch tool {
+	case "opencode":
+		return `{ [ -n "${OPENCODE_CONFIG_CONTENT:-}" ] || export OPENCODE_CONFIG_CONTENT=` + opencodeJSON + "; }"
+	case "copilot":
+		return `export COPILOT_CUSTOM_INSTRUCTIONS_DIRS="${COPILOT_CUSTOM_INSTRUCTIONS_DIRS:+$COPILOT_CUSTOM_INSTRUCTIONS_DIRS,}"` + copilotDir
+	}
+	return ""
 }
 
 // IdentityDir returns the agent-deck-owned root that holds one directory per
@@ -256,7 +424,8 @@ func (i *Instance) BuildIdentityPrompt() string {
 	fmt.Fprintf(&b, "- `agent-deck inbox drain --json %s` — completion events your children queued for you\n", identityField(i.ID))
 	b.WriteString("- `agent-deck list --json` — every session in this profile\n")
 	b.WriteString("\n## Skills\n")
-	fmt.Fprintf(&b, "Pool skills exist for many tasks. List: `agent-deck skill list`; attach to this session: `agent-deck skill attach <session id> <skill>` (then restart); attached now: %s.\n", attachedSkillNames(i.ProjectPath))
+	id := identityField(i.ID)
+	fmt.Fprintf(&b, "Pool skills exist for many tasks. List them: `agent-deck skill list`. Attached to this session now: %s (`agent-deck skill attached %s`). Attach one: `agent-deck skill attach %s <skill>`, then restart.\n", i.attachedSkillNamesForBlock(), id, id)
 	b.WriteString("\n## Completion sentinel\n")
 	b.WriteString("When a task you were given by a parent is fully done, end your final message with exactly one line:\n")
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
@@ -344,6 +513,16 @@ func (i *Instance) hostLabel() string {
 	return name
 }
 
+// attachedSkillNamesForBlock is attachedSkillNames for the identity block. An
+// SSH session's project (and its skills.toml) lives on the remote, so the
+// controller cannot list it and says where to look instead of guessing.
+func (i *Instance) attachedSkillNamesForBlock() string {
+	if i.IsSSH() {
+		return "listed on the remote"
+	}
+	return attachedSkillNames(i.ProjectPath)
+}
+
 // attachedSkillNames lists the project's currently-attached pool skills (from
 // skills.toml), or "none". Never errors: a missing/unreadable manifest reads
 // the same as no skills attached.
@@ -352,9 +531,16 @@ func attachedSkillNames(projectPath string) string {
 	if err != nil || len(skills) == 0 {
 		return "none"
 	}
-	names := make([]string, len(skills))
-	for i, s := range skills {
-		names[i] = s.Name
+	names := make([]string, 0, len(skills))
+	for _, s := range skills {
+		// A repo's skills.toml is untrusted text: one line per name, no
+		// control characters (identityField), like every other field.
+		if name := strings.TrimSpace(identityOneLine(s.Name)); name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "none"
 	}
 	return strings.Join(names, ", ")
 }
@@ -402,8 +588,11 @@ func identityOneLine(s string) string {
 // Writes on every call: the builders that call it run exactly once per
 // start/restart, and rewriting a few hundred bytes is cheaper than any cache
 // that could serve a stale title.
+//
+// Always !ok for SSH and sandboxed spawns: a controller path means nothing
+// where their harness runs (see identityRunsElsewhere).
 func (i *Instance) ensureIdentityFile() (dir, file string, ok bool) {
-	if !i.identityInjectionEnabled() {
+	if !i.identityInjectionEnabled() || i.identityRunsElsewhere() {
 		return "", "", false
 	}
 	dir, err := i.identitySessionDir()
@@ -427,7 +616,13 @@ func (i *Instance) ensureIdentityFile() (dir, file string, ok bool) {
 	// changed, because the rendered content then differs.
 	level, _ := i.EffectiveContextLevel()
 	content := []byte(i.BuildContextPromptForLevel(level))
-	for _, name := range []string{identityFileName, geminiIdentityFileName} {
+	names := []string{identityFileName, geminiIdentityFileName}
+	if i.Tool == "copilot" {
+		if err := os.MkdirAll(filepath.Join(dir, copilotIdentitySubdir), 0o755); err == nil {
+			names = append(names, filepath.Join(copilotIdentitySubdir, copilotIdentityFileName))
+		}
+	}
+	for _, name := range names {
 		path := filepath.Join(dir, name)
 		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, content) {
 			continue
@@ -444,13 +639,26 @@ func (i *Instance) ensureIdentityFile() (dir, file string, ok bool) {
 
 // identityEnvExport returns the `export AGENTDECK_IDENTITY_FILE=...` fragment
 // for buildEnvSourceCommand, or "" when injection is off. This is the only
-// piece every tool gets, including custom `--cmd` commands.
+// piece every tool gets, including custom `--cmd` commands. For SSH and
+// sandboxed spawns it writes the file where the harness runs first.
 func (i *Instance) identityEnvExport() string {
-	_, file, ok := i.ensureIdentityFile()
+	if i.identityRunsElsewhere() {
+		text, ok := i.identityRemoteText()
+		if !ok {
+			return ""
+		}
+		return identityRemoteFileExport(i.ID, i.Tool, text)
+	}
+	dir, file, ok := i.ensureIdentityFile()
 	if !ok {
 		return ""
 	}
-	return "export " + IdentityFileEnv + "=" + shellescape.Quote(file)
+	out := "export " + IdentityFileEnv + "=" + shellescape.Quote(file)
+	opencodeJSON, _ := json.Marshal(map[string][]string{"instructions": {file}})
+	if native := identityToolEnvExports(i.Tool, shellescape.Quote(filepath.Join(dir, copilotIdentitySubdir)), shellescape.Quote(string(opencodeJSON))); native != "" {
+		out += " && " + native
+	}
+	return out
 }
 
 // claudeIdentityFlag returns the claude flag or "". Unlike the other
@@ -458,6 +666,12 @@ func (i *Instance) identityEnvExport() string {
 // appends it to a flag list that is joined later, and it does so for fresh,
 // resume and fork spawns alike.
 func (i *Instance) claudeIdentityFlag() string {
+	if i.identityRunsElsewhere() {
+		if _, ok := i.identityRemoteText(); ok {
+			return "--append-system-prompt " + identityInlineText()
+		}
+		return ""
+	}
 	_, file, ok := i.ensureIdentityFile()
 	if !ok {
 		return ""
@@ -488,16 +702,34 @@ func (i *Instance) codexIdentityFlag(codexHome, projectPath string) string {
 // delivered after the developer message) and is not touched by this key.
 // model_instructions_file is deliberately not used: it would replace codex's
 // built-in instructions.
+//
+// An SSH session's codex reads the REMOTE codex config, which this host
+// cannot see, so no merge is attempted there: a developer_instructions set
+// in the remote config is overridden for that spawn (documented in
+// documentation/HARNESS_IDENTITY.md; opt out per session with --no-identity).
+// A sandbox mounts this host's codex home, so it merges as a local spawn does.
 func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string, bool) {
-	_, file, ok := i.ensureIdentityFile()
-	if !ok {
-		return "", false
+	var merged string
+	if i.identityRunsElsewhere() {
+		text, ok := i.identityRemoteText()
+		if !ok {
+			return "", false
+		}
+		merged = text
+		if i.IsSSH() {
+			return i.codexRemoteOverrideWithinBudget(text, merged)
+		}
+	} else {
+		_, file, ok := i.ensureIdentityFile()
+		if !ok {
+			return "", false
+		}
+		content, err := os.ReadFile(file)
+		if err != nil {
+			return "", false
+		}
+		merged = string(content)
 	}
-	content, err := os.ReadFile(file)
-	if err != nil {
-		return "", false
-	}
-	merged := string(content)
 	// A configured (present) developer_instructions leads, so codex applies
 	// exactly what it would have plus our block. An explicit empty override
 	// (found, value=="") contributes no prefix — codex would apply nothing —
@@ -505,7 +737,34 @@ func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string,
 	if existing, found := codexEffectiveDeveloperInstructions(codexHome, projectPath); found && existing != "" {
 		merged = existing + "\n\n" + merged
 	}
-	return "developer_instructions=" + tomlBasicString(merged), true
+	if i.identityRunsElsewhere() {
+		return i.codexRemoteOverrideWithinBudget(merged, merged)
+	}
+	return "developer_instructions=" + identityTOMLString(merged), true
+}
+
+// codexRemoteOverrideWithinBudget returns the override for an SSH/sandboxed
+// codex, whose launch already carries the block once for the file
+// (identityRemoteFileExport): when both together exceed
+// identityInlineMaxBytes the override is dropped and codex gets the file and
+// AGENTDECK_IDENTITY_FILE only.
+func (i *Instance) codexRemoteOverrideWithinBudget(text, merged string) (string, bool) {
+	value := "developer_instructions=" + identityTOMLString(merged)
+	if n := len(identityPrintfArg(text)) + len(value); n > identityInlineMaxBytes {
+		sessionLog.Warn("identity_codex_override_too_large",
+			slog.String("instance_id", i.ID),
+			slog.Int("bytes", n),
+			slog.Int("max", identityInlineMaxBytes))
+		return "", false
+	}
+	return value, true
+}
+
+// identityTOMLString is tomlBasicString with identityLaunchSafe applied (TOML
+// \u escapes decode to the same bytes), for the codex override that rides in
+// the launch command.
+func identityTOMLString(s string) string {
+	return identityLaunchSafe(tomlBasicString(s), `\u0027`, `exec\u0020`)
 }
 
 // codexConfigLayer is the subset of a codex config.toml this package reads.
@@ -727,6 +986,12 @@ func (i *Instance) identityNativeArgs(tool, codexHome string) []string {
 		// shell-string counterpart, ompIdentityFlag.
 		harness = "omp"
 	}
+	// An SSH/sandboxed target has no env prefix in a launch plan to carry
+	// the block variable, and the raw block would put newlines into the pane
+	// command; only codex's single-line override fits (budget-checked).
+	if i.identityRunsElsewhere() && harness != "codex" {
+		return nil
+	}
 	switch harness {
 	case "claude":
 		_, file, ok := i.ensureIdentityFile()
@@ -755,7 +1020,16 @@ func (i *Instance) identityNativeArgs(tool, codexHome string) []string {
 
 // piIdentityFlag returns pi's `--append-system-prompt <file>` (pi reads a
 // path argument as file contents) or "".
+//
+// SSH and sandboxed spawns pass the text itself (pi treats an argument that
+// is not an existing file as literal text).
 func (i *Instance) piIdentityFlag() string {
+	if i.identityRunsElsewhere() {
+		if _, ok := i.identityRemoteText(); ok {
+			return " --append-system-prompt " + identityInlineText()
+		}
+		return ""
+	}
 	_, file, ok := i.ensureIdentityFile()
 	if !ok {
 		return ""
@@ -767,6 +1041,9 @@ func (i *Instance) piIdentityFlag() string {
 // the same flag as pi's, documented in can1357/oh-my-pi
 // docs/cli-reference.md.
 func (i *Instance) ompIdentityFlag() string {
+	if i.identityRunsElsewhere() {
+		return i.piIdentityFlag()
+	}
 	_, file, ok := i.ensureIdentityFile()
 	if !ok {
 		return ""

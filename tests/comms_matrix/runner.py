@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.request
 import time
 import uuid
@@ -19,11 +20,62 @@ import uuid
 HERE = Path(__file__).resolve().parent
 TOOLS = ('claude', 'codex', 'gemini', 'pi', 'hermes', 'opencode', 'cursor')
 BINARY = '/usr/local/bin/agent-deck'
+# How long a pi driver may stay silent before its pause ack counts as lost.
+PAUSE_ACK_TIMEOUT_S = 30
 
 
 def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + '\n')
+
+
+def kill_group(process):
+    """Kill the driver and everything it spawned (it leads its own session), then reap it."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        process.kill()
+    process.wait()
+
+
+def read_json_line(process, timeout_s):
+    """One JSON object line from the driver's stdout; any other outcome kills and reaps its group and fails with its stderr."""
+    box = []
+    reader = threading.Thread(target=lambda: box.append(process.stdout.readline()), daemon=True)
+    reader.start()
+    reader.join(timeout_s)
+    # One snapshot, taken before the kill: killing the driver makes the reader thread append an EOF read to box.
+    got = list(box)
+    line = got[0] if got else ''
+    if not got:
+        problem = f'silent for {timeout_s}s'
+    elif not line:
+        # EOF: exiting closes stdout a moment before poll() sees it.
+        try:
+            process.wait(0.2)
+            problem = 'exited'
+        except subprocess.TimeoutExpired:
+            problem = 'closed stdout'
+    elif not line.endswith('\n'):
+        problem = 'ended its output mid-line'
+    elif not line.strip():
+        problem = 'sent a blank line'
+    else:
+        try:
+            message = json.loads(line)
+        except ValueError:
+            message, problem = None, 'sent malformed JSON'
+        else:
+            problem = None if isinstance(message, dict) else 'sent a non-object JSON line'
+        if problem is None:
+            return message
+    kill_group(process)
+    # The group is dead, so stderr reaches EOF; the bound covers a holder outside it.
+    errors = []
+    collector = threading.Thread(target=lambda: errors.append(process.stderr.read()), daemon=True)
+    collector.start()
+    collector.join(2)
+    raise RuntimeError(f'pi driver {problem} before its next line: ' + (errors[0] if errors else ''))
 
 
 def check(name, actual, target, baseline=None):
@@ -179,7 +231,8 @@ class Rig:
                    PATH=str(Path(BINARY).parent) + os.pathsep + self.env['PATH'])
         extension = Path(env.get('PI_CODING_AGENT_DIR', self.root / '.pi/agent')) / 'extensions/agent-deck.ts'
         process = subprocess.Popen(['node', str(HERE / 'pi_driver.mjs'), str(extension)], env=env,
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                   start_new_session=True)
         try:
             for number, steps in enumerate(parts):
                 for step in steps:
@@ -187,13 +240,12 @@ class Rig:
                 if number < len(parts) - 1:
                     process.stdin.write(json.dumps(dict(pause=True)) + '\n')
                     process.stdin.flush()
-                    while not json.loads(process.stdout.readline() or '{}').get('paused'):
-                        if process.poll() is not None:
-                            raise RuntimeError('pi driver exited before its pause: ' + process.stderr.read())
+                    while not read_json_line(process, PAUSE_ACK_TIMEOUT_S).get('paused'):
+                        pass
                     self.tick()
             out, err = process.communicate(timeout=30)
         finally:
-            process.kill()
+            kill_group(process)
         self.calls.append(dict(argv=['pi_driver.mjs', str(extension)], code=process.returncode, stdout=out, stderr=err))
         if process.returncode:
             raise RuntimeError('pi driver failed: ' + err)

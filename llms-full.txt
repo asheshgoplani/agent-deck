@@ -1,6 +1,11 @@
 # Agent Deck - Complete Documentation for AI Assistants
 
-This file contains complete documentation for AI/LLM consumption.
+This file contains documentation for AI/LLM consumption.
+
+It is a hand-assembled snapshot of README.md, skills/agent-deck/SKILL.md and
+skills/agent-deck/references/ (cli, config, troubleshooting, tui). It is not
+generated and can lag behind those files; when they disagree, the files in the
+repo are right. Run `agent-deck --version` for the installed version.
 
 **Discord:** https://discord.gg/e4xSs6NBN8
 
@@ -17,7 +22,7 @@ This file contains complete documentation for AI/LLM consumption.
 **Your AI agent command center**
 
 [![GitHub Stars](https://img.shields.io/github/stars/asheshgoplani/agent-deck?style=for-the-badge&logo=github&color=yellow&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/stargazers)
-[![Go Version](https://img.shields.io/badge/Go-1.26.9-00ADD8?style=for-the-badge&logo=go&labelColor=1a1b26)](https://go.dev)
+[![Go Version](https://img.shields.io/badge/Go-1.26.10-00ADD8?style=for-the-badge&logo=go&labelColor=1a1b26)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-9ece6a?style=for-the-badge&labelColor=1a1b26)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20WSL-7aa2f7?style=for-the-badge&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck)
 [![Latest Release](https://img.shields.io/github/v/release/asheshgoplani/agent-deck?style=for-the-badge&color=e0af68&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/releases)
@@ -100,7 +105,7 @@ Running many sessions? Socket pooling shares MCP processes across all sessions v
 
 ### Search
 
-Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `$` (error). Press `G` for global search across all Claude conversations.
+Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `&` (error). Press `$` for the Cost Dashboard and `G` for global search of the Recall index (needs `[recall] enabled`).
 
 ### Status Detection
 
@@ -314,7 +319,7 @@ compatibility: claude, codex, opencode
 
 Terminal session manager for AI coding agents. Built with Go + Bubble Tea.
 
-**Version:** 0.8.98 | **Repo:** [github.com/asheshgoplani/agent-deck](https://github.com/asheshgoplani/agent-deck)
+**Repo:** [github.com/asheshgoplani/agent-deck](https://github.com/asheshgoplani/agent-deck)
 
 ## Script Path Resolution (IMPORTANT)
 
@@ -363,6 +368,7 @@ agent-deck session output "Project"
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session output <name>` | Get last response |
+| `agent-deck session ref <source> <target>` | Hand `<target>` a short reference to `<source>` in its composer (not sent; `--print` only prints) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck mcp list` | List available MCPs |
@@ -495,7 +501,7 @@ agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
 | Key | Action |
 |-----|--------|
 | `/` | Local search |
-| `G` | Global search (all Claude conversations) |
+| `G` | Global search (Recall index, needs `[recall] enabled`) |
 | `!@#$` | Filter by status (running/waiting/idle/error) |
 
 ### Global
@@ -587,7 +593,7 @@ env = { EXA_API_KEY = "key" }
 description = "Web search"
 ```
 
-See [config-reference.md](references/config-reference.md) for all options.
+See [config-reference.md](skills/agent-deck/references/config-reference.md) for all options.
 
 ## Troubleshooting
 
@@ -617,7 +623,7 @@ cat ~/.config/agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET"  # Sanitized
 3. Output of commands above
 4. Relevant log: `tail -100 ~/.agent-deck/logs/agentdeck_<session>_*.log`
 
-See [troubleshooting.md](references/troubleshooting.md) for detailed diagnostics.
+See [troubleshooting.md](skills/agent-deck/references/troubleshooting.md) for detailed diagnostics.
 
 ## Session Sharing
 
@@ -634,7 +640,7 @@ $SKILL_DIR/../session-share/scripts/export.sh
 $SKILL_DIR/../session-share/scripts/import.sh ~/Downloads/session-file.json
 ```
 
-**See:** [session-share skill](../session-share/SKILL.md) for full documentation.
+**See:** [session-share skill](skills/session-share/SKILL.md) for full documentation.
 
 ## Critical Rules
 
@@ -644,11 +650,11 @@ $SKILL_DIR/../session-share/scripts/import.sh ~/Downloads/session-file.json
 
 ## References
 
-- [cli-reference.md](references/cli-reference.md) - Complete CLI command reference
-- [config-reference.md](references/config-reference.md) - All config.toml options
-- [tui-reference.md](references/tui-reference.md) - TUI features and shortcuts
-- [troubleshooting.md](references/troubleshooting.md) - Common issues and bug reporting
-- [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
+- [cli-reference.md](skills/agent-deck/references/cli-reference.md) - Complete CLI command reference
+- [config-reference.md](skills/agent-deck/references/config-reference.md) - All config.toml options
+- [tui-reference.md](skills/agent-deck/references/tui-reference.md) - TUI features and shortcuts
+- [troubleshooting.md](skills/agent-deck/references/troubleshooting.md) - Common issues and bug reporting
+- [session-share skill](skills/session-share/SKILL.md) - Export/import sessions for collaboration
 
 
 ---
@@ -1055,7 +1061,7 @@ notify_in_cli = true          # Show in CLI commands
 
 ## [global_search] Section
 
-Search across all Claude conversations.
+Settings for the old in-memory global search index. The TUI `G` key no longer reads this section: it searches the Recall index and is gated by `[recall] enabled` (see the `[recall]` section). The keys are still parsed and shown in the Settings panel.
 
 ```toml
 [global_search]
@@ -1068,7 +1074,7 @@ index_rate_limit = 20       # Files/second for indexing
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable `G` key global search. |
+| `enabled` | bool | `true` | Old global search switch. Does not gate `G` (use `[recall] enabled`). |
 | `tier` | string | `"auto"` | Strategy: `instant` (fast, more RAM), `balanced` (LRU cache). |
 | `memory_limit_mb` | int | `100` | Max memory for balanced tier. |
 | `recent_days` | int | `90` | Only search recent conversations. |
@@ -1097,7 +1103,7 @@ show_pool_status = true     # Show 🔌 indicator
 
 **Benefits:** 30 sessions x 5 MCPs = 150 processes -> 5 shared processes (90% memory savings).
 
-**Socket location:** `/tmp/agentdeck-mcp-{name}.sock`
+**Socket location:** `<data dir>/sockets/mcp-{name}.sock` (for example `~/.agent-deck/sockets/`), private to your user. Sockets under `/tmp/agentdeck-mcp-*.sock` from old versions are ignored.
 
 ## [mcps.*] Section
 
@@ -1346,13 +1352,14 @@ max_lines = 2000
 
 ### Global Search Not Working
 
-Check config:
+`G` searches the Recall index (`recall.db`). It is off unless Recall is on:
 ```toml
-[global_search]
+[recall]
 enabled = true
 ```
 
-Also verify `~/.claude/projects/` exists and has content.
+Then check the index with `agent-deck recall status`. With Recall off, `G`
+falls back to the local title search. See `docs/recall.md`.
 
 ## Debugging
 
@@ -1406,60 +1413,19 @@ Prepare clear answers to:
 
 ### Step 3: Create GitHub Issue
 
-Go to: **https://github.com/asheshgoplani/agent-deck/issues/new**
+Blank issues are off in this repo, so use the **Bug report** form:
+**https://github.com/asheshgoplani/agent-deck/issues/new?template=bug.yml**
 
-Use this template:
+Its fields, filled from Steps 1 and 2:
 
-```markdown
-## Description
+- **agent-deck version**: output of `agent-deck version`
+- **OS and terminal**: OS, terminal, and `tmux -V`
+- **Steps to reproduce**: exact commands or TUI actions
+- **Expected vs actual**
+- **Logs (redacted)**: relevant log lines, `agent-deck status --json`, and a sanitized config
+- **Was this written with AI help?** and, if so, **which model**
 
-[Brief description of the issue]
-
-## Steps to Reproduce
-
-1. [First step]
-2. [Second step]
-3. [What happened]
-
-## Expected Behavior
-
-[What should have happened]
-
-## Environment
-
-- agent-deck version: [output of `agent-deck version`]
-- OS: [macOS/Linux/WSL]
-- tmux version: [output of `tmux -V`]
-
-## Debug Output
-
-<details>
-<summary>Status JSON</summary>
-
-```json
-[paste agent-deck status --json]
-```
-
-</details>
-
-<details>
-<summary>Config (sanitized)</summary>
-
-```toml
-[paste sanitized config]
-```
-
-</details>
-
-<details>
-<summary>Logs</summary>
-
-```
-[paste relevant log lines]
-```
-
-</details>
-```
+Questions and setup help go to [Discussions](https://github.com/asheshgoplani/agent-deck/discussions), not issues.
 
 ### Step 4: Follow Up
 
@@ -1584,13 +1550,13 @@ Complete reference for agent-deck Terminal UI features.
 | Key | Action |
 |-----|--------|
 | `/` | Local search (fuzzy) |
-| `G` | Global search (all Claude conversations) |
+| `G` | Global search (Recall index, needs `[recall] enabled`) |
 | `Tab` | Switch between local/global search |
 | `0` | Clear filter (show all) |
 | `!` | Filter: running only (toggle) |
 | `@` | Filter: waiting only (toggle) |
 | `#` | Filter: idle only (toggle) |
-| `$` | Filter: error only (toggle) |
+| `&` | Filter: error only (toggle) |
 
 ### Global
 
@@ -1672,18 +1638,17 @@ Complete reference for agent-deck Terminal UI features.
 
 ### Global Search (`G`)
 
-- Full content search across `~/.claude/projects/`
-- Regex + fuzzy matching
+- Full-text search of the Recall index (`recall.db`): Claude transcripts plus the other harnesses Recall reads (see `docs/recall.md`)
+- Same query as `agent-deck recall search`
 - Recency ranking
 - Split view: results + preview
 - `[/]` scroll preview
 - `Enter` create/jump to session
 
-**Config:**
+**Config:** `G` is off unless Recall is on (with Recall off it falls back to the local title search; see `docs/recall.md`):
 ```toml
-[global_search]
+[recall]
 enabled = true
-recent_days = 30
 ```
 
 ## Preview Pane

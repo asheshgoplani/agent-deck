@@ -832,7 +832,7 @@ func TestCodexAcceptanceGuardClearsOnlyDefinitiveNonDelivery(t *testing.T) {
 			}
 			guard.Release()
 
-			_, reconcileErr := session.ReconcileCodexSubmissionMarker(inst.ID, sessionID, "")
+			_, reconcileErr := session.ReconcileCodexSubmissionMarker(inst.ID, sessionID, "", nil)
 			if tt.retained && reconcileErr == nil {
 				t.Fatal("ambiguous/submitted outcome did not retain its marker")
 			}

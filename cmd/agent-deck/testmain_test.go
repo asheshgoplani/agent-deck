@@ -1,9 +1,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,6 +37,8 @@ func runTestMain(m *testing.M) int {
 	// real home, so data-safety is preserved by NOT re-isolating.
 	isHelperProcess := os.Getenv("AGENT_DECK_TASK6_HELPER_PROCESS") != ""
 
+	widenTestParallelism()
+
 	if !isHelperProcess {
 		// Pin the Go build and module caches before HOME moves: a test that
 		// runs `go build` itself (eval harness sandbox, goldens) would
@@ -51,6 +56,12 @@ func runTestMain(m *testing.M) int {
 		// Must run before anything resolves a path. See internal/testutil/homeenv.go.
 		cleanupHome := testutil.IsolateHome()
 		defer cleanupHome()
+		cleanupServiceManagers, err := stubServiceManagers()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stub service managers: %v\n", err)
+			return 1
+		}
+		defer cleanupServiceManagers()
 	}
 	os.Unsetenv("AGENTDECK_INSTANCE_ID")
 	os.Unsetenv("AGENT_DECK_SESSION_ID")
@@ -124,6 +135,28 @@ func cleanupTestSessions() {
 		if strings.Contains(sess, "Test-Skip-Regen") {
 			_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
 		}
+	}
+}
+
+// widenTestParallelism gives the package's parallel tests two slots per CPU
+// when the run did not pass -parallel itself (#2797). Every test here that
+// calls t.Parallel (parallelSubprocessTest) spends its time waiting on child
+// processes, daemons and timers rather than on CPU, so with go test's default
+// of one slot per CPU the parallel phase queued behind those waits: about 90 s
+// of a 320 s package run with the CPUs mostly idle. An explicit -parallel
+// always wins.
+func widenTestParallelism() {
+	if !flag.Parsed() {
+		flag.Parse()
+	}
+	explicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "test.parallel" {
+			explicit = true
+		}
+	})
+	if !explicit {
+		_ = flag.Set("test.parallel", strconv.Itoa(2*runtime.GOMAXPROCS(0)))
 	}
 }
 

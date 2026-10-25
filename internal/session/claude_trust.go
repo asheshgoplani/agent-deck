@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +32,8 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 	}
 	// Locked and verified: parallel callers on one account must not lose
 	// each other's entries (SWFB1018).
-	return updateClaudeJSONLocked(claudeJSONPath, func(cfg map[string]any) {
+	granted := false
+	err := updateClaudeJSONLocked(claudeJSONPath, func(cfg map[string]any) {
 		projects, _ := cfg["projects"].(map[string]any)
 		if projects == nil {
 			projects = map[string]any{}
@@ -40,10 +42,50 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 		if entry == nil {
 			entry = map[string]any{}
 		}
+		if accepted, _ := entry["hasTrustDialogAccepted"].(bool); !accepted {
+			granted = true
+		}
 		entry["hasTrustDialogAccepted"] = true
 		projects[parentDir] = entry
 		cfg["projects"] = projects
 	})
+	if err == nil && granted {
+		logFolderTrustGranted("claude", parentDir, "config", claudeJSONPath)
+	}
+	return err
+}
+
+// ClaudeTrustJSONPaths returns every .claude.json a trust seed for inst must
+// reach: the home root, plus <dir>/.claude.json when inst runs on an explicit
+// config root (account, conductor, group, env, profile or global config_dir),
+// since Claude then runs with CLAUDE_CONFIG_DIR=<dir> and reads trust there
+// (#2673).
+func ClaudeTrustJSONPaths(inst *Instance) []string {
+	var out []string
+	root := GetUserMCPRootPath()
+	if root != "" {
+		out = append(out, root)
+	}
+	if inst != nil && IsClaudeConfigDirExplicitForInstance(inst) {
+		if dir := GetClaudeConfigDirForInstance(inst); dir != "" {
+			if p := filepath.Join(dir, ".claude.json"); p != root {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// preAcceptClaudeTrustForInstance seeds trust for dir in every file
+// ClaudeTrustJSONPaths(inst) names and returns the joined failures.
+func preAcceptClaudeTrustForInstance(inst *Instance, dir string) error {
+	var errs []error
+	for _, p := range ClaudeTrustJSONPaths(inst) {
+		if err := PreAcceptClaudeTrust(p, dir); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // WriteMultiRepoParentClaudeMD writes a .claude/CLAUDE.md to parentDir telling

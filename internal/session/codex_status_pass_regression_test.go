@@ -62,7 +62,7 @@ esac
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\ncase \"$*\" in *args=*) printf 'sh\\n';; *) printf '1 0 sh\\n';; esac\n"), 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\ncase \"$*\" in *-eo*) printf '1 0 sh\\n';; *args=*) printf 'sh\\n';; *) printf '1 0 sh\\n';; esac\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -184,7 +184,8 @@ func TestStatusPassSweepPinsOwnershipBeyondTTL(t *testing.T) {
 	}
 	scans, peers := 0, 0
 	for _, line := range strings.Split(string(data), "\n") {
-		if strings.Contains(line, "list-sessions") {
+		// Ownership scans only: the pass's plain session listing is not one.
+		if strings.Contains(line, "list-sessions") && strings.Contains(line, "CODEX_SESSION_ID") {
 			scans++
 		}
 		if strings.Contains(line, "show-environment") {

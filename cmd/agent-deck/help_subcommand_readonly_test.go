@@ -23,8 +23,6 @@ var subcommandHelpGaps = map[string]string{
 	"profile list":          "runs the listing",
 	"watcher import":        "treats the flag as a path to import",
 	"watcher install-skill": "treats the flag as a skill name",
-	"openclaw status":       "dials the gateway",
-	"oc status":             "dials the gateway",
 	"worktree trust-hooks":  "flag package prints usage but exits 2",
 	"wt trust-hooks":        "flag package prints usage but exits 2",
 }

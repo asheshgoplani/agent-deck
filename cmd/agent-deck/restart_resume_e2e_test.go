@@ -25,7 +25,8 @@ import (
 // case has its own tmux server and state, so they run in parallel.
 
 // restartFakeClaude is deliveryFakeClaude plus --resume and the session
-// hooks, which it skips when .fake-nohooks exists in the project.
+// hooks, which it skips when .fake-nohooks exists in the project. With
+// .fake-quick-start it resumes straight to its prompt, as real Claude does.
 const restartFakeClaude = `#!/bin/sh
 sid=nosid
 while [ $# -gt 0 ]; do
@@ -51,13 +52,25 @@ mode=$(cat "$cwd/.fake-mode" 2>/dev/null)
 if [ "$mode" = crash ]; then # the resume fails at once (bad build, auth, no conversation)
   hook SessionEnd; exit 3
 fi
-# .fake-slow-end: SessionEnd runs late, as real Claude's async node hook can
-trap '[ -e "$cwd/.fake-slow-end" ] && sleep 0.3; hook SessionEnd; exit 0' HUP TERM INT
+# .fake-slow-end: SessionEnd runs late, as real Claude's async node hook can.
+# .fake-quick-start "late-end": it runs in the background, past the pane's
+# hangup, once the resumed process's SessionStart is in (#2813).
+trap 'if [ "$(cat "$cwd/.fake-quick-start" 2>/dev/null)" = late-end ]; then
+  trap "" HUP; (n=0; while [ "$(grep -c SessionStart "$cwd/.fake/hooks-fired")" -lt 2 ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done; hook SessionEnd) &
+  exit 0
+fi
+[ -e "$cwd/.fake-slow-end" ] && sleep 0.3; hook SessionEnd; exit 0' HUP TERM INT
 if [ "$mode" = hang ]; then # it never reaches its prompt
   printf '{"id":"hang-%s","phase":"booting"}' "$$" > "$t.input-control.json"
 elif [ "$mode" = banner ]; then # it is up, but its login expired
   printf '{"id":"banner-%s","phase":"banner"}' "$$" > "$t.input-control.json"
   (sleep 4; hook SessionStart) &
+elif [ -e "$cwd/.fake-quick-start" ]; then # real Claude: straight back to its prompt
+  if [ "$(cat "$cwd/.fake-quick-start")" = late-end ]; then
+    hook SessionStart &
+  else # after the old process's SessionEnd
+    (n=0; until grep -q SessionEnd "$cwd/.fake/hooks-fired" || [ $n -ge 100 ]; do sleep 0.1; n=$((n+1)); done; hook SessionStart) &
+  fi
 else
   (sleep 4; hook SessionStart) &
 fi
@@ -329,6 +342,55 @@ func TestRestartE2E_ErrorBannerAfterRestartIsNotified(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("the parent must hear at once that the resumed session shows a login error, got %v", recs)
+			}
+		})
+	}
+}
+
+// Issue #2813: real Claude resumes straight to its prompt, no busy frame and
+// its SessionStart at once, so the daemon never sees a running -> waiting
+// flip. The parent still gets the one info line, well before the boot
+// timeout, and nothing urgent. The old process's SessionEnd runs as the kill
+// lands, so it can reach the hook file before or after the new SessionStart:
+// the fake forces each order (.fake-quick-start "late-end" holds the old
+// SessionEnd until the new SessionStart is in; otherwise the new SessionStart
+// waits for the old SessionEnd).
+func TestRestartE2E_IdleRestartWithoutBusyFrameSendsInfoLine(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		oldEndLast bool
+	}{
+		{"old_SessionEnd_first", false},
+		{"old_SessionEnd_after_new_SessionStart", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			e := newRestartEnv(t) // the default 2m boot timeout: the line must not wait for it
+			parent, child := setupIdleChild(t, e)
+			quick := "end-first"
+			if c.oldEndLast {
+				quick = "late-end"
+			}
+			writeFile(t, filepath.Join(child.project, ".fake-quick-start"), quick, 0o600)
+			writeFile(t, filepath.Join(child.project, ".fake-phase"), "idle", 0o600)
+			e.mustRun("session", "restart", "--force", child.id)
+			e.waitPane(child, "child back at its prompt", func(p string) bool { return strings.Contains(p, "All four steps ran.") })
+			e.waitRecords(parent, child, 30*time.Second, func(r []map[string]any) bool { return len(r) >= 1 })
+			time.Sleep(4 * time.Second) // more daemon passes: still one line
+			recs := e.pendingFrom(parent.id, child.id)
+			b, _ := os.ReadFile(filepath.Join(child.project, ".fake", "hooks-fired"))
+			if len(recs) != 1 {
+				t.Fatalf("an idle restart with no busy frame gives the parent exactly one info line, got %d: %v (hooks: %q)", len(recs), recs, b)
+			}
+			if r := recs[0]; r["tier"] != "info" || r["to_status"] == "error" || !strings.Contains(recordText(r), "conversation resumed, no new turn") {
+				t.Fatalf("want the info line, got %v", r)
+			}
+			want := "SessionStart\nSessionEnd\nSessionStart\n" // the old SessionEnd before the new SessionStart
+			if c.oldEndLast {
+				want = "SessionStart\nSessionStart\nSessionEnd\n"
+			}
+			if string(b) != want {
+				t.Fatalf("precondition: hook order %q, want %q", b, want)
 			}
 		})
 	}

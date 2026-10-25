@@ -28,8 +28,25 @@ const issue2361StuckPaneContent = `  Session is starting — showing its transcr
 // printf/sleep command line Start() otherwise records as s.Command.
 func startPaneWithContent(t *testing.T, name, content, tool, readyMarker string) *Session {
 	t.Helper()
+	return startPaneRunning(t, name, fmt.Sprintf("printf %%s %s; sleep 300", shellescape.Quote(content)), tool, readyMarker)
+}
+
+// startPaneRunning starts a real tmux pane whose initial process is cmd and
+// blocks until readyMarker shows in the pane.
+//
+// The command must be the pane's initial process. On the send-keys path
+// (RunCommandAsInitialProcess false) Start pastes the whole command line into
+// an interactive shell, and the shell draws that line, content and marker
+// included, before the command has printed anything. The marker check then
+// passes on the typed command, and the frame the test classifies ends in
+// the tail of that command line ("; sleep 300") instead of the content.
+// bash 5.3 (Ubuntu 26.04, the ubuntu-latest image since 2026-10-23) draws
+// that line cleanly, so the roster frame read as unknown and the overdue
+// probe expired it.
+func startPaneRunning(t *testing.T, name, cmd, tool, readyMarker string) *Session {
+	t.Helper()
 	s := NewSession(name, t.TempDir())
-	cmd := fmt.Sprintf("printf %%s %s; sleep 300", shellescape.Quote(content))
+	s.RunCommandAsInitialProcess = true
 	if err := s.Start(cmd); err != nil {
 		t.Fatalf("start pane: %v", err)
 	}
@@ -46,6 +63,29 @@ func startPaneWithContent(t *testing.T, name, content, tool, readyMarker string)
 			t.Fatalf("pane content never appeared (marker %q, err=%v); last capture:\n%s", readyMarker, err, pane)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestStartPaneRunning_ReturnsOnPrintedOutputNotTypedCommand guards the
+// helper itself: when the command is slow to print, the helper must still
+// return the printed frame, never the shell's echo of the typed command line
+// (which carries the marker too). The delay stands in for a loaded CI runner.
+func TestStartPaneRunning_ReturnsOnPrintedOutputNotTypedCommand(t *testing.T) {
+	frame, err := os.ReadFile(filepath.Join("testdata", "status_corpus", "synth-claude-idle-12-subagent-rows.txt"))
+	if err != nil {
+		t.Fatalf("read corpus frame: %v", err)
+	}
+	const marker = "Task 12: review slice 12"
+	s := startPaneRunning(t, "issue2361-helper-delayed-print",
+		fmt.Sprintf("sleep 0.5; printf %%s %s; sleep 300", shellescape.Quote(string(frame))), "claude", marker)
+
+	pane, err := s.CapturePaneFresh()
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	lines := lastNLines(StripANSI(pane), 1)
+	if len(lines) != 1 || strings.TrimSpace(lines[0]) != "◯ general-purpose  "+marker {
+		t.Fatalf("helper returned before the content was printed; last line %q, pane:\n%s", lines, pane)
 	}
 }
 

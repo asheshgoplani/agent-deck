@@ -19,8 +19,11 @@ import (
 // hookEventHistoryMax events, so the next late Stop can be traced against
 // the pane and the transcript after the fact.
 //
-// Diagnostic only: nothing reads this file on any status path (the hook
-// watcher ignores non-.json names, the CLI cold load reads <id>.json). It is
+// Diagnostic, plus the restart judge: no status path reads this file (the
+// hook watcher ignores non-.json names, the CLI cold load reads <id>.json);
+// the notify-daemon reads it after a restart to find a resumed process's
+// SessionStart that the old process's late SessionEnd overwrote (#2813), and
+// the old SessionEnd that the new SessionStart overwrote (STALEERR2). It is
 // pruned with the instance's other hook artifacts (session.PruneHookArtifacts)
 // and disabled together with the runtime health sampler by
 // `[health] enabled = false` in config.toml — the same kill switch, so one

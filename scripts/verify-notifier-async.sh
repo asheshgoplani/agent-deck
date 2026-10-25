@@ -2,8 +2,16 @@
 # verify-notifier-async.sh — end-to-end proof that v1.7.45 drains the
 # deferred-retry queue and delivers the [EVENT] banner to a real tmux pane.
 #
-# The "busy parent defers" logic is exhaustively covered by the unit tests
-# in internal/session/transition_notifier_queue_test.go. This harness covers
+# OUT OF DATE: the deferred-retry queue this script seeds
+# (runtime/transition-deferred-queue.json) and its unit tests
+# (transition_notifier_queue_test.go) were removed in #1226, when delivery
+# moved to the durable per-parent outbox (internal/session/inbox_outbox.go,
+# tests in internal/session/issue1225_outbox_*_test.go). Current code no
+# longer reads that queue file. Kept for history until someone decides to
+# rewrite or drop it.
+#
+# Original description: the "busy parent defers" logic was covered by the
+# unit tests in transition_notifier_queue_test.go. This harness covers
 # the complementary assertion that unit tests cannot: when the drain path
 # fires, the tmux send-keys pipeline actually lands the banner in the parent's
 # live pane, resolved through the real storage → notifier → SendSessionMessage

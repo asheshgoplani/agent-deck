@@ -68,8 +68,8 @@ Four adapters are wired into the CLI today. All four embody the doorbell model �
 
 | Type | What it listens for | Required flag | Transport |
 |------|---------------------|---------------|-----------|
-| `webhook` | Any service that can fire an HTTP POST | `--port <int>` | Local HTTP listener |
-| `github` | GitHub repo events (issues, PRs, pushes) | `--secret <hmac-secret>` | HTTPS webhook + HMAC-SHA256 verify |
+| `webhook` | Any service that can fire an HTTP POST | `--port <int>` | Local HTTP listener, signed with a shared secret |
+| `github` | GitHub repo events (issues, PRs, pushes) | `$GITHUB_WEBHOOK_SECRET` or `--secret-file <path>` (chmod 600) | HTTPS webhook + HMAC-SHA256 verify |
 | `ntfy` | [ntfy.sh](https://ntfy.sh) topics (phone → conductor) | `--topic <name>` | Persistent SSE subscription |
 | `slack` | Slack messages via a Cloudflare Worker bridge into an ntfy topic | `--topic <name>` | Slack → CF Worker → ntfy → watcher |
 
@@ -96,7 +96,7 @@ The usual loop:
 
 ```bash
 # Create the watcher (writes ~/.agent-deck/watcher/<name>/ with watcher.toml + state.json).
-agent-deck watcher create github --name gh-alerts --secret "$GITHUB_WEBHOOK_SECRET"
+GITHUB_WEBHOOK_SECRET=... agent-deck watcher create github --name gh-alerts
 
 # Activate it (the profile's watcher engine runs it within seconds).
 agent-deck watcher start gh-alerts
@@ -133,6 +133,8 @@ Each watcher gets its own directory at `~/.agent-deck/watcher/<name>/` with (REQ
 
 Delivery: a routed event reaches its conductor through the same durable outbox as `agent-deck session send --queue`. When the engine routes an event to a conductor it writes a record to the profile's send queue (`sendqueue/` in the profile directory), before it stores the event, and starts that conductor's detached `session send-worker`. The worker types the events into the conductor in the order they were routed, once the conductor is idle, and retries while the pane is busy or its composer holds a draft. It types each at most once: an attempt whose outcome it cannot prove settles as typed and is never typed again. The record outlives the process that routed the event, so a quit, a signal exit or a crash of the TUI or `web` process loses nothing, and an event for a stopped conductor waits until the conductor runs again. The same event routed twice (a replay after a restart, say) is queued once. Set `delivery_deadline` under `[watcher]` in config.toml (a duration such as `"72h"`) to fail an event that has waited that long instead; unset, it waits until the conductor takes it. `agent-deck watcher status <name>` shows, per conductor, how many routed events still wait and since when (`undelivered` in `--json`), and so does each health state the engine reports.
 
+Queue cap: the outbox keeps at most 1000 undelivered routed events, and at most 64 MiB of their message text, per watcher and conductor. A webhook watcher bound to loopback with no `secret` accepts unsigned requests from any local process, and each request is a new event, so without a cap one local process could fill the disk while the conductor is stopped or busy. The cap is per watcher, so a flood stays inside the watcher it comes through: a signed GitHub watcher routed to the same conductor keeps its own 1000 slots and is still queued. There is no shared per-conductor ceiling on top, because any ceiling one watcher can fill alone would let it refuse the others again; the total stays bounded by the number of watchers you configure. Past a watcher's cap its new events for that conductor are refused, not queued, and are never delivered later: they are stored in the watcher's event history (`watcher_events` in the profile's state.db) like delivered ones, so the history alone does not tell them apart. The refusal is counted instead: state.db keeps, per watcher and conductor, how many events were refused and when the first and the last were. `agent-deck watcher status <name>` shows it (`refused` in `--json`, with `count`, `first_refused_at` and `last_refused_at`), so does each health state the engine reports, and a watcher with a refusal in the last hour is in warning, so the health alert below goes to its conductor. The events already queued are delivered in order and none is dropped. The engine logs `watcher_delivery_queue_full` at most once a minute per watcher and conductor, with the running total (`refused_total`) and the refusals since the previous warning, and the outbox logs `watcher_delivery_queue_has_room`, naming the watcher, once it queues that watcher's events for that conductor again.
+
 Health alerts follow the same routing. While the engine runs, a watcher that moves into warning or error sends one `[WATCHER HEALTH ALERT]` line to its conductor, and one `[WATCHER HEALTH RECOVERED]` line when it is healthy again. A watcher that stays in the same state sends nothing more. The conductor is the one set on the watcher row if any, else the one its newest routed event went to, else the only conductor `clients.json` names. If `clients.json` names several and the watcher has no routed events yet, the alert waits and the engine's process logs `watcher_health_alert_no_conductor`. Alerts are typed by the engine's process, not queued: one that is still waiting when that process exits is dropped, and the next engine owner restates each watcher's state. An alert takes the conductor's send lock like any `session send`, so it never lands in the pane together with a routed event.
 
 Dedupe is SQL-level: `INSERT OR IGNORE INTO watcher_events (watcher_name, event_id, ...)`. Retries from the sender (GitHub re-fires when its delivery times out, ntfy replays when the subscriber reconnects) cannot double-fire a conductor. Turning this off requires an RFC.
@@ -143,7 +145,32 @@ Restart catch-up (ntfy and slack): `state.json` keeps `dedup_cursor`, the ntfy m
 
 - **GitHub adapter verifies HMAC-SHA256** on every webhook. Missing or invalid signature → event dropped, counter incremented, nothing forwarded. Removing this check requires an RFC (`CLAUDE.md` "Watcher structural changes requiring RFC").
 - **ntfy adapter** relies on topic secrecy. Use a long random topic name; anyone who knows it can publish to it.
-- **webhook adapter** binds to localhost by default; exposing it to the public internet is on you (use a reverse proxy + auth header).
+- **webhook adapter** binds to localhost by default and checks every request against the `secret` in its `[source]` table: it needs `X-Webhook-Timestamp: <unix seconds>` within 5 minutes of the watcher's clock and `X-Webhook-Signature-256: sha256=<hex HMAC-SHA256 of timestamp + "\n" + X-Webhook-Sender + "\n" + raw body>` (the sender is `""` when the header is absent), else 401. The signature covers the timestamp, the sender and the body, so a changed sender or a stale request is refused, and each signature is accepted once: a replay within the window gets 409 (the adapter remembers up to 10000 recent signatures in memory and answers 503 when that many are live; a restart forgets them, but the timestamp window still bounds a replay to 5 minutes). On a loopback bind `X-Webhook-Token: <secret>` is accepted instead; it is the secret itself, unsigned, so any local process that sees such a request can replay it or change its sender, and on a non-loopback bind it is refused (401). The secret is trimmed and must be at least 16 bytes of printable ASCII with no space, `"` or `\`, or the watcher fails to start. `X-Webhook-Subject` is not covered by the signature: treat it as a display hint only. `watcher create webhook` generates that secret (or takes `$WEBHOOK_SECRET` / `--secret-file <path>`, chmod 600) and prints where it is stored. Any request with an `Origin` header is refused (403), since only browser pages send one, and on a loopback bind with no secret a `Host` other than `localhost`, `127.0.0.1` or `[::1]` is refused too (403; a signed request may come through a tunnel or proxy). Every refusal is logged as `webhook_refused` with its reason. `X-Webhook-Sender`, which picks the routed conductor, is only trusted when the signature covers it, from a loopback token request, or from a local process when no secret is set. A `watcher.toml` that exists but does not parse fails that watcher's start with an error naming the file, instead of starting it with default (unsigned) settings. Without a secret the adapter refuses to start on a non-loopback bind and logs a WARNING on loopback; `--no-secret` creates such a watcher on purpose.
+
+  Example sender; it reads the secret from the file, so the secret never appears in a process's arguments (`/proc/<pid>/cmdline`):
+
+  ```bash
+  python3 - <<'EOF'
+  import hashlib, hmac, re, time, urllib.request
+  toml = open("<watcher dir>/watcher.toml").read()
+  secret = re.search(r'^secret = "(.*)"$', toml, re.M).group(1).encode()
+  body, sender, ts = b'{"text":"hello"}', 'my-service', str(int(time.time()))
+  sig = hmac.new(secret, (ts + '\n' + sender + '\n').encode() + body, hashlib.sha256).hexdigest()
+  req = urllib.request.Request('http://127.0.0.1:9000/webhook', data=body, headers={
+      'X-Webhook-Timestamp': ts, 'X-Webhook-Sender': sender, 'X-Webhook-Signature-256': 'sha256=' + sig})
+  print(urllib.request.urlopen(req).status)
+  EOF
+  ```
+
+  Token form, loopback bind only, with the header in a chmod-600 file:
+
+  ```bash
+  (umask 077; printf 'X-Webhook-Token: %s\n' "$(sed -n 's/^secret = "\(.*\)"$/\1/p' '<watcher dir>/watcher.toml')" > '<watcher dir>/token-header')
+  curl -sS http://127.0.0.1:9000/webhook -H @'<watcher dir>/token-header' \
+    -H 'X-Webhook-Sender: my-service' --data-binary 'hello'
+  ```
+
+  **Upgrading:** a webhook watcher created before this change has no `secret` and keeps working on `127.0.0.1`, with a startup WARNING. Its senders may not send an `Origin` header, and must address it as `localhost`, `127.0.0.1` or `[::1]`. A watcher with `bind = "0.0.0.0"` (or any non-loopback address) and no secret no longer starts: add `secret = "<output of: openssl rand -hex 32>"` under `[source]` in its `watcher.toml` (chmod 600) and have its senders sign with it, or set `bind = "127.0.0.1"`.
 - **slack adapter** rides on top of the ntfy adapter, so it inherits ntfy's topic-secrecy threat model plus whatever you put in front of your Cloudflare Worker.
 
 ## Custom external watchers

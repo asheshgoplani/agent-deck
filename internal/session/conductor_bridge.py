@@ -148,6 +148,31 @@ TG_MAX_LENGTH = 4096
 # Slack message length limit
 SLACK_MAX_LENGTH = 40000
 
+# Slack access migration switch. Installs from before the allow-list was
+# required may have a [conductor.slack] table with neither allowed_user_ids
+# nor allow_all_users. False (shipped): such a table refuses every Slack user.
+# True: it stays open to every workspace member, with a startup warning. An
+# explicit empty allowed_user_ids list refuses everyone either way.
+SLACK_LEGACY_OPEN_WHEN_ALLOWLIST_ABSENT = False
+
+SLACK_NO_ALLOWED_USERS_WARNING = (
+    "Slack bridge: no allowed users are set, so every Slack message and command is refused. "
+    "Add your Slack member ID under [conductor.slack] in ~/.agent-deck/config.toml: "
+    'allowed_user_ids = ["U01234567"] (or set allow_all_users = true to let every '
+    "workspace member in), then restart the bridge."
+)
+SLACK_LEGACY_OPEN_WARNING = (
+    "Slack bridge: no allowed users are set, so every member of this Slack workspace can "
+    "send commands. Add your Slack member ID under [conductor.slack] in "
+    '~/.agent-deck/config.toml: allowed_user_ids = ["U01234567"] (or set '
+    "allow_all_users = true to keep this and silence this warning), then restart the bridge."
+)
+SLACK_REFUSAL_REPLY = (
+    "Not allowed: this agent-deck bridge only takes commands from its allow-list. "
+    "Your Slack member ID is {user_id}. The owner can add it under [conductor.slack] "
+    'in ~/.agent-deck/config.toml: allowed_user_ids = ["{user_id}"]'
+)
+
 # Discord message length limit
 DISCORD_MAX_LENGTH = 2000
 
@@ -229,6 +254,26 @@ def _resolve_secret(value: str) -> str:
     return value
 
 
+def slack_access_policy(sl: dict) -> tuple[list[str], bool, bool]:
+    """Read who may use the Slack bot from a raw [conductor.slack] table.
+
+    Returns (allowed_user_ids, allow_all_users, legacy_open). legacy_open is
+    True only when SLACK_LEGACY_OPEN_WHEN_ALLOWLIST_ABSENT is on and the table
+    has neither key; otherwise an empty allow-list refuses everyone.
+    """
+    raw = sl.get("allowed_user_ids", [])
+    if not isinstance(raw, list):
+        raw = [raw]
+    allowed = [str(u).strip() for u in raw if str(u).strip()]
+    allow_all = sl.get("allow_all_users", False) is True
+    legacy_open = (
+        SLACK_LEGACY_OPEN_WHEN_ALLOWLIST_ABSENT
+        and "allowed_user_ids" not in sl
+        and "allow_all_users" not in sl
+    )
+    return allowed, allow_all, legacy_open
+
+
 def load_config() -> dict:
     """Load [conductor] section from config.toml.
 
@@ -270,7 +315,7 @@ def load_config() -> dict:
     sl_app_token = _resolve_secret(sl.get("app_token", ""))
     sl_channel_id = sl.get("channel_id", "")
     sl_listen_mode = sl.get("listen_mode", "mentions")  # "mentions" or "all"
-    sl_allowed_users = sl.get("allowed_user_ids", [])  # List of authorized Slack user IDs
+    sl_allowed_users, sl_allow_all, sl_legacy_open = slack_access_policy(sl)
     # default_conductor (#2547): None = key absent (legacy first-conductor
     # routing), "" = no default (prompt with the conductor list), or a name.
     sl_default_conductor = sl.get("default_conductor")
@@ -323,6 +368,8 @@ def load_config() -> dict:
             "listen_mode": sl_listen_mode,
             "default_conductor": sl_default_conductor,
             "allowed_user_ids": sl_allowed_users,
+            "allow_all_users": sl_allow_all or sl_legacy_open,
+            "legacy_open": sl_legacy_open,
             "configured": sl_configured,
         },
         "discord": {
@@ -937,12 +984,27 @@ def _record_withdrawn(record: dict, reads: dict) -> bool:
     return isinstance(read_at, int) and read_at >= stamp_ms
 
 
+def _find_conductor_row(sessions: list[dict], name: str) -> dict | None:
+    """The named conductor's row in a `list --json` listing. The stable
+    conductor_name wins, so a renamed or decorated conductor is still found;
+    the exact title is the fallback for an agent-deck that predates the
+    field. A row named as a different conductor never matches by title."""
+    for s in sessions:
+        if isinstance(s, dict) and s.get("conductor_name") == name:
+            return s
+    title = conductor_session_title(name)
+    for s in sessions:
+        if isinstance(s, dict) and not s.get("conductor_name") and s.get("title") == title:
+            return s
+    return None
+
+
 def _conductor_inbox_snapshot(sessions: list[dict], name: str) -> tuple[int, str, bool]:
     """Count durable records still to be delivered and identify replacement
     records at the same count. A record the conductor already read the
     result of with `session output` is withdrawn at the next drain and is not
     counted, the same way the Go heartbeat counts (InboxSnapshot)."""
-    conductor = next((s for s in sessions if s.get("title") == conductor_session_title(name)), None)
+    conductor = _find_conductor_row(sessions, name)
     if not conductor or not conductor.get("id"):
         return 0, "", False
     session_id = str(conductor["id"]).strip().replace("/", "_").replace("..", "_").replace(" ", "_")
@@ -1078,9 +1140,11 @@ def send_to_conductor(
             return True, "", False  # queued, not failed
 
         # A chat message is a person's: an enforced cost budget never
-        # blocks it (--ignore-budget).
+        # blocks it (--ignore-budget). Flags go before "--" so a message that
+        # starts with "-" is delivered as text, never parsed as a flag.
         result = run_cli(
-            "session", "send", session, message, "--no-wait", "--ignore-budget", *source_args,
+            "session", "send", "--no-wait", "--ignore-budget", *source_args,
+            "--", session, message,
             profile=profile, timeout=30,
         )
         if result.returncode != 0:
@@ -1111,8 +1175,9 @@ def send_to_conductor(
         # `--wait --json` returns the accepted turn and its exact correlated
         # response as one result; never issue a second output read here.
         result = run_cli(
-            "session", "send", session, message,
+            "session", "send",
             "--wait", "--timeout", f"{response_timeout}s", "--json", "--ignore-budget", *source_args,
+            "--", session, message,
             profile=profile,
             timeout=max(response_timeout + 30, 60),
         )
@@ -3016,19 +3081,78 @@ def create_slack_app(config: dict):
 
     # Authorization setup
     allowed_users = config["slack"]["allowed_user_ids"]
+    allow_all_users = config["slack"].get("allow_all_users", False)
+    if config["slack"].get("legacy_open"):
+        log.warning(SLACK_LEGACY_OPEN_WARNING)
+    elif not allowed_users and not allow_all_users:
+        log.warning(SLACK_NO_ALLOWED_USERS_WARNING)
+    # Users already told they are not allowed, so a refused user gets one
+    # reply per bridge process instead of one per message.
+    _refusal_replied: set = set()
 
-    def is_slack_authorized(user_id: str) -> bool:
-        """Check if Slack user is authorized to use the bot.
+    def _bot_team_id():
+        result = _auth_cache.get("result")
+        return getattr(result, "team_id", None) if result else None
 
-        If allowed_user_ids is empty, allow all users (backward compatible).
-        Otherwise, only allow users in the list.
+    def slack_refusal(
+        user_id: str, channel: str, team: str, home_only: bool, event_team: str = "",
+    ):
+        """Return why a Slack event is refused, or None when it is accepted.
+
+        "team": the envelope team (team) or the event's own team (event_team)
+        is another Slack team than the bot's own (an unknown id does not
+        block). "no-user": the event has no user id (an integration or app
+        post), refused in every mode. A user on allowed_user_ids is accepted
+        in any channel, even with allow_all_users.
+        "user": the user is not on allowed_user_ids and allow_all_users is
+        off. "channel": open mode (allow_all_users), a user not on the list,
+        and the event is outside the configured channel while home_only is
+        set. Every refusal is logged without message text.
         """
-        if not allowed_users:  # Empty list = no restrictions
-            return True
-        if user_id not in allowed_users:
-            log.warning("Unauthorized Slack message from user %s", user_id)
-            return False
-        return True
+        bot_team = _bot_team_id()
+        if bot_team and any(t and t != bot_team for t in (team, event_team)):
+            reason = "team"
+        elif not user_id:
+            reason = "no-user"
+        elif user_id in allowed_users:
+            reason = None
+        elif allow_all_users:
+            reason = "channel" if home_only and channel != channel_id else None
+        else:
+            reason = "user"
+        if reason:
+            log.warning(
+                "Refused Slack event (%s): user=%s channel=%s team=%s event_team=%s",
+                reason, user_id, channel, team, event_team,
+            )
+        return reason
+
+    async def _reply_refused_once(say, user_id: str, thread_ts: str | None):
+        if not user_id or user_id in _refusal_replied:
+            return
+        _refusal_replied.add(user_id)
+        try:
+            await say(text=SLACK_REFUSAL_REPLY.format(user_id=user_id), thread_ts=thread_ts)
+        except Exception as e:
+            log.error("Slack refusal reply failed: %s", e)
+
+    async def _slash_authorized(respond, command) -> bool:
+        """Check a slash command before any of the /ad-* handlers runs.
+
+        Same rule as mentions: a user on allowed_user_ids may use the
+        commands in any channel; with allow_all_users (open mode) they are
+        accepted only in the configured channel_id. A refused user gets the
+        refusal text as an ephemeral reply; other refusals stay silent.
+        """
+        user_id = command.get("user_id", "")
+        reason = slack_refusal(
+            user_id, command.get("channel_id", ""), command.get("team_id", ""), True,
+        )
+        if reason == "user":
+            await respond(
+                SLACK_REFUSAL_REPLY.format(user_id=user_id), response_type="ephemeral",
+            )
+        return reason is None
 
     # Caches for Slack user/channel name resolution.
     # Entries: (value: str, expires_at: float | None).
@@ -3331,7 +3455,7 @@ def create_slack_app(config: dict):
             await _safe_say(say, text=prefixed, thread_ts=thread_ts)
 
     @app.event("message")
-    async def handle_slack_message(event, say):
+    async def handle_slack_message(event, say, body=None):
         """Handle messages in the configured channel.
 
         Only active when listen_mode is "all". Ignored in "mentions" mode.
@@ -3347,7 +3471,13 @@ def create_slack_app(config: dict):
 
         # Authorization check
         user_id = event.get("user", "")
-        if not is_slack_authorized(user_id):
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        reason = slack_refusal(
+            user_id, event.get("channel"), (body or {}).get("team_id"), False, event.get("team"),
+        )
+        if reason == "user":
+            await _reply_refused_once(say, user_id, thread_ts)
+        if reason:
             return
 
         text = event.get("text", "").strip()
@@ -3355,17 +3485,31 @@ def create_slack_app(config: dict):
             return
         await _handle_slack_text(
             text, say,
-            thread_ts=event.get("thread_ts") or event.get("ts"),
+            thread_ts=thread_ts,
             user_id=user_id, event_channel=event.get("channel"),
         )
 
     @app.event("app_mention")
-    async def handle_slack_mention(event, say):
-        """Handle @bot mentions in any channel the bot is in. Always active."""
+    async def handle_slack_mention(event, say, body=None):
+        """Handle @bot mentions. Always active.
+
+        With allowed_user_ids, a listed user may mention the bot in any
+        channel it is in. With allow_all_users (open mode), mentions are
+        accepted only in the configured channel_id.
+        """
+        # Ignore mentions posted by bots and integrations
+        if event.get("bot_id") or event.get("subtype"):
+            return
 
         # Authorization check
         user_id = event.get("user", "")
-        if not is_slack_authorized(user_id):
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        reason = slack_refusal(
+            user_id, event.get("channel"), (body or {}).get("team_id"), True, event.get("team"),
+        )
+        if reason == "user":
+            await _reply_refused_once(say, user_id, thread_ts)
+        if reason:
             return
 
         text = event.get("text", "")
@@ -3373,7 +3517,6 @@ def create_slack_app(config: dict):
         text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
         if not text:
             return
-        thread_ts = event.get("thread_ts") or event.get("ts")
         await _handle_slack_text(
             text, say,
             thread_ts=thread_ts,
@@ -3385,10 +3528,7 @@ def create_slack_app(config: dict):
         """Handle /ad-status slash command."""
         await ack()
 
-        # Authorization check
-        user_id = command.get("user_id", "")
-        if not is_slack_authorized(user_id):
-            await respond("⛔ Unauthorized. Contact your administrator.")
+        if not await _slash_authorized(respond, command):
             return
 
         profiles = get_unique_profiles()
@@ -3419,10 +3559,7 @@ def create_slack_app(config: dict):
         """Handle /ad-sessions slash command."""
         await ack()
 
-        # Authorization check
-        user_id = command.get("user_id", "")
-        if not is_slack_authorized(user_id):
-            await respond("⛔ Unauthorized. Contact your administrator.")
+        if not await _slash_authorized(respond, command):
             return
 
         profiles = get_unique_profiles()
@@ -3446,10 +3583,7 @@ def create_slack_app(config: dict):
         """Handle /ad-restart slash command."""
         await ack()
 
-        # Authorization check
-        user_id = command.get("user_id", "")
-        if not is_slack_authorized(user_id):
-            await respond("⛔ Unauthorized. Contact your administrator.")
+        if not await _slash_authorized(respond, command):
             return
 
         target_name = command.get("text", "").strip()
@@ -3484,10 +3618,7 @@ def create_slack_app(config: dict):
         """Handle /ad-help slash command."""
         await ack()
 
-        # Authorization check
-        user_id = command.get("user_id", "")
-        if not is_slack_authorized(user_id):
-            await respond("⛔ Unauthorized. Contact your administrator.")
+        if not await _slash_authorized(respond, command):
             return
 
         conductors = discover_conductors()

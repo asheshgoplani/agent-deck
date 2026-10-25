@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -45,24 +43,12 @@ func httpMCPServerConfig(def MCPDef) MCPServerConfig {
 }
 
 // getExternalSocketPath returns the socket path if an external pool socket exists and is alive
-// This allows CLI commands to use sockets created by the TUI without needing pool initialization
+// This allows CLI commands to use sockets created by the TUI without needing pool initialization.
+// It looks only in this user's private pool socket dir and only accepts sockets
+// owned by this uid (mcppool.ExternalSocketPath); the old shared
+// /tmp/agentdeck-mcp-<name>.sock location is never trusted.
 func getExternalSocketPath(mcpName string) string {
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("agentdeck-mcp-%s.sock", mcpName))
-
-	// Check if socket file exists
-	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
-		return ""
-	}
-
-	// Check if socket is alive (accepting connections)
-	conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
-	if err != nil {
-		mcpCatLog.Debug("socket_not_alive", slog.String("socket", socketPath), slog.Any("error", err))
-		return ""
-	}
-	conn.Close()
-
-	return socketPath
+	return mcppool.ExternalSocketPath(mcpName)
 }
 
 // tryPoolSocket attempts to resolve an MCP to a pool socket in order of preference:
@@ -194,9 +180,21 @@ func writeJSONFileAtomic(root, path string, data []byte, perm os.FileMode) error
 	// A cleaned absolute path holds ".." only inside a name; such a path just
 	// skips the shortcut. The guard is the traversal check CodeQL
 	// go/path-injection recognises.
+	// A file looser than perm is rewritten even when its bytes match, so an
+	// .mcp.json left world-readable by an older agent-deck is tightened
+	// through the same symlink-safe replace.
 	if !strings.Contains(path, "..") {
-		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
-			return nil
+		if st, statErr := os.Stat(path); statErr == nil {
+			if st.Mode().Perm()&^perm == 0 {
+				if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+					return nil
+				}
+			} else {
+				mcpCatLog.Info("project_mcp_permissions_tightened",
+					slog.String("path", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(path), "\n", ""), "\r", "")),
+					slog.String("from", fmt.Sprintf("%o", st.Mode().Perm())),
+					slog.String("to", fmt.Sprintf("%o", perm)))
+			}
 		}
 	}
 	return withProjectMCPOptOut(atomicfile.WriteFileWithin(root, path, data, perm))
@@ -326,9 +324,11 @@ func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []st
 		return fmt.Errorf("failed to marshal mcp json: %w", err)
 	}
 
-	if err := writeJSONFileAtomic(projectRoot, mcpFile, data, 0644); err != nil {
+	// 0600: the file carries MCP env values, which are often tokens.
+	if err := writeJSONFileAtomic(projectRoot, mcpFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to save mcp json: %w", err)
 	}
+	excludeProjectMCPFromGit(projectRoot, mcpFile)
 
 	return nil
 }

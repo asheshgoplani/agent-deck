@@ -169,6 +169,11 @@ func idleRefreshPaneBlocker(tool string, v idleRefreshPaneView) string {
 		if send.DialogOpen(tmux.StripANSI(v.Raw)) {
 			return "dialog open"
 		}
+		// The queued hint is not a draft, but a restart would drop the
+		// input Claude holds behind it.
+		if send.ComposerShowsQueuedHint(v.Raw, tmux.StripANSI) {
+			return "queued input"
+		}
 		draft, visible = send.ComposerDraft(v.Raw, tmux.StripANSI)
 	}
 	if !visible {

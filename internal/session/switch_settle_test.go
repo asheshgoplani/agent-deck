@@ -1133,3 +1133,41 @@ func TestSettleSwitch_ForeignLayoutWithScreenWordsPressesNothing(t *testing.T) {
 		})
 	}
 }
+
+// #2893: under load a capture can land while Claude is still drawing the
+// trust dialog (title up, only the first row drawn). That frame is not the
+// whole dialog, so it is not answered, but settle must look again rather
+// than stop for good: the next frames show the full dialog.
+func TestSettleSwitch_HalfDrawnTrustPromptIsSampledAgain(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	full := trustPane(settleProject)
+	half := full[:strings.Index(full, " ❯ No, exit")+len(" ❯ No, exit")]
+	if got := ClassifySettlePane(half, SettleProjectPaths(settleProject)); got.State != SettlePaneTrustOther {
+		t.Fatalf("half-drawn frame = %s (%s), want it refused", got.State, got.Detail)
+	}
+	f.set(half, half, half, full)
+	f.onKey = trustDialogKeys(settleProject, readyPane)
+	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if err != nil || !report.OK() || strings.Join(f.keys, ",") != "Down,Enter" {
+		t.Fatalf("err=%v keys=%v receipt=%s", err, f.keys, report.Receipt())
+	}
+}
+
+// The re-sampling is bounded: an own-path trust block that stays beside
+// another menu still stops settle, with nothing pressed.
+func TestSettleSwitch_TrustPromptNeverAloneStillStops(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set(decoyPanes["own-path trust block above the MCP dialog"])
+	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if !errors.Is(err, ErrSettleStopped) || len(f.keys) != 0 || len(f.kicks) != 0 {
+		t.Fatalf("err=%v keys=%v kicks=%d receipt=%s", err, f.keys, len(f.kicks), report.Receipt())
+	}
+	if !strings.Contains(report.StoppedAt, "not the only menu on screen") {
+		t.Fatalf("stopped at %q", report.StoppedAt)
+	}
+	if elapsed := f.now.Sub(time.Unix(0, 0)); elapsed > 10*time.Second {
+		t.Fatalf("took %s of fake time to stop; the re-sample must be bounded", elapsed)
+	}
+}

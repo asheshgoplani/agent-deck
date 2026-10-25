@@ -7,14 +7,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Profiles
+## [1.16.33] - 2026-10-24
 
-- Each profile's `state.db` now records the profile it belongs to, and agent-deck refuses to open a store for writing when it belongs to another profile (for example a state.db copied into another profile's directory) instead of mixing two profiles' sessions; nothing is written. Read-only views (statusline, remote catalog) only log a warning and keep working. A profile directory reached through a symlink counts as the directory it points at. Existing stores are stamped on their first open. If you renamed or copied a profile directory on purpose, the error prints the one command that clears the stamp.
-- Hook-driven session-id bindings, last-access times, Claude session links and `session set <id> tool-session-id` now write to the profile the session was loaded from. A process that had another profile's store open as its default wrote them there, the same mistake fixed for the restart outcome in #2206.
+### Highlights
 
-### Events
+- Report a problem without leaving agent-deck: `agent-deck feedback bug|idea`, or `Z` in the TUI. You see the full scrubbed issue before anything is sent (see New features).
+- Hand one session to another as a reference: `agent-deck session ref <source> <target>`, or `alt+l` in the TUI (see New features).
+- Idle Claude and Codex sessions move onto a newly installed CLI build by themselves and keep their conversation (see New features).
+- Switching a session's Claude account no longer needs a person afterwards (see New features).
+- Security hardening for shared machines and chat bridges: the Slack bridge needs an allow-list, webhook watchers use signed requests, and state files, sockets and env secrets are private to your user. Read Upgrading before you update (see Security).
+- Many fixes for false parent alerts around restarts and stops, the TUI attach leak, mouse and keyboard input, and remotes; thanks to the community contributors named below (see Fixes).
 
-- `agent-deck events publish` accepts only lowercase kind names: a kind with an uppercase letter, such as a third-party plugin's `macapp.myPlugin`, now gets exit 2. Rename such a kind to lowercase (`macapp.myplugin`).
+### New features
+
+- `agent-deck feedback bug|idea` and the TUI key `Z` (rebindable as `report_problem`) build a GitHub issue from the same sections as the bug and feature forms. They add the version, OS, terminal and tool, and for a bug the last 40 lines of `debug.log`. The home directory, tokens, emails, IP and MAC addresses, and remote and ssh host names and logins are scrubbed before you see the text. Nothing is filed until you say yes. With `gh` logged in the issue is filed with `gh issue create`; otherwise a prefilled issue page opens and you press Submit. Plain `agent-deck feedback` keeps the rating flow (#2887).
+- `agent-deck session ref <source> <target>` and `alt+l` in the TUI type one line into the target session's composer. The line names the source session, the command to read its output and its transcript path when known. It is never sent: you read it and press Enter. It is refused for the same session, sessions in different profiles, remote sessions, or a target that is not running or shows a menu. `--print` only prints the line (#2882).
+- Opt-in local timings: with `AGENTDECK_TIMINGS=1` or `[logs] timings = true`, agent-deck appends one JSON line per finished operation to `timings.jsonl` in the cache directory (name, duration, failed, no content; rotated at 8 MB). `agent-deck perf [--json] [--since]` prints count, p50, p95 and max per operation. Off by default. Telemetry is not touched (#2883).
+- Every session now gets the identity block. SSH remote and Docker sandbox sessions carry it in the launch command (the remote needs bash). opencode gets it through `OPENCODE_CONFIG_CONTENT` and copilot through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, without overwriting your own values. `--no-identity`, `[launch] inject_identity = false` and `context_level = "none"` still win. `session primer --json` gains a `delivery` field (#2875).
+- Idle sessions restart onto a newer Claude Code or Codex build once it is installed. Only a local session idle at an empty prompt for 5 minutes is restarted, and it resumes its conversation. Busy, attached, drafting and waiting-on-a-timer sessions are never touched, and conductors only when they opt in. The parent gets one info line, not a false "finished" alert; a resume that crashes or does not reach its prompt within 2 minutes is reported. Turn it off with `[sessions] auto_refresh_idle_builds = false` (#2787, #2793, #2802).
+- Switching a session's Claude account settles on its own: after the restart agent-deck answers the folder-trust prompt for the session's own project (and the first-start screens), checks plugins and MCP servers, sends the continue message and verifies the account. Any other prompt or menu stops it with no key sent. `--no-settle` skips this and `agent-deck session switch-settle` runs it by itself. A switch whose session did come up on the new account despite a start error is kept with a warning, and every failed switch prints a one-line reason on stderr (#2778, #2816).
+- In a remote attach, Ctrl+V with an image on your local clipboard uploads it and types its path into the remote Claude or Gemini composer. Anywhere else Ctrl+V works as before. Turn it off with `[remote] paste_images = false` (#2775, #2870).
+- A TUI attached to a session now says when an update is installed (`detach to restart`) and restarts on the next detach. `[updates] auto_restart` turns this off too (#2857).
+- Over plain ssh, a Ctrl+V with no image on that host shows one hint: attach from agent-deck on your own machine to paste an image (#2857).
+- `[remotes.<name>] require_same_profile = true` keeps remote talkback inside the remote's profile, so on a host shared by several tenants one tenant's events cannot reach another tenant's conductor. Off by default (#2831, #2886; thanks @jwr456 for the report and @Myasir92 for the fix).
+
+### Security
+
+- Slack bridge: an empty or missing `allowed_user_ids` now refuses every Slack user, unless `allow_all_users = true`. Other workspaces, bot and integration mentions, and events without a user ID are ignored. A refused user gets one reply with their member ID and the config line to add, the bridge warns at start, and `conductor setup` asks for member IDs (#2884).
+- Webhook watchers: `watcher create webhook` generates a shared secret. Signed requests carry `X-Webhook-Timestamp` and an HMAC-SHA256 of the timestamp, sender and body (5-minute window; a replay is refused). The plain token is accepted only on loopback. Browser requests with an `Origin` header get 403. A `watcher.toml` that does not parse now stops that watcher instead of running it with defaults (#2884).
+- `agent-deck openclaw` no longer sends the gateway password over plain `ws://` to a host that is not loopback or tailnet, unless you pass `--insecure` or set `allow_insecure = true` (#2884).
+- ntfy and slack watchers can use an access token, take `--server` and `--random-topic`, and warn on a public topic that is easy to guess. Chat messages starting with "-" are delivered as text, not read as flags. The Gemini key goes in a header instead of the URL. `conductor setup` installs the bridge's Python packages at pinned versions (#2884).
+- On machines several people log in to: project MCP configs are written 0600 and untracked ones are added to `.git/info/exclude`; SSH ControlMaster sockets live in a per-user `/tmp/agent-deck-ssh-<uid>`; the MCP pool uses only your own sockets; inline env values for local sessions go through a private file instead of the command line, and restart logs show `KEY=***`; state directories are 0700 and files 0600 (#2885).
+- Launch commands shell-quote paths, session ids, model and agent names, instance ids and env_file paths, so a value with quotes, `;` or `$(...)` can no longer run extra commands. Each folder-trust grant agent-deck makes for you is logged as `folder_trust_granted`. Ordinary values give the same commands as before (#2876).
+- A state database records the profile it belongs to. agent-deck refuses to open another profile's store for writing (for example a `state.db` copied into another profile's directory) instead of mixing two profiles' sessions; read-only views only warn. Hook bindings, last-access times, session links and `session set <id> tool-session-id` now write to the profile the session came from (#2786).
+- The events log directory is 0700 and its files 0600, and older logs are tightened (#2761).
+- Code scanning fixes: spawn-guard file paths are validated, and logged ids and errors go through the log sanitizer (#2891, #2892). A dev-only test dependency (vite) is updated for three advisories (#2829).
+
+### Fixes
+
+- The TUI no longer leaks one kqueue or epoll descriptor each time you attach and come back, which could end in "too many open files" after days of use (#2692, #2815).
+- Keys typed right after Enter reach the attached session instead of the TUI, and Ctrl+Q works from the first byte of an attach (#2856).
+- Scrolling with the mouse wheel on the classic dashboard no longer moves the sessions/preview divider by itself (#2826, #2858; thanks @cherninely for the report, root cause and regression test).
+- New plain shell sessions no longer show a long typed `export AGENTDECK_*=...` line; the variables are set when the shell starts (tmux 3.2 or later) (#2817, #2842).
+- A send to a busy Claude session that already has queued input is queued instead of refused (#2847).
+- A send to a Codex session that the running turn took in no longer blocks every later send (#2836, #2877; thanks @jwiegley for the report, the diagnosis and the fix this follows).
+- `session stop` no longer fails with `stale concurrent Status conflict` and leaves the row at error when another process samples the dead pane during the stop. The TUI close and archive and the web stop had the same fix (#2850, #2874).
+- Stopping a child that was stopped and started before no longer sends its parent an urgent error (#2853, #2888; thanks @kickinrad for the precise repro).
+- A parent is told when an idle child's process dies, and an idle restart sends its "refreshed" line even when the boot was not seen (#2806, #2813, #2846).
+- An idle restart or build refresh no longer sends the parent a false urgent error, a false "finished" record or a repeat of the child's last reply; a mid-turn restart and real errors after a restart are still reported (#2792, #2793, #2802, #2866, #2869). An idle auto-compaction no longer sends the parent an empty urgent record (#2857).
+- A session queued at its group's `max_concurrent` cap now gets the Claude folder-trust seed when it starts, and its `-m` message is delivered once (#2879; thanks @Myasir92).
+- Archived sessions are left out of `agent-deck status`, the TUI header counts and desktop alerts (#2878).
+- `inbox drain` and the fleet line say when no notify daemon is running, instead of looking like nothing finished (#2834, #2863; thanks @tarekrached for the report).
+- Remote commands to a long `user@host` no longer fail with exit 255: the ssh ControlPath uses a fixed-length `%C` name (#2837, #2849; thanks @tarekrached for the report and the fix).
+- Remotes: timed-out or interrupted ssh commands no longer leave processes behind (#2764). The TUI backs off a slow or failing remote host; Ctrl+R and `session focus --remote` clear the wait (#2763, #2771, #2773). A remote session's preview shows the bottom of the pane again (#2766). `remote attach` and `rename` look up only the one session (#2768).
+- Transcripts are found under the session's own Claude config directory (#2769, #2772), and after an account switch the readers follow the copy the live Claude writes, so limit-guard no longer reports a conductor as spinning (#2840).
+- Undoing a TUI or web delete keeps the session and its inbox entries; the web server no longer hangs on exit finishing pending deletes (#2761, #2776).
+- After an update the notify daemon restarts onto the new build on Linux too, and every install writes one line to `auto-update.log` (#2777).
+- opencode2 sessions created in the TUI are recognised as OpenCode and keep the opencode2 label in the list and previews (#2830, #2838; thanks @dtvillafana).
+- `inbox drain self`, auto-parent and no-argument session commands find the calling session by its whole tmux name (#2844, #2871).
+- The conductor bridge finds a renamed conductor's inbox; `list --json` gains an additive `conductor_name` field (#2867).
+- Comms spool entries written in the same millisecond are read in write order (#2823, #2859; thanks @fpmx3bp for the report and @Myasir92 for the fix).
+- Data races on tmux session names during a restart are fixed (#2805, #2807, #2808, #2843).
+- Costs: "this week" starts on the current Monday (#2810, #2812); events on a boundary date are counted correctly (#2809, #2811); quitting the TUI can no longer panic in the cost watcher (#2851). Thanks @Myasir92.
+- Groups: `group create` and `group update` take space-separated flags after the name (#2854). `launch -g`, `session fork -g` and `session move --group` resolve a group like `add -g`, and `add -g` fails on a name shared by several groups instead of picking one (#2839, #2845).
+- With `allow_multiple = false`, a second TUI can no longer start next to an idle primary (#2839, #2845).
+- Profiles: `profile migrate` can no longer lose a session from both profiles, the registration lock uses the resolved profile, `run-task` resolves the profile like other commands, and `inbox stats --all` stays in your profile (#2851, #2854).
+- Your config is kept: Gemini, Cursor and OpenCode MCP configs survive bad or null JSON, and your own Gemini and Cursor hook fields survive hooks install and uninstall (#2851, #2852, #2854).
+- Loadout and conductor sessions on their own Claude config root get folder trust there, so they no longer stall on the trust prompt (#2854).
+- Non-ASCII text: table cells, path shortening and the settings editor cut on whole characters, and `~` only replaces your real home directory (#2839, #2844, #2851, #2852).
+- `--help` and `-h` after any subcommand never run it; `plugin <sub> --help` created the state database (#2779).
+- Smaller fixes, many from @Myasir92: macOS network rate with a VPN up, watcher senders matched case-insensitively, `jj` prune keeps live workspaces, the branch picker skips `origin/HEAD`, ntfy and slack watchers reset their backoff, watcher subjects keep valid UTF-8, a stopped HTTP MCP server can start again, web push sends time out after 10 s, the releases-behind count is recounted after an upgrade, POSIX backslash rules in shellwords, unset recall hints disappear, Codex queued inputs that wrap are counted, booting sessions show as `starting`, `POST /api/groups` with an unknown parent returns 404, `plugin attach/detach` follow the CLI JSON contract, statuslines of Claude-compatible custom tools link to their session, global search index writes are serialized, and the edit-paths dialog no longer restarts an agent for unchanged paths (#2839, #2844, #2848, #2851, #2852, #2854).
+- A watcher's undelivered events are capped per conductor (1000 or 64 MiB) and refusals are counted in `watcher status`; a failed worktree setup script logs only the tail of its output (#2881).
+
+### Performance
+
+- `agent-deck events publish`, `open` and `browser` take about 13 ms instead of about 1 s. The web menu status pass at 100 sessions drops from 948 ms to 171 ms (#2861).
+- Codex discovery reads one `ps` snapshot per status pass, and rows whose tmux session is gone are proven absent from one listing: the web menu at 100 sessions drops from 177 ms to 93 ms (#2880).
+- With no tmux server running, the status pass no longer starts a tmux client per stopped session (#2835; thanks @borng).
+- The notify daemon reads only new event-log lines and starts about one tmux process per session per pass instead of five (#2770, #2774).
+- `list --json` captures all panes with one tmux call per socket (#2762).
+
+### Under the hood
+
+- `session_cmd.go`, `tmux.go`, `instance.go` and `home.go` are split into topic files with no code change; the menu snapshot types move to `internal/menudata`, so the TUI no longer imports the web package (#2864, #2865, #2872).
+- Unreachable functions, unbuilt `*_windows.go` files and the unused `internal/profile` package are removed (#2855).
+- README checked against the code; new `AGENTS.md` and `docs/architecture.md`; Browser panel docs (#2799, #2873).
+- `make release-ready` checks a release candidate before a tag, including the update path end to end (#2785). `scripts/check-fix-has-test.sh` flags fix PRs without a regression test (#2788). The send budget gate moves into `internal/session` (#2825; thanks @fpmx3bp).
+- Tests: a guard fails any test that reaches the real home or the host's service managers, many slow tests now take seconds, flaky tests are fixed, and new end-to-end tests cover sends, restarts and status detection (#2780, #2781, #2782, #2783, #2784, #2789, #2790, #2791, #2794, #2795, #2796, #2797, #2798, #2800, #2801, #2803, #2804, #2822, #2841, #2860, #2862, #2868, #2890, #2894; thanks @3rwww1 and @Myasir92).
+
+### Upgrading
+
+- Slack bridge: if your bot stops answering, add `allowed_user_ids = ["<your member ID>"]` under `[conductor.slack]` in config.toml and restart the bridge, or set `allow_all_users = true` to keep it open. There is no automatic fallback to the old open behaviour.
+- Webhook watchers: one without a secret keeps working on `127.0.0.1` with a startup warning. One bound to another address without a secret no longer starts: add `secret = "<openssl rand -hex 32>"` under `[source]` in its `watcher.toml` (chmod 600) or bind it to `127.0.0.1`, then sign requests as documented in documentation/WATCHERS.md. A `watcher.toml` that does not parse now stops that watcher; fix it and run `agent-deck watcher reload`.
+- openclaw over plain `ws://` to a non-loopback, non-tailnet host needs `--insecure` or `allow_insecure = true`; existing bridge sessions need `allow_insecure = true`.
+- `conductor setup` replaces a bridge Python package you upgraded yourself with its pinned version.
+- SSH: control sockets move to `/tmp/agent-deck-ssh-<uid>`, so the first remote command after the upgrade opens one new ssh connection per host; old ones expire on their own.
+- The MCP pool ignores old `/tmp/agentdeck-mcp-*.sock` files. A directory-local `.agent-deck/config.toml` owned by another user or writable by others is ignored with a warning. Your state root is tightened to 0700 once, with a notice.
+- Each `state.db` is stamped with its profile on first open. If you renamed or copied a profile directory on purpose, the error prints the command that clears the stamp.
+- `agent-deck events publish` refuses kind names with capital letters (exit 2); rename a kind such as `macapp.myPlugin` to `macapp.myplugin`.
+- Idle build refresh is on by default; set `[sessions] auto_refresh_idle_builds = false` to keep sessions on the build they started with.
+- A TUI, web or MCP restart now counts as a fresh start, so a plain `session restart` within 60 seconds of one is skipped unless you pass `--force`.
+- `status --json` leaves archived sessions out, so its total can be lower than the row count of `list --json`.
+
+### Known issues
+
+- Security: this release is built with Go 1.26.9, which is affected by GO-2026-6809 (the Go standard library's crypto/x509 does not yet refuse certain intermediate certificates that are no longer trusted; agent-deck reaches the affected code when it verifies TLS certificates). Systems with up-to-date root stores are not affected in practice. A follow-up release built with Go 1.26.10 fixes it.
+- Under heavy load, the account-switch settle can stop at a half-drawn folder-trust prompt. It fails safe: no key is sent, and you answer the prompt yourself (#2893).
 
 ## [1.16.30] - 2026-10-18
 

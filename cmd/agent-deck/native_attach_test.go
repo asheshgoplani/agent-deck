@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 	"github.com/creack/pty"
 )
 
@@ -569,7 +570,7 @@ while True:
 	control := func(operation string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		command := exec.CommandContext(ctx, shimPath, "-O", operation, "-o", "ControlPath=/tmp/agent-deck-ssh/%r@%h:%p", "test-host")
+		command := exec.CommandContext(ctx, shimPath, "-O", operation, "-o", "ControlPath="+sshcontrol.ControlPath(), "test-host")
 		command.Env = append(envFor(controller), "NATIVE_SSH_MULTIPLEX=true")
 		out, err := command.CombinedOutput()
 		return string(out), err

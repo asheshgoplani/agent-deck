@@ -398,8 +398,6 @@ func handleGroupShow(profile string, args []string) {
 		fmt.Println("  agent-deck group show work --resolved --json")
 	}
 
-	args = reorderGroupArgs(args)
-
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
@@ -609,11 +607,6 @@ func handleGroupCreate(profile string, args []string) {
 		fmt.Println("  agent-deck group create wide --max-concurrent 4")
 	}
 
-	// Reorder args: move name to end so flags are parsed correctly
-	// Go's flag package stops parsing at first non-flag argument
-	// This allows: "group create ios --parent mobile" to work correctly
-	args = reorderGroupArgs(args)
-
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
@@ -732,8 +725,6 @@ func handleGroupUpdate(profile string, args []string) {
 		fmt.Println("  agent-deck group update mobile --clear-default-path")
 		fmt.Println("  agent-deck group update mobile --max-concurrent 2")
 	}
-
-	args = reorderGroupArgs(args)
 
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
@@ -1129,8 +1120,6 @@ func handleGroupReorder(profile string, args []string) {
 		fmt.Println("  agent-deck group reorder mobile --position 0")
 	}
 
-	args = reorderGroupArgs(args)
-
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
@@ -1303,53 +1292,7 @@ func normalizeGroupPath(name string) string {
 
 // truncateGroupName shortens a group name for display
 func truncateGroupName(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return s[:max]
-	}
-	return s[:max-3] + "..."
-}
-
-// reorderGroupArgs reorders arguments so flags come before positional args
-// This fixes Go's flag package limitation where flags after positional args are ignored
-// e.g., "ios --parent mobile" becomes "--parent mobile ios"
-func reorderGroupArgs(args []string) []string {
-	if len(args) == 0 {
-		return args
-	}
-
-	// Known flags that take a value
-	valueFlags := map[string]bool{
-		"--parent":       true,
-		"--default-path": true,
-		"--position":     true,
-		"-p":             true,
-	}
-
-	var flags []string
-	var positional []string
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-
-		// Check if it's a flag
-		if strings.HasPrefix(arg, "-") {
-			flags = append(flags, arg)
-
-			// Check if this flag takes a value (and value is separate)
-			if !strings.Contains(arg, "=") && valueFlags[arg] && i+1 < len(args) {
-				i++
-				flags = append(flags, args[i])
-			}
-		} else {
-			positional = append(positional, arg)
-		}
-	}
-
-	// Return flags first, then positional args
-	return append(flags, positional...)
+	return truncateWidth(s, max)
 }
 
 // handleGroupChange implements issue #447: reparent an entire group (and its

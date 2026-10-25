@@ -14,12 +14,27 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/quota"
 	"github.com/asheshgoplani/agent-deck/internal/shellwords"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // Hook installation wires a statusline feed for named account configurations
 // and the active default Claude config. The managed wrapper ingests metadata
 // before running the previous command, or renders a default when none exists.
 // Account quota files retain their existing format and cache keys.
+
+// Statusline ownership in statedb must include custom tools that run Claude:
+// they share the Claude statusLine and bind claude_session_id the same way.
+func init() {
+	statedb.ClaudeCompatibleTools = func() []string {
+		names := []string{"claude"}
+		for _, name := range GetCustomToolNames() {
+			if IsClaudeCompatible(name) {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+}
 
 // usageIngestWords is the subcommand the feed wrapper runs.
 var usageIngestWords = []string{"usage", "ingest", "claude"}

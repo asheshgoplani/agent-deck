@@ -17,7 +17,7 @@ import (
 // recallHookTrigger is the Claude hook side of Recall's triggers
 // (docs/recall.md, phase 3). On Stop and SessionEnd it appends the
 // session's transcript to the hook queue after the recall containment
-// check (RecallContainedPath: every Claude config dir plus the
+// check (session.RecallNotifyTranscript: every Claude config dir plus the
 // worker-scratch root, symlink-resolved, fail-closed). Stop is installed
 // synchronous and sits on Claude's turn-end latency, so that is ALL the
 // Stop path does: one appended line, no database, no lock (FINAL-DESIGN

@@ -112,19 +112,6 @@ func ClearAllCodexMCPInfoCache() {
 	clear(codexMcpCacheTimes)
 }
 
-// PruneCodexMCPCache removes stale Codex MCP cache entries.
-func PruneCodexMCPCache(maxAge time.Duration) {
-	codexMcpInfoCacheMu.Lock()
-	defer codexMcpInfoCacheMu.Unlock()
-	now := time.Now()
-	for path, t := range codexMcpCacheTimes {
-		if now.Sub(t) > maxAge {
-			delete(codexMcpInfoCache, path)
-			delete(codexMcpCacheTimes, path)
-		}
-	}
-}
-
 func buildCodexMCPServers(enabledNames []string) map[string]codexMCPServer {
 	availableMCPs := GetAvailableMCPs()
 	pool := GetGlobalPool()

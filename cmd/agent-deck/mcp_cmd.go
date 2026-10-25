@@ -1010,7 +1010,7 @@ func handleMCPServerStatus(args []string) {
 // typed (the restart itself still happened) and a warning says so.
 func sendMCPContinue(profile string, storage *session.Storage, inst *session.Instance, instances []*session.Instance, send func(string) error, quiet bool) {
 	if r := budgetForSend(profile, inst, instances, storage); r.Action == costs.BudgetActionStop {
-		publishBudgetExceeded(profile, inst.ID, "mcp_continue", r)
+		session.PublishBudgetExceeded(profile, inst.ID, "mcp_continue", r)
 		if !quiet {
 			fmt.Fprintf(os.Stderr, "Warning: restarted, but \"continue\" was not sent: budget exceeded: %s\n", r.Describe())
 		}

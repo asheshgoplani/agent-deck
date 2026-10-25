@@ -200,7 +200,7 @@ func editPrompt(text string) tea.Cmd {
 	// #nosec G204,G702 -- VISUAL/EDITOR is the user's trusted shell command; the
 	// generated filename is a quoted positional argument, never draft content.
 	cmd := exec.Command("sh", "-c", editor+" \"$1\"", "editor", path)
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	return execProcessHoldingInput(cmd, func(err error) tea.Msg {
 		defer os.Remove(path)
 		if err != nil {
 			return promptEditorMsg{err: err}

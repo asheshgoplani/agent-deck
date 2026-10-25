@@ -1,7 +1,7 @@
 package session
 
 import (
-	"os"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
@@ -22,8 +22,17 @@ func logDataPath(name string) (string, error) {
 	return dataPath(filepath.Join("logs", name), "logs")
 }
 
+// tempAgentDeckPath is the last-resort location for state when the data dir
+// cannot be resolved. It lives under a per-user private temp dir
+// ("<TempDir>/.agent-deck-<uid>", 0700, owned by us, not a symlink; see
+// agentpaths.SecureTempDir) instead of the shared "<TempDir>/.agent-deck"
+// another local user could pre-create or symlink.
 func tempAgentDeckPath(parts ...string) string {
-	all := append([]string{os.TempDir(), ".agent-deck"}, parts...)
+	base, note := agentpaths.SecureTempDir(".agent-deck")
+	if note != "" {
+		eventLog.Warn("private_temp_dir_notice", slog.String("dir", base), slog.String("detail", note))
+	}
+	all := append([]string{base}, parts...)
 	return filepath.Join(all...)
 }
 

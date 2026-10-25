@@ -88,6 +88,10 @@
         "command": {
           "type": "string"
         },
+        "conductor_name": {
+          "description": "stable conductor name of a conductor session (survives renames); absent for other sessions",
+          "type": "string"
+        },
         "created_at": {
           "type": "string",
           "format": "date-time"

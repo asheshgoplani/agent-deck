@@ -5,15 +5,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// perUserControlPath is the ControlPath every launcher command must carry:
+// the per-user /tmp/agent-deck-ssh-<uid> directory, never the shared one.
+func perUserControlPath() string {
+	return "/tmp/agent-deck-ssh-" + strconv.Itoa(os.Getuid()) + "/%C"
+}
 
 func TestMoshArgs(t *testing.T) {
 	got := MoshArgs("me@box", " /opt/homebrew/bin/mosh-server ", []string{"/bin/agent deck", "-p", "w", "session", "attach", "id"})
 	want := []string{
 		"--experimental-remote-ip=remote",
-		"--ssh=ssh -o ControlMaster=auto -o ControlPath=/tmp/agent-deck-ssh/%r@%h:%p -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes",
+		"--ssh=ssh -o ControlMaster=auto -o ControlPath=" + perUserControlPath() + " -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes",
 		"--server=/opt/homebrew/bin/mosh-server",
 		"me@box", "--",
 		"/bin/agent deck", "-p", "w", "session", "attach", "id",
@@ -82,7 +89,7 @@ func TestBuildAttachCommand_RemoteMoshArgv(t *testing.T) {
 		t.Fatalf("mosh saw %q\nwant     %q", got, want)
 	}
 	// No mosh-server on the remote: the same command attaches over ssh.
-	wantSSH := []string{"-tt", "-o", "ControlMaster=auto", "-o", "ControlPath=" + SSHControlDir + "/%r@%h:%p", "-o", "ControlPersist=600", "me@box", "/bin/agent ' deck", "-p", "wo'rk", "session", "attach", "id ' 1"}
+	wantSSH := []string{"-tt", "-o", "ControlMaster=auto", "-o", "ControlPath=" + perUserControlPath(), "-o", "ControlPersist=600", "me@box", "/bin/agent ' deck", "-p", "wo'rk", "session", "attach", "id ' 1"}
 	if got := run("1"); !reflect.DeepEqual(got, wantSSH) {
 		t.Fatalf("fallback ssh saw %q\nwant              %q", got, wantSSH)
 	}

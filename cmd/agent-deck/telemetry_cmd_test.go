@@ -9,11 +9,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
 
 func isolateTelemetryHome(t *testing.T) {
 	t.Helper()
+	// A guard violation fails this test instead of aborting the package (#2801).
+	sandboxguard.Report(t)
 	telemetry.EnableForTest(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)

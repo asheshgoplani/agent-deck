@@ -18,6 +18,16 @@ func TestSplit(t *testing.T) {
 		{`"" pi`, []string{"", "pi"}, true},
 		{`"unterminated`, nil, false},
 		{`trailing\`, nil, false},
+		// Inside double quotes a backslash escapes only $ ` " \ and newline (POSIX).
+		{`"a\b"`, []string{`a\b`}, true},
+		{`sh -c "sed 's/\./x/'"`, []string{"sh", "-c", `sed 's/\./x/'`}, true},
+		{`"C:\Users\me"`, []string{`C:\Users\me`}, true},
+		{`"a\$b"`, []string{"a$b"}, true},
+		{"\"a\\`b\"", []string{"a`b"}, true},
+		{`"a\"b"`, []string{`a"b`}, true},
+		{`"a\\b"`, []string{`a\b`}, true},
+		{"\"a\\\nb\"", []string{"ab"}, true},
+		{`"a\`, nil, false},
 	}
 	for _, tt := range tests {
 		got, ok := Split(tt.command)

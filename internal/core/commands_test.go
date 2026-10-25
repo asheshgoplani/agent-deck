@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -367,7 +371,7 @@ func TestDrainGroupQueueWithNothingQueued(t *testing.T) {
 	inst.Status = session.StatusStopped
 	var events []Event
 	ctx := WithObserver(context.Background(), func(ev Event) { events = append(events, ev) })
-	if got := drainGroupQueue(ctx, "g", []*session.Instance{inst}, []*session.GroupData{{Name: "g", Path: "g", MaxConcurrent: 1}}); got != nil {
+	if got := drainGroupQueue(ctx, nil, "g", []*session.Instance{inst}, []*session.GroupData{{Name: "g", Path: "g", MaxConcurrent: 1}}); got != nil {
 		t.Fatalf("drained %v with nothing queued", got.Title)
 	}
 	if len(events) != 0 {
@@ -381,7 +385,7 @@ func TestDrainGroupQueueRespectsCap(t *testing.T) {
 	running.Status = session.StatusRunning
 	queued := session.NewInstanceWithGroup("q", dir, "g")
 	queued.Status = session.StatusQueued
-	got := drainGroupQueue(context.Background(), "g", []*session.Instance{running, queued}, []*session.GroupData{{Name: "g", Path: "g", MaxConcurrent: 1}})
+	got := drainGroupQueue(context.Background(), nil, "g", []*session.Instance{running, queued}, []*session.GroupData{{Name: "g", Path: "g", MaxConcurrent: 1}})
 	if got != nil || queued.Status != session.StatusQueued {
 		t.Fatalf("drained at cap: %v, queued status %s", got, queued.Status)
 	}
@@ -408,5 +412,67 @@ func TestNewSpawnFailureReasons(t *testing.T) {
 	}
 	if got := spawnFailureMessage("start", errors.New("boom")); got != "failed to start session: boom" {
 		t.Fatalf("message = %q", got)
+	}
+}
+
+// A queued start's -m message and folder trust: session.start at cap keeps the
+// message, and the drain seeds trust and queues the message for delivery once.
+func TestQueuedStartKeepsMessageAndDrainDeliversOnce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	quiesceBackgroundWriters(t)
+	profile := fmt.Sprintf("_core_start_queue_msg_%d", time.Now().UnixNano())
+	dir := t.TempDir()
+	running := session.NewInstanceWithGroup("busy", dir, "serial")
+	running.Status = session.StatusRunning
+	waiting := session.NewInstanceWithGroup("next", dir, "serial")
+	waiting.Tool = "claude"
+	waiting.Status = session.StatusStopped
+	waiting.SetTmuxSessionForTest(nil)
+	groups := []*session.GroupData{{Name: "serial", Path: "serial", MaxConcurrent: 1}}
+	seedStore(t, profile, groups, running, waiting)
+
+	if _, res := Invoke[SessionStartOut](context.Background(), testRegistry(t, Deps{}), IDSessionStart, SessionStartIn{Profile: profile, Session: "next", Message: "brief"}); res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	queued := findByTitle(loadStore(t, profile), "next")
+	if queued == nil || queued.QueuedMessage != "brief" {
+		t.Fatalf("queued row = %+v, want queued_message \"brief\"", queued)
+	}
+
+	var sent []string
+	t.Cleanup(session.SetQueuedSpawnForTest(func(i *session.Instance, message string) error {
+		sent = append(sent, message)
+		i.Status = session.StatusStarting
+		return nil
+	}))
+	var workers []string
+	prev := spawnSendWorker
+	spawnSendWorker = func(_, id string) error { workers = append(workers, id); return nil }
+	t.Cleanup(func() { spawnSendWorker = prev })
+	running.Status = session.StatusStopped
+	instances := []*session.Instance{running, queued}
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	if got := drainGroupQueue(context.Background(), storage, "serial", instances, groups); got != queued {
+		t.Fatalf("drained %v, want next", got)
+	}
+	if got := drainGroupQueue(context.Background(), storage, "serial", instances, groups); got != nil {
+		t.Fatalf("second drain started %v", got.Title)
+	}
+	if len(sent) != 1 || sent[0] != "" || queued.QueuedMessage != "" {
+		t.Fatalf("spawns %q, stored %q; want one spawn typing nothing, message cleared", sent, queued.QueuedMessage)
+	}
+	recs, err := sendqueue.List(sendqueue.Dir(filepath.Dir(storage.Path())), queued.ID)
+	if err != nil || len(recs) != 1 || recs[0].Message != "brief" || len(workers) != 1 {
+		t.Fatalf("queued sends %+v (err %v), workers %q; want one \"brief\" and one worker", recs, err, workers)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil || !strings.Contains(strings.Join(strings.Fields(string(data)), ""), `"hasTrustDialogAccepted":true`) {
+		t.Fatalf("drain did not seed folder trust: %v %s", err, data)
 	}
 }

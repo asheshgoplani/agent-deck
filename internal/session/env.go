@@ -58,7 +58,9 @@ func (i *Instance) buildEnvSourceCommand() string {
 	}
 	if config == nil {
 		if restartEnv := buildEnvExports(i.restartEnv); restartEnv != "" {
-			sources = append(sources, restartEnv)
+			sources = append(sources, i.offloadInlineEnv(launchEnvKindRestart, restartEnv))
+		} else {
+			pruneLaunchEnvKind(i.ID, launchEnvKindRestart)
 		}
 		sources = append(sources, i.telegramStripSources()...)
 		if stripExpr := claudeJobDirStripExpr(i); stripExpr != "" {
@@ -146,24 +148,26 @@ func (i *Instance) buildEnvSourceCommand() string {
 	//    would.
 	if instInvokesClaudeBinary(i) {
 		if claudeEnv := i.getClaudeInlineEnv(config); claudeEnv != "" {
-			sources = append(sources, claudeEnv)
+			sources = append(sources, i.offloadInlineEnv(launchEnvKindClaude, claudeEnv))
 		}
 	}
 
 	// 6. Inline env vars from [tools.X].env
 	if inlineEnv := i.getToolInlineEnv(); inlineEnv != "" {
-		sources = append(sources, inlineEnv)
+		sources = append(sources, i.offloadInlineEnv(launchEnvKindTool, inlineEnv))
 	}
 
 	// 7. Conductor-specific env (highest priority, overrides tool env)
 	if conductorEnv := i.getConductorEnv(ignoreMissing); conductorEnv != "" {
-		sources = append(sources, conductorEnv)
+		sources = append(sources, i.offloadInlineEnv(launchEnvKindConductor, conductorEnv))
 	}
 
 	// 8. Explicit restart overrides are applied after every configured source,
 	//    so the command-line value wins for this replacement process.
 	if restartEnv := buildEnvExports(i.restartEnv); restartEnv != "" {
-		sources = append(sources, restartEnv)
+		sources = append(sources, i.offloadInlineEnv(launchEnvKindRestart, restartEnv))
+	} else {
+		pruneLaunchEnvKind(i.ID, launchEnvKindRestart)
 	}
 
 	// 9. S8 (v1.7.40) — strip TELEGRAM_STATE_DIR on every non-channel-owning
@@ -222,7 +226,8 @@ func themeEnvExport() string {
 		}
 	}
 
-	return fmt.Sprintf("export COLORFGBG='%s'", colorfgbg)
+	// Quoted: an inherited COLORFGBG is propagated verbatim.
+	return "export COLORFGBG=" + shellQuote(colorfgbg)
 }
 
 // ThemeColorFGBG returns the COLORFGBG value for the current resolved theme.
@@ -268,12 +273,15 @@ func paneWarning(msg string) string {
 
 // buildSourceCmd creates a shell command to source a file.
 // If ignoreMissing is true, wraps in a file existence check.
+// The path is single-quoted so $(...), backticks or quotes in it (from
+// config, env expansion or the project dir) stay literal.
 func buildSourceCmd(path string, ignoreMissing bool) string {
+	quoted := shellQuote(path)
 	if ignoreMissing {
 		// Use [ -f file ] && source file pattern for safe sourcing
-		return fmt.Sprintf(`[ -f "%s" ] && source "%s"`, path, path)
+		return fmt.Sprintf(`[ -f %s ] && source %s`, quoted, quoted)
 	}
-	return fmt.Sprintf(`source "%s"`, path)
+	return "source " + quoted
 }
 
 // resolvePath resolves a user-specified config file path:
@@ -489,7 +497,8 @@ func isFilePath(s string) bool {
 
 // getToolInlineEnv returns shell export commands for inline env vars from [tools.X].env.
 // Returns empty string if the tool has no inline env vars defined.
-// Keys are sorted for deterministic output. Single quotes in values are escaped.
+// Keys are sorted for deterministic output; invalid env names are skipped and
+// single quotes in values are escaped.
 func (i *Instance) getToolInlineEnv() string {
 	def := GetToolDef(i.Tool)
 	if def == nil || len(def.Env) == 0 {
@@ -506,6 +515,12 @@ func (i *Instance) getToolInlineEnv() string {
 	// Build export statements with single-quote escaping
 	exports := make([]string, 0, len(keys))
 	for _, k := range keys {
+		if !IsValidEnvKey(k) {
+			// LOC-4: the key is spliced into `export <key>=…` unquoted, so a
+			// name like "A=1; cmd; B" would run cmd. Never emit it.
+			warnInvalidEnvKey("tools."+i.Tool+".env", k)
+			continue
+		}
 		v := def.Env[k]
 		// Escape single quotes: replace ' with '\'' (end quote, escaped quote, start quote)
 		escaped := strings.ReplaceAll(v, "'", "'\\''")
@@ -531,6 +546,7 @@ func buildEnvExports(env map[string]string) string {
 	exports := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if !IsValidEnvKey(key) {
+			warnInvalidEnvKey("restart env", key)
 			continue
 		}
 		escaped := strings.ReplaceAll(env[key], "'", "'\\''")
@@ -544,7 +560,7 @@ func (i *Instance) buildRestartEnvPrefix() string {
 	if exports == "" {
 		return ""
 	}
-	return exports + " && "
+	return i.offloadInlineEnv(launchEnvKindRestart, exports) + " && "
 }
 
 // getClaudeInlineEnv returns shell export statements for the merged
@@ -582,6 +598,7 @@ func (i *Instance) getClaudeInlineEnv(config *UserConfig) string {
 	exports := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if !IsValidEnvKey(k) {
+			warnInvalidEnvKey("groups/conductors claude env", k)
 			continue // skip invalid env var names
 		}
 		escaped := strings.ReplaceAll(merged[k], "'", "'\\''")
@@ -706,6 +723,7 @@ func (i *Instance) getConductorEnv(ignoreMissing bool) string {
 		sort.Strings(keys)
 		for _, k := range keys {
 			if !IsValidEnvKey(k) {
+				warnInvalidEnvKey("conductor "+name+" meta.json env", k)
 				continue // skip invalid env var names
 			}
 			parts = append(parts, fmt.Sprintf("export %s='%s'", k, strings.ReplaceAll(meta.Env[k], "'", "'\\''")))
@@ -731,6 +749,36 @@ func IsValidEnvKey(key string) bool {
 		return false
 	}
 	return true
+}
+
+// EnvKeyRejectReason says why key is not a valid env name, without quoting
+// any part of it, or returns "" for a valid name. A rejected "name" is often a
+// whole entry typed or parsed wrongly, or a bare token ('ghp_…', 'AKIA…',
+// 'API_KEY sk-…'), and such tokens are made of exactly the identifier
+// characters, so no prefix of a rejected name is ever safe to show. Log lines
+// and errors about a rejected name carry this reason and the name's length
+// only.
+func EnvKeyRejectReason(key string) string {
+	if key == "" {
+		return "empty name"
+	}
+	if IsValidEnvKey(key) {
+		return ""
+	}
+	if key[0] >= '0' && key[0] <= '9' {
+		return "starts with a digit"
+	}
+	switch {
+	case strings.ContainsAny(key, " \t\r\n"):
+		return "contains whitespace"
+	case strings.Contains(key, "="):
+		return "contains '='"
+	case strings.Contains(key, "-"):
+		return "contains '-'"
+	case strings.Contains(key, "."):
+		return "contains '.'"
+	}
+	return "contains a character outside [A-Za-z0-9_]"
 }
 
 // telegramEnvVarsToStrip lists every TELEGRAM_* env var that the

@@ -201,19 +201,6 @@ func ClearAllOpenCodeMCPInfoCache() {
 	clear(opencodeMcpCacheTimes)
 }
 
-// PruneOpenCodeMCPCache removes stale OpenCode MCP cache entries (TTL).
-func PruneOpenCodeMCPCache(maxAge time.Duration) {
-	opencodeMcpInfoCacheMu.Lock()
-	defer opencodeMcpInfoCacheMu.Unlock()
-	now := time.Now()
-	for path, t := range opencodeMcpCacheTimes {
-		if now.Sub(t) > maxAge {
-			delete(opencodeMcpInfoCache, path)
-			delete(opencodeMcpCacheTimes, path)
-		}
-	}
-}
-
 // buildOpenCodeMCPServers constructs the mcp map for an opencode.json write.
 func buildOpenCodeMCPServers(enabledNames []string) map[string]opencodeMCPServer {
 	availableMCPs := GetAvailableMCPs()
@@ -299,6 +286,9 @@ func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string, nativeV2
 		if jsonErr := json.Unmarshal(data, &rawConfig); jsonErr != nil {
 			return fmt.Errorf("refusing to overwrite unparseable opencode project config %s: %w", mcpFile, jsonErr)
 		}
+		if rawConfig == nil { // a JSON null root decodes to a nil map
+			rawConfig = make(map[string]interface{})
+		}
 	} else if os.IsNotExist(readErr) {
 		rawConfig = make(map[string]interface{})
 	} else {
@@ -314,6 +304,7 @@ func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string, nativeV2
 	if err := atomicfile.WriteFileWithin(filepath.Dir(mcpFile), mcpFile, newData, 0o600); err != nil {
 		return fmt.Errorf("save opencode project mcp: %w", withProjectMCPOptOut(err))
 	}
+	excludeProjectMCPFromGit(projectPath, mcpFile)
 
 	ClearOpenCodeMCPCache(projectPath)
 	return nil
@@ -340,6 +331,9 @@ func WriteOpenCodeGlobalMCP(enabledNames []string, nativeV2 ...bool) error {
 	if data, readErr := os.ReadFile(configFile); readErr == nil {
 		if jsonErr := json.Unmarshal(data, &rawConfig); jsonErr != nil {
 			return fmt.Errorf("refusing to overwrite unparseable opencode global config %s: %w", configFile, jsonErr)
+		}
+		if rawConfig == nil { // a JSON null root decodes to a nil map
+			rawConfig = make(map[string]interface{})
 		}
 	} else if os.IsNotExist(readErr) {
 		rawConfig = make(map[string]interface{})

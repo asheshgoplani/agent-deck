@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -117,7 +118,7 @@ func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 		}
 		if own {
 			// The own path, but not as the only menu on screen.
-			return SettlePane{State: SettlePaneTrustOther, Detail: "folder trust for " + shown + " is not the only menu on screen"}
+			return SettlePane{State: SettlePaneTrustOther, Detail: "folder trust for " + shown + settleTrustNotAlone}
 		}
 		return SettlePane{State: SettlePaneTrustOther, Detail: "folder trust for " + shown}
 	}
@@ -699,6 +700,13 @@ func preseedClaudeJSON(source map[string]any, targetJSON, projectPath string, by
 			changed = append(changed, "bypass-ack")
 		}
 	})
+	if err == nil {
+		for _, note := range notes {
+			if dir, ok := strings.CutPrefix(note, "trust:"); ok {
+				logFolderTrustGranted("claude", dir, "config", targetJSON)
+			}
+		}
+	}
 	return notes, err
 }
 
@@ -817,6 +825,17 @@ type SettleOptions struct {
 // screen (a stale frame) before it counts as shown again.
 const settleAnswerGrace = 3 * time.Second
 
+// settleRedrawWait is how long an own-path trust dialog that is not yet the
+// only menu on screen is sampled again before settle stops (#2893). Under
+// load a capture can land while Claude is still drawing the dialog (title
+// up, rows missing); that frame is refused, never answered, and the next
+// ones usually show the whole dialog.
+const settleRedrawWait = 3 * time.Second
+
+// settleTrustNotAlone ends the detail of an own-path trust dialog refused
+// because something else is on screen with it.
+const settleTrustNotAlone = " is not the only menu on screen"
+
 var errDialogGone = errors.New("dialog closed before it was answered")
 
 // ErrSettleStopped marks a settle that met a prompt it may not answer.
@@ -913,6 +932,7 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 	answered := map[SettlePaneState]int{}
 	answeredAt := map[SettlePaneState]time.Time{}
 	readySeen := 0
+	var redrawSince time.Time
 	for deps.Now().Before(deadline) {
 		raw, err := deps.Capture()
 		if err != nil {
@@ -953,6 +973,8 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 			}
 			answeredAt[pane.State] = deps.Now()
 			report.Answered = appendOnce(report.Answered, string(pane.State))
+			logFolderTrustGranted("claude", opts.ProjectPath, "config_dir", opts.ConfigDir,
+				slog.String("via", "dialog_keypress"))
 			deps.Sleep(time.Second)
 		case SettlePaneTheme, SettlePaneOnboarding:
 			// Any theme is acceptable and the notes only continue, so
@@ -996,6 +1018,17 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 			answeredAt[pane.State] = deps.Now()
 			report.Answered = appendOnce(report.Answered, string(pane.State))
 		default:
+			// A half-drawn own trust dialog: nothing is pressed, but look
+			// again for a bounded time before stopping for good.
+			if pane.State == SettlePaneTrustOther && strings.HasSuffix(pane.Detail, settleTrustNotAlone) {
+				if redrawSince.IsZero() {
+					redrawSince = deps.Now()
+				}
+				if deps.Now().Sub(redrawSince) < settleRedrawWait {
+					readySeen = 0
+					break
+				}
+			}
 			report.StoppedAt = string(pane.State) + ": " + pane.Detail
 			return ErrSettleStopped
 		}

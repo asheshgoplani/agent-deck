@@ -66,10 +66,26 @@ func TestAccountReviewFallbackShellRestartKeepsTypedCommandAccount(t *testing.T)
 		}
 		output := filepath.Join(t.TempDir(), "account")
 		require.NoError(t, inst.GetTmuxSession().SendKeysAndEnter("printf '%s' \"$AGENTDECK_ACCOUNT\" > "+shellescape.Quote(output)))
-		require.Eventually(t, func() bool { _, err := os.Stat(output); return err == nil }, 5*time.Second, 10*time.Millisecond)
-		data, err := os.ReadFile(output)
-		require.NoError(t, err)
-		require.Equal(t, "saved", string(data), "typed command after restart=%v", restart)
+		require.Equal(t, "saved", waitForFileContent(t, output, 5*time.Second), "typed command after restart=%v", restart)
+	}
+}
+
+// waitForFileContent polls path until it holds non-empty content or the
+// deadline passes. The shell redirect creates the file before printf writes
+// to it, so the file existing is not enough: reading on existence alone can
+// see an empty file under load.
+func waitForFileContent(t *testing.T, path string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil && len(data) > 0 {
+			return string(data)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still empty after %s (read error: %v)", path, timeout, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

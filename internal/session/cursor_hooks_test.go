@@ -214,3 +214,75 @@ func TestSetCursorHooksEnabled_RoundTrip(t *testing.T) {
 		t.Fatal("SetCursorHooksEnabled(true) did not restore the default")
 	}
 }
+
+// ASK-102: install and uninstall rewrite only agent-deck's own entries; other
+// top-level keys and per-hook fields (timeout, ...) survive the round trip.
+func TestCursorHooks_PreservesUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hooks.json")
+	seed := `{"version":1,"extra":true,"hooks":{"afterFileEdit":[{"command":"fmt.sh","timeout":30}],"stop":[{"command":"mine","timeout":5}]}}`
+	if err := os.WriteFile(p, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(stage string) {
+		t.Helper()
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Extra *bool                       `json:"extra"`
+			Hooks map[string][]map[string]any `json:"hooks"`
+		}
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Extra == nil || !*got.Extra {
+			t.Errorf("%s: top-level extra dropped", stage)
+		}
+		if e := got.Hooks["afterFileEdit"]; len(e) != 1 || e[0]["timeout"] != float64(30) {
+			t.Errorf("%s: afterFileEdit timeout lost: %v", stage, e)
+		}
+		found := false
+		for _, h := range got.Hooks["stop"] {
+			if h["command"] == "mine" {
+				found = true
+				if h["timeout"] != float64(5) {
+					t.Errorf("%s: user stop timeout lost: %v", stage, h)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: user stop hook missing", stage)
+		}
+	}
+
+	if ok, err := InjectCursorHooks(dir); err != nil || !ok {
+		t.Fatalf("inject: %v %v", ok, err)
+	}
+	check("after inject")
+	if !CheckCursorHooksInstalled(dir) {
+		t.Fatal("not installed")
+	}
+	if ok, err := RemoveCursorHooks(dir); err != nil || !ok {
+		t.Fatalf("remove: %v %v", ok, err)
+	}
+	check("after remove")
+}
+
+// A hooks.json holding only JSON null installed fresh before the raw rewrite;
+// it must not start failing AutoInstallCursorHooks on every TUI start.
+func TestInjectCursorHooks_NullRootInstallsFresh(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hooks.json")
+	if err := os.WriteFile(p, []byte("null\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := InjectCursorHooks(dir); err != nil || !ok {
+		t.Fatalf("inject on null root: %v %v", ok, err)
+	}
+	if !CheckCursorHooksInstalled(dir) {
+		t.Fatal("hooks not installed after null-root inject")
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 )
 
 const (
@@ -343,14 +344,8 @@ func CachedUpdateInfo(currentVersion string) (*UpdateInfo, error) {
 	if cache == nil || cache.LatestVersion == "" {
 		return nil, nil
 	}
-	info := &UpdateInfo{
-		CurrentVersion: currentVersion,
-		LatestVersion:  cache.LatestVersion,
-		DownloadURL:    cache.DownloadURL,
-		ReleaseURL:     cache.ReleaseURL,
-		ReleasesBehind: cache.ReleasesBehind,
-		Available:      ReleaseSupersedes(cache.LatestVersion, currentVersion),
-	}
+	info := &UpdateInfo{CurrentVersion: currentVersion}
+	applyCacheToInfo(info, cache, currentVersion)
 	return info, nil
 }
 
@@ -380,6 +375,8 @@ func fetchLatestRelease() (*Release, error) {
 // should keep using its cached copy. newETag is the response's ETag, to
 // remember for the next call regardless of whether it was a 200 or a 304.
 func fetchLatestReleaseConditional(etag string) (release *Release, newETag string, notModified bool, err error) {
+	done := optiming.StartResult("update.check")
+	defer func() { done(err != nil) }()
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", apiBaseURL, GitHubRepo)
 
 	resp, authed, err := githubAPIGetConditional(url, etag)
@@ -618,13 +615,23 @@ func compareNumericIdentifiers(a, b string) int {
 
 // applyCacheToInfo fills info from a cached (or just-confirmed-unchanged)
 // release: used both when the cache is still fresh and when a conditional
-// poll comes back 304 Not Modified.
+// poll comes back 304 Not Modified. The cached ReleasesBehind is only used
+// when the cache was written by this same version: after an upgrade it still
+// counts how far the old binary was behind, so it is left at 0 (unknown).
 func applyCacheToInfo(info *UpdateInfo, cache *UpdateCache, currentVersion string) {
 	info.LatestVersion = cache.LatestVersion
 	info.DownloadURL = cache.DownloadURL
 	info.ReleaseURL = cache.ReleaseURL
-	info.ReleasesBehind = cache.ReleasesBehind
+	info.ReleasesBehind = 0
+	if cacheWrittenBy(cache, currentVersion) {
+		info.ReleasesBehind = cache.ReleasesBehind
+	}
 	info.Available = ReleaseSupersedes(cache.LatestVersion, currentVersion)
+}
+
+// cacheWrittenBy reports whether cache was last written by currentVersion.
+func cacheWrittenBy(cache *UpdateCache, currentVersion string) bool {
+	return strings.TrimPrefix(cache.CurrentVersion, "v") == strings.TrimPrefix(currentVersion, "v")
 }
 
 // CheckForUpdate checks if a new version is available
@@ -643,8 +650,9 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 	cache, cacheErr := loadCache()
 	haveCache := cacheErr == nil
 
-	// Try to use cache first (unless force check)
-	if !forceCheck && haveCache && time.Since(cache.CheckedAt) < checkInterval {
+	// Try to use cache first (unless force check). A cache written by another
+	// version (the user upgraded) is polled again so ReleasesBehind is recounted.
+	if !forceCheck && haveCache && time.Since(cache.CheckedAt) < checkInterval && cacheWrittenBy(cache, currentVersion) {
 		applyCacheToInfo(info, cache, currentVersion)
 		return info, nil
 	}
@@ -670,6 +678,15 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 		}
 		applyCacheToInfo(info, cache, currentVersion)
 		refreshed := *cache
+		if !cacheWrittenBy(cache, currentVersion) {
+			// The release is unchanged but this binary is not the one that
+			// counted; recount (0 on failure, like the 200 path).
+			info.ReleasesBehind = 0
+			if recent, recentErr := fetchRecentReleases(recentReleasesLimit); recentErr == nil {
+				info.ReleasesBehind = CountReleasesBehind(currentVersion, recent)
+			}
+			refreshed.ReleasesBehind = info.ReleasesBehind
+		}
 		refreshed.CheckedAt = time.Now()
 		refreshed.CurrentVersion = currentVersion
 		if newETag != "" {
@@ -746,7 +763,9 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 // binary for the requested platform. It fails closed: checksum download,
 // missing-entry, or hash mismatch errors occur before the installed binary is
 // touched.
-func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
+func PerformVerifiedUpdate(release *Release, goos, goarch string) (err error) {
+	done := optiming.StartResult("update.install")
+	defer func() { done(err != nil) }()
 	execPath, upgradeCmd, managed, err := detectHomebrewManagedInstall()
 	if err != nil {
 		return fmt.Errorf("failed to detect install type: %w", err)

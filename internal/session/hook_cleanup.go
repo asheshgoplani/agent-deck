@@ -55,6 +55,9 @@ func pruneHookArtifacts(deletedID string) error {
 	if err != nil {
 		return err
 	}
+	if deletedID == "" {
+		sweepLaunchEnvOrphans(ids, time.Now().Add(-24*time.Hour))
+	}
 	root, err := os.OpenRoot(GetHooksDir())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

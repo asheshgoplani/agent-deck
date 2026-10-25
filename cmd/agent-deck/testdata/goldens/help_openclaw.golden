@@ -8,4 +8,9 @@ Commands:
   send           Send a message to an agent
   help           Show this help
 
+The gateway password is sent in the clear over ws://, so a ws:// gateway_url
+must be loopback (127.0.0.0/8, ::1, localhost) or tailnet (100.64.0.0/10,
+fd7a:115c:a1e0::/48, *.ts.net). Use wss:// for any other host, or pass
+--insecure (or set allow_insecure = true under [openclaw]) to allow it anyway.
+
 Aliases: openclaw, oc

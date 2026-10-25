@@ -20,20 +20,60 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
-// envVarFlags implements flag.Value for repeatable -env KEY=VALUE flags
-type envVarFlags map[string]string
+// envVarFlags implements flag.Value for repeatable -env KEY=VALUE flags.
+//
+// The flag package prints a rejected value verbatim ("invalid value %q for
+// flag -env"), and a malformed entry ('API_KEY sk-…' with no '=') is the
+// secret itself. So Set never rejects: it records the first problem, with no
+// value in it, and the caller reports it after parsing (exitOnEnvFlagError).
+type envVarFlags struct {
+	vals map[string]string
+	err  error
+}
+
+func newEnvVarFlags() *envVarFlags { return &envVarFlags{vals: make(map[string]string)} }
 
 func (e *envVarFlags) String() string { return "" }
+
 func (e *envVarFlags) Set(val string) error {
-	parts := strings.SplitN(val, "=", 2)
-	if len(parts) != 2 || parts[0] == "" {
-		return fmt.Errorf("invalid env format %q, expected KEY=VALUE", val)
+	if err := e.add(val); err != nil && e.err == nil {
+		e.err = err
 	}
-	if !session.IsValidEnvKey(parts[0]) {
-		return fmt.Errorf("invalid environment variable name %q", parts[0])
-	}
-	(*e)[parts[0]] = parts[1]
 	return nil
+}
+
+// add validates and stores one KEY=VALUE. Its errors never quote any part of
+// the entry: without an '=' the whole entry may be a bare token ('ghp_…'), and
+// a rejected name may be one too, so they carry only a reason.
+func (e *envVarFlags) add(val string) error {
+	key, value, ok := strings.Cut(val, "=")
+	if !ok {
+		return fmt.Errorf("invalid env format: missing '=' (expected KEY=VALUE)")
+	}
+	if reason := session.EnvKeyRejectReason(key); reason != "" {
+		return fmt.Errorf("invalid environment variable name (%s, %d bytes), expected KEY=VALUE", reason, len(key))
+	}
+	e.vals[key] = value
+	return nil
+}
+
+// Err reports the first rejected -env entry, or nil.
+func (e *envVarFlags) Err() error { return e.err }
+
+// Map returns the accepted KEY=VALUE pairs.
+func (e *envVarFlags) Map() map[string]string { return e.vals }
+
+// exitOnEnvFlagError reports a rejected -env entry the way a flag parse error
+// is reported (message, usage, exit 2) but without echoing the value.
+func exitOnEnvFlagError(fs *flag.FlagSet, e *envVarFlags) {
+	if e == nil || e.Err() == nil {
+		return
+	}
+	fmt.Fprintf(fs.Output(), "invalid value for flag -env: %v\n", e.Err())
+	if fs.Usage != nil {
+		fs.Usage()
+	}
+	exitCLI(2)
 }
 
 // handleConductor dispatches conductor subcommands
@@ -184,8 +224,8 @@ func handleConductorSetup(profile string, args []string) {
 	sharedClaudeMD := fs.String("shared-claude-md", "", "Custom path for shared CLAUDE.md (e.g., ~/docs/conductor-shared.md)")
 	sharedPolicyMD := fs.String("shared-policy-md", "", "Custom path for shared POLICY.md (e.g., ~/docs/conductor-policy.md)")
 	envFile := fs.String("env-file", "", "Path to .env file to source before conductor starts (e.g., ~/.conductor.env)")
-	envFlags := make(envVarFlags)
-	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format (can be repeated)")
+	envFlags := newEnvVarFlags()
+	fs.Var(envFlags, "env", "Environment variable in KEY=VALUE format (can be repeated)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -245,6 +285,7 @@ func handleConductorSetup(profile string, args []string) {
 
 	name, extras, err := parseConductorSetupArgs(fs, args)
 	exitOnFlagError(err)
+	exitOnEnvFlagError(fs, envFlags)
 
 	if name == "" {
 		fmt.Fprintln(os.Stderr, "Error: conductor name is required")
@@ -360,6 +401,12 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println()
 	}
 
+	// An install from before the Slack allow-list was required: the wizard
+	// below skips configured channels, so say here why the bot refuses.
+	if msg := slackAccessWarning(settings.Slack); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+
 	// Step 2b: Offer channel configuration for any unconfigured channels.
 	// Runs on first setup and on re-runs, so users can add channels later.
 	// Skipped in --json mode: interactive prompts would hang on stdin.
@@ -446,6 +493,14 @@ func handleConductorSetup(profile string, args []string) {
 					}
 
 					settings.Slack = withSlackCredentials(settings.Slack, botToken, appToken, channelID)
+					if len(settings.Slack.AllowedUserIDs) == 0 && !settings.Slack.AllowAllUsers {
+						slack, err := promptSlackAccess(reader, os.Stdout, settings.Slack)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+							exitCLI(1)
+						}
+						settings.Slack = slack
+					}
 					configChanged = true
 				}
 			}
@@ -591,8 +646,8 @@ func handleConductorSetup(profile string, args []string) {
 		clearOnCompact = false
 	}
 	var envMap map[string]string
-	if len(envFlags) > 0 {
-		envMap = map[string]string(envFlags)
+	if len(envFlags.Map()) > 0 {
+		envMap = envFlags.Map()
 	}
 	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, *heartbeatRulesMD, envMap, *envFile, *heartbeatIdleMinutes); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
@@ -1480,6 +1535,47 @@ func formatPipFailureMessage(d pipFailureDiagnostic) string {
 	return b.String()
 }
 
+// bridgePythonPins is the one exact version setup installs for each bridge
+// dependency on Python 3.10 and newer, so a new upstream release never reaches
+// a bridge untested. The automatic install and every printed manual-install
+// command use it. The versions install together (aiogram and discord.py both
+// depend on aiohttp) and ship wheels for current Pythons, including 3.14.
+var bridgePythonPins = map[string]string{
+	"toml":       "0.10.2",
+	"aiogram":    "3.31.0",
+	"slack-bolt": "1.30.0",
+	"slack-sdk":  "3.45.0",
+	"aiohttp":    "3.14.4",
+	"discord.py": "2.7.1",
+}
+
+// bridgePythonPinsLegacy is the same table for Python 3.8 and 3.9: only
+// aiogram and aiohttp differ, since their current releases need 3.10.
+var bridgePythonPinsLegacy = map[string]string{
+	"toml":       "0.10.2",
+	"aiogram":    "3.13.1",
+	"slack-bolt": "1.30.0",
+	"slack-sdk":  "3.45.0",
+	"aiohttp":    "3.10.11",
+	"discord.py": "2.7.1",
+}
+
+// pinBridgePackages returns name==version for each named package, from the
+// table that fits pyVersion (sys.version, e.g. "3.12.4"). An unknown version
+// gets the current table.
+func pinBridgePackages(names []string, pyVersion string) []string {
+	pins := bridgePythonPins
+	if pyVersion == "3.8" || pyVersion == "3.9" ||
+		strings.HasPrefix(pyVersion, "3.8.") || strings.HasPrefix(pyVersion, "3.9.") {
+		pins = bridgePythonPinsLegacy
+	}
+	pinned := make([]string, 0, len(names))
+	for _, name := range names {
+		pinned = append(pinned, name+"=="+pins[name])
+	}
+	return pinned
+}
+
 // installPythonDeps installs Python dependencies for the bridge.
 // Returns true on success. On failure it prints a formatted, actionable error
 // (PEP 668 gets a special-cased remediation block listing three fix options;
@@ -1509,7 +1605,6 @@ func installPythonDeps() bool {
 	if len(packages) == 1 {
 		packages = append(packages, "aiogram", "slack-bolt", "slack-sdk", "aiohttp", "discord.py")
 	}
-
 	// Try with --user first; fall back to no --user (venvs, containers).
 	// We capture stderr on the second attempt so a failure can be classified
 	// and surfaced with a remediation message.
@@ -1525,6 +1620,8 @@ func installPythonDeps() bool {
 	if python == "" {
 		python = "python3"
 	}
+	_, pyVersion := probePythonInterpreter(python)
+	packages = pinBridgePackages(packages, pyVersion)
 
 	args := append([]string{"-m", "pip", "install", "--quiet", "--user"}, packages...)
 	if err := exec.Command(python, args...).Run(); err == nil {
@@ -1944,7 +2041,7 @@ func handleConductorMove(sourceProfile string, args []string) {
 
 // withSlackCredentials returns s with the tokens and channel the setup wizard
 // collected, keeping every other [conductor.slack] key the user already set
-// (default_conductor #2547, allowed_user_ids, listen_mode) instead of
+// (default_conductor #2547, allowed_user_ids, allow_all_users, listen_mode) instead of
 // replacing the whole table and dropping them on save.
 func withSlackCredentials(s session.SlackSettings, botToken, appToken, channelID string) session.SlackSettings {
 	s.BotToken = botToken

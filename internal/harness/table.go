@@ -66,16 +66,6 @@ func All(overrides map[string]Override) []Entry {
 	return out
 }
 
-// Lookup returns one entry with its override applied.
-func Lookup(name string, overrides map[string]Override) (Entry, bool) {
-	for _, e := range table {
-		if e.Name == name {
-			return apply(e, overrides[name]), true
-		}
-	}
-	return Entry{}, false
-}
-
 // Names lists the harness names, sorted.
 func Names() []string {
 	out := make([]string, 0, len(table))

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -503,8 +505,8 @@ func TestResolveGroupPathForAdd_ByExactPath(t *testing.T) {
 		{ID: "1", GroupPath: "platform/backend"},
 	})
 
-	got := resolveGroupPathForAdd(tree, "platform/backend")
-	if got != "platform/backend" {
+	got, err := resolveGroupPathForAdd(tree, "platform/backend")
+	if err != nil || got != "platform/backend" {
 		t.Fatalf("Expected exact group path match, got %q", got)
 	}
 }
@@ -515,12 +517,84 @@ func TestResolveGroupPathForAdd_ByNameAndNormalizedPath(t *testing.T) {
 	}
 	tree := session.NewGroupTreeWithGroups(nil, stored)
 
-	if got := resolveGroupPathForAdd(tree, "My Team"); got != "my-team" {
+	if got, _ := resolveGroupPathForAdd(tree, "My Team"); got != "my-team" {
 		t.Fatalf("Expected name selector to resolve to my-team, got %q", got)
 	}
 
-	if got := resolveGroupPathForAdd(tree, "my team"); got != "my-team" {
+	if got, _ := resolveGroupPathForAdd(tree, "my team"); got != "my-team" {
 		t.Fatalf("Expected normalized selector to resolve to my-team, got %q", got)
+	}
+}
+
+// TestResolveGroupPathForAdd_AmbiguousNameIsNotGuessed pins that a bare name
+// shared by groups under different parents is an error listing the candidates,
+// not one of them. Before the fix the name fallback ranged over the Groups map
+// and returned the first match, so "-g workers" landed in a random group.
+func TestResolveGroupPathForAdd_AmbiguousNameIsNotGuessed(t *testing.T) {
+	tree := session.NewGroupTree([]*session.Instance{
+		{ID: "1", GroupPath: "deck/yasir/workers"},
+		{ID: "2", GroupPath: "deck/team/workers"},
+	})
+
+	want := `group "workers" is ambiguous: deck/team/workers, deck/yasir/workers; use the full path`
+	for i := 0; i < 50; i++ {
+		got, err := resolveGroupPathForAdd(tree, "workers")
+		if err == nil || err.Error() != want {
+			t.Fatalf("call %d: got (%q, %v), want error %q", i, got, err, want)
+		}
+	}
+
+	// A name with exactly one match still resolves.
+	if got, err := resolveGroupPathForAdd(tree, "yasir"); err != nil || got != "deck/yasir" {
+		t.Fatalf("unique name: got (%q, %v), want deck/yasir", got, err)
+	}
+}
+
+// TestAdd_AmbiguousGroupNameFails pins the CLI side: `add -g workers` with two
+// groups named workers must fail and list them, not create a new top-level
+// "workers" group.
+func TestAdd_AmbiguousGroupNameFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"group", "create", "deck", "--json"},
+		{"group", "create", "team", "--parent", "deck", "--json"},
+		{"group", "create", "yasir", "--parent", "deck", "--json"},
+		{"group", "create", "workers", "--parent", "deck/team", "--json"},
+		{"group", "create", "workers", "--parent", "deck/yasir", "--json"},
+	} {
+		if stdout, stderr, code := runAgentDeck(t, home, args...); code != 0 {
+			t.Fatalf("%v failed (%d)\n%s\n%s", args, code, stdout, stderr)
+		}
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home, "add", "-t", "w", "-c", "shell", "-g", "workers", "--no-parent", project)
+	want := `group "workers" is ambiguous: deck/team/workers, deck/yasir/workers; use the full path`
+	if code == 0 || !strings.Contains(stdout+stderr, want) {
+		t.Fatalf("add -g workers: exit=%d, want non-zero and %q\nstdout: %s\nstderr: %s", code, want, stdout, stderr)
+	}
+
+	stdout, stderr, code = runAgentDeck(t, home, "group", "list", "--json")
+	if code != 0 {
+		t.Fatalf("group list failed (%d)\n%s\n%s", code, stdout, stderr)
+	}
+	var resp struct {
+		Groups []groupListNode `json:"groups"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("unmarshal group list: %v\n%s", err, stdout)
+	}
+	for _, g := range resp.Groups {
+		if strings.EqualFold(g.Path, "workers") {
+			t.Fatalf("ambiguous add created top-level group %q:\n%s", g.Path, stdout)
+		}
 	}
 }
 

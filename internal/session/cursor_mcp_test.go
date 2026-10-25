@@ -121,3 +121,51 @@ func TestWriteCursorGlobalMCP_PreservesOtherKeys(t *testing.T) {
 		t.Fatal("expected foo key preserved")
 	}
 }
+
+// ASK-102: an unparseable or null-root ~/.cursor/mcp.json must be refused, not
+// replaced; and the user's own non-catalog servers must survive a rewrite.
+func TestWriteCursorGlobalMCP_FailsClosedAndKeepsUserServers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Cleanup(resetUserConfigCache(t, &UserConfig{MCPs: map[string]MCPDef{"cat": {Command: "echo"}}}))
+	path := filepath.Join(home, ".cursor", "mcp.json")
+
+	for _, seed := range []string{`{"foo":1,"mcpServers":{"mine":`, "null"} {
+		if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("seed %q: panicked: %v", seed, r)
+				}
+			}()
+			if err := WriteCursorGlobalMCP([]string{"cat"}); err == nil {
+				t.Errorf("seed %q: expected error, got nil", seed)
+			}
+		}()
+		if after, _ := os.ReadFile(path); string(after) != seed {
+			t.Errorf("seed %q: file was modified to %s", seed, after)
+		}
+	}
+
+	seed := `{"other":1,"mcpServers":{"mine":{"command":"foo"},"cat":{"command":"old"}}}`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCursorGlobalMCP(nil); err != nil {
+		t.Fatalf("WriteCursorGlobalMCP: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	servers, _ := raw["mcpServers"].(map[string]interface{})
+	if raw["other"] == nil || servers["mine"] == nil || servers["cat"] != nil {
+		t.Errorf("want other kept, user server 'mine' kept, managed 'cat' dropped; got %s", data)
+	}
+}

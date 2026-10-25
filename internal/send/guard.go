@@ -13,10 +13,25 @@ import (
 //
 // Treating these as operator drafts would make every automated send hold and
 // Ctrl+C an actually-empty composer (issue #1409).
+//
+// While a turn runs with input queued behind it, Claude shows its own hint in
+// the empty composer instead:
+//
+//	❯ Press up to edit queued messages
+//
+// That is Claude's acknowledgement of earlier queued input, not a draft;
+// reading it as one refused every further send to a busy target (ASK-95).
 func IsComposerPlaceholder(text string) bool {
 	t := strings.TrimSpace(text)
+	if strings.EqualFold(t, ClaudeQueuedHint) {
+		return true
+	}
 	return strings.HasPrefix(t, `Try "`) && strings.HasSuffix(t, `"`)
 }
+
+// ClaudeQueuedHint is the composer placeholder Claude Code renders while it
+// holds input behind the running turn.
+const ClaudeQueuedHint = "Press up to edit queued messages"
 
 // ComposerDraft returns the normalized operator draft sitting in the visible
 // composer, and whether a composer is visible at all.
@@ -49,6 +64,17 @@ func ComposerDraft(raw string, strip func(string) string) (draft string, compose
 		return "", true
 	}
 	return body, true
+}
+
+// ComposerShowsQueuedHint reports whether the visible composer shows Claude's
+// queued-messages hint: it holds no draft, but input is waiting behind the
+// turn. Same raw/strip contract as ComposerDraft.
+func ComposerShowsQueuedHint(raw string, strip func(string) string) bool {
+	if strip == nil {
+		strip = func(s string) string { return s }
+	}
+	body, ok := CurrentComposerPrompt(strip(raw))
+	return ok && strings.EqualFold(NormalizePromptText(body), ClaudeQueuedHint)
 }
 
 // ComposerHasDraft reports whether the visible composer holds operator input.

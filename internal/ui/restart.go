@@ -187,8 +187,13 @@ const autoRestartRetryAfter = time.Minute
 // quiet (the banner already says "restarting when idle") and tries again
 // on the next tick. It is only ever reached from the home screen: while
 // attached, Bubble Tea is parked inside tea.Exec and no tick arrives, so
-// tmux sessions and servers are never touched by the hand-over.
+// tmux sessions and servers are never touched by the hand-over. The attach
+// worker only says an update waits; the detach runs this at once
+// (restartOnDetach).
 func (h *Home) maybeAutoRestart() tea.Cmd {
+	// The last call before an attach parks the loop is what the attach
+	// worker starts from (attached_update.go), hold and all.
+	defer h.shareUpdateState()
 	installed := h.installedUpdateVersion()
 	if installed == "" {
 		h.noteRestartWait("")

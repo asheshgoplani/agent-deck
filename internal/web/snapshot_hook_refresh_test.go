@@ -410,3 +410,33 @@ func allSessionStatuses() []session.Status {
 		session.StatusStopped,
 	}
 }
+
+// Issue #2853 parity: the web read path ignores a "dead" hook (SessionEnd)
+// written before the session's newest spawn began, as Instance.UpdateStatus
+// does, and still shows error for a dead hook from after it.
+func TestRefreshSnapshotHookStatuses_DeadHookFromEarlierSpawnIgnored(t *testing.T) {
+	now := time.Now()
+	began := now.Add(-30 * time.Second)
+	const id = "sess-2853-web"
+	session.MarkInstanceSpawnedForTest(id, began)
+
+	for _, tc := range []struct {
+		name   string
+		hookAt time.Time
+		want   session.Status
+	}{
+		{"previous process's SessionEnd", began.Add(-6 * time.Second), session.StatusRunning},
+		{"new process exited after the spawn began", began.Add(5 * time.Second), session.StatusError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hooks := map[string]*session.HookStatus{
+				id: {Status: "dead", Event: "SessionEnd", UpdatedAt: tc.hookAt},
+			}
+			snap := snapshotWithSession(id, "claude", session.StatusRunning)
+			refreshSnapshotHookStatusesAt(snap, hooks, now)
+			if got := snap.Items[0].Session.Status; got != tc.want {
+				t.Fatalf("dead hook at spawn%+ds: got %q want %q", int(tc.hookAt.Sub(began).Seconds()), got, tc.want)
+			}
+		})
+	}
+}

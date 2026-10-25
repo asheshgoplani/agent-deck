@@ -1,0 +1,2 @@
+# Raw go test output stays local (it names local paths); results/<label>.json is the record.
+*.txt

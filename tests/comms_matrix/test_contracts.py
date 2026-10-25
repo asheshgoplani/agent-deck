@@ -2,13 +2,38 @@
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
+import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from runner import check, decode_records
+import runner
+from runner import check, decode_records, read_json_line
 
 HERE = Path(__file__).resolve().parent
+
+
+def process_is_gone(pid):
+    """Dead, or a zombie nobody has reaped yet. The CI container has no init, so python is PID 1 and an
+    orphaned grandchild stays a zombie for good: kill(pid, 0) still succeeds on it."""
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text()
+    except FileNotFoundError:
+        if Path('/proc/self/stat').exists():
+            return True  # /proc works and has no entry for pid
+    except OSError:
+        pass
+    else:
+        # "<pid> (<comm>) <state> ...": comm may hold spaces and parentheses, so cut after the last ")".
+        return stat[stat.rindex(')') + 2] in 'ZX'
+    try:  # no /proc: signal 0 is all there is
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
 
 
 class ResultContractTests(unittest.TestCase):
@@ -112,13 +137,13 @@ class PiDriverSequenceTests(unittest.TestCase):
             ['node', str(HERE / 'pi_driver.mjs'), str(self.extension)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        self.addCleanup(process.kill)
+        self.addCleanup(lambda: (process.kill(), process.wait()))
         step = lambda name: json.dumps({'event': name, 'payload': {'session_id': 's'}}) + '\n'
         process.stdin.write(step('input') + '{"pause": true}\n')
         process.stdin.flush()
         lines = []
         while True:
-            line = json.loads(process.stdout.readline())
+            line = read_json_line(process, 15)
             lines.append(line)
             if line.get('paused'):
                 break
@@ -144,6 +169,183 @@ class PiFixtureTests(unittest.TestCase):
         self.assertEqual(fixture['message']['role'], 'assistant')
         v1 = json.loads((HERE / 'fixtures' / 'pi_turnend_v1.json').read_text())
         self.assertNotIn('messageEntryId', v1, 'v1 stays the payload without an entry id')
+
+
+class DriverReadDeadlineTests(unittest.TestCase):
+    """read_json_line(process, timeout_s): a live but silent driver must fail, not hang."""
+
+    def spawn(self, code):
+        process = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (process.kill(), process.wait()))
+        return process
+
+    def test_pause_ack_timeout_fails_loudly(self):
+        process = self.spawn('import sys, time; sys.stderr.write("driver diagnostics\\n"); sys.stderr.flush(); time.sleep(60)')
+        started = time.monotonic()
+        with self.assertRaises(Exception) as caught:
+            read_json_line(process, 0.5)
+        self.assertLess(time.monotonic() - started, 10, 'the read must give up at its deadline')
+        self.assertNotIsInstance(caught.exception, json.JSONDecodeError)
+        self.assertIn('driver diagnostics', str(caught.exception), 'the driver stderr must be in the failure')
+        self.assertIn('silent for 0.5s', str(caught.exception))
+        self.assertNotIn('exited', str(caught.exception))
+        self.assertIsNotNone(process.returncode, 'the silent driver must be killed and reaped, not left running')
+
+    def test_eof_raises_with_driver_stderr_not_a_bare_decode_error(self):
+        process = self.spawn('import sys; sys.stderr.write("exited early\\n")')
+        with self.assertRaises(Exception) as caught:
+            read_json_line(process, 5)
+        self.assertNotIsInstance(caught.exception, json.JSONDecodeError)
+        self.assertIn('exited early', str(caught.exception))
+        self.assertIn('pi driver exited before', str(caught.exception))
+        self.assertIsNotNone(process.returncode, 'the failure path must reap the driver itself')
+
+    def test_a_blank_line_from_a_live_driver_is_not_called_exited_or_silent(self):
+        process = self.spawn('import sys, time; sys.stderr.write("still alive\\n"); sys.stderr.flush(); print(flush=True); time.sleep(60)')
+        with self.assertRaises(Exception) as caught:
+            read_json_line(process, 5)
+        message = str(caught.exception)
+        self.assertIn('pi driver sent a blank line before', message)
+        self.assertNotIn('exited', message)
+        self.assertNotIn('silent', message)
+        self.assertIn('still alive', message)
+        self.assertIsNotNone(process.returncode, 'the driver must be killed and reaped')
+
+    def test_a_line_that_arrives_in_time_is_returned_parsed(self):
+        process = self.spawn('import sys, time; print(\'{"paused": true}\', flush=True); time.sleep(60)')
+        self.assertEqual(read_json_line(process, 10), {'paused': True})
+        self.assertIsNone(process.poll(), 'a successful read leaves the driver running')
+
+
+class DriverFailurePathTests(unittest.TestCase):
+    """Every way a driver can fail ends in an exception and a reaped driver, within the deadline."""
+
+    def spawn(self, code):
+        # Its own session, as the rig starts the real driver: failure may then kill the whole group.
+        process = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(lambda: (process.kill(), process.wait()))
+        return process
+
+    def assert_fails_and_reaps(self, process, timeout_s=5):
+        with self.assertRaises(Exception) as caught:
+            read_json_line(process, timeout_s)
+        self.assertIsNotNone(process.returncode, 'the failure path must kill and reap the driver, not leave it to cleanup')
+        return str(caught.exception)
+
+    def test_malformed_json_line_raises_and_reaps(self):
+        self.assert_fails_and_reaps(self.spawn('import time; print("{not json", flush=True); time.sleep(60)'))
+
+    def test_non_object_json_line_raises_and_reaps(self):
+        # [1] parses, but a driver frame is an object: it is a protocol error, not a result.
+        self.assert_fails_and_reaps(self.spawn('import time; print("[1]", flush=True); time.sleep(60)'))
+
+    def test_final_record_without_a_newline_then_exit_is_a_protocol_error(self):
+        message = self.assert_fails_and_reaps(self.spawn('import sys; sys.stdout.write(\'{"paused": true}\')'))
+        self.assertTrue(message, 'the failure must say something')
+
+    def test_closed_stdout_on_a_live_driver_is_labelled_closed_stdout(self):
+        started = time.monotonic()
+        message = self.assert_fails_and_reaps(self.spawn('import os, time; os.close(1); time.sleep(60)'))
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIn('closed stdout', message)
+        self.assertNotIn('exited', message)
+
+    def test_a_grandchild_holding_the_pipes_does_not_defeat_the_deadline(self):
+        pid_file = Path(tempfile.mkdtemp()) / 'grandchild.pid'
+        self.addCleanup(shutil.rmtree, pid_file.parent, True)
+        code = ('import subprocess, sys, time\n'
+                'g = subprocess.Popen(["sleep", "8"])\n'  # inherits the driver's stdout and stderr
+                f'open({str(pid_file)!r}, "w").write(str(g.pid))\n'
+                'time.sleep(60)\n')
+        process = self.spawn(code)
+        deadline = time.monotonic() + 5
+        # The file can exist before its content is written: wait for the pid itself.
+        while time.monotonic() < deadline:
+            if pid_file.exists() and pid_file.read_text().strip():
+                break
+            time.sleep(0.02)
+        grandchild = int(pid_file.read_text())
+        self.addCleanup(lambda: not process_is_gone(grandchild) and os.kill(grandchild, 9))
+        started = time.monotonic()
+        with self.assertRaises(Exception):
+            read_json_line(process, 0.5)
+        self.assertLess(time.monotonic() - started, 4, 'a grandchild holding stderr must not extend the deadline')
+        self.assertIsNotNone(process.returncode)
+        for _ in range(100):
+            if process_is_gone(grandchild):
+                break
+            time.sleep(0.02)
+        else:
+            self.fail('the driver\'s grandchild survived the failure')
+
+
+class PiRunFailurePathTests(unittest.TestCase):
+    """The same failures through Rig.pi_run, with a fake `node` standing in for the driver."""
+
+    def run_with_driver(self, driver_code, communicate_timeout=None):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        fake_bin = tmp / 'bin'
+        fake_bin.mkdir()
+        (tmp / 'driver.py').write_text(driver_code)
+        node = fake_bin / 'node'
+        node.write_text(f'#!/bin/sh\nexec {sys.executable} {tmp / "driver.py"}\n')
+        node.chmod(0o755)
+        spawned = []
+        real_popen = subprocess.Popen
+
+        def capturing(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            spawned.append(process)
+            self.addCleanup(lambda: (process.kill(), process.wait()))
+            if communicate_timeout is not None:
+                real_communicate = process.communicate
+                # pi_run asks for 30 s; the test only needs it to expire.
+                process.communicate = lambda *a, timeout=None, **k: real_communicate(*a, timeout=communicate_timeout, **k)
+            return process
+
+        rig = runner.Rig(tmp / 'out', tmp / 'root')
+        parts = [[{'event': 'input', 'payload': {}}], [{'event': 'turn_end', 'payload': {}}]]
+        with mock.patch.object(runner, 'BINARY', str(fake_bin / 'agent-deck')), \
+                mock.patch.object(runner.subprocess, 'Popen', capturing), \
+                mock.patch.object(rig, 'tick'):  # the daemon tick needs the real binary
+            with self.assertRaises(Exception):
+                rig.pi_run('pi-identity', parts)
+        self.assertEqual(len(spawned), 1, 'pi_run did not start the fake driver')
+        return spawned[0]
+
+    def test_malformed_json_from_the_driver_fails_and_reaps(self):
+        process = self.run_with_driver('import time\nprint("{not json", flush=True)\ntime.sleep(60)\n')
+        self.assertIsNotNone(process.returncode, 'pi_run must reap the driver on a malformed line')
+
+    def test_non_object_json_from_the_driver_fails_and_reaps(self):
+        process = self.run_with_driver('import time\nprint("[1]", flush=True)\ntime.sleep(60)\n')
+        self.assertIsNotNone(process.returncode, 'pi_run must reap the driver on a non-object line')
+
+    def test_a_driver_that_acks_the_pause_then_hangs_is_reaped_when_communicate_times_out(self):
+        pid_file = Path(tempfile.mkdtemp()) / 'grandchild.pid'
+        self.addCleanup(shutil.rmtree, pid_file.parent, True)
+        # Acks the pause, then hangs with a grandchild holding the pipes open: only
+        # communicate's timeout can end the run.
+        code = ('import subprocess, time\n'
+                'print(\'{"paused": true}\', flush=True)\n'
+                'g = subprocess.Popen(["sleep", "60"])\n'
+                f'open({str(pid_file)!r}, "w").write(str(g.pid))\n'
+                'time.sleep(60)\n')
+        started = time.monotonic()
+        process = self.run_with_driver(code, communicate_timeout=1)
+        self.assertLess(time.monotonic() - started, 8, 'the communicate timeout must end the run')
+        self.assertIsNotNone(process.returncode, 'pi_run must reap the driver when communicate times out')
+        grandchild = int(pid_file.read_text())
+        self.addCleanup(lambda: not process_is_gone(grandchild) and os.kill(grandchild, 9))
+        for _ in range(100):
+            if process_is_gone(grandchild):
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("the driver's grandchild survived the communicate timeout")
 
 
 if __name__ == '__main__':

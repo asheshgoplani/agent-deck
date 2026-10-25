@@ -60,6 +60,7 @@ func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now
 		Hook:              hs,
 		Now:               now,
 		AllowStaleWaiting: !session.IsCodexCompatible(sess.Tool),
+		InstanceID:        sess.ID,
 	})
 	sess.Status = out.Status
 }

@@ -58,19 +58,19 @@ func PrimePaneCaptures(sessions []*Session) int {
 	var order []string
 	seen := make(map[*Session]bool, len(sessions))
 	for _, s := range sessions {
-		if s == nil || s.Name == "" || seen[s] {
+		if s == nil || s.TmuxName() == "" || seen[s] {
 			continue
 		}
 		seen[s] = true
 		// A control-mode pipe captures without a subprocess already.
-		if pm != nil && pm.IsConnected(s.Name) {
+		if pm != nil && pm.IsConnected(s.TmuxName()) {
 			continue
 		}
 		socket := strings.TrimSpace(s.SocketName)
 		// A session the fresh default-socket inventory says is gone would
 		// abort the sequence; leave it to its own (absent) handling.
 		if socket == DefaultSocketName() {
-			if exists, valid := sessionExistsFromCache(s.Name); valid && !exists {
+			if exists, valid := sessionExistsFromCache(s.TmuxName()); valid && !exists {
 				continue
 			}
 		}
@@ -111,7 +111,7 @@ func primeCaptureChunk(socket string, chunk []*Session) int {
 			if i > 0 {
 				args = append(args, ";")
 			}
-			args = append(args, "capture-pane", "-t", s.Name, "-p", "-e", ";", "display-message", "-p", marker+strconv.Itoa(i))
+			args = append(args, "capture-pane", "-t", s.TmuxName(), "-p", "-e", ";", "display-message", "-p", marker+strconv.Itoa(i))
 		}
 		timeout := min(tmuxPollTimeout+time.Duration(len(chunk))*50*time.Millisecond, 10*time.Second)
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)

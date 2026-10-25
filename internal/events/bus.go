@@ -87,6 +87,7 @@ type Bus struct {
 
 	queue          chan queuedFrame
 	closeCh        chan struct{}
+	syncReq        chan struct{} // Flush: append what is queued and fsync now (cap 1)
 	closeWg        sync.WaitGroup
 	subWg          sync.WaitGroup // running subscriptions; Close waits for them before closing files
 	publishMu      sync.RWMutex
@@ -208,6 +209,7 @@ func openWith(dir string, mode os.FileMode, keepCorrupt, syncDurable bool) (*Bus
 		syncDurable:  syncDurable,
 		queue:        make(chan queuedFrame, defaultQueueCap),
 		closeCh:      make(chan struct{}),
+		syncReq:      make(chan struct{}, 1),
 	}
 	lockFile, err := os.OpenFile(filepath.Join(dir, "writer.lock"), os.O_CREATE|os.O_RDWR, mode)
 	if err != nil {
@@ -565,6 +567,12 @@ func (b *Bus) Flush(timeout time.Duration) bool {
 	if b.synced.Load() >= target {
 		return true
 	}
+	// Every frame counted in target is already in the queue (enqueue sends
+	// before it counts), so the writer drains it when it takes this request.
+	select {
+	case b.syncReq <- struct{}{}:
+	default: // a request is already pending
+	}
 	deadline := time.Now().Add(timeout)
 	for b.synced.Load() < target {
 		if time.Now().After(deadline) {
@@ -688,6 +696,16 @@ func (b *Bus) writerLoop() {
 			flush(false)
 		case <-syncTicker.C:
 			flush(true)
+		case <-b.syncReq:
+			// Flush: append everything queued so far, then fsync. Bounded to
+			// the frames present now so a busy producer cannot starve it.
+			for n := len(b.queue); n > 0; n-- {
+				batch = append(batch, <-b.queue)
+				if len(batch) == maxWriteBatch {
+					flush(false)
+				}
+			}
+			flush(true)
 		case <-b.closeCh:
 			for {
 				select {
@@ -706,7 +724,8 @@ func (b *Bus) writerLoop() {
 }
 
 // writeBatch takes the cross-process lock once for up to maxWriteBatch frames.
-// Sync runs on the one-second tick and at shutdown, never per output line.
+// Sync runs on the one-second tick, on a Flush request and at shutdown,
+// never per output line.
 func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 	if b.abandoned.Load() {
 		return

@@ -396,3 +396,28 @@ func TestGroupPATCHRenameRealErrorStays500(t *testing.T) {
 		t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// POST /api/groups with an unknown parentPath must be a 404 (the CLI says
+// NOT_FOUND for the same request), not a 500.
+func TestGroupsCollectionPOSTUnknownParentReturns404(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		createGroupFn: func(name, parentPath string) (string, error) {
+			return "", fmt.Errorf("parent group %q: %w", parentPath, ErrGroupNotFound)
+		},
+	}
+
+	body := strings.NewReader(`{"name":"x","parentPath":"nope"}`)
+	req := newLocalRequest(http.MethodPost, "/api/groups", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

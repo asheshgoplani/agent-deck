@@ -259,6 +259,7 @@ func (h *HelpOverlay) View() string {
 	copyInfoKey := h.key(hotkeyCopyInfo, "B")
 	contextInspectorKey := h.key(hotkeyContextInspector, "C")
 	sendKey := h.key(hotkeySendOutput, "x")
+	sessionRefKey := h.key(hotkeySessionRef, "alt+l")
 	execShellKey := h.key(hotkeyExecShell, "E")
 	openShellHereKey := h.key(hotkeyOpenShellHere, "h")
 	notesKey := h.key(hotkeyEditNotes, "e")
@@ -273,6 +274,7 @@ func (h *HelpOverlay) View() string {
 	deadLettersKey := h.key(hotkeyDeadLetters, "alt+d")
 	triggersKey := h.key(hotkeyTriggers, "alt+t")
 	agentsPanelKey := h.key(hotkeyAgentsPanel, "alt+a")
+	reportKey := h.key(hotkeyReportProblem, "Z")
 	groupKey := h.key(hotkeyCreateGroup, "g")
 	undoKey := h.key(hotkeyUndoDelete, "Ctrl+Z")
 	archiveKey := h.key(hotkeyArchiveSession, "A")
@@ -373,6 +375,7 @@ func (h *HelpOverlay) View() string {
 				{yoloKey, "Toggle YOLO mode"},
 				{contextInspectorKey, "Inspect full context (everything the agent is being sent, ranked by cost)"},
 				{sendKey, "Send output to session"},
+				{sessionRefKey, "Hand a reference to another session (pick, move, ⏎ drop; never sent)"},
 				{execShellKey, "Exec shell in sandbox container"},
 				{openShellHereKey, "Open shell in session's worktree (split pane / window)"},
 				{editPathsKey, "Edit multi-repo paths"},
@@ -445,6 +448,7 @@ func (h *HelpOverlay) View() string {
 				{importKey, "Import tmux sessions"},
 				{switchKey, "Switch session (here or attached)"},
 				{scrollbackKey, "Scrollback pager (while attached)"},
+				{reportKey, "Report a problem or idea (GitHub issue; you see it in full and confirm first)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},

@@ -47,6 +47,28 @@ func TestOpenCode2ConstructorAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestOpenCode2LiveDisplayRetainsLauncher(t *testing.T) {
+	isolateOpenCodeConfig(t, "opencode")
+	for _, command := range []string{"opencode2", "/nix/store/example/bin/opencode2", "env FOO=bar opencode2"} {
+		t.Run(command, func(t *testing.T) {
+			inst := NewInstanceWithTool("live", t.TempDir(), "opencode2")
+			inst.Command = command
+			// Startup and tool calls can report a shell; normal live detection
+			// returns the canonical OpenCode identity. Neither may hide the
+			// explicitly selected launcher or alter restart/status behavior.
+			for _, observed := range []string{"", "shell", "opencode", "shell", "opencode"} {
+				inst.noteObservedRuntimeLocked(observed)
+				if got := inst.DisplayToolThreadSafe(); got != "opencode2" {
+					t.Fatalf("display after observation %q = %q, want opencode2", observed, got)
+				}
+				if inst.Tool != "opencode" || inst.Command != command || inst.runtimePatternToolLocked() != "opencode" {
+					t.Fatal("live observation changed launch identity or status patterns")
+				}
+			}
+		})
+	}
+}
+
 func TestOpenCode2RegistryVisibility(t *testing.T) {
 	isolateOpenCodeConfig(t, "opencode")
 	previous := lookPathFn
@@ -73,6 +95,57 @@ func TestOpenCode2RegistryVisibility(t *testing.T) {
 	normalizeUIHiddenTools(&ui, nil)
 	if !slices.Contains(ui.HiddenTools, "opencode2") {
 		t.Fatal("hidden_tools normalization discarded the launcher")
+	}
+}
+
+func TestOpenCode2DisplayIdentity(t *testing.T) {
+	isolateOpenCodeConfig(t, "opencode")
+	inst := NewInstanceWithTool("v2", t.TempDir(), "opencode2")
+	for _, observed := range []string{"", "shell", "opencode", "claude"} {
+		inst.observedTool = observed
+		want := "opencode2"
+		if observed == "claude" {
+			want = observed
+		}
+		if got := inst.DisplayToolThreadSafe(); got != want {
+			t.Errorf("observed %q: display = %q, want %q", observed, got, want)
+		}
+	}
+	inst.observedTool = ""
+	payload, err := json.Marshal(inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Instance
+	if err := json.Unmarshal(payload, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.DisplayToolThreadSafe(); got != "opencode2" {
+		t.Fatalf("restored display = %q", got)
+	}
+}
+
+func TestOpenCode2RemoteDisplayIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		tool, command, want string
+	}{
+		{"opencode", "opencode2", "opencode2"},
+		{"opencode", "env FOO=bar '/opt/bin/opencode2'", "opencode2"},
+		{"opencode", "opencode", "opencode"},
+		{"opencode", "", "opencode"},
+		{"claude", "opencode2", "claude"},
+	} {
+		payload, err := json.Marshal(map[string]string{"tool": tc.tool, "command": tc.command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := parseRemoteSessions([]byte(fmt.Sprintf("[%s]", payload)))
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("remote payload failed: rows=%v err=%v", rows, err)
+		}
+		if got := rows[0].DisplayTool(); got != tc.want || rows[0].Tool != tc.tool {
+			t.Errorf("tool=%q command=%q: display=%q, canonical=%q, want %q/%q", tc.tool, tc.command, got, rows[0].Tool, tc.want, tc.tool)
+		}
 	}
 }
 
@@ -293,6 +366,10 @@ func TestOpenCode2DiscoveryUsesSelectedLauncherAndNestedAPITimes(t *testing.T) {
 	inst.OpenCodeSessionID = "ses_v2"
 	if got := inst.queryOpenCodeSession(); got != "ses_v2" {
 		t.Fatalf("v2 session binding = %q", got)
+	}
+	inst.setOpenCodeSession("ses_v2")
+	if !inst.CanFork() {
+		t.Fatal("discovered v2 session must enable fork and quick fork")
 	}
 	args, err := os.ReadFile(marker)
 	if err != nil || !strings.Contains(string(args), "session.list") || !strings.Contains(string(args), "directory="+project) {

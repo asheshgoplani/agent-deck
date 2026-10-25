@@ -15,6 +15,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/desknotify"
 	"github.com/asheshgoplani/agent-deck/internal/health"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -97,6 +98,16 @@ type TransitionDaemon struct {
 	// cannot and should not do — and testing this logic is the whole point after a
 	// field failure that a passing suite failed to catch.
 	turnLiveCheck func(inst *Instance) bool
+
+	// idleExitPending holds, per (profile, child), the idle status a child
+	// flipped to error from and since when its pane is gone, until a later
+	// pass confirms the death (#2806). idleExitAlive is the pane liveness
+	// seam; nil means idleChildProcessAlive. idleExitTold holds children
+	// the restart sweep already reported failed, so that is not reported
+	// twice (#2813).
+	idleExitPending map[string]map[string]idleExitEntry
+	idleExitAlive   func(inst *Instance) bool
+	idleExitTold    map[string]map[string]bool
 
 	// lastDoneScan tracks, per (profile, instance), the hook-status timestamp
 	// whose pending transcript rescan (issue #1186 flush race) reached a
@@ -254,6 +265,7 @@ func (d *TransitionDaemon) SyncOnce(_ context.Context) time.Duration {
 	if len(profiles) == 0 {
 		return notifyPollSlow
 	}
+	defer optiming.Start("daemon.pass")()
 
 	// Stamp liveness BEFORE the work: the question a drain asks is "is a writer
 	// alive", and a daemon wedged inside a probe should still look alive for one
@@ -715,6 +727,8 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		// next poll, so skipping the edge here loses nothing.
 		_, _ = d.emitTurn(profile, inst, byID, from, to, time.Now(), true)
 	}
+	// Issue #2806: an idle child whose process died; no turn, so not emitTurn.
+	d.confirmIdleExits(profile, byID, prev, statuses, notifyEnabled, time.Now())
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
 	d.emitDoneSignals(profile, byID, hookStatuses)
 	d.wakeForInfoDigests(profile, byID, statuses)
@@ -1755,6 +1769,13 @@ func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatu
 	// Honour the per-session opt-out the parent path already respects, so one
 	// noisy session can be silenced without disabling notifications globally.
 	if inst.NoTransitionNotify {
+		return
+	}
+	// An archived session is one the operator filed away, so it never raises
+	// a banner. Only this operator alert is gated: the parent-inbox path in
+	// the poll loop still records the child's turn, because a conductor
+	// archives a finished worker and still needs its completion record.
+	if inst.IsArchived() {
 		return
 	}
 	// Edge-trigger: notify once per entry into a status, not once per poll

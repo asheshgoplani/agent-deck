@@ -40,6 +40,7 @@ func fixture(t *testing.T, name string) string {
 func TestHookHandler_ClaudeFixturesSpoolBothEdges(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_JOB_DIR", "") // a leaked one marks the hook a background worker and drops both edges
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-spool")
 	t.Cleanup(session.SetCommsLedgerForTest(true))
 
@@ -161,6 +162,7 @@ func TestCodexNotify_FixtureSpoolsLastAssistantMessageOnce(t *testing.T) {
 func TestHookHandler_PiSettleSpoolsOneTurnEnd(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_JOB_DIR", "")
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-pi")
 	t.Cleanup(session.SetCommsLedgerForTest(true))
 
@@ -179,6 +181,7 @@ func TestHookHandler_PiSettleSpoolsOneTurnEnd(t *testing.T) {
 func TestHookHandler_PiNoTextSettleSpoolsOneStatusEdge(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_JOB_DIR", "")
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-pi-tool")
 	t.Cleanup(session.SetCommsLedgerForTest(true))
 

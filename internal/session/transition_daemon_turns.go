@@ -72,7 +72,11 @@ func (d *TransitionDaemon) emitTurnWith(profile string, inst *Instance, byID map
 	if piv.Awaiting {
 		return event, false // the run's settle has not landed; the next poll retries
 	}
-	if classified && facts.UUID == "" && facts.TextHash == "" {
+	// ASK-92: an idle auto-compaction grows the transcript and may flip the
+	// pane, but no one started a turn and the child said nothing. A flip into
+	// error still reaches the parent the legacy way.
+	compaction := classified && facts.Compaction && attentionClass(to) != "error"
+	if classified && !compaction && facts.UUID == "" && facts.TextHash == "" {
 		// No turn identity (an interrupted turn, a reply with no text): the
 		// noise rule cannot recognise it next poll, so journaling it would add
 		// one line per observation. Treat it as unclassified: legacy signal,
@@ -93,6 +97,7 @@ func (d *TransitionDaemon) emitTurnWith(profile string, inst *Instance, byID map
 	if !classified || inst.GetJSONLPath() == "" {
 		signal = event.LastOutputHash
 	}
+	d.dropStaleBannerWatch(inst.ID) // before judgeRestart can spend a newer restart's token
 	tok, verdict, why := d.judgeRestart(inst.ID, inst.GetJSONLPath(), signal, func() string { return restartPaneSubstate(inst) }, to, event.Timestamp)
 	switch verdict {
 	case restartNewError:
@@ -106,6 +111,22 @@ func (d *TransitionDaemon) emitTurnWith(profile string, inst *Instance, byID map
 		return d.emitRestartBoot(inst, event, tok, selfConductor), true
 	}
 	event.restartJudged = true
+
+	if !classified && d.restartResumeEcho(inst, to, event.Timestamp, observedFlip) {
+		// The unseen-boot info line already told the parent this restart
+		// resumed with no new turn; the same idle prompt, seen again once the
+		// flush-race window lets an unanswered user record go unclassified,
+		// is not a finished turn.
+		_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.NoiseSuppressed++ })
+		event.DeliveryResult = transitionDeliveryDropped
+		return event, true
+	}
+
+	if compaction {
+		_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.NoiseSuppressed++ })
+		event.DeliveryResult = transitionDeliveryDropped
+		return event, true
+	}
 
 	if !classified {
 		if selfConductor {

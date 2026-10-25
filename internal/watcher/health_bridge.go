@@ -106,16 +106,6 @@ func (b *HealthBridge) Run(ctx context.Context) error {
 	}
 }
 
-// NotifyTeardown is called when an adapter teardown is unexpected. Always passes
-// through the same debounce path as regular health alerts.
-func (b *HealthBridge) NotifyTeardown(watcherName string, unexpected bool) {
-	if !b.cfg.Enabled || !unexpected {
-		return
-	}
-	b.maybeEmit(context.Background(), watcherName, TriggerAdapterTeardownUnexpected,
-		"adapter teardown was unexpected")
-}
-
 // triggerFor maps a HealthState to a trigger string, or "" if no alert applies.
 func (b *HealthBridge) triggerFor(state HealthState) string {
 	switch state.Status {

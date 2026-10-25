@@ -46,12 +46,12 @@ import os,stat
 for p in ['/usr/sbin/sshd',os.environ['NATIVE_SSH_AUTHORIZED_CAT']]:
  s=os.stat(p)
  assert s.st_uid==0 and not s.st_mode & 0o022 and os.access(p,os.X_OK),p
-# The acceptance fixture uses this production namespace. Refuse active sockets.
-p='/tmp/agent-deck-ssh'
-if os.path.lexists(p):
- s=os.lstat(p)
- assert stat.S_ISDIR(s.st_mode) and s.st_uid==os.getuid() and s.st_mode & 0o077==0
- assert not any(stat.S_ISSOCK(os.lstat(e.path).st_mode) for e in os.scandir(p))
+# The acceptance fixture uses the production namespaces (per-user and legacy). Refuse active sockets.
+for p in ['/tmp/agent-deck-ssh-%d' % os.getuid(), '/tmp/agent-deck-ssh']:
+ if os.path.lexists(p):
+  s=os.lstat(p)
+  assert stat.S_ISDIR(s.st_mode) and s.st_uid==os.getuid() and s.st_mode & 0o077==0
+  assert not any(stat.S_ISSOCK(os.lstat(e.path).st_mode) for e in os.scandir(p))
 PY
 id
 go version

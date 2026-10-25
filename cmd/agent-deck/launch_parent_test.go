@@ -174,12 +174,13 @@ func TestLaunchParent_PrecheckAcceptsDanglingParentCaller(t *testing.T) {
 }
 
 // fakeTmux puts a tmux on PATH that records every call and answers with the
-// session name of the fixture's child.
-func fakeTmux(t *testing.T, childID string) (marker string) {
+// tmux session name of the fixture's child. That name ends in a random suffix,
+// not the session ID.
+func fakeTmux(t *testing.T, child *session.Instance) (marker string) {
 	t.Helper()
 	dir := t.TempDir()
 	marker = filepath.Join(dir, "probed")
-	script := "#!/bin/sh\ntouch " + marker + "\necho agentdeck_Child_" + childID + "\n"
+	script := "#!/bin/sh\ntouch " + marker + "\necho " + child.GetTmuxSession().Name + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +192,7 @@ func fakeTmux(t *testing.T, childID string) (marker string) {
 func TestLaunchParent_EnvIdentitySkipsTheTmuxProbe(t *testing.T) {
 	f := newParentFixture()
 	for _, noParent := range []bool{true, false} {
-		marker := fakeTmux(t, f.child.ID)
+		marker := fakeTmux(t, f.child)
 		t.Setenv("AGENT_DECK_SESSION_ID", "")
 		t.Setenv("AGENTDECK_INSTANCE_ID", f.parent.ID)
 		if _, _, note, err := selectLaunchParent("", noParent, nestOn, f.all); err != nil || note != "" {
@@ -205,7 +206,7 @@ func TestLaunchParent_EnvIdentitySkipsTheTmuxProbe(t *testing.T) {
 
 func TestLaunchParent_TmuxIdentityStillUsedWithoutEnv(t *testing.T) {
 	f := newParentFixture()
-	marker := fakeTmux(t, f.child.ID)
+	marker := fakeTmux(t, f.child)
 	t.Setenv("AGENT_DECK_SESSION_ID", "")
 	t.Setenv("AGENTDECK_INSTANCE_ID", "")
 	p, _, note, err := selectLaunchParent("", true, nestOn, f.all)
@@ -524,7 +525,7 @@ func TestLaunchParent_DefaultOffKeepsTheOldRule(t *testing.T) {
 
 func TestLaunchParent_DefaultOffNoParentSkipsTheTmuxProbe(t *testing.T) {
 	f := newParentFixture()
-	marker := fakeTmux(t, f.child.ID)
+	marker := fakeTmux(t, f.child)
 	t.Setenv("AGENT_DECK_SESSION_ID", "")
 	t.Setenv("AGENTDECK_INSTANCE_ID", "")
 	if p, _, note, err := selectLaunchParent("", true, nestOff, f.all); p != nil || note != "" || err != nil {

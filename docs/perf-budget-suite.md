@@ -5,6 +5,8 @@
 > per-developer file, this content was relocated here so it stays
 > version-controlled and shared across contributors.
 
+For the full operation catalogue, targets and live timings (`agent-deck perf`), see [performance.md](performance.md).
+
 Agent-deck has a recurring complaint that lifecycle operations (cold start, group create/delete) drift slower release-over-release. **As of v1.7.x, hot-path walltime is permanently test-gated.**
 
 ## Required tests
@@ -12,7 +14,7 @@ Agent-deck has a recurring complaint that lifecycle operations (cold start, grou
 Any PR modifying performance-sensitive lifecycle paths MUST run:
 
 ```bash
-GOTOOLCHAIN=go1.26.9 PERF_BUDGET_MULTIPLIER=2.0 \
+GOTOOLCHAIN=go1.26.10 PERF_BUDGET_MULTIPLIER=2.0 \
   go test -run '^TestPerf_' -race -count=1 -timeout 120s \
   ./...
 ```
@@ -66,7 +68,7 @@ When adding a TUI-flow or persistence-touching test, write the Tier 1 walltime g
 
 ## Budget changes require an RFC
 
-- Loosening any `TestPerf_*` budget (i.e. raising the `base`) by more than 25% requires an RFC at `docs/rfc/PERF_BUDGETS.md` documenting the cause and the upper bound.
+- Loosening any `TestPerf_*` budget (i.e. raising the `base`) by more than 25% requires an RFC in `docs/rfc/` (for example a new `docs/rfc/PERF_BUDGETS.md`; none exists yet) documenting the cause and the upper bound.
 - Removing a `TestPerf_*` test is forbidden without an RFC.
 - Adding a budget MUST cite the local median and use the matching ColdBudget/WarmBudget helper.
 

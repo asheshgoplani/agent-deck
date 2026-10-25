@@ -3854,7 +3854,7 @@ exit 1
 		TmuxSocketName: "test-socket",
 		tmuxSession:    &tmux.Session{Name: "multi-window", SocketName: "test-socket"},
 	}
-	pids, err := inst.collectTmuxPaneProcessTreePIDs()
+	pids, err := inst.collectTmuxPaneProcessTreePIDs(nil)
 	if err != nil {
 		t.Fatalf("collect session panes: %v", err)
 	}
@@ -4056,10 +4056,10 @@ func TestQueryCodexSessionFromDockerProcFDCompleteness(t *testing.T) {
 
 func TestCodexProcessCandidateDiscoveryFailureIsUndetermined(t *testing.T) {
 	inst := &Instance{}
-	if _, err := inst.collectCodexProcessCandidates(); err == nil {
+	if _, err := inst.collectCodexProcessCandidates(nil); err == nil {
 		t.Fatal("missing tmux session must make candidate discovery undetermined")
 	}
-	if _, _, err := inst.queryCodexSessionFromProcessFiles(); err == nil {
+	if _, _, err := inst.queryCodexSessionFromProcessFiles(nil); err == nil {
 		t.Fatal("incomplete candidate discovery must reach the process-file caller")
 	}
 }

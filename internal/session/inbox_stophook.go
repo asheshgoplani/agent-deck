@@ -84,7 +84,7 @@ func saveStopBlockCountLocked(instanceID string, count int) error {
 	if err != nil {
 		return err
 	}
-	return writeFileDurable(stopBlocksPathFor(instanceID), data, 0o644)
+	return writeFileDurable(stopBlocksPathFor(instanceID), data, 0o600)
 }
 
 // DrainForStopHook implements the conductor Stop-hook contract for one instance.

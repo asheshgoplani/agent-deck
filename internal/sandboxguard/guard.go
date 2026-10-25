@@ -294,8 +294,8 @@ func isHomeRootEnv(env string) bool {
 // directory (os.UserHomeDir), and the os.UserHomeDir error when there is none.
 // Under go test the result goes through Must, so a home-derived default
 // (~/.claude, ~/.codex, ~/.claude.json) that lands in a real home panics
-// before the caller reads or writes it. Outside a test binary it is exactly
-// os.UserHomeDir plus filepath.Join.
+// before the caller reads or writes it (or fails a test that called Report).
+// Outside a test binary it is exactly os.UserHomeDir plus filepath.Join.
 func HomeJoin(kind string, elem ...string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -309,17 +309,18 @@ func HomeJoin(kind string, elem ...string) (string, error) {
 // the prefix. Outside a test binary it returns path unchanged.
 func MustHome(kind, path string) string {
 	if err := checkFrom(kind, path, "HOME"); err != nil {
-		panic(err.Error())
+		return refuse(err, path)
 	}
 	return path
 }
 
 // Must returns path, or panics when a test binary resolved it under a real
 // home. Use it in resolvers that return a bare string: the panic stops the
-// test before anything reads or writes the live file.
+// test before anything reads or writes the live file. A test that called
+// Report fails instead, and gets a quarantined path back (see Report).
 func Must(kind, path string) string {
 	if err := Check(kind, path); err != nil {
-		panic(err.Error())
+		return refuse(err, path)
 	}
 	return path
 }

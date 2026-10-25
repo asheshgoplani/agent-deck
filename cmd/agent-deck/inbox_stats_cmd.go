@@ -16,7 +16,7 @@ import (
 func runInboxStats(stdout io.Writer, args []string, explicitProfile string) error {
 	fs := flag.NewFlagSet("inbox stats", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the counters as JSON")
-	all := fs.Bool("all", false, "every parent with counters")
+	all := fs.Bool("all", false, "every parent in this profile with counters")
 	reset := fs.Bool("reset", false, "zero the counters for the selected parent")
 	fs.Usage = func() {
 		fmt.Fprintln(stdout, "Usage: agent-deck inbox stats [--json] [--all] [--reset] [<session-id>|self]")
@@ -29,11 +29,34 @@ func runInboxStats(stdout io.Writer, args []string, explicitProfile string) erro
 	}
 	var stats []session.InboxStats
 	if *all {
+		// The stats directory is shared by every profile on the host: keep
+		// only parents that belong to the effective profile.
+		profile := explicitProfile
+		if profile == "" {
+			p, err := session.ResolveProfileForStorage("")
+			if err != nil {
+				return fmt.Errorf("resolve effective profile: %w", err)
+			}
+			profile = p
+		}
+		storage, instances, _, err := loadSessionData(profile)
+		if err != nil {
+			return newInboxProfileCorruptError(profile, err)
+		}
+		_ = storage.Close()
+		own := make(map[string]bool, len(instances))
+		for _, inst := range instances {
+			own[inst.ID] = true
+		}
 		list, err := session.ListInboxStats()
 		if err != nil {
 			return fmt.Errorf("list inbox stats: %w", err)
 		}
-		stats = list
+		for _, st := range list {
+			if own[st.Parent] {
+				stats = append(stats, st)
+			}
+		}
 	} else {
 		sessionID, err := resolveDrainTarget(fs.Args())
 		if err != nil {

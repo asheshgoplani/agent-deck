@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -475,9 +477,11 @@ func TestOpenCLIProfileAndWaitFlags(t *testing.T) {
 }
 
 // T1: --wait bounds the acknowledgment wait, both in publishOpenRequest and
-// through the CLI flag (no app answers here). Serial on purpose: it asserts
-// wall-clock ceilings (2 s, openAckTimeout-500ms) that the package's parallel
-// process-spawning tests would eat into on a loaded CI runner.
+// through the CLI flag (no app answers here). Not t.Parallel on purpose: it
+// asserts wall-clock ceilings (2 s, openAckTimeout-500ms) that the package's
+// parallel process-spawning tests would eat into on a loaded CI runner. Its own
+// three CLI runs do overlap with each other (#2797); each is still held to its
+// own floor and ceiling.
 func TestOpenWaitBoundsTheAckWait(t *testing.T) {
 	bus, err := events.Open(t.TempDir())
 	if err != nil {
@@ -497,19 +501,36 @@ func TestOpenWaitBoundsTheAckWait(t *testing.T) {
 	home := t.TempDir()
 	id := addOpenTestSession(t, home, "Wait bound")
 	env := []string{"AGENTDECK_INSTANCE_ID=" + id, "SSH_CONNECTION=fake-remote 1 2 3"}
-	for _, c := range []struct {
+	cases := []struct {
 		wait     string
 		min, max time.Duration
 	}{
 		{"0", 0, openAckTimeout - 500*time.Millisecond},
 		{"1500ms", 1500 * time.Millisecond, openAckTimeout + 5*time.Second},
 		{"5s", 5 * time.Second, 15 * time.Second},
-	} {
-		start := time.Now()
-		stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "open", "https://example.com/w", "--wait", c.wait)
-		elapsed := time.Since(start)
-		if code != 0 || strings.TrimSpace(stdout) != openQueuedMessage || elapsed < c.min || elapsed > c.max {
-			t.Fatalf("--wait %s: exit=%d %q %q after %s, want %s..%s", c.wait, code, stdout, stderr, elapsed, c.min, c.max)
+	}
+	// The three CLI runs wait at the same time (each publishes its own
+	// request; no app answers any), so the test costs the longest wait, not
+	// the sum (#2797). Each is still timed on its own.
+	bin := channelsCLIBinary(t)
+	errs := make([]string, len(cases))
+	var wg sync.WaitGroup
+	for i, c := range cases {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			stdout, stderr, code, err := execAgentDeckEnv(bin, home, "", env, "open", "https://example.com/w", "--wait", c.wait)
+			elapsed := time.Since(start)
+			if err != nil || code != 0 || strings.TrimSpace(stdout) != openQueuedMessage || elapsed < c.min || elapsed > c.max {
+				errs[i] = fmt.Sprintf("--wait %s: err=%v exit=%d %q %q after %s, want %s..%s", c.wait, err, code, stdout, stderr, elapsed, c.min, c.max)
+			}
+		}()
+	}
+	wg.Wait()
+	for _, e := range errs {
+		if e != "" {
+			t.Error(e)
 		}
 	}
 }

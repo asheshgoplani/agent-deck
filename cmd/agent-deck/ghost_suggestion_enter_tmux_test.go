@@ -95,6 +95,9 @@ func TestExecuteSend_NeverPressesEnterOnGhostSuggestion_Tmux(t *testing.T) {
 	const msg = "AUTOMATED_GHOST_PROBE_MESSAGE"
 	for _, mode := range []string{"focused", "unfocused", "native"} {
 		t.Run(mode, func(t *testing.T) {
+			// Each mode has its own pane and record file: they run side by
+			// side (#2797).
+			t.Parallel()
 			logPath := filepath.Join(dir, mode+".log")
 			sess := startFakeClaudePane(t, "ghost-"+mode, "bash "+script+" "+logPath+" "+mode)
 			if raw, err := sess.CapturePaneFresh(); err == nil {

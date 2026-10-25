@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -70,6 +71,25 @@ const claudeStatuslineSchema = `CREATE TABLE IF NOT EXISTS claude_statuslines (
  record TEXT NOT NULL
 )`
 
+// ClaudeCompatibleTools lists the tool names whose sessions run Claude and so
+// can own a statusline record. statedb cannot see the user's tool config, so
+// the session package replaces this to add Claude-compatible custom tools.
+var ClaudeCompatibleTools = func() []string { return []string{"claude"} }
+
+// ClaudeToolPredicate returns a "tool IN (...)" SQL condition matching
+// ClaudeCompatibleTools, plus its arguments.
+func ClaudeToolPredicate() (string, []any) {
+	names := ClaudeCompatibleTools()
+	if len(names) == 0 {
+		names = []string{"claude"}
+	}
+	args := make([]any, len(names))
+	for i, name := range names {
+		args[i] = name
+	}
+	return "tool IN (?" + strings.Repeat(",?", len(names)-1) + ")", args
+}
+
 // SaveClaudeStatusline atomically resolves ownership and replaces the last
 // record. Registry deletion prunes linked records with the other session metadata.
 // Unlinked records are capped so arbitrary native IDs cannot grow the cache.
@@ -78,6 +98,7 @@ func (s *StateDB) SaveClaudeStatusline(record ClaudeStatusline) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	toolCond, toolArgs := ClaudeToolPredicate()
 	var sessionID string
 	err = withBusyRetry(func() error {
 		sessionID = ""
@@ -86,8 +107,8 @@ func (s *StateDB) SaveClaudeStatusline(record ClaudeStatusline) (string, error) 
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
-		err = tx.QueryRow(`SELECT min(id) FROM instances WHERE tool = 'claude'
-   AND json_extract(tool_data, '$.claude_session_id') = ? HAVING count(*) = 1`, record.ClaudeSessionID).Scan(&sessionID)
+		err = tx.QueryRow(`SELECT min(id) FROM instances WHERE `+toolCond+`
+   AND json_extract(tool_data, '$.claude_session_id') = ? HAVING count(*) = 1`, append(toolArgs, record.ClaudeSessionID)...).Scan(&sessionID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -124,15 +145,16 @@ func (s *StateDB) SaveClaudeStatusline(record ClaudeStatusline) (string, error) 
 // ClaudeStatuslineForSession resolves an exact ID or unambiguous title without
 // tmux probes. Joining on the current native ID also finds a pre-binding record.
 func (s *StateDB) ClaudeStatuslineForSession(target string) (*ClaudeStatusline, error) {
+	toolCond, toolArgs := ClaudeToolPredicate()
 	var nativeID string
 	err := s.db.QueryRow(`SELECT json_extract(tool_data, '$.claude_session_id') FROM instances
-  WHERE tool = 'claude' AND (id = ? OR (title = ? AND NOT EXISTS (SELECT 1 FROM instances WHERE id = ?)
-  AND (SELECT count(*) FROM instances WHERE title = ?) = 1))`, target, target, target, target).Scan(&nativeID)
+  WHERE `+toolCond+` AND (id = ? OR (title = ? AND NOT EXISTS (SELECT 1 FROM instances WHERE id = ?)
+  AND (SELECT count(*) FROM instances WHERE title = ?) = 1))`, append(toolArgs, target, target, target, target)...).Scan(&nativeID)
 	if err != nil {
 		return nil, err
 	}
 	var owners int
-	if err = s.db.QueryRow(`SELECT count(*) FROM instances WHERE tool = 'claude' AND json_extract(tool_data, '$.claude_session_id') = ?`, nativeID).Scan(&owners); err != nil {
+	if err = s.db.QueryRow(`SELECT count(*) FROM instances WHERE `+toolCond+` AND json_extract(tool_data, '$.claude_session_id') = ?`, append(toolArgs, nativeID)...).Scan(&owners); err != nil {
 		return nil, err
 	}
 	if owners != 1 {

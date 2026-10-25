@@ -117,3 +117,20 @@ func TestParsePaneStatusANSICapture(t *testing.T) {
 		}
 	}
 }
+
+// TestParsePaneStatusCodexQueuedWrappedEntry: Codex indents a wrapped queued
+// entry's continuation rows with four spaces; entries after the first wrapped
+// one must still be counted.
+func TestParsePaneStatusCodexQueuedWrappedEntry(t *testing.T) {
+	st := ParsePaneStatus("• Queued follow-up inputs\n  ↳ first part\n    wrapped tail\n  ↳ second\n")
+	if st.Queued != 2 || len(st.QueuedText) != 2 || st.QueuedText[1] != "second" {
+		t.Errorf("wrapped entry: Queued=%d QueuedText=%q, want 2 entries ending in %q", st.Queued, st.QueuedText, "second")
+	}
+	data, err := os.ReadFile(filepath.Join("testdata", "status_corpus", "codex-local-macapp-v4-working-queued-inputs_af58e2b8.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := ParsePaneStatus(string(data)); st.Queued != 5 || len(st.QueuedText) != 5 {
+		t.Errorf("corpus frame: Queued=%d len(QueuedText)=%d, want 5", st.Queued, len(st.QueuedText))
+	}
+}
