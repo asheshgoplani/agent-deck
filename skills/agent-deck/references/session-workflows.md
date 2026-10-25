@@ -140,7 +140,7 @@ Share Claude sessions between developers for collaboration or handoff.
 **Use when:** User says "share session", "export session", "send to colleague", "import session"
 
 ```bash
-# Export current session to file (session-share is a sibling skill)
+# Export current session to file (scripts ship in the agent-deck skill)
 $SKILL_DIR/scripts/session-share/export.sh
 # Output: ~/session-shares/session-<date>-<title>.json
 

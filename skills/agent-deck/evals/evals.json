@@ -251,7 +251,7 @@
     {
       "id": 12,
       "prompt": "Export my current agent-deck session so I can send it to a teammate, and make sure Claude's internal reasoning isn't included since some of it discusses a client's infrastructure.",
-      "expected_output": "Runs `$SKILL_DIR/scripts/export.sh` without `--include-thinking` (default already strips thinking blocks), and does not need `--no-sanitize` since redaction (API keys, tokens, absolute paths) is on by default.",
+      "expected_output": "Runs `$SKILL_DIR/scripts/session-share/export.sh` without `--include-thinking` (default already strips thinking blocks), and does not need `--no-sanitize` since redaction (API keys, tokens, absolute paths) is on by default.",
       "files": [],
       "area": "session-share"
     },
