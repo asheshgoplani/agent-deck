@@ -232,44 +232,15 @@ func GetTerminalInfo() TerminalInfo {
 }
 
 func detectToolFromCommand(command string) string {
-	cmdLower := strings.ToLower(strings.TrimSpace(command))
+	cmdLower := launchCommands(strings.ToLower(strings.TrimSpace(command)))
 	if cmdLower == "" {
 		return ""
 	}
 
 	fields, valid := shellwords.Split(cmdLower)
 	if valid {
-		base := shellwords.ExecutableBase(fields)
-		switch base {
-		case "claude":
-			return "claude"
-		case "gemini":
-			return "gemini"
-		case "opencode", "opencode2", "open-code":
-			return "opencode"
-		case "codex":
-			return "codex"
-		case "copilot":
-			return "copilot"
-		case "crush":
-			return "crush"
-		case "muse":
-			return "muse"
-		case "cursor":
-			return "cursor"
-		case "agent":
-			// Standalone Cursor Agent CLI binary (~/.local/bin/agent).
-			return "cursor"
-		case "hermes":
-			return "hermes"
-		case "dsh":
-			// DeepSeek Harness. The binary is `dsh`; the agent-deck tool is
-			// named for the vendor.
-			return "deepseek"
-		case "pi":
-			return "pi"
-		case "omp", "oh-my-pi":
-			return "omp"
+		if tool := toolForExecutable(shellwords.ExecutableBase(fields)); tool != "" {
+			return tool
 		}
 		if isOMPCommand(fields) {
 			return "omp"
@@ -317,6 +288,122 @@ func detectToolFromCommand(command string) string {
 	default:
 		return ""
 	}
+}
+
+// toolForExecutable returns the tool that an executable basename starts, or ""
+// when the basename names no tool.
+func toolForExecutable(base string) string {
+	switch base {
+	case "claude":
+		return "claude"
+	case "gemini":
+		return "gemini"
+	case "opencode", "opencode2", "open-code":
+		return "opencode"
+	case "codex":
+		return "codex"
+	case "copilot":
+		return "copilot"
+	case "crush":
+		return "crush"
+	case "muse":
+		return "muse"
+	case "cursor":
+		return "cursor"
+	case "agent":
+		// Standalone Cursor Agent CLI binary (~/.local/bin/agent).
+		return "cursor"
+	case "hermes":
+		return "hermes"
+	case "dsh":
+		// DeepSeek Harness. The binary is `dsh`; the agent-deck tool is
+		// named for the vendor.
+		return "deepseek"
+	case "pi":
+		return "pi"
+	case "omp", "oh-my-pi":
+		return "omp"
+	}
+	return ""
+}
+
+// setupCommands are what agent-deck runs around a tool launch: cd -- <project>,
+// env files ([ -f … ] && source …), unset and export of its variables, the
+// per-session directory (mkdir), and the exit-receipt trailer (umask, printf,
+// exit). Their arguments are paths and variable names, never the tool.
+var setupCommands = map[string]bool{
+	"cd": true, "export": true, "unset": true, "source": true, ".": true,
+	"[": true, "mkdir": true, "umask": true, "printf": true, "exit": true,
+}
+
+// launchCommands drops agent-deck's setup commands from a launch chain and
+// expands `<shell> -c <script>` in place, leaving the commands that start the
+// tool. #2683 put `unset CLAUDE_JOB_DIR` into every hook-status tool's chain,
+// so the substring fallback in detectToolFromCommand read every pi, codex, and
+// gemini launch as claude. A command that does not parse is returned unchanged.
+//
+// A command whose own executable is a tool is that tool's launch, so a shell in
+// its arguments (`codex exec bash -c '...'`) is not expanded.
+func launchCommands(command string) string {
+	commands, ok := shellwords.Commands(command)
+	if !ok {
+		return command
+	}
+	var kept []string
+	for _, cmd := range commands {
+		words, valid := shellwords.Split(cmd)
+		if !valid {
+			kept = append(kept, cmd)
+			continue
+		}
+		if toolForExecutable(shellwords.ExecutableBase(words)) != "" {
+			kept = append(kept, cmd)
+			continue
+		}
+		if script, isShell := shellScript(words); isShell {
+			if inner := launchCommands(script); inner != "" {
+				kept = append(kept, inner)
+			}
+			continue
+		}
+		if !isSetupCommand(words) {
+			kept = append(kept, cmd)
+		}
+	}
+	return strings.Join(kept, " ; ")
+}
+
+// shellScript returns the script of a `<shell> -c <script>` command wherever
+// the shell appears in it: the exit-receipt wrapper runs the launch chain as
+// `bash -c '<chain>'; code=$?; …`, an exec prefix may come before it, and a
+// wrapper that puts a program in front of {command} receives the chain as
+// `<program> bash -c '<chain>'` (substituteWrapperCommand).
+func shellScript(words []string) (string, bool) {
+	for i := 0; i+2 < len(words); i++ {
+		switch filepath.Base(words[i]) {
+		case "bash", "sh", "zsh", "dash", "ksh":
+		default:
+			continue
+		}
+		flag := words[i+1]
+		if strings.HasPrefix(flag, "-") && !strings.HasPrefix(flag, "--") && strings.ContainsRune(flag, 'c') {
+			return words[i+2], true
+		}
+	}
+	return "", false
+}
+
+// isSetupCommand reports whether a simple command only prepares the pane: a
+// bare assignment (session_dir=…, code=$?) or one of setupCommands, ignoring a
+// subshell's opening parenthesis.
+func isSetupCommand(words []string) bool {
+	for _, word := range words {
+		if isShellAssignmentToken(word) {
+			continue
+		}
+		return setupCommands[strings.TrimLeft(word, "({")]
+	}
+	return true
 }
 
 // isOMPCommand recognizes only supported OMP launchers in command position.
