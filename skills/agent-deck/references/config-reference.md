@@ -44,6 +44,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[core] Section](#core-section)
 - [[macapp] Section](#macapp-section)
 - [[browser] Section](#browser-section)
+- [[ask] Section](#ask-section)
 - [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -1270,7 +1271,7 @@ status_events = false      # Status owners publish session.status and session.tu
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the Mac app's own frames (`macapp.open`, `macapp.open.ack`, `macapp.browser.response`, `macapp.app.focus`); `macapp.browser.request` also needs [`[browser] enabled`](#browser-section). Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
+| `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the Mac app's own frames (`macapp.open`, `macapp.open.ack`, `macapp.browser.response`, `macapp.app.focus`, `macapp.ask.seen`); `macapp.ask` and `macapp.ask.ack` are never admitted (only `agent-deck ask` publishes them); `macapp.browser.request` also needs [`[browser] enabled`](#browser-section). Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
 | `transcript_events` | bool | `false` | The notify daemon publishes a `session.transcript` frame whenever a live session's native transcript grows. Restart required. |
 | `status_events` | bool | `false` | Every status owner (TUI poller, notify daemon) publishes `session.status` and `session.turn` frames on each status transition. |
 
@@ -1292,6 +1293,25 @@ enabled = false         # this profile only; overrides [browser]
 | `profiles.<name>.browser.enabled` | bool | none | Per-profile override of `browser.enabled`, either way. `agent-deck config set profiles.<name>.browser.enabled true`. |
 
 Browser requests also need `[macapp] plugins = true`. Both are opt-ins, not security boundaries: an agent on the host can edit its config. The Mac app enforces the browser policy.
+
+## [ask] Section
+
+`agent-deck ask secret|choice|text` asks the owner in a dialog (docs/ask.md). On by default.
+
+```toml
+[ask]
+enabled = true                 # false refuses every request and every deliver
+secret_scopes = ["conductor/"] # vault scopes ask secret may write
+allow_sandboxed = false        # let sessions that run in a sandbox ask
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | `false` makes `ask` refuse every request (exit 2) and `ask deliver` refuse every answer. |
+| `secret_scopes` | list of strings | `["conductor/"]` | Scope prefixes `ask secret <scope/NAME>` may write; `"conductor"` and `"conductor/"` mean the same scope. An empty list allows no secret requests. Checked again on deliver. |
+| `allow_sandboxed` | bool | `false` | Lets sessions that run in a sandbox ask; otherwise their requests are refused. |
+
+There is no key for the vault command: the vault is the fixed `/usr/local/bin/deck-secret`, which must be root-owned. These keys are guard rails an agent on the host can edit, not security boundaries.
 
 ## [tmux] Section
 

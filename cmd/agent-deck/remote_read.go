@@ -182,7 +182,7 @@ func validateRemoteEventsPublishArgs(args []string) error {
 		values[name] = value // Go flags use the last assignment.
 	}
 	if !events.IsMacappRemoteReplyKind(values["kind"]) {
-		return fmt.Errorf("remote events publish forwards only %s, %s and %s; refused kind %q", events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus, values["kind"])
+		return fmt.Errorf("remote events publish forwards only %s, %s, %s and %s; refused kind %q", events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus, events.KindMacappAskSeen, values["kind"])
 	}
 	if values["data-file"] != "-" {
 		return fmt.Errorf("remote events publish reads its data from stdin: pass --data-file -")

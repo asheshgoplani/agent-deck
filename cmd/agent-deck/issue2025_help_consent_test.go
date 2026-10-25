@@ -178,6 +178,7 @@ func TestEveryRegisteredCommandFamilyBareHelpIsReadOnly(t *testing.T) {
 		usage   string
 	}{
 		{"agent", "Usage: agent-deck agent <command>"},
+		{"ask", "Usage: agent-deck ask"},
 		{"codex-hooks", "Usage: agent-deck codex-hooks"},
 		{"conductor", "conductor <command>"},
 		{"costs", "Usage: agent-deck costs"},

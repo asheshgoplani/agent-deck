@@ -628,6 +628,9 @@ func main() {
 		case "open":
 			handleOpen(profile, args[1:])
 			return
+		case "ask":
+			handleAsk(profile, args[1:])
+			return
 		case "browser":
 			handleBrowser(profile, args[1:])
 			return
@@ -1602,7 +1605,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "browser": true, "file": true, "events": true, "triggers": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -4669,6 +4672,7 @@ func printHelp() {
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
 	fmt.Println("  open <file|url>  Show a page in the Mac app Browser panel [--session <id|title>]")
+	fmt.Println("  ask <kind>       Ask the owner for a secret, choice or text in a dialog (docs/ask.md)")
 	fmt.Println("  browser <op>     Drive the session's Mac app Browser: open, tabs, close, click, type, read, shot")
 	fmt.Println("  file bundle      Export a page folder as a size-capped tar [--session <id>]")
 	fmt.Println("  file read        Print a file under [web] file_link_roots [--json]")

@@ -334,6 +334,9 @@ type UserConfig struct {
 	// Browser holds the `agent-deck browser` opt-in (docs/macapp-browser.md).
 	Browser BrowserSettings `toml:"browser,omitempty"`
 
+	// Ask holds the `agent-deck ask` switches (docs/ask.md).
+	Ask AskSettings `toml:"ask,omitempty"`
+
 	// Harnesses overrides the core install/login table per harness
 	// ([harnesses.<name>] binary, install_command, login_command, docs_url).
 	Harnesses map[string]harness.Override `toml:"harnesses,omitempty"`
@@ -354,6 +357,35 @@ type CommsSettings struct {
 	// in P2b, so this phase does not move the #2482 wake targets.
 	// Needs ledger = true. See docs/comms.md "Delivery".
 	Consumers []string `toml:"consumers,omitempty"`
+}
+
+// AskSettings is the [ask] section (docs/ask.md): an agent asks the owner
+// for a secret, a choice or a short text through the Mac app or TUI dialog.
+// These are guard rails an agent can edit, not security boundaries. There is
+// deliberately no vault command key: the vault is the fixed, root-owned
+// /usr/local/bin/deck-secret.
+type AskSettings struct {
+	// Enabled turns `agent-deck ask` on. Default true; false refuses every
+	// request and every deliver.
+	Enabled *bool `toml:"enabled,omitempty"`
+
+	// SecretScopes lists the vault scopes `ask secret` may write, as
+	// "scope/" prefixes. Default ["conductor/"]; an empty list allows none.
+	SecretScopes []string `toml:"secret_scopes,omitempty"`
+
+	// AllowSandboxed lets sessions that run in a sandbox ask. Default false.
+	AllowSandboxed bool `toml:"allow_sandboxed,omitempty"`
+}
+
+// IsEnabled reports [ask] enabled (default true).
+func (a AskSettings) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
+
+// Scopes returns [ask] secret_scopes, ["conductor/"] when unset.
+func (a AskSettings) Scopes() []string {
+	if a.SecretScopes == nil {
+		return []string{"conductor/"}
+	}
+	return a.SecretScopes
 }
 
 // MacappSettings is the [macapp] section. Everything is off by default.

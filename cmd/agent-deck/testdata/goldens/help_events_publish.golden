@@ -1,6 +1,7 @@
 Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--profile <name>] [--json]
 Needs [macapp] plugins = true, except the Mac app's own frames: macapp.open,
-macapp.open.ack, macapp.browser.response and macapp.app.focus;
+macapp.open.ack, macapp.browser.response, macapp.app.focus and macapp.ask.seen;
+macapp.ask and macapp.ask.ack are published only by agent-deck ask on the host;
 to enable it, run: agent-deck config set macapp.plugins true --yes (docs/macapp-core.md).
   -data string
     	JSON object payload

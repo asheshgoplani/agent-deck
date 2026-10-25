@@ -259,7 +259,8 @@ func handleEventsPublish(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--profile <name>] [--json]")
 		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except the Mac app's own frames: macapp.open,")
-		fmt.Fprintln(fs.Output(), "macapp.open.ack, macapp.browser.response and macapp.app.focus;")
+		fmt.Fprintln(fs.Output(), "macapp.open.ack, macapp.browser.response, macapp.app.focus and macapp.ask.seen;")
+		fmt.Fprintln(fs.Output(), "macapp.ask and macapp.ask.ack are published only by agent-deck ask on the host;")
 		fmt.Fprintln(fs.Output(), "to enable it, run: agent-deck config set macapp.plugins true --yes (docs/macapp-core.md).")
 		fs.PrintDefaults()
 	}
@@ -288,6 +289,12 @@ func handleEventsPublish(profile string, args []string) {
 			exitCLI(2)
 		}
 		profile = p
+	}
+	if events.IsMacappHostOnlyKind(*kind) {
+		// A forged ack would close the owner's ask dialog, a forged request
+		// would show one: only `agent-deck ask` publishes these, in process.
+		out.Error(fmt.Sprintf("events publish: %s is published only by agent-deck ask on this host", *kind), ErrCodeInvalidOperation)
+		exitCLI(2)
 	}
 	if *kind == events.KindMacappBrowserRequest {
 		// The browser opt-in gates the request kind on every publish path
@@ -451,7 +458,7 @@ func readPublishData(name string) ([]byte, error) {
 // can publish without it.
 func checkRemoteReplyPublish(profile, kind, sessionID, data, dataFile string) error {
 	if !events.IsMacappRemoteReplyKind(kind) {
-		return fmt.Errorf("kind %q is not a Mac app reply (%s, %s or %s)", kind, events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus)
+		return fmt.Errorf("kind %q is not a Mac app reply (%s, %s, %s or %s)", kind, events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus, events.KindMacappAskSeen)
 	}
 	if data != "" || dataFile != "-" {
 		return errors.New("the payload must come on stdin (--data-file -)")

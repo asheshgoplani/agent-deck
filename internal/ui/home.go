@@ -289,6 +289,7 @@ type Home struct {
 	contextPager         *ContextPager         // Full-context inspector overlay (what the agent is being sent)
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
+	askDialog            *AskDialog            // ASK-117: owner answers an agent's ask secret|choice|text
 	reportDialog         *ReportDialog         // "Report a problem" form: bug/idea -> GitHub issue (internal/issuereport)
 	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
 	tel                  homeTelemetry         // Opt-in telemetry sampler and TUI lifetime (home_telemetry.go)
@@ -2140,6 +2141,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Execute final shutdown logic after splash delay
 		return h, h.performFinalShutdown(bool(msg))
 
+	case askPollMsg, askSeenMsg, askDeliveredMsg, askCancelledMsg, askTickMsg, askCloseMsg:
+		return h, h.askDialog.HandleMsg(msg, func() bool { return h.canShowAsk(time.Now()) })
+
 	case tea.BlurMsg:
 		// The terminal reports motion only while the pointer is inside its
 		// window, so once focus leaves there is no event coming that would
@@ -2184,6 +2188,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case tea.MouseMsg:
+		// The ask modal owns the screen: no click may attach a session or
+		// focus a pane while it is open.
+		if h.askDialog.IsVisible() {
+			return h, nil
+		}
 		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
 			return h, nil
 		}
@@ -4775,7 +4784,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// restarted (update --check --json).
 		h.maybeWriteHeartbeat(now)
 
-		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch(), updateCheckCmd, binaryProbeCmd, autoRestartCmd}
+		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch(), updateCheckCmd, binaryProbeCmd, autoRestartCmd, h.askDialog.PollCmd(now)}
 		if h.fullRepaint {
 			cmds = append(cmds, tea.ClearScreen)
 		}
@@ -4792,6 +4801,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
 		h.lastUserInputTime = time.Now()
+		// The ask modal takes every key first: they never reach the
+		// keypress log, telemetry, insert mode or any pane (ASK-117).
+		if h.askDialog.IsVisible() {
+			return h, h.askDialog.Update(msg)
+		}
 		h.tel.sampler.KeyPressed()
 		// Hands on the keyboard means the mouse is not about to grab anything,
 		// and the terminal stops reporting motion the instant the pointer

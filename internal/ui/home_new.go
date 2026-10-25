@@ -191,6 +191,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		contextPager:              NewContextPager(),
 		worktreeFinishDialog:      NewWorktreeFinishDialog(),
 		feedbackDialog:            NewFeedbackDialog(),
+		askDialog:                 NewAskDialog(actualProfile),
 		reportDialog:              NewReportDialog(),
 		telemetryDialog:           NewTelemetryDialog(),
 		zoxidePicker:              NewZoxidePicker(),

@@ -78,6 +78,26 @@ func profileIsolationRows(t *testing.T, profile, title, group, watcher string) (
 	return hasSession, hasGroup, w != nil
 }
 
+// profileIsolationAskRecords counts the request records in profile's ask dir.
+func profileIsolationAskRecords(t *testing.T, profile string) int {
+	t.Helper()
+	dir, err := session.GetProfileDir(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "ask", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, m := range matches {
+		if filepath.Base(m) != "rate.json" {
+			n++
+		}
+	}
+	return n
+}
+
 func TestProfileIsolation_StateWritingCommandsUseTheSelectedProfile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
@@ -152,6 +172,19 @@ func TestProfileIsolation_StateWritingCommandsUseTheSelectedProfile(t *testing.T
 			if s, g, w := profileIsolationRows(t, session.DefaultProfile, title, group, watcher); s || g || w {
 				t.Errorf("profile %q: session=%v group=%v watcher=%v; the default profile must stay untouched",
 					session.DefaultProfile, s, g, w)
+			}
+
+			// ask (ASK-117) keeps its records in the selected profile's ask
+			// dir. The request times out (exit 4): only where it lands matters.
+			askArgs := append(append([]string{}, tt.flag...), "ask", "text", "iso question?", "--session", title, "--wait", "1s")
+			if stdout, stderr, code := runAgentDeckEnv(t, home, "", env, askArgs...); code != 4 {
+				t.Fatalf("agent-deck %s: exit %d, want 4 (timed out)\nstdout: %s\nstderr: %s", strings.Join(askArgs, " "), code, stdout, stderr)
+			}
+			if n := profileIsolationAskRecords(t, target); n != 1 {
+				t.Errorf("profile %q: %d ask records, want 1", target, n)
+			}
+			if n := profileIsolationAskRecords(t, session.DefaultProfile); n != 0 {
+				t.Errorf("profile %q: %d ask records; the default profile must stay untouched", session.DefaultProfile, n)
 			}
 
 			// Reads follow the same selection: list shows the session it

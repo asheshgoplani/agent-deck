@@ -434,6 +434,7 @@ func (h *Home) updateSizes() {
 	h.groupDialog.SetSize(h.width, h.height)
 	h.confirmDialog.SetSize(h.width, h.height)
 	h.hookTrustDialog.SetSize(h.width, h.height)
+	h.askDialog.SetSize(h.width, h.height)
 	h.geminiModelDialog.SetSize(h.width, h.height)
 	if h.sessionSwitcher != nil {
 		// Keep the switcher's viewport current so its standalone centered view
@@ -509,6 +510,12 @@ func (h *Home) renderFrame() string {
 					minTerminalWidth, minTerminalHeight,
 				)),
 		)
+	}
+
+	// The ask modal holds the keyboard while open, so it is drawn above
+	// everything (it can only open when no other modal is up).
+	if h.askDialog.IsVisible() {
+		return h.askDialog.View()
 	}
 
 	// A pending worktree hook approval is shown above everything else.

@@ -788,6 +788,16 @@ agent-deck open report.html --browser-profile work --wait 10s  # Browser panel p
 
 Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`, then the agent-deck session owning the calling tmux session) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within `--wait` (default 3 s), else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. Details: `docs/macapp-open.md`.
 
+### ask - Ask the owner for a secret, a choice or a short text
+
+```bash
+agent-deck ask secret conductor/GH_TOKEN --reason "GitHub key with workflow permission" [--replace]
+agent-deck ask choice "Which database?" --option staging --option prod
+agent-deck ask text "Which branch?"
+```
+
+The owner answers in the Mac app dialog, the TUI modal, or with `agent-deck ask answer <id>` in his own terminal. A secret goes straight to `/usr/local/bin/deck-secret`; the command prints only `stored scope/NAME (replaced=no, by app)` and never the value. Choice and text print the answer only. `--session`, `--wait 10m` (max 30m), `--fallback-after 20s`, `--no-fallback`, `--json`. Exit 0 stored/answered, 2 refused, 3 cancelled, 4 timed out, 5 nothing can show it or no vault. Dialog side: `ask deliver <id>` (header line + value on stdin), `ask cancel <id> --nonce N` (the nonce that dialog announced; `--unshown` instead for a request no dialog showed), `ask show <id> --json`, `ask list --json`. See `docs/ask.md`.
+
 ### browser - Drive the session's Browser panel in the macOS app
 
 ```bash
@@ -1226,7 +1236,7 @@ In the TUI, remote sessions use the same status indicators and nested group tree
 agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
 agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
 agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--profile <name>]
-agent-deck remote <name> events publish --kind macapp.open.ack|macapp.browser.response|macapp.app.focus --session <id> --data-file - < reply.json
+agent-deck remote <name> events publish --kind macapp.open.ack|macapp.browser.response|macapp.app.focus|macapp.ask.seen --session <id> --data-file - < reply.json
 agent-deck remote <name> session send-status <send-id> --json
 ```
 

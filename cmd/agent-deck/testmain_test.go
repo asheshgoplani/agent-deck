@@ -18,6 +18,9 @@ import (
 // accidental modification of production data.
 // CRITICAL: This was missing and caused test data to overwrite production sessions!
 func TestMain(m *testing.M) {
+	// The ask tests re-run this test binary as the CLI with a fake vault
+	// (askHelperMain); it never runs the test suite.
+	askHelperMain()
 	os.Exit(runTestMain(m))
 }
 
