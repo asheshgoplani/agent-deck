@@ -338,6 +338,10 @@ func (d *TransitionDaemon) startCommsDrain(id string, en CommsEnrollment) {
 	commsLog.Info("comms_consumer_unenrolled", slog.String("parent", id))
 }
 
+// commsScanHook is told of every delivery pass that reads the parent's
+// records (tests count the fast path's skips with it).
+var commsScanHook = func(string) {}
+
 // deliverToConsumer settles stale attempts and, when the parent is idle
 // and something warrants it, types one combined wake.
 func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, profile string, inst *Instance, status string, names comms.Names) {
@@ -351,20 +355,24 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 	}
 	now := commsNow()
 	if f, found, _ := comms.ReadConsumer(r.Dir, id); found {
-		// Nothing new since the last pass and no deadline due: skip the
+		// Nothing new since the last delivery pass and no deadline due: skip the
 		// read entirely (a parent with records waiting for its own prompt
-		// costs two small file reads per poll, not a scan).
-		flag, _ := comms.ReadFlag(r.Dir, id)
-		if flag.Last <= f.Through && (f.NextDue == 0 || now.UnixMilli() < f.NextDue) {
+		// costs two small file reads per poll, not a scan). A flag from another
+		// epoch (the ledger was restored) is never compared with Judged; no
+		// flag (nothing was ever addressed to the parent) is nothing new.
+		flag, found := comms.ReadFlag(r.Dir, id)
+		if (!found || (flag.Epoch == f.Epoch && flag.Last <= f.Judged)) && (f.NextDue == 0 || now.UnixMilli() < f.NextDue) {
 			return
 		}
 	}
+	commsScanHook(id)
 	var line string
 	var carried []comms.Exported
 	capped := false
 	_, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
 		var acks []events.Cursor
 		f := p.File
+		f.Judged = p.Through
 		var wakeFailed []events.Cursor
 		f.Settle(func(in comms.Inflight) bool {
 			age := now.UnixMilli() - in.At
