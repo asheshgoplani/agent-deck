@@ -1127,6 +1127,8 @@ agent-deck feedback idea --title "Report a problem from the menu bar"
 
 Anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; never prompts, paths, titles or names) is shared with the maintainer via PostHog EU **only after you say yes** to the one-time TUI question; `agent-deck telemetry preview` shows exactly what would be sent, and `agent-deck telemetry off` or `DO_NOT_TRACK=1` turns it off. Details and the full field list: [TELEMETRY.md](TELEMETRY.md). A separate `install.tick` uses a fresh daily nonce to count reporting installs, checked by the interactive TUI after the consent day; retries reuse that nonce. Owner installs suppress it with `[telemetry] owner = true` or `AGENTDECK_TELEMETRY_OWNER=1`. Status and TUI Settings show the last acknowledged tick day. Schema 3 asks existing opt-ins to accept the updated disclosure; schema-2 refusals remain final.
 
+The website counts page views with PostHog EU, cookieless (in-memory only) and not at all when your browser sends Do Not Track or Global Privacy Control; see [TELEMETRY.md](TELEMETRY.md#website).
+
 ```bash
 agent-deck telemetry status      # on/off, why, and what is waiting in the local spool
 agent-deck telemetry preview     # the exact request bodies the next upload would send

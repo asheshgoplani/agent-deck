@@ -497,6 +497,16 @@ The PostHog event `uuid` and required `distinct_id` both equal `tick_id`. No per
 
 The `creds_refresh` value of `feature.daily` is deprecated: the `creds-refresh` command was removed, so current builds never send it, but it stays in the allow-list so events from older clients still validate.
 
+## Website
+
+The website (`site/`, published to GitHub Pages) counts page views with PostHog's web snippet. This is separate from the app: it needs no consent prompt because it stores nothing on your device and identifies no one.
+
+- **What is sent.** One `$pageview` per page load: the page URL and referrer, plus what PostHog's browser library attaches to every event (browser, OS, screen size). No clicks (autocapture is off), no session recording, no surveys, no page-leave events. Heatmaps, dead-click capture, web vitals, exception capture, web experiments and feature-flag calls are switched off in the page itself, so a change to the shared project's settings cannot turn them on.
+- **No cookies, no storage.** `persistence: 'memory'` keeps PostHog's random visitor id in memory only, so nothing is written to cookies or `localStorage` and every page load is a new anonymous visitor. There is no cookie banner because there are no cookies.
+- **Do Not Track and Global Privacy Control.** If your browser sends Do Not Track (`navigator.doNotTrack`, `window.doNotTrack` or `navigator.msDoNotTrack`) or Global Privacy Control, the page does not load the PostHog script at all; `respect_dnt: true` is set as a second check.
+- **Where it goes.** The same PostHog Cloud EU project as the app's telemetry (project 284907), at `https://eu.i.posthog.com`, with the script loaded from `https://eu-assets.i.posthog.com`. The project discards client IP addresses. The key in the page is the public, write-only `phc_` project key.
+- **Opting out.** Turn on Do Not Track or Global Privacy Control in your browser, or block `eu.i.posthog.com` and `eu-assets.i.posthog.com` with a content blocker.
+
 ## What we cannot see, by design
 
 - The decline rate: a "no" sends nothing.
