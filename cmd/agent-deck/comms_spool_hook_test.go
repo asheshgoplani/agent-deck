@@ -195,3 +195,22 @@ func TestHookHandler_PiNoTextSettleSpoolsOneStatusEdge(t *testing.T) {
 		t.Fatalf("spooled %+v", e)
 	}
 }
+
+// A v4 extension's settle carries the run token; the spool entry carries it on,
+// so the ledger keys the run as the inbox does.
+func TestHookHandler_PiSettleSpoolsTheRunToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_JOB_DIR", "")
+	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-pi-run")
+	t.Cleanup(session.SetCommsLedgerForTest(true))
+
+	runHookHandlerWith(t, fixture(t, "pi_agentsettled_v4.json"))
+	entries, err := session.ReadCommsSpool("inst-pi-run")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries %+v err %v", entries, err)
+	}
+	if entries[0].RunID != "run-77" {
+		t.Fatalf("the spool entry must carry the run token: %+v", entries[0])
+	}
+}

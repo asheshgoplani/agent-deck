@@ -835,6 +835,29 @@ func TestLedgerConsumer_FinalPassOnlyExactTurnKeys(t *testing.T) {
 			}
 		})
 	}
+	// A pi run: its record carries the run signal and no transcript uuid. The
+	// signal names the run for good, so a stale flag keeps the key; an error or
+	// a remote record does not map. A transcript uuid takes the transcript rule.
+	pi := TransitionNotificationEvent{ChildSessionID: "child", LastOutputHash: piRunSignal("run-A"), ToStatus: "waiting"}
+	for _, kind := range []string{"pi-run", "pi-run-stale", "pi-run-remote", "pi-run-error", "pi-run-uuid"} {
+		t.Run(kind, func(t *testing.T) {
+			ev := pi
+			want := comms.Key(comms.KindTurn, "child", "pi", piRunSignal("run-A"))
+			switch kind {
+			case "pi-run-stale":
+				ev.OutputHashStale = true
+			case "pi-run-remote":
+				ev.SourceRemote, want = "peer", ""
+			case "pi-run-error":
+				ev.ToStatus, want = "error", ""
+			case "pi-run-uuid":
+				ev.TurnUUID, want = "uuid", ""
+			}
+			if got := inboxTurnKey(ev); got != want {
+				t.Fatalf("key %q, want %q", got, want)
+			}
+		})
+	}
 }
 
 func TestLedgerConsumer_QueuedLandedAndTypedNeverWakeSender(t *testing.T) {
