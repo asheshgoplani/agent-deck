@@ -30,7 +30,7 @@ on:
       - '.github/workflows/pr-notify.yml'
       - '.github/workflows/issue-notify.yml'
       - 'tests/ci/notify-workflows.test.sh'
-      - '.github/skills/agent-deck-contributor/scripts/self-check.sh'
+      - 'skills/agent-deck/scripts/contributing/self-check.sh'
       - 'tests/ci/self-check-container-guard.test.sh'
       - '.github/workflows/eval-smoke.yml'
       - 'go.mod'
