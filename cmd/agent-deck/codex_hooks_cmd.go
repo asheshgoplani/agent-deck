@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -20,6 +21,8 @@ import (
 const codexNotifyMarkerBegin = "# BEGIN AGENTDECK CODEX NOTIFY"
 const codexNotifyMarkerEnd = "# END AGENTDECK CODEX NOTIFY"
 const codexNotifyLine = `notify = ["agent-deck", "codex-notify"]`
+
+var codexNotifyLog = logging.ForComponent(logging.CompSession)
 
 var codexNotifyTableRe = regexp.MustCompile(`(?m)^\s*\[notify\]\s*$`)
 var codexNotifyKeyRe = regexp.MustCompile(`(?m)^\s*notify\s*=`)
@@ -211,13 +214,37 @@ func handleCodexNotify() {
 	// Subagent threads (thread_source=subagent) do write a rollout and fire
 	// agent-turn-complete each time a spawned child finishes, while the parent
 	// turn keeps working; their events are not the pane's either.
-	if home := codexNotifyHome(); home != "" &&
-		(session.CodexUnbackedTurnEnd(sessionID, event, home) || session.CodexSubagentThread(sessionID, home)) {
-		return
+	if home := codexNotifyHome(); home != "" {
+		reason := ""
+		switch {
+		case session.CodexUnbackedTurnEnd(sessionID, event, home):
+			reason = "unbacked_turn_end"
+		case session.CodexSubagentThread(sessionID, home):
+			reason = "subagent_thread"
+		}
+		if reason != "" {
+			logCodexNotifyDropped(reason, instanceID, sessionID, turnID, event, home)
+			return
+		}
 	}
 
 	writeCodexHookStatusDone(instanceID, status, sessionID, event, turnID, codexNotifyDoneSignal(event, data))
 	spoolCommsFromCodexNotify(instanceID, sessionID, turnID, event, data)
+}
+
+// logCodexNotifyDropped records why a notify payload never reached the hook
+// status (issue #2900): one debug line with the reason and the payload's
+// identity, never its text. codex-notify is a short-lived child of Codex, so
+// like `ask` it opens the debug.log only when AGENTDECK_DEBUG is set.
+func logCodexNotifyDropped(reason, instanceID, threadID, turnID, event, codexHome string) {
+	defer initAskDebugLogging()()
+	codexNotifyLog.Debug("codex_notify_dropped",
+		slog.String("reason", reason),
+		slog.String("instance", instanceID),
+		slog.String("thread_id", threadID),
+		slog.String("turn_id", turnID),
+		slog.String("event", event),
+		slog.String("codex_home", codexHome))
 }
 
 // codexNotifyText is the text Codex's notify payload already carries
