@@ -586,7 +586,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.modelInput.Blur()
 	d.claudeOptions.Blur()
 	d.claudeOptions.ResetStartQuery() // #741: per-session query must not leak across openings
-	d.claudeOptions.SetAccount("")    // #924: the account pick is per-session too
+	d.claudeOptions.SetAccount("")    // #924: the account pick is per-session too; #2895 reapplies the default below
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 	if d.branchPicker != nil {
@@ -640,6 +640,11 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		d.hermesOptions.SetDefaults(userConfig.Hermes.YoloMode)
 		d.ompOptions.SetDefaults(session.NewOMPOptions(userConfig))
 		d.claudeOptions.SetDefaults(userConfig)
+		// #2895: start on [claude].default_account instead of inherit. Each
+		// opening recomputes it from config, so a one-off pick still never
+		// reaches the next opening; a group or suggested conductor parent
+		// with its own config_dir keeps the dialog on inherit.
+		d.claudeOptions.SetAccount(session.DefaultAccountForNewSession(userConfig, groupPath, d.selectedConductor()))
 		d.sandboxEnabled = userConfig.Docker.DefaultEnabled
 		d.worktreeEnabled = userConfig.Worktree.DefaultEnabled
 		if d.worktreeEnabled {
@@ -1574,6 +1579,7 @@ func (d *NewDialog) ResetRemoteDefaults() {
 	d.claudeOptions.SetFromOptions(&session.ClaudeOptions{SessionMode: "new"})
 	d.claudeOptions.SetExtraArgs(nil)
 	d.claudeOptions.SetAccounts(nil)
+	d.claudeOptions.SetDefaultAccount("") // #2895: the local default never travels
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
@@ -2368,6 +2374,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				total := len(d.conductorSessions) + 1
 				if d.conductorCursor < total-1 {
 					d.conductorCursor++
+					d.reapplyDefaultAccount()
 					return d, nil
 				}
 			}
@@ -2402,6 +2409,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			if cur == focusConductor {
 				if d.conductorCursor > 0 {
 					d.conductorCursor--
+					d.reapplyDefaultAccount()
 					return d, nil
 				}
 			}
@@ -2465,6 +2473,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				total := len(d.conductorSessions) + 1 // +1 for "None"
 				if d.conductorCursor < total-1 {
 					d.conductorCursor++
+					d.reapplyDefaultAccount()
 					return d, nil
 				}
 			}
@@ -2487,6 +2496,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			if cur == focusConductor {
 				if d.conductorCursor > 0 {
 					d.conductorCursor--
+					d.reapplyDefaultAccount()
 					return d, nil
 				}
 			}
@@ -3905,6 +3915,29 @@ func (d *NewDialog) GetParentProjectPath() string {
 		return ""
 	}
 	return d.conductorSessions[d.conductorCursor-1].ProjectPath
+}
+
+// reapplyDefaultAccount re-runs the #2895 default after the Parent row
+// moved, so a conductor with its own config_dir keeps the session on
+// inherit and moving off it restores the default. A pick the user made on
+// the Account row in this opening stays.
+func (d *NewDialog) reapplyDefaultAccount() {
+	if d.remoteTarget || d.claudeOptions.AccountTouched() {
+		return
+	}
+	userConfig, err := session.LoadUserConfig()
+	if err != nil || userConfig == nil {
+		return
+	}
+	d.claudeOptions.SetAccount(session.DefaultAccountForNewSession(userConfig, d.parentGroupPath, d.selectedConductor()))
+}
+
+// selectedConductor returns the selected conductor parent, or nil.
+func (d *NewDialog) selectedConductor() *session.Instance {
+	if d.conductorCursor <= 0 || d.conductorCursor > len(d.conductorSessions) {
+		return nil
+	}
+	return d.conductorSessions[d.conductorCursor-1]
 }
 
 // toolKind uses only the owning host's compatibility catalog for remote tools.

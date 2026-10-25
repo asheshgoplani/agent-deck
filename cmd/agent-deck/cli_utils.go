@@ -33,6 +33,27 @@ func resolveCLIAccountSlot(explicitAccount, resolvedTool, resolvedCommand string
 	return account, candidate.ValidateAccount()
 }
 
+// defaultCLIAccountSlot applies [claude].default_account (#2895) to a new
+// session created without --account or AGENTDECK_ACCOUNT, the same default
+// the TUI's New Session dialog preselects. Claude sessions only; a group or
+// parent conductor config_dir, or a slot no longer configured, leaves the
+// session on inherit (session.DefaultAccountForNewSession). So does an
+// ambient CLAUDE_CONFIG_DIR: a Claude session exports its account's dir, and
+// a child it creates keeps that account, as before the default existed.
+func defaultCLIAccountSlot(inst *session.Instance, parent *session.Instance) string {
+	if inst == nil || !session.IsClaudeCompatible(inst.Tool) {
+		return ""
+	}
+	if session.AmbientClaudeConfigDir() != "" {
+		return ""
+	}
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		return ""
+	}
+	return session.DefaultAccountForNewSession(cfg, inst.GroupPath, parent)
+}
+
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
 // the caller's own session. These deliberately omit -L so tmux auto-routes via
 // $TMUX (see the display-message entries in TestNoRawTmuxExec_OutsideAllowlist),

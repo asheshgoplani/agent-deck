@@ -15,6 +15,7 @@
                            │  CLAUDE                                                        │
                            │    [x] Dangerous mode - Skip permission prompts                │
                            │    Config directory: ~/.claude (default)                       │
+                           │    Default account: >None                                      │
                            │                                                                │
                            │  GEMINI                                                        │
                            │    [ ] YOLO mode - Auto-approve all actions                    │
@@ -32,7 +33,6 @@
                            │    [ ] Restart automatically after update                      │
                            │                                                                │
                            │  LOGS                                                          │
-                           │    Max file size: [10] MB    Lines to keep: [10000]            │
                            │    ▼ more below                                                │
                            │  j/k Navigate  Space Toggle                                    │
                            │  h/l Adjust  Enter Edit  Esc Close                             │

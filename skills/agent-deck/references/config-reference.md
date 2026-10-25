@@ -124,6 +124,7 @@ Claude Code integration settings.
 ```toml
 [claude]
 config_dir = "~/.claude"           # Path to Claude config directory
+default_account = "work"           # Account slot new sessions start on ("" = inherit)
 dangerous_mode = true              # Enable --dangerously-skip-permissions
 auto_mode = false                  # Enable --permission-mode auto (classifier-based)
 allow_dangerous_mode = false       # Enable --allow-dangerously-skip-permissions
@@ -142,6 +143,7 @@ prompt_suggestions = "on"          # Optional override of [launch].prompt_sugges
 |-----|------|---------|-------------|
 | `config_dir` | string | `~/.claude` | Claude config directory. Override with `CLAUDE_CONFIG_DIR` env. |
 | `profiles.<name>.claude.config_dir` | string | none | Profile-specific Claude config directory. Takes precedence over `[claude].config_dir` when that profile is active. |
+| `default_account` | string | `""` | Named account slot (a `[profiles.<name>.claude]` block with a `config_dir`) that new Claude sessions start on when none is picked. The New Session dialog preselects it (its pill reads `<slot> (default)`; `←`/`→` still reaches `inherit` and every slot, and a one-off pick is not remembered), and `add` / `launch` without `--account` or `AGENTDECK_ACCOUNT` use it. It is applied at creation only: the slot is stored on the session, so changing the default never moves an existing session (use `session switch-account` for that). A group or parent conductor with its own `config_dir` keeps the session on `inherit`; a slot no longer configured falls back to `inherit` (logged as `default_account_not_configured`). This machine's default never travels to a remote target or `add --ssh` session; a remote server that has its own `default_account` applies that one when no slot is picked. In the CLI an ambient `CLAUDE_CONFIG_DIR` also wins, so a session that agent-deck started on an account (it exports that account's dir) creates children on the same account. In the dialog, moving the Parent row onto or off a conductor with its own `config_dir` re-applies the rule until you touch the Account row. Quick create (recent sessions, zoxide) stays on `inherit`. Empty keeps the conductor/group/env chain. Settable from Settings (`S`, Claude → Default account) or `agent-deck config set claude.default_account <slot>`. |
 | `dangerous_mode` | bool | `false` | Adds `--dangerously-skip-permissions`. Forces bypass on. Takes precedence over `auto_mode` and `allow_dangerous_mode`. |
 | `auto_mode` | bool | `false` | Adds `--permission-mode auto`. A classifier model auto-approves safe operations while blocking risky ones. Ignored when `dangerous_mode` is true. |
 | `allow_dangerous_mode` | bool | `false` | Adds `--allow-dangerously-skip-permissions`. Unlocks bypass as an option without activating it. Ignored when `dangerous_mode` or `auto_mode` is true. |

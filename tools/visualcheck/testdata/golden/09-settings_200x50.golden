@@ -15,6 +15,7 @@
                                                                    │  CLAUDE                                                        │
                                                                    │    [x] Dangerous mode - Skip permission prompts                │
                                                                    │    Config directory: ~/.claude (default)                       │
+                                                                   │    Default account: >None                                      │
                                                                    │                                                                │
                                                                    │  GEMINI                                                        │
                                                                    │    [ ] YOLO mode - Auto-approve all actions                    │
@@ -42,7 +43,6 @@
                                                                    │                                                                │
                                                                    │  PREVIEW                                                       │
                                                                    │    [x] Show Output - Terminal output in preview                │
-                                                                   │    [ ] Show Analytics - Claude analytics panel                 │
                                                                    │    ▼ more below                                                │
                                                                    │  j/k Navigate  Space Toggle                                    │
                                                                    │  h/l Adjust  Enter Edit  Esc Close                             │

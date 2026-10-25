@@ -39,6 +39,12 @@ type ClaudeOptionsPanel struct {
 	// accountCursor indexes accounts+1: 0 selects "inherit" (no per-session
 	// slot, i.e. the conductor/group/env chain), i+1 selects accounts[i].
 	accountCursor int
+	// defaultAccount is the [claude].default_account slot (#2895), labelled
+	// "(default)" in the row. Local only: a remote target clears it.
+	defaultAccount string
+	// accountTouched is set once the user moves the account row in this
+	// opening, so a parent change no longer re-applies the default (#2895).
+	accountTouched bool
 	// Whether this panel is for fork dialog (fewer options)
 	isForkMode bool
 	// Total number of focusable elements
@@ -104,7 +110,15 @@ func (p *ClaudeOptionsPanel) SetDefaults(config *session.UserConfig) {
 		p.useChrome = config.Claude.UseChrome
 		p.useTeammateMode = config.Claude.UseTeammateMode
 		p.SetAccounts(session.ConfiguredAccountNames(config))
+		p.SetDefaultAccount(config.Claude.DefaultAccount)
 	}
+}
+
+// SetDefaultAccount marks the configured default slot (#2895) so its pill
+// reads "<slot> (default)". A name that is not one of the row's slots marks
+// nothing. It only labels; the caller preselects with SetAccount.
+func (p *ClaudeOptionsPanel) SetDefaultAccount(account string) {
+	p.defaultAccount = strings.TrimSpace(account)
 }
 
 // SetAccounts populates the account row. Callers pass the configured Claude
@@ -122,6 +136,7 @@ func (p *ClaudeOptionsPanel) SetAccounts(accounts []string) {
 // "inherit", matching what an unset Instance.Account resolves to.
 func (p *ClaudeOptionsPanel) SetAccount(account string) {
 	p.accountCursor = 0
+	p.accountTouched = false
 	for i, name := range p.accounts {
 		if name == account {
 			p.accountCursor = i + 1
@@ -154,6 +169,13 @@ func (p *ClaudeOptionsPanel) cycleAccount(step int) {
 		return
 	}
 	p.accountCursor = ((p.accountCursor+step)%span + span) % span
+	p.accountTouched = true
+}
+
+// AccountTouched reports whether the user moved the account row since the
+// last SetAccount.
+func (p *ClaudeOptionsPanel) AccountTouched() bool {
+	return p.accountTouched
 }
 
 // SetFromOptions applies persisted ClaudeOptions to the panel fields.
@@ -652,18 +674,24 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 		if p.focusIndex == focusIdx {
 			label = activeStyle.Render("  ▶ Account:")
 		}
-		content += label + "\n    " + renderLabelPills(accountPillLabels(p.accounts), p.accountCursor) + "\n"
+		content += label + "\n    " + renderLabelPills(accountPillLabels(p.accounts, p.defaultAccount), p.accountCursor) + "\n"
 	}
 
 	return content
 }
 
 // accountPillLabels renders the account row's options: the inherit slot
-// first, then every configured account in config order.
-func accountPillLabels(accounts []string) []string {
+// first, then every configured account in config order, the configured
+// default (#2895) suffixed " (default)".
+func accountPillLabels(accounts []string, defaultAccount string) []string {
 	labels := make([]string, 0, len(accounts)+1)
 	labels = append(labels, "inherit")
-	labels = append(labels, accounts...)
+	for _, name := range accounts {
+		if defaultAccount != "" && name == defaultAccount {
+			name += " (default)"
+		}
+		labels = append(labels, name)
+	}
 	return labels
 }
 

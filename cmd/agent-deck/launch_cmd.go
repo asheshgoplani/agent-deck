@@ -594,6 +594,11 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		newInstance.SubcommandPassthrough = sessionCommandIsPassthrough
 		newInstance.TrackCommandExit = newInstance.Tool == "shell" && !sessionCommandIsPassthrough
 	}
+	// #2895: no --account or AGENTDECK_ACCOUNT → [claude].default_account,
+	// applied once the tool is known (Claude sessions only).
+	if newInstance.Account == "" {
+		newInstance.Account = defaultCLIAccountSlot(newInstance, parentInstance)
+	}
 	if err := newInstance.ValidateAccount(); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)

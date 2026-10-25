@@ -22,6 +22,7 @@ const (
 	SettingDefaultTool
 	SettingDangerousMode
 	SettingClaudeConfigDir
+	SettingClaudeDefaultAccount
 	SettingGeminiYoloMode
 	SettingCodexYoloMode
 	SettingHermesYoloMode
@@ -60,7 +61,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 39
+const settingsCount = 40
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -109,6 +110,12 @@ type SettingsPanel struct {
 	statsShowNetwork    bool
 	statsShowGPU        bool
 	statsShowLoad       bool
+
+	// [claude].default_account (#2895) and the slots its radio row offers
+	// (ConfiguredAccountNames). The value is kept verbatim, so a slot removed
+	// from config survives an unrelated save until the row is moved.
+	claudeDefaultAccount string
+	claudeAccountSlots   []string
 
 	showSessionTimestamps  bool
 	showPaneTitles         bool
@@ -299,6 +306,8 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 			s.claudeConfigIsScope = true
 		}
 	}
+	s.claudeDefaultAccount = config.Claude.DefaultAccount
+	s.claudeAccountSlots = session.ConfiguredAccountNames(config)
 
 	// Gemini settings
 	s.geminiYoloMode = config.Gemini.YoloMode
@@ -451,6 +460,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	if !s.claudeConfigIsScope {
 		config.Claude.ConfigDir = s.claudeConfigDir
 	}
+	config.Claude.DefaultAccount = s.claudeDefaultAccount
 
 	// Gemini settings
 	config.Gemini.YoloMode = s.geminiYoloMode
@@ -683,6 +693,16 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 			changed = true
 		}
 
+	case SettingClaudeDefaultAccount:
+		idx := s.defaultAccountIndex() + delta
+		if idx >= 0 && idx <= len(s.claudeAccountSlots) {
+			s.claudeDefaultAccount = ""
+			if idx > 0 {
+				s.claudeDefaultAccount = s.claudeAccountSlots[idx-1]
+			}
+			changed = true
+		}
+
 	case SettingSearchTier:
 		newVal := s.searchTier + delta
 		if newVal >= 0 && newVal < len(tierNames) {
@@ -747,6 +767,17 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 	}
 
 	return changed
+}
+
+// defaultAccountIndex is the Default account radio index: 0 = None, i+1 =
+// claudeAccountSlots[i]. A slot no longer configured reads as None.
+func (s *SettingsPanel) defaultAccountIndex() int {
+	for i, name := range s.claudeAccountSlots {
+		if name == s.claudeDefaultAccount {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // toggleValue toggles a checkbox value
@@ -1016,6 +1047,17 @@ func (s *SettingsPanel) View() string {
 		line += s.claudeConfigDir
 	}
 	if s.cursor == int(SettingClaudeConfigDir) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	// Default account (#2895): the slot new sessions start on.
+	accountNames := append([]string{"None"}, s.claudeAccountSlots...)
+	line = "Default account: " + s.renderRadioGroup(accountNames, s.defaultAccountIndex(), s.cursor == int(SettingClaudeDefaultAccount))
+	if s.claudeDefaultAccount != "" && s.defaultAccountIndex() == 0 {
+		line += dimStyle.Render(" (" + s.claudeDefaultAccount + " not configured)")
+	}
+	if s.cursor == int(SettingClaudeDefaultAccount) {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
@@ -1368,41 +1410,42 @@ func (s *SettingsPanel) View() string {
 			7,  // SettingDefaultTool
 			11, // SettingDangerousMode
 			12, // SettingClaudeConfigDir
-			15, // SettingGeminiYoloMode
-			18, // SettingCodexYoloMode
-			21, // SettingHermesYoloMode
-			24, // SettingCheckForUpdates
-			25, // SettingAutoUpdate
-			26, // SettingAutoInstall
-			27, // SettingAutoRestart
-			30, // SettingLogMaxSize
-			30, // SettingLogMaxLines (shares line with LogMaxSize)
-			31, // SettingRemoveOrphans
-			34, // SettingGlobalSearchEnabled
-			35, // SettingSearchTier
-			36, // SettingRecentDays
-			39, // SettingShowOutput
-			40, // SettingShowAnalytics
-			41, // SettingShowNotes
-			42, // SettingNotesOutputSplit
-			45, // SettingMaintenanceEnabled
-			48, // SettingStatsEnabled
-			49, // SettingStatsRefresh
-			50, // SettingStatsFormat
-			52, // SettingStatsShowCPU (row with RAM, Disk)
-			52, // SettingStatsShowRAM
-			52, // SettingStatsShowDisk
-			53, // SettingStatsShowNetwork (row with GPU, Load)
-			53, // SettingStatsShowGPU
-			53, // SettingStatsShowLoad
-			56, // SettingSyncTitle (SESSIONS section, after stats)
-			59, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
-			60, // SettingShowPaneTitles (DISPLAY section, after timestamps)
-			63, // SettingShowOnlyInstalledTools (TOOL PICKER section)
-			64, // SettingVisibleTools
-			67, // SettingEmbeddedTerminal (INTERFACE section)
-			68, // SettingSidebarDensity
-			73, // SettingPrivacy (PRIVACY section)
+			13, // SettingClaudeDefaultAccount
+			16, // SettingGeminiYoloMode
+			19, // SettingCodexYoloMode
+			22, // SettingHermesYoloMode
+			25, // SettingCheckForUpdates
+			26, // SettingAutoUpdate
+			27, // SettingAutoInstall
+			28, // SettingAutoRestart
+			31, // SettingLogMaxSize
+			31, // SettingLogMaxLines (shares line with LogMaxSize)
+			32, // SettingRemoveOrphans
+			35, // SettingGlobalSearchEnabled
+			36, // SettingSearchTier
+			37, // SettingRecentDays
+			40, // SettingShowOutput
+			41, // SettingShowAnalytics
+			42, // SettingShowNotes
+			43, // SettingNotesOutputSplit
+			46, // SettingMaintenanceEnabled
+			49, // SettingStatsEnabled
+			50, // SettingStatsRefresh
+			51, // SettingStatsFormat
+			53, // SettingStatsShowCPU (row with RAM, Disk)
+			53, // SettingStatsShowRAM
+			53, // SettingStatsShowDisk
+			54, // SettingStatsShowNetwork (row with GPU, Load)
+			54, // SettingStatsShowGPU
+			54, // SettingStatsShowLoad
+			57, // SettingSyncTitle (SESSIONS section, after stats)
+			60, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			61, // SettingShowPaneTitles (DISPLAY section, after timestamps)
+			64, // SettingShowOnlyInstalledTools (TOOL PICKER section)
+			65, // SettingVisibleTools
+			68, // SettingEmbeddedTerminal (INTERFACE section)
+			69, // SettingSidebarDensity
+			74, // SettingPrivacy (PRIVACY section)
 		}
 		cursorLine := rowOf[cursorToLine[s.cursor]]
 

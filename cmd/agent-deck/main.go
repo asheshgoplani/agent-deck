@@ -2690,6 +2690,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 
 	// Validate the selected slot before account-dependent loadout or registration.
 	newInstance.Account = selectedAccount
+	// #2895: no --account or AGENTDECK_ACCOUNT → [claude].default_account.
+	// Not for --ssh: the slot names a config_dir on this machine.
+	if newInstance.Account == "" && *sshHost == "" {
+		newInstance.Account = defaultCLIAccountSlot(newInstance, parentInstance)
+	}
 	if err := newInstance.ValidateAccount(); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)

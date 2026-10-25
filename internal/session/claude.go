@@ -491,6 +491,12 @@ func envClaudeConfigDirIgnoringScratchLeak() string {
 	return expanded
 }
 
+// AmbientClaudeConfigDir returns the CLAUDE_CONFIG_DIR of this process's
+// environment as the resolver reads it (a worker-scratch leak ignored), or "".
+func AmbientClaudeConfigDir() string {
+	return envClaudeConfigDirIgnoringScratchLeak()
+}
+
 // GetClaudeConfigDir returns the Claude config directory for the active profile.
 func GetClaudeConfigDir() string {
 	path, _ := resolveClaudeConfigDir(resolveOpts{})

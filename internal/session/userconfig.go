@@ -2216,6 +2216,15 @@ type ClaudeSettings struct {
 	// Code falls back to its own default (#1172).
 	DefaultModel string `toml:"default_model,omitempty"`
 
+	// DefaultAccount is the named account slot (a [profiles.<name>.claude]
+	// block with a config_dir) new Claude sessions start on when no slot is
+	// picked: the New Session dialog preselects it and `add`/`launch` without
+	// --account use it (#2895). It is copied into Instance.Account at creation
+	// only, so changing it never moves an existing session. A group or
+	// conductor config_dir still wins, and a slot that is no longer configured
+	// falls back to inherit. Default: "" (inherit the conductor/group/env chain).
+	DefaultAccount string `toml:"default_account,omitempty"`
+
 	// UseChrome enables --chrome by default for Claude sessions.
 	UseChrome bool `toml:"use_chrome,omitempty"`
 
