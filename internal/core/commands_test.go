@@ -421,6 +421,9 @@ func TestQueuedStartKeepsMessageAndDrainDeliversOnce(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	// An install from before the FX-8 safe defaults (auto_trust_folders on);
+	// the new-install side is in internal/session/folder_trust_policy_test.go.
+	defer session.SetInstallKindForTest(session.InstallKindExisting)()
 	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_start_queue_msg_%d", time.Now().UnixNano())
 	dir := t.TempDir()
