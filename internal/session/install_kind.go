@@ -145,10 +145,12 @@ func installHasHistory() bool {
 			continue
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			dir := filepath.Join(root, ProfilesDirName, e.Name())
+			// Follow a symlinked profile dir (another disk, dotfiles): the
+			// DirEntry type of a link is not a directory.
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 				continue
 			}
-			dir := filepath.Join(root, ProfilesDirName, e.Name())
 			if pathPresent(filepath.Join(dir, storeRootStateDBName)) || pathPresent(filepath.Join(dir, storeRootLegacySessionsJSON)) {
 				return true
 			}
@@ -300,17 +302,9 @@ func ApplyInstallDefaults() (string, error) {
 		}
 		if len(kept) > 0 {
 			if updated, ok := insertLegacyDefaults(content, kept); ok {
-				if err := backupConfigFile(configPath); err != nil {
-					return "", fmt.Errorf("install defaults: back up %s: %w", configPath, err)
+				if err := writeConfigInPlace(configPath, updated); err != nil {
+					return "", fmt.Errorf("install defaults: %w", err)
 				}
-				perm := os.FileMode(0o600)
-				if info, err := os.Stat(configPath); err == nil {
-					perm = info.Mode().Perm()
-				}
-				if err := atomicfile.WriteFileDurable(configPath, updated, perm); err != nil {
-					return "", fmt.Errorf("install defaults: write %s: %w", configPath, err)
-				}
-				ClearUserConfigCache()
 				written = true
 			} else {
 				sessionLog.Warn("install_defaults_config_not_edited", slog.String("path", configPath))
@@ -360,6 +354,47 @@ func tomlTableHeader(table string) *regexp.Regexp {
 	return regexp.MustCompile(`(?m)^[ \t]*\[[ \t]*` + regexp.QuoteMeta(table) + `[ \t]*\][ \t]*(#.*)?$`)
 }
 
+// insertAfterTableHeader puts line right after the [table] header line. It
+// reports false when the content has no such header.
+func insertAfterTableHeader(content []byte, table, line string) ([]byte, bool) {
+	loc := tomlTableHeader(table).FindIndex(content)
+	if loc == nil {
+		return nil, false
+	}
+	end := loc[1]
+	var buf bytes.Buffer
+	buf.Write(content[:end])
+	if end < len(content) && content[end] == '\r' {
+		buf.WriteByte('\r')
+		end++
+	}
+	if end < len(content) && content[end] == '\n' {
+		end++
+	}
+	buf.WriteByte('\n')
+	buf.WriteString(line)
+	buf.Write(content[end:])
+	return buf.Bytes(), true
+}
+
+// writeConfigInPlace replaces config.toml with an in-place text edit of it:
+// config.toml.bak first, the file's permission bits kept, a symlink written
+// through, atomic and durable.
+func writeConfigInPlace(configPath string, updated []byte) error {
+	if err := backupConfigFile(configPath); err != nil {
+		return fmt.Errorf("back up %s: %w", configPath, err)
+	}
+	perm := os.FileMode(0o600)
+	if info, err := os.Stat(configPath); err == nil {
+		perm = info.Mode().Perm()
+	}
+	if err := atomicfile.WriteFileDurable(configPath, updated, perm); err != nil {
+		return fmt.Errorf("write %s: %w", configPath, err)
+	}
+	ClearUserConfigCache()
+	return nil
+}
+
 // insertLegacyDefaults adds "key = true" for each switch: on the line right
 // after its table's header, or as a new table at the end. The result must
 // decode to exactly the old document plus those keys; otherwise (an inline
@@ -370,22 +405,8 @@ func insertLegacyDefaults(content []byte, kept []legacyDefault) ([]byte, bool) {
 	var tail bytes.Buffer
 	for _, d := range kept {
 		line := d.key + " = true\n"
-		re := tomlTableHeader(d.table)
-		if loc := re.FindIndex(out); loc != nil {
-			end := loc[1]
-			var buf bytes.Buffer
-			buf.Write(out[:end])
-			if end < len(out) && out[end] == '\r' {
-				buf.WriteByte('\r')
-				end++
-			}
-			if end < len(out) && out[end] == '\n' {
-				end++
-			}
-			buf.WriteByte('\n')
-			buf.WriteString(line)
-			buf.Write(out[end:])
-			out = buf.Bytes()
+		if updated, ok := insertAfterTableHeader(out, d.table, line); ok {
+			out = updated
 			continue
 		}
 		fmt.Fprintf(&tail, "\n[%s]\n%s", d.table, line)

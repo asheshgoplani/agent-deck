@@ -484,3 +484,56 @@ func TestApplyInstallDefaults_MarkerKeepsValueAfterLineRemoved(t *testing.T) {
 		t.Error("existing install: removing the written line flipped dangerous_mode")
 	}
 }
+
+// Review M1: a profile directory that is a symlink (to another disk or a
+// dotfiles location) still holds the install's history.
+func TestInstallKind_SymlinkedProfileDirIsExisting(t *testing.T) {
+	home := installKindHome(t)
+	real := filepath.Join(home, "data", "agent-deck-default")
+	writeTestFile(t, filepath.Join(real, "state.db"), "x")
+	profiles := filepath.Join(home, ".local", "share", "agent-deck", "profiles")
+	if err := os.MkdirAll(profiles, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(profiles, "default")); err != nil {
+		t.Fatal(err)
+	}
+	if got := InstallKind(); got != InstallKindExisting {
+		t.Fatalf("InstallKind() = %q, want existing (symlinked profile dir with a store)", got)
+	}
+	// The first-run wizard's save must not record the install as new.
+	if err := SaveUserConfig(&UserConfig{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := installMarker(t, home); got == InstallKindNew {
+		t.Fatal("first config save recorded an existing install as new")
+	}
+	ClearUserConfigCache()
+	cfg, _ := LoadUserConfig()
+	if !cfg.Security.GetAutoTrustFolders() {
+		t.Error("existing install with a symlinked profile dir lost auto_trust_folders = true")
+	}
+}
+
+// Review LOW: the one-time edit keeps the file's permission bits.
+func TestApplyInstallDefaults_KeepsFileMode(t *testing.T) {
+	home := installKindHome(t)
+	path := xdgConfigTOML(home)
+	writeTestFile(t, path, "theme = \"dark\"\n")
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyInstallDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Errorf("config.toml mode after the one-time edit = %#o, want 0640", got)
+	}
+	if !strings.Contains(readTestFile(t, path), "dangerous_mode = true") {
+		t.Error("one-time edit did not run")
+	}
+}
