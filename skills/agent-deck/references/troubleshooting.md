@@ -9,7 +9,7 @@ Common issues and solutions for agent-deck.
 | Session shows `✕` error | `agent-deck session start <name>` |
 | MCPs not loading | `agent-deck session restart <name>` |
 | CLI changes not in TUI | Press `Ctrl+R` to refresh |
-| Flag not working | Put flags BEFORE arguments |
+| Flag not working | Flags work before or after arguments; anything after `--` is not a flag |
 | Fork fails | Check Claude session has a valid session ID, or Pi session has JSONL history under Agent Deck's Pi session dir |
 | Status stuck | Wait 2 seconds or press `u` to mark unread |
 
@@ -26,7 +26,7 @@ terminals and Windows Terminal, including WSL2. This bypasses application mouse
 reporting and lets the terminal perform native selection.
 
 The full explanation of why mouse capture blocks selection, plus the complete
-copy-key table (`c` / `C` / `V` / `Y`), lives in
+copy-key table (`c` / `B` / `V` / `Y`), lives in
 [Terminal shortcuts](../../../docs/terminal-shortcuts.md#text-selection-and-copying)
 and the [TUI Reference](tui-reference.md#copy--text-selection).
 
@@ -43,15 +43,16 @@ resizing, and mouse copy mode.
 
 ### Flags Ignored
 
-**Problem:** Flags after positional arguments are silently ignored.
+Flags may go before or after positional arguments; agent-deck moves them into place, so both of these send the message:
 
 ```bash
-# WRONG - message not sent
 agent-deck session start my-project -m "Hello"
-
-# CORRECT
 agent-deck session start -m "Hello" my-project
 ```
+
+If a flag still seems ignored: everything after `--` is positional, and a value flag followed by another flag (`-m --json`) is an error. Pass `-m=--json` if that really is the value.
+
+Two subcommands still stop parsing at the first positional, so put their flags first: `config show --json <path>` (in `config show <path> --json` the `--json` is ignored) and `openclaw send --agent <id> <message>` (anything after the message start is message text).
 
 ### MCP Not Available
 
@@ -125,7 +126,7 @@ Atuin pty-proxy is only needed for the atuin TUI overlay feature and is not requ
 
 **With many sessions:** Normal if batched updates. Check:
 ```bash
-agent-deck status  # Should show ~0.5% CPU when idle
+agent-deck health  # per-process CPU%, RSS and status-pass latency against the budgets
 ```
 
 **With active session:** Normal (live preview updates).
@@ -318,7 +319,7 @@ AGENTDECK_DEBUG=1 agent-deck
 
 Check session logs:
 ```bash
-tail -100 ~/.agent-deck/logs/agentdeck_<session>_*.log
+tail -100 ~/.local/share/agent-deck/logs/agentdeck_<session>_*.log
 ```
 
 ## Report a Bug
@@ -343,7 +344,7 @@ agent-deck session show <session-name> --json
 cat ~/.config/agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET\|PASSWORD"  # (legacy: ~/.agent-deck/config.toml)
 
 # Recent logs (if error occurred)
-tail -100 ~/.agent-deck/logs/agentdeck_<session>_*.log 2>/dev/null
+tail -100 ~/.local/share/agent-deck/logs/agentdeck_<session>_*.log 2>/dev/null
 
 # System info
 uname -a
@@ -441,7 +442,7 @@ mv ~/.agent-deck/profiles/default/sessions.json.migrated \
 
 Session logs preserved:
 ```bash
-tail -500 ~/.agent-deck/logs/agentdeck_<session>_*.log
+tail -500 ~/.local/share/agent-deck/logs/agentdeck_<session>_*.log
 ```
 
 ### Profile Corrupted
@@ -471,9 +472,9 @@ curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/unins
 - **Binary:** `~/.local/bin/agent-deck` or `/usr/local/bin/agent-deck`
 - **Homebrew:** `agent-deck` package (if installed via brew)
 - **tmux config:** The `# agent-deck configuration` block in `~/.tmux.conf`
-- **Data directory:** `~/.agent-deck/` (sessions, logs, config)
+- **Data:** the XDG config/data/cache dirs (`~/.config/agent-deck/`, `~/.local/share/agent-deck/`, `~/.cache/agent-deck/`) and a legacy `~/.agent-deck/`
 
-Use `--keep-data` to preserve your sessions and configuration.
+Use `--keep-data` to preserve your sessions and configuration, `--keep-tmux-config` to keep the tmux block, and `-y` to skip the prompts.
 
 ## Critical Warnings
 

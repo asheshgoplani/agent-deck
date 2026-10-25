@@ -94,7 +94,7 @@ agent-deck launch -g book-keeper -c claude   # no path: lands on the group's def
 ```
 
 Notes:
-- `[path]` omitted: resolves the target group's `default_path`, then the global `default_path` config key, then cwd — the same chain as `add` (#1303). An explicit `.` always means the current directory.
+- `[path]` omitted: resolves the target group's `default_path`, then the global `default_path` config key, then the group's most recent session path, then cwd — the same chain as `add` (#1303). An explicit `.` always means the current directory.
 - `--account <name>` selects a named slot from `[profiles.<name>.claude].config_dir` for this session, matching `add --account`. Without `--account` (or `AGENTDECK_ACCOUNT`), `add` and `launch` put a Claude session on `[claude].default_account` when it is set, unless the target group or parent conductor has its own `config_dir` or `CLAUDE_CONFIG_DIR` is set in the environment (a child created from an agent-deck Claude session keeps that session's account); the same default the TUI's New Session dialog preselects.
 - `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh|max|ultra` plus any level the installed Codex advertises; other tools refuse the flag. When the installed Codex describes the chosen `--model`, only that model's levels are accepted. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
 - `--model` accepts any ID: the model lists are suggestions, not an allowlist, and an ID the list lacks is passed to the tool as is.
@@ -106,10 +106,10 @@ Notes:
 ### accounts - List named account slots
 
 ```bash
-agent-deck accounts [--json]
+agent-deck accounts [--harness claude|codex] [--json]
 ```
 
-Lists profiles that configure a Claude `config_dir`; these names are accepted by `add --account`, `launch --account`, `session set <id> account`, `session switch-account`, and the account rows in the TUI's New Session and Edit Session dialogs.
+Lists profiles that configure a Claude `config_dir` (with `--harness codex`, the `[profiles.<name>.codex].config_dir` slots instead); these names are accepted by `add --account`, `launch --account`, `session set <id> account`, `session switch-account`, and the account rows in the TUI's New Session and Edit Session dialogs.
 
 Each row reports the slot name, its config dir, and whether that directory exists yet — a configured account with no directory has never been logged in (`CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`). The `--json` form carries the same three fields (`name`, `config_dir`, `exists`).
 
@@ -295,10 +295,10 @@ that do not own a Telegram channel remains in effect.
 ### session fork (Claude, OpenCode, Pi, Codex, Oh My Pi)
 
 ```bash
-agent-deck session fork <id|title> [-t "title"] [-g "group"]
+agent-deck session fork <id|title> [-t "title"] [-g "group"] [-w <branch> [-b] [--with-state|--with-state-and-gitignored]] [--sandbox [--sandbox-image <img>]] [--json]
 ```
 
-Creates a new session with the same conversation context for supported tools.
+Creates a new session with the same conversation context for supported tools. `-w` forks into a new worktree for the branch (`-b` creates the branch); `--with-state` carries the parent's uncommitted changes (`--with-state-and-gitignored` also copies gitignored files such as `.env`). `-g` resolves like `add -g` (see [Group Commands](#group-commands)); without `-g` the fork goes into the parent's group.
 
 In the TUI, quick fork (`f`) is comprehensive by default: it creates a new git worktree + branch, carries the parent's uncommitted state, matches Docker isolation, and inherits the Claude launch options. Defaults are configured in the `[fork]` section — see [config-reference.md](config-reference.md#fork-section). The Web/API fork is a plain tool-native fork and does not apply the `[fork]` defaults.
 
@@ -425,7 +425,7 @@ agent-deck session primer my-project --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level, prompt-suggestions, wait-timeout
+**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, tool-session-id, account, idle-timeout, context-level, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -1051,17 +1051,23 @@ agent-deck skill source rm <name>
 
 ## Group Commands
 
+`-g/--group` on `add`, `launch`, `session fork` and `session move --group` resolves the same way: a unique short name goes to the existing group's full path (`workers` → `deck/team/workers`), a name shared by several groups is an error that lists them, and an unknown name is created as typed.
+
 ### group list
 
 ```bash
 agent-deck group list [--json] [-q]
+agent-deck group show <name> [--resolved] [--json]   # --resolved adds the effective claude config
 ```
 
 ### group create
 
 ```bash
-agent-deck group create <name> [--parent <group>]
+agent-deck group create <name> [--parent <group>] [--default-path <dir>] [--max-concurrent N]
+agent-deck group update <name> [--default-path <dir> | --clear-default-path] [--max-concurrent N]
 ```
+
+`--max-concurrent`: 0 = unlimited, 1 = serial, N = cap. Flags may follow the name.
 
 ### group delete
 
@@ -1075,9 +1081,13 @@ agent-deck group delete <name> [--force]
 
 ```bash
 agent-deck group move <session> <group>
+agent-deck group move <group> --to-profile <name> [--force]   # move every session in the group to another profile
+agent-deck group change <group> [<dest>]                     # reparent a group (no dest = root)
+agent-deck group reorder <name> --up|--down|--position N
+agent-deck session move <id|title> <new-path> [--group <g>] [--copy] [--no-restart]
 ```
 
-Use `""` or `root` to move to default group.
+Use `""` or `root` to move to default group. `session move` moves a session to a new path and carries its Claude history along.
 
 ## Profile Commands
 
@@ -1098,9 +1108,9 @@ agent-deck conductor status [name]
 agent-deck conductor list [--profile <name>]
 ```
 
-- `setup` creates `~/.agent-deck/conductor/<name>/` plus `meta.json` and registers `conductor-<name>` session in the selected profile.
+- `setup` creates `<conductor dir>/<name>/` plus `meta.json` (conductor dir: `[conductor].dir`, else `~/.local/share/agent-deck/conductor`, with legacy `~/.agent-deck/conductor` as a fallback) and registers `conductor-<name>` session in the selected profile.
 - Re-running `setup <name>` without `--agent` keeps the conductor's existing agent (new conductors default to `claude`); pass `--agent` explicitly to switch. On a switch, the previous agent's instructions file (`CLAUDE.md` / `AGENTS.md` / `HERMES.md`) is deleted only if it still matches the generated template; an edited file is renamed to `<file>.bak-<timestamp>`.
-- `setup` also installs shared `~/.agent-deck/conductor/CLAUDE.md` (or symlink via `--shared-claude-md`).
+- `setup` also installs shared `<conductor dir>/CLAUDE.md` (or symlink via `--shared-claude-md`).
 - Heartbeat timers run per conductor (default every 15 minutes) and can be disabled with `--no-heartbeat`.
 - Heartbeat sends use non-blocking `session send --no-wait -q` to avoid timeout churn when sessions are busy.
 - Bridge daemon is installed only when Telegram and/or Slack is configured in `[conductor]`.
@@ -1360,11 +1370,11 @@ agent-deck inbox drain [--json] <session-id>            # consume pending comple
 agent-deck inbox export [--json] [--profile <name>]     # read-only: this profile's records on this host, nothing consumed
 agent-deck inbox export --json --after '<cursor>' [--with-writer]  # read-only: only records newer than the cursor
 agent-deck inbox cursor [--json] [<remote>]             # the remote-talkback cursors this machine keeps
-agent-deck inbox dead-letter list|show [--json]         # inspect physical dead-letter / unowned-ledger records
+agent-deck inbox dead-letter list|show|retry|purge     # inspect, redeliver or purge dead-letter records
 agent-deck inbox writer-status [--json]                 # is a notify-daemon actually recording transitions here?
 ```
 
-`drain` preserves distinct turns per child and dedups re-delivery via `turn_fingerprint`; run it first on every heartbeat — reading clears the inbox. `export` is what `remote drain` runs over SSH to pull one host's records into another without consuming anything locally. `dead-letter list`/`dead-letter show` inspect records that failed to route, with raw bytes preserved for diagnosis — there is currently no `retry` or `purge` subcommand for dead-letter records (both are explicitly rejected by the CLI; a record must be handled by other means, e.g. fixing the underlying routing issue and re-draining). `writer-status` answers "is anything watching?" — without it, an empty `export` can't be told apart from a host where no notify-daemon has ever run.
+`drain` preserves distinct turns per child and dedups re-delivery via `turn_fingerprint`; run it first on every heartbeat — reading clears the inbox. `export` is what `remote drain` runs over SSH to pull one host's records into another without consuming anything locally. `dead-letter list`/`dead-letter show` inspect records that failed to route, with raw bytes preserved for diagnosis; `retry` and `purge` resolve them (see [dead-letter](#dead-letter---inspect-and-resolve-terminal-delivery-failures)). `writer-status` answers "is anything watching?" — without it, an empty `export` can't be told apart from a host where no notify-daemon has ever run.
 
 `export --after '<cursor>'` (requires `--json`) is the incremental form `remote drain` uses; `--after -` reads the cursor from stdin, which is how `remote drain` sends it. The cursor is `{"<child_id>": <seq>, "_ts": "<RFC3339>", "_ledger": {"<child_id>": "<RFC3339>#<hash>"}, "_unowned": {"n": <count>, "last": "<mark>"}}` (`_ts` is the newest stamp received, informational; a `_ledger` value marks the entry's stamp and outcome; unknown `_` keys are ignored); the reply is `{"records": [...], "cursor_next": {...}}` plus `"writer": {...}` with `--with-writer`. It returns turn-journal lines with seq above the cursor for each child (a child the cursor does not know ships its last 64 lines), each child's completion-ledger record when it differs from the one in `_ledger` (unless a journal line carries the same completion), and the `_unowned` records appended after position `n` (all of them when the record at `n` no longer matches `last`, e.g. after a purge), minus the turns the journal itself delivers (same seq, transcript turn and stale flag). So a turn the journal trimmed before the cursor reached it, or never journaled, still crosses from `_unowned`. A journal line that repeats the last committed transcript turn is judged the way the producer's notifier judged it: within its 2 h dedup window (and the same attention class) the notifier dropped it, so it never ships (one daemon pass journals such a repeat for the snapshot edge of a turn it already emitted); past the window it was committed as a stale-signal turn (issue #2184) and ships keyed on its own time. At the journal's trim boundary the last commit is read from the remote's `_unowned` records. A top-level conductor's journal (no parent, or itself as parent, and a `conductor-` title) never ships, because its producer suppresses those turns (`self_conductor`) and the full export never carries them; a child whose parent is in this host's own registry never ships either (journal lines, completion-ledger entry and `_unowned` records alike): it belongs to that local parent, which holds its records in its own inbox. Only children whose parent this host cannot resolve (the conductor on the other machine) cross. Both kinds of skipped journal still enter `cursor_next` by seq, so a session later parented under the cross-host conductor ships only its new turns. A parentless session without a conductor title is an orphan and its turns do ship. The full export (no `--after`) is unchanged and still ships every inbox. Only the profiles named by the records an export considers are opened, so an old `_unowned` record of a deleted profile does not recreate its store. Journals and ledger entries untouched for 14 days, and records older than that, are neither shipped nor named in `cursor_next`. Without `--after` the output stays the bare JSON array. `cursor` lists the saved cursors (`remote`, `parent`, `updated_at`, `cursor`); text mode prints one line per cursor and one per child seq (a `_legacy` cursor prints as a legacy remote).
 

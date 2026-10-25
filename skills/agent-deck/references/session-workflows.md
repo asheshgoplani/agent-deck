@@ -104,13 +104,13 @@ Note: `try` creates a plain folder, not a git repo — run `git init` in it firs
 
 ```bash
 agent-deck health --json --since 1h          # per-process CPU/RSS/FDs/goroutines vs performance budgets, no data leaves the host
-agent-deck inbox dead-letter list --json      # inspect records that failed to route (list/show only — no retry/purge)
+agent-deck inbox dead-letter list --json      # inspect records that failed to route (also show, retry, purge)
 agent-deck remote update dev --from-build /path/to/local/dist   # push a verified local build to a remote, no release needed
 ```
 
 - `health` reports against budgets (`status_pass_ms_exclusive`, `open_fds_exclusive` plus `open_fds_per_session` for each managed session, `tmux_calls_per_session`, `remote_poll_ms_exclusive`); use `--since` to widen the history window when a regression is intermittent.
 - `list --json` should stay well under 1 s at ~100 sessions (bench/baseline/github-ubuntu-latest.md: ~0.48 s at 100, ~0.06 s at 10); much slower means run `agent-deck health --json`.
-- `inbox dead-letter list|show` is diagnostic-only in this release — there is no `retry` or `purge` subcommand (both are explicitly rejected). Recovering a dead-lettered record means fixing the underlying routing issue and re-draining, not resubmitting the record itself.
+- `inbox dead-letter list|show` inspects records that failed to route (`show` never prints raw content). Fix the underlying routing issue first, then `retry <id>` re-resolves and redelivers one record. `purge --older-than <duration>` removes old records and `purge --yes` removes all of them; `purge` never removes an `_unowned` record (only the TTL sweep reclaims those).
 - `remote update --from-build <dir>` is for shipping a verified local three-platform build (darwin/arm64, linux/amd64, linux/arm64) to a remote before it's published as a release — same checksum/version verification and downgrade guard as a normal `remote update`.
 - `[ui.remote_preview]`/`[ui.header]` share one field vocabulary: `version`, `sessions_by_status`, `harnesses`, `load`, `memory`, `disk`, `last_poll`, and the opt-in `accounts` (named Claude account slots with live 5h/7d usage, one aligned row per slot in the preview, read from each slot's local quota cache — `agent-deck hooks install` wires the feed) and `ssh` (who is connected to the host over SSH right now, per user) — see [config-reference.md](config-reference.md).
 
@@ -131,7 +131,7 @@ agent-deck remote <host> session annotate <id> --outcome worked  # hints on a re
 agent-deck mcp attach <session> recall                           # the built-in MCP server (recall mcp)
 ```
 
-Hints are single-valued per key (setting again replaces), tags are a set; all of it lives in the profile's state.db and survives any index rebuild. The index (`recall backfill|sweep|status|sessions|search|show|open|gc|rebuild`) is off by default, covers Claude transcripts of every profile plus Codex, pi, Gemini, OpenCode and Hermes, never runs a daemon or watcher, refuses batch work while a session is busy, and stays fresh through the Claude Stop hook, `session stop`, `worker_done` and the daemon's turn-end edge (each appends one line to `recall/queue.jsonl`; the Stop hook also indexes its own file within 150 ms). The TUI `G` key is the same search. `recall open` resumes Claude conversations and starts any bound session; other harnesses are searchable, not resumable. Phase 4: `recall context <session> --into current` delivers a past conversation (card, brief or excerpt under a token budget) to the calling session through `session send`; every sweep derives `lost_time`, `session_kind` and `outcome` lines (`recall enrich` drains the rest; stale ones are marked); `recall search --remote <host>`/`--all-remotes` federates over SSH and stores nothing (an older remote is one line + exit 1); card sync (`export`/`pull`/`import`) is off unless `[recall] remote_cards = true`; `recall mcp` is an MCP server `mcp list` offers as `recall`. `session search` is unchanged.
+Hints are single-valued per key (setting again replaces), tags are a set; all of it lives in the profile's state.db and survives any index rebuild. The index (`recall backfill|sweep|status|sessions|search|show|open|gc|rebuild`) is off by default, covers Claude transcripts of every profile plus Codex, pi, Gemini, OpenCode and Hermes, never runs a daemon or watcher, refuses batch work while a session is busy, and stays fresh through the Claude Stop hook, `session stop`, `worker_done` and the daemon's turn-end edge (each appends one line to `recall/queue.jsonl`; the Stop hook only appends, and the async SessionEnd hook also indexes its own file within 150 ms when `[recall] hook_sweep` is on). The TUI `G` key is the same search. `recall open` resumes Claude conversations and starts any bound session; other harnesses are searchable, not resumable. Phase 4: `recall context <session> --into current` delivers a past conversation (card, brief or excerpt under a token budget) to the calling session through `session send`; every sweep derives `lost_time`, `session_kind` and `outcome` lines (`recall enrich` drains the rest; stale ones are marked); `recall search --remote <host>`/`--all-remotes` federates over SSH and stores nothing (an older remote is one line + exit 1); card sync (`export`/`pull`/`import`) is off unless `[recall] remote_cards = true`; `recall mcp` is an MCP server `mcp list` offers as `recall`. `session search` is unchanged.
 
 ## Session Sharing
 
@@ -180,8 +180,12 @@ agent-deck accounts
 # Create and start a new session directly under one named account
 agent-deck launch . -c claude --account <account>
 
-# Full flow: stop → copy conversation into the target account → set account → restart with --resume
+# Full flow: stop → copy conversation into the target account → set account → restart with --resume → settle
 agent-deck session switch-account <session> <account>
+
+# Skip the settle step, or fail loudly when it is not healthy (exit 4; 3 = stopped at a prompt)
+agent-deck session switch-account <session> <account> --no-settle
+agent-deck session switch-account <session> <account> --settle-strict
 
 # Skip the restart (e.g. switch several sessions, restart later)
 agent-deck session switch-account <session> <account> --no-restart
@@ -195,6 +199,8 @@ agent-deck session set <session> account <account>
 - The conversation `.jsonl` is **copied** into `<target-config-dir>/projects/<encoded-path>/` for every project key Claude Code may use for the working directory (typed path, macOS `/private` form, realpath) — the old account keeps its copy. Every existing copy in both accounts is compared; the newest by last event wins (tie: longest), a newer target copy is kept rather than overwritten, and each replaced copy is backed up next to it (`.bak-<timestamp>` or `.pre-switch-<timestamp>`). The receipt says which copy was chosen (`--json`: `transcript`). The session id does not change.
 - `claude --resume` is a pure file lookup, so the restarted session continues with full history under the new account's auth.
 - Tools/MCPs/plugins and usage limits follow the **new** account; enable any needed plugins in the target profile (e.g. `CLAUDE_CONFIG_DIR=<dir> claude plugin enable telegram@claude-plugins-official` for channel owners).
+- After the restart the switch settles hands-free: it answers only known first-start prompts, checks plugins and MCPs, sends a continue message and verifies the account, then prints one `settle <title>: ok|FAILED|STOPPED` line. The exit code stays 0 unless `--settle-strict`.
+- If the session has no recorded conversation id and the only candidate is the newest transcript in its directory, the switch is refused: nothing is copied and the account is not changed. Name the conversation with `agent-deck session set <session> claude-session-id <uuid>` and re-run.
 - A fresh session with no conversation yet switches cleanly (nothing to migrate).
 - Unknown account names error and list the configured ones.
 

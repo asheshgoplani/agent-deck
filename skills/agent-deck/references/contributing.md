@@ -51,7 +51,8 @@ Branch from `main` as `fix/...`, `feature/...` or `docs/...` (see
 touching production code, following [repro.md](repro.md): the real affected binary in a
 container or throwaway environment, with the command, revision, fixture, output and exit
 status kept. Say `reproduced` only when the reported symptom is observed. A failed build
-or missing dependency is not a reproduction; report `not reproduced` with the attempt.
+or missing dependency is not a reproduction; report `blocked` with the attempt (a harness
+failure, as in [repro.md](repro.md)), fix the harness and try again.
 
 ## 4. Write the failing test first
 

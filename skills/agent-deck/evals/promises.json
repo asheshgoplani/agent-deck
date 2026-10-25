@@ -1,0 +1,3135 @@
+{
+ "_doc": "What the agent-deck skill teaches, one entry per teaching unit. anchor is a verbatim substring under heading in file; check.py static fails when it goes missing. checked_by names deterministic checkers (cli-drift, config-drift, script:<path>, go:<TestName>); task evals list the promises they check in their own promises field.",
+ "promises": [
+  {
+   "id": "skill-scripts-path",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Scripts",
+   "anchor": "Resolve them from the base directory shown when the skill loaded",
+   "summary": "Resolve helper scripts from the skill base directory ($SKILL_DIR), not the user project.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "skill-essential-commands",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Essential Commands",
+   "anchor": "Child sessions' live status + asserted completions (non-blocking, read-only)",
+   "summary": "Core command table: add/launch/start/stop/send/output/children/current/fork/mcp/status/open/worktree.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "skill-message-file",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Essential Commands",
+   "anchor": "Send message from file (`-` = stdin); no shell quoting",
+   "summary": "Use --message-file (or - for stdin) for long/quoted messages on send, launch and session start.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "skill-slash-command",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Essential Commands",
+   "anchor": "safely and verify it; never via `session send`",
+   "summary": "Run Claude slash commands with session command --json (list with session commands), never via session send.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "skill-account-launch",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Essential Commands",
+   "anchor": "Create and start a session under a named account slot",
+   "summary": "launch --account <name> starts a session under a named account slot.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "skill-status-symbols",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Essential Commands",
+   "anchor": "`●` running | `◐` waiting | `○` idle | `✕` error",
+   "summary": "Status glyph legend.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "skill-rule1-flags",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Rules",
+   "anchor": "**Flags before arguments:** `session start -m \"Hello\" name`",
+   "summary": "Put flags before positionals; a flag that seems ignored is usually in the wrong position.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "skill-rule2-mcp",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Rules",
+   "anchor": "attaching alone does not load it",
+   "summary": "Attach MCPs only on request, then session restart; --global vs session .mcp.json.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "skill-rule3-no-poll",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Rules",
+   "anchor": "rather than a polling loop, which can interfere with the target",
+   "summary": "Read other sessions with single output/children calls, not polling loops.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "skill-rule4-identity",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Rules",
+   "anchor": "**State only the task in a child's prompt.**",
+   "summary": "Child prompts state only the task; identity block already carries id/parent/sentinel; opt out with --no-identity.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "skill-config-path",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Configuration",
+   "anchor": "legacy `~/.agent-deck/config.toml` still honored",
+   "summary": "Config lives at $XDG_CONFIG_HOME/agent-deck/config.toml (legacy path honored).",
+   "kind": "reference"
+  },
+  {
+   "id": "skill-where-to-look",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Where to Look Next",
+   "anchor": "Read the matching reference before acting on anything beyond the commands above.",
+   "summary": "Routing table: which reference to read for each task area.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-noninteractive-profile",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Session-to-Session Communication",
+   "anchor": "always pass `-p <profile>` explicitly",
+   "summary": "From cron/systemd/hooks always pass -p <profile> or targets are not found.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-send-confirmation",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "read that, not the finer-grained `delivery` diagnostic",
+   "summary": "send --json carries a stable 3-way confirmation field; read it, not delivery.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-send-queued-json",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "reports the verdict `delivered`/`queued`/`unknown` as evidence arrives",
+   "summary": "Plain --json send returns at once queued with send_id; poll session send-status <send_id> --json.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-send-envelope",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "From inside a session the message starts with `[agent-deck from:<your id>]`",
+   "summary": "Sends from inside a session are tagged; replies return to your inbox as urgent; --no-tag opts out.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-output-bounded",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "capped at `--max-tokens` (default 25000)",
+   "summary": "session output is read-only, ANSI-stripped and token-capped; --json/-q/--copy carry full source; --pane for capture.",
+   "kind": "reference"
+  },
+  {
+   "id": "comm-children-readonly",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "explicitly does NOT clear the inbox",
+   "summary": "session children is read-only and does not clear the inbox.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-inbox-durable",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "THE durable channel (records are tiered",
+   "summary": "inbox drain is the durable at-least-once channel; draining consumes; single-profile only.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-inbox-last-wins",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "What each channel guarantees, and what it does not",
+   "anchor": "**Inbox is last-wins per child.**",
+   "summary": "Inbox keeps only the latest record per child; use files for history.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-transition-events",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "sessions with no parent link are WARN-logged once and DROPPED",
+   "summary": "Transition events need parent_session_id; unparented sessions get none.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-heartbeat-lossy",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "Lossy by design: skipped while the conductor is busy, never queued",
+   "summary": "Heartbeats are lossy by design.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-handoff",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "The channel map",
+   "anchor": "One-shot read-only transcript copy (32k-char tail budget)",
+   "summary": "session handoff builds a one-shot Claude->Codex context copy.",
+   "kind": "reference"
+  },
+  {
+   "id": "comm-unverified-not-proof",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "What each channel guarantees, and what it does not",
+   "anchor": "is NOT proof the turn started",
+   "summary": "delivery unverified with exit 0 is not proof; confirm with session show --json or output.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-nonzero-not-nondelivery",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "What each channel guarantees, and what it does not",
+   "anchor": "Blind retry on non-zero =",
+   "summary": "Non-zero send exit does not prove non-delivery; check --pane before resending.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-defer-drops",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "What each channel guarantees, and what it does not",
+   "anchor": "**`--defer-if-busy` drops on timeout** with a non-zero exit",
+   "summary": "--defer-if-busy drops on timeout; treat as undelivered.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-single-line",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Pitfalls and workarounds",
+   "anchor": "Embedded newlines make `send` exit 1",
+   "summary": "Positional messages must be single-line; use --message-file for multiline.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-no-wait-enter",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Pitfalls and workarounds",
+   "anchor": "**#876 Enter fallback after `--no-wait`.**",
+   "summary": "After --no-wait to a fresh session, send an idempotent Enter via tmux send-keys.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-no-spam-busy",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Pitfalls and workarounds",
+   "anchor": "3 identical sends/nudges",
+   "summary": "Do not spam busy sessions; use --defer-if-busy; stop after 3 identical nudges.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-substate",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Pitfalls and workarounds",
+   "anchor": "`error` + substate `auth-401` means dead",
+   "summary": "Read substate: auth-401 and model-unavailable are not fixed by restart.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-topology",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Pitfalls and workarounds",
+   "anchor": "Verify every `launch` created the",
+   "summary": "Verify parent linkage with session show --json / session children.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-addressing",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Pitfalls and workarounds",
+   "anchor": "`session set-title-lock <id> on` prevents that",
+   "summary": "Prefer id prefixes over titles; lock titles; always -p from non-interactive senders.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-colliding-transcript",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Pitfalls and workarounds",
+   "anchor": "refuses with \"colliding transcript\"",
+   "summary": "On colliding transcript fall back to session output --pane.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "comm-verified-commands",
+   "area": "core",
+   "file": "references/session-communication.md",
+   "heading": "Verified commands",
+   "anchor": "# look without consuming",
+   "summary": "Verified command cookbook (send modes, output, children, inbox drain/peek, show, handoff, search).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "sub-launch-script",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Sub-Agent Launch",
+   "anchor": "The script auto-detects current session/profile and creates a child session.",
+   "summary": "launch-subagent.sh creates a child of the current session.",
+   "kind": "script"
+  },
+  {
+   "id": "sub-retrieval-modes",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Retrieval Modes",
+   "anchor": "Default. Tell user: \"Ask me to check when ready\"",
+   "summary": "Fire-and-forget default; on-demand session output; blocking --wait.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-fanout-hint",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Worker Prompt Conventions",
+   "anchor": "appends the line to the prompt only for a `claude` child that gets no identity block",
+   "summary": "Fan-out hint is injected by identity block; script appends only when context_level=none.",
+   "kind": "script",
+   "checked_by": [
+    "go:TestFanoutHint_DocsAndScriptCarryTheLine",
+    "go:TestLaunchSubagentScript_AppendsFanoutHintOnlyWithoutIdentityBlock"
+   ]
+  },
+  {
+   "id": "sub-prelude-read",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Worker Prompt Conventions",
+   "anchor": "include an explicit **prelude-read** as the first step",
+   "summary": "Worker prompts that edit existing files start with a prelude Read step (#968).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-done-sentinel",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Completion sentinel (trustworthy \"worker finished\" signal, #1186)",
+   "anchor": "===AGENTDECK_DONE=== status=<ok|fail> summary=<one line to end of line>",
+   "summary": "Workers assert completion with the ===AGENTDECK_DONE=== sentinel; parent gets [DONE].",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-consult-tool-flag",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Consult Another Agent (Codex, Gemini)",
+   "anchor": "You MUST use the `--tool` flag to specify which agent",
+   "summary": "Consult Codex/Gemini via launch-subagent.sh --tool codex|gemini --wait.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-consult-no-manual-add",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Quick Reference",
+   "anchor": "try to create Codex/Gemini sessions manually with `agent-deck add`",
+   "summary": "Never create consult sessions manually with agent-deck add.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-consult-cleanup",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Cleanup",
+   "anchor": "After getting the response, remove the consultation session:",
+   "summary": "Remove consultation sessions afterwards.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-peer-no-parent",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Peer (Root) Sessions vs Sub-Agents",
+   "anchor": "pass the `-no-parent` flag",
+   "summary": "Root-level peers (conductors, outliving sessions) use launch -no-parent.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-unset-parent-fix",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Peer (Root) Sessions vs Sub-Agents",
+   "anchor": "`agent-deck session unset-parent <session>` (alias: `session update <session> --no-parent`)",
+   "summary": "Fix an accidental child with session unset-parent, then restart.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-script-no-peer",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Peer (Root) Sessions vs Sub-Agents",
+   "anchor": "It does NOT support `-no-parent`.",
+   "summary": "launch-subagent.sh cannot create peers.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sub-recommended-mcps",
+   "area": "core",
+   "file": "references/sub-agents.md",
+   "heading": "Recommended MCPs",
+   "anchor": "| Web research | `exa`, `firecrawl` |",
+   "summary": "Suggested MCPs per task type.",
+   "kind": "reference"
+  },
+  {
+   "id": "fleet-requires",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Fleet",
+   "anchor": "If `agent-deck session children --help` succeeds, you have them.",
+   "summary": "Feature check for session children / --assert-done.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "fleet-explicit-parent",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "When to use",
+   "anchor": "pass `--parent <session-id-or-title>`",
+   "summary": "Use --parent <id|title> to parent children to a specific session.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-singletons",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Before you fan out",
+   "anchor": "**Check for shared singletons.**",
+   "summary": "Do not fan out over a shared DB/port/lock; isolate or use one session.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-worktree-deps",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Before you fan out",
+   "anchor": "frozen lockfile, never regenerate it",
+   "summary": "Worktree children must install deps first from the frozen lockfile.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-long-prompt-file",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Before you fan out",
+   "anchor": "**Long prompts: pass via a file.**",
+   "summary": "Pass long child prompts via --message-file.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-launch-inherit-group",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "1. Fan out (one `launch` per child; loop it)",
+   "anchor": "**Do NOT pass a custom `-g/--group` for fleet children.**",
+   "summary": "One launch per child with --inherit-group; never a custom -g for parented children.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-assert-done-default",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "1. Fan out (one `launch` per child; loop it)",
+   "anchor": "**`--assert-done` is on by default for `-c claude`**",
+   "summary": "--assert-done default-on for claude children.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-children-poll",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "3. Check progress (non-blocking, non-destructive)",
+   "anchor": "`done_status` records a prior assertion; it is not proof that the current turn",
+   "summary": "Poll session children --json; done_status is history, live status decides.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-follow-until-done",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "3. Check progress (non-blocking, non-destructive)",
+   "anchor": "agent-deck session children --follow --until-done",
+   "summary": "Background --follow --until-done for push notification; key off .event.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-waiting-unblock",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "4. Unblock a child that's waiting on you",
+   "anchor": "agent-deck session approve <child-id> once",
+   "summary": "Answer waiting children with output + send; Codex menus with session approve.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-collect",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "5. Collect a finished child's result",
+   "anchor": "Returns that child's latest full response.",
+   "summary": "Collect results with session output <id> --json.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-no-parent-group",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Independent (un-parented) sessions",
+   "anchor": "So the rule **inverts** for independent sessions: *pass the group explicitly.*",
+   "summary": "--no-parent sessions need explicit -g \"$AGENTDECK_RESOLVED_GROUP\"; repair with group move.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-supervision-tools",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Supervision tools the parent can use",
+   "anchor": "`agent-deck status -q` — global count of sessions currently `waiting`",
+   "summary": "Parent supervision toolset (children, follow, output, send, approve, status -q, inbox drain, stop/remove).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "fleet-turn-start-snapshot",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Supervision tools the parent can use",
+   "anchor": "AGENTDECK_NO_CHILDREN_CONTEXT=1",
+   "summary": "Claude parents get a turn-start fleet snapshot; opt out with AGENTDECK_NO_CHILDREN_CONTEXT=1.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-p-pitfall",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Notes",
+   "anchor": "**The `-p` pitfall — prefer `--parent` over `-p` for a parent.**",
+   "summary": "Prefer --parent over -p (older builds read -p as --profile -> phantom DB).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "fleet-backcompat",
+   "area": "fleet",
+   "file": "references/fleet.md",
+   "heading": "Backward Compatibility",
+   "anchor": "fall back to the until-loop already shown above",
+   "summary": "Older decks: until-loop fallback; treat exit-0 send as unconfirmed.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cap-noun-table",
+   "area": "core",
+   "file": "references/capabilities.md",
+   "heading": "Capabilities",
+   "anchor": "`inbox dead-letter` list/show/retry/purge; `Alt+D` in the TUI",
+   "summary": "Noun-level capability table with surface status.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cap-per-cli",
+   "area": "core",
+   "file": "references/capabilities.md",
+   "heading": "Per-CLI Capabilities (what a launched session can do)",
+   "anchor": "This is a capability **map**, not a manual",
+   "summary": "Per-CLI (claude/codex/gemini) in-session capability map.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cap-choose-tool",
+   "area": "core",
+   "file": "references/capabilities.md",
+   "heading": "Per-CLI Capabilities (what a launched session can do)",
+   "anchor": "**Choosing the `-c` tool for a child:** default to **claude**",
+   "summary": "Default to claude; codex for review/second opinion; gemini for large-context/third opinion.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cap-child-powers",
+   "area": "core",
+   "file": "references/capabilities.md",
+   "heading": "Per-CLI Capabilities (what a launched session can do)",
+   "anchor": "**agent-deck powers every child also has**",
+   "summary": "Every child can attach MCPs, launch children/peers, load skills, send to siblings.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cap-delegation",
+   "area": "core",
+   "file": "references/capabilities.md",
+   "heading": "Per-CLI Capabilities (what a launched session can do)",
+   "anchor": "1 task = inline; a few independent subtasks = Agent tool; a sweep / audit / matrix = Workflow",
+   "summary": "Inline vs Agent tool vs Workflow delegation rule.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cond-setup",
+   "area": "core",
+   "file": "references/conductors.md",
+   "heading": "Conductors",
+   "anchor": "agent-deck conductor setup review --agent codex --description \"Codex reviewer\"",
+   "summary": "conductor setup <name> [--agent codex] [-env] [-p profile]; status/list.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cond-home",
+   "area": "core",
+   "file": "references/conductors.md",
+   "heading": "Conductors",
+   "anchor": "Multiple conductors per profile are supported and each can pair with its own bot.",
+   "summary": "Conductor home dir layout; multiple conductors per profile.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cond-channels",
+   "area": "core",
+   "file": "references/conductors.md",
+   "heading": "Channels (Telegram / Slack)",
+   "anchor": "Each conductor pairs **one-to-one** with its own bot",
+   "summary": "One bot per conductor; telegram plugin never globally enabled; tokens in .env chmod 600.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cond-cmd",
+   "area": "core",
+   "file": "references/conductors.md",
+   "heading": "Running slash commands from a channel (`/cmd`)",
+   "anchor": "The conductor quick command `/cmd <session> <slash command>`",
+   "summary": "Channel /cmd runs session command on another session; use cmd (no slash) via bridge/Slack.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cond-watchers",
+   "area": "core",
+   "file": "references/conductors.md",
+   "heading": "Watchers",
+   "anchor": "`--secret` | GitHub repo webhooks with HMAC verification",
+   "summary": "Watcher adapter types and required flags; create/start/list/test.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cond-watcher-skill",
+   "area": "core",
+   "file": "references/conductors.md",
+   "heading": "Watchers",
+   "anchor": "agent-deck watcher install-skill watcher-creator",
+   "summary": "Install watcher-creator skill for conversational watcher setup.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-not-supervisor",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "What agent-deck is NOT: a process supervisor",
+   "anchor": "always-on listeners and daemons belong under the OS supervisor",
+   "summary": "Daemons go under launchd/systemd, not agent-deck sessions.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-no-wait-enter",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "`session send --no-wait` can leave prompts typed-but-not-submitted",
+   "anchor": "The Enter is idempotent",
+   "summary": "--no-wait race: sleep 3 then tmux send-keys Enter.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-slash-unsafe",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "Slash commands typed with `session send` are unsafe",
+   "anchor": "refuses a draft (`composer_draft`) or a dialog (`dialog_open`) before typing",
+   "summary": "session send of slash commands is unsafe; use session command which verifies.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-text-file-busy",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "Replacing the binary while agent-deck is running (`text file busy`)",
+   "anchor": "Workaround — move-then-copy (keeps running processes on the old inode):",
+   "summary": "Replace a running binary by mv then cp.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-claude-subcommand",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "`-c \"claude <subcommand> ...\"` silently rewritten — injected flags demote the subcommand (#1800)",
+   "anchor": "wrap in a shell so tool detection treats the command as opaque",
+   "summary": "claude subcommands as -c need a bash -c wrapper (#1800) [stale, see drift].",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-config-drift",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "Cross-machine config drift (macOS ↔ Linux)",
+   "anchor": "`agent-deck skill list` returns \"No skills found\"",
+   "summary": "Copied macOS /Users/ paths in sources.toml break skill list on Linux.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-channels",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "Channel subscription for conductor/bot sessions (v1.7.0+)",
+   "anchor": "it MUST be started with `--channels <plugin-id>`",
+   "summary": "Bot sessions need --channel(s) for inbound turns, not .mcp.json.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-telegram-pollers",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "Many competing telegram pollers after multiple session starts",
+   "anchor": "exactly ONE session loads the telegram channel plugin",
+   "summary": "Only one session loads the telegram plugin per token.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-telegram-topology",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "Telegram conductor topology (v1.7.22+)",
+   "anchor": "`TELEGRAM_STATE_DIR` is injected **exclusively** via `[conductors.<name>.claude].env_file`",
+   "summary": "Supported telegram topology and GLOBAL_ANTIPATTERN/DOUBLE_LOAD/WRAPPER_DEPRECATED warnings.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-v19-findings",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "v1.9.x findings (filed via the self-improvement pipeline)",
+   "anchor": "never `xargs -P` for agent-deck mutations",
+   "summary": "Table of v1.9.x symptoms and workarounds (sequential rm, sequential launch, etc.).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gotcha-backcompat",
+   "area": "core",
+   "file": "references/gotchas.md",
+   "heading": "Backward Compatibility",
+   "anchor": "check with `agent-deck --version` before assuming a feature below exists",
+   "summary": "Features needing >=1.16.11 and fallbacks for older decks.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "auto-selfimp-quickstart",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "Quick start",
+   "anchor": "Phase 3 — file issues from FINDINGS.md (interactive; never auto-files)",
+   "summary": "Self-improvement quick start: distill.py, run-analyzers.sh, file-issues.sh.",
+   "kind": "script"
+  },
+  {
+   "id": "auto-selfimp-privacy",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "Privacy",
+   "anchor": "The auditor must verdict `SAFE_TO_SHARE` before the filer will submit.",
+   "summary": "Three privacy layers + human review before filing.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-selfimp-constraints",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "Constraints",
+   "anchor": "never via the Anthropic SDK directly",
+   "summary": "LLM work only in agent-deck sub-sessions, paced, manifest-resumable.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-goal-entities",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "The core idea",
+   "anchor": "Three entities, never collapsed:",
+   "summary": "Worker/Verifier/Manager separation.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-goal-done-shell",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "Done-conditions must be shell commands",
+   "anchor": "\"Worker says it's done\" → self-judgment",
+   "summary": "Done-conditions are shell commands, not fuzzy or self-judged.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-goal-no-cli",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "Future CLI surface (Phase 2, not built)",
+   "anchor": "These `agent-deck goal ...` commands do not exist yet.",
+   "summary": "agent-deck goal does not exist; use scripts/goal/goal.sh + manager.py.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-tbv-rule",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "The rule",
+   "anchor": "spawn a **separate** Claude session (not the same conductor, not the same worker)",
+   "summary": "Non-trivial done-claims need an independent session hitting live state.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-tbv-mapping",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "Claim → verifier mapping",
+   "anchor": "`gh release view <tag> --json assets` AND probe each download URL",
+   "summary": "Claim -> verifier command table (PR, release, tap, comment, goal, bulk drain).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-tbv-spawn",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "How to spawn the verifier",
+   "anchor": "**`--wait` is mandatory.**",
+   "summary": "Spawn verifier with launch-subagent.sh --wait; one verifier per claim; peer not child.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-tbv-antipatterns",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "Anti-patterns",
+   "anchor": "\"Codex agreed with me\" — consult is brainstorming, not verification",
+   "summary": "Self-review, Codex agreement, CI-green alone are not verification.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-tbv-priority0",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "Wake-loop priority 0 (mandatory)",
+   "anchor": "run **one ground-truth verifier check**",
+   "summary": "Each wake starts with a ground-truth check of the last claim.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "auto-tbv-no-verifier",
+   "area": "core",
+   "file": "references/autonomy.md",
+   "heading": "When you don't need a verifier",
+   "anchor": "The verifier requirement attaches to claims about external mutable state",
+   "summary": "Trivial self-evident actions need no verifier.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "goal-principles",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Design principles",
+   "anchor": "**Done-conditions are external shell commands.**",
+   "summary": "Design principles: three entities, shell done-conditions, receipts, rich nudges, mechanical escalation.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "goal-registry",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Goal registry schema",
+   "anchor": "A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`.",
+   "summary": "Goal JSON registry schema.",
+   "kind": "reference"
+  },
+  {
+   "id": "goal-status-values",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Goal registry schema",
+   "anchor": "Status values: `active`, `done`, `failed`, `escalated`, `stopped_by_user`.",
+   "summary": "Goal status values.",
+   "kind": "reference"
+  },
+  {
+   "id": "goal-progress-features",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Opt-in progress features",
+   "anchor": "**No-progress cap** (`no_progress_cap: N`, 0 = off).",
+   "summary": "Opt-in no-progress cap, backoff, worktree progress/gate via goal.sh env.",
+   "kind": "script",
+   "checked_by": [
+    "script:scripts/goal/tests"
+   ]
+  },
+  {
+   "id": "goal-worktree-gate",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Opt-in progress features",
+   "anchor": "so leave the gate off for those",
+   "summary": "Leave worktree_gate off for done_cmds checking external state.",
+   "kind": "script",
+   "checked_by": [
+    "script:scripts/goal/tests"
+   ]
+  },
+  {
+   "id": "goal-worker-contract",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Worker contract — the launch prompt",
+   "anchor": "You may NOT decide you're done. Only the manager's verifier decides.",
+   "summary": "Worker contract: prelude reads, one bounded step, receipt, STUCK, ScheduleWakeup.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "goal-manager-loop",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Manager loop — exact algorithm",
+   "anchor": "rc = subprocess.run(goal.done_cmd, shell=True, timeout=30).returncode",
+   "summary": "Manager algorithm: verify, receipts, nudge, escalate, cycle cap.",
+   "kind": "script",
+   "checked_by": [
+    "script:scripts/goal/tests"
+   ]
+  },
+  {
+   "id": "goal-run-budget",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Run budget",
+   "anchor": "`goal.sh --max-turns N --max-tokens N --max-minutes N` sets them",
+   "summary": "Run budget caps and BUDGET_EXCEEDED pause/fail handling.",
+   "kind": "script",
+   "checked_by": [
+    "script:scripts/goal/tests"
+   ]
+  },
+  {
+   "id": "goal-nudge",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Nudge generator — context-aware",
+   "anchor": "[GOAL NUDGE - cycle {N}, nudge {M}/{escalate_after}]",
+   "summary": "Context-rich multiple-choice nudge template.",
+   "kind": "script",
+   "checked_by": [
+    "script:scripts/goal/tests"
+   ]
+  },
+  {
+   "id": "goal-escalation",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Escalation bundle",
+   "anchor": "Cancel: set \"state.status\" to \"stopped_by_user\" in the goal JSON",
+   "summary": "Escalation bundle and resume/cancel options.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "goal-done-guidelines",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Done-condition guidelines",
+   "anchor": "**Honest about partial success.**",
+   "summary": "Done-conditions: external, idempotent, fast (<30s), strict.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "goal-bad-examples",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Examples that DON'T work",
+   "anchor": "\"Looks good\" not externally verifiable. Drop the second clause.",
+   "summary": "Refuse fuzzy or self-judged done-conditions.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "goal-failure-modes",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "Failure modes and recovery",
+   "anchor": "Refuse at create-time. One goal per worker session.",
+   "summary": "Failure modes and recovery table.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "goal-cli-not-built",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "CLI surface (proposed, not built)",
+   "anchor": "**None of the `agent-deck goal ...` commands below exist.**",
+   "summary": "No agent-deck goal command; goal.sh/manager.py are the entry points.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "goal-not",
+   "area": "core",
+   "file": "references/goal.md",
+   "heading": "What this is NOT",
+   "anchor": "**Not for fuzzy goals.**",
+   "summary": "Goal is not a planner, multi-agent orchestrator, conductor replacement, or for fuzzy goals.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "si-outputs",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "What it produces",
+   "anchor": "Curated inventory of what agent-deck does, mapped to surfaces",
+   "summary": "FINDINGS.md, CAPABILITIES.md, manifest, analysis/ outputs.",
+   "kind": "reference"
+  },
+  {
+   "id": "si-phases",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "Architecture — 4 phases",
+   "anchor": "All LLM work happens in spawned agent-deck sessions — never via direct Anthropic SDK.",
+   "summary": "4-phase pipeline, sequential paced, resumable.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "si-privacy",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "Privacy pipeline — 3 layers before sharing",
+   "anchor": "Filing flow refuses to submit if audit verdict isn't `SAFE_TO_SHARE`.",
+   "summary": "Regex -> AI sanitizer -> auditor -> human review; filing gated on SAFE_TO_SHARE.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "si-workers-no-gh",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "Privacy pipeline — 3 layers before sharing",
+   "anchor": "Worker sessions are forbidden from running `gh issue create` directly.",
+   "summary": "Workers never file issues directly.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "si-when",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "When to run",
+   "anchor": "After agent-deck version bump",
+   "summary": "When to run the pipeline.",
+   "kind": "reference"
+  },
+  {
+   "id": "si-schemas",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "Output schemas",
+   "anchor": "## Recurring issues (≥2 reports)",
+   "summary": "Report/FINDINGS/CAPABILITIES schemas.",
+   "kind": "reference"
+  },
+  {
+   "id": "si-footguns",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "Footguns the analysis itself hit",
+   "anchor": "`file_issue.py` now strips unknown labels and keeps `bug` if present.",
+   "summary": "Known footguns (labels, auditor gating, stale replays).",
+   "kind": "script"
+  },
+  {
+   "id": "si-scripts",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "Script reference",
+   "anchor": "`sanitize.py <input> <output> [--map k=v]`",
+   "summary": "Script reference table.",
+   "kind": "script"
+  },
+  {
+   "id": "si-prompts",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "Prompts",
+   "anchor": "This is **Layer 0: prevention at source**",
+   "summary": "Five worker prompts with privacy rules (Layer 0).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "si-cost",
+   "area": "core",
+   "file": "references/self-improvement.md",
+   "heading": "Cost estimate (typical run)",
+   "anchor": "End-to-end first run, one conductor",
+   "summary": "Cost/time estimates.",
+   "kind": "reference"
+  },
+  {
+   "id": "script-usage",
+   "area": "core",
+   "file": "scripts/launch-subagent.sh",
+   "heading": "",
+   "anchor": "# Usage: launch-subagent.sh \"Title\" \"Prompt\" [options]",
+   "summary": "Script options: --mcp, --tool, --path, --wait, --timeout, --no-fanout-hint.",
+   "kind": "script",
+   "checked_by": [
+    "script:tests/test_launch_subagent.sh"
+   ]
+  },
+  {
+   "id": "script-workdir",
+   "area": "core",
+   "file": "scripts/launch-subagent.sh",
+   "heading": "",
+   "anchor": "# Determine work directory: --path flag > parent session path > /tmp fallback",
+   "summary": "Work dir: --path > parent path > /tmp fallback.",
+   "kind": "script",
+   "checked_by": [
+    "script:tests/test_launch_subagent.sh"
+   ]
+  },
+  {
+   "id": "script-launch-parent",
+   "area": "core",
+   "file": "scripts/launch-subagent.sh",
+   "heading": "",
+   "anchor": "LAUNCH_CMD=(agent-deck -p \"$PROFILE\" launch \"$WORK_DIR\" -t \"$TITLE\" --parent \"$PARENT\"",
+   "summary": "Launches with explicit --parent, parent profile and parent group.",
+   "kind": "script",
+   "checked_by": [
+    "script:tests/test_launch_subagent.sh"
+   ]
+  },
+  {
+   "id": "script-wait-quiet-output",
+   "area": "core",
+   "file": "scripts/launch-subagent.sh",
+   "heading": "",
+   "anchor": "# -q: a script's poll read is not the parent having read the",
+   "summary": "--wait polls status, reads output with -q so the inbox notice is still delivered.",
+   "kind": "script",
+   "checked_by": [
+    "script:tests/test_launch_subagent.sh"
+   ]
+  },
+  {
+   "id": "script-not-in-session",
+   "area": "core",
+   "file": "scripts/launch-subagent.sh",
+   "heading": "",
+   "anchor": "Error: Not in an agent-deck session",
+   "summary": "Fails outside an agent-deck session.",
+   "kind": "script",
+   "checked_by": [
+    "script:tests/test_launch_subagent.sh"
+   ]
+  },
+  {
+   "id": "sw-context-commands",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Context Inspection (what is in a session's context window)",
+   "anchor": "session context <name> --tab breakdown --all",
+   "summary": "Inspect a session's context window with `session context` (overview, --tab breakdown --all, --item, --tab verify, --json, --strict, --capabilities).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "sw-context-provenance",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Context Inspection (what is in a session's context window)",
+   "anchor": "An unknown is never printed as zero.",
+   "summary": "Every figure has provenance (measured / ~est / ABSENT); skills cost only name+description until invoked; figures are as-of-now-on-disk.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-context-verify-mutates",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Context Inspection (what is in a session's context window)",
+   "anchor": "It mutates the session: confirmation required, use sparingly, never on a busy session.",
+   "summary": "`--verify` types /context into the live session (mutating); always asks first, `--yes` skips for CI; never on a busy session.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-context-exit-codes",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Context Inspection (what is in a session's context window)",
+   "anchor": "Exit codes: 0 ok · 1 could not run (bad args, no pane, unreadable panel) · 2 not found",
+   "summary": "session context exit codes 0-5 (3 invariant failure, 4 verify drift, 5 verify indeterminate).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "sw-context-readonly-sweep",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Context Inspection (what is in a session's context window)",
+   "anchor": "Agents may run read-only sweeps freely (`list --json` → context per session)",
+   "summary": "Agents may sweep `list --json` -> context per session read-only, report findings, never edit another session's files.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-worktree-create",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Create Session in Git Worktree",
+   "anchor": "--worktree feature/my-feature --new-branch",
+   "summary": "Create an isolated session in a git worktree with `add --worktree <branch> [--new-branch]`.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-worktree-manage",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "List and Manage Worktrees",
+   "anchor": "agent-deck worktree cleanup --force",
+   "summary": "`worktree list|info`, and `worktree cleanup` is a dry run until `--force`.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-try-scratch",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Scratch Sessions (`agent-deck try`)",
+   "anchor": "The argument is an **experiment name**, not a prompt.",
+   "summary": "`agent-deck try <name>` finds/creates a dated experiment folder (fuzzy match); argument is a name not a prompt; --no-session, --sandbox, --list.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-try-config",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Scratch Sessions (`agent-deck try`)",
+   "anchor": "Note: `try` creates a plain folder, not a git repo",
+   "summary": "`[experiments] directory/date_prefix/default_tool` configure try; default ~/src/tries; folder is not a git repo (git init first).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-health",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Runtime Health & Fleet Maintenance (v1.16.11+)",
+   "anchor": "agent-deck health --json --since 1h",
+   "summary": "`agent-deck health --json --since` reports per-process CPU/RSS/FDs vs budgets locally; list --json should stay under ~1 s at 100 sessions.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-dead-letter",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Runtime Health & Fleet Maintenance (v1.16.11+)",
+   "anchor": "`inbox dead-letter list|show` inspects records that failed to route",
+   "summary": "Inspect failed-to-route records with `inbox dead-letter list|show` (skill claims no retry/purge; stale, see drift).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "sw-remote-from-build",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Runtime Health & Fleet Maintenance (v1.16.11+)",
+   "anchor": "`remote update --from-build <dir>` is for shipping a verified local three-platform build",
+   "summary": "Ship a verified local build to a remote with `remote update <name> --from-build <dir>` (checksum/version/downgrade guard).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-recall-summary",
+   "area": "recall",
+   "file": "references/session-workflows.md",
+   "heading": "Recall (hints, and the cross-harness transcript index)",
+   "anchor": "agent-deck recall context <session> --tier brief --into current",
+   "summary": "Summary of recall: hints at launch, session annotate, recall search/show/open/context, federated search, MCP attach.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "sw-share-summary",
+   "area": "session-share",
+   "file": "references/session-workflows.md",
+   "heading": "Session Sharing",
+   "anchor": "$SKILL_DIR/scripts/session-share/export.sh",
+   "summary": "Session sharing via export.sh / import.sh under $SKILL_DIR/scripts/session-share/.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-switch-account-commands",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Switch a Session to Another Claude Account",
+   "anchor": "agent-deck session switch-account <session> <account> --no-restart",
+   "summary": "Move a session to another Claude account: `accounts`, `launch --account`, `session switch-account [--no-restart]`, `session set <s> account`.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-switch-account-setup",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Switch a Session to Another Claude Account",
+   "anchor": "**One-time setup** — name each account in `$XDG_CONFIG_HOME/agent-deck/config.toml`",
+   "summary": "Accounts are `[profiles.<name>.claude] config_dir` blocks; target profile must already be logged in.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-switch-account-guarantees",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Switch a Session to Another Claude Account",
+   "anchor": "the old account keeps its copy",
+   "summary": "Conversation .jsonl copied (not moved) under every project key; newest wins, backups kept, session id unchanged; plugins/limits follow new account; unknown names error.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sw-switch-account-tui-groups",
+   "area": "core",
+   "file": "references/session-workflows.md",
+   "heading": "Switch a Session to Another Claude Account",
+   "anchor": "set `[groups.<name>.claude].config_dir` / `[conductors.<name>.claude].config_dir`",
+   "summary": "TUI Account rows (New Session, Edit Session Shift+P); group/conductor config_dir makes new sessions use an account.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "rc-hints-model",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Phase 1 (available now): hints and tags",
+   "anchor": "Hints are single-valued per key (setting a key again replaces it). Tags are a",
+   "summary": "Hints single-valued per key, tags a set; well-known keys purpose/ticket/why/decision/outcome/note/parent; stored in state.db, survive rebuild.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-hints-at-creation",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "At creation (`add` and `launch`)",
+   "anchor": "`launch` derives `purpose` from the first line of `-m`",
+   "summary": "`add/launch --hint/--ticket/--tag/--why`; launch derives purpose from -m; children get parent=; conductor setup records purpose.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-annotate",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Afterwards (`session annotate`)",
+   "anchor": "agent-deck session annotate <id> --set-hint ticket=SB-413 --remove-tag flaky --unset why",
+   "summary": "`session annotate` sets/removes hints and tags (--decision, --outcome, --set-hint, --remove-tag, --unset, --self, --note-stdin 8 KiB, --json read).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-end-of-task-habit",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Afterwards (`session annotate`)",
+   "anchor": "**End of task habit:** before the completion sentinel, run",
+   "summary": "Before the completion sentinel, run `session annotate --self --outcome ... --decision ...`.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-remote-annotate",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Remote session hints",
+   "anchor": "Runs on the remote and writes the remote's own state.db.",
+   "summary": "`remote <host> session annotate` writes the remote's state.db; hints never copied locally.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-enable-index",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Phases 2 and 3 (available now): the transcript index, every harness",
+   "anchor": "Needs `[recall] enabled = true` in config.toml (every command exits 2 with a",
+   "summary": "Transcript index needs `[recall] enabled = true` (exit 2 otherwise); one index for all profiles and harnesses; hooks queue fresh transcripts; searches drain the queue.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-initial-backfill",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Enabling recall for the first time",
+   "anchor": "Nothing to do if the daemon is not",
+   "summary": "notify-daemon runs a throttled initial backfill on enable (backfill_on_enable); progress in `recall status --json` initial_backfill; run `recall backfill` by hand without daemon.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-search",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Find sessions",
+   "anchor": "a title, hint or tag hit always beats any number of",
+   "summary": "`recall search` ranks title/hint/tag over body; AND-ed terms; --phrase verification; clipped bodies are `unverified`; filters narrow before ceiling; hits carry harness/profile/native_id/deck_id.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-backfill-busy",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Find sessions",
+   "anchor": "refuses while a session is busy (--force)",
+   "summary": "`recall backfill` is resumable and refuses while a session is busy unless --force.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "rc-show",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Read one: `recall show`",
+   "anchor": "agent-deck recall show <session> --tier card",
+   "summary": "`recall show --tier card|excerpt|raw --turns N`; <session> may be #n, native id/prefix or deck id.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "rc-open-resumable",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Continue one: `recall open`",
+   "anchor": "Codex, pi, Gemini, OpenCode and Hermes conversations that no registered",
+   "summary": "`recall open` resumes Claude conversations / starts bound sessions; other harnesses are searchable not resumable (exit 2, names recall show).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-freshness-cmds",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Keep it fresh: sweep, status, gc, rebuild",
+   "anchor": "Exit codes: 2 recall off / not found, 3 load-gated or locked.",
+   "summary": "`recall status/sweep [--full]/gc/rebuild`; exit 2 off/not found, 3 load-gated or locked.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "rc-tui-g",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "The TUI",
+   "anchor": "`G` in the TUI opens the same search",
+   "summary": "TUI G key = recall search overlay (/ stays title filter); falls back when recall disabled.",
+   "kind": "reference"
+  },
+  {
+   "id": "rc-agent-flow",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Typical agent flow",
+   "anchor": "`recall search \"<what you remember>\" --harness <h> --json`, pick a hit,",
+   "summary": "Agent flow: search --json -> show --tier card -> --turns 40 or context --into current -> annotate -> open.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-context-into",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Bring a past conversation into this session: `recall context`",
+   "anchor": "`--into current` needs `AGENTDECK_INSTANCE_ID`",
+   "summary": "`recall context --tier card|brief|excerpt --budget --into current|<id>` delivers via session send; outside a session exit 2; --ssh target refused unless remote_cards; ask card first.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-enrich",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Derived summaries: `recall enrich`",
+   "anchor": "The `outcome` line is a guess (`failed?`, `abandoned?`, `unknown`)",
+   "summary": "Sweeps derive lost_time/session_kind/outcome; `recall enrich` drains stale; outcome is a guess unless annotated; --cost-class llm never automatic.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-federated",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Phase 4 (available now): context, derived summaries, remote, MCP",
+   "anchor": "Read `remotes[].error` before trusting a merged",
+   "summary": "`recall search --remote <host>/--all-remotes` federates over SSH, stores nothing; older remote = one line + exit 1; read remotes[].error; card sync only with remote_cards.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-mcp",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "MCP: `agent-deck recall mcp`",
+   "anchor": "agent-deck mcp attach <session> recall && agent-deck session restart <session>",
+   "summary": "Attach the built-in recall MCP (recall_search/recall_show/recall_context) with `mcp attach <s> recall` + restart.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rc-not-built",
+   "area": "recall",
+   "file": "references/recall.md",
+   "heading": "Not built",
+   "anchor": "`session search` keeps its substring semantics and is not an alias for any of these.",
+   "summary": "TUI a/R and `recall fetch --raw` are not built; session search is not recall.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ss-skill-dir",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Script Path Resolution (IMPORTANT)",
+   "anchor": "**You MUST use that base directory path to resolve all script references.**",
+   "summary": "Resolve scripts from the skill base directory as $SKILL_DIR/scripts/session-share/.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ss-export-options",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Export Session",
+   "anchor": "| `--include-thinking` | Keep Claude's thinking blocks (only together with `--no-sanitize`; sanitizing always strips them) |",
+   "summary": "export.sh options --session, --output, --include-thinking, --no-sanitize; default output ~/session-shares/.",
+   "kind": "script"
+  },
+  {
+   "id": "ss-import-options",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Import Session",
+   "anchor": "| `--no-start` | Don't auto-start the session |",
+   "summary": "import.sh <file> options --title, --project, --no-start.",
+   "kind": "script"
+  },
+  {
+   "id": "ss-workflow",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Workflow: Sharing a Session",
+   "anchor": "Session appears in agent-deck as \"Imported: feature\"",
+   "summary": "Exporter runs export.sh and sends file directly; importer runs import.sh, session titled 'Imported: <title>' resumes with full context.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ss-file-format",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Export File Format",
+   "anchor": "\"original_project\": \"/Users/alice/my-project\"",
+   "summary": "Export JSON fields: version, exported_at, exported_by, session{id,title,original_project}, context, messages, stats.",
+   "kind": "reference"
+  },
+  {
+   "id": "ss-redaction",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "What's Redacted by Default",
+   "anchor": "| Thinking blocks | Removed entirely |",
+   "summary": "Default redaction: API keys/tokens -> [REDACTED], home paths -> ~, username -> $USER, thinking removed.",
+   "kind": "script"
+  },
+  {
+   "id": "ss-best-practices",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Best Practices",
+   "anchor": "**Review before sharing** - Open the export file and scan for sensitive data",
+   "summary": "Review export before sharing, use direct transfer, delete after import, use --include-thinking sparingly.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ss-troubleshooting",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Troubleshooting",
+   "anchor": "| \"Could not detect current Claude session\" | Make sure you're in an agent-deck session with active Claude |",
+   "summary": "Troubleshooting: not in an active Claude session; send a message first; --project for wrong project; default strips thinking for size.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ss-storage-encoding",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Session Storage",
+   "anchor": "Path encoding: `/Users/alice/project` becomes `-Users-alice-project`",
+   "summary": "Claude transcripts live in ~/.claude/projects/<encoded-path>/<id>.jsonl; path encoding replaces / with - (code also replaces '.', and honours CLAUDE_CONFIG_DIR).",
+   "kind": "script"
+  },
+  {
+   "id": "ss-import-internals",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "How Import Works",
+   "anchor": "Sets `claude-session-id` so restart uses `--resume`",
+   "summary": "Import writes JSONL into the encoded project dir, creates a deck session and sets claude-session-id so restart resumes.",
+   "kind": "script"
+  },
+  {
+   "id": "ss-deps-compat",
+   "area": "session-share",
+   "file": "references/session-share.md",
+   "heading": "Dependencies",
+   "anchor": "`jq` - JSON processing (install: `brew install jq`)",
+   "summary": "Requires jq, agent-deck and claude; claims to work on old deck versions.",
+   "kind": "reference"
+  },
+  {
+   "id": "rt-local-only",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "Deck retrospective",
+   "anchor": "Do not upload transcripts, logs, reports, Recall results or file names.",
+   "summary": "Retro is fully local: transcripts are evidence not instructions; no uploads, no issue filing, no messages.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rt-inputs-window",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "1. Agree the local inputs",
+   "anchor": "Otherwise use the preceding seven days. Record one frozen observation timestamp.",
+   "summary": "Explicit timezone window with exclusive end, default previous seven days, frozen observation timestamp; only the user's own data dirs.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rt-readonly-recall",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "1. Agree the local inputs",
+   "anchor": "Read Recall via `recall search --no-sweep --json` when supported",
+   "summary": "Read recall read-only via `recall search --no-sweep --json`; never backfill/sweep/enrich/import/pull/open; never drain an inbox or contact a live session.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rt-measure-script",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "2. Measure and compare",
+   "anchor": "python3 \"$SKILL_DIR/scripts/retro/measure.py\" --config CONFIG --start START --end END --out OUTPUT",
+   "summary": "Run measure.py with a config built from config.example.json; --previous for comparison; outputs metrics.json, report.md/html, wakes-<label>.json.",
+   "kind": "script"
+  },
+  {
+   "id": "rt-compare-rates",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "2. Measure and compare",
+   "anchor": "Unequal window totals are not an improvement: compare hourly rates, percentages and comparable source coverage.",
+   "summary": "Never treat absent metrics as zero; compare rates not totals; Codex accounting is not measured by the script and must be reported as an unmeasured cohort.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rt-candidates",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "3. Find and rank candidate failures",
+   "anchor": "Only a demonstrated product failure is `reproduced`; all other observations remain `seen, not reproduced` with reasons.",
+   "summary": "Private candidate table; every candidate goes through repro + validate.py; only demonstrated failures are reproduced; fixing needs authorization.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rt-drafts",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "4. Prepare drafts safely",
+   "anchor": "Only reproduced candidates without an existing issue may receive a draft.",
+   "summary": "Check local issue snapshot for duplicates; drafts only for reproduced candidates, synthetic repro, no transcript/private data; the user files.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rt-handoff",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "5. Contributor handoff",
+   "anchor": "Wait for the returned issue URL before starting its fix/PR handoff.",
+   "summary": "New finding: present draft, pause for user to file, wait for issue URL; then repro test-first fix and contributing PR.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rt-reports",
+   "area": "retro",
+   "file": "references/retro.md",
+   "heading": "6. Deliver private reports",
+   "anchor": "Use a phone-width white HTML page with bars and plain words plus Markdown tables.",
+   "summary": "Private phone-width HTML + Markdown report; public drafts separate; cancel only this run's wakeups.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rm-wake-definition",
+   "area": "retro",
+   "file": "references/retro-metrics.md",
+   "heading": "Definitions and coverage",
+   "anchor": "A Claude wake begins at a non-tool-result user record.",
+   "summary": "Wake definition, per-message-ID max token accounting, cached reads are not billing cost, dedupe superset account copies.",
+   "kind": "script"
+  },
+  {
+   "id": "rm-coverage-unknowns",
+   "area": "retro",
+   "file": "references/retro-metrics.md",
+   "heading": "Definitions and coverage",
+   "anchor": "Absent sources, zero denominators, unsupported formats and rotated history remain unknown.",
+   "summary": "Ledger vs legacy cohorts kept separate; latency needs remote provenance, negative latency is a clock problem; unknowns stay unknown.",
+   "kind": "script"
+  },
+  {
+   "id": "rp-isolation",
+   "area": "repro",
+   "file": "references/repro.md",
+   "heading": "Inputs and isolation",
+   "anchor": "A changed HOME alone is not a security boundary",
+   "summary": "Docker with fresh HOME and private tmux (preferred) or disposable HOME + XDG + private socket; never live sessions, paid models, killing shared tmux, or modifying installed binary.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rp-reproduce-first",
+   "area": "repro",
+   "file": "references/repro.md",
+   "heading": "Reproduce first",
+   "anchor": "Define the oracle before running",
+   "summary": "Real binary from exact revision, oracle defined first, timeout/build failure is an error not the bug, run.py receipts; verdicts reproduced/not reproduced/blocked.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rp-test-first",
+   "area": "repro",
+   "file": "references/repro.md",
+   "heading": "Test-first fix loop",
+   "anchor": "a checked-in regression test that fails on the old code and passes on the fix",
+   "summary": "Freeze repro, failing regression test, smallest fix, same reproduction on fixed build; fixed needs all evidence.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rp-landed-fix-backport",
+   "area": "repro",
+   "file": "references/repro.md",
+   "heading": "Test-first fix loop",
+   "anchor": "retain `fix unverified` until equivalent red evidence exists",
+   "summary": "For an already-landed fix, backport only the test; if it cannot run on old source keep `fix unverified`.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rp-output-callers",
+   "area": "repro",
+   "file": "references/repro.md",
+   "heading": "Output and callers",
+   "anchor": "Only `reproduced` candidates may become issue drafts",
+   "summary": "Write RESULTS.md and result.json; retro calls repro for every candidate; no filing/pushing without authorization.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rpc-docker-runner",
+   "area": "repro",
+   "file": "references/repro-contract.md",
+   "heading": "Docker runner",
+   "anchor": "0 means the expected behavior holds, 1 means the **specific** defect was observed",
+   "summary": "repro.sh exit codes 0/1/2+; run.py with --image --binary --script --fixtures --out --timeout; no network, read-only mounts, no Docker socket.",
+   "kind": "script"
+  },
+  {
+   "id": "rpc-result-schema",
+   "area": "repro",
+   "file": "references/repro-contract.md",
+   "heading": "result.json",
+   "anchor": "Allowed status: `reproduced`, `not reproduced`, `blocked`, `fix unverified`, `fixed`.",
+   "summary": "result.json schema and five allowed statuses; fixed needs fixed revision, both reproduction receipts and regression receipts.",
+   "kind": "script"
+  },
+  {
+   "id": "rpc-disposable-home",
+   "area": "repro",
+   "file": "references/repro-contract.md",
+   "heading": "Disposable HOME alternative",
+   "anchor": "clear inherited environment with `env -i`",
+   "summary": "Disposable HOME only for trusted repros without Docker: env -i, HOME/XDG under task dir, private tmux socket.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "rpc-validation",
+   "area": "repro",
+   "file": "references/repro-contract.md",
+   "heading": "Validation",
+   "anchor": "add `oracle_matched: true` and `oracle_evidence`",
+   "summary": "Add oracle_matched/oracle_evidence, keep output_sha256, run validate.py; self-check uses --require-status fixed via REPRO_REPORT; blocked/not reproduced need attempts.",
+   "kind": "script"
+  },
+  {
+   "id": "co-self-check-location",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "Scripts",
+   "anchor": "skills/agent-deck/scripts/contributing/self-check.sh",
+   "summary": "Run self-check.sh from the repo root (or $SKILL_DIR); it finds the root via git rev-parse.",
+   "kind": "reference"
+  },
+  {
+   "id": "co-capture-ask",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "1. Capture the human ask",
+   "anchor": "Before any code, write down verbatim what your human asked for",
+   "summary": "Record the human ask verbatim first; it becomes `## What actually bothered you`.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "co-claim-scope",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "2. Claim or discuss",
+   "anchor": "`self-check.sh` fails such a diff unless `LINKED_ISSUE=<n>` is set.",
+   "summary": "Claim/discuss first; lean-scope line (no new adapters/UIs without a Discussion); >3000 lines needs LINKED_ISSUE; own findings go via retro/repro and the human files.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "co-branch-reproduce",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "3. Branch and reproduce",
+   "anchor": "Say `reproduced` only when the reported symptom is observed.",
+   "summary": "Branch fix/feature/docs from main; reproduce with repro.md before touching code; failed build is not a reproduction.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "co-test-first",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "4. Write the failing test first",
+   "anchor": "Say `fixed` only when the same reproduction passes on the fixed build",
+   "summary": "Regression test fails first; one problem per PR (~400 line fit flag); every hunk tested; run security self-scan.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "co-review-rules",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "5. Check your diff against the four review rules",
+   "anchor": "fix the siblings, resolve the profile first, no byte cuts on display text, join what you",
+   "summary": "Reread the diff against the four review rules: siblings, profile first, no byte cuts, join what you start.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "co-checks-loop",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "6. Run the checks the way CI does",
+   "anchor": "Never run `go test` on your host.",
+   "summary": "Never go test on host; run self-check.sh on host (prints docker run, ends Not ready yet), rerun in container until `Ready to open`; REPRO_REPORT must be fixed.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "co-pr-text",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "7. Write PR text that passes the intake bot",
+   "anchor": "The gate marker is the very last line and agrees with the checked box.",
+   "summary": "Exact `## ` headings, quoted ask, inline Evidence with revert-check, no CRITICAL/URGENT wording without repro, gate marker last.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "co-verdicts",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "8. Respond to intake and review verdicts",
+   "anchor": "the check reruns on edit and no commit is needed",
+   "summary": "needs-info: edit the description (no commit); needs-work: do exactly the 1-3 moves; verdicts SHA-bound; nothing auto-closes; human merges.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "co-never",
+   "area": "contributing",
+   "file": "references/contributing.md",
+   "heading": "Never",
+   "anchor": "Edit `CHANGELOG.md`, or fold `.github/` changes into an unrelated PR.",
+   "summary": "Never claim AI-free authorship, check false boxes, test against real $HOME, edit CHANGELOG or fold .github changes in.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gs-intake-layer",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Layer 1 — intake gate (`.github/workflows/pr-intake.yml`, instant)",
+   "anchor": "Observe-only today: labels + one kind comment, its check reports green either",
+   "summary": "Intake is observe-only: required headings, exactly one AI box, non-empty intent -> needs-info; marker informational; bad-gate leaves it alone.",
+   "kind": "reference"
+  },
+  {
+   "id": "gs-marker-grammar",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Layer 1 — intake gate (`.github/workflows/pr-intake.yml`, instant)",
+   "anchor": "Marker grammar: `<!-- gate:ai=<human|assisted|authored> model=<name-or-unsure> intent=<yes|no> -->`",
+   "summary": "Gate marker grammar; model=none when ai=human.",
+   "kind": "reference"
+  },
+  {
+   "id": "gs-pregate",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Cheap mechanical pre-gate (before any lens spends compute)",
+   "anchor": "| Giant undiscussed diff | additions > 3000 AND no linked issue/Discussion |",
+   "summary": "Pre-gate: gutted template, >3000-line undiscussed diff, urgency-scanner slop.",
+   "kind": "reference"
+  },
+  {
+   "id": "gs-correctness-revert",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Correctness lens",
+   "anchor": "reverts your non-test hunks and re-runs your tests; a test that still passes proves nothing",
+   "summary": "Correctness lens: sandboxed tests, revert-check centerpiece, diff coverage; REPRO_REPORT validates fixed verdict, omitted is skipped.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gs-security-lens",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Security lens (diff-scoped security gates)",
+   "anchor": "any `replace` directive or GOPROXY override (automatic stop)",
+   "summary": "Security gates: dependency vet, .github human gate, hidden-logic sweep.",
+   "kind": "reference"
+  },
+  {
+   "id": "gs-fit-lens",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Fit lens",
+   "anchor": "| Oversized PR | over ~400 changed lines |",
+   "summary": "Fit lens: lean scope, overlap, ~400 lines, style match, CHANGELOG edit.",
+   "kind": "reference"
+  },
+  {
+   "id": "gs-intent-lens",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Intent lens (slop-vs-genuine)",
+   "anchor": "undisclosed bulk-generation gets closed, disclosed AI gets equal standing",
+   "summary": "Intent lens: disclosure honesty, author understanding, behaviour evidence, human need.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gs-house-rules",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Layer 3 — house rules (enforced across layers)",
+   "anchor": "| Open-PR cap | max 5 per author |",
+   "summary": "House rules: 5 open PRs, >3000 lines discussion, one problem, CHANGELOG untouched, hot-path timing, gofmt+vet.",
+   "kind": "reference"
+  },
+  {
+   "id": "gs-verdict-protocol",
+   "area": "contributing",
+   "file": "references/contributing-gate-spec.md",
+   "heading": "Layer 4 — verdict protocol (how the loop behaves)",
+   "anchor": "two independent AI reviews clean AND CI green AND the human",
+   "summary": "SHA-bound verdicts, rank-up moves, no auto-close (10-day nudge, keep-open), misfire path, human merge only.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "pb-template",
+   "area": "contributing",
+   "file": "references/contributing-pr-body-template.md",
+   "heading": "contributing-pr-body-template.md — one complete passing PR body",
+   "anchor": "<!-- gate:ai=authored model=claude-opus-4-x intent=yes -->",
+   "summary": "A complete passing PR body example with all required headings and marker.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "pb-rules",
+   "area": "contributing",
+   "file": "references/contributing-pr-body-template.md",
+   "heading": "Rules the example demonstrates",
+   "anchor": "**Exactly one AI-disclosure box checked**, model named (`unsure` is also",
+   "summary": "Rules: exact headings, one AI box + model, quoted intent, observed evidence incl. revert-check, honest checklist, marker last, hot-path timing.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sc-invisible-chars",
+   "area": "contributing",
+   "file": "references/contributing-security-self-scan.md",
+   "heading": "1. Invisible characters and homoglyphs (automatic reject)",
+   "anchor": "Zero-width, RTL-override, and look-alike Unicode in code are backdoor tooling.",
+   "summary": "Grep added lines for zero-width/RTL/homoglyph characters (automatic reject).",
+   "kind": "reference"
+  },
+  {
+   "id": "sc-curl-pipe",
+   "area": "contributing",
+   "file": "references/contributing-security-self-scan.md",
+   "heading": "2. Downloaded-and-executed code (automatic stop-for-human)",
+   "anchor": "added | grep -nE 'base64 (-d|--decode)'",
+   "summary": "No curl|sh downloads; confirm base64 decode hits.",
+   "kind": "reference"
+  },
+  {
+   "id": "sc-network-exec",
+   "area": "contributing",
+   "file": "references/contributing-security-self-scan.md",
+   "heading": "4. Exec of constructed strings",
+   "anchor": "`exec.Command` on a built string is the classic injection surface.",
+   "summary": "No exec of constructed strings; args via argv/STDIN; network calls need justification and user-configured destinations.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sc-secrets-perms",
+   "area": "contributing",
+   "file": "references/contributing-security-self-scan.md",
+   "heading": "6. File permissions",
+   "anchor": "Secrets and control directories are `0600`/`0700`.",
+   "summary": "No env secret exfiltration; secrets 0600/0700, no world-writable modes; no time-bombs or weak crypto; no config injection.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sc-deps",
+   "area": "contributing",
+   "file": "references/contributing-security-self-scan.md",
+   "heading": "9. Dependency hygiene (if go.mod/go.sum changed at all)",
+   "anchor": "git diff \"$MB\" HEAD -- go.mod | grep -E '^\\+\\s*replace\\s'",
+   "summary": "Dependency hygiene: no replace/GOPROXY, go mod verify with isolated HOME, optional govulncheck.",
+   "kind": "reference"
+  },
+  {
+   "id": "sc-workflow-safety",
+   "area": "contributing",
+   "file": "references/contributing-security-self-scan.md",
+   "heading": "10. Workflow safety (if you must touch `.github/` — separate PR, human-gated)",
+   "anchor": "Third-party actions (anything not `actions/*` or `github/*`) are pinned by full",
+   "summary": "Workflow safety: no pull_request_target widening, no interpolation in run:, SHA-pinned actions, no write perms for untrusted code.",
+   "kind": "reference"
+  },
+  {
+   "id": "sc-reading-results",
+   "area": "contributing",
+   "file": "references/contributing-security-self-scan.md",
+   "heading": "Reading the results",
+   "anchor": "Every hit is either **removed**, **confirmed-benign with one sentence in the PR",
+   "summary": "Every hit is removed or explained in one sentence in the PR body.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sb-enable",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "One-Liner Commands",
+   "anchor": "agent-deck add --sandbox-image myregistry/custom:v1 .",
+   "summary": "Sandbox a session with `add --sandbox` / `--sandbox-image`, `try --sandbox`; remove cleans container; Docker checked at start.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sb-precedence-config",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "Precedence",
+   "anchor": "CLI flags take priority over config file defaults:",
+   "summary": "CLI flags override `[docker] default_enabled/default_image`; config options cpu/memory limits, mount_ssh, environment, volume_ignores, auto_cleanup.",
+   "kind": "reference"
+  },
+  {
+   "id": "sb-shared-dirs",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "Shared Sandbox Directories",
+   "anchor": "Agent Deck syncs credential files into a **shared sandbox directory** and bind-mounts it into containers",
+   "summary": "Host tool credentials sync into ~/<tool>/sandbox/ on every start; seed files write-once; container state preserved.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sb-macos-single-owner",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "Single-owner rule for OAuth tokens (macOS)",
+   "anchor": "The Keychain entry belongs to the host's Claude Code and is never copied by default.",
+   "summary": "macOS: Keychain token never copied by default; sandbox has its own /login credential; seed_credentials_from_keychain is opt-in once; setup-token via environment is race-free.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sb-reset-login",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "Single-owner rule for OAuth tokens (macOS)",
+   "anchor": "delete `~/.claude/sandbox/.credentials.json` and run `/login` in the next sandbox session",
+   "summary": "Sandbox login broken: delete ~/.claude/sandbox/.credentials.json and /login inside sandbox.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sb-naming-howitworks",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "How It Works",
+   "anchor": "Press `E` on a sandboxed session to exec a shell inside the container.",
+   "summary": "Container naming agent-deck-{title}-{id8}; tmux runs docker exec; E opens container shell; remove deletes container.",
+   "kind": "reference"
+  },
+  {
+   "id": "sb-env-passthrough",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "Environment Variables",
+   "anchor": "environment = [\"ANTHROPIC_API_KEY\", \"OPENAI_API_KEY\", \"GEMINI_API_KEY\"]",
+   "summary": "Pass host env vars into containers via `[docker] environment`; terminal vars always passed.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sb-custom-image",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "Custom Docker Images",
+   "anchor": "FROM agent-deck-sandbox:latest",
+   "summary": "Extend agent-deck-sandbox:latest, build, set default_image or --sandbox-image.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "sb-security-model",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "Security Model",
+   "anchor": "**No Docker socket:** The Docker socket is never mounted",
+   "summary": "Hardening: cap-drop ALL, no-new-privileges, read-only root, pids-limit 4096, no Docker socket, blocked volume paths, symlink boundary.",
+   "kind": "reference"
+  },
+  {
+   "id": "sb-oom",
+   "area": "core",
+   "file": "references/sandbox.md",
+   "heading": "Container killed due to memory (OOM)",
+   "anchor": "Docker Desktop defaults to 2 GB for the entire VM.",
+   "summary": "OOM on macOS: raise Docker Desktop VM memory and set `[docker] memory_limit`.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-global-help-readonly",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "Global Options",
+   "anchor": "`--help` and `-h` are read-only on every human-facing command.",
+   "summary": "Global -p/--json/-q options; --help/-h never has side effects.",
+   "kind": "reference"
+  },
+  {
+   "id": "cli-add-parent-group",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "add - Create session",
+   "anchor": "`--parent` and `--no-parent` are mutually exclusive.",
+   "summary": "add flags: parent auto-link from AGENT_DECK_SESSION_ID, --parent/--no-parent exclusive, explicit -g overrides inherited group, auto wrapper for --cmd args.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-add-ssh",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "add - Create session",
+   "anchor": "agent-deck has no private-key flag",
+   "summary": "--ssh takes a destination (not a registered remote); key selection via ~/.ssh/config or ssh-agent.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-add-attach",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "add - Create session",
+   "anchor": "`--attach` does create → start → attach in one step.",
+   "summary": "add --attach needs a TTY; without one it errors but leaves the session created and started.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-launch-path-chain",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "launch - Create + start (+ optional message)",
+   "anchor": "`[path]` omitted: resolves the target group's `default_path`",
+   "summary": "launch/add path default chain; explicit . means cwd.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-launch-model-effort",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "launch - Create + start (+ optional message)",
+   "anchor": "`--model <id>` and `--effort <level>` are the per-session overrides",
+   "summary": "--model/--effort per tool, -capabilities --json catalog, --account requires a name.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-launch-hints-identity",
+   "area": "recall",
+   "file": "references/cli-reference.md",
+   "heading": "launch - Create + start (+ optional message)",
+   "anchor": "durable recall hints written to state.db at creation",
+   "summary": "--hint/--tag/--ticket/--why recall hints at creation; launch derives purpose from -m; --no-identity skips identity injection.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-accounts",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "accounts - List named account slots",
+   "anchor": "a configured account with no directory has never been logged in",
+   "summary": "accounts lists config_dir slots and whether each dir exists (never logged in otherwise).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-list-status",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "list - List sessions",
+   "anchor": "A missing field means unknown: the listing never inspects panes",
+   "summary": "list --json fields (account, transcript_path, native ids) and status -v/-q summary.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-update-timer",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "update - Check for and install a new release",
+   "anchor": "`--unattended` is what the daily timer, the TUI's `auto_install`",
+   "summary": "update --check/--version/--unattended and the timer install/ensure/status family.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-web-security",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "web - Start browser UI",
+   "anchor": "Allow a non-loopback `--listen` with no `--token`/`--token-file` (unsafe)",
+   "summary": "web flags: loopback by default, --token/--token-file for non-loopback, --read-only, --no-tui.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-start-restart",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session restart",
+   "anchor": "`--if-idle` restarts only a session that is still idle at an empty prompt.",
+   "summary": "session start -m/--attach; restart reloads MCPs, --env one-shot vars (not saved), --if-idle under the send lock.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-fork",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session fork (Claude, OpenCode, Pi, Codex, Oh My Pi)",
+   "anchor": "Creates a new session with the same conversation context for supported tools.",
+   "summary": "session fork -t/-g; requires a valid Claude session id; TUI f applies [fork] defaults, Web/API does not.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-session-show-current",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session show",
+   "anchor": "Substate `background-work` (Claude) means the foreground turn ended",
+   "summary": "session show/current JSON identity fields, background_work substate, exit_code for command sessions.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-session-primer-set",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session set",
+   "anchor": "Setting `account` auto-migrates the Claude conversation into the target account's config dir",
+   "summary": "session set fields incl. account migration, context-level, prompt-suggestions; session primer shows resolved context.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-session-send-keys",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session send-keys",
+   "anchor": "`--enter` is raw by design: it can submit unsent composer text",
+   "summary": "send-keys low-level keys, composer guard for prompt suggestions, --enter is raw.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-send-confirmation",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session send",
+   "anchor": "**Read `confirmation`, not the human text.**",
+   "summary": "Branch on the 3-way confirmation field; --json alone returns queued; follow with session send-status; do not resend a queued send.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-send-guarded",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session send",
+   "anchor": "`--require-input-prompt` (guarded send) refuses instead of typing into a harness menu.",
+   "summary": "Guarded send refuses on menus/drafts; --message-file for long text; queue list/release/cancel; send envelope routes replies to sender's inbox.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-approve",
+   "area": "fleet",
+   "file": "references/cli-reference.md",
+   "heading": "session approve",
+   "anchor": "Resolves one currently visible Codex numbered approval menu.",
+   "summary": "Answer Codex approval menus with session approve, never session send \"1\".",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-command",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session command",
+   "anchor": "Use it instead of `session send` or `tmux send-keys` for every slash command.",
+   "summary": "Run slash commands (/model, /compact, /clear) via session command with verified outcome; --background for self.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-output",
+   "area": "fleet",
+   "file": "references/cli-reference.md",
+   "heading": "session output",
+   "anchor": "Get the last response from a session.",
+   "summary": "session output: bounded text, --json/--if-version change detection, a text read withdraws the matching inbox notice.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-session-context",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session context",
+   "anchor": "never combine `--verify` with a non-interactive shell",
+   "summary": "session context tabs/--json are read-only; --verify writes into the live session and needs --yes non-interactively; exit codes 0-5.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-children",
+   "area": "fleet",
+   "file": "references/cli-reference.md",
+   "heading": "session children",
+   "anchor": "Read-only: never clears the inbox, so poll it as often as you like.",
+   "summary": "session children snapshot/--follow JSONL; --until-done exits when every child waits or is terminal.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-session-metrics",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session metrics",
+   "anchor": "Per-session numbers for evals, derived on demand",
+   "summary": "session metrics fields from the event journal; unknowns are null.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-session-annotate",
+   "area": "recall",
+   "file": "references/cli-reference.md",
+   "heading": "session annotate",
+   "anchor": "hints are single-valued per key (setting a key again replaces it), tags are a set",
+   "summary": "session annotate (--self, --decision, --outcome, --tag, --note-stdin).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-recall",
+   "area": "recall",
+   "file": "references/cli-reference.md",
+   "heading": "recall",
+   "anchor": "every command needs `[recall] enabled = true` and exits 2 otherwise",
+   "summary": "recall verbs (search/show/context/open/...), gate on [recall] enabled, --into current.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-switch-account",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "session switch-account",
+   "anchor": "copy-only, with a destination backup and size verification",
+   "summary": "switch-account stops, copies the conversation into the target account, sets it and resumes.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-open-browser",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "open - Show a page in the macOS app Browser panel",
+   "anchor": "Use this to show the user an HTML report.",
+   "summary": "open/browser drive the macOS app Browser panel; browser needs browser.enabled and [macapp] plugins.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-fleet-recovery",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "fleet recover",
+   "anchor": "**Dry run by default.** Without `--yes` the command prints the plan",
+   "summary": "fleet status is read-only; fleet recover restarts down sessions one at a time with brakes, dry run unless --yes.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-worktree",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "worktree trust-hooks",
+   "anchor": "On a terminal it asks y/N; without one it refuses unless `--yes` is given.",
+   "summary": "worktree list/info/cleanup (dry run unless --force); trust-hooks approves repo hook scripts.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-mcp-skill",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "skill attach",
+   "anchor": "Claude-compatible sessions -> `<project>/.claude/skills`",
+   "summary": "mcp list/attached/attach/detach (--global, --restart) and skill attach roots per runtime.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-group-profile",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "group move",
+   "anchor": "Use `\"\"` or `root` to move to default group.",
+   "summary": "group list/create/delete --force/move; profile list/create/delete/default.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-conductor",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "Conductor Commands",
+   "anchor": "Heartbeat sends use non-blocking `session send --no-wait -q`",
+   "summary": "conductor setup/teardown/status/list; heartbeat per conductor; notify-daemon transition nudges.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-conductor-notify",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "notify / outbox / tier-filter - What reaches the human (#2469)",
+   "anchor": "replies outside a heartbeat are not forwarded",
+   "summary": "conductor notify --tier urgent|info queues for the human; outbox and tier-filter.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-inbox-dead-letter",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "dead-letter - Inspect and resolve terminal delivery failures",
+   "anchor": "An unbounded purge requires `--yes`.",
+   "summary": "inbox peek/stats are read-only; dead-letter list/show/retry/purge with --older-than or --yes.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-inbox-drain-export",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "inbox - Durable completion/transition records",
+   "anchor": "run it first on every heartbeat — reading clears the inbox",
+   "summary": "inbox drain consumes; export is read-only; writer-status tells if a notify-daemon is recording.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-remote-basics",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "remote sessions",
+   "anchor": "add `--with-errors` (or the equivalent `--json-envelope`",
+   "summary": "remote add/remove/list --check/sessions/attach/rename/exec forwarding.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-remote-drain",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "remote drain",
+   "anchor": "so a conductor that launched workers on another host learns they finished",
+   "summary": "remote drain pulls a remote's completion records into the local inbox; safe to repeat; exit 0/2/3.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-remote-update",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "remote update",
+   "anchor": "`--from-build <dir>` installs from a local directory of release-layout archives",
+   "summary": "remote update name|--all, --from-build, checksum/version verified, --install-timer.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-health",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "health - Local runtime health",
+   "anchor": "Reads local runtime health for the selected profile: no data leaves the host.",
+   "summary": "agent-deck health reports per-process samples vs performance budgets.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cli-hooks-deepseek",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "Codex Hook Commands",
+   "anchor": "Install it once per Codex home",
+   "summary": "codex-hooks/tmux-hooks/pi-hooks install/status/uninstall; deepseek read-only inspection.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "cli-resolution-exit-codes",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "Session Resolution",
+   "anchor": "**ID prefix:** `abc123` (6+ chars)",
+   "summary": "Session resolution (title, 6+ char id prefix, path, current) and generic exit codes 0/1/2.",
+   "kind": "reference"
+  },
+  {
+   "id": "cli-costs-budgets",
+   "area": "core",
+   "file": "references/cli-reference.md",
+   "heading": "Costs",
+   "anchor": "Budgets are display-only unless `[costs.budgets] enforce = true`.",
+   "summary": "costs commands need --json; enforced budgets refuse agent sends with BUDGET_EXCEEDED; people use --ignore-budget.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cfg-top-level",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "Top-Level",
+   "anchor": "Pre-selected tool when creating sessions.",
+   "summary": "Top-level keys: default_tool, default_path chain, sync_title, push_title, group_sort.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-send-transport",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "Top-Level",
+   "anchor": "Once a write to the socket starts, it is never retried on tmux",
+   "summary": "send_transport tmux|auto; socket sends report queued_socket, never retried on tmux.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-shell",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[shell] Section",
+   "anchor": "Environment sources are applied in this order (later overrides earlier):",
+   "summary": "[shell] env_files/init_script/launch_shell and env sourcing order.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cfg-claude",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[claude] Section",
+   "anchor": "Forces bypass on. Takes precedence over `auto_mode` and `allow_dangerous_mode`.",
+   "summary": "[claude] permission keys precedence, vim_mode, hooks_enabled, command; config_dir resolution order.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-multi-account",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "Multiple Claude accounts (per profile)",
+   "anchor": "Use a global default, then override only profiles that need a different Claude account/config",
+   "summary": "Per-profile Claude accounts via [profiles.<name>.claude].config_dir; verify with hooks status -p.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cfg-group-overrides",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "Per-group / per-conductor Claude overrides",
+   "anchor": "conductor beats group on every key",
+   "summary": "[groups.\"<path>\".claude] / [conductors.<name>.claude] overrides (config_dir, env, model, skills, mcps); verify with group show --resolved.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cfg-group-defaults",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[group_defaults] Section",
+   "anchor": "Defaults stamped onto **newly-created** groups. Existing groups are unaffected.",
+   "summary": "[group_defaults] max_concurrent for new groups; group create --max-concurrent overrides.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cfg-tool-sections",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[codex] Section",
+   "anchor": "Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`)",
+   "summary": "Per-tool sections (gemini/opencode/codex/copilot/cursor/omp/hermes/muse): command, yolo_mode, env_file, default_model.",
+   "kind": "reference",
+   "checked_by": [
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-models",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[models] Section",
+   "anchor": "probe = true   # Ask installed CLIs for their model lists (default)",
+   "summary": "[models] probe and per-tool extra/list for model suggestions.",
+   "kind": "reference",
+   "checked_by": [
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-worktree",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[worktree] Section",
+   "anchor": "Git worktree settings. Worktrees allow creating isolated working directories",
+   "summary": "[worktree] path_template, branch_prefix, default_location, auto_cleanup; dir-local .agent-deck/config.toml overrides.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-fork",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[fork] Section",
+   "anchor": "Defaults for forking a session — the TUI quick fork (`f`) and the `Shift+F` dialog.",
+   "summary": "[fork] defaults for TUI quick fork (worktree, carry state, docker).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-launch",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[launch] Section",
+   "anchor": "What `add` and `launch` do when run from inside a sub-session without `--parent`.",
+   "summary": "[launch] inject_identity, context_level, nest_under_parent, prompt_suggestions, fanout_hint; per-harness identity delivery.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cfg-prompt-suggestions",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "Prompt suggestions in launched sessions",
+   "anchor": "Precedence, most specific first: the session override",
+   "summary": "Prompt suggestion precedence: session > profile > [launch] > children-off.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cfg-logs-updates",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[updates] Section",
+   "anchor": "How often every agent-deck daemon/TUI polls the GitHub releases endpoint for a new release.",
+   "summary": "[logs] size/lines/orphans; [updates] auto_install/auto_restart/check_interval/manage_timer/auto_update_remotes.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-sessions-idle-refresh",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[sessions] Section",
+   "anchor": "Idle sessions move onto a newer Claude Code or Codex CLI build by themselves.",
+   "summary": "[sessions] auto_refresh_idle_builds and which sessions qualify (idle 5 min, empty composer, no client).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-recall",
+   "area": "recall",
+   "file": "references/config-reference.md",
+   "heading": "[recall] Section",
+   "anchor": "Turn the recall.db index on. Hints and annotations work regardless.",
+   "summary": "[recall] enabled gates the transcript index; hints work regardless; max_loadavg, remote_cards.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "cfg-inbox-comms-send",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[inbox] Section",
+   "anchor": "Tiers that type a wake into an idle parent the moment a record lands.",
+   "summary": "[inbox] wake_on/question_wakes/max_text_bytes; [comms] ledger; [send] tag_sends.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-remotes-talkback",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[remotes.<name>] Talkback",
+   "anchor": "this key makes the notify-daemon pull a remote's child records on its own",
+   "summary": "[remotes.<name>] talkback_interval_secs schedules remote drain from the notify-daemon.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-tmux",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[tmux] Section",
+   "anchor": "How agent-deck drives tmux: which server its sessions live on, and which tmux options it sets on them.",
+   "summary": "[tmux] socket_name, mouse, inject_status_line, launch_as, options table applied after defaults.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-mcps",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[mcps.*] Section",
+   "anchor": "Define MCP servers. One section per MCP.",
+   "summary": "[mcps.*] stdio/http/oauth/server definitions and [mcp_pool] socket sharing.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-tools",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "[tools.*] Section",
+   "anchor": "Define custom AI tools.",
+   "summary": "[tools.*] custom tools: command, busy_patterns, env, resume_flag, session_id_env for reboot-safe resume.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift",
+    "config-drift"
+   ]
+  },
+  {
+   "id": "cfg-data-locations",
+   "area": "core",
+   "file": "references/config-reference.md",
+   "heading": "Data Locations",
+   "anchor": "Session state lives in one **profile store** per profile",
+   "summary": "Profile store selection between XDG and legacy roots; migrate-paths writes the active-root marker.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "tui-layout-twins",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Keyboard Shortcuts",
+   "anchor": "Reconciled against the in-app help overlay (`?`), which is the source of truth",
+   "summary": "Help overlay is the source of truth; [hotkeys] rebinding; Russian layout twins.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "tui-navigation",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Navigation",
+   "anchor": "Alternate-session toggle: swap with the previous session",
+   "summary": "Navigation keys incl. gg, 1-9 groups, ` alternate session, Alt+arrows MRU.",
+   "kind": "reference"
+  },
+  {
+   "id": "tui-session-actions",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Session Actions",
+   "anchor": "Archive session — stops tmux, hides from default list",
+   "summary": "Session action keys (n, R, T, d/D, A/Shift+U, M, m, s, f/F, I insert mode, a quick approve).",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "tui-copy",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Copy & Text Selection",
+   "anchor": "Dragging with the mouse does **not** select text",
+   "summary": "Copy keys and Shift/Option drag; [tmux] mouse=false affects attached sessions only.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "tui-search-filter",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Search & Filter",
+   "anchor": "Recall search over every indexed conversation",
+   "summary": "/ local fuzzy, G recall search, status filters !@#&%, group view and time filters.",
+   "kind": "reference"
+  },
+  {
+   "id": "tui-global-keys",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Global",
+   "anchor": "Manual refresh / reload from disk",
+   "summary": "Global keys: ?, S, i import, Ctrl+R reload, Ctrl+Q detach, Ctrl+Y install update, Ctrl+T restart, Alt+D dead letters.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "tui-status-indicators",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Local Status Indicators",
+   "anchor": "| `✕` | Error | Red | tmux session doesn't exist |",
+   "summary": "Status symbols running/waiting/idle/error/starting and background-work.",
+   "kind": "reference"
+  },
+  {
+   "id": "tui-dialogs",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "New Session (`n`)",
+   "anchor": "Fields (order: Name → Tool → Model → Reasoning effort → Path)",
+   "summary": "Dialogs: new session fields, edit session, MCP manager scopes, skills manager, fork, delete, dead-letter panel.",
+   "kind": "reference"
+  },
+  {
+   "id": "tui-updates",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Updates",
+   "anchor": "The TUI checks for a new release on startup and every 5 minutes",
+   "summary": "TUI auto_install/auto_restart behaviour and the restart safety check.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "tui-layout-icons",
+   "area": "core",
+   "file": "references/tui-reference.md",
+   "heading": "Layout",
+   "anchor": "**80+ cols:** Side-by-side (default)",
+   "summary": "Responsive layout breakpoints, tool icons, Tokyo Night colors.",
+   "kind": "reference"
+  },
+  {
+   "id": "ts-quick-fixes",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Quick Fixes",
+   "anchor": "| CLI changes not in TUI | Press `Ctrl+R` to refresh |",
+   "summary": "Quick-fix table: error -> session start, MCPs -> restart, Ctrl+R refresh, fork prerequisites.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-copy-text",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Cannot Select or Copy Terminal Text",
+   "anchor": "Hold Shift while dragging in most Linux",
+   "summary": "V copies visible text; Shift/Option drag bypasses mouse reporting; [tmux] mouse=false as last resort.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-flags-ignored",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Flags Ignored",
+   "anchor": "Flags may go before or after positional arguments; agent-deck moves them into place",
+   "summary": "Claims flags after positional args are ignored (stale, see drift).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-mcp-session-id",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "MCP Not Available",
+   "anchor": "Check if attached: `agent-deck mcp attached <session>`",
+   "summary": "MCP not available: mcp attached, restart, mcp list; missing claude_session_id blocks fork.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-conductor-permissions",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Conductor Keeps Asking for Permissions",
+   "anchor": "`allow_dangerous_mode` or `dangerous_mode` there has no effect.",
+   "summary": "Set [claude] allow_dangerous_mode (or dangerous_mode) globally and restart the conductor; per-profile copies have no effect.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-atuin",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Atuin Pty-Proxy Incompatibility",
+   "anchor": "Replace the pty-proxy init line with standard atuin init",
+   "summary": "Atuin pty-proxy breaks the TUI; use plain atuin init.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-cpu-logs",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Log Files Too Large",
+   "anchor": "Add to `$XDG_CONFIG_HOME/agent-deck/config.toml`",
+   "summary": "High CPU expectations and shrinking logs via [logs] max_size_mb/max_lines.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-global-search",
+   "area": "recall",
+   "file": "references/troubleshooting.md",
+   "heading": "Global Search Not Working",
+   "anchor": "`G` searches the Recall index (`recall.db`). It is off unless Recall is on:",
+   "summary": "G needs [recall] enabled = true; check with recall status.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-kitty-shift-enter",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Shift+Enter Submits Instead of Inserting a Newline (Kitty)",
+   "anchor": "map shift+enter send_text all \\x1b[13;2u",
+   "summary": "Kitty needs a CSI-u Shift+Enter mapping in kitty.conf.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-terminal-features",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Progressive Display Corruption Inside tmux (duplicated rows, mojibake, junk after scroll)",
+   "anchor": "tmux set -su terminal-features      # back to tmux's built-in defaults",
+   "summary": "Inflated tmux terminal-features causes corruption; count it and reset with set -su without restarting the server.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-window-size",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "One tmux Window Stuck at 80x24 While Its Siblings Are Full Width",
+   "anchor": "agent-deck tmux-hooks uninstall   # removes after-new-window[2259] only if it is agent-deck's",
+   "summary": "Window-size policy, the after-new-window[2259] hook, tmux-hooks status/uninstall, fix with set-option -w.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-bug-report",
+   "area": "contributing",
+   "file": "references/troubleshooting.md",
+   "heading": "Step 1: Gather Information",
+   "anchor": "cat ~/.config/agent-deck/config.toml | grep -v",
+   "summary": "Bug report: gather version, status --json, session show, sanitized config, logs; file via the bug.yml form.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-mass-death",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Every Session Died At Once",
+   "anchor": "agent-deck fleet status          # read-only: what is actually down?",
+   "summary": "Mass death: fleet status, fleet recover dry run then --yes (sequential); session revive --all when panes are alive.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-recovery-data",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Session Metadata Lost",
+   "anchor": "Note: new installs store profiles under `$XDG_DATA_HOME/agent-deck/profiles/`",
+   "summary": "Recover state.db from sessions.json.migrated; logs survive lost tmux sessions; fresh profile if corrupted.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ts-uninstall",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Uninstalling",
+   "anchor": "agent-deck uninstall --keep-data  # Remove binary only, keep sessions",
+   "summary": "agent-deck uninstall --dry-run/--keep-data and what gets removed.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "ts-critical-warnings",
+   "area": "core",
+   "file": "references/troubleshooting.md",
+   "heading": "Critical Warnings",
+   "anchor": "**NEVER run these commands - they destroy ALL agent-deck sessions:**",
+   "summary": "Never tmux kill-server or mass kill-session agentdeck sessions.",
+   "kind": "behaviour"
+  }
+ ]
+}

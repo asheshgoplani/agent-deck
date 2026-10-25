@@ -1,6 +1,6 @@
 # Recall
 
-> Part of the agent-deck skill. Record and later find what an agent-deck session was for, across harnesses, and hand a past conversation to the current one. Use when the user says "remember what this session was for", "tag this session", "annotate", "mark the outcome", "ticket for this session", "find the session where we...", "what did we decide about", "which Codex/pi/Gemini session did X", "bring that conversation into this session", "search the other machine's sessions", or wants to search past conversations. Available: hints and tags (add/launch --hint, session annotate, remote annotate), the transcript index over Claude, Codex, pi, Gemini, OpenCode and Hermes (recall search/sessions/show/open/backfill/sweep/status/gc/rebuild, the TUI G key, hook-driven freshness), recall context --into current, the derived artifacts (recall enrich; lost_time, session_kind, outcome), federated remote search (--remote/--all-remotes), opt-in card sync (export/pull/import) and the MCP server (recall mcp); all behind [recall] enabled = true.
+> Part of the agent-deck skill. Record and later find what an agent-deck session was for, across harnesses, and hand a past conversation to the current one. Use when the user says "remember what this session was for", "tag this session", "annotate", "mark the outcome", "ticket for this session", "find the session where we...", "what did we decide about", "which Codex/pi/Gemini session did X", "bring that conversation into this session", "search the other machine's sessions", or wants to search past conversations. Available: hints and tags (add/launch --hint, session annotate, remote annotate), the transcript index over Claude, Codex, pi, Gemini, OpenCode and Hermes (recall search/sessions/show/timeline/follow/open/backfill/sweep/status/gc/rebuild, the TUI G key, hook-driven freshness), recall context --into current, the derived artifacts (recall enrich; lost_time, session_kind, outcome), federated remote search (--remote/--all-remotes), opt-in card sync (export/pull/import) and the MCP server (recall mcp); all behind [recall] enabled = true.
 
 Recall is agent-deck's memory of what every session was for and what
 happened in it. Human intent (hints, tags) lives in the profile's state.db
@@ -40,7 +40,7 @@ agent-deck session annotate <id> --json                        # read: hints, ta
 `agent-deck session annotate --self --outcome <worked|failed|partial> --decision "<one line>"`
 so the next agent can find what you concluded.
 
-### Remote sessions
+### Remote session hints
 
 ```bash
 agent-deck remote <host> session annotate <id> --outcome worked
@@ -108,7 +108,9 @@ agent-deck recall sessions --harness hermes --json
   body candidates before the 5,000-message ceiling (newest first), so a
   filtered search on a common term is complete. The output (and `index`
   in `--json`) says when the bounded pre-search sweep left files behind;
-  run `recall sweep` then.
+  run `recall sweep` then. `--no-sweep` skips that pre-search refresh
+  (read-only); `--subagents` includes subagent transcripts (both also on
+  `recall sessions`).
 - Hits carry `harness`, `profile`, `native_id` (the harness's own
   conversation id), `deck_id` when a registered session owns the
   conversation, `missing` when the file is gone (the text is still
@@ -129,6 +131,20 @@ agent-deck recall show <session> --tier raw             # every message
 unique prefix, or an agent-deck session id. Messages carry `class`
 (`prompt`, `assist`, `compact_summary`, ...); a Codex compaction summary
 supersedes the messages before it (they stay readable and searchable).
+
+### Turns and live follow: `recall timeline`, `recall follow`
+
+```bash
+agent-deck recall timeline <session> --json --tail 50                # ordered typed turns, with a resume cursor
+agent-deck recall timeline <session> --json --since <cursor>         # only what changed after that cursor
+agent-deck recall follow <session> --after <cursor|end> --jsonl      # stream new turns as JSONL frames (--status adds status frames)
+```
+
+Both read the native transcript directly (Claude or Codex), whatever the
+index state; `--agent <id>` picks one Claude sub-agent sidechain and
+`--transcript <file> --harness claude|codex` reads a file instead of a
+session. Frames: `row`, `update`, `remove`, `status`, `delivery`,
+`resync_required`.
 
 ### Continue one: `recall open`
 
@@ -174,7 +190,9 @@ open error when the index could not be opened).
 `recall show <id> --tier card`, then `--turns 40` for the excerpt, or
 `recall context <id> --tier brief --into current` to have it in your own
 prompt; `session annotate <deck id> --decision ...` on what you learned;
-`recall open <id>` to continue a Claude conversation in a new session.
+`recall open <id>` to continue a Claude conversation in a new session
+(Codex, pi, Gemini, OpenCode and Hermes conversations no deck session owns
+are searchable, not resumable: bring them in with `recall context`).
 
 ## Phase 4 (available now): context, derived summaries, remote, MCP
 
@@ -213,7 +231,7 @@ The `outcome` line is a guess (`failed?`, `abandoned?`, `unknown`)
 unless someone ran `session annotate --outcome`; annotate and it
 becomes certain on the next drain.
 
-### Remote sessions
+### Remote sessions: federated recall
 
 ```bash
 agent-deck recall search "retry budget" --remote lab --json       # federated: the remote searches its own index; hits labelled remote lab

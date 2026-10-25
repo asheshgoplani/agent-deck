@@ -74,6 +74,8 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `u` | Mark unread, idle -> waiting (**rebindable**) |
 | `a` | Quick approve — sends `1` to Claude (**rebindable**) |
 | `o` | Prompt session — send a one-line prompt without attaching (**rebindable**) |
+| `Q` | Queue a message for after the current turn (`queue_message`, **rebindable**) |
+| `C` | Inspect full context — everything the agent is being sent, ranked by cost (`context_inspector`, **rebindable**) |
 | `I` | Insert mode: keystrokes go straight to the selected session's pane until `Esc`; `Enter` submits. Insert mode is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft |
 | `y` | Toggle YOLO mode (**rebindable**) |
 | `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level at the parent's first child) |
@@ -106,14 +108,16 @@ your drag as a selection gesture.
 | Key | Action |
 |-----|--------|
 | `c` | Copy last AI response (**rebindable**) |
-| `C` | Copy session info — repo / path / branch |
+| `B` | Copy session info — repo / path / branch (**rebindable**, `copy_info`) |
 | `V` | Copy visible terminal text, links included (**rebindable**) |
 | `Y` | Copy a fenced code block from output; opens a picker when there are several |
 | `Shift+drag` | Native terminal selection — bypasses mouse reporting |
 | `Option+drag` | Native terminal selection in iTerm2 |
 
-Note the family is only half-rebindable: `c` and `V` are `copy_output` and
-`copy_pane` under `[hotkeys]`, while `C` and `Y` are fixed.
+`c`, `B` and `V` are `copy_output`, `copy_info` and `copy_pane` under
+`[hotkeys]`; `Y` is fixed. Copy info moved from `C` to `B`: `C` now opens the
+context inspector (set `copy_info = "C"` and rebind `context_inspector` to get
+the old key back).
 
 All four copy paths use the same clipboard chain, falling back to OSC 52 so they
 work over SSH. If your terminal offers no selection bypass at all, you can turn
@@ -171,6 +175,7 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Ctrl+Y` | Install the available update now (`install_update`; runs `agent-deck update` on the terminal, see [Updates](#updates)) |
 | `Ctrl+T` | Restart agent-deck in place now (`restart_deck`; the new build starts with the same args, env and selection) |
 | `Alt+D` | Dead-letter events (list, inspect, retry, confirmed selected purge) |
+| `Alt+T` | Triggers panel — every launchd job, systemd unit, watcher and bridge that wakes a session (`triggers`, **rebindable**) |
 | `Ctrl+E` | Open feedback dialog |
 | `Z` | Report a problem or idea: a short form, then the full GitHub issue text, filed only after you press `y` (`report_problem`, **rebindable**) |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |

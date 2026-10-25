@@ -31,7 +31,7 @@ tmux send-keys -t "$TMUX" Enter
 
 The Enter is idempotent — if already submitted, it's just a no-op newline. Use this pattern every time you `session send --no-wait` to a freshly-launched session.
 
-**Alternative:** omit `--no-wait` so the built-in 60s readiness wait kicks in before submitting.
+**Alternative:** omit `--no-wait` so the built-in readiness wait (`--timeout`, default 10m) kicks in before submitting.
 
 ### Slash commands typed with `session send` are unsafe
 
@@ -63,9 +63,9 @@ Kernel tracks inodes, not names. Running processes keep a reference to the renam
 
 ### `-c "claude <subcommand> ..."` silently rewritten — injected flags demote the subcommand (#1800)
 
-> **This is a known bug, not intended behaviour.** Tracked as [#1800](https://github.com/asheshgoplani/agent-deck/issues/1800); a fix is in flight. Delete this entire section once that fix ships — the workaround below is a stopgap, not the supported way to run claude subcommands.
+> **Fixed in current builds.** A known claude or codex subcommand in `-c` (such as `remote-control` or `mcp`) now runs as-is, with no injected flags and no wrapper (see `-wrapper` in `launch --help`). The rewrite below still happens on an older deck, and for a subcommand not yet on agent-deck's list.
 
-Passing a claude **subcommand** as the session command — e.g. `-c "claude remote-control --name X"` or `-c "claude mcp serve"` — does not run the command you gave. Tool detection splits it into `claude` + extra args and re-appends the extras *after* agent-deck's injected flags, so the pane runs:
+On an affected deck, passing a claude **subcommand** as the session command — e.g. `-c "claude remote-control --name X"` or `-c "claude mcp serve"` — does not run the command you gave. Tool detection splits it into `claude` + extra args and re-appends the extras *after* agent-deck's injected flags, so the pane runs:
 
 ```
 claude --session-id <uuid> --dangerously-skip-permissions remote-control --name X
@@ -165,14 +165,14 @@ These were surfaced by mining real conductor transcripts (see [Self-Improvement]
 | Symptom | Workaround | Issue |
 |---|---|---|
 | `agent-deck rm` driven by `xargs -P N` reports `✓ Removed` but rows persist | Sequential `while read id; do agent-deck rm "$id"; done` — never `xargs -P` for agent-deck mutations | [#961](https://github.com/asheshgoplani/agent-deck/issues/961) |
-| `session send --wait --timeout 300s` still times out at 80s if recipient is busy | Poll until ready: `until [ "$(agent-deck session show --json $id \| jq -r .status)" = "waiting" ]; do sleep 10; done` | [#957](https://github.com/asheshgoplani/agent-deck/issues/957) |
+| `session send --wait --timeout 300s` timed out at 80s if recipient was busy (fixed) | `--timeout` now covers the readiness wait too. On an older deck, poll until ready: `until [ "$(agent-deck session show --json $id \| jq -r .status)" = "waiting" ]; do sleep 10; done` | [#957](https://github.com/asheshgoplani/agent-deck/issues/957) |
 | Conductor restart wipes Claude history when `claude_session_id` is empty / `"none"` | Use `tool: claude` not `tool: shell` for conductors so JSONL-resume applies | [#956](https://github.com/asheshgoplani/agent-deck/issues/956) |
 | Transition-notifier replays events for *removed* sessions out of `~/.agent-deck/inboxes/<id>.jsonl` | Truncate the inbox file by hand after `rm` | [#962](https://github.com/asheshgoplani/agent-deck/issues/962) |
 | Feedback dialog never shows for users with `feedback_enabled:false` (single boolean gates everything) | Manual flip in `feedback-state.json` to reopt-in | [#967](https://github.com/asheshgoplani/agent-deck/issues/967) |
 | All sessions die on SSH logout (tmux server in login-session cgroup) | `loginctl enable-linger` on the host + `launch_in_user_scope=true` | [#958](https://github.com/asheshgoplani/agent-deck/issues/958) |
 | Parallel `agent-deck launch` cascade → swap thrash → workers + conductor die | Sequential launches; cap parallelism; don't reach for `vm.overcommit_memory=2` (worsens it) | [#964](https://github.com/asheshgoplani/agent-deck/issues/964) |
 | Orphaned context7 MCP procs (PPID=1) accumulating; `pkill -f context7-mcp` from inside the conductor self-immolates | Guard with `$$` check: `grep -q $$ <(pgrep -f "<pat>") \|\| pkill -f "<pat>"` | [#965](https://github.com/asheshgoplani/agent-deck/issues/965) |
-| `launch-subagent.sh` puts children in parent's `conductor` group instead of project group | Always pass `-g <project-group>` explicitly | [#972](https://github.com/asheshgoplani/agent-deck/issues/972) |
+| `launch-subagent.sh` puts children in parent's `conductor` group instead of project group | The script has no `-g` option and always uses the parent's group: run `agent-deck launch ... -g <project-group>` directly, or `agent-deck group move <id> <group>` afterwards | [#972](https://github.com/asheshgoplani/agent-deck/issues/972) |
 | Bare slash commands sent via `session send` ignored on a freshly restarted child | Run client commands with `session command` (it waits for the prompt and verifies); for a skill the agent should invoke itself, wrap conversationally: `"Please run /cmd …"` | [#966](https://github.com/asheshgoplani/agent-deck/issues/966) |
 | `.mcp.json` plugin version pins go stale after plugin upgrade | After `/mcp` reload, rewrite `.mcp.json` from current plugin spec | [#960](https://github.com/asheshgoplani/agent-deck/issues/960) |
 | Cron heartbeat `NEED:` lines repeat unchanged for 12-21h with no auto-retire | After 3 repeats, change tactic — escalate explicitly or spawn a different worker | [#971](https://github.com/asheshgoplani/agent-deck/issues/971) |
@@ -194,7 +194,7 @@ This skill is read by whatever deck version the reading session is on, including
 | `remote sessions --json` bare-array/`--with-errors` split, `remote drain` | Older builds may return `null` instead of `[]` for zero sessions, and lack `remote drain`/`inbox export` entirely (a `remote drain` against one reports a version error pointing at `remote update`) |
 | `inbox dead-letter list\|show` | No dead-letter inspection — a lost completion is invisible; fall back to reading transcripts / RESULTS.md for the child's actual outcome |
 | `[ui.remote_preview]`/`[ui.header]` `accounts` field | Older builds show version/sessions/load only, no per-account usage in the header or remote panel |
-| `session children --follow`, `--until-done` | Fall back to the until-loop in [Fanning out several children?](sub-agents.md#fanning-out-several-children) polling `--json` on an interval |
+| `session children --follow`, `--until-done` | Fall back to the until-loop in [fleet.md](fleet.md#3-check-progress-non-blocking-non-destructive) polling `--json` on an interval |
 | `shell` as accepted tool alias | Use a `custom` `-c "bash -c '...'"` command instead — same effect, more typing |
 | Harness identity injection (`AGENTDECK_IDENTITY_FILE`, append-system-prompt for claude/pi, developer-instructions override for codex, trust-gated context dir for gemini) | A launched session gets none of this — state its session id, tool, and how to reach its parent explicitly in the launch prompt |
 

@@ -29,7 +29,7 @@ agent-deck add --sandbox .
 agent-deck add --sandbox-image myregistry/custom:v1 .
 
 # Sandboxed scratch session in a dated experiment folder
-# (argument is an experiment NAME, not a prompt — see the Scratch Sessions section in SKILL.md)
+# (argument is an experiment NAME, not a prompt — see Scratch Sessions in session-workflows.md)
 agent-deck try auth-refactor --sandbox
 
 # Remove session (auto-cleans container)

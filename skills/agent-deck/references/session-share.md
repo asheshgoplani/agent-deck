@@ -52,9 +52,9 @@ $SKILL_DIR/scripts/session-share/export.sh [options]
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--session <id>` | Export specific session (default: current) |
+| `--session <id>` | Export a specific Claude conversation by its Claude session id (the `<id>.jsonl` name; `agent-deck session show <s> --json` gives `claude_session_id`), looked up under the current directory's project dir (default: current session) |
 | `--output <path>` | Custom output path |
-| `--include-thinking` | Include Claude's thinking blocks |
+| `--include-thinking` | Keep Claude's thinking blocks (only together with `--no-sanitize`; sanitizing always strips them) |
 | `--no-sanitize` | Don't redact sensitive data |
 
 **Examples:**
@@ -65,8 +65,8 @@ $SKILL_DIR/scripts/session-share/export.sh
 # Export to specific location
 $SKILL_DIR/scripts/session-share/export.sh --output /tmp/handoff.json
 
-# Export specific session with thinking blocks
-$SKILL_DIR/scripts/session-share/export.sh --session abc123 --include-thinking
+# Export specific session with thinking blocks (needs --no-sanitize too: nothing is redacted then)
+$SKILL_DIR/scripts/session-share/export.sh --session abc123 --include-thinking --no-sanitize
 ```
 
 **What gets exported:**
@@ -174,7 +174,7 @@ $SKILL_DIR/scripts/session-share/import.sh session.json --no-start
 | Issue | Solution |
 |-------|----------|
 | "Could not detect current Claude session" | Make sure you're in an agent-deck session with active Claude |
-| "Session file not found" | Session may not have been saved yet; send a message first |
+| "Could not find session file for ID" | Session may not have been saved yet; send a message first. Check the `Looked in:` path (another account needs its `CLAUDE_CONFIG_DIR`) |
 | Import shows wrong project | Use `--project /correct/path` to specify destination |
 | Large file size | Use default settings (strips thinking blocks) |
 
@@ -182,14 +182,14 @@ $SKILL_DIR/scripts/session-share/import.sh session.json --no-start
 
 ### Session Storage
 
-Claude stores sessions in: `~/.claude/projects/<encoded-path>/<session-id>.jsonl`
+Claude stores sessions in: `~/.claude/projects/<encoded-path>/<session-id>.jsonl` (or `$CLAUDE_CONFIG_DIR/projects/...` when set, e.g. another account)
 
-Path encoding: `/Users/alice/project` becomes `-Users-alice-project`
+Path encoding: `/Users/alice/project` becomes `-Users-alice-project`. Both `/` and `.` become `-`, so `/Users/first.last/app` becomes `-Users-first-last-app`.
 
 ### How Import Works
 
 1. Reads export JSON file
-2. Creates directory: `~/.claude/projects/<encoded-current-project>/`
+2. Creates directory: `~/.claude/projects/<encoded-current-project>/` (under `$CLAUDE_CONFIG_DIR` when set)
 3. Writes messages as JSONL: `<session-id>.jsonl`
 4. Creates agent-deck session pointing to this path
 5. Sets `claude-session-id` so restart uses `--resume`
@@ -202,4 +202,4 @@ Path encoding: `/Users/alice/project` becomes `-Users-alice-project`
 
 ## Backward Compatibility
 
-This skill's scripts only use `agent-deck add`/basic session creation and `claude --resume`, both stable since well before v1.16.11 — no part of this skill is gated on the recent CLI additions (session send delivery verdicts, context inspector, health, remote dead-letter). It works unchanged on any deck version that can create a Claude session pointed at an existing `.jsonl` transcript.
+This skill's scripts only use basic session commands (`session current --json`, `session show --json`, `list --json`, `add`, `session set <title> claude-session-id <id>`, `session start`) and `claude --resume`, all stable since well before v1.16.11 — no part of this skill is gated on the recent CLI additions (session send delivery verdicts, context inspector, health, remote dead-letter). It works unchanged on any deck version that can create a Claude session pointed at an existing `.jsonl` transcript.

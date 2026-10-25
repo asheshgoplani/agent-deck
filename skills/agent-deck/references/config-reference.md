@@ -67,7 +67,7 @@ send_transport = "tmux"     # `session send` delivery: "tmux" (default) or "auto
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_tool` | string | `"claude"` | Pre-selected tool when creating sessions. |
-| `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
+| `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → the group's most recent session path → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. A title you supply explicitly is already exempt: `add -t`, `launch -t`, the TUI New Session dialog, an explicit fork title, and `rename` all lock the title on creation (#1615/#1715), so only auto-derived folder-name titles follow the agent. The per-session title-lock (`agent-deck session set-title-lock <id> on|off`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
 | `push_title` | bool | `true` | Pass the exact deck title as `--name <title>` on supported Claude start/restart/resume commands. Case, punctuation, Unicode and long names are preserved; invalid UTF-8, control/bidirectional-control characters and line separators omit the default. An explicit `--name`/`-n` override wins. Missing settings default to enabled; configuration read/parse errors disable automatic naming. A deck rename applies on the next supported startup. No running prompt receives input. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. `"alphabetical"` (#2451) orders sessions A→Z by title, case-insensitively; sessions whose titles match ignoring case keep their creation order. In `"actionable"` and `"alphabetical"` mode the sort is reapplied whenever the session list reloads, so a `K`/`J` move does not stick. Any other value falls back to `"creation"`. The setting orders the TUI and the web UI; `agent-deck list` prints sessions in storage order and does not apply it, and remote rows keep the remote's own listing order. Pin and Maestro rows are unaffected by this setting. |
@@ -307,7 +307,6 @@ Codex CLI integration settings.
 command = "codex"  # Codex CLI command or alias
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
 env_file = "~/.codex.env"
-command = "codex"
 ```
 
 | Key | Type | Default | Description |
@@ -315,7 +314,6 @@ command = "codex"
 | `command` | string | `codex` | Codex CLI command or alias to launch built-in Codex sessions. Examples: `codex-v2`, `CODEX_HOME=~/.codex-work codex`. |
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
 | `env_file` | string | `""` | A .env file sourced for Codex sessions only. See [Path Resolution](#path-resolution). |
-| `command` | string | `"codex"` | Override the binary/invocation. |
 
 ## [models] Section
 
@@ -731,8 +729,6 @@ How each harness receives the block (`documentation/HARNESS_IDENTITY.md` has the
 
 SSH and Docker-sandboxed sessions get the block too: claude/pi/omp as inline `--append-system-prompt` text, codex as the same inline override (over SSH without merging the remote's own `developer_instructions`), and the file is written where the harness runs (`$XDG_RUNTIME_DIR/agent-deck/identity/<id>/identity.md`, else `~/.local/share/agent-deck/identity/<id>/identity.md`) with `AGENTDECK_IDENTITY_FILE` pointing at it; gemini stays env-only there. The SSH payload runs under `bash -c` on the remote (fish/csh login shells work; bash is required, so an sh-only remote such as Alpine/busybox is a known limit), and the identity payload is capped at 8 KB (codex drops its override first, then the block is skipped for that spawn).
 
-SSH (`--ssh`) and Docker-sandboxed sessions are skipped: the file lives on the controller host.
-
 ### Prompt suggestions in launched sessions
 
 Precedence, most specific first: the session override (`agent-deck session set <id> prompt-suggestions children-off|on|off`, empty clears it) > `[profiles.<active-profile>.claude].prompt_suggestions` > `[launch].prompt_suggestions` > `children-off`. A malformed value at any layer is ignored and the next layer decides. Changes take effect on the session's next start or restart. `agent-deck config set launch.prompt_suggestions off` writes the global key.
@@ -766,7 +762,7 @@ remove_orphans = true   # Delete logs for removed sessions
 | `max_lines` | int | `10000` | Lines to keep after truncation. |
 | `remove_orphans` | bool | `true` | Clean up logs for deleted sessions. |
 
-**Logs location:** `~/.agent-deck/logs/agentdeck_<session>_<id>.log`
+**Logs location:** `~/.local/share/agent-deck/logs/<tmux session name>.log` (the XDG data dir; the legacy `~/.agent-deck/logs/` is only a fallback)
 
 ## [updates] Section
 

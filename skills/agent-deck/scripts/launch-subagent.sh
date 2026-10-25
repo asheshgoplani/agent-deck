@@ -6,7 +6,7 @@
 # Options:
 #   --mcp <name>     Attach MCP (can repeat)
 #   --tool <type>    Agent tool: claude, codex, gemini (default: claude)
-#   --path <dir>     Working directory for the agent (default: /tmp/<title>)
+#   --path <dir>     Working directory (default: the parent session's path, else /tmp/<title>)
 #   --wait           Poll until complete, return output
 #   --timeout <sec>  Wait timeout (default: 300)
 #   --no-fanout-hint Never append the fan-out line to the prompt

@@ -13,11 +13,11 @@ silently uses the default profile and the target is "not found".
 
 | Channel | Direction | Command | Guarantee |
 |---|---|---|---|
-| **send** | any → any live session | `session send <id> "msg"` | Best-effort keystrokes into the pane (or, opt-in, Claude's own messaging socket). `--json` carries a stable 3-way `confirmation` field (`confirmed`/`unknown`/`failed`) — read that, not the finer-grained `delivery` diagnostic. Since 1.16.17 a plain `--json` send (no `--wait`/`--stream`/`--no-wait`/`--draft`/`--defer-if-busy`) returns at once with `send_id`, `verdict:"queued"`, `delivery:"queued"` and `confirmation:"unknown"`; a background worker types it (into a busy Claude immediately, other harnesses when idle) and `session send-status <send_id> --json` reports the verdict `delivered`/`queued`/`unknown` as evidence arrives (`submitted`, `queued`, `delivered`, `unverified`, `queued_socket`, `line_too_long`, `menu_open`, `pane_gone`, `typed_not_submitted`, `no_evidence`, `send_failed`, `composer_blocked`, `socket_write_failed`). NOT durable: if the send fails or the sender dies, the message is gone. From inside a session the message starts with `[agent-deck from:<your id>]`, and the receiver's reply lands in your inbox as an urgent `reply` record, or as your own child's urgent record when you are its parent; either way an idle Claude sender is woken for it (`--no-tag` / `[send] tag_sends = false` to opt out). |
+| **send** | any → any live session | `session send <id> "msg"` | Best-effort keystrokes into the pane (or, opt-in, Claude's own messaging socket). `--json` carries a stable 3-way `confirmation` field (`confirmed`/`unknown`/`failed`) — read that, not the finer-grained `delivery` diagnostic. Since 1.16.17 a plain `--json` send (no `--wait`/`--stream`/`--no-wait`/`--draft`/`--defer-if-busy`) returns at once with `send_id`, `verdict:"queued"`, `delivery:"queued"` and `confirmation:"unknown"`; a background worker types it (into a busy Claude immediately, other harnesses when idle) and `session send-status <send_id> --json` reports the verdict `delivered`/`queued`/`unknown` as evidence arrives, plus the record `state` (`queued`/`typing`/`typed`/`submitted`/`landed`/`failed`/`cancelled`): only `landed` (with `landed_row_id`) proves the text is in the transcript, and `settled: true` marks an outcome that could not be proven. A queued send (plain `--json`, or `--queue`) is a durable record on disk: it is never dropped silently, and a failure reaches a sender session's inbox. The other modes (`--wait`/`--no-wait`/`--draft`/`--defer-if-busy`) are NOT durable: if the send fails or the sender dies, the message is gone. From inside a session the message starts with `[agent-deck from:<your id>]`, and the receiver's reply lands in your inbox as an urgent `reply` record, or as your own child's urgent record when you are its parent; either way an idle Claude sender is woken for it (`--no-tag` / `[send] tag_sends = false` to opt out). |
 | **output** | read a session's last reply | `session output <id> -q` | Read-only transcript snapshot; non-consuming; `--pane` returns the tmux pane capture instead. Default text is ANSI-stripped and capped at `--max-tokens` (default 25000) with the full output kept on disk; `--json`/`-q`/`--copy` carry the full source. |
 | **children** | parent reads its child fleet | `session children --json`, `--follow [--until-done]` | Read-only; merges live status with the completion ledger; explicitly does NOT clear the inbox. |
-| **inbox drain** | child completions → parent | `inbox drain self --json` | THE durable channel (records are tiered `urgent`/`info` and carry the child's new `text`, so act on the record instead of re-reading the child; only `urgent` wakes an idle parent, see `[inbox]` in config-reference): fsync'd append + WAL, at-least-once delivery with exactly-once effects (turn-fingerprint dedup), survives crashes and restarts. Last-wins PER CHILD: intermediate events are dropped by design. Single-profile only. Draining consumes. |
-| **transition events** | daemon → parent's inbox | automatic (requires `parent_session_id`) | Only `running → waiting/error/idle` edges fire; deduped (90s + 2h windows); sessions with no parent link are WARN-logged once and DROPPED. |
+| **inbox drain** | child completions → parent | `inbox drain self --json` | THE durable channel (records are tiered `urgent`/`info` and carry the child's new `text`, so act on the record instead of re-reading the child; only `urgent` wakes an idle parent, see `[inbox]` in config-reference): fsync'd append + WAL, at-least-once delivery with exactly-once effects (turn-fingerprint dedup), survives crashes and restarts. Only a running notify-daemon writes these records: with none, `inbox drain` warns `no notify-daemon running` and an empty drain proves nothing (`inbox writer-status` checks). Last-wins PER CHILD: intermediate events are dropped by design. Single-profile only. Draining consumes. |
+| **transition events** | daemon → parent's inbox | automatic (requires `parent_session_id`) | Only `running → waiting/error/idle` edges fire, plus an idle child's death (`waiting → error` with its pane gone past a grace period), reported once as urgent; deduped (90s + 2h windows); sessions with no parent link are WARN-logged once and DROPPED. |
 | **[DONE] sentinel** | worker asserts completion | worker prints `===AGENTDECK_DONE=== status=ok summary=...` | Idempotent per distinct completion; the only trustworthy "finished" signal (see [Completion sentinel](sub-agents.md#completion-sentinel-trustworthy-worker-finished-signal-1186)). |
 | **heartbeat** | bridge → conductor | bridge-driven `send --wait -q` | Lossy by design: skipped while the conductor is busy, never queued; only fires when waiting>0 or error>0. |
 | **handoff** | Claude → Codex context copy | `session handoff <id> [--json --out file]` | One-shot read-only transcript copy (32k-char tail budget); no ongoing link afterwards. |
@@ -37,7 +37,7 @@ agent-deck -p <profile> session children --json                          # child
 agent-deck -p <profile> session children --follow --until-done           # JSONL event stream, exits when all children terminal
 agent-deck -p <profile> inbox drain self --json                          # heartbeat fallback; your UserPromptSubmit hook already drains into [agent-deck inbox] context at every turn start
 agent-deck -p <profile> inbox peek self                                  # look without consuming
-agent-deck -p <profile> session show <id> --json                         # has parent_session_id + substate (list --json does NOT)
+agent-deck -p <profile> session show <id> --json                         # parent_session_id + substate (list --json has both too)
 agent-deck -p <profile> session handoff <id> --json                      # build cross-tool handoff prompt, read-only
 agent-deck -p <profile> session search "term" --json --limit 5           # substring search across Claude transcripts
 ```
@@ -53,9 +53,10 @@ agent-deck -p <profile> session search "term" --json --limit 5           # subst
 - **A non-zero send exit does NOT prove non-delivery.** The 3-second tmux send-keys
   deadline can kill a send that already landed in the pane. Blind retry on non-zero =
   double-send. Check the pane (`session output <id> --pane`) before resending.
-- **Only the inbox is durable.** `send` in every mode dies with the sender. Child→parent
-  completions ride the inbox; everything else (parent→child, peer→peer, cross-profile)
-  is fire-and-forget keystrokes. Cross-profile parents are a terminal drop.
+- **Only the inbox and queued sends are durable.** A `--wait`/`--no-wait`/`--draft`/`--defer-if-busy`
+  send dies with the sender; a queued one (plain `--json` or `--queue`) stays on disk until
+  it lands or fails. Child→parent completions ride the inbox; other synchronous sends
+  (parent→child, peer→peer, cross-profile) are fire-and-forget keystrokes. Cross-profile parents are a terminal drop.
 - **Inbox is last-wins per child.** A parent draining after three child status changes
   sees only the latest. There is no replayable message history between sessions; use
   files (RESULTS.md, task-log.md) for anything that must not collapse.
@@ -82,14 +83,17 @@ agent-deck -p <profile> session search "term" --json --limit 5           # subst
   credentials (restarting will NOT fix it; the fleet HOLDs these); substate
   `model-unavailable` means the model is down. Never restart-loop either. `substate`
   is omitempty: absent means none, not healthy-confirmed.
-- **Topology reads:** `list --json` omits `parent_session_id`. To see linkage use
-  `session show --json <id>` or `session children`. Verify every `launch` created the
+- **Topology reads:** `session show --json <id>` always emits `parent_session_id` (an
+  empty string `""` when there is no parent); `list --json` omits the key when there is
+  none (omitempty); `session children --json` reports the parent id as `parent`. Verify every `launch` created the
   linkage you expect; children born without a parent link get NO transition events.
 - **Addressing:** prefer id prefixes over titles (a Claude session can rename itself and
   break title targeting; `session set-title-lock <id> on` prevents that). Always `-p`
-  from non-interactive senders.
+  from non-interactive senders (cron, systemd, hooks): without it they resolve against the
+  default profile and the target is "not found".
 - **If `session output` refuses with "colliding transcript"** (one claude_session_id
   claimed by two live instances, seen after restart/fork), fall back to
   `session output <id> --pane` — read-only and always available.
-- **Slash commands via send:** wrap conversationally ("Please run /cmd ...") — bare
-  `/cmd` sends to a freshly restarted child are ignored.
+- **Slash commands:** run them with `session command <id> "/cmd"` (it waits for the prompt
+  and verifies), never `session send`. Only for a skill the agent should invoke itself,
+  send it wrapped conversationally ("Please run /cmd ...").

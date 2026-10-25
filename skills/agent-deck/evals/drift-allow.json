@@ -1,0 +1,6 @@
+{
+  "allow": [
+    {"file": "references/goal.md", "pattern": "^agent-deck goal\\b", "reason": "the section says these goal commands are proposed and not built; the working entry point is scripts/goal/goal.sh"},
+    {"file": "references/autonomy.md", "pattern": "^agent-deck goal\\b", "reason": "Future CLI surface (Phase 2, not built): the text says they do not exist yet"}
+  ]
+}

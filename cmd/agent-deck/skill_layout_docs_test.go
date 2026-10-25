@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The repo ships exactly one skill: everything about Agent Deck is a
@@ -192,5 +195,27 @@ func TestNoReferenceToRemovedSkillPaths(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
+	}
+}
+
+// The skill's deterministic evals (skills/agent-deck/evals/check.py, ASK-122):
+// every promise anchored in the text and covered, every eval's checks grounded
+// in the sections it cites, trigger terms in the description, config keys real,
+// and every eval killed when its sections are deleted. The CLI flag drift check
+// needs a built binary and runs from skills/agent-deck/evals/run.sh instead.
+func TestAgentDeckSkillEvalsDeterministic(t *testing.T) {
+	t.Parallel()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not on PATH; run skills/agent-deck/evals/run.sh")
+	}
+	check := filepath.Join("..", "..", "skills", "agent-deck", "evals", "check.py")
+	for _, mode := range []string{"static", "mutate"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		out, err := exec.CommandContext(ctx, python, "-I", check, mode).CombinedOutput()
+		cancel()
+		if err != nil {
+			t.Errorf("check.py %s failed: %v\n%s", mode, err, out)
+		}
 	}
 }

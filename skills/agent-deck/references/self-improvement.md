@@ -132,7 +132,7 @@ Compiled from the first end-to-end run (May 2026, 7 conductors, 83 transcripts):
 
 ## Script reference
 
-All scripts live in `scripts/self-improvement/` relative to this skill. Resolve paths via `$SKILL_DIR/scripts/self-improvement/` (see [SKILL.md Script Path Resolution](../SKILL.md)).
+All scripts live in `scripts/self-improvement/` relative to this skill. Resolve paths via `$SKILL_DIR/scripts/self-improvement/` (see [SKILL.md Scripts](../SKILL.md#scripts)).
 
 | Script | Purpose |
 |---|---|

@@ -1,6 +1,6 @@
 ---
 name: agent-deck
-description: agent-deck, the terminal session manager for AI coding agents. Use when the user mentions "agent-deck", "session", "sub-agent", "MCP attach", or "git worktree", or needs to create, start, message, read, fork, restart, or supervise agent-deck sessions; launch child sessions or consult another CLI through agent-deck; attach MCPs to a session; manage groups, profiles, accounts, or worktree sessions; fan out a fleet of child sessions and check them non-blockingly; export or import a session for a teammate ("share session"); tag sessions and find past conversations (recall); run a local retrospective over their own transcripts, or reproduce an agent-deck bug and prove its fix; set up conductors or watchers; configure config.toml; troubleshoot agent-deck; or work on the agent-deck repo itself (fix, add or review its code or docs, open or fix a PR). Not for in-conversation subagents, plain git worktrees, or plain tmux.
+description: agent-deck, the terminal session manager for AI coding agents. Use when the user mentions "agent-deck", "session", "sub-agent", "MCP attach", or "git worktree", or needs to create, start, message, read, fork, restart, or supervise agent-deck sessions; launch child sessions or consult another CLI through agent-deck; attach MCPs to a session; manage groups, profiles, accounts, or worktree sessions; fan out a fleet of child sessions and check them non-blockingly; export or import a session for a teammate ("share session"); tag sessions and find past conversations (recall); run a local retrospective over their own transcripts, or reproduce an agent-deck bug and prove its fix; set up conductors or watchers; configure config.toml; troubleshoot agent-deck; or work on the agent-deck repo itself (fix, add or review its code or docs, open or fix a PR). Not for in-conversation subagents, plain git worktrees, plain tmux, team or sprint retrospectives, or bugs in projects other than agent-deck.
 metadata:
   compatibility: "claude, codex, opencode"
 ---
@@ -48,14 +48,14 @@ Every other command and flag is in [cli-reference.md](references/cli-reference.m
 
 ## Rules
 
-1. **Flags before arguments:** `session start -m "Hello" name`. `session`, `add`, `launch` and most other subcommands now accept flags after the positional too, but a few still stop parsing at the first positional, so a flag that seems ignored is almost always in the wrong position.
+1. **Flags before arguments:** `session start -m "Hello" name` always works. Since 0.12.0 nearly every subcommand (`session`, `add`, `launch`, `group`, `worktree`, `try`, ...) also accepts flags after the positional, so on a current build a flag after the name is not why it was ignored (older builds dropped it); only `config show [path]` and `openclaw send <message>` stop parsing at the first positional, so there a flag after it is ignored or read as text. Everything after `--` is positional.
 2. **MCPs on request only:** attach one when the user asks, then `session restart` it; attaching alone does not load it. `--global` writes Claude's config for every project; the default writes the session's `.mcp.json`.
 3. **Leave other sessions to work:** read another session with a single `session output` or `session children` call rather than a polling loop, which can interfere with the target.
 4. **State only the task in a child's prompt.** Every session agent-deck launches already carries its identity (session id, title, parent, core commands, completion sentinel; `$AGENTDECK_IDENTITY_FILE` for custom `--cmd`), so a prompt need not explain who the child is or how to reach its parent. Opt out with `--no-identity` or `[launch] inject_identity = false`; gemini also needs its identity folder trusted (`documentation/HARNESS_IDENTITY.md`).
 
 ## Configuration
 
-`$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored). Every option is in [config-reference.md](references/config-reference.md).
+`$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored, but only when the XDG file does not exist; once it does, the legacy file is ignored). Every option is in [config-reference.md](references/config-reference.md).
 
 ## Where to Look Next
 
