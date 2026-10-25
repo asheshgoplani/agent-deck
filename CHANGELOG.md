@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.34] - 2026-10-25
+
+### Highlights
+
+- Safer defaults on new installs: Claude asks before running tools, tools ask before trusting a folder agent-deck did not create, and a project's relative `env_file` is not run unless the folder is trusted. Existing installs keep their current values (see Changes and Upgrading).
+- In the New Session dialog, Enter now creates the session from any row, and an empty name becomes the folder name (see Changes).
+- Sandbox providers v1: plug in any machine. agent-deck asks your own command for a fresh sandbox, uses it as a remote and destroys it afterwards (see New features).
+- An opt-in wait timer takes the recommended option when a session has waited on you for too long (see New features).
+- A default Claude account for new sessions, and `agent-deck ask` for handing a secret to an agent without pasting it into chat (see New features).
+- Built with Go 1.26.10, which fixes GO-2026-6809 (see Security).
+
+### New features
+
+- Sandbox providers v1: a provider is any command. agent-deck runs `<command> create|list|status|destroy` with one JSON request on stdin and reads one JSON reply on stdout. A created sandbox becomes a normal remote with its own ssh config, known hosts and control socket under the agent-deck data dir; your `~/.ssh/config` is never edited. Provider output is checked before anything is written or run. New commands: `agent-deck provider list|test`, `remote add --provider`, `launch --provider` (a new session on a fresh sandbox in one step) and `remote destroy`. With a remote or provider configured, the New Session dialog shows a "Where" row (default: this machine). Nothing changes without a `[providers.<name>]` block. Examples are in `examples/providers/` and the guide is `docs/PLUG-IN-ANY-MACHINE.md` (#2917).
+- Opt-in wait timer: with `[sessions] wait_timeout = "5m"` (at least 1m), or per session with `agent-deck session set <id> wait-timeout 5m` or the "Wait timer" row in Edit Session, a session that has shown the same question for the whole timeout, with nobody attached, gets one Enter on the `(Recommended)` option. It only answers a plain single-choice Claude question with exactly one recommended row. It never answers a permission, approval or folder-trust prompt, a login screen, or a question about deleting, pushing, deploying or other outward actions. Every choice is logged. Off by default (#2914).
+- A default Claude account for new sessions: `[claude] default_account = "<slot>"`, or Settings (`S`) → Claude → "Default account". The New Session dialog starts on it, and `add` and `launch` without `--account` use it too. Changing the default never moves an existing session (#2895, #2912; thanks @godlen4332 for the suggestion).
+- `agent-deck ask secret|choice|text` lets a session ask you through a dialog (the TUI, or a hidden prompt in your terminal). A secret goes straight to the host's secret store; the asking agent only sees that it was stored, cancelled or timed out. The value never reaches the transcript, logs, pane or command line. See docs/ask.md (#2909).
+
+### Security
+
+- Builds use Go 1.26.10, which fixes GO-2026-6809 (crypto/x509 in the Go standard library did not refuse certain intermediate certificates that are no longer trusted) (#2906).
+- On new installs, three defaults are now safe: `[claude] dangerous_mode` is off, so Claude asks before running tools; folder trust is granted only for folders agent-deck made (worktrees, its own data folders, conductors) and folders in `[security] trusted_folders` or started with `--trust-folder`; and a relative `env_file` in an untrusted project is skipped with a warning instead of being run. Existing installs keep their current behaviour (see Upgrading) (#2915).
+
+### Changes
+
+- New Session dialog: Enter creates the session from any row, with the defaults filled in. This reverses the earlier default, where Enter walked to the next field. An empty name becomes the folder name, made unique (`billing-api`, `billing-api-2`, ...). If a required field is wrong, Enter moves to it and says why. Set `[ui] new_session_enter_advances = true` to keep the old walk. Ctrl+S creates in both modes, and remote creates still need a name (#2910).
+- On a new install, `launch` into a folder that is not trusted prints a note on stderr, and `--json` adds a `FOLDER_NOT_TRUSTED` warning. `--trust-folder` edits config.toml in place and keeps your comments and layout (#2915).
+
+### Fixes
+
+- `session switch-account` and `session restart` run from inside the session they target no longer kill themselves partway. The command hands the work to a detached copy of itself, prints where it logs, and exits (#2897, #2907; thanks @bautrey for the report).
+- A Codex child that ends its turn with the done line now sends its parent a "finished" record, as a Claude child does (#2899, #2905; thanks @sakost for the report).
+- A parent supervising a pi child is told after every run, not only the first (#2827; thanks @fpmx3bp).
+- Under load, account-switch settle waits up to 3 seconds for a half-drawn folder-trust prompt to finish drawing instead of stopping. Nothing is pressed until the whole dialog is on screen (#2893, #2904).
+
+### Under the hood
+
+- One agent-deck skill: the fleet, session-share, retro, repro, recall and contributor skills are folded into `skills/agent-deck` (#2889). The skill gets deterministic evals that need no model, plus a check that every command and flag it names exists (#2916).
+- Skill reference fixes: a `web --open` flag that does not exist, unclosed code blocks in the config reference, and other stale claims, now pinned by tests (#2902; thanks @kickinrad).
+- Stale `.claude` plans and slash commands are removed from the repo (#2901; thanks @jonnocraig). Unreachable internal helpers are removed (#2903; thanks @jennings).
+- The comms matrix test driver's pause read has a deadline, so a silent driver can no longer hang a run (#2824; thanks @fpmx3bp).
+- The website counts pageviews with a cookieless snippet that is skipped when Do Not Track or Global Privacy Control is set; TELEMETRY.md has a "Website" section (#2911).
+- Dependency updates: charmbracelet/x/vt, klauspost/compress, golang.org/x/net, google.golang.org/api and goreleaser-action (#2820, #2821).
+
+### Upgrading
+
+- Existing installs keep their values. The first terminal or TUI start after the update writes `dangerous_mode = true` under `[claude]` and `auto_trust_folders = true` under `[security]` into config.toml once, only for keys you have not set, keeps the old file as `config.toml.bak`, and prints a one-time notice that says how to turn them off. Daemons, hooks and scripts never edit config.toml. The safe defaults apply to new installs only.
+- On a new install, Claude asks before running tools unless you set `dangerous_mode = true`, and tools ask before trusting a folder unless you add it to `[security] trusted_folders` or pass `--trust-folder`.
+- If you are used to Enter moving through the New Session dialog, set `[ui] new_session_enter_advances = true`.
+
+### Known issues
+
+- govulncheck still lists GO-2026-5932 as informational: it is in x/crypto/openpgp, which agent-deck does not import.
+- `remote list --json` prints plain text when no remotes are configured (#2920).
+- Optional follow-ups: New Session name preview and mistyped-path hints after the Enter change (#2913), and sandbox provider follow-ups (#2918).
+
 ## [1.16.33] - 2026-10-24
 
 ### Highlights

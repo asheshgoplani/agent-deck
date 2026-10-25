@@ -434,6 +434,11 @@ func handleRemoteList(args []string) {
 	}
 
 	if len(config.Remotes) == 0 {
+		// #2920: --json must stay parseable with nothing configured.
+		if *jsonOutput {
+			fmt.Println("[]")
+			return
+		}
 		fmt.Println("No remotes configured.")
 		fmt.Println("\nAdd one with: agent-deck remote add <name> <user@host>")
 		return
@@ -720,9 +725,13 @@ func handleRemoteSessions(args []string) {
 	}
 
 	if len(config.Remotes) == 0 {
-		if envelope {
+		switch {
+		case envelope:
 			writeRemoteSessionsJSON(remoteSessionsOutput{})
-		} else {
+		case jsonOutput:
+			// #2920: the bare array, same as a configured remote with no sessions.
+			writeRemoteSessionsArray(nil)
+		default:
 			fmt.Println("No remotes configured.")
 		}
 		return
