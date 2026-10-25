@@ -645,8 +645,9 @@ func TestSessionRunsBypass(t *testing.T) {
 	if SessionRunsBypass(inst, cfgOff) {
 		t.Fatal("bypass with dangerous_mode off and no options")
 	}
+	defer SetInstallKindForTest(InstallKindExisting)()
 	if !SessionRunsBypass(inst, &UserConfig{}) {
-		t.Fatal("dangerous_mode defaults on")
+		t.Fatal("dangerous_mode defaults on for an existing install")
 	}
 	_ = inst.SetClaudeOptions(&ClaudeOptions{SkipPermissions: false})
 	if SessionRunsBypass(inst, &UserConfig{}) {

@@ -330,6 +330,11 @@ func GetGlobal() *StateDB {
 	return globalDB
 }
 
+// BeforeCreate, when set, runs before Open creates a database file that does
+// not exist yet. The session package uses it to record a new install
+// (install_kind.go) before this release creates its first state.db.
+var BeforeCreate func(dbPath string)
+
 // Open creates or opens a SQLite database at dbPath with WAL mode and busy timeout.
 //
 // busy_timeout and foreign_keys are PER-CONNECTION pragmas in SQLite, so they
@@ -340,6 +345,11 @@ func GetGlobal() *StateDB {
 // level. journal_mode=WAL is persistent on the database file, so it can stay
 // as a one-shot Exec.
 func Open(dbPath string) (*StateDB, error) {
+	if BeforeCreate != nil {
+		if _, err := os.Lstat(dbPath); errors.Is(err, os.ErrNotExist) {
+			BeforeCreate(dbPath)
+		}
+	}
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
 		return nil, fmt.Errorf("statedb: mkdir: %w", err)

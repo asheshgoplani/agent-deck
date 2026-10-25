@@ -310,6 +310,9 @@ type UserConfig struct {
 	// Web defines `agent-deck web` HTTP server settings.
 	Web WebSettings `toml:"web,omitempty"`
 
+	// Security holds the folder-trust switches ([security]).
+	Security SecuritySettings `toml:"security,omitempty"`
+
 	// UI defines TUI layout settings (split ratios, etc).
 	UI UISettings `toml:"ui,omitempty"`
 
@@ -1088,6 +1091,31 @@ type WebSettings struct {
 	// `~` and $VARS expand. Empty (the default) keeps file links off: a click
 	// only copies the path.
 	FileLinkRoots []string `toml:"file_link_roots,omitempty"`
+}
+
+// SecuritySettings is the [security] table.
+type SecuritySettings struct {
+	// AutoTrustFolders lets agent-deck mark any folder it starts a Claude,
+	// Codex or Cursor session in as trusted (so the tool skips its "trust
+	// this folder?" prompt), and source a relative env_file from it. Unset:
+	// false on a new install, true on an install that predates v1.16.34
+	// (written into its config.toml once; see InstallKind). Folders
+	// agent-deck creates itself (conductor, triage and scratch dirs under its
+	// data dir, worktrees it makes) and trusted_folders are trusted either way.
+	AutoTrustFolders *bool `toml:"auto_trust_folders,omitempty"`
+
+	// TrustedFolders lists folders (and everything under them) agent-deck may
+	// mark trusted even when auto_trust_folders is off. `~` and $VARS expand.
+	// `agent-deck launch --trust-folder` adds the session's folder here.
+	TrustedFolders []string `toml:"trusted_folders,omitempty"`
+}
+
+// GetAutoTrustFolders resolves [security].auto_trust_folders; see the field.
+func (s SecuritySettings) GetAutoTrustFolders() bool {
+	if s.AutoTrustFolders == nil {
+		return isExistingInstall()
+	}
+	return *s.AutoTrustFolders
 }
 
 // FeedbackSettings controls the in-product feedback prompts.
@@ -2219,7 +2247,9 @@ type ClaudeSettings struct {
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
 	ConfigDir string `toml:"config_dir,omitempty"`
 
-	// DangerousMode enables --dangerously-skip-permissions flag for Claude sessions
+	// DangerousMode enables --dangerously-skip-permissions flag for Claude sessions.
+	// Unset: false on a new install, true on an install that predates
+	// v1.16.34 (written into its config.toml once; see InstallKind).
 	// Default: true (nil = use default true, explicitly set false to disable)
 	// Power users typically want this enabled for faster iteration
 	DangerousMode *bool `toml:"dangerous_mode,omitempty"`
@@ -2622,11 +2652,12 @@ func (c *UserConfig) GetConductorHermesEnvFile(name string) string {
 	return conductorCfg.Hermes.EnvFile
 }
 
-// GetDangerousMode returns whether dangerous mode is enabled, defaulting to true
-// Power users (the primary audience) typically want this enabled for faster iteration
+// GetDangerousMode returns whether dangerous mode is enabled. Unset, it is
+// false on a new install and true (the pre-1.16.34 default) on an install
+// that predates it; see InstallKind.
 func (c *ClaudeSettings) GetDangerousMode() bool {
 	if c.DangerousMode == nil {
-		return true
+		return isExistingInstall()
 	}
 	return *c.DangerousMode
 }
@@ -4487,6 +4518,12 @@ func SaveUserConfigWithIntent(config *UserConfig, allowSectionDrop bool) error {
 		return fmt.Errorf("failed to get config path: %w", err)
 	}
 
+	// The first config.toml this release writes records a new install
+	// before the file exists (install_kind.go).
+	if !pathPresent(configPath) {
+		recordInstallKindBeforeCreate()
+	}
+
 	// Ensure directory exists
 	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -5570,6 +5607,7 @@ func CreateExampleConfig() error {
 	if _, err := os.Stat(configPath); err == nil {
 		return nil
 	}
+	recordInstallKindBeforeCreate()
 
 	exampleConfig := `# Agent Deck User Configuration
 # This file is loaded on startup. Edit to customize tools and MCPs.

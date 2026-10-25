@@ -296,6 +296,9 @@ func assertDialogFits(t *testing.T, frame string, w, h int, mustShow ...string) 
 func isolateDialogFitHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	// The frames show an install from before the FX-8 safe defaults (skip
+	// permissions on); a fresh HOME would otherwise be a new install.
+	t.Cleanup(session.SetInstallKindForTest(session.InstallKindExisting))
 	session.ClearUserConfigCache()
 	t.Cleanup(session.ClearUserConfigCache)
 }

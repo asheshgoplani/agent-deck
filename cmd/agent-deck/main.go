@@ -483,6 +483,15 @@ func main() {
 	if len(args) == 0 || !storeRootQuietCommands[args[0]] {
 		session.EnsureStateRootPrivate(os.Stderr)
 	}
+	// FX-8 safe defaults: an install that predates them keeps today's values
+	// for every unset switch (dangerous_mode, auto_trust_folders), written
+	// into its config.toml once with a one-time notice. Only at an
+	// interactive start: daemons, hooks, scripts and the auto-update restart
+	// path never edit config.toml (their unset switches resolve the same way
+	// through session.InstallKind). The TUI prints the notice after it exits.
+	if (len(args) == 0 || !storeRootQuietCommands[args[0]]) && stdinStdoutIsTerminal() {
+		applyInstallDefaults(len(args) == 0 || !commandRegistry[args[0]])
+	}
 
 	var webEnabled bool
 	// webHeadless: true when --no-tui is passed to the `web` subcommand.
@@ -1443,6 +1452,7 @@ func main() {
 	tuiRunning.Store(true)
 	_, runErr := p.Run()
 	tuiRunning.Store(false)
+	printDeferredInstallNotice()
 	homeModel.CloseTelemetryAfterRun(runErr)
 	if runErr != nil {
 		reportTUIRunError(runErr)
