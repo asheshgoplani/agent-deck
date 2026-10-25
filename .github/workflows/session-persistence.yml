@@ -20,12 +20,12 @@ on:
   pull_request:
     paths:
       - 'internal/tmux/**'
-      - 'internal/session/instance.go'
+      - 'internal/session/instance*.go'
       - 'internal/session/userconfig.go'
       - 'internal/session/storage*.go'
-      - 'cmd/session_cmd.go'
-      - 'cmd/start_cmd.go'
-      - 'cmd/restart_cmd.go'
+      - 'cmd/agent-deck/session_cmd.go'
+      - 'cmd/agent-deck/session_lifecycle_cmd.go'
+      - 'cmd/agent-deck/session_restart_all.go'
       - 'scripts/verify-session-persistence.sh'
       - 'scripts/verify-session-persistence.d/**'
       - 'scripts/verify-session-persistence_test.go'

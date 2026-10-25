@@ -7,7 +7,7 @@ on:
       - 'internal/session/hook_watcher.go'
       - 'internal/session/hook_cleanup*'
       - 'internal/session/storage.go'
-      - 'internal/ui/home.go'
+      - 'internal/ui/home*.go'
       - 'internal/ui/hook_cleanup*'
       - '.github/scripts/hooks-fd/**'
       - '.github/workflows/hooks-fd-macos.yml'
