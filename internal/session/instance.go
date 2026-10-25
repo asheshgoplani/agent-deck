@@ -1738,6 +1738,7 @@ func (i *Instance) Start() (startErr error) {
 		i.recordTmuxStartFailure(command, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
+	i.persistPiSocketDecision() // the pane spawned: the launch decision is now a fact
 
 	// gen AND the wake channel are both produced here, in the caller, so no
 	// bump can slip into the gap before the watcher subscribes (see
@@ -2141,6 +2142,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		i.recordTmuxStartFailure(diagnosticCommand, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
+	i.persistPiSocketDecision() // before any message wait (sister path to Start())
 
 	// One generation for this spawn, shared by the ownership claim and the
 	// fast-death watcher (sister path to Start()).

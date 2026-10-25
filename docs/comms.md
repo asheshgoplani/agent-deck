@@ -108,14 +108,14 @@ P1 enabled two producers; the pi producer followed (#2482 Pi row). Each is pinne
 |---|---|---|---|---|
 | Claude Code | `hook-handler` | `UserPromptSubmit.prompt` | `Stop.last_assistant_message` + `transcript_path` | `claude_*_v1.json` |
 | Codex CLI | `codex-notify` (the existing `notify` line) | `input-messages` (last) on the same payload | `agent-turn-complete.last-assistant-message`, keyed by `turn-id` | `codex_notify_v1.json` |
-| pi | the pi extension (v4) through `hook-handler` | last `input` text, carried as `prompt` on the settle payload | last `turn_end` text of the run, sent on `agent_settled` when the run completed; keyed by the run (`run_id`), the key its inbox record carries, so a ledger parent is shown the run once when the ledger reaches it first, and twice with its text kept when the inbox does; without a `run_id` (an entry spooled before the upgrade, or a v3 extension) by session id and `messageEntryId`; tail-capped at 16 KiB | `pi_agentsettled_v4.json`, `pi_agentsettled_v3.json` |
+| pi | the pi extension (v5) through `hook-handler` | last `input` text, carried as `prompt` on the settle payload | last `turn_end` text of the run, sent on `agent_settled` when the run completed; keyed by the run (`run_id`), the key its inbox record carries, so a ledger parent is shown the run once when the ledger reaches it first, and twice with its text kept when the inbox does; without a `run_id` (an entry spooled before the upgrade, or a v3 extension) by session id and `messageEntryId`; tail-capped at 16 KiB | `pi_agentsettled_v4.json`, `pi_agentsettled_v3.json` |
 
 A Codex `Stop` hook pointed at `hook-handler` is recognised by its
 `turn_id` and never spooled, so notify and Stop cannot produce one turn
 twice (`codex_stop_v1.json`). A pi run that settles without text (tool-only,
 aborted or failed) spools one `status` edge instead (`pi_agentsettled_notext_v3.json`);
 a v2 extension spools nothing. A pi child's inbox record is keyed by its run
-(`pi-run:` plus a hash of the per-run `run_id` the v4 extension sends with `settles: true`), so
+(`pi-run:` plus a hash of the per-run `run_id` the extension (v4 and later) sends with `settles: true`), so
 each run is one inbox record and rings the parent once: on its `agent_settled`, or, if none
 arrives within 10 s of the `turn_end`, on a fallback under the same persisted key. (A
 ledger-consuming parent sees the run once when the ledger shows it first, and twice with its
@@ -540,9 +540,118 @@ the old hooks ignore them and the inbox delivers everything (it kept every
 record); after an upgrade the parent resumes where the ledger left it, so
 records the inbox delivered meanwhile can repeat.
 
-Not in this phase: Gemini, Cursor, pi, Hermes, OpenCode and Codex parents
+Not in this phase: Gemini, Cursor, Hermes, OpenCode and Codex parents
 stay on the inbox; the Claude cross-session socket is not used (tmux typed
 line only, through the same `session send --no-wait` the inbox wake uses).
+
+### A listed pi parent
+
+A pi parent listed in `consumers` (pi >= 1.2.0, `agent-deck pi-hooks install`
+at extension v5) is enrolled like a Claude one (marker `tool: pi`). Pi has two
+facilities that make it a full consumer: `before_agent_start`, which lets the
+extension return a message that joins the run's context, and
+`pi.sendMessage(..., {triggerTurn: true})`, which starts a run without
+touching the editor.
+
+| | Claude parent | pi parent |
+|---|---|---|
+| Prompt-time context | `UserPromptSubmit` JSON envelope | `before_agent_start`: `hook-handler` prints plain text, the extension returns it as the run's message |
+| Wake | typed line (`session send --no-wait`) | a doorbell frame on the extension's unix socket; typed only as a fallback, below |
+| Acknowledged by | the prompt names the record ids | the run that carries the doorbell's nonce (the hook), never the socket reply |
+| Injection accepted | when the hook printed it | when the extension echoes the delivery token (below), never on print |
+| Preview acks | no (injected whole) | no (injected whole) |
+| A child's urgent turn while the parent is busy | the inbox Stop drain hands it over when the turn ends | the ledger rings a listed pi parent one doorbell at the first idle pass, unless the turn was shown; unlike the inbox doorbell, which rings only an idle conductor, this ring needs no conductor title (the listing is the opt-in); the two share the 1 min debounce |
+
+An unlisted pi session is not enrolled: its hook prints nothing and its inbox is
+left alone, and its wakes stay typed as before.
+
+**The doorbell.** The launch exports `AGENTDECK_PI_SOCKET` only when `pi
+--version` (run on the launch's own PATH, every launch) is at least 1.2.0 and
+the extension is current; otherwise one `pi_wake_socket off` line says why and
+`agent-deck pi-hooks status` prints the same reason. A wake is one NDJSON frame
+`{"v":1,"id":<nonce>,"line":<wake line>,"ids":[<record ids>]}`. The nonce is a
+ULID. The extension sends it as a custom message, never typed input, so a
+draft in the editor is untouched, and the run it starts carries the nonce into
+`hook-handler`. The daemon checks that the listener is a process of the target's
+pane tree and that the socket is private before it writes.
+
+**Three steps per wake.** Do #1 runs under the consumer lock: the
+attempt bound to the nonce, `LastWake` and the automatic wake count, all before any
+I/O. The `[costs.budgets]` check, which opens storage and sums the group's
+sessions (skipped, with a warning, when the registry cannot be read), runs
+outside the lock between two passes of the same revalidating step: a spent
+budget carries nothing and publishes `session.budget_exceeded` with `via:
+socket`. The socket I/O runs outside the lock too. Do #2 settles the attempt by nonce only: an
+attempt the hook has meanwhile replaced or acknowledged is left to the hook.
+
+| Reply | Receipt | Wake record |
+|---|---|---|
+| `submitted` (the run started with the nonce) | `transport_accepted` | `via: socket`, `state: landed` |
+| `queued` (handed to pi, no run seen in 1.5 s) | stays `attempted` | `state: queued` |
+| no reply, a malformed one, a failed write | stays `attempted`, never typed | `state: pushed`, `err` |
+| `busy`, `duplicate` with `notSent` | back to pending, the wake count undone; the first idle pass after the 1 min debounce rings again | none |
+| `bad_request` or an unknown word with `notSent`, or refused before the write | back to pending, the wake stays counted, socket wakes for these records stop, nothing typed | `via: socket`, `state: failed`, `err` the reason (`after_write` when the frame was written) |
+| a pi launched with the socket exported, and the socket is down (no file, a refused connection: a rebind or reload window) | back to pending, nothing typed, the first idle pass after the debounce rings again | none |
+| a pi launched without the socket (too old, no extension, path too long, socket off, or by an older binary) and nobody answers | the doorbell is typed once, dispatched in the background like a Claude wake | `via: tmux`, nothing in `err` |
+| the pane tree could not be read completely (or is empty) | stays `attempted`, never typed, the 90 s settle retries | `state: pushed`, `err: pane_tree_unreadable` |
+| a complete, successfully read pane tree that lacks the socket's peer, or a socket the wake will not use (permissions) | back to pending, wakes for these records stop, nothing typed | `via: socket`, `state: failed`, `err` the reason |
+| the connection was cancelled or failed for a reason that proves nothing | back to pending, retried by the first idle pass after the debounce | none |
+
+**Nothing is typed into a pi whose extension answers.** Pi has no composer-draft
+guard, so a typed line can merge into an operator's draft and submit it, which
+the socket exists to avoid; and the records need no typed line, because every one
+of them reaches pi at its next run start through `before_agent_start`. A refusal
+therefore never types: the records stay pending. Only a pi that is provably absent,
+that is, an extension that is not there to refuse, gets the typed doorbell, which
+is how pi has always been woken. Anything short of proof (a peer the pane tree
+does not hold, a socket the wake will not use, a dial that failed for another
+reason) may hide a live pi and types nothing. `agent-deck pi-hooks status` prints
+`Socket wakes stopped: <reason> (<parent>)` for a parent whose wakes a permanent
+refusal has stopped. Silence, a failed write and `pushed` prove nothing either,
+so they are never typed and never re-sent in the same pass; a wake no hook
+acknowledged within 90 seconds is retried once under a new nonce.
+
+**A printed context is not a delivered one.** The extension discards the hook's
+stdout when the hook times out or exits non-zero. So for pi the hook prints the
+context followed by a last line, `<!-- agent-deck-delivery:<ULID> -->`, and
+records the token on the attempt, which stays `attempted`. The extension strips
+that line, injects the rest, and echoes the token on its next `turn_start`; the
+hook spools it as an `injected` edge, and only that moves exactly that attempt to
+`transport_accepted`. With no receipt (a dropped injection, which the extension
+also warns about on stderr) the records stay pending and ride the next run start. The receipt also rides the next
+`before_agent_start` (`prior_injected_token`), which accepts the attempt before
+that run's own settle, so it does not depend on the daemon; the daemon's ingest of
+the spooled edge is the backstop. A token-bound attempt is neither re-injected nor
+dropped for 30 seconds, long enough for a receipt in transit. The turn keys an
+injection showed are held under its token and become shown only on the receipt, so
+a dropped injection neither suppresses the inbox copy of its turns nor loses them.
+The inbox records an injection prints are peeked, not drained: they stay in the
+inbox, so every drain (the CLI drain included) still sees them, and the token
+records their ids and the turn keys alongside the attempt. The receipt consumes them
+by id in one drain, and promotes the keys to shown in the same step, even when no
+attempt is in flight for them (an injection that carried only inbox records). With
+no receipt nothing is consumed and the records ride the next run start. Delivery is
+at least once: a crash between the receipt and the drain shows a record again,
+carrying its id. An attempt whose age is negative (the clock stepped back) counts
+as past the receipt window.
+
+Whether a pi may be typed into is decided by what its launch did, not by a
+connect at wake time: the launch records, on the persisted instance, whether it
+exported `AGENTDECK_PI_SOCKET`, on every launch path including a restart. The
+socket is for local launches only: an SSH or sandboxed pi exports nothing and is
+recorded as such, so its doorbell is typed as before. A pi with no record is one an
+older binary launched and is treated as launched without it.
+Claude is unchanged, since Claude itself consumes its stdout.
+
+**One leg for every doorbell.** The inbox wake, the remote talkback scheduler
+and the CLI drain's wake all go through the same send leg: a pi parent rides the
+socket and a Claude parent is typed. The inbox doorbell carries the fingerprints
+of the newest eight records waiting in the inbox (a hash of the line when the
+inbox has none to name, so a repeated nudge is recognised) and is reserved
+synchronously at dispatch, before its goroutine runs, so the ledger pass of the
+same poll does not ring a second one. Its wake record comes from
+the leg, with the outcome it saw.
+
 
 ## Sends and remote records (P3)
 

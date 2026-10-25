@@ -63,9 +63,12 @@ type hookPayload struct {
 	TranscriptPath       json.RawMessage `json:"transcript_path"`
 	TurnID               json.RawMessage `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
 	LastAssistantMessage json.RawMessage `json:"last_assistant_message"` // Claude Stop
-	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
+	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit, pi before_agent_start
 	Settles              json.RawMessage `json:"settles"`                // pi: the capability bit, sent with run_id by a v4+ extension (agent_settled itself is v3+)
 	RunID                json.RawMessage `json:"run_id"`                 // pi: the run token minted at agent_start
+	WakeNonce            json.RawMessage `json:"wake_nonce"`             // pi before_agent_start of a doorbell's run
+	InjectedToken        json.RawMessage `json:"injected_token"`         // pi turn_start: receipt of an injected context
+	PriorInjectedToken   json.RawMessage `json:"prior_injected_token"`   // pi before_agent_start: receipt of the run before
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
 	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
@@ -137,6 +140,15 @@ func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 			return "pi", session.CommsEdgeTurnEnd, text, rawString(p.Prompt)
 		}
 		return "pi", session.CommsEdgeStatus, "", ""
+	case "beforeagentstart":
+		if p.Source != "pi" {
+			return "", "", "", ""
+		}
+		return "pi", session.CommsEdgePromptStart, "", rawString(p.Prompt)
+	case "turnstart":
+		if p.Source == "pi" && strings.TrimSpace(rawString(p.InjectedToken)) != "" {
+			return "pi", session.CommsEdgeInjected, "", ""
+		}
 	}
 	return "", "", "", ""
 }
@@ -168,10 +180,42 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 	if edge == session.CommsEdgeStatus {
 		entry.From, entry.State = "running", "waiting"
 	}
+	if harness == "pi" && edge == session.CommsEdgePromptStart {
+		entry.WakeNonce = strings.TrimSpace(rawString(p.WakeNonce))
+	}
+	if edge == session.CommsEdgeInjected {
+		entry.InjectedToken = strings.TrimSpace(rawString(p.InjectedToken))
+	}
 	if err := session.WriteCommsSpool(entry); err != nil {
 		hookHandlerLog.Warn("comms_spool_write_failed",
 			slog.String("instance", instanceID), slog.String("event", p.HookEventName), slog.String("error", err.Error()))
 	}
+}
+
+// piBeforeAgentStart prints the context a pi run starts with: what the
+// ledger owes the parent, acknowledging the doorbell whose nonce the run
+// carries. A pi session the ledger does not serve prints nothing and its inbox
+// is left alone (listed parents only).
+func piBeforeAgentStart(instanceID string, p hookPayload) {
+	// The previous run's receipt rides this run start, so the attempt is accepted
+	// (and settled below) without waiting for the daemon to ingest the spooled one.
+	session.AcceptPriorInjection(instanceID, strings.TrimSpace(rawString(p.PriorInjectedToken)))
+	dl, ok := session.LedgerPromptContext(instanceID, rawString(p.Prompt), strings.TrimSpace(rawString(p.WakeNonce)))
+	if !ok {
+		return
+	}
+	printed := false
+	if dl.Text != "" {
+		out := dl.Text
+		if dl.Token != "" {
+			// The last line, in the form the extension strips; it echoes the
+			// token back once it has really injected the context.
+			out = strings.TrimRight(out, "\n") + "\n<!-- agent-deck-delivery:" + dl.Token + " -->"
+		}
+		_, err := fmt.Println(out)
+		printed = err == nil
+	}
+	dl.Done(printed)
 }
 
 // resolveStopHookActive fails safe (audit B8): an absent stop_hook_active is
@@ -417,6 +461,14 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// UserPromptSubmit, pi agent_settled).
 	spoolCommsFromHook(instanceID, payload)
 
+	// pi's before_agent_start: the extension returns this hook's stdout as the
+	// run's injected message, so print the ledger's context as plain text (not
+	// Claude's JSON envelope). It carries no status.
+	if payload.Source == "pi" && normalizeHookEventKey(payload.HookEventName) == "beforeagentstart" {
+		piBeforeAgentStart(instanceID, payload)
+		return
+	}
+
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)
 
@@ -531,7 +583,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 			// from the ledger (acknowledging what a wake line showed);
 			// every other session keeps the inbox drain.
 			// The ledger's context already ends with what the inbox holds.
-			if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt)); ok {
+			if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt), ""); ok {
 				ledger = dl
 				if dl.Text != "" {
 					parts = append([]string{dl.Text}, parts...)

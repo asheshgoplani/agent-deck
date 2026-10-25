@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,9 +21,95 @@ import (
 // poll is one daemon poll for the fixture's profile.
 func (f *deliverFixture) poll(t *testing.T, parentStatus string) {
 	t.Helper()
-	f.d.ingestCommsSpool("default", f.byID)
+	f.d.ingestCommsSpool(f.profileName(), f.byID)
 	f.deliver(t, parentStatus)
 	f.d.notifier.Flush()
+}
+
+// settleAndCount runs idle polls for 6 min, starting the run each new doorbell
+// asks for (with its receipt), and returns the doorbells.
+func (w *piWakeFx) settleAndCount(t *testing.T, text string) int {
+	t.Helper()
+	seen := 0
+	for i := 0; i < 12; i++ {
+		w.poll(t, "waiting")
+		for ; seen < w.ext.count(); seen++ {
+			w.clock = w.clock.Add(time.Second)
+			w.shownOnce(t, seen, w.piWokenRun(t, seen, true), text)
+		}
+		w.clock = w.clock.Add(30 * time.Second)
+	}
+	if typed := w.typed.all(); len(typed) != 0 {
+		t.Errorf("typed into a socket-launched pi: %q", typed)
+	}
+	return w.ext.count()
+}
+
+// A pin, not a regression test (it passes with the fast path on Through too).
+// The receipt of an injection made before the child's turn landed arrives
+// while the parent is still busy (finalizeInjection, a consumer pass).
+func TestCommsDeliverPin_PiReceiptWhileBusyLeavesTheUrgentTurnToTheDeliveryPass(t *testing.T) {
+	w := newPiWakeFixture(t, replyWith("submitted"))
+	w.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "earlier result"})
+	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "") // the parent's own run starts
+	if !ok {
+		t.Fatal("no injection at the run start")
+	}
+	dl.Done(true)
+	w.poll(t, "running")
+	w.clock = w.clock.Add(time.Second)
+	w.piChildUrgentTurn(t, "run-0000000e0001", "Should we ship on Friday or Monday?", false)
+	w.injectedEdge(t, tokenOf(t, dl)) // the run's turn_start echoes the token
+	for i := 0; i < 4; i++ {
+		w.poll(t, "running")
+		w.clock = w.clock.Add(10 * time.Second)
+	}
+	if n := w.settleAndCount(t, "Should we ship on Friday or Monday?"); n != 1 {
+		t.Errorf("socket doorbells after the parent settled = %d, want exactly 1", n)
+	}
+}
+
+// `agent-deck msg read` while the parent is busy: the CLI's pass (a peek that
+// consumes nothing) covers the turn.
+func TestCommsDeliver_PiMsgReadWhileBusyLeavesTheUrgentTurnToTheDeliveryPass(t *testing.T) {
+	w := newPiWakeFixture(t, replyWith("submitted"))
+	w.poll(t, "running")
+	w.piChildUrgentTurn(t, "run-0000000e0002", "Should we ship on Friday or Monday?", false)
+	// What msg read does without --ack: one pass that prints and acknowledges nothing.
+	if _, err := w.l.Reader().Do(w.parent.ID, func(comms.Pass) ([]events.Cursor, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		w.poll(t, "running")
+		w.clock = w.clock.Add(10 * time.Second)
+	}
+	if n := w.settleAndCount(t, "Should we ship on Friday or Monday?"); n != 1 {
+		t.Errorf("socket doorbells after the parent settled = %d, want exactly 1", n)
+	}
+}
+
+// A pin, not a regression test (it passes with the fast path on Through too).
+// The parent's next run start injects the turn, and the extension drops it (no
+// receipt). The prompt hook's pass covers the turn; once the attempt is stale
+// the delivery pass rings for it.
+func TestCommsDeliverPin_PiUnreceiptedInjectionLeavesTheUrgentTurnToTheDeliveryPass(t *testing.T) {
+	w := newPiWakeFixture(t, replyWith("submitted"))
+	w.poll(t, "running")
+	w.piChildUrgentTurn(t, "run-0000000e0003", "Should we ship on Friday or Monday?", false)
+	w.poll(t, "running")
+	dl, ok := LedgerPromptContext(w.parent.ID, "next task", "") // a human prompt starts a run
+	if !ok || !strings.Contains(dl.Text, "Should we ship on Friday or Monday?") {
+		t.Fatalf("the run start did not carry the turn (ok %v)", ok)
+	}
+	dl.Done(true) // printed; the extension dropped it
+	for i := 0; i < 4; i++ {
+		w.poll(t, "running")
+		w.clock = w.clock.Add(10 * time.Second)
+	}
+	w.clock = w.clock.Add(2 * time.Minute) // past the attempt's stale bound
+	if n := w.settleAndCount(t, "Should we ship on Friday or Monday?"); n != 1 {
+		t.Errorf("socket doorbells after the dropped injection = %d, want exactly 1", n)
+	}
 }
 
 // A pin, not a regression test (it passes without Judged, on main too): a
@@ -190,7 +277,7 @@ func TestCommsDeliver_AConsumerNeverAddressedHoldsTheFastPath(t *testing.T) {
 func TestCommsDeliver_TheJudgedCursorIsWrittenOnceThenHoldsTheFastPath(t *testing.T) {
 	f := newDeliverFixture(t)
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "child result"})
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on") // a hook-side pass
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "") // a hook-side pass
 	if !ok {
 		t.Fatal("no injection")
 	}

@@ -525,6 +525,22 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	return forked, cmd, nil
 }
 
+// RebuildPiForkCommand recomputes forked's start command after the caller changed
+// what a launch exports (a fork given a sandbox after it was created): a sandboxed
+// pi never exports the host socket, and the flag is recorded false.
+func (i *Instance) RebuildPiForkCommand(forked *Instance) error {
+	baseCommand := strings.TrimSpace(i.Command)
+	if baseCommand == "" {
+		baseCommand = "pi"
+	}
+	cmd, err := i.buildPiForkCommandForTarget(forked, baseCommand)
+	if err != nil {
+		return err
+	}
+	forked.ForkStartCommand = cmd
+	return nil
+}
+
 // CanForkCodex reports whether this Codex session can be forked. Forkability
 // requires a flushed on-disk rollout for the captured session id — the same
 // invariant buildCodexCommand uses to gate `codex resume` (#756). `codex fork`
