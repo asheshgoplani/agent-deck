@@ -161,6 +161,7 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 	entry := session.CommsSpoolEntry{
 		Harness: harness, Event: p.HookEventName, Edge: edge, Instance: instanceID,
 		SessionID: sessionID, TurnID: strings.TrimSpace(rawString(p.TurnID)), Text: text, Prompt: prompt,
+		RunID:          strings.TrimSpace(rawString(p.RunID)),
 		TranscriptPath: transcript, Cwd: strings.TrimSpace(p.Cwd), TSignal: time.Now().UnixMilli(),
 	}
 	if edge == session.CommsEdgeStatus {
