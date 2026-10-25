@@ -89,13 +89,34 @@ func (s *StateDB) touchStamp() (WriteStamps, error) {
 // can tell "recorded" from "silently dropped" (the instance was never saved, or
 // another process deleted it mid-restart).
 func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (WriteStamps, error) {
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, "tool_data")
+}
+
+// WriteRestartOutcomeWithPiSocket is WriteRestartOutcome that also records, in
+// the same UPDATE, whether the pi's launch exported AGENTDECK_PI_SOCKET (the key
+// is set when true and removed when false, as the full save writes it), so a
+// stale full save cannot land between the outcome and the decision.
+func (s *StateDB) WriteRestartOutcomeWithPiSocket(id, tmuxSession, status, tool string, exported bool) (WriteStamps, error) {
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, piSocketToolDataExpr(exported))
+}
+
+// piSocketToolDataExpr is the tool_data expression that records the decision.
+func piSocketToolDataExpr(exported bool) string {
+	if exported {
+		return `json_set(COALESCE(tool_data, '{}'), '$.pi_socket_exported', json('true'))`
+	}
+	return `json_remove(COALESCE(tool_data, '{}'), '$.pi_socket_exported')`
+}
+
+func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, toolDataExpr string) (WriteStamps, error) {
 	var affected int64
 	if err := withBusyRetry(func() error {
 		res, err := s.db.Exec(
 			`UPDATE instances
 			   SET tmux_session = ?, status = ?, tool = ?,
 			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
-			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END
+			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END,
+			       tool_data = `+toolDataExpr+`
 			 WHERE id = ?`,
 			tmuxSession, status, tool, status, status, id,
 		)
@@ -113,4 +134,15 @@ func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (Wri
 	// Peers poll last_modified; without the bump a running TUI keeps serving
 	// the dead name from its own snapshot.
 	return s.touchStamp()
+}
+
+// WritePiSocketExported records, in the instance's tool_data, whether its last
+// launch exported AGENTDECK_PI_SOCKET: the key is set when true and removed when
+// false, as the full save writes it. A start writes it after a successful launch
+// (a restart folds it into its outcome write).
+func (s *StateDB) WritePiSocketExported(id string, exported bool) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(`UPDATE instances SET tool_data = `+piSocketToolDataExpr(exported)+` WHERE id = ?`, id)
+		return err
+	})
 }

@@ -71,7 +71,12 @@ func (i *Instance) writeRestartOutcome() (statedb.WriteStamps, error) {
 	var stamps statedb.WriteStamps
 	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
 		var werr error
-		stamps, werr = db.WriteRestartOutcome(i.ID, name, string(i.Status), i.Tool)
+		if i.Tool == "pi" {
+			// The launch decision rides the same UPDATE as the outcome.
+			stamps, werr = db.WriteRestartOutcomeWithPiSocket(i.ID, name, string(i.Status), i.Tool, i.PiSocketExported)
+		} else {
+			stamps, werr = db.WriteRestartOutcome(i.ID, name, string(i.Status), i.Tool)
+		}
 		return werr
 	})
 	if errors.Is(err, errNoStateDB) {
@@ -114,4 +119,25 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 		return statedb.WriteStamps{}
 	}
 	return i.restartTmuxRecordStamps
+}
+
+// persistPiSocketDecision records, once a pi's pane has spawned, whether its
+// launch exported AGENTDECK_PI_SOCKET. Start and StartWithMessage are the launch
+// paths the CLI, the web and the TUI share, and none of them saves the instance
+// afterwards, so a start that flipped the decision would otherwise leave the old
+// value in storage. They call it right after the spawn succeeds, so a failure
+// before it, or a spawn another process won, leaves storage as it was. It is a targeted write of one key (a not-yet-saved instance
+// matches no row and is written by its first save); a failure is logged and never
+// fails the start.
+func (i *Instance) persistPiSocketDecision() {
+	if i.Tool != "pi" {
+		return
+	}
+	if err := i.withOwningStateDB(func(db *statedb.StateDB) error {
+		return db.WritePiSocketExported(i.ID, i.PiSocketExported)
+	}); err != nil && !errors.Is(err, errNoStateDB) {
+		sessionLog.Warn("pi_socket_decision_persist_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("error", err.Error()))
+	}
 }

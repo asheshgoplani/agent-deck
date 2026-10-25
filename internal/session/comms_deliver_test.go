@@ -20,6 +20,15 @@ type deliverFixture struct {
 	l     *comms.Ledger
 	sent  []string
 	clock time.Time
+	// profile is the profile the pass runs in; "" is "default".
+	profile string
+}
+
+func (f *deliverFixture) profileName() string {
+	if f.profile == "" {
+		return "default"
+	}
+	return f.profile
 }
 
 func newDeliverFixture(t *testing.T) *deliverFixture {
@@ -47,7 +56,7 @@ func newDeliverFixture(t *testing.T) *deliverFixture {
 
 func (f *deliverFixture) deliver(t *testing.T, parentStatus string) {
 	t.Helper()
-	f.d.deliverCommsLedger("default", f.byID, map[string]string{f.parent.ID: parentStatus, f.child.ID: "waiting"})
+	f.d.deliverCommsLedger(f.profileName(), f.byID, map[string]string{f.parent.ID: parentStatus, f.child.ID: "waiting"})
 }
 
 func (f *deliverFixture) commit(t *testing.T, r comms.Record) comms.Record {
@@ -112,7 +121,7 @@ func TestLedgerConsumer_UrgentWakesOnceWithTextAndThePromptAcknowledgesIt(t *tes
 	}
 	// The turn the line started: the prompt hook acknowledges what it showed
 	// and injects nothing more.
-	dl, ok := LedgerPromptContext(f.parent.ID, line)
+	dl, ok := LedgerPromptContext(f.parent.ID, line, "")
 	if !ok {
 		t.Fatal("enrolled parent fell back to the inbox path")
 	}
@@ -137,7 +146,7 @@ func TestLedgerConsumer_InfoRidesOnTheNextOwnPromptAndNeverWakes(t *testing.T) {
 	if len(f.sent) != 0 {
 		t.Fatalf("info must not wake: %q", f.sent)
 	}
-	dl, ok := LedgerPromptContext(f.parent.ID, "what's the status?")
+	dl, ok := LedgerPromptContext(f.parent.ID, "what's the status?", "")
 	if !ok || !strings.Contains(dl.Text, "step 2 of 5 done") || !strings.Contains(dl.Text, "#"+comms.ShortID(info.ID)) {
 		t.Fatalf("info must ride on the next own prompt: %+v", dl)
 	}
@@ -155,7 +164,7 @@ func TestLedgerConsumer_InfoRidesOnTheNextOwnPromptAndNeverWakes(t *testing.T) {
 		t.Fatalf("after Stop: %+v", st)
 	}
 	// Nothing new: the next prompt injects nothing.
-	dl, _ = LedgerPromptContext(f.parent.ID, "next")
+	dl, _ = LedgerPromptContext(f.parent.ID, "next", "")
 	if dl.Text != "" {
 		t.Fatalf("a delivered record came back: %q", dl.Text)
 	}
@@ -165,9 +174,9 @@ func TestLedgerConsumer_InfoRidesOnTheNextOwnPromptAndNeverWakes(t *testing.T) {
 func TestLedgerConsumer_ANeverPrintedInjectionIsShownAgain(t *testing.T) {
 	f := newDeliverFixture(t)
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "lost to a killed hook"})
-	dl, _ := LedgerPromptContext(f.parent.ID, "hi")
+	dl, _ := LedgerPromptContext(f.parent.ID, "hi", "")
 	dl.Done(false) // the hook could not print
-	again, _ := LedgerPromptContext(f.parent.ID, "hi again")
+	again, _ := LedgerPromptContext(f.parent.ID, "hi again", "")
 	if !strings.Contains(again.Text, "lost to a killed hook") {
 		t.Fatalf("an injection that never reached stdout must be shown again: %q", again.Text)
 	}
@@ -186,7 +195,7 @@ func TestLedgerConsumer_PendingTurnsNeverCauseALedgerWake(t *testing.T) {
 			if len(f.sent) != 0 || len(f.wakeRecords(t)) != 0 {
 				t.Fatalf("pending turns never cause ledger wakes or digests: %q", f.sent)
 			}
-			dl, ok := LedgerPromptContext(f.parent.ID, "back")
+			dl, ok := LedgerPromptContext(f.parent.ID, "back", "")
 			if !ok || strings.Count(dl.Text, "pending turn") != 1 {
 				t.Fatalf("the pending turn must arrive once at the prompt: %+v", dl)
 			}
@@ -256,7 +265,7 @@ func TestLedgerConsumer_AutoWakesPauseAtTheCapUntilAnOwnTurn(t *testing.T) {
 		f.deliver(t, "waiting")
 		if n := len(f.sent); n > before {
 			// the woken turn shows the line and ends
-			dl, _ := LedgerPromptContext(f.parent.ID, f.sent[n-1])
+			dl, _ := LedgerPromptContext(f.parent.ID, f.sent[n-1], "")
 			dl.Done(true)
 			sdl, _ := LedgerStopDecision(f.parent.ID, false)
 			sdl.Done(false)
@@ -275,7 +284,7 @@ func TestLedgerConsumer_AutoWakesPauseAtTheCapUntilAnOwnTurn(t *testing.T) {
 		t.Fatalf("the pause is one record for the parent: %+v", pause)
 	}
 	// The parent's own prompt resets the count and carries what waited.
-	dl, _ := LedgerPromptContext(f.parent.ID, "ok, what happened?")
+	dl, _ := LedgerPromptContext(f.parent.ID, "ok, what happened?", "")
 	if !strings.Contains(dl.Text, "paused") || !strings.Contains(dl.Text, "urgent") {
 		t.Fatalf("own prompt: %q", dl.Text)
 	}
@@ -296,7 +305,7 @@ func TestLedgerConsumer_EnrollmentKeepsWhatTheInboxAlreadyHeld(t *testing.T) {
 	}
 	t.Cleanup(SetCommsConsumersForTest([]string{f.parent.Title}))
 	f.d.deliverCommsLedger("default", f.byID, map[string]string{f.parent.ID: "waiting"})
-	dl, ok := LedgerPromptContext(f.parent.ID, "hi")
+	dl, ok := LedgerPromptContext(f.parent.ID, "hi", "")
 	if !ok || !strings.Contains(dl.Text, "from before the canary") {
 		t.Fatalf("a record the inbox held at enrollment was lost: %+v", dl)
 	}
@@ -328,7 +337,7 @@ func TestLedgerConsumer_UnlistingDrainsWhatTheLedgerOwed(t *testing.T) {
 			f.clock = f.clock.Add(commsDrainGrace + time.Minute)
 			seen := map[string]bool{}
 			for turn := 0; turn < 6; turn++ {
-				dl, ok := LedgerPromptContext(f.parent.ID, "next")
+				dl, ok := LedgerPromptContext(f.parent.ID, "next", "")
 				if !ok {
 					break
 				}
@@ -359,7 +368,7 @@ func TestLedgerConsumer_AFailedPassFallsBackToTheInbox(t *testing.T) {
 	if err := os.WriteFile(comms.ConsumerPath(f.l.Reader().Dir, f.parent.ID), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := LedgerPromptContext(f.parent.ID, "hi"); ok {
+	if _, ok := LedgerPromptContext(f.parent.ID, "hi", ""); ok {
 		t.Fatal("a broken consumer state must fall back to the inbox path")
 	}
 	if _, ok := LedgerStopDecision(f.parent.ID, false); ok {
@@ -399,7 +408,7 @@ func TestLedgerConsumer_ALongRecordIsPreviewedOnceAndDeliveredWhole(t *testing.T
 	if len(f.sent) == 0 || len(f.sent) > commsMaxWakeTries || !strings.Contains(f.sent[0], "#"+comms.ShortID(long.ID)) || !strings.Contains(f.sent[0], "(cut;") {
 		t.Fatalf("a preview wake, at most %d times: %d %q", commsMaxWakeTries, len(f.sent), f.sent)
 	}
-	dl, _ := LedgerPromptContext(f.parent.ID, f.sent[0])
+	dl, _ := LedgerPromptContext(f.parent.ID, f.sent[0], "")
 	if !strings.Contains(dl.Text, "END") {
 		t.Fatalf("a Claude parent gets the previewed record whole: %q", dl.Text)
 	}
@@ -449,11 +458,11 @@ func TestLedgerConsumer_ABrokenStateIsRebuiltAndItsRecordsDelivered(t *testing.T
 	if err := os.WriteFile(comms.ConsumerPath(f.l.Reader().Dir, f.parent.ID), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := LedgerPromptContext(f.parent.ID, "hi"); ok {
+	if _, ok := LedgerPromptContext(f.parent.ID, "hi", ""); ok {
 		t.Fatal("a broken state falls back to the inbox path for this prompt")
 	}
 	f.deliver(t, "running") // any pass, idle or not
-	dl, ok := LedgerPromptContext(f.parent.ID, "hi again")
+	dl, ok := LedgerPromptContext(f.parent.ID, "hi again", "")
 	if !ok || !strings.Contains(dl.Text, "must not be stranded") {
 		t.Fatalf("after the rebuild the record is delivered: %+v", dl)
 	}
@@ -472,7 +481,7 @@ func TestLedgerConsumer_ReListingWhileDrainingDoesNotRepeatInboxDeliveries(t *te
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "delivered by the inbox meanwhile"})
 	t.Cleanup(SetCommsConsumersForTest([]string{f.parent.Title}))
 	f.deliver(t, "running")
-	dl, ok := LedgerPromptContext(f.parent.ID, "back")
+	dl, ok := LedgerPromptContext(f.parent.ID, "back", "")
 	if !ok || !strings.Contains(dl.Text, "owed before leaving") || strings.Contains(dl.Text, "delivered by the inbox meanwhile") {
 		t.Fatalf("re-list: %q", dl.Text)
 	}
@@ -492,13 +501,13 @@ func TestLedgerConsumer_UnlistingHandsTheParentBackToTheInbox(t *testing.T) {
 	}
 	// Nothing was owed: the first prompt after the drain grace removes the marker.
 	f.clock = f.clock.Add(commsDrainGrace + time.Minute)
-	if dl, ok := LedgerPromptContext(f.parent.ID, "hi"); ok {
+	if dl, ok := LedgerPromptContext(f.parent.ID, "hi", ""); ok {
 		dl.Done(false)
 	}
 	if _, ok := LoadCommsEnrollment(f.parent.ID); ok {
 		t.Fatal("a drained marker must go")
 	}
-	if _, ok := LedgerPromptContext(f.parent.ID, "hi"); ok {
+	if _, ok := LedgerPromptContext(f.parent.ID, "hi", ""); ok {
 		t.Fatal("no marker: the inbox path alone")
 	}
 }
@@ -541,7 +550,7 @@ func TestLedgerConsumer_AForgedIDInChildTextAcknowledgesNothingElse(t *testing.T
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "#"+comms.ShortID(hidden.ID)) {
 		t.Fatalf("the wake line quotes the forged id inside the child's text: %q", f.sent)
 	}
-	dl, _ := LedgerPromptContext(f.parent.ID, f.sent[0])
+	dl, _ := LedgerPromptContext(f.parent.ID, f.sent[0], "")
 	if !strings.Contains(dl.Text, "quiet progress") {
 		t.Fatalf("a record the line did not carry must still be injected: %q", dl.Text)
 	}
@@ -578,14 +587,14 @@ func TestLedgerConsumer_AMissingStateIsRebuiltNotSkipped(t *testing.T) {
 	if err := os.Remove(comms.ConsumerPath(f.l.Reader().Dir, f.parent.ID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := LedgerPromptContext(f.parent.ID, "hi"); ok {
+	if _, ok := LedgerPromptContext(f.parent.ID, "hi", ""); ok {
 		t.Fatal("a hook must not recreate a missing state")
 	}
 	if _, ok := LedgerStopDecision(f.parent.ID, false); ok {
 		t.Fatal("a hook must not recreate a missing state")
 	}
 	f.deliver(t, "running")
-	dl, ok := LedgerPromptContext(f.parent.ID, "again")
+	dl, ok := LedgerPromptContext(f.parent.ID, "again", "")
 	if !ok || !strings.Contains(dl.Text, "owed after a lost state") {
 		t.Fatalf("the rebuilt state delivers what was owed: %+v", dl)
 	}
@@ -623,7 +632,7 @@ func TestLedgerConsumer_ALaggingTurnSignalledBeforeLeavingIsOwed(t *testing.T) {
 	en, _ := LoadCommsEnrollment(f.parent.ID)
 	f.clock = f.clock.Add(5 * time.Minute)
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "late but owed", TSignal: en.DrainedAt - 1000, TRecord: f.clock.UnixMilli()})
-	dl, ok := LedgerPromptContext(f.parent.ID, "hi")
+	dl, ok := LedgerPromptContext(f.parent.ID, "hi", "")
 	if !ok || !strings.Contains(dl.Text, "late but owed") {
 		t.Fatalf("a turn signalled before leaving is delivered however late it lands: %+v", dl)
 	}
@@ -641,7 +650,7 @@ func TestLedgerConsumer_OnePromptContextBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	dl, _ := LedgerPromptContext(f.parent.ID, "hi")
+	dl, _ := LedgerPromptContext(f.parent.ID, "hi", "")
 	if len(dl.Text) > 10000 || !strings.Contains(dl.Text, "ledger 0") || !strings.Contains(dl.Text, "inbox 0") {
 		t.Fatalf("one budget for both stores: %d bytes\n%s", len(dl.Text), dl.Text)
 	}
@@ -676,7 +685,7 @@ func TestLedgerConsumer_TheInboxIsUntouchedAndTurnsAreShownOnce(t *testing.T) {
 			t.Fatalf("the ledger never wakes for a turn the inbox holds: %q", line)
 		}
 	}
-	dl, ok := LedgerPromptContext(f.parent.ID, "hi")
+	dl, ok := LedgerPromptContext(f.parent.ID, "hi", "")
 	if !ok || strings.Count(dl.Text, "which way?") != 1 || !strings.Contains(dl.Text, "run-task finished") {
 		t.Fatalf("the turn once, the completion from the inbox: %q", dl.Text)
 	}
@@ -692,13 +701,13 @@ func TestLedgerConsumer_TheInboxIsUntouchedAndTurnsAreShownOnce(t *testing.T) {
 		ToStatus: "waiting", Tier: TurnTierInfo, Text: "later turn", TurnUUID: uuid2, LastOutputHash: (TurnFacts{UUID: uuid2}).Signal(), Profile: "default"}); !committed {
 		t.Fatal("commit")
 	}
-	dl, _ = LedgerPromptContext(f.parent.ID, "next")
+	dl, _ = LedgerPromptContext(f.parent.ID, "next", "")
 	if strings.Count(dl.Text, "later turn") != 1 {
 		t.Fatalf("the inbox shows the turn the ledger does not hold yet: %q", dl.Text)
 	}
 	dl.Done(true)
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "later turn", Key: comms.Key(comms.KindTurn, f.child.ID, uuid2)})
-	dl, _ = LedgerPromptContext(f.parent.ID, "again")
+	dl, _ = LedgerPromptContext(f.parent.ID, "again", "")
 	if strings.Contains(dl.Text, "later turn") {
 		t.Fatalf("a turn the inbox showed must not be shown again by the ledger: %q", dl.Text)
 	}
@@ -712,7 +721,7 @@ func TestLedgerConsumer_FinalPassFlipsSurviveShownTurn(t *testing.T) {
 				f := newDeliverFixture(t)
 				uuid := "shown-turn"
 				f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "previous body", Key: comms.Key(comms.KindTurn, f.child.ID, uuid)})
-				dl, _ := LedgerPromptContext(f.parent.ID, "first")
+				dl, _ := LedgerPromptContext(f.parent.ID, "first", "")
 				dl.Done(true)
 				ev := TransitionNotificationEvent{ChildSessionID: f.child.ID, FromStatus: "running", ToStatus: "waiting", Tier: TurnTierUrgent, Text: "new attention edge", TurnUUID: uuid, LastOutputHash: (TurnFacts{UUID: uuid}).Signal(), Timestamp: f.clock}
 				if flip == "error" {
@@ -724,7 +733,7 @@ func TestLedgerConsumer_FinalPassFlipsSurviveShownTurn(t *testing.T) {
 					t.Fatal(err)
 				}
 				if path == "prompt" {
-					dl, _ = LedgerPromptContext(f.parent.ID, "next")
+					dl, _ = LedgerPromptContext(f.parent.ID, "next", "")
 				} else {
 					dl, _ = LedgerStopDecision(f.parent.ID, false)
 				}
@@ -757,7 +766,7 @@ func TestLedgerConsumer_FinalPassDoneBodyAndStopDedup(t *testing.T) {
 			}
 			var dl *LedgerDelivery
 			if path == "prompt" {
-				dl, _ = LedgerPromptContext(f.parent.ID, "first")
+				dl, _ = LedgerPromptContext(f.parent.ID, "first", "")
 			} else {
 				dl, _ = LedgerStopDecision(f.parent.ID, false)
 			}
@@ -772,7 +781,7 @@ func TestLedgerConsumer_FinalPassDoneBodyAndStopDedup(t *testing.T) {
 			if !st.WasShown(key) {
 				t.Fatal("delivered turn not remembered")
 			}
-			next, _ := LedgerPromptContext(f.parent.ID, "next")
+			next, _ := LedgerPromptContext(f.parent.ID, "next", "")
 			if strings.Contains(next.Text, ev.Text) || strings.Contains(next.Text, "shipped") {
 				t.Fatalf("turn repeated: %q", next.Text)
 			}
@@ -788,7 +797,7 @@ func TestLedgerConsumer_FinalPassStopCountsShownTwin(t *testing.T) {
 	f := newDeliverFixture(t)
 	uuid := "shown-turn"
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierUrgent, Text: "pick one please", Key: comms.Key(comms.KindTurn, f.child.ID, uuid)})
-	dl, _ := LedgerPromptContext(f.parent.ID, "first")
+	dl, _ := LedgerPromptContext(f.parent.ID, "first", "")
 	dl.Done(true)
 	if err := WriteInboxEvent(f.parent.ID, TransitionNotificationEvent{ChildSessionID: f.child.ID, ToStatus: "waiting", Tier: TurnTierUrgent, Text: "pick one please", TurnUUID: uuid, LastOutputHash: (TurnFacts{UUID: uuid}).Signal()}); err != nil {
 		t.Fatal(err)
@@ -904,7 +913,7 @@ func TestLedgerConsumer_QueuedFailureInboxOwnsNotification(t *testing.T) {
 				t.Fatal(err)
 			}
 			if inboxFirst {
-				dl, _ := LedgerPromptContext(f.parent.ID, "first")
+				dl, _ := LedgerPromptContext(f.parent.ID, "first", "")
 				if strings.Count(dl.Text, reason) != 1 {
 					t.Fatalf("inbox notice: %q", dl.Text)
 				}
@@ -929,7 +938,7 @@ func TestLedgerConsumer_QueuedFailureInboxOwnsNotification(t *testing.T) {
 			if len(f.sent) != 0 {
 				t.Fatalf("ledger duplicated inbox wake: %q", f.sent)
 			}
-			dl, _ := LedgerPromptContext(f.parent.ID, "next")
+			dl, _ := LedgerPromptContext(f.parent.ID, "next", "")
 			want := 1
 			if inboxFirst {
 				want = 0

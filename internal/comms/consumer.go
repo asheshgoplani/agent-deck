@@ -130,6 +130,20 @@ type ConsumerFile struct {
 	WakeTries  map[string]int `json:"wake_tries,omitempty"`  // cursor -> wakes that did not take
 	NextDue    int64          `json:"next_due,omitempty"`    // Unix ms the delivery pass next has something to do without a new record
 	Shown      []string       `json:"shown,omitempty"`       // keys of turns recently shown to the parent by either path (newest last, bounded)
+	// Injections are what a pi prompt injection showed, by delivery token: the
+	// turn keys of its ledger records and the inbox records it peeked (they were
+	// printed but not drained). The extension's receipt for the token promotes the
+	// keys to Shown and consumes the inbox records by id; without a receipt
+	// nothing is consumed and the records ride the next run start. Bounded: the
+	// oldest go first.
+	Injections map[string]Injection `json:"injections,omitempty"`
+}
+
+// Injection is one pi injection's record of what it showed.
+type Injection struct {
+	At    int64    `json:"at"`              // Unix ms the injection was made
+	Keys  []string `json:"keys,omitempty"`  // turn keys it showed (either path)
+	Inbox []string `json:"inbox,omitempty"` // fingerprints of the inbox records it peeked
 }
 
 // GapNote is one recorded loss: records From..To (cursors of the epoch the

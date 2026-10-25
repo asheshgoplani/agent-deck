@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/comms"
+	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/events"
 )
 
@@ -79,14 +80,15 @@ func commsConsumerList() []string {
 // commsConsumes reports whether the ledger delivers to inst: the ledger is
 // on, inst is listed (id, title or "*") and its harness has the delivery
 // path the canary needs: prompt-time injection, a Stop hook and a typed
-// wake. That is Claude in this phase; a Codex parent (no prompt hook is
-// installed for it) stays on the inbox, while Codex children are recorded
-// with their text like any other.
+// wake. That is Claude, and pi with extension v5 (its before_agent_start
+// hook injects and its socket rings the doorbell); a Codex parent (no prompt
+// hook is installed for it) stays on the inbox, while Codex children are
+// recorded with their text like any other.
 // A title selects a parent only when exactly one session of the profile
 // carries it (titles is the profile's title -> count), so a second
 // session named like the conductor is never enrolled by accident.
 func commsConsumes(inst *Instance, list []string, titles map[string]int) bool {
-	if inst == nil || len(list) == 0 || !IsClaudeCompatible(inst.Tool) {
+	if inst == nil || len(list) == 0 || !(IsClaudeCompatible(inst.Tool) || inst.Tool == "pi") {
 		return false
 	}
 	for _, v := range list {
@@ -369,7 +371,10 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		if mem, ok := l.Flag(id); ok && (!found || mem.Epoch > flag.Epoch || (mem.Epoch == flag.Epoch && mem.Last > flag.Last)) {
 			flag, found = mem, true
 		}
-		if (!found || (flag.Epoch == f.Epoch && flag.Last <= f.Judged)) && (f.NextDue == 0 || now.UnixMilli() < f.NextDue) {
+		// A deadline further out than any this pass sets is from a clock that has
+		// since stepped back: it is not waited for.
+		stepped := f.NextDue-now.UnixMilli() > commsNextDueHorizon.Milliseconds()
+		if (!found || (flag.Epoch == f.Epoch && flag.Last <= f.Judged)) && !stepped && (f.NextDue == 0 || now.UnixMilli() < f.NextDue) {
 			return
 		}
 	}
@@ -378,22 +383,35 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 	var carried []comms.Exported
 	capped := false
 	var judged events.Cursor
-	_, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
+	// A pi parent's doorbell is carried and bound to its nonce here, under the
+	// lock, and rung after the lock is released (ringPiWake).
+	var piWake *piWakePlan
+	budgetHold := false
+	// The budget is read outside the lock (it opens storage): the first run of
+	// the pass finds that a pi wake is warranted and stops short of carrying,
+	// the budget is evaluated, and a second run revalidates against the state
+	// as it is then and carries.
+	var budget *costs.BudgetResult
+	needBudget := false
+	pass := func(p comms.Pass) ([]events.Cursor, error) {
+		line, carried, piWake, needBudget, budgetHold = "", nil, nil, false, false
 		var acks []events.Cursor
 		f := p.File
 		f.Judged = p.Through
 		judged = p.Through
 		var wakeFailed []events.Cursor
 		f.Settle(func(in comms.Inflight) bool {
+			// A negative age (the clock stepped back) counts as stale: a backward
+			// step must never hold an attempt.
 			age := now.UnixMilli() - in.At
 			if in.Via == comms.ViaWake {
-				if age > commsWakeSettle.Milliseconds() {
+				if age > commsWakeSettle.Milliseconds() || age < 0 {
 					wakeFailed = append(wakeFailed, in.Cursor)
 					return true
 				}
 				return false
 			}
-			return in.State == comms.ReceiptAttempted && age > commsAttemptStale.Milliseconds()
+			return in.State == comms.ReceiptAttempted && (age > commsAttemptStale.Milliseconds() || age < 0)
 		})
 		f.NoteWakeFailed(wakeFailed)
 		news, skip := splitNews(p.Pending, id)
@@ -401,13 +419,22 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		// The inbox, which keeps every record, wakes for every turn; the
 		// ledger wakes only for urgent records the inbox never holds (a
 		// queued send's failure returned to its sender, the wake-cap note).
+		// A pi parent is also woken for an urgent child turn it has not
+		// been shown: the inbox doorbell rings only an idle parent, and pi
+		// has no Stop hook to hand a busy one the turn when its run ends.
 		var pending []comms.Exported
 		for _, e := range news {
-			if _, inflight := f.InflightFor(e.Cursor); !inflight && ledgerOnlyUrgent(e.Record) && f.WakeTriesFor(e.Cursor) < commsMaxWakeTries {
+			wakes := ledgerOnlyUrgent(e.Record) || (inst.Tool == "pi" && piUnshownUrgentTurn(f, e.Record))
+			if _, inflight := f.InflightFor(e.Cursor); !inflight && wakes && f.WakeTriesFor(e.Cursor) < commsMaxWakeTries {
 				pending = append(pending, e)
 			}
 		}
-		defer func() { f.NextDue = commsNextDue(f, pending) }()
+		defer func() {
+			f.NextDue = commsNextDue(f, pending)
+			if budgetHold {
+				f.NextDue = now.UnixMilli() + commsWakeDebounce.Milliseconds() // a spent budget is not re-read every poll
+			}
+		}()
 		if len(pending) == 0 {
 			return acks, nil
 		}
@@ -420,11 +447,36 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		if f.LastWake > 0 && now.UnixMilli()-f.LastWake < commsWakeDebounce.Milliseconds() {
 			return acks, nil
 		}
+		if wakeReserved(r.Dir, id, now) {
+			return acks, nil // an inbox doorbell is dispatched and not yet rung
+		}
 		var whole, preview []comms.Exported
 		line, whole, preview = comms.WakeLine(pending, names, comms.WakeLineBytes)
 		carried = append(append([]comms.Exported{}, whole...), preview...)
 		if len(carried) == 0 {
 			line = "" // a wake that carries no record is never typed
+			return acks, nil
+		}
+		if inst.Tool == "pi" {
+			// Do #1: the budget gate, then the attempt, its nonce and the
+			// debounce, all durable before any socket I/O.
+			if budget == nil {
+				line, carried, needBudget = "", nil, true
+				return acks, nil
+			}
+			if budget.Action == costs.BudgetActionStop {
+				PublishBudgetExceeded(profile, id, "socket", *budget)
+				line, carried, budgetHold = "", nil, true
+				return acks, nil
+			}
+			nonce := comms.NewID(now)
+			f.Carry(carried, comms.ViaWake, now.UnixMilli())
+			f.BindNonce(exportedCursors(carried), nonce)
+			f.MarkPreview(exportedCursors(preview))
+			f.LastWake = now.UnixMilli()
+			f.AutoWakes++
+			piWake = &piWakePlan{nonce: nonce, line: line, ids: exportedIDs(carried)}
+			line, carried = "", nil // the leg spools this wake's record
 			return acks, nil
 		}
 		if err := d.commsWakeSend(inst, profile, line); err != nil {
@@ -438,10 +490,20 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		f.LastWake = now.UnixMilli()
 		f.AutoWakes++
 		return acks, nil
-	})
-	if err != nil {
-		commsLog.Warn("comms_deliver_failed", slog.String("parent", id), slog.String("error", err.Error()))
-		return
+	}
+	for {
+		if _, err := r.Do(id, pass); err != nil {
+			commsLog.Warn("comms_deliver_failed", slog.String("parent", id), slog.String("error", err.Error()))
+			return
+		}
+		if !needBudget {
+			break
+		}
+		res := wakeBudgetCheck(profile, inst)
+		budget = &res
+	}
+	if piWake != nil {
+		d.ringPiWake(r, profile, inst, piWake)
 	}
 	l.RenewFlag(id, judged)
 	if line != "" {
@@ -465,6 +527,12 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 // queued send's failure returned to its sender, the wake-cap note).
 func ledgerOnlyUrgent(r comms.Record) bool {
 	return r.Kind != comms.KindTurn && r.Kind != comms.KindSend && r.IsUrgent()
+}
+
+// piUnshownUrgentTurn reports a child's urgent turn the parent has not been
+// shown, which the ledger wakes a pi parent for.
+func piUnshownUrgentTurn(f *comms.ConsumerFile, r comms.Record) bool {
+	return r.Kind == comms.KindTurn && r.IsUrgent() && !f.WasShown(r.Key)
 }
 
 // commsNextDue is the earliest time a pass could act without a new record:
@@ -520,15 +588,15 @@ func exportedIDs(es []comms.Exported) []string {
 // prompt the harness reported (a prompt-start spool edge) showed: the ids
 // a wake line typed. This is how a Codex parent's wake is confirmed. A
 // prompt of the parent's own resets its automatic wake count.
-func (d *TransitionDaemon) commsAckPrompt(l *comms.Ledger, inst *Instance, prompt string) {
+func (d *TransitionDaemon) commsAckPrompt(l *comms.Ledger, inst *Instance, prompt, nonce string) {
 	if !commsDeliversTo(inst.ID) {
 		return
 	}
 	// A parent with no prompt-time injection (Codex) only ever gets the
 	// wake line, so a preview it was shown is its delivery.
-	acceptPreview := !IsClaudeCompatible(inst.Tool)
+	acceptPreview := !IsClaudeCompatible(inst.Tool) && inst.Tool != "pi"
 	if _, err := l.Reader().Do(inst.ID, func(p comms.Pass) ([]events.Cursor, error) {
-		return ackShownInPrompt(p, prompt, acceptPreview), nil
+		return ackShownInPrompt(p, prompt, nonce, acceptPreview), nil
 	}); err != nil {
 		commsLog.Warn("comms_prompt_ack_failed", slog.String("parent", inst.ID), slog.String("error", err.Error()))
 	}
@@ -536,10 +604,12 @@ func (d *TransitionDaemon) commsAckPrompt(l *comms.Ledger, inst *Instance, promp
 
 // ackShownInPrompt returns the pending records a wake prompt named and
 // settles their wake attempts; a prompt of the parent's own resets the
-// automatic wake count.
-func ackShownInPrompt(p comms.Pass, prompt string, acceptPreview bool) []events.Cursor {
+// automatic wake count. A prompt that carries a doorbell's nonce (a pi run)
+// shows exactly the attempts bound to that nonce, whatever the line names, and
+// is never the parent's own.
+func ackShownInPrompt(p comms.Pass, prompt, nonce string, acceptPreview bool) []events.Cursor {
 	f := p.File
-	if !comms.IsWakePrompt(prompt) {
+	if nonce == "" && !comms.IsWakePrompt(prompt) {
 		f.AutoWakes, f.CapNoted = 0, false
 		return nil
 	}
@@ -551,7 +621,10 @@ func ackShownInPrompt(p comms.Pass, prompt string, acceptPreview bool) []events.
 	var acks []events.Cursor
 	for _, e := range p.Pending {
 		in, inflight := f.InflightFor(e.Cursor)
-		if inflight && in.Via == comms.ViaWake && in.ID == e.Record.ID && ids[comms.ShortID(e.Record.ID)] && (!in.Preview || acceptPreview) {
+		if !inflight || in.Via != comms.ViaWake || in.ID != e.Record.ID || (in.Preview && !acceptPreview) {
+			continue
+		}
+		if (nonce != "" && in.Nonce == nonce) || (nonce == "" && ids[comms.ShortID(e.Record.ID)]) {
 			acks = append(acks, e.Cursor)
 		}
 	}
@@ -577,6 +650,11 @@ type LedgerDelivery struct {
 	carried   []events.Cursor
 	shownKeys []string // turn keys shown by this delivery (either path)
 	onShown   func()
+	// Token is the delivery token of a pi injection: the hook prints it as the
+	// context's last line, the extension strips it and echoes it once it has
+	// really returned the context to pi, and only that receipt accepts the
+	// attempt. Empty for Claude, whose stdout Claude itself consumes.
+	Token string
 }
 
 // Done finishes the delivery: shown records become transport_accepted.
@@ -589,8 +667,10 @@ func (dl *LedgerDelivery) Done(printed bool) {
 		return
 	}
 	if _, err := dl.r.Do(dl.id, func(p comms.Pass) ([]events.Cursor, error) {
-		p.File.Accept(dl.carried)
-		p.File.NoteShown(dl.shownKeys...)
+		if dl.Token == "" {
+			p.File.Accept(dl.carried) // a pi injection waits for its receipt
+			p.File.NoteShown(dl.shownKeys...)
+		}
 		return nil, nil
 	}); err != nil {
 		commsLog.Warn("comms_delivery_accept_failed", slog.String("parent", dl.id), slog.String("error", err.Error()))
@@ -646,12 +726,48 @@ func commsNames(profile string) comms.Names {
 // settleTurnAttempts acknowledges the prompt and Stop attempts whose
 // records were printed (the turn that carried them ran) and returns the
 // ones never printed to pending.
-func settleTurnAttempts(f *comms.ConsumerFile) []events.Cursor {
+func settleTurnAttempts(f *comms.ConsumerFile, now int64) []events.Cursor {
 	acks := f.Settle(func(in comms.Inflight) bool {
 		return in.Via != comms.ViaWake && in.State == comms.ReceiptTransportAccepted
 	})
-	f.Settle(func(in comms.Inflight) bool { return in.Via != comms.ViaWake && in.State == comms.ReceiptAttempted })
+	f.Settle(func(in comms.Inflight) bool {
+		return in.Via != comms.ViaWake && in.State == comms.ReceiptAttempted && !inReceiptWindow(in, now)
+	})
 	return acks
+}
+
+// commsNextDueHorizon is the furthest ahead any pass sets a deadline.
+const commsNextDueHorizon = 2 * commsAttemptStale
+
+// commsReceiptWindow is how long a pi injection waits for its receipt before it
+// counts as dropped and its records ride the next run start again.
+const commsReceiptWindow = 30 * time.Second
+
+// inReceiptWindow reports a token-bound injection whose receipt may still be on
+// its way (the extension echoes it on its next turn_start, and the daemon
+// ingests that a poll later): it is neither re-injected nor dropped yet.
+func inReceiptWindow(in comms.Inflight, now int64) bool {
+	age := now - in.At
+	return in.Via == comms.ViaPrompt && in.Token != "" && in.State == comms.ReceiptAttempted &&
+		age >= 0 && age < commsReceiptWindow.Milliseconds()
+}
+
+// AcceptPriorInjection applies the receipt a pi run start carries for the run
+// before it (prior_injected_token), so the attempt is accepted without waiting
+// for the daemon to ingest the spooled one. A token no attempt carries changes
+// nothing.
+func AcceptPriorInjection(id, token string) {
+	if strings.TrimSpace(token) == "" {
+		return
+	}
+	r, _, ok := openLedgerFor(id)
+	if !ok {
+		return
+	}
+	defer func() { _ = r.Close() }()
+	if err := finalizeInjection(r, id, token); err != nil {
+		commsLog.Warn("comms_prior_receipt_failed", slog.String("parent", id), slog.String("error", err.Error()))
+	}
 }
 
 // selectContext picks pending records for injection: urgent first, then
@@ -716,7 +832,7 @@ func drainScope(en CommsEnrollment) (inScope func(comms.Record) bool, draining, 
 
 // LedgerPromptContext is the prompt hook of a parent with a ledger
 // marker. It acknowledges the records the prompt showed (a wake line names
-// them) and the records injected into the previous turn, and returns the
+// them, or the doorbell nonce a pi run carries) and the records injected into the previous turn, and returns the
 // rest as context, followed by the inbox drain within one shared budget.
 // Exact turn keys suppress duplicates: a transcript turn in both directions,
 // a pi run only when the ledger showed it first (inboxShownKey).
@@ -724,7 +840,7 @@ func drainScope(en CommsEnrollment) (inScope func(comms.Record) bool, draining, 
 // owed it; once that is delivered its marker is removed. ok is false when
 // the inbox path alone applies (no marker, or the ledger cannot be read:
 // nothing is consumed then and the caller drains the inbox as before).
-func LedgerPromptContext(id, prompt string) (*LedgerDelivery, bool) {
+func LedgerPromptContext(id, prompt, nonce string) (*LedgerDelivery, bool) {
 	r, en, ok := openLedgerFor(id)
 	if !ok {
 		return nil, false
@@ -735,10 +851,11 @@ func LedgerPromptContext(id, prompt string) (*LedgerDelivery, bool) {
 	var shownBefore []string
 	now := commsNow().UnixMilli()
 	finished := false
+	isPi := en.Tool == "pi"
 	_, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
 		f := p.File
-		acks := settleTurnAttempts(f)
-		acks = append(acks, ackShownInPrompt(p, prompt, false)...)
+		acks := settleTurnAttempts(f, now)
+		acks = append(acks, ackShownInPrompt(p, prompt, nonce, false)...)
 		news, skip := splitNews(p.Pending, id)
 		acks = append(acks, skip...)
 		done := map[events.Cursor]bool{}
@@ -755,6 +872,9 @@ func LedgerPromptContext(id, prompt string) (*LedgerDelivery, bool) {
 				acks, done[e.Cursor] = append(acks, e.Cursor), true
 				continue
 			}
+			if in, inflight := f.InflightFor(e.Cursor); inflight && inReceiptWindow(in, now) {
+				continue // injected a moment ago; its receipt may still arrive
+			}
 			rest = append(rest, e)
 		}
 		shownBefore = append([]string(nil), f.Shown...)
@@ -767,6 +887,10 @@ func LedgerPromptContext(id, prompt string) (*LedgerDelivery, bool) {
 		take := selectContext(rest, names, commsLedgerContextBudget)
 		f.Carry(take, comms.ViaPrompt, now)
 		dl.carried = exportedCursors(take)
+		if en.Tool == "pi" {
+			dl.Token = comms.NewID(commsNow())
+			f.BindToken(dl.carried, dl.Token)
+		}
 		for _, e := range take {
 			if e.Record.Kind == comms.KindTurn {
 				dl.shownKeys = append(dl.shownKeys, e.Record.Key)
@@ -789,7 +913,14 @@ func LedgerPromptContext(id, prompt string) (*LedgerDelivery, bool) {
 	// left of the one context budget; a turn the ledger showed (now or
 	// before, matched by its exact identity) is retired unshown.
 	shown := commsShownMatcher(append(shownBefore, dl.shownKeys...))
-	drained, evs, derr := drainForPrompt(id, max(commsContextBudget-len(dl.Text), 1000), shown)
+	var held func(TransitionNotificationEvent) bool
+	if isPi {
+		// A pi injection is not shown until its receipt: the inbox copies of the
+		// turns it carries stay queued (neither printed twice nor retired), and
+		// only the turns shown before count as shown.
+		shown, held = commsShownMatcher(shownBefore), commsShownMatcher(dl.shownKeys)
+	}
+	drained, evs, derr := drainForPrompt(id, max(commsContextBudget-len(dl.Text), 1000), shown, held, isPi)
 	if derr == nil && drained != "" {
 		if dl.Text != "" {
 			dl.Text += "\n"
@@ -798,6 +929,24 @@ func LedgerPromptContext(id, prompt string) (*LedgerDelivery, bool) {
 	}
 	for _, ev := range evs {
 		dl.shownKeys = append(dl.shownKeys, inboxShownKey(ev))
+	}
+	if isPi && (dl.Token != "" || len(evs) > 0) {
+		// The inbox records this injection printed were peeked, not drained: they
+		// stay in the inbox, so every drain sees them, until the receipt names
+		// them. The token, the turn keys and the inbox ids are recorded together.
+		if dl.Token == "" {
+			dl.Token = comms.NewID(commsNow())
+		}
+		fps := make([]string, 0, len(evs))
+		for _, ev := range evs {
+			fps = append(fps, turnFingerprintOf(ev))
+		}
+		if _, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
+			p.File.RecordInjection(dl.Token, now, dl.shownKeys, fps)
+			return nil, nil
+		}); err != nil {
+			commsLog.Warn("comms_injection_record_failed", slog.String("parent", id), slog.String("error", err.Error()))
+		}
 	}
 	return dl, true
 }
@@ -819,6 +968,47 @@ func inboxShownKey(ev TransitionNotificationEvent) string {
 // run's inbox record to it.
 func piRunTurnKey(childID, signal string) string {
 	return comms.Key(comms.KindTurn, childID, "pi", signal)
+}
+
+// finalizeInjection applies a pi injection's receipt: the attempt is accepted,
+// the turn keys the token recorded become shown (even with no attempt in flight,
+// as for an inbox-only injection), and the inbox records it peeked are consumed
+// by id in one drain. Delivery is at least once: a crash between the receipt and
+// the drain shows a record again, carrying its id. A repeated receipt finds
+// nothing recorded.
+func finalizeInjection(r *comms.Reader, id, token string) error {
+	var fps []string
+	if _, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
+		p.File.AcceptToken(token)
+		in, _ := p.File.TakeInjection(token)
+		fps = in.Inbox
+		return nil, nil
+	}); err != nil {
+		return err
+	}
+	if len(fps) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(fps))
+	for _, fp := range fps {
+		want[fp] = true
+	}
+	drained, err := DrainInboxForParentWhere(id, func(pending []TransitionNotificationEvent) []TransitionNotificationEvent {
+		var take []TransitionNotificationEvent
+		for _, ev := range pending {
+			if want[turnFingerprintOf(ev)] {
+				take = append(take, ev)
+			}
+		}
+		return take
+	})
+	if len(drained) > 0 {
+		_ = BumpInboxStats(id, func(s *InboxStats) {
+			s.Drains++
+			s.RecordsDelivered += int64(len(drained))
+		})
+	}
+	return err
 }
 
 // inboxTurnKey is the ledger key of the turn an inbox record carries: the
@@ -872,7 +1062,7 @@ func LedgerStopDecision(id string, stopHookActive bool) (*LedgerDelivery, bool) 
 	var shownBefore []string
 	_, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
 		f := p.File
-		acks := settleTurnAttempts(f)
+		acks := settleTurnAttempts(f, now)
 		news, skip := splitNews(p.Pending, id)
 		acks = append(acks, skip...)
 		done := map[events.Cursor]bool{}
