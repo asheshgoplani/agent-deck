@@ -1,6 +1,7 @@
 package termreply
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -495,5 +496,57 @@ func TestFilterCrossChunkSplitAfterEscWhenArmed_StillSuppressed(t *testing.T) {
 
 	got = f.Consume([]byte("]11;rgb:d3d3/f5f5/f5f5\x07after"), true, false)
 	require.Equal(t, []byte("after"), got)
+	require.False(t, f.Active())
+}
+
+// With Option-as-Meta (Terminal.app default profile, iTerm2 "Esc+"), Alt plus
+// an escape-string introducer key sends exactly ESC+introducer: Alt+Shift+-
+// (the em-dash chord) is ESC _ (APC), Alt+Shift+P is ESC P (DCS), Alt+] is
+// ESC ]. Treating that as the start of a reply put the filter into discard
+// mode until a BEL or ST that typing never produces, so every later key,
+// Ctrl+Q included, was swallowed and the attach looked frozen.
+func TestFilterPassesAltEscapeStringIntroducerKeystrokeWhenNotArmed(t *testing.T) {
+	for _, introducer := range []byte{'_', 'P', ']', '^', 'X'} {
+		for _, forwardColor := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%c/forward_color=%t", introducer, forwardColor), func(t *testing.T) {
+				f := Filter{ForwardColorReplies: forwardColor, KeyAtReadEnd: true}
+
+				got := f.Consume([]byte{0x1b, introducer}, false, false)
+				require.Equal(t, []byte{0x1b, introducer}, got)
+				require.False(t, f.Active())
+
+				got = f.Consume([]byte("a\x11"), false, false)
+				require.Equal(t, []byte("a\x11"), got, "keys after the chord must not be swallowed")
+			})
+		}
+	}
+}
+
+// Within the quarantine window a reply split right after its introducer is
+// still discarded across reads.
+func TestFilterStillDiscardsSplitEscapeStringIntroducerWhenArmed(t *testing.T) {
+	f := Filter{KeyAtReadEnd: true}
+
+	got := f.Consume([]byte("\x1bP"), true, false)
+	require.Empty(t, got)
+	require.True(t, f.Active())
+
+	got = f.Consume([]byte(">|iTerm2 3.6.10\x1b\\k"), true, false)
+	require.Equal(t, []byte("k"), got)
+	require.False(t, f.Active())
+}
+
+// A byte-at-a-time reader (the dashboard's SessionInputRouter) hands the
+// filter ESC+introducer as a whole chunk for every reply, so without
+// KeyAtReadEnd the introducer still starts a discarded reply.
+func TestFilterDiscardsEscapeStringIntroducerAtReadEndByDefault(t *testing.T) {
+	var f Filter
+
+	got := f.Consume([]byte("\x1bP"), false, false)
+	require.Empty(t, got)
+	require.True(t, f.Active())
+
+	got = f.Consume([]byte(">|iTerm2 3.6.10\x1b\\k"), false, false)
+	require.Equal(t, []byte("k"), got)
 	require.False(t, f.Active())
 }

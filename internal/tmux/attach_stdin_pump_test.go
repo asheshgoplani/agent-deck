@@ -153,6 +153,41 @@ func TestAttachStdinPump_ForwardsInputAndInterceptsDetach(t *testing.T) {
 	}
 }
 
+// TestAttachStdinPump_AltEscapeStringIntroducerDoesNotFreezeInput pins the
+// em-dash freeze: with Option-as-Meta (Terminal.app, iTerm2 "Esc+"),
+// Alt+Shift+- sends ESC _, the APC introducer. The reply filter took it for a
+// terminal reply and discarded everything after it waiting for a terminator,
+// Ctrl+Q included, so the attach could only be escaped by closing the tab.
+func TestAttachStdinPump_AltEscapeStringIntroducerDoesNotFreezeInput(t *testing.T) {
+	pump, w, out := newTestPump(t, AttachOptions{DetachByte: 17})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte("\x1b_")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// A separate keystroke: let the pump read the chord on its own.
+	time.Sleep(AttachStdinPollInterval)
+	if _, err := w.Write([]byte("a\x11")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case res := <-done:
+		if !res.interrupted {
+			t.Error("interrupted = false on the detach key, want true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pump did not exit on the detach key after ESC _")
+	}
+
+	if got, want := out.String(), "\x1b_a"; got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
 // TestAttachStdinPump_SwallowsStaleDAReplyDuringQuarantine reproduces #2356:
 // switching sessions (Windows Terminal, v1.16.16) leaked literal DA1/DA2
 // device-attributes reply text into the new session's prompt. The reply the

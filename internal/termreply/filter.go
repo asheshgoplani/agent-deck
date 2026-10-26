@@ -60,6 +60,15 @@ type Filter struct {
 	// every reply, and answers its panes' OSC 11 queries from them.
 	ForwardColorReplies bool
 
+	// KeyAtReadEnd treats ESC plus an escape-string introducer that ends a
+	// chunk, outside the quarantine, as an Option-as-Meta keystroke rather
+	// than the start of a reply (Alt+Shift+- is ESC _). Set it only when each
+	// chunk is one read of everything the tty had ready, as in the attach
+	// stdin pump: a reply is written in one piece and carries its payload.
+	// A byte-at-a-time reader must leave it off, since there every reply's
+	// introducer ends a chunk.
+	KeyAtReadEnd bool
+
 	mode                filterMode
 	pendingEsc          bool
 	escapeSeenInDiscard bool
@@ -232,7 +241,7 @@ func (f *Filter) discardRestOfEscapeString(lastByte byte) {
 func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 	out := make([]byte, 0, len(src))
 
-	for _, b := range src {
+	for i, b := range src {
 		switch f.mode {
 		case filterModeDiscardEscapeString:
 			if f.escapeSeenInDiscard {
@@ -327,6 +336,12 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 		if f.pendingEsc {
 			f.pendingEsc = false
 			switch {
+			case f.KeyAtReadEnd && isEscapeStringIntroducer(b) && !armed && !final && i == len(src)-1:
+				// Entering discard mode for a keystroke would swallow every
+				// later key, the detach key included, waiting for a
+				// terminator that typing never produces. See KeyAtReadEnd.
+				out = append(out, escapeByte, b)
+				continue
 			case b == operatingSystemCommandByte && f.ForwardColorReplies:
 				f.beginSequence(filterModeCollectColorReply, escapeByte, operatingSystemCommandByte)
 				continue

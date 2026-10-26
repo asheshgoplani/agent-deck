@@ -298,7 +298,7 @@ func tmuxParsesColorReplies(ver string) bool {
 // cancellation.
 func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 	buf := make([]byte, 32)
-	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies}
+	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies, KeyAtReadEnd: true}
 	fd := int(p.in.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
 
 	reportErr := func(err error) {
