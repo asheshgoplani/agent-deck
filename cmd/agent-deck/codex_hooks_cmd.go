@@ -230,6 +230,7 @@ func handleCodexNotify() {
 
 	writeCodexHookStatusDone(instanceID, status, sessionID, event, turnID, codexNotifyDoneSignal(event, data))
 	spoolCommsFromCodexNotify(instanceID, sessionID, turnID, event, data)
+	spoolTraceFromCodexNotify(instanceID, event, sessionID, turnID)
 }
 
 // logCodexNotifyDropped records why a notify payload never reached the hook

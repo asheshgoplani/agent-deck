@@ -385,6 +385,13 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 		logBgWorkerHookDropOnce(instanceID, bgSessionID, payload.HookEventName)
 		return
 	}
+	// Agent activity tracing (ASK-129): one redacted spool line, no SQLite,
+	// errors ignored; a no-op unless [trace] level / AGENTDECK_TRACE is on.
+	// Before the PreToolUse sync gate: tracing records every tool edge it is
+	// given, the gate only protects the status file's ordering. After the
+	// background-worker drop (#2683): those hooks belong to no pane, so a
+	// trace span keyed on this instance would misattribute them too.
+	spoolTraceFromHook(instanceID, data, receivedAt)
 	if payload.HookEventName == "PreToolUse" && os.Getenv(session.PreToolHookSyncMarkerEnv) != "1" {
 		// An old async hook can first be scheduled after a newer Stop or
 		// permission event. No payload timestamp can recover that order.

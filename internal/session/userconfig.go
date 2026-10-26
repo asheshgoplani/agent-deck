@@ -139,6 +139,10 @@ type UserConfig struct {
 	// (docs/comms.md). Off by default while the ledger is canaried.
 	Comms CommsSettings `toml:"comms,omitempty"`
 
+	// Trace is the [trace] section: agent activity tracing (ASK-129,
+	// internal/trace). Off by default; AGENTDECK_TRACE overrides it.
+	Trace TraceSettings `toml:"trace,omitempty"`
+
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps,omitempty"`
@@ -348,6 +352,24 @@ type UserConfig struct {
 	// Harnesses overrides the core install/login table per harness
 	// ([harnesses.<name>] binary, install_command, login_command, docs_url).
 	Harnesses map[string]harness.Override `toml:"harnesses,omitempty"`
+}
+
+// TraceSettings is the [trace] section.
+type TraceSettings struct {
+	// Level is off (default), metadata (ids, tool names, timings, status)
+	// or summaries (adds a short scrubbed shape summary per tool call).
+	Level string `toml:"level,omitempty"`
+}
+
+// TraceLevelSetting returns the configured [trace] level string ("" when
+// unset or the config is unreadable). The env override is applied by the
+// caller (trace.ResolveLevel).
+func TraceLevelSetting() string {
+	cfg, _ := LoadUserConfig()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Trace.Level
 }
 
 // CommsSettings is the [comms] section.

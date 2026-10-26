@@ -62,6 +62,7 @@ var cliFeatures = map[string]cliFeature{
 	"wt":              {sub: map[string]telemetry.Feature{"create": "worktree_create", "finish": "worktree_finish"}},
 	"costs":           {feature: "costs"},
 	"events":          {feature: "events"},
+	"trace":           {},
 	"recall":          {feature: "recall_search", sub: map[string]telemetry.Feature{"timeline": "recall_timeline"}},
 	"usage":           {feature: "usage"},
 	"config":          {feature: "config_edit"},
