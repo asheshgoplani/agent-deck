@@ -257,6 +257,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		mru:                       session.NewMRUHistory(session.DefaultMRUCapacity),
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
+	h.newDialog.titleTaken = h.newSessionTitleTaken
 
 	h.reloadHotkeysFromConfig()
 

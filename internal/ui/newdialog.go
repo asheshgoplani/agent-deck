@@ -203,6 +203,10 @@ type NewDialog struct {
 	branchAutoSet   bool   // true if branch was auto-derived from session name.
 	branchPrefix    string // configured prefix for auto-generated branch names.
 	branchPicker    *BranchPickerDialog
+	// titleTaken reports whether a session title is already used, by an
+	// existing session or one still being created. Home sets it; the derived
+	// name (preview and create) skips taken titles (#2913).
+	titleTaken func(string) bool
 	// Docker sandbox support.
 	sandboxEnabled    bool
 	inheritedExpanded bool             // whether the inherited settings section is expanded.
@@ -668,6 +672,11 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		}
 	}
 	d.branchInput.Placeholder = d.branchPrefix + "branch-name"
+	// A worktree on by default with an empty name takes its branch from the
+	// derived name, as a toggled one does (#2913).
+	if d.worktreeEnabled && d.branchAutoSet {
+		d.autoBranchFromName()
+	}
 	d.rebuildFocusTargets()
 }
 
@@ -1182,6 +1191,20 @@ func (d *NewDialog) Hide() {
 	}
 }
 
+// ReturnToPath shows the dialog again after a local create was turned back
+// before it started (Cancel on "Directory Not Found"), keeping what was
+// entered and putting focus on the Path row so a mistyped path can be fixed
+// (#2913). name is the Name value to restore: a derived name is not kept, so
+// it follows the corrected path.
+func (d *NewDialog) ReturnToPath(name string) {
+	d.nameInput.SetValue(name)
+	d.visible = true
+	if idx := d.indexOf(focusPath); idx >= 0 {
+		d.focusIndex = idx
+		d.updateFocus()
+	}
+}
+
 // IsVisible returns whether the dialog is visible
 func (d *NewDialog) IsVisible() bool {
 	return d.visible
@@ -1260,6 +1283,11 @@ func (d *NewDialog) IsWorktreeExplicit() bool {
 // name field is non-empty and the branch hasn't been manually edited.
 func (d *NewDialog) autoBranchFromName() {
 	name := strings.TrimSpace(d.nameInput.Value())
+	if name == "" && !d.createsOffMachine() {
+		// An empty local name becomes the derived name on submit, so the
+		// branch follows that name (#2913).
+		name = d.DerivedName()
+	}
 	if name == "" {
 		return
 	}
@@ -1843,19 +1871,63 @@ func (d *NewDialog) validate() (string, focusTarget) {
 	return "", focusName // Valid
 }
 
-// folderName is the session name an empty local Name field gets on submit:
-// the folder's base name (the first path in multi-repo mode), or "" when the
-// path has none.
-func (d *NewDialog) folderName() string {
-	path := d.pathInput.Value()
-	if d.multiRepoEnabled && len(d.multiRepoPaths) > 0 {
-		path = d.multiRepoPaths[0]
+// DerivedName is the session name an empty local Name field gets on submit,
+// and the name the empty field previews: the base name of the folder (the
+// first path in multi-repo mode) after ~, $VARS and a relative path are
+// resolved the way the create resolves them, cut to MaxNameLength and made
+// unique against titleTaken (#2913). It is "" when the folder has no usable
+// base name (the create then generates one).
+func (d *NewDialog) DerivedName() string {
+	_, path, _ := d.GetValues()
+	if paths, ok := d.GetMultiRepoPaths(); ok {
+		path = ""
+		if len(paths) > 0 {
+			path = paths[0]
+		}
 	}
-	base := filepath.Base(strings.Trim(strings.TrimSpace(path), "'\""))
+	if path == "" {
+		return ""
+	}
+	if abs, err := absLocalProjectPath(path); err == nil {
+		path = abs
+	}
+	base := filepath.Base(path)
 	if base == "" || base == "." || base == "/" {
 		return ""
 	}
+	return uniqueTitleWithin(base, MaxNameLength, d.titleTaken)
+}
+
+// uniqueTitleWithin returns base, or base with the first free "-N" suffix,
+// cut so the result is at most max bytes (the limit the Name field checks).
+func uniqueTitleWithin(base string, max int, taken func(string) bool) string {
+	base = cutToBytes(base, max)
+	if taken == nil || !taken(base) {
+		return base
+	}
+	for i := 2; i < 1000; i++ {
+		suffix := fmt.Sprintf("-%d", i)
+		candidate := cutToBytes(base, max-len(suffix)) + suffix
+		if !taken(candidate) {
+			return candidate
+		}
+	}
 	return base
+}
+
+// cutToBytes shortens s to at most n bytes without splitting a rune.
+func cutToBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := 0
+	for i := range s {
+		if i > n {
+			break
+		}
+		cut = i // rune start; s[:i] has i <= n bytes
+	}
+	return s[:cut]
 }
 
 // SetError sets an inline validation error displayed inside the dialog
@@ -2832,6 +2904,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		oldValue := d.pathInput.Value()
 		d.pathInput, cmd = d.pathInput.Update(msg)
 		if d.pathInput.Value() != oldValue {
+			// A branch derived from an empty name follows the folder (#2913).
+			if d.worktreeEnabled && d.branchAutoSet && strings.TrimSpace(d.nameInput.Value()) == "" {
+				d.autoBranchFromName()
+			}
 			d.suggestionNavigated = false
 			d.suggestionsActive = false
 			d.suggestionsHidden = false // typing re-opens the dropdown
@@ -3264,8 +3340,10 @@ func (d *NewDialog) View() string {
 	// ASK-110: an empty local name is taken from the folder on submit; show
 	// that name so Enter is not a guess.
 	d.nameInput.Placeholder = "session-name"
-	if base := d.folderName(); base != "" && !d.createsOffMachine() {
-		d.nameInput.Placeholder = base
+	if !d.createsOffMachine() {
+		if derived := d.DerivedName(); derived != "" {
+			d.nameInput.Placeholder = derived
+		}
 	}
 	content.WriteString(d.nameInput.View())
 	content.WriteString("\n\n")

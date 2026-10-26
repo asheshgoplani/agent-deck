@@ -40,6 +40,10 @@ type sessionCreatedMsg struct {
 	err          error
 	tempID       string // matches creatingSessions key for placeholder removal
 	setupWarning string // non-fatal worktree setup-script failure, shown after a successful create
+	// reservedTitle is the title the New Session dialog held for this create
+	// so a second quick create derives a different name (#2913); released
+	// when this message arrives, on success or error.
+	reservedTitle string
 }
 
 type sessionForkedMsg struct {

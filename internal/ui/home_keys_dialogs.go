@@ -166,20 +166,6 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
-		// ASK-110: an empty name is taken from the folder (the one the name
-		// field previews), made unique like the zoxide flow. Written back to
-		// the field so a create-directory confirmation shows the same name.
-		if name == "" {
-			base := path
-			if multiRepoEnabled && len(multiRepoPaths) > 0 {
-				base = multiRepoPaths[0]
-			}
-			h.instancesMu.RLock()
-			name = ensureUniqueSessionTitle(deriveSessionNameFromPath(base), h.instances)
-			h.instancesMu.RUnlock()
-			h.newDialog.nameInput.SetValue(name)
-		}
-
 		// Remember the submitted tool so the next new-session dialog preselects
 		// it (UX top-3 #2). Best-effort: persisted in the profile StateDB, never
 		// config.toml. An explicit [default_tool] still wins on the next open.
@@ -210,6 +196,22 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				worktreePath = wtPath
 				worktreeRepoRoot = repoRoot
 			}
+		}
+
+		// ASK-110: an empty name is taken from the folder, the name the field
+		// previews (#2913: same resolution, uniqueness and length limit).
+		// Derived only once nothing below can refuse the submit, so a refused
+		// one leaves the field empty and the name follows a corrected path.
+		// Written back to the field so the create shows the name it used.
+		typedName := name
+		if name == "" {
+			name = h.newDialog.DerivedName()
+			if name == "" {
+				h.instancesMu.RLock()
+				name = ensureUniqueSessionTitle(deriveSessionNameFromPath(""), h.instances)
+				h.instancesMu.RUnlock()
+			}
+			h.newDialog.nameInput.SetValue(name)
 		}
 
 		// Build generic toolOptionsJSON from tool-specific options
@@ -253,6 +255,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
 				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, claudeAccount, launchModelID, parentSessionID, parentProjectPath)
+				h.createDirName, h.createDirFromForm = typedName, true
 				return h, nil
 			}
 		}
@@ -292,7 +295,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		return h, h.createSessionInGroupWithWorktreeAndOptions(
+		return h, h.reserveTitle(name, h.createSessionInGroupWithWorktreeAndOptions(
 			name,
 			path,
 			"",
@@ -314,7 +317,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			parentProjectPath,
 			tempID,
 			false, // not auto-named — user went through the full create dialog
-		)
+		))
 
 	case msg.String() == "esc":
 		// #1162: when the model picker dropdown is open, Esc dismisses only the
@@ -468,12 +471,10 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if h.confirmDialog.GetFocusedButton() == 0 {
 				return h, h.confirmCreateDirectory()
 			}
-			h.pendingRemoteCreate = nil
-			h.confirmDialog.Hide()
+			h.cancelCreateDirectory()
 			return h, nil
 		case "n", "N", "esc":
-			h.pendingRemoteCreate = nil
-			h.confirmDialog.Hide()
+			h.cancelCreateDirectory()
 			return h, nil
 		}
 		return h, nil
@@ -713,8 +714,70 @@ func (h *Home) confirmAction() tea.Cmd {
 	return nil
 }
 
+// cancelCreateDirectory handles the "no" action for ConfirmCreateDirectory.
+// A missing path from the New Session dialog is most often a typo, so the
+// dialog comes back with what was entered and focus on Path instead of the
+// whole form being lost (#2913). A remote create closes as before.
+func (h *Home) cancelCreateDirectory() {
+	fromForm := h.createDirFromForm && h.pendingRemoteCreate == nil
+	name := h.createDirName
+	h.pendingRemoteCreate = nil
+	h.createDirName, h.createDirFromForm = "", false
+	h.confirmDialog.Hide()
+	if fromForm {
+		h.newDialog.ReturnToPath(name)
+	}
+}
+
+// newSessionTitleTaken reports whether title is used by an existing session
+// or by a dialog create still in flight (#2913).
+func (h *Home) newSessionTitleTaken(title string) bool {
+	if h.reservedTitles[title] > 0 {
+		return true
+	}
+	h.instancesMu.RLock()
+	defer h.instancesMu.RUnlock()
+	for _, inst := range h.instances {
+		if inst.Title == title {
+			return true
+		}
+	}
+	return false
+}
+
+// reserveTitle holds title until create's sessionCreatedMsg arrives, so the
+// next derived name skips it (#2913).
+func (h *Home) reserveTitle(title string, create tea.Cmd) tea.Cmd {
+	if title == "" || create == nil {
+		return create
+	}
+	if h.reservedTitles == nil {
+		h.reservedTitles = make(map[string]int)
+	}
+	h.reservedTitles[title]++
+	return func() tea.Msg {
+		msg := create()
+		if created, ok := msg.(sessionCreatedMsg); ok {
+			created.reservedTitle = title
+			return created
+		}
+		return msg
+	}
+}
+
+// releaseTitle drops one reservation made by reserveTitle.
+func (h *Home) releaseTitle(title string) {
+	if title == "" || h.reservedTitles[title] == 0 {
+		return
+	}
+	if h.reservedTitles[title]--; h.reservedTitles[title] == 0 {
+		delete(h.reservedTitles, title)
+	}
+}
+
 // confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
 func (h *Home) confirmCreateDirectory() tea.Cmd {
+	h.createDirName, h.createDirFromForm = "", false
 	if pending := h.pendingRemoteCreate; pending != nil {
 		h.pendingRemoteCreate = nil
 		h.confirmDialog.Hide()
@@ -732,7 +795,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		h.setError(fmt.Errorf("failed to create directory: %w", err))
 		return nil
 	}
-	return h.createSessionInGroupWithWorktreeAndOptions(
+	return h.reserveTitle(name, h.createSessionInGroupWithWorktreeAndOptions(
 		name,
 		path,
 		"",
@@ -754,7 +817,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		parentProjectPath,
 		"",    // no placeholder — non-worktree sessions are fast
 		false, // not auto-named
-	)
+	))
 }
 
 // logUsageFeedResults logs what the accounts usage feed heal changed.
