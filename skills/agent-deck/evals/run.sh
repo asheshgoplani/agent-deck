@@ -2,25 +2,28 @@
 # Run every deterministic eval of the agent-deck skill. No model calls, no network,
 # nothing written outside a temp dir; safe on a host.
 #
-#   skills/agent-deck/evals/run.sh [--binary PATH] [--answers FILE] [--log-dir DIR]
+#   skills/agent-deck/evals/run.sh [--binary PATH] [--answers FILE] [--log-dir DIR] [--flows]
 #
 #   --binary PATH   agent-deck binary for the CLI drift check. Default: build this
 #                   checkout into a temp dir when `go` is on PATH, else skip that check.
 #   --answers FILE  also grade model answers (see RUNNER.md) with check.py grade.
 #   --log-dir DIR   one log per step (default: a new temp dir, printed at the end).
+#   --flows         also run the agent-flow evals (flows.sh): real tmux on a private
+#                   socket and a fake Claude; ~1 min. Needs tmux and a built binary.
 #
 # Exit 0 only when every step passed.
 set -u
 EVALS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="$(dirname "$EVALS_DIR")"
 REPO_DIR="$(cd "$SKILL_DIR/../.." && pwd)"
-BINARY="" ANSWERS="" LOG_DIR=""
+BINARY="" ANSWERS="" LOG_DIR="" FLOWS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --binary) BINARY="$2"; shift 2 ;;
         --answers) ANSWERS="$2"; shift 2 ;;
         --log-dir) LOG_DIR="$2"; shift 2 ;;
-        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+        --flows) FLOWS=1; shift ;;
+        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -65,6 +68,7 @@ step launch-subagent bash tests/test_launch_subagent.sh
 step retro         python3 -I -m unittest discover -s scripts/retro -p 'test_*.py'
 step repro         python3 -I -m unittest discover -s scripts/repro -p 'test_*.py'
 step goal          bash -c 'cd scripts/goal && python3 -m unittest discover -s tests'
+[ -n "$FLOWS" ] && step flows bash evals/flows.sh "${BIN_ARGS[@]}" --log-dir "$LOG_DIR/flows"
 [ -n "$ANSWERS" ] && step grade python3 -I evals/check.py grade "$ANSWERS"
 
 fails=0
