@@ -263,6 +263,33 @@ func TestAttachStdinPump_AltEscapeStringIntroducerEndingAFullRead(t *testing.T) 
 	}
 }
 
+// Keys queued right behind a chord that ends a full read are held with it,
+// not discarded as reply payload, so a Ctrl+Q among them still detaches.
+func TestAttachStdinPump_AltEscapeStringIntroducerWithKeysQueuedBehindIt(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+	out := &syncBuffer{}
+	pump.out = out
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte(fullReadPrefix + "\x1b_a\x11")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case res := <-done:
+		if !res.interrupted {
+			t.Error("interrupted = false on the detach key, want true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pump did not exit on the detach key queued behind ESC _; forwarded %q", out.String())
+	}
+	if got, want := out.String(), fullReadPrefix+"\x1b_a"; got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
 // TestAttachStdinPump_SwallowsStaleDAReplyDuringQuarantine reproduces #2356:
 // switching sessions (Windows Terminal, v1.16.16) leaked literal DA1/DA2
 // device-attributes reply text into the new session's prompt. The reply the

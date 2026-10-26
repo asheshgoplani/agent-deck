@@ -37,6 +37,10 @@ const (
 	csiFinalCursorPositionByte   = 'R' // DSR cursor position reply
 
 	colorReplyMaxLen = 64 // tmux reads a color reply with a 127+ byte payload as keys
+
+	// heldInputMaxLen bounds the bytes held for KeysOnIdle. Terminal replies
+	// are far shorter; anything longer is typing and is released as input.
+	heldInputMaxLen = 4096
 )
 
 var colorReplyPrefixes = [...]string{"\x1b]10;", "\x1b]11;"}
@@ -60,19 +64,25 @@ type Filter struct {
 	// every reply, and answers its panes' OSC 11 queries from them.
 	ForwardColorReplies bool
 
-	// KeyAtReadEnd treats ESC plus an escape-string introducer that ends a
-	// chunk, outside the quarantine, as an Option-as-Meta keystroke rather
-	// than the start of a reply (Alt+Shift+- is ESC _). Set it before each
-	// Consume, and only when the chunk is one read that left nothing else
-	// ready on the tty, as the attach stdin pump does: a reply is written in
-	// one piece and carries its payload. A byte-at-a-time reader must leave
-	// it off, since there every reply's introducer ends a chunk.
-	KeyAtReadEnd bool
+	// KeysOnIdle makes an escape string begun outside the quarantine wait for
+	// its terminator instead of being dropped byte by byte, so FlushIdle can
+	// still return it as input. A terminal writes a reply in one piece, so
+	// one still unterminated once the tty has gone idle was typed: with
+	// Option-as-Meta, Alt+Shift+- is ESC _ (#2931). Without this, the filter
+	// discards every later key, the detach key included, waiting for a
+	// terminator that typing never produces. Set it only when the caller
+	// calls FlushIdle as soon as no input is waiting, as the attach stdin
+	// pump does.
+	KeysOnIdle bool
 
 	mode                filterMode
 	pendingEsc          bool
 	escapeSeenInDiscard bool
 	sequenceBuf         []byte
+
+	// held is the unterminated escape string kept for FlushIdle (KeysOnIdle).
+	holding bool
+	held    []byte
 
 	// usedReplyKind tracks, per reply category, whether a whitelisted DA/DSR
 	// reply has already been passed through to tmux while armed. See
@@ -112,6 +122,38 @@ func classifyReply(seq []byte, final byte) replyKind {
 // state for a reply split across reads.
 func (f *Filter) ResetReplyBudget() {
 	f.usedReplyKind = [replyKindCount]bool{}
+}
+
+// Holding reports whether an unterminated escape string is held for FlushIdle.
+func (f *Filter) Holding() bool {
+	return f.holding
+}
+
+// FlushIdle returns the held escape string as input, ending it, once the
+// caller has seen that no further input is waiting. It returns nil when
+// nothing is held. See KeysOnIdle.
+func (f *Filter) FlushIdle() []byte {
+	if !f.holding {
+		return nil
+	}
+	out := append([]byte(nil), f.held...)
+	f.resetSequenceState()
+	return out
+}
+
+// hold records b as part of the held escape string. Past heldInputMaxLen it
+// cannot be a reply, so the string is released as input into out.
+func (f *Filter) hold(out []byte, b byte) []byte {
+	if !f.holding {
+		return out
+	}
+	f.held = append(f.held, b)
+	if len(f.held) <= heldInputMaxLen {
+		return out
+	}
+	out = append(out, f.held...)
+	f.resetSequenceState()
+	return out
 }
 
 // Active reports whether the filter is carrying parser state across read boundaries.
@@ -201,18 +243,33 @@ func (f *Filter) beginSequence(mode filterMode, prefix ...byte) {
 	f.sequenceBuf = append(f.sequenceBuf[:0], prefix...)
 }
 
+// beginHold starts holding an escape string whose introducer is b, when
+// KeysOnIdle applies. Inside the quarantine replies are expected and none
+// is held.
+func (f *Filter) beginHold(armed bool, introducer byte) {
+	if !f.KeysOnIdle || armed {
+		return
+	}
+	f.holding = true
+	f.held = append(f.held[:0], escapeByte, introducer)
+}
+
 func (f *Filter) resetSequenceState() {
 	f.mode = filterModeIdle
 	f.sequenceBuf = f.sequenceBuf[:0]
 	f.escapeSeenInDiscard = false
+	f.holding = false
+	f.held = f.held[:0]
 }
 
 func (f *Filter) discardRestOfEscapeString(lastByte byte) {
 	terminated := isEscapeStringTerminated(f.sequenceBuf)
+	holding, held := f.holding, f.held
 	f.resetSequenceState()
 	if !terminated {
 		f.mode = filterModeDiscardEscapeString
 		f.escapeSeenInDiscard = lastByte == escapeByte
+		f.holding, f.held = holding, held
 	}
 }
 
@@ -241,9 +298,12 @@ func (f *Filter) discardRestOfEscapeString(lastByte byte) {
 func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 	out := make([]byte, 0, len(src))
 
-	for i, b := range src {
+	for _, b := range src {
 		switch f.mode {
 		case filterModeDiscardEscapeString:
+			if out = f.hold(out, b); f.mode == filterModeIdle {
+				continue // released as input past heldInputMaxLen
+			}
 			if f.escapeSeenInDiscard {
 				f.escapeSeenInDiscard = false
 				if b == stringTerminatorByte {
@@ -321,6 +381,9 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 			continue
 
 		case filterModeCollectColorReply:
+			if out = f.hold(out, b); f.mode == filterModeIdle {
+				continue // released as input past heldInputMaxLen
+			}
 			f.sequenceBuf = append(f.sequenceBuf, b)
 			if !mayBeColorReply(f.sequenceBuf) || len(f.sequenceBuf) > colorReplyMaxLen {
 				f.discardRestOfEscapeString(b)
@@ -336,20 +399,17 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 		if f.pendingEsc {
 			f.pendingEsc = false
 			switch {
-			case f.KeyAtReadEnd && isEscapeStringIntroducer(b) && !armed && !final && i == len(src)-1:
-				// Entering discard mode for a keystroke would swallow every
-				// later key, the detach key included, waiting for a
-				// terminator that typing never produces. See KeyAtReadEnd.
-				out = append(out, escapeByte, b)
-				continue
 			case b == operatingSystemCommandByte && f.ForwardColorReplies:
 				f.beginSequence(filterModeCollectColorReply, escapeByte, operatingSystemCommandByte)
+				f.beginHold(armed, b)
 				continue
 			case isEscapeStringIntroducer(b):
-				// Escape-string replies (DCS/OSC/APC/PM/SOS) are never
-				// legitimate keyboard input — strip regardless of armed
-				// state to prevent terminal-response leaks like #731.
+				// Escape-string replies (DCS/OSC/APC/PM/SOS) are
+				// stripped regardless of armed state to prevent
+				// terminal-response leaks like #731. A keyboard chord
+				// can start one too; KeysOnIdle holds it for FlushIdle.
 				f.mode = filterModeDiscardEscapeString
+				f.beginHold(armed, b)
 				continue
 			case b == controlSequenceIntroducerByte:
 				f.beginSequence(filterModeCollectCSI, escapeByte, controlSequenceIntroducerByte)

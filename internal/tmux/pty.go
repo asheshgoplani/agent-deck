@@ -33,6 +33,12 @@ const attachOutputDrainTimeout = 250 * time.Millisecond
 // an attached session.
 const attachReplyQuarantine = 500 * time.Millisecond
 
+// attachHeldInputIdle is how long the stdin pump waits for the rest of an
+// unterminated escape string before releasing it as typed input. Replies are
+// written in one piece, so their remainder is already waiting; a typed
+// Option-as-Meta chord is delayed by at most this much.
+const attachHeldInputIdle = 10 * time.Millisecond
+
 // AttachStdinPollInterval bounds how long the stdin reader may sit inside
 // poll(2) before it re-checks the attach context. A blocking os.Stdin.Read
 // cannot be interrupted by cancel(), and a tty inherited from the shell is
@@ -298,7 +304,7 @@ func tmuxParsesColorReplies(ver string) bool {
 // cancellation.
 func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 	buf := make([]byte, 32)
-	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies}
+	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies, KeysOnIdle: true}
 	fd := int(p.in.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
 
 	reportErr := func(err error) {
@@ -342,12 +348,14 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 		// gated to the quarantine window so generic CSI pass-through
 		// works for keyboard input outside it.
 		armed := time.Since(p.startTime) < attachReplyQuarantine
-		// A short read took everything the tty had ready, so ESC plus an
-		// escape-string introducer ending it is an Option-as-Meta key, not
-		// a reply (#2931). A full read may have cut a reply in two: only a
-		// key when nothing else is already waiting.
-		replyFilter.KeyAtReadEnd = n < len(buf) || !PollFdReady(fd, time.Millisecond)
 		chunk = replyFilter.Consume(chunk, armed, false)
+		// A reply arrives in one piece, terminator included. An escape
+		// string still open once stdin is idle was typed (Option-as-Meta
+		// Alt+Shift+- is ESC _, #2931): release it, and any keys held
+		// behind it, so they reach the pane and the detach check below.
+		if replyFilter.Holding() && !PollFdReady(fd, attachHeldInputIdle) {
+			chunk = append(chunk, replyFilter.FlushIdle()...)
+		}
 		if len(chunk) == 0 {
 			continue
 		}
