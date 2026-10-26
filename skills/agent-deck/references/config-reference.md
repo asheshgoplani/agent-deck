@@ -158,7 +158,7 @@ prompt_suggestions = "on"          # Optional override of [launch].prompt_sugges
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 | `hooks_enabled` | bool | `true` | Enables Claude Code lifecycle hooks for real-time status detection. Set `false` to opt out of hook-based detection and the TUI install prompt. |
 | `statusline_feed` | bool | `true` | Lets `agent-deck hooks install` and the automatic repair wrap Claude's `statusLine` with `agent-deck usage statusline-wrap`, which records each session's model, context and 5h/7d (`usage statusline`, `usage.statusline` events) and then runs your previous command unchanged (or prints a short default line when there was none). The active Claude config is wrapped only while agent-deck's hooks are installed there; named account slots are always wrapped. Set `false` to leave every `statusLine` untouched; `hooks uninstall` still restores one that was wrapped earlier from `agent-deck-statusline-backup.json`. |
-| `command` | string | `"claude"` | Override the binary/invocation (e.g., `"cdw"` for a wrapper that sets `CLAUDE_CONFIG_DIR`). |
+| `command` | string | `"claude"` | Override the binary/invocation (e.g., `"cdw"` for a wrapper that sets `CLAUDE_CONFIG_DIR`). Forks use it too when its first word is an executable (an absolute path, or found on `PATH`); a fork runs under a non-interactive `bash -c` where shell aliases do not exist, so an alias forks with the literal `claude`. SSH and sandboxed forks always use `claude`. |
 
 Config resolution order for Claude config dir:
 1. `CLAUDE_CONFIG_DIR` env var

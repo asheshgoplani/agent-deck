@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
 
 func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
@@ -185,13 +187,16 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 
 	workDir := target.ProjectPath
 
-	// IMPORTANT: For capture-resume commands (which contain $(...) syntax), we MUST use
-	// "claude" binary + explicit env exports, NOT a custom command alias like "cdw".
+	// IMPORTANT: For capture-resume commands (which contain $(...) syntax), we MUST NOT
+	// exec a custom command alias like "cdw".
 	// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
-	// and shell aliases are not available in non-interactive bash shells. This always
-	// execs the literal "claude" binary below regardless of GetClaudeCommandForInstance,
-	// so the #1822 F3 custom-command gate does not apply here: pass false.
-	bashExportPrefix := target.buildBashExportPrefix(false)
+	// and shell aliases are not available in non-interactive bash shells. A configured
+	// command that is a real executable (an absolute wrapper path, or a command line
+	// whose first word is on PATH) works under `bash -c`, so it is honoured like a fresh
+	// start; anything else falls back to the literal "claude" binary. The #1822 F3
+	// custom-command gate then applies exactly as in buildClaudeCommandWithMessage.
+	claudeCmd := forkClaudeCommand(target)
+	bashExportPrefix := target.buildBashExportPrefix(claudeCmd != "claude")
 
 	// If no options provided, use defaults from config
 	if opts == nil {
@@ -237,15 +242,43 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	// ordinary paths; shellescape leaves an ordinary id bare.
 	cmd := fmt.Sprintf(
 		`cd %s && `+
-			`%sexec claude --session-id "%s" --resume %s --fork-session%s`,
+			`%sexec %s --session-id "%s" --resume %s --fork-session%s`,
 		shellQuote(workDir),
-		bashExportPrefix, forkUUID, shellescape.Quote(i.ClaudeSessionID), extraFlags)
+		bashExportPrefix, claudeCmd, forkUUID, shellescape.Quote(i.ClaudeSessionID), extraFlags)
 	cmd, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", err
 	}
 
 	return cmd, nil
+}
+
+// forkClaudeCommand returns the Claude command a fork of target execs: the
+// command GetClaudeCommandForInstance resolves when its first word (after any
+// VAR=value prefixes) is an executable, else the literal "claude". An alias
+// such as "cdw" does not exist in the non-interactive `bash -c` the fork runs
+// under. An SSH or sandboxed target runs the command elsewhere, where a local
+// lookup says nothing, so it keeps "claude".
+func forkClaudeCommand(target *Instance) string {
+	if target.identityRunsElsewhere() {
+		return "claude"
+	}
+	cmd := GetClaudeCommandForInstance(target)
+	if cmd == "claude" {
+		return cmd
+	}
+	words, ok := shellwords.Split(cmd)
+	if !ok {
+		return "claude"
+	}
+	words = stripLeadingEnvAssignments(words)
+	if len(words) == 0 {
+		return "claude"
+	}
+	if _, err := exec.LookPath(words[0]); err != nil {
+		return "claude"
+	}
+	return cmd
 }
 
 // GetActualWorkDir returns the actual working directory from tmux, or falls back to ProjectPath
