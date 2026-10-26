@@ -1162,6 +1162,14 @@ func (i *Instance) RestartFresh() error {
 		}
 	}
 
+	// #2921: Kill only starts reaping the old pane's processes, and Start's
+	// ownership gate (#1873) refuses while the old spawn's receipt still names
+	// a live process outside any pane. A process that ignores tmux's SIGHUP
+	// (Claude Code 2.1.27+) is exactly that, and even one that obeys it may not
+	// have exited yet. Tearing the old spawn down is what a fresh restart asks
+	// for, so reap what its receipt owns, identity-checked, as a stop does.
+	i.clearOwnershipAfterTeardown(false)
+
 	i.recreateTmuxSession()
 
 	if err := i.Start(); err != nil {
