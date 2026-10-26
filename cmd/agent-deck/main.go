@@ -29,12 +29,14 @@ import (
 	"golang.org/x/term"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/crashreport"
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/managed"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
@@ -77,12 +79,20 @@ func initUpdateSettings() {
 // initTelemetrySettings passes the config.toml [telemetry] section to the
 // telemetry package. Config can only turn telemetry OFF or change the
 // receiver URL; consent itself lives in telemetry-state.json (TELEMETRY.md).
+//
+// The managed file (internal/managed, set by a company for its machines) is
+// read first: it can lower the level or turn telemetry off, names the org,
+// and may carry the crash-report DSN. It never grants consent.
 func initTelemetrySettings() {
+	managedConfig = managed.Load()
+	telemetry.SetManaged(managedConfig)
 	cfg, err := session.LoadUserConfig()
 	if err != nil || cfg == nil {
 		// Fail closed: the user may have written [telemetry].disabled = true
 		// in a file we cannot parse right now.
 		telemetry.SetConfigUnreadable()
+		telemetry.SetOrgID(managedConfig.OrgID, "")
+		crashState = decideCrashReporting(managedConfig, "")
 		return
 	}
 	telemetry.SetConfigDisabled(cfg.Telemetry.Disabled)
@@ -90,6 +100,8 @@ func initTelemetrySettings() {
 	telemetry.SetPostHogKey(cfg.Telemetry.PostHogKey)
 	telemetry.SetConfigLevel(cfg.Telemetry.Level)
 	telemetry.SetConfigOwner(cfg.Telemetry.Owner)
+	telemetry.SetOrgID(managedConfig.OrgID, cfg.Telemetry.OrgID)
+	crashState = decideCrashReporting(managedConfig, cfg.Telemetry.CrashDSN)
 }
 
 // telemetrySignalClose flushes the TUI's pending telemetry (activity hour,
@@ -394,6 +406,9 @@ func main() {
 	initUpdateSettings()
 	initTelemetrySettings()
 	telemetry.SetProcess(Version, telemetry.SurfaceCLI)
+	// Off (a no-op) unless a crash DSN is configured; see managed_settings.go.
+	initCrashReporting()
+	defer crashreport.Recover()
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/managed"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
@@ -39,6 +40,10 @@ type telemetryStatus struct {
 	ConsentDay     string                      `json:"consent_day,omitempty"`
 	InstallID      string                      `json:"install_id,omitempty"`
 	Level          string                      `json:"level"`
+	OrgID          string                      `json:"org_id"`
+	OrgSource      string                      `json:"org_source"`
+	Managed        string                      `json:"managed_config"`
+	CrashReports   string                      `json:"crash_reports"`
 	Endpoint       string                      `json:"endpoint"`
 	Upload         string                      `json:"upload"`
 	KeySource      string                      `json:"key_source"`
@@ -120,6 +125,10 @@ func buildTelemetryStatus(s *telemetry.State) telemetryStatus {
 		ConsentDay:     s.ConsentDay,
 		InstallID:      s.InstallID,
 		Level:          string(telemetry.EffectiveLevel(s)),
+		OrgID:          orgOrNone(telemetry.OrgID()),
+		OrgSource:      telemetry.OrgSource(),
+		Managed:        managedStatusLine(managedConfig),
+		CrashReports:   crashState.String(),
 		Endpoint:       telemetry.Endpoint(),
 		Upload:         "configured",
 		KeySource:      telemetry.PostHogKeySource(),
@@ -181,6 +190,9 @@ func telemetryStatusCmd(out io.Writer, jsonOut bool) int {
   Consent:       %s
   Install id:    %s
   Level:         %s
+  Org id:        %s
+  Managed:       %s
+  Crash reports: %s
   Endpoint:      %s
   Upload:        %s
   Project key:   %s
@@ -191,10 +203,26 @@ func telemetryStatusCmd(out io.Writer, jsonOut bool) int {
   Daily tick:    %s
   State file:    %s
   Docs:          %s
-`, state, orDash(st.Reason), st.Consent, orDash(st.InstallID), st.Level, st.Endpoint, st.Upload, st.KeySource,
+`, state, orDash(st.Reason), st.Consent, orDash(st.InstallID), st.Level, orgLine(st), st.Managed, st.CrashReports, st.Endpoint, st.Upload, st.KeySource,
 		st.Spool.Events, st.Spool.Bytes, orDash(st.Spool.OldestDay), orDash(st.NextUpload), last,
 		st.CapToday, st.InstallTick.Summary(), st.StatePath, telemetry.DocsURL)
 	return 0
+}
+
+// orgOrNone returns the org id, or "none" when there is none.
+func orgOrNone(id string) string {
+	if id == "" {
+		return telemetry.OrgSourceNone
+	}
+	return id
+}
+
+// orgLine is the org id with its source, e.g. "pilot-7f3k2 (managed)".
+func orgLine(st telemetryStatus) string {
+	if st.OrgSource == telemetry.OrgSourceNone {
+		return st.OrgID
+	}
+	return st.OrgID + " (" + st.OrgSource + ")"
 }
 
 // telemetryConsentBlocked returns why this process cannot take consent, or "".
@@ -244,6 +272,7 @@ func telemetryEnableCmd(version string, in io.Reader, out, errOut io.Writer, jso
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
+		crashReportsOffAfterDecline()
 		if jsonOut {
 			return writeJSON(out, buildTelemetryStatus(telemetry.LoadState()))
 		}
@@ -282,6 +311,7 @@ func telemetryDisableCmd(version string, out, errOut io.Writer, jsonOut bool) in
 		fmt.Fprintf(errOut, "telemetry: %v\n", err)
 		return 1
 	}
+	crashReportsOffAfterDecline()
 	if jsonOut {
 		return writeJSON(out, buildTelemetryStatus(telemetry.LoadState()))
 	}
@@ -473,6 +503,10 @@ Kill switches (win over stored consent, re-read on every run):
   [telemetry] level = "basic"         record only app.start, usage.daily and env.snapshot
   [telemetry] endpoint = URL          receiver base URL (default %s; re-asks consent)
   [telemetry] posthog_key / %s   PostHog key, only for builds without a compiled-in one
+  [telemetry] org_id = "<slug>"       opaque company id, sent as "org" (managed file wins)
+  [telemetry] crash_dsn = URL         crash/error reports to this Sentry DSN (default off)
+  %s=PATH       managed file set by a company: org_id, crash_dsn,
+                                      telemetry_level off|basic|full (a ceiling, never grants)
 
 When data is sent:
   Only from the interactive TUI, never on the day you said yes, then at most
@@ -487,5 +521,5 @@ When data is sent:
 
 Never sent: prompts, output, titles, paths, repo, host or user names, commands,
 environment values, error messages, IP addresses (discarded by PostHog).
-`, telemetry.DocsURL, telemetry.DefaultEndpoint, telemetry.EnvPostHogKey)
+`, telemetry.DocsURL, telemetry.DefaultEndpoint, telemetry.EnvPostHogKey, managed.EnvPath)
 }

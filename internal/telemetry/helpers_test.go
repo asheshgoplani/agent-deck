@@ -53,7 +53,9 @@ func env(t *testing.T) *clock {
 	prevTTY, prevDisabled, prevUnreadable := isTerminalFn, configDisabled, configUnreadable
 	prevKey, prevLevel, prevEndpoint := configKey, configLevel, endpoint
 	prevNow, prevSurface, prevVersion, prevUUID := nowFn, surface, processVersion, newUUID
+	prevMLevel, prevMOff, prevMBad, prevOrg, prevOrgSrc := managedLevel, managedOff, managedUnreadable, orgID, orgSource
 	t.Cleanup(func() {
+		managedLevel, managedOff, managedUnreadable, orgID, orgSource = prevMLevel, prevMOff, prevMBad, prevOrg, prevOrgSrc
 		isTerminalFn, configDisabled, configUnreadable = prevTTY, prevDisabled, prevUnreadable
 		configKey, configLevel, endpoint = prevKey, prevLevel, prevEndpoint
 		nowFn, surface, processVersion, newUUID = prevNow, prevSurface, prevVersion, prevUUID
@@ -61,6 +63,7 @@ func env(t *testing.T) *clock {
 	isTerminalFn = func() bool { return true }
 	configDisabled, configUnreadable = false, false
 	configKey, configLevel, endpoint = "", "", DefaultEndpoint
+	managedLevel, managedOff, managedUnreadable, orgID, orgSource = "", false, false, "", OrgSourceNone
 	SetProcess("9.9.9", SurfaceTUI)
 	c := &clock{t: at(0, 14, 30)}
 	nowFn = c.now

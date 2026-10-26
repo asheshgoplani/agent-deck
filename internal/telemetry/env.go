@@ -71,6 +71,8 @@ const (
 	ReasonEnvDNT       DisableReason = "DO_NOT_TRACK is set"
 	ReasonConfig       DisableReason = "[telemetry].disabled = true in config.toml"
 	ReasonConfigError  DisableReason = "config.toml could not be read, so telemetry is treated as disabled"
+	ReasonManaged      DisableReason = "the managed configuration sets telemetry_level = \"off\""
+	ReasonManagedError DisableReason = "the managed configuration could not be read, so telemetry is treated as disabled"
 	ReasonUndecided    DisableReason = "consent has not been given (default off)"
 	ReasonDeclined     DisableReason = "consent was declined"
 )
@@ -109,6 +111,12 @@ func HardDisableReason() DisableReason {
 	}
 	if configUnreadable {
 		return ReasonConfigError
+	}
+	if managedUnreadable {
+		return ReasonManagedError
+	}
+	if managedOff {
+		return ReasonManaged
 	}
 	return ReasonNone
 }
