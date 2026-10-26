@@ -1,0 +1,116 @@
+title = "Agent Deck historical benign findings"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/issuereport/scrub_round3_test.go"
+targetRules = ["curl-auth-user"]
+condition = "AND"
+paths = ['''^internal/issuereport/scrub_round3_test\.go$''']
+commits = ["3f0070419f83ec56ded49a643430de04d16b1676"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: cmd/agent-deck/session_context_golden_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^cmd/agent\-deck/session_context_golden_test\.go$''']
+commits = ["2fbfb5b7bf73d7b722f9114f8c71b31df61ec4fa", "98cc8af2e8e82845991a71266e5d6ca96757ee68", "a0d9f9f90acbeb21f5a0636a94f11171b7e52862", "c2f93de571b0933fb9cc19306c318449826bf044"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: cmd/agent-deck/webhook_secret_create_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^cmd/agent\-deck/webhook_secret_create_test\.go$''']
+commits = ["4479e506e0ef97ebac050d544c34e9c0b4218c30"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/agents/credential_scan_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/agents/credential_scan_test\.go$''']
+commits = ["1a4e608b25e868a7d24dfceadcb677279561ed08"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/core/daemon/daemon_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/core/daemon/daemon_test\.go$''']
+commits = ["7e97ec0fa59d791230144eaae6b0d4efe71733a5", "d8f676a0efb75b188184a805145145ca039702d8"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/issuereport/scrub_identity_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/issuereport/scrub_identity_test\.go$''']
+commits = ["3f0070419f83ec56ded49a643430de04d16b1676"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/logging/redact_env_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/logging/redact_env_test\.go$''']
+commits = ["908ab6d91619ecfa0ed497bfee559fa2189f027a", "fcd4bcab6fd74320e5b77f301d30e8fd3ba7baed"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/send/claudesocket_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/send/claudesocket_test\.go$''']
+commits = ["3d35dc69f0d68b49ce948be60269a2543d0ca0ea"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/session/rebind_gate_largest_copy_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/session/rebind_gate_largest_copy_test\.go$''']
+commits = ["3ac498c3721db0afe3bca56989631ff039d8f67b", "7e385654905db684dfb4ebd66295218f0c092670"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/telemetry/helpers_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/telemetry/helpers_test\.go$''']
+commits = ["c8b5461d73e81bef9732e97ef6c139791ddf3dd4"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/telemetry/upload_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/telemetry/upload_test\.go$''']
+commits = ["c8b5461d73e81bef9732e97ef6c139791ddf3dd4"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/watcher/webhook_auth_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/watcher/webhook_auth_test\.go$''']
+commits = ["4479e506e0ef97ebac050d544c34e9c0b4218c30"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/web/hosts_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/web/hosts_test\.go$''']
+commits = ["65880149f4eba83552426dbae713310bea19b629"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: tests/eval/session/fork_with_state_test.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/eval/session/fork_with_state_test\.go$''']
+commits = ["5dc3e91224a04c3b5a958c17631368ef0be404bd"]
+
+[[allowlists]]
+description = "Vendored Bubble Tea keyboard names: third_party/bubbletea/key.go"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^third_party/bubbletea/key\.go$''']
+commits = ["69bc341e4fe5e0001b64e409f239541764f021bd"]
+
+[[allowlists]]
+description = "Historical synthetic test fixture: internal/triggers/line_test.go"
+targetRules = ["jwt"]
+condition = "AND"
+paths = ['''^internal/triggers/line_test\.go$''']
+commits = ["2545ea830b0b4f3bee35feef1936c2e1a06636e8", "626d328cb06912e02270757b823f884d7e3b2b71"]
