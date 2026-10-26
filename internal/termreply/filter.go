@@ -62,11 +62,11 @@ type Filter struct {
 
 	// KeyAtReadEnd treats ESC plus an escape-string introducer that ends a
 	// chunk, outside the quarantine, as an Option-as-Meta keystroke rather
-	// than the start of a reply (Alt+Shift+- is ESC _). Set it only when each
-	// chunk is one read of everything the tty had ready, as in the attach
-	// stdin pump: a reply is written in one piece and carries its payload.
-	// A byte-at-a-time reader must leave it off, since there every reply's
-	// introducer ends a chunk.
+	// than the start of a reply (Alt+Shift+- is ESC _). Set it before each
+	// Consume, and only when the chunk is one read that left nothing else
+	// ready on the tty, as the attach stdin pump does: a reply is written in
+	// one piece and carries its payload. A byte-at-a-time reader must leave
+	// it off, since there every reply's introducer ends a chunk.
 	KeyAtReadEnd bool
 
 	mode                filterMode

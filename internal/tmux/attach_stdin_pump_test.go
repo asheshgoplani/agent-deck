@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -153,37 +154,111 @@ func TestAttachStdinPump_ForwardsInputAndInterceptsDetach(t *testing.T) {
 	}
 }
 
-// TestAttachStdinPump_AltEscapeStringIntroducerDoesNotFreezeInput pins the
-// em-dash freeze: with Option-as-Meta (Terminal.app, iTerm2 "Esc+"),
-// Alt+Shift+- sends ESC _, the APC introducer. The reply filter took it for a
-// terminal reply and discarded everything after it waiting for a terminator,
-// Ctrl+Q included, so the attach could only be escaped by closing the tab.
-func TestAttachStdinPump_AltEscapeStringIntroducerDoesNotFreezeInput(t *testing.T) {
-	pump, w, out := newTestPump(t, AttachOptions{DetachByte: 17})
+// syncBuffer is a pump output the test can read while the pump writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitFor blocks until the pump has forwarded exactly want.
+func (b *syncBuffer) waitFor(t *testing.T, want string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if b.String() == want {
+			return
+		}
+	}
+	t.Fatalf("forwarded %q, want %q", b.String(), want)
+}
+
+// runPumpUntilDetach runs pump, writes each input only once the pump has
+// forwarded everything expected so far (so each is a read of its own, as
+// separate keystrokes are), then Ctrl+Q, and returns what reached tmux.
+func runPumpUntilDetach(t *testing.T, pump *attachStdinPump, w *os.File, steps ...[2]string) string {
+	t.Helper()
+	out := &syncBuffer{}
+	pump.out = out
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := runPump(ctx, pump)
 
-	if _, err := w.Write([]byte("\x1b_")); err != nil {
+	for _, step := range steps {
+		if _, err := w.Write([]byte(step[0])); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		out.waitFor(t, step[1])
+	}
+	if _, err := w.Write([]byte{0x11}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	// A separate keystroke: let the pump read the chord on its own.
-	time.Sleep(AttachStdinPollInterval)
-	if _, err := w.Write([]byte("a\x11")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
 	select {
 	case res := <-done:
 		if !res.interrupted {
 			t.Error("interrupted = false on the detach key, want true")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("pump did not exit on the detach key after ESC _")
+		t.Fatalf("pump did not exit on the detach key; forwarded %q", out.String())
 	}
+	return out.String()
+}
 
-	if got, want := out.String(), "\x1b_a"; got != want {
+// TestAttachStdinPump_AltEscapeStringIntroducerDoesNotFreezeInput pins the
+// em-dash freeze (#2931): with Option-as-Meta (Terminal.app, iTerm2 "Esc+"),
+// Alt+Shift+- sends ESC _, the APC introducer. The reply filter took it for a
+// terminal reply and discarded everything after it waiting for a terminator,
+// Ctrl+Q included, so the attach could only be escaped by closing the tab.
+func TestAttachStdinPump_AltEscapeStringIntroducerDoesNotFreezeInput(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+
+	got := runPumpUntilDetach(t, pump, w,
+		[2]string{"\x1b_", "\x1b_"},
+		[2]string{"a", "\x1b_a"},
+	)
+	if want := "\x1b_a"; got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
+// fullReadPrefix fills the pump's 32-byte read up to the last two bytes, so
+// ESC plus an introducer written after it ends a full read.
+var fullReadPrefix = strings.Repeat("x", 30)
+
+// A full read can end on a reply's introducer while the rest of the reply is
+// already waiting: that is still a reply, and its payload must not reach the
+// pane as typed text.
+func TestAttachStdinPump_DiscardsReplyCutByAFullRead(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+
+	got := runPumpUntilDetach(t, pump, w,
+		[2]string{fullReadPrefix + "\x1bP>|iTerm2 3.6.10\x1b\\k", fullReadPrefix + "k"},
+	)
+	if want := fullReadPrefix + "k"; got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
+// A full read ending on ESC _ with nothing else waiting is still the key.
+func TestAttachStdinPump_AltEscapeStringIntroducerEndingAFullRead(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+
+	got := runPumpUntilDetach(t, pump, w,
+		[2]string{fullReadPrefix + "\x1b_", fullReadPrefix + "\x1b_"},
+		[2]string{"a", fullReadPrefix + "\x1b_a"},
+	)
+	if want := fullReadPrefix + "\x1b_a"; got != want {
 		t.Errorf("forwarded %q, want %q", got, want)
 	}
 }

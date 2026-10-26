@@ -298,7 +298,7 @@ func tmuxParsesColorReplies(ver string) bool {
 // cancellation.
 func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 	buf := make([]byte, 32)
-	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies, KeyAtReadEnd: true}
+	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies}
 	fd := int(p.in.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
 
 	reportErr := func(err error) {
@@ -342,6 +342,11 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 		// gated to the quarantine window so generic CSI pass-through
 		// works for keyboard input outside it.
 		armed := time.Since(p.startTime) < attachReplyQuarantine
+		// A short read took everything the tty had ready, so ESC plus an
+		// escape-string introducer ending it is an Option-as-Meta key, not
+		// a reply (#2931). A full read may have cut a reply in two: only a
+		// key when nothing else is already waiting.
+		replyFilter.KeyAtReadEnd = n < len(buf) || !PollFdReady(fd, time.Millisecond)
 		chunk = replyFilter.Consume(chunk, armed, false)
 		if len(chunk) == 0 {
 			continue
