@@ -3,8 +3,12 @@
 # tests. Driven by the environment:
 #   FAKE_PROVIDER_STATE    directory for logs and sandbox records (required)
 #   FAKE_PROVIDER_MODE     ok (default) | slow | badjson | badhost | traversal |
-#                          protocol2 | stderr | error | huge
+#                          protocol2 | stderr | error | huge | createhang
+#                          (createhang: create makes the sandbox, records its
+#                          request labels in labels.log, then hangs; list
+#                          reports labels.log labels)
 #   FAKE_PROVIDER_DESTROY  ok (default) | fail
+#   FAKE_PROVIDER_LIST     ok (default) | fail
 # It records argc and argv, the request on stdin and the provider env vars so
 # tests can check what agent-deck sent.
 set -u
@@ -20,8 +24,14 @@ printf '%s protocol=%s name=%s\n' "$action" "${AGENTDECK_PROVIDER_PROTOCOL:-}" "
 key="$state/id_ed25519"
 
 sandbox_json() {
-	# $1 id, $2 host, $3 key path
-	printf '{"id":"%s","host":"%s","port":2222,"user":"dev","auth":{"type":"key","key_path":"%s"},"labels":{"provider":"fake"},"state":"running"}' "$1" "$2" "$3"
+	# $1 id, $2 host, $3 key path, $4 labels object (default {"provider":"fake"})
+	printf '{"id":"%s","host":"%s","port":2222,"user":"dev","auth":{"type":"key","key_path":"%s"},"labels":%s,"state":"running"}' "$1" "$2" "$3" "${4:-{\"provider\":\"fake\"\}}"
+}
+
+# labels_for <id>: the labels recorded for id in labels.log, if any.
+labels_for() {
+	[ -f "$state/labels.log" ] || return 0
+	sed -n "s/^$1 //p" "$state/labels.log" | head -n 1
 }
 
 case "$mode" in
@@ -64,6 +74,11 @@ create)
 	[ "$mode" = badhost ] && host="-oProxyCommand=touch$state/pwned"
 	[ "$mode" = traversal ] && keypath="$state/../$(basename "$state")/id_ed25519"
 	printf '%s\n' "$id" >> "$state/created.log"
+	if [ "$mode" = createhang ]; then
+		printf '%s %s\n' "$id" "$(printf '%s' "$req" | sed -n 's/.*"labels":\({[^}]*}\).*/\1/p')" >> "$state/labels.log"
+		sleep 60
+		exit 0
+	fi
 	printf '{"protocol":1,"sandbox":%s}\n' "$(sandbox_json "$id" "$host" "$keypath")"
 	;;
 status)
@@ -71,12 +86,16 @@ status)
 	printf '{"protocol":1,"sandbox":%s}\n' "$(sandbox_json "$id" 127.0.0.1 "$key")"
 	;;
 list)
+	if [ "${FAKE_PROVIDER_LIST:-ok}" = fail ]; then
+		printf 'list refused by fake\n' >&2
+		exit 4
+	fi
 	printf '{"protocol":1,"sandboxes":['
 	sep=
 	if [ -f "$state/created.log" ]; then
 		while read -r id; do
 			grep -qx "$id" "$state/destroyed.log" 2>/dev/null && continue
-			printf '%s%s' "$sep" "$(sandbox_json "$id" 127.0.0.1 "$key")"
+			printf '%s%s' "$sep" "$(sandbox_json "$id" 127.0.0.1 "$key" "$(labels_for "$id")")"
 			sep=,
 		done < "$state/created.log"
 	fi

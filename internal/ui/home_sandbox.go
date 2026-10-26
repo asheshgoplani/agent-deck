@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,6 +18,11 @@ import (
 // sandboxProvisionTimeout bounds one TUI-driven provisioning (create, ssh
 // wait, install). Provision rolls the sandbox back on its own when it fails.
 const sandboxProvisionTimeout = 15 * time.Minute
+
+// sandboxQuitWait bounds how long quitting waits for a cancelled
+// provisioning to roll back (the provider package bounds a rollback at 2
+// minutes).
+const sandboxQuitWait = 150 * time.Second
 
 // sandboxProgressMsg carries one provisioning progress line; events is
 // read again for the next line or the final sandboxProvisionedMsg.
@@ -60,7 +66,11 @@ func newDialogWhereChoicesFromConfig() []whereChoice {
 // dialog opened on a remote row; a sandbox is provisioned first, off the UI
 // loop, and the session is created on it when that succeeds.
 func (h *Home) submitNewDialogWhere(where whereChoice) tea.Cmd {
-	opts := h.newDialog.GetWhereRemoteCreateOptions()
+	opts, optsErr := h.newDialog.GetWhereRemoteCreateOptions()
+	if optsErr != "" {
+		h.newDialog.SetError(optsErr)
+		return nil
+	}
 	h.newDialog.Hide()
 	h.clearError()
 	if where.kind == whereRemote {
@@ -94,6 +104,7 @@ func (h *Home) provisionSandboxCmd(providerName string, opts session.RemoteAddOp
 	profile := h.profile
 	events := make(chan tea.Msg, 16)
 	run := func() tea.Msg {
+		defer h.beginSandboxProvision()()
 		ctx, cancel := context.WithTimeout(baseCtx, sandboxProvisionTimeout)
 		defer cancel()
 		res, err := provision(ctx, provider.ProvisionOptions{
@@ -116,6 +127,45 @@ func (h *Home) provisionSandboxCmd(providerName string, opts session.RemoteAddOp
 		return nil
 	}
 	return tea.Batch(run, waitSandboxEvent(events))
+}
+
+// beginSandboxProvision counts one provisioning in flight and returns its
+// end.
+func (h *Home) beginSandboxProvision() func() {
+	h.sandboxProvisionMu.Lock()
+	if h.sandboxProvisionN == 0 {
+		h.sandboxProvisionIdle = make(chan struct{})
+	}
+	h.sandboxProvisionN++
+	h.sandboxProvisionMu.Unlock()
+	return sync.OnceFunc(func() {
+		h.sandboxProvisionMu.Lock()
+		h.sandboxProvisionN--
+		if h.sandboxProvisionN == 0 {
+			close(h.sandboxProvisionIdle)
+		}
+		h.sandboxProvisionMu.Unlock()
+	})
+}
+
+// waitSandboxProvisions waits, at most timeout, until no sandbox
+// provisioning is in flight; false when it gave up.
+func (h *Home) waitSandboxProvisions(timeout time.Duration) bool {
+	h.sandboxProvisionMu.Lock()
+	idle := h.sandboxProvisionIdle
+	busy := h.sandboxProvisionN > 0
+	h.sandboxProvisionMu.Unlock()
+	if !busy {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-idle:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func waitSandboxEvent(events <-chan tea.Msg) tea.Cmd {

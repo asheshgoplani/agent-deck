@@ -1269,7 +1269,7 @@ agent_deck_path = ""
 | `timeout_seconds` | int | `60` | Time limit for `list`, `status` and `destroy` calls. |
 | `agent_deck_path` | string | `"agent-deck"` | agent-deck path on this provider's sandboxes, copied into each remote it creates as `agent_deck_path`. |
 
-Provider output is untrusted and validated before use: sandbox id, host (DNS name or IP literal only), port, user, auth (`key` with a private key file that is a regular file, not a symlink, owned by you and mode `0600`/`0400`; or `agent`), labels, state and pinned host keys. A sandbox the provider created but agent-deck cannot use (invalid answer, ssh never answers, agent-deck cannot be installed) is destroyed again and the remote is not kept.
+Provider output is untrusted and validated before use: sandbox id, host (DNS name or IP literal only), port, user, auth (`key` with a private key file that is a regular file, not a symlink, owned by you and mode `0600`/`0400`; or `agent`), labels, state and pinned host keys. A sandbox the provider created but agent-deck cannot use (invalid answer, ssh never answers, agent-deck cannot be installed) is destroyed again and the remote is not kept. A create that times out or is interrupted is followed by a `list`, and the sandbox carrying that request's `agent-deck/create-id` label is destroyed.
 
 A sandbox remote is an ordinary `[remotes.<name>]` entry with three more keys, all written by agent-deck:
 
@@ -1277,7 +1277,7 @@ A sandbox remote is an ordinary `[remotes.<name>]` entry with three more keys, a
 |-----|------|-------------|
 | `provider` | string | The `[providers.<name>]` that created the sandbox. `remote destroy` only works on remotes that have it; `remote list` shows them as `sandbox (provider <name>)`. |
 | `sandbox_id` | string | The provider's id for the sandbox. |
-| `ssh_config` | string | Path of the sandbox's own ssh config, `<agent-deck data dir>/sandboxes/<remote>/ssh_config` (directory `0700`, files `0600`, beside `known_hosts` and `sandbox.json`). Every ssh and mosh call for the remote passes it with `-F`, so your `~/.ssh/config` and `~/.ssh/known_hosts` are not used for it. Host keys the provider pins are checked strictly; without them the first key seen is trusted into the sandbox's own `known_hosts`. `host` is the alias `agentdeck-sb-<remote>`. |
+| `ssh_config` | string | Path of the sandbox's own ssh config, `<agent-deck data dir>/sandboxes/<remote>/ssh_config` (directory `0700`, files `0600`, beside `known_hosts` and `sandbox.json`). Every ssh and mosh call for the remote passes it with `-F`, so `~/.ssh/config`, `/etc/ssh/ssh_config` and `~/.ssh/known_hosts` are not used for it: `ProxyJump`, bastion or `ProxyCommand` settings there do not apply, and the provider must return a host and port that are reachable directly. Host keys the provider pins are checked strictly; without them the first key seen is trusted into the sandbox's own `known_hosts`. `host` is the alias `agentdeck-sb-<remote>`. |
 
 ## [health] Section
 

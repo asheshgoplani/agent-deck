@@ -86,7 +86,8 @@ The table name (`docker` here) is the provider name you use on the CLI.
 
 ```json
 {"protocol":1,"action":"create","name":"<remote name>",
- "labels":{"agent-deck/remote":"<name>","agent-deck/profile":"<profile>"}}
+ "labels":{"agent-deck/remote":"<name>","agent-deck/profile":"<profile>",
+           "agent-deck/create-id":"<random id>"}}
 {"protocol":1,"action":"list"}
 {"protocol":1,"action":"status","id":"<sandbox id>"}
 {"protocol":1,"action":"destroy","id":"<sandbox id>"}
@@ -146,6 +147,14 @@ reject a request whose protocol it does not speak.
 `timeout_seconds` (default 60). If your API returns before the machine boots,
 poll inside `create` until it has an address.
 
+If `create` times out or is interrupted (Ctrl-C, quitting the TUI), the
+provider may already have made the sandbox. agent-deck then runs `list` and
+destroys the sandbox whose `agent-deck/create-id` label matches that create
+request. Keep the request's labels on the sandbox and return them from `list`,
+or such a sandbox has to be found and destroyed by hand. Two provisionings of
+the same remote name never run at once: the second is refused while the first
+runs.
+
 ### Validation rules
 
 agent-deck treats the reply as untrusted and checks every field:
@@ -201,7 +210,9 @@ agent-deck remote destroy <name> [--yes] [--force]
 
 Stops the sessions on the sandbox, destroys it through the provider, and
 removes the remote. It works only on provider remotes; for a plain remote use
-`remote remove`.
+`remote remove`. `remote remove` on a sandbox remote only forgets it: it warns
+that the sandbox keeps running, points to `remote destroy`, and on a terminal
+asks first.
 
 - If sessions are running there, it asks: "Stop N sessions on <name> and
   destroy the sandbox? [y/N]".
@@ -238,7 +249,11 @@ and starts the session there.
   there and ssh uses `StrictHostKeyChecking yes`. Without them, ssh uses
   `accept-new` for that sandbox only.
 - Every ssh call to a sandbox passes `-F <its ssh_config>`, so your own
-  `~/.ssh/config` is not changed.
+  `~/.ssh/config` is not changed. It is not read either: with `-F`, ssh skips
+  `~/.ssh/config` and `/etc/ssh/ssh_config`, so a `ProxyJump`, bastion,
+  `ProxyCommand` or other setting there does not apply to a sandbox. The
+  provider must return a host and port agent-deck can reach directly (for
+  example a port forward or tunnel the provider sets up).
 - Each sandbox gets its own SSH control socket, named from a hash of its
   ssh_config. A sandbox never reuses a connection opened for another remote
   with the same address, which would skip its own host key and key checks.
