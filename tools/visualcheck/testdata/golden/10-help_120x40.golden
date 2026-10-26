@@ -9,6 +9,7 @@
                    │    R              Restart selected session                                     │
                    │    Ctrl+Q         Detach from session                                          │
                    │    ?              Open this help                                               │
+                   │    alt+w          Show me around: what you can do                              │
                    │                                                                                │
                    │  NAVIGATION                                                                    │
                    │    j / Down       Move down                                                    │
@@ -31,7 +32,6 @@
                    │  GROUP NAVIGATION (<version>)                                                    │
                    │    Alt+j / Alt+k  Next / prev session in group                                 │
                    │    Alt+1 - Alt+9  Jump to Nth session in group                                 │
-                   │    Alt+g / Alt+G  First / last in group                                        │
                    │  ▼ more below                                                                  │
                    │                                                                                │
                    │  j/k scroll • any other key to close                                           │

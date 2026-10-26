@@ -1,0 +1,50 @@
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                             ╭────────────────────────────────────────────────────────────────────────────╮                                                             
+                                                             │                                                                            │                                                             
+                                                             │  What you can do                                                           │                                                             
+                                                             │                                                                            │                                                             
+                                                             │  Sessions   n / N                                                          │                                                             
+                                                             │             new session (Enter creates) / quick create. This list is all   │                                                             
+                                                             │             of them.                                                       │                                                             
+                                                             │  Switch     Enter / Ctrl+Q / `                                             │                                                             
+                                                             │             open the selected session / back to this list / the previous   │                                                             
+                                                             │             one.                                                           │                                                             
+                                                             │  Send       o / Q                                                          │                                                             
+                                                             │             message a session without opening it / queue one for after     │                                                             
+                                                             │             its turn.                                                      │                                                             
+                                                             │  Conductor  agent-deck conductor setup <name>                              │                                                             
+                                                             │             one agent that watches the others and asks you only when       │                                                             
+                                                             │             needed.                                                        │                                                             
+                                                             │  Remotes    agent-deck remote add <name> user@host                         │                                                             
+                                                             │             plug in any machine; its sessions show up here.                │                                                             
+                                                             │                                                                            │                                                             
+                                                             │  ? all keys · alt+w shows this again · Z reports a problem.                │                                                             
+                                                             │                                                                            │                                                             
+                                                             │  Tab agents & sign-in · Esc close                                          │                                                             
+                                                             │                                                                            │                                                             
+                                                             ╰────────────────────────────────────────────────────────────────────────────╯                                                             
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        

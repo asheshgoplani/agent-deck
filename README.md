@@ -118,6 +118,8 @@ agent-deck web                    # Start web UI on http://127.0.0.1:8420
 
 > **⚠️ Changed again after v1.16.32:** in the new-session dialog (`n`), **Enter creates the session from any row** with what is filled in: this folder, your last-used tool, the selected group, and the folder name when Name is empty. `n` then `Enter` is the whole common case; `N` on the home screen creates without the dialog. Tab/↓ reach the optional rows, `↓`/`Space` open the model list, and a wrong required field takes focus with the reason. To walk the form with Enter down to the **`[ Create session ]`** button instead, set `[ui].new_session_enter_advances = true`; **Ctrl+S** creates from any field in both modes.
 
+**First run:** a fresh install opens a Welcome that shows which agents you have (Claude Code, Codex, Gemini CLI, Pi), whether Claude and Codex are signed in (from their own `claude auth status` / `codex login status`), and the install command for any that are missing. `l` runs the tool's own login (`claude auth login`, `codex login`) in a session for you; agent-deck never touches your tokens. `Enter` opens the New Session dialog with the picked agent and this folder, and `Enter` again starts it. `Esc` skips, once and for good. **`Alt+W` ("Show me around")** shows what you can do any time.
+
 ### Key Shortcuts
 
 From the main menu, `o` and `Shift+Q` open a message composer above the footer.
@@ -154,6 +156,7 @@ The main-menu composer currently supports local sessions only, not remote-sessio
 | `C` | Context inspector (what the session is sent, ranked by cost) |
 | `V` / `Y` | Copy visible terminal text / a fenced code block |
 | `Shift+drag` | Select text natively (`Option+drag` in iTerm2) — see below |
+| `Alt+W` | Show me around: what you can do, your agents and sign-in |
 | `?` | Full help |
 
 > **Why can't I drag-select text?** The TUI holds the terminal in mouse

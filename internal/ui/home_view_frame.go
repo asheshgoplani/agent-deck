@@ -540,6 +540,9 @@ func (h *Home) renderFrame() string {
 	if h.setupWizard.IsVisible() {
 		return h.setupWizard.View()
 	}
+	if h.onboarding.IsVisible() {
+		return h.onboarding.View()
+	}
 
 	// Delivery and watcher panels are modal (before settings panel)
 	if h.triggersPanel.IsVisible() {

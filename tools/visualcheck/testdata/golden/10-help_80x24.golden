@@ -9,13 +9,13 @@
     │    R              Restart selected session                           │
     │    Ctrl+Q         Detach from session                                │
     │    ?              Open this help                                     │
+    │    alt+w          Show me around: what you can do                    │
     │                                                                      │
     │  NAVIGATION                                                          │
     │    j / Down       Move down                                          │
     │    k / Up         Move up                                            │
     │    Ctrl+u/d       Half page up/down                                  │
     │    PgUp / PgDn    Half page up/down                                  │
-    │    Ctrl+f/b       Full page up/down                                  │
     │  ▼ more below                                                        │
     │                                                                      │
     │  j/k scroll • any other key to close                                 │

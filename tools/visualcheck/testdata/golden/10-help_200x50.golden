@@ -9,6 +9,7 @@
                                                            │    R              Restart selected session                                     │
                                                            │    Ctrl+Q         Detach from session                                          │
                                                            │    ?              Open this help                                               │
+                                                           │    alt+w          Show me around: what you can do                              │
                                                            │                                                                                │
                                                            │  NAVIGATION                                                                    │
                                                            │    j / Down       Move down                                                    │
@@ -41,7 +42,6 @@
                                                            │    T              Restart with new session ID                                  │
                                                            │    d              Delete session                                               │
                                                            │    D              Close session process                                        │
-                                                           │    ctrl+z         Undo delete                                                  │
                                                            │  ▼ more below                                                                  │
                                                            │                                                                                │
                                                            │  j/k scroll • any other key to close                                           │

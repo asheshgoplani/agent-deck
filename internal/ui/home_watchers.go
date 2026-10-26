@@ -15,13 +15,7 @@ import (
 
 // Init initializes the model
 func (h *Home) Init() tea.Cmd {
-	// Check for first run (no config.toml exists)
-	configPath, _ := session.GetUserConfigPath()
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		h.setupWizard.SetReportKey(h.actionKey(hotkeyReportProblem))
-		h.setupWizard.Show()
-		h.setupWizard.SetSize(h.width, h.height)
-	}
+	h.showSetupWizardIfFirstRun()
 
 	// Start system stats collection
 	if h.sshCollector != nil {
@@ -327,5 +321,19 @@ func (h *Home) refreshWatcherPanel() {
 			}
 			h.watcherPanel.SetEvents(displayEvents)
 		}
+	}
+}
+
+// showSetupWizardIfFirstRun opens the setup wizard when there is no
+// config.toml. On a fresh install with no sessions the first session load
+// swaps it for the Welcome (maybeStartOnboarding). Once the Welcome has been
+// shown it stands for first run, so the wizard does not follow it on a later
+// start (the user may have quit before dismissing it).
+func (h *Home) showSetupWizardIfFirstRun() {
+	configPath, _ := session.GetUserConfigPath()
+	if _, err := os.Stat(configPath); os.IsNotExist(err) && !onboardingMarkerExists() {
+		h.setupWizard.SetReportKey(h.actionKey(hotkeyReportProblem))
+		h.setupWizard.Show()
+		h.setupWizard.SetSize(h.width, h.height)
 	}
 }
