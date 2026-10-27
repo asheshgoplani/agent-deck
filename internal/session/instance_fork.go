@@ -259,6 +259,11 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 // such as "cdw" does not exist in the non-interactive `bash -c` the fork runs
 // under. An SSH or sandboxed target runs the command elsewhere, where a local
 // lookup says nothing, so it keeps "claude".
+//
+// A command with leading assignments is returned behind `env`: it is spliced
+// after `exec`, and `exec FLAG=1 wrapper` makes bash look for a program named
+// "FLAG=1". `exec env FLAG=1 wrapper` sets the variables and runs the wrapper,
+// the same shape a fresh start's `exec env -u TELEGRAM_* <command>` takes.
 func forkClaudeCommand(target *Instance) string {
 	if target.identityRunsElsewhere() {
 		return "claude"
@@ -271,12 +276,22 @@ func forkClaudeCommand(target *Instance) string {
 	if !ok {
 		return "claude"
 	}
-	words = stripLeadingEnvAssignments(words)
+	// isShellEnvAssignment, not stripLeadingEnvAssignments: the hook helper
+	// refuses any word containing a path separator, so it would leave
+	// CLAUDE_CONFIG_DIR=/tmp/account in command position.
+	assignments := 0
+	for assignments < len(words) && isShellEnvAssignment(words[assignments]) {
+		assignments++
+	}
+	words = words[assignments:]
 	if len(words) == 0 {
 		return "claude"
 	}
 	if _, err := exec.LookPath(words[0]); err != nil {
 		return "claude"
+	}
+	if assignments > 0 {
+		return "env " + cmd
 	}
 	return cmd
 }

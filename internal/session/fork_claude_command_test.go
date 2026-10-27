@@ -73,6 +73,55 @@ func TestFork_ConfiguredWrapperPathIsExecuted(t *testing.T) {
 	}
 }
 
+// TestFork_ConfiguredCommandWithAssignmentsIsExecuted: leading VAR=value
+// words in [claude].command reach the wrapper's environment, and the wrapper
+// runs. The fork splices the command after `exec`, where a bare assignment
+// word is taken for the program name; a value with a path separator must
+// not hide the wrapper from the executable lookup either.
+func TestFork_ConfiguredCommandWithAssignmentsIsExecuted(t *testing.T) {
+	cases := []struct {
+		name, variable, value string
+	}{
+		{"plain value", "FLAG", "1"},
+		{"path value", "CLAUDE_CONFIG_DIR", "/tmp/account"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapper := filepath.Join(t.TempDir(), "claude-stack")
+			record := filepath.Join(t.TempDir(), "record")
+			stub := "#!/bin/sh\n{ printf '%s=%s\\n' " + tc.variable + " \"$" + tc.variable + "\"; " +
+				"for a in \"$@\"; do printf '%s\\n' \"$a\"; done; } > " + shellQuote(record) + "\n"
+			if err := os.WriteFile(wrapper, []byte(stub), 0o755); err != nil {
+				t.Fatalf("write wrapper: %v", err)
+			}
+			command := tc.variable + "=" + tc.value + " " + wrapper
+			withIsolatedHomeAndConfig(t, "[claude]\ncommand = "+tomlQuote(command)+"\n")
+
+			cmdStr, err := newForkSource(t).Fork("forked", "")
+			if err != nil {
+				t.Fatalf("Fork() error = %v", err)
+			}
+			if strings.Contains(cmdStr, "exec claude ") {
+				t.Fatalf("fork command fell back to literal claude:\n%s", cmdStr)
+			}
+			if out, err := exec.Command("bash", "-c", cmdStr).CombinedOutput(); err != nil {
+				t.Fatalf("fork command failed: %v (%s)\ncmd: %s", err, out, cmdStr)
+			}
+			data, err := os.ReadFile(record)
+			if err != nil {
+				t.Fatalf("wrapper never ran: %v\ncmd: %s", err, cmdStr)
+			}
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if want := tc.variable + "=" + tc.value; lines[0] != want {
+				t.Errorf("wrapper environment has %q, want %q\ncmd: %s", lines[0], want, cmdStr)
+			}
+			if got := strings.Join(lines[1:], " "); !strings.Contains(got, "--resume session-abc-123 --fork-session") {
+				t.Errorf("wrapper argv = %q, want --resume session-abc-123 --fork-session", got)
+			}
+		})
+	}
+}
+
 // TestFork_ConfiguredCommandLineOnPathIsExecuted: a command line whose first
 // word is found on PATH keeps its own arguments ahead of the fork's.
 func TestFork_ConfiguredCommandLineOnPathIsExecuted(t *testing.T) {
