@@ -1,2 +1,2 @@
 terminal_width=80 list_width=28
-   └─ ● a genuinely l… 👁️ 2
+   └─ ● a genuinely lo… ◉ 2

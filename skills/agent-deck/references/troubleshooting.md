@@ -252,7 +252,7 @@ attached, typed or resized last: the person using the session sees it
 full-size, and the idle terminal shows the other person's size (clipped if it
 is smaller, the pane in the top-left corner with dots around it if it is
 larger) until they type or resize. That is tmux's one-size-per-window rule,
-not a stuck window. The deck's `👁️ N` row badge and `session viewers` say who
+not a stuck window. The deck's `◉ N` row badge and `session viewers` say who
 else has the session open.
 
 Windows opened by hand get the policy from one `after-new-window` hook that
