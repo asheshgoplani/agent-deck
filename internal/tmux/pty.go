@@ -700,7 +700,11 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	ioErrors := make(chan error, 2)
 
 	startTime := time.Now()
-	const terminalStyleReset = "\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m"
+	// The trailing CSI r gives the scroll region back the whole screen: tmux
+	// leaves the region it last scrolled a pane with set on the outer terminal
+	// and only resets it on a clean exit, which closing its PTY on Ctrl+Q
+	// skips (ASK-140).
+	const terminalStyleReset = "\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m\x1b[r"
 	outputDone := make(chan struct{})
 
 	// Goroutine 1: Copy PTY output to stdout

@@ -451,6 +451,17 @@ func (h *Home) updateSizes() {
 	}
 }
 
+// resetScrollRegion (DECSTBM with no parameters) gives the scroll region back
+// the whole screen and homes the cursor. An attached tmux client scrolls a
+// pane by setting a region on the outer terminal and leaves it set; a Ctrl+Q
+// detach closes its PTY before tmux's reset on exit is written, so the region
+// survives into the deck and every frame's line feeds scroll only that band:
+// rows climb, stale copies stay, the rows below are never drawn (ASK-140).
+// Every frame starts with it: Bubble Tea writes row 0 right after homing the
+// cursor, so the reset moves nothing, and every full repaint (start, resize,
+// return from an attach) heals a leaked region.
+const resetScrollRegion = "\x1b[r"
+
 // View renders the UI
 func (h *Home) View() string {
 	// CRITICAL: Do not render fresh output during attach (Bubble Tea Issue #431
@@ -472,10 +483,8 @@ func (h *Home) View() string {
 		return h.lastRenderedFrame
 	}
 
-	frame := h.renderFrame()
-	if frame != "" {
-		h.lastRenderedFrame = frame
-	}
+	frame := resetScrollRegion + h.renderFrame()
+	h.lastRenderedFrame = frame
 	if h.pendingFrameOp != "" && h.width > 0 && !h.initialLoading {
 		optiming.Since(h.pendingFrameOp, h.pendingFrameStart)
 		h.pendingFrameOp = ""
