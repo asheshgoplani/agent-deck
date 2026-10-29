@@ -70,12 +70,22 @@ func (p *Pool) Start(name, command string, args []string, env map[string]string)
 }
 
 func (p *Pool) ShouldPool(mcpName string) bool {
-	if !p.config.Enabled {
+	return p.config.Allows(mcpName)
+}
+
+// Allows reports whether this pool config lets mcpName be served from a pool
+// socket. It is the one decision for both the TUI pool (ShouldPool) and the
+// CLI path, which has no Pool and must still honour pool_mcps / exclude_mcps:
+// pool sockets are keyed by name and shared by every config home of the user,
+// so a config that did not opt a name in must never attach to another
+// config's process of that name.
+func (c *PoolConfig) Allows(mcpName string) bool {
+	if c == nil || !c.Enabled {
 		return false
 	}
 
-	if p.config.PoolAll {
-		for _, excluded := range p.config.ExcludeMCPs {
+	if c.PoolAll {
+		for _, excluded := range c.ExcludeMCPs {
 			if excluded == mcpName {
 				return false
 			}
@@ -83,7 +93,7 @@ func (p *Pool) ShouldPool(mcpName string) bool {
 		return true
 	}
 
-	for _, name := range p.config.PoolMCPs {
+	for _, name := range c.PoolMCPs {
 		if name == mcpName {
 			return true
 		}
