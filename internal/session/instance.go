@@ -2401,7 +2401,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			// A "waiting" event older than the user's last visit is the turn
 			// they already saw: keep the visit, or every reload undoes it.
 			if i.tmuxSession != nil && (hs.Status == "running" ||
-				(hs.Status == "waiting" && !hookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, i.acknowledgedAt))) {
+				(hs.Status == "waiting" && !HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, i.acknowledgedAt))) {
 				i.tmuxSession.ResetAcknowledged()
 			}
 		}
@@ -2489,7 +2489,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				// Keep this as waiting and let tmux settle to idle if the user
 				// has acknowledged and no new activity appears. A completion
 				// older than the user's last visit was already seen.
-				if hookPredatesVisit(i.hookLastUpdate, time.Time{}, i.acknowledgedAt) {
+				if HookPredatesVisit(i.hookLastUpdate, time.Time{}, i.acknowledgedAt) {
 					i.Status = StatusIdle
 				} else {
 					if i.tmuxSession != nil {
@@ -3213,13 +3213,28 @@ func (i *Instance) CaptureLoadedMCPs() {
 	i.LoadedMCPNames = mcpInfo.AllNames()
 }
 
-// hookPredatesVisit reports whether a hook event happened before the user's
+// HookPredatesVisit reports whether a hook event happened before the user's
 // last visit. The hook "ts" is whole seconds, so without the handler's
 // received time a Stop in the visit's own second counts as newer: a seen turn
 // shown as new beats a new turn shown as seen.
-func hookPredatesVisit(updated, received, visit time.Time) bool {
+func HookPredatesVisit(updated, received, visit time.Time) bool {
 	if !received.IsZero() {
 		return received.Before(visit)
 	}
 	return updated.Before(visit.Truncate(time.Second))
+}
+
+// AcknowledgedAt returns when the user last marked this session seen, as
+// loaded from storage, or zero when unknown.
+func (i *Instance) AcknowledgedAt() time.Time {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.acknowledgedAt
+}
+
+// ClearAcknowledgedAt drops the visit time once the session is marked unread.
+func (i *Instance) ClearAcknowledgedAt() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.acknowledgedAt = time.Time{}
 }

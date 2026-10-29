@@ -192,7 +192,34 @@ func TestCodexWaitingFastPath_HookOlderThanVisitKeepsSeen(t *testing.T) {
 	if !inst.tmuxSession.IsAcknowledged() {
 		t.Fatal("Codex fast path cleared the acknowledgment for a completion older than the visit")
 	}
-	if got := inst.GetStatusThreadSafe(); got == StatusWaiting {
-		t.Fatalf("status = %q for a completion the user already saw, want not waiting", got)
+	if got := inst.GetStatusThreadSafe(); got != StatusIdle {
+		t.Fatalf("status = %q for a completion the user already saw, want %q", got, StatusIdle)
+	}
+}
+
+// Marking a session unread (the TUI's u key) drops the visit time too, so the
+// same Codex completion surfaces as waiting again right away.
+func TestCodexWaitingFastPath_ClearedVisitShowsWaiting(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	t.Setenv("HOME", t.TempDir())
+
+	inst := NewInstanceWithTool("codex-ack-cleared", t.TempDir(), "codex")
+	if err := inst.tmuxSession.Start("sleep 300"); err != nil {
+		t.Fatalf("tmux start: %v", err)
+	}
+	t.Cleanup(func() { _ = inst.tmuxSession.Kill() })
+	inst.acknowledgedAt = time.Now()
+	inst.tmuxSession.ResetAcknowledged()
+	inst.ClearAcknowledgedAt()
+
+	inst.hookStatus = "waiting"
+	inst.hookEvent = "Stop"
+	inst.hookLastUpdate = time.Now().Add(-2 * time.Second)
+
+	if err := inst.UpdateStatus(); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	if got := inst.GetStatusThreadSafe(); got != StatusWaiting {
+		t.Fatalf("status = %q after marking unread, want %q", got, StatusWaiting)
 	}
 }

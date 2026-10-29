@@ -166,7 +166,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	// rejected foreign event (restoreHook) cannot clear it.
 	if prevHookStatus == "" && status.Status == "waiting" && i.tmuxSession != nil &&
 		!i.acknowledgedAt.IsZero() &&
-		!hookPredatesVisit(status.UpdatedAt, status.ReceivedAt, i.acknowledgedAt) {
+		!HookPredatesVisit(status.UpdatedAt, status.ReceivedAt, i.acknowledgedAt) {
 		defer func() {
 			if !rejected {
 				i.tmuxSession.ResetAcknowledged()

@@ -406,3 +406,29 @@ func TestMemoryMenuDataInvalidateCacheClearsCachedSnapshot(t *testing.T) {
 		t.Fatalf("expected InvalidateCache to clear the cached snapshot, got %+v", got)
 	}
 }
+
+// A status-only publish carries the live "seen" mark, so the web hook overlay
+// does not keep a mark the TUI has since cleared.
+func TestMemoryMenuData_UpdateSessionStatesCarriesAcknowledgment(t *testing.T) {
+	store := NewMemoryMenuData(nil)
+	store.SetSnapshot(&MenuSnapshot{
+		Profile: "default",
+		Items: []MenuItem{{
+			Type:    MenuItemTypeSession,
+			Session: &MenuSession{ID: "sess-ack", Tool: "claude", Status: session.StatusIdle, Acknowledged: true, AcknowledgedAt: time.Now()},
+		}},
+	})
+
+	store.UpdateSessionStates(map[string]MenuSessionState{
+		"sess-ack": {Status: session.StatusWaiting, Tool: "claude"},
+	}, time.Now())
+
+	snapshot, err := store.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("LoadMenuSnapshot() error = %v", err)
+	}
+	got := snapshot.Items[0].Session
+	if got.Acknowledged || !got.AcknowledgedAt.IsZero() {
+		t.Fatalf("after publish: Acknowledged=%v AcknowledgedAt=%v, want the cleared mark", got.Acknowledged, got.AcknowledgedAt)
+	}
+}
