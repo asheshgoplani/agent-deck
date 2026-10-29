@@ -453,6 +453,13 @@ func TestApplyHookStatusToMenuSession_CodexCompletionBeforeVisitIsIdle(t *testin
 		t.Fatalf("completion before the visit: status = %q, want %q", seen.Status, session.StatusIdle)
 	}
 
+	// Seen before, but this completion came after the visit: still waiting.
+	fresh := &MenuSession{ID: "codex-fresh", Tool: "codex", Status: session.StatusIdle, Acknowledged: true, AcknowledgedAt: now.Add(-5 * time.Second)}
+	applyHookStatusToMenuSession(fresh, hook, now)
+	if fresh.Status != session.StatusWaiting {
+		t.Fatalf("completion after the visit: status = %q, want %q", fresh.Status, session.StatusWaiting)
+	}
+
 	unseen := &MenuSession{ID: "codex-unseen", Tool: "codex", Status: session.StatusIdle}
 	applyHookStatusToMenuSession(unseen, hook, now)
 	if unseen.Status != session.StatusWaiting {
