@@ -709,6 +709,22 @@ func (s *StateDB) Migrate() error {
 		}
 	}
 
+	// Sessions marked seen before acknowledged_at existed (or by an older
+	// binary sharing this database) have no visit time; give them "now". Safe
+	// because writing "running" clears acknowledged, so a still-acknowledged
+	// row has had no new turn since the visit. Count first: Migrate runs on
+	// every open, and an unconditional UPDATE would be a write per open.
+	var legacyAcks int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM instances WHERE acknowledged = 1 AND acknowledged_at = 0`).Scan(&legacyAcks); err != nil {
+		return fmt.Errorf("statedb: count legacy acknowledgments: %w", err)
+	}
+	if legacyAcks > 0 {
+		if _, err := tx.Exec(`UPDATE instances SET acknowledged_at = ? WHERE acknowledged = 1 AND acknowledged_at = 0`,
+			time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("statedb: backfill acknowledged_at: %w", err)
+		}
+	}
+
 	// Set schema version only when missing or changed.
 	// Avoiding a write on every open reduces lock contention between CLI processes.
 	schemaVersion := fmt.Sprintf("%d", SchemaVersion)

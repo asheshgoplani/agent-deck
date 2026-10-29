@@ -5,6 +5,38 @@ import (
 	"time"
 )
 
+// A session marked seen before acknowledged_at existed (or by an older binary
+// sharing the database) has no visit time. Migrate gives it "now": had the
+// agent run since the visit, writing "running" would already have cleared
+// acknowledged. Without this, every pre-upgrade acknowledgment keeps the old
+// flicker until the user opens that session again.
+func TestMigrate_BackfillsAcknowledgedAtForLegacyAcks(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.SaveInstances([]*InstanceRow{ackRow("legacy-ack"), ackRow("unseen")}); err != nil {
+		t.Fatalf("SaveInstances: %v", err)
+	}
+	if _, err := db.db.Exec(`UPDATE instances SET acknowledged = 1, acknowledged_at = 0 WHERE id = 'legacy-ack'`); err != nil {
+		t.Fatalf("seed legacy ack: %v", err)
+	}
+
+	before := time.Now().Add(-time.Second)
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	after := time.Now().Add(time.Second)
+
+	statuses, err := db.ReadAllStatuses()
+	if err != nil {
+		t.Fatalf("ReadAllStatuses: %v", err)
+	}
+	if got := statuses["legacy-ack"].AcknowledgedAt; got.Before(before) || got.After(after) {
+		t.Fatalf("legacy ack AcknowledgedAt = %v, want backfilled between %v and %v", got, before, after)
+	}
+	if got := statuses["unseen"]; got.Acknowledged || !got.AcknowledgedAt.IsZero() {
+		t.Fatalf("unseen session got Acknowledged=%v AcknowledgedAt=%v, want untouched", got.Acknowledged, got.AcknowledgedAt)
+	}
+}
+
 // Marking a session seen records when it happened, so a reader can tell a
 // turn that finished before the visit from one that finished after it.
 func TestSetAcknowledged_StampsAcknowledgedAt(t *testing.T) {
