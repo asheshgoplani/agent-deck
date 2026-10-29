@@ -6492,6 +6492,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				tmuxSess := item.Session.GetTmuxSession()
 				if tmuxSess != nil {
 					tmuxSess.ResetAcknowledged()
+					item.Session.ClearAcknowledgedAt()
 					// Persist to SQLite so background sync doesn't overwrite.
 					//
 					// Adopt the write: it moves last_modified, and without that

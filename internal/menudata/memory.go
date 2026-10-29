@@ -11,8 +11,10 @@ import (
 
 // MenuSessionState is a lightweight status/tool update for one session.
 type MenuSessionState struct {
-	Status session.Status
-	Tool   string
+	Status         session.Status
+	Tool           string
+	Acknowledged   bool
+	AcknowledgedAt time.Time
 }
 
 // MemoryMenuData stores one menu snapshot for web mode.
@@ -245,6 +247,8 @@ func (m *MemoryMenuData) UpdateSessionStates(states map[string]MenuSessionState,
 		}
 
 		item.Session.Status = state.Status
+		item.Session.Acknowledged = state.Acknowledged
+		item.Session.AcknowledgedAt = state.AcknowledgedAt
 		if state.Tool != "" {
 			item.Session.Tool = state.Tool
 		}

@@ -63,5 +63,11 @@ func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now
 		Acknowledged:      sess.Acknowledged,
 		InstanceID:        sess.ID,
 	})
+	// Same call as the Codex fast path in Instance.updateStatus: a completion
+	// older than the user's last visit was already seen.
+	if out.Status == session.StatusWaiting && hs != nil && session.IsCodexCompatible(sess.Tool) &&
+		session.HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, sess.AcknowledgedAt) {
+		out.Status = session.StatusIdle
+	}
 	sess.Status = out.Status
 }

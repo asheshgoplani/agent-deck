@@ -440,3 +440,22 @@ func TestRefreshSnapshotHookStatuses_DeadHookFromEarlierSpawnIgnored(t *testing.
 		})
 	}
 }
+
+// The web overlay makes the same call as the Codex fast path: a fresh Codex
+// completion older than the user's last visit was already seen.
+func TestApplyHookStatusToMenuSession_CodexCompletionBeforeVisitIsIdle(t *testing.T) {
+	now := time.Now()
+	hook := &session.HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: now.Add(-2 * time.Second)}
+
+	seen := &MenuSession{ID: "codex-seen", Tool: "codex", Status: session.StatusIdle, AcknowledgedAt: now}
+	applyHookStatusToMenuSession(seen, hook, now)
+	if seen.Status != session.StatusIdle {
+		t.Fatalf("completion before the visit: status = %q, want %q", seen.Status, session.StatusIdle)
+	}
+
+	unseen := &MenuSession{ID: "codex-unseen", Tool: "codex", Status: session.StatusIdle}
+	applyHookStatusToMenuSession(unseen, hook, now)
+	if unseen.Status != session.StatusWaiting {
+		t.Fatalf("completion with no visit: status = %q, want %q", unseen.Status, session.StatusWaiting)
+	}
+}
