@@ -2526,6 +2526,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			h.instancesMu.Lock()
 			oldCount := len(h.instances)
+			session.CarryOverReloadState(h.instances, msg.instances)
 			h.instances = msg.instances
 			newCount := len(msg.instances)
 			uiLog.Debug("reload_load_sessions", slog.Int("old_count", oldCount), slog.Int("new_count", newCount), slog.String("profile", h.profile))

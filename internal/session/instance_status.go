@@ -666,6 +666,24 @@ func (i *Instance) CachedSubstate() Substate {
 	return i.reconcileSubstate(tmuxSess.CachedSubstate())
 }
 
+// CarryOverReloadState hands in-memory per-session state that a storage reload
+// cannot rebuild from SQLite from the outgoing sessions to their replacements.
+// Today that is the cached substate: without it the sidebar's detail line
+// vanishes on every reload until the next status pass re-classifies the pane.
+func CarryOverReloadState(prev, next []*Instance) {
+	old := make(map[string]*tmux.Session, len(prev))
+	for _, inst := range prev {
+		if ts := inst.GetTmuxSession(); ts != nil {
+			old[inst.ID] = ts
+		}
+	}
+	for _, inst := range next {
+		if ts := inst.GetTmuxSession(); ts != nil {
+			ts.InheritCachedSubstate(old[inst.ID])
+		}
+	}
+}
+
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance
 // (read from SQLite). This transitions a YELLOW (waiting) session to GRAY (idle)
 // without requiring the user to interact with this specific TUI instance.
