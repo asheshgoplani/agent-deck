@@ -74,6 +74,9 @@ type MenuSession struct {
 	// drift. The web MCP pane reads this instead of guessing from the name.
 	MCPSupported bool           `json:"mcpSupported"`
 	Status       session.Status `json:"status"`
+	// Acknowledged is the user's "seen" mark, so the web's hook overlay can
+	// keep a turn the user already looked at idle. Not part of the API.
+	Acknowledged bool `json:"-"`
 	// Substate is the additive Honest-Status-v2 refinement of Status
 	// (e.g. "model-unavailable", "auth-401", "idle-at-empty-prompt"). It
 	// explains WHY a session is in its coarse status so consumers like the
@@ -170,6 +173,10 @@ func ToMenuSession(inst *session.Instance) *MenuSession {
 		tmuxName = tmuxSess.TmuxName()
 	}
 	modelInfo := inst.LaunchModelInfo()
+	acknowledged := false
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+		acknowledged = tmuxSess.IsAcknowledged()
+	}
 
 	return &MenuSession{
 		ID:                 inst.ID,
@@ -181,6 +188,7 @@ func ToMenuSession(inst *session.Instance) *MenuSession {
 		CanFork:            inst.CanFork(),
 		MCPSupported:       session.ToolSupportsMCPManager(inst.GetToolThreadSafe()),
 		Status:             inst.GetStatusThreadSafe(),
+		Acknowledged:       acknowledged,
 		Substate:           string(inst.CachedSubstate()),
 		SubstateDetail:     inst.SubstateDetail(),
 		GroupPath:          inst.GroupPath,

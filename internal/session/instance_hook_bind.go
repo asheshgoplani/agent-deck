@@ -157,6 +157,23 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		}
 	}
 
+	// The first hook a rebuilt instance sees gets the same check as the COLD
+	// LOAD read in updateStatus, which this call pre-empts on the CLI and
+	// watcher paths: a "waiting" event the user has not seen since their last
+	// visit clears the acknowledgment restored from storage. Only an ack with
+	// a recorded visit time is checked; one implied by a stored "idle" status
+	// keeps the existing rule that a Stop does not clear it. Deferred so a
+	// rejected foreign event (restoreHook) cannot clear it.
+	if prevHookStatus == "" && status.Status == "waiting" && i.tmuxSession != nil &&
+		!i.acknowledgedAt.IsZero() &&
+		!hookPredatesVisit(status.UpdatedAt, status.ReceivedAt, i.acknowledgedAt) {
+		defer func() {
+			if !rejected {
+				i.tmuxSession.ResetAcknowledged()
+			}
+		}()
+	}
+
 	// A live lifecycle hook proves the agent became interactive. The hook fast
 	// path in UpdateStatus skips tmux.GetStatus, which is otherwise the only
 	// place the startup clock is cleared, so end the startup phase here or the
