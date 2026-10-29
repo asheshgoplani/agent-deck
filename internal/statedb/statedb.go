@@ -289,6 +289,9 @@ type StatusRow struct {
 	Status       string
 	Tool         string
 	Acknowledged bool
+	// AcknowledgedAt is when the user last marked the session seen (zero when
+	// not acknowledged).
+	AcknowledgedAt time.Time
 	// HookLag is the persisted tool_data.hook_lag extra (nil when absent):
 	// the completed-turn samples a CLI pass recorded for a Claude session
 	// whose hook still says running (session/hook_lag.go).
@@ -476,7 +479,8 @@ func (s *StateDB) Migrate() error {
 			pin             TEXT NOT NULL DEFAULT '',
 			last_sent_at    INTEGER NOT NULL DEFAULT 0,
 			tool_data       TEXT NOT NULL DEFAULT '{}',
-			acknowledged    INTEGER NOT NULL DEFAULT 0
+			acknowledged    INTEGER NOT NULL DEFAULT 0,
+			acknowledged_at INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create instances: %w", err)
@@ -656,6 +660,7 @@ func (s *StateDB) Migrate() error {
 	// See CLAUDE.md "Schema Migration Safety": every new column MUST have a corresponding ALTER TABLE.
 	alterMigrations := []string{
 		"ALTER TABLE instances ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE instances ADD COLUMN acknowledged_at INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE watcher_events ADD COLUMN triage_session_id TEXT NOT NULL DEFAULT ''",
 		// Slack-truncation fix: full message text alongside the (first-line,
 		// 200-byte) subject label, so the conductor bridge can forward the
@@ -1777,7 +1782,7 @@ func (s *StateDB) WriteLastAccessed(id string, at time.Time) error {
 // abort the whole query and silently blank every session's shared status;
 // the json_valid guard turns such a row into a NULL hook_lag instead.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
-	rows, err := s.db.Query(`SELECT id, status, tool, acknowledged,
+	rows, err := s.db.Query(`SELECT id, status, tool, acknowledged, acknowledged_at,
 		CASE WHEN json_valid(tool_data) THEN json_extract(tool_data, '$.hook_lag') ELSE NULL END
 		FROM instances`)
 	if err != nil {
@@ -1790,11 +1795,15 @@ func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 		var id string
 		var sr StatusRow
 		var ack int
+		var ackAt int64
 		var hookLag sql.NullString
-		if err := rows.Scan(&id, &sr.Status, &sr.Tool, &ack, &hookLag); err != nil {
+		if err := rows.Scan(&id, &sr.Status, &sr.Tool, &ack, &ackAt, &hookLag); err != nil {
 			return nil, err
 		}
 		sr.Acknowledged = ack != 0
+		if sr.Acknowledged && ackAt > 0 {
+			sr.AcknowledgedAt = time.UnixMilli(ackAt)
+		}
 		if hookLag.Valid && hookLag.String != "" {
 			sr.HookLag = json.RawMessage(hookLag.String)
 		}
@@ -1846,12 +1855,12 @@ func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 // STALE stored status. Same self-inflicted false positive WriteRestartOutcome's
 // stamps exist to prevent (#1868).
 func (s *StateDB) SetAcknowledgedStamped(id string, ack bool) (WriteStamps, error) {
-	v := 0
+	v, at := 0, int64(0)
 	if ack {
-		v = 1
+		v, at = 1, time.Now().UnixMilli()
 	}
 	if err := withBusyRetry(func() error {
-		_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
+		_, err := s.db.Exec("UPDATE instances SET acknowledged = ?, acknowledged_at = ? WHERE id = ?", v, at, id)
 		return err
 	}); err != nil {
 		return WriteStamps{}, err
