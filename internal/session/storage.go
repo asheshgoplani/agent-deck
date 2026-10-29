@@ -1589,6 +1589,8 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 				d.Acknowledged, d.AcknowledgedAt = true, sr.AcknowledgedAt
 			}
 		}
+	} else {
+		storageLog.Warn("ack_read_failed", slog.String("error", ackErr.Error()))
 	}
 
 	instances, groups, err := s.convertToInstances(data)
