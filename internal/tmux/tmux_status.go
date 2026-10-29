@@ -1562,9 +1562,12 @@ func (s *Session) InheritCachedSubstate(prev *Session) {
 	if prev == nil || prev == s || prev.TmuxName() != s.TmuxName() {
 		return
 	}
-	// Read prev and write s under separate locks: holding both would risk a
-	// lock-order inversion with any caller that inherits the other way round.
-	sub, detail := prev.CachedSubstate(), prev.CachedSubstateDetail()
+	// Read prev's pair under one lock, so a status pass between two reads
+	// cannot mix frames. Write s under its own lock: holding both would risk
+	// a lock-order inversion with any caller that inherits the other way round.
+	prev.mu.Lock()
+	sub, detail := prev.lastSubstate, prev.lastSubstateDetail
+	prev.mu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lastSubstate == SubstateNone {
