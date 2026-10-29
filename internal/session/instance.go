@@ -2399,9 +2399,12 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
 			// A "waiting" event older than the user's last visit is the turn
-			// they already saw: keep the visit, or every reload undoes it.
+			// they already saw: keep the visit, or every reload undoes it. A
+			// permission prompt or notification still needs an answer, so it
+			// always resets, as UpdateHookStatus treats it.
+			needsAnswer := hs.Event == "PermissionRequest" || hs.Event == "Notification"
 			if i.tmuxSession != nil && (hs.Status == "running" ||
-				(hs.Status == "waiting" && !HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, i.acknowledgedAt))) {
+				(hs.Status == "waiting" && (needsAnswer || !HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, i.acknowledgedAt)))) {
 				i.tmuxSession.ResetAcknowledged()
 			}
 		}

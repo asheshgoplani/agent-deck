@@ -64,9 +64,11 @@ func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now
 		InstanceID:        sess.ID,
 	})
 	// Same call as the Codex fast path in Instance.updateStatus: a completion
-	// older than the user's last visit was already seen.
+	// older than the user's last visit was already seen. The seen mark must
+	// be set too: a session marked unread can be published before its visit
+	// time is cleared.
 	if out.Status == session.StatusWaiting && hs != nil && session.IsCodexCompatible(sess.Tool) &&
-		session.HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, sess.AcknowledgedAt) {
+		sess.Acknowledged && session.HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, sess.AcknowledgedAt) {
 		out.Status = session.StatusIdle
 	}
 	sess.Status = out.Status
