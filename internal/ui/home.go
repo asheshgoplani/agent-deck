@@ -6456,8 +6456,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				tmuxSess := item.Session.GetTmuxSession()
 				if tmuxSess != nil {
-					tmuxSess.ResetAcknowledged()
+					// Visit time first: a publish in between then sees no
+					// visit, never a cleared mark with the old visit time.
 					item.Session.ClearAcknowledgedAt()
+					tmuxSess.ResetAcknowledged()
 					// Persist to SQLite so background sync doesn't overwrite.
 					//
 					// Adopt the write: it moves last_modified, and without that

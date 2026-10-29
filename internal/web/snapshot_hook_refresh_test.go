@@ -447,7 +447,7 @@ func TestApplyHookStatusToMenuSession_CodexCompletionBeforeVisitIsIdle(t *testin
 	now := time.Now()
 	hook := &session.HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: now.Add(-2 * time.Second)}
 
-	seen := &MenuSession{ID: "codex-seen", Tool: "codex", Status: session.StatusIdle, AcknowledgedAt: now}
+	seen := &MenuSession{ID: "codex-seen", Tool: "codex", Status: session.StatusIdle, Acknowledged: true, AcknowledgedAt: now}
 	applyHookStatusToMenuSession(seen, hook, now)
 	if seen.Status != session.StatusIdle {
 		t.Fatalf("completion before the visit: status = %q, want %q", seen.Status, session.StatusIdle)
@@ -457,5 +457,13 @@ func TestApplyHookStatusToMenuSession_CodexCompletionBeforeVisitIsIdle(t *testin
 	applyHookStatusToMenuSession(unseen, hook, now)
 	if unseen.Status != session.StatusWaiting {
 		t.Fatalf("completion with no visit: status = %q, want %q", unseen.Status, session.StatusWaiting)
+	}
+
+	// Marked unread, published before the visit time was cleared: the mark
+	// alone decides, so the completion is unread again.
+	unread := &MenuSession{ID: "codex-unread", Tool: "codex", Status: session.StatusIdle, AcknowledgedAt: now}
+	applyHookStatusToMenuSession(unread, hook, now)
+	if unread.Status != session.StatusWaiting {
+		t.Fatalf("completion marked unread: status = %q, want %q", unread.Status, session.StatusWaiting)
 	}
 }

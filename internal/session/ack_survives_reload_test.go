@@ -223,3 +223,43 @@ func TestCodexWaitingFastPath_ClearedVisitShowsWaiting(t *testing.T) {
 		t.Fatalf("status = %q after marking unread, want %q", got, StatusWaiting)
 	}
 }
+
+// A permission prompt or notification still needs an answer, even one older
+// than the visit, so the rebuilt session shows it as waiting again. This
+// holds on the cold read and on the first hook a rebuilt instance is fed.
+func TestColdHookRead_PermissionPromptOlderThanVisitClearsAcknowledgment(t *testing.T) {
+	for _, event := range []string{"PermissionRequest", "Notification"} {
+		t.Run(event, func(t *testing.T) {
+			inst := newIssue2361Instance(t, "test-ack-cold-perm-"+event)
+			inst.tmuxSession.Acknowledge()
+			inst.acknowledgedAt = time.Now()
+
+			stopAt := time.Unix(time.Now().Add(-10*time.Minute).Unix(), 0)
+			writeIssue2361HookFile(t, inst.ID, "waiting", event, "owner-session", inst.ProjectPath, stopAt)
+
+			if err := inst.UpdateStatus(); err != nil {
+				t.Fatalf("UpdateStatus: %v", err)
+			}
+			if inst.tmuxSession.IsAcknowledged() {
+				t.Fatalf("cold read kept the acknowledgment for an open %s", event)
+			}
+		})
+	}
+}
+
+func TestUpdateHookStatus_FirstPermissionPromptOlderThanVisitClearsAcknowledgment(t *testing.T) {
+	inst := newIssue2361Instance(t, "test-ack-first-hook-perm")
+	inst.tmuxSession.Acknowledge()
+	inst.acknowledgedAt = time.Now()
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "waiting",
+		Event:     "PermissionRequest",
+		SessionID: "owner-session",
+		UpdatedAt: time.Unix(time.Now().Add(-10*time.Minute).Unix(), 0),
+	})
+
+	if inst.tmuxSession.IsAcknowledged() {
+		t.Fatal("first hook kept the acknowledgment for an open PermissionRequest")
+	}
+}
