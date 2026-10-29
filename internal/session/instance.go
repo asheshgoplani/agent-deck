@@ -651,6 +651,7 @@ type Instance struct {
 	// carrying one must not revert ClaudeSessionID to the stalled copy.
 	claudeSupersededIDs         map[string]struct{}
 	hookLastUpdate              time.Time // When hook status was last received
+	acknowledgedAt              time.Time // When the user last marked this session seen (from SQLite on load)
 	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
 	skipRecoveryTurn            bool      // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
 	restartReason               string    // SetRestartReason: why the next restart happens, for its resume note
@@ -2397,7 +2398,10 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
-			if i.tmuxSession != nil && (hs.Status == "running" || hs.Status == "waiting") {
+			// A "waiting" event older than the user's last visit is the turn
+			// they already saw: keep the visit, or every reload undoes it.
+			if i.tmuxSession != nil && (hs.Status == "running" ||
+				(hs.Status == "waiting" && !hs.UpdatedAt.Before(i.acknowledgedAt))) {
 				i.tmuxSession.ResetAcknowledged()
 			}
 		}

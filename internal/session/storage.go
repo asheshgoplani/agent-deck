@@ -48,6 +48,10 @@ type InstanceData struct {
 	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
 	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
 	TitleLocked        bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
+	// Acknowledged and AcknowledgedAt carry the user's "seen" mark from the
+	// acknowledged columns into a rebuilt session, so a reload does not undo it.
+	Acknowledged   bool      `json:"-"`
+	AcknowledgedAt time.Time `json:"-"`
 	// ConductorName mirrors Instance.ConductorName, the stable conductor key.
 	// Lives in the tool_data extras zone (conductor_identity.go).
 	ConductorName string `json:"conductor_name,omitempty"`
@@ -1575,6 +1579,18 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 		}
 	}
 
+	// The "seen" mark lives outside the registry snapshot on purpose: putting it
+	// in the snapshot would make every acknowledgment write trigger a reload.
+	// Read it once per load instead. Best effort: without it the session is
+	// rebuilt from its stored status alone, as before.
+	if acks, ackErr := s.db.ReadAllStatuses(); ackErr == nil {
+		for _, d := range data.Instances {
+			if sr, ok := acks[d.ID]; ok && sr.Acknowledged {
+				d.Acknowledged, d.AcknowledgedAt = true, sr.AcknowledgedAt
+			}
+		}
+	}
+
 	instances, groups, err := s.convertToInstances(data)
 	if err == nil {
 		byID := make(map[string]*statedb.InstanceRow, len(dbRows))
@@ -1756,6 +1772,11 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			// server for a session that lives on an isolated socket and
 			// report it as dead (issue #687, v1.7.50).
 			tmuxSess.SocketName = instData.TmuxSocketName
+			// A stored "waiting" rebuilds as unseen; the user's saved visit
+			// overrides that so a reload does not turn the dot back to waiting.
+			if instData.Acknowledged {
+				tmuxSess.ApplySharedAcknowledged(true)
+			}
 			// Issue #663: for multi-repo sessions ProjectPath is a symlink
 			// inside MultiRepoTempDir (see home.go:7255-7364), so the
 			// restart pane must cwd into the parent dir — not the symlink
@@ -1919,6 +1940,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		// Session ID syncing (SetEnvironment calls) will happen on EnsureConfigured()
 		// or when the session is restarted. This saves 0-4 subprocess calls per session.
 
+		inst.acknowledgedAt = instData.AcknowledgedAt
 		instances[i] = inst
 	}
 
