@@ -5,32 +5,36 @@ import (
 	"time"
 )
 
-// A session marked seen before acknowledged_at existed (or by an older binary
-// sharing the database) has no visit time. Migrate gives it "now": had the
-// agent run since the visit, writing "running" would already have cleared
-// acknowledged. Without this, every pre-upgrade acknowledgment keeps the old
-// flicker until the user opens that session again.
+// Acks saved before acknowledged_at existed get the session's last visit
+// (last_accessed) as their time, so a Stop that finished after that visit,
+// even while agent-deck was closed, still shows as unseen. An ack with no
+// recorded visit stays at zero and any Stop clears it, as before the column.
 func TestMigrate_BackfillsAcknowledgedAtForLegacyAcks(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.SaveInstances([]*InstanceRow{ackRow("legacy-ack"), ackRow("unseen")}); err != nil {
+	if err := db.SaveInstances([]*InstanceRow{ackRow("legacy-ack"), ackRow("legacy-no-visit"), ackRow("unseen")}); err != nil {
 		t.Fatalf("SaveInstances: %v", err)
 	}
-	if _, err := db.db.Exec(`UPDATE instances SET acknowledged = 1, acknowledged_at = 0 WHERE id = 'legacy-ack'`); err != nil {
+	visit := time.Unix(time.Now().Add(-time.Hour).Unix(), 0)
+	if _, err := db.db.Exec(`UPDATE instances SET acknowledged = 1, acknowledged_at = 0, last_accessed = ? WHERE id = 'legacy-ack'`, visit.Unix()); err != nil {
 		t.Fatalf("seed legacy ack: %v", err)
 	}
+	if _, err := db.db.Exec(`UPDATE instances SET acknowledged = 1, acknowledged_at = 0, last_accessed = 0 WHERE id = 'legacy-no-visit'`); err != nil {
+		t.Fatalf("seed legacy ack without a visit: %v", err)
+	}
 
-	before := time.Now().Add(-time.Second)
 	if err := db.Migrate(); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	after := time.Now().Add(time.Second)
 
 	statuses, err := db.ReadAllStatuses()
 	if err != nil {
 		t.Fatalf("ReadAllStatuses: %v", err)
 	}
-	if got := statuses["legacy-ack"].AcknowledgedAt; got.Before(before) || got.After(after) {
-		t.Fatalf("legacy ack AcknowledgedAt = %v, want backfilled between %v and %v", got, before, after)
+	if got := statuses["legacy-ack"].AcknowledgedAt; !got.Equal(visit) {
+		t.Fatalf("legacy ack AcknowledgedAt = %v, want the last visit %v", got, visit)
+	}
+	if got := statuses["legacy-no-visit"]; !got.Acknowledged || !got.AcknowledgedAt.IsZero() {
+		t.Fatalf("legacy ack without a visit got Acknowledged=%v AcknowledgedAt=%v, want true and zero", got.Acknowledged, got.AcknowledgedAt)
 	}
 	if got := statuses["unseen"]; got.Acknowledged || !got.AcknowledgedAt.IsZero() {
 		t.Fatalf("unseen session got Acknowledged=%v AcknowledgedAt=%v, want untouched", got.Acknowledged, got.AcknowledgedAt)

@@ -710,17 +710,18 @@ func (s *StateDB) Migrate() error {
 	}
 
 	// Sessions marked seen before acknowledged_at existed (or by an older
-	// binary sharing this database) have no visit time; give them "now". Safe
-	// because writing "running" clears acknowledged, so a still-acknowledged
-	// row has had no new turn since the visit. Count first: Migrate runs on
-	// every open, and an unconditional UPDATE would be a write per open.
+	// binary sharing this database) have no visit time; use the last visit
+	// (last_accessed, whole seconds). A Stop that finished after it, even
+	// while agent-deck was closed, then still reads as unseen. Rows with no
+	// recorded visit stay at 0, so any Stop clears them as before. Count
+	// first: Migrate runs on every open, and an unconditional UPDATE would be
+	// a write per open.
 	var legacyAcks int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM instances WHERE acknowledged = 1 AND acknowledged_at = 0`).Scan(&legacyAcks); err != nil {
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM instances WHERE acknowledged = 1 AND acknowledged_at = 0 AND last_accessed > 0`).Scan(&legacyAcks); err != nil {
 		return fmt.Errorf("statedb: count legacy acknowledgments: %w", err)
 	}
 	if legacyAcks > 0 {
-		if _, err := tx.Exec(`UPDATE instances SET acknowledged_at = ? WHERE acknowledged = 1 AND acknowledged_at = 0`,
-			time.Now().UnixMilli()); err != nil {
+		if _, err := tx.Exec(`UPDATE instances SET acknowledged_at = last_accessed * 1000 WHERE acknowledged = 1 AND acknowledged_at = 0 AND last_accessed > 0`); err != nil {
 			return fmt.Errorf("statedb: backfill acknowledged_at: %w", err)
 		}
 	}
