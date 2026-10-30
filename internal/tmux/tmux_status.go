@@ -1409,8 +1409,9 @@ func (s *Session) hasErrorBannerIndicator(content string) bool {
 	// out. A reconnected session has no startup clock, so the hold text itself
 	// is the durable, timeout-specific reason. RespawnPane publishes a fresh
 	// startupAt before unlocking, preventing preserved old scrollback from
-	// poisoning the new generation.
-	if (s.startupTimedOut || s.startupAt.IsZero()) && strings.Contains(strings.ToLower(StripANSI(content)), "session startup timed out before the agent became interactive") {
+	// poisoning the new generation. A generation that armed a clock and then
+	// cleared it became interactive, so the banner there is stale (#2938).
+	if (s.startupTimedOut || (s.startupAt.IsZero() && !s.startupArmed)) && strings.Contains(strings.ToLower(StripANSI(content)), "session startup timed out before the agent became interactive") {
 		return true
 	}
 	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand())

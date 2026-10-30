@@ -492,6 +492,12 @@ type Session struct {
 	InstanceID      string // Agent-deck instance ID for hook callbacks
 	startupAt       time.Time
 	startupTimedOut bool // terminal for this pane generation after #1892's deadline
+	// startupArmed records that this process armed a startup clock for the
+	// current pane generation (NewSession, Start, RespawnPane). Once armed, a
+	// zero startupAt means the generation became interactive, not that it was
+	// reconnected without a clock, so hasErrorBannerIndicator must not read a
+	// preserved startup-timeout banner as current (#2938).
+	startupArmed bool
 	// afterStartupTimeoutClaim is a test seam for scheduling a competing pane
 	// generation after timeout recovery releases mu but before GetStatus decides
 	// which generation's status to return.
@@ -848,6 +854,7 @@ func NewSession(name, workDir string) *Session {
 		WorkDir:               workDir,
 		Created:               time.Now(),
 		startupAt:             time.Now(),
+		startupArmed:          true,
 		lastStableStatus:      "waiting",
 		toolDetectExpiry:      30 * time.Second, // Re-detect tool every 30 seconds
 		injectStatusLine:      true,             // Default: inject status bar
@@ -984,6 +991,7 @@ func (s *Session) Start(command string) error {
 	s.Created = time.Now()
 	s.mu.Lock()
 	s.startupAt = s.Created
+	s.startupArmed = true
 	s.startupTimedOut = false
 	s.lastStableStatus = "waiting"
 	s.stateTracker = nil
@@ -2102,6 +2110,7 @@ func (s *Session) RespawnPane(command string) error {
 	// Publish the new generation before releasing the claim. A timeout poll can
 	// only proceed after it observes this fresh startup clock.
 	s.startupAt = time.Now()
+	s.startupArmed = true
 	s.startupTimedOut = false
 	s.lastStableStatus = "waiting"
 	s.stateTracker = nil
