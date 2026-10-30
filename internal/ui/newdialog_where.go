@@ -101,18 +101,30 @@ func (d *NewDialog) cycleWhere(delta int) {
 	d.ClearError()
 }
 
+// whereRemoteDefaultsNote is shown under the Where row for a remote or new
+// sandbox pick: what the dialog does not carry there (#2918).
+const whereRemoteDefaultsNote = "Model, effort, Claude options: the remote's own defaults"
+
 // GetWhereRemoteCreateOptions collects what a session created on a remote
 // picked in the Where row carries. The dialog was filled from this
 // machine's config, so only what the user typed travels (name, tool, path,
 // worktree branch); the remote applies its own defaults for the rest, as
-// ResetRemoteDefaults arranges for a dialog opened on a remote row.
-func (d *NewDialog) GetWhereRemoteCreateOptions() session.RemoteAddOptions {
+// ResetRemoteDefaults arranges for a dialog opened on a remote row, and the
+// Where row says so. Settings that would silently not happen there
+// (multi-repo, the Docker sandbox) return an error message for the dialog.
+func (d *NewDialog) GetWhereRemoteCreateOptions() (session.RemoteAddOptions, string) {
+	if d.multiRepoEnabled {
+		return session.RemoteAddOptions{}, "Multi-repo is not carried to a remote or new sandbox; turn it off or pick this machine"
+	}
+	if d.sandboxEnabled {
+		return session.RemoteAddOptions{}, "Run in Docker sandbox is not carried to a remote or new sandbox; turn it off or pick this machine"
+	}
 	name, path, command := d.GetRemoteValues()
 	opts := session.RemoteAddOptions{Tool: command, Title: name, Path: path}
 	if d.worktreeEnabled {
 		opts.WorktreeBranch = strings.TrimSpace(d.branchInput.Value())
 	}
-	return opts
+	return opts, ""
 }
 
 func (d *NewDialog) renderWhereSection(content *strings.Builder, cur focusTarget) {
@@ -132,5 +144,10 @@ func (d *NewDialog) renderWhereSection(content *strings.Builder, cur focusTarget
 		content.WriteString(" ")
 		content.WriteString(valueStyle.Render(value))
 	}
-	content.WriteString("\n\n")
+	content.WriteString("\n")
+	if d.GetWhere().kind != whereLocal {
+		content.WriteString(valueStyle.Render("  " + whereRemoteDefaultsNote))
+		content.WriteString("\n")
+	}
+	content.WriteString("\n")
 }

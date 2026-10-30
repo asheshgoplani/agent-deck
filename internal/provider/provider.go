@@ -62,6 +62,16 @@ const (
 
 var providerLog = logging.ForComponent("provider")
 
+// ErrTimeout is matched (errors.Is) by the error of a provider call that ran
+// past its configured timeout and was killed.
+var ErrTimeout = errors.New("provider call timed out")
+
+// timeoutError keeps the call's own message and matches ErrTimeout.
+type timeoutError struct{ msg string }
+
+func (e *timeoutError) Error() string        { return e.msg }
+func (e *timeoutError) Is(target error) bool { return target == ErrTimeout }
+
 // Auth says how ssh authenticates to a sandbox.
 type Auth struct {
 	// Type is "key" (KeyPath names a private key file) or "agent" (the
@@ -288,7 +298,7 @@ func (c *Client) call(ctx context.Context, req request, timeout time.Duration) (
 		slog.Int("exit_code", exitCode))
 
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-		return nil, fmt.Errorf("provider %q %s timed out after %s%s", c.Name, req.Action, timeout, stderrSuffix(stderr))
+		return nil, &timeoutError{msg: fmt.Sprintf("provider %q %s timed out after %s%s", c.Name, req.Action, timeout, stderrSuffix(stderr))}
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, fmt.Errorf("provider %q %s: %w", c.Name, req.Action, ctxErr)

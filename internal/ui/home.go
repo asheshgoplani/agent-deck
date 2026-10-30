@@ -1054,6 +1054,12 @@ type Home struct {
 	// sandboxProvisioner replaces provider.Provision for a "new sandbox"
 	// Where pick (tests stub it); nil uses defaultSandboxProvisioner.
 	sandboxProvisioner func(ctx context.Context, opts provider.ProvisionOptions) (*provider.Provisioned, error)
+	// sandboxProvisionMu guards the count of sandbox provisionings in
+	// flight; quit waits for them (waitSandboxProvisions) so a cancelled
+	// create still finishes its rollback (#2918).
+	sandboxProvisionMu   sync.Mutex
+	sandboxProvisionN    int
+	sandboxProvisionIdle chan struct{} // closed when the count drops to 0
 	// insertKeySender is the persistent dispatch path opened on
 	// enterInsertMode and closed on exitInsertMode (#1102 perf fix +
 	// remote support). Local sessions get a tmux.KeySender (control-mode
@@ -7131,6 +7137,11 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		}
 		// Signal background worker to stop
 		h.cancel()
+		// A sandbox being provisioned saw the cancel above; let it roll
+		// back, or the sandbox is left running.
+		if !h.waitSandboxProvisions(sandboxQuitWait) {
+			uiLog.Warn("sandbox_provision_quit_timeout")
+		}
 		// Wait for background worker to finish (prevents race on shutdown)
 		if h.statusWorkerDone != nil {
 			select {

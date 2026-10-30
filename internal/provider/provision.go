@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -18,6 +19,10 @@ import (
 const (
 	LabelRemote  = "agent-deck/remote"
 	LabelProfile = "agent-deck/profile"
+	// LabelCreateID is a random id per create request. When a create is cut
+	// off (timeout, cancel) before the provider answered, it finds exactly
+	// the sandbox that request made, if any.
+	LabelCreateID = "agent-deck/create-id"
 )
 
 const (
@@ -86,11 +91,25 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	if !ValidRemoteName(name) {
 		return nil, fmt.Errorf("invalid remote name %q: use letters, digits, '-' and '_' (max 64, starting with a letter or digit)", name)
 	}
+	// One provisioning per remote name at a time: a second one would
+	// overwrite the first's ssh files and, on its rollback, remove them.
+	unlock, err := lockRemoteName(name)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if cfg, err = session.ReloadUserConfig(); err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
 	if _, exists := cfg.Remotes[name]; exists {
 		return nil, fmt.Errorf("remote %q already exists (use 'agent-deck remote remove %s' or pick another --name)", name, name)
 	}
 
-	labels := map[string]string{LabelRemote: name}
+	createID, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("generating create id: %w", err)
+	}
+	labels := map[string]string{LabelRemote: name, LabelCreateID: createID}
 	if opts.Profile != "" {
 		labels[LabelProfile] = opts.Profile
 	}
@@ -99,6 +118,10 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	if err != nil {
 		if sb != nil {
 			return nil, rollback(client, name, sb.ID, false, err)
+		}
+		if errors.Is(err, ErrTimeout) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// The provider may have made the sandbox before it was cut off.
+			return nil, sweepInterruptedCreate(client, name, createID, err)
 		}
 		return nil, err
 	}
@@ -158,6 +181,39 @@ func rollback(client *Client, name, id string, registered bool, cause error) err
 	}
 	providerLog.Warn("provider_rollback_incomplete", slog.String("provider", client.Name), slog.String("remote", name), slog.Int("failures", len(errs)))
 	return fmt.Errorf("%w; rollback failed: %w", cause, errors.Join(errs...))
+}
+
+// sweepInterruptedCreate destroys the sandbox a cut-off create request
+// made, found by its create-id label, on a fresh context so a cancelled
+// caller still cleans up. Its failures are joined to cause, with the label
+// to look for by hand.
+func sweepInterruptedCreate(client *Client, name, createID string, cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), rollbackTimeout)
+	defer cancel()
+	list, err := client.List(ctx)
+	if err != nil {
+		providerLog.Warn("provider_create_sweep_failed", slog.String("provider", client.Name), slog.String("remote", name))
+		return fmt.Errorf("%w; could not check for a leftover sandbox labelled %s=%s: %w (check the provider by hand)", cause, LabelRemote, name, err)
+	}
+	var destroyed []string
+	var errs []error
+	for _, sb := range list {
+		if sb.Labels[LabelCreateID] != createID || sb.Labels[LabelRemote] != name {
+			continue
+		}
+		if err := client.Destroy(ctx, sb.ID); err != nil {
+			errs = append(errs, fmt.Errorf("destroying leftover sandbox %s: %w (destroy it by hand)", sb.ID, err))
+			continue
+		}
+		destroyed = append(destroyed, sb.ID)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%w; %w", cause, errors.Join(errs...))
+	}
+	if len(destroyed) > 0 {
+		return fmt.Errorf("%w (leftover sandbox %s destroyed)", cause, strings.Join(destroyed, ", "))
+	}
+	return cause
 }
 
 // DestroyRemote destroys a sandbox remote: provider destroy, then
@@ -267,15 +323,24 @@ func unregisterRemote(name string) error {
 // rule. The name is chosen before create because the create request
 // carries it.
 func defaultRemoteName(providerName string) (string, error) {
-	var b [3]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	suffix, err := randomHex(3)
+	if err != nil {
 		return "", fmt.Errorf("generating remote name: %w", err)
 	}
 	prefix := sanitizeNamePart(providerName)
 	if prefix == "" {
 		prefix = "sandbox"
 	}
-	return prefix + "-" + hex.EncodeToString(b[:]), nil
+	return prefix + "-" + suffix, nil
+}
+
+// randomHex is n random bytes, hex encoded.
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func sanitizeNamePart(s string) string {

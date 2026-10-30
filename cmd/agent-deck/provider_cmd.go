@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -82,6 +83,54 @@ func installOnSandbox(ctx context.Context, name string, rc session.RemoteConfig)
 	}
 	fmt.Fprintf(providerDeps.stdout, "  ✓ Installed agent-deck v%s on remote '%s'\n", Version, name)
 	return nil
+}
+
+// providerWorkTracker counts provider work in flight (a provisioning with
+// its rollback, a destroy), so a signal handler can wait for it before the
+// CLI exits instead of cutting a provider destroy off.
+type providerWorkTracker struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{} // closed when n drops to 0
+}
+
+// providerWork tracks this process's provider work.
+var providerWork = &providerWorkTracker{}
+
+// begin marks one piece of work and returns its (idempotent) end.
+func (w *providerWorkTracker) begin() func() {
+	w.mu.Lock()
+	if w.n == 0 {
+		w.idle = make(chan struct{})
+	}
+	w.n++
+	w.mu.Unlock()
+	return sync.OnceFunc(func() {
+		w.mu.Lock()
+		w.n--
+		if w.n == 0 {
+			close(w.idle)
+		}
+		w.mu.Unlock()
+	})
+}
+
+func (w *providerWorkTracker) busy() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.n > 0
+}
+
+// done is closed when no work is in flight (already closed when idle).
+func (w *providerWorkTracker) done() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.n == 0 {
+		c := make(chan struct{})
+		close(c)
+		return c
+	}
+	return w.idle
 }
 
 // providerSignalContext is cancelled by SIGINT/SIGTERM so a long create can
@@ -337,6 +386,7 @@ func provisionRemote(profile, providerName, name string) (*provider.Provisioned,
 		fmt.Fprintln(providerDeps.stderr, "Error: remote name must use letters, digits, '-' and '_' and not match a remote management command")
 		return nil, 1
 	}
+	defer providerWork.begin()()
 	ctx, stop := providerSignalContext()
 	defer stop()
 	p, err := provider.Provision(ctx, provider.ProvisionOptions{
@@ -354,8 +404,21 @@ func provisionRemote(profile, providerName, name string) (*provider.Provisioned,
 	return p, 0
 }
 
+// launchValueFlags are the launch flags that take a value, so the argument
+// after one (`-m "--provider ..."`) is that value, never a flag of ours.
+var launchValueFlags = sync.OnceValue(func() map[string]bool {
+	out := map[string]bool{}
+	for _, f := range creationCommandFields("launch") {
+		if f.TakesValue {
+			out[f.Name] = true
+		}
+	}
+	return out
+})
+
 // splitLaunchProviderArgs pulls --provider and --name out of launch args
-// (before any "--"); rest is forwarded to the remote launch unchanged.
+// (before any "--"); rest is forwarded to the remote launch unchanged,
+// including the values of launch's own value flags.
 func splitLaunchProviderArgs(args []string) (providerName, name string, rest []string, ok bool, err error) {
 	set := func(key, value string) {
 		if key == "provider" {
@@ -364,11 +427,17 @@ func splitLaunchProviderArgs(args []string) (providerName, name string, rest []s
 			name = value
 		}
 	}
-	pending := "" // flag waiting for its value in the next argument
+	pending := ""        // flag waiting for its value in the next argument
+	launchValue := false // the next argument is a launch flag's value
 	for i, a := range args {
 		if pending != "" {
 			set(pending, a)
 			pending = ""
+			continue
+		}
+		if launchValue {
+			rest = append(rest, a)
+			launchValue = false
 			continue
 		}
 		if a == "--" {
@@ -378,6 +447,7 @@ func splitLaunchProviderArgs(args []string) (providerName, name string, rest []s
 		key, value, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
 		if !strings.HasPrefix(a, "-") || (key != "provider" && key != "name") {
 			rest = append(rest, a)
+			launchValue = strings.HasPrefix(a, "-") && !hasValue && launchValueFlags()[key]
 			continue
 		}
 		if !hasValue {
@@ -466,6 +536,7 @@ func runRemoteDestroy(args []string) int {
 		return 1
 	}
 
+	defer providerWork.begin()()
 	ctx, stop := providerSignalContext()
 	defer stop()
 	listCtx, cancelList := context.WithTimeout(ctx, rc.GetCommandTimeout())
