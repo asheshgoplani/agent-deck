@@ -1043,6 +1043,14 @@ type Home struct {
 	// pendingRemoteCreate holds the remote create whose path the server
 	// reported missing, while the create-directory confirmation is open.
 	pendingRemoteCreate *remoteCreateDirNeededMsg
+	// reservedTitles counts the titles of dialog creates still in flight, so
+	// a second quick create derives a different name (#2913). Touched only on
+	// the UI goroutine: added on submit, released by sessionCreatedMsg.
+	reservedTitles map[string]int
+	// createDirName is the Name field as typed when a dialog create stopped at
+	// "Directory Not Found"; Cancel returns to the dialog with it (#2913).
+	createDirName     string
+	createDirFromForm bool
 	// sandboxProvisioner replaces provider.Provision for a "new sandbox"
 	// Where pick (tests stub it); nil uses defaultSandboxProvisioner.
 	sandboxProvisioner func(ctx context.Context, opts provider.ProvisionOptions) (*provider.Provisioned, error)
@@ -2724,6 +2732,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			slog.Bool("has_err", msg.err != nil),
 			slog.String("temp_id", msg.tempID),
 			slog.Bool("has_instance", msg.instance != nil))
+		h.releaseTitle(msg.reservedTitle)
 		// Remove the creating placeholder (if any) — always, on success or error
 		if msg.tempID != "" {
 			delete(h.creatingSessions, msg.tempID)

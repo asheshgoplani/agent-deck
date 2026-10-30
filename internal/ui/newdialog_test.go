@@ -1749,14 +1749,18 @@ func TestNewDialog_AutoBranch_NameEditedToUnsanitizable_ClearsStaleBranch(t *tes
 	}
 }
 
+// With Name and Path both empty there is no name to derive a branch from.
+// (#2913: with a path, an empty name's branch comes from the derived name;
+// see TestNewSession2913_WorktreeWithEmptyNameFillsBranch.)
 func TestNewDialog_ToggleWorktree_EmptyName_NoBranch(t *testing.T) {
 	d := NewNewDialog()
-	// Name is empty
+	// Name and Path are empty
+	d.pathInput.SetValue("")
 
 	d.ToggleWorktree()
 
 	if d.branchInput.Value() != "" {
-		t.Errorf("branch should be empty when name is empty, got %q", d.branchInput.Value())
+		t.Errorf("branch should be empty when name and path are empty, got %q", d.branchInput.Value())
 	}
 }
 
