@@ -109,12 +109,12 @@ A company can place a managed file on its machines (an MDM profile or the instal
 
 Crash and error reports go to a Sentry project only when a DSN is configured at run time: `crash_dsn` in the managed file, else `[telemetry] crash_dsn` in `config.toml`. No DSN is compiled in. Today only a panic in the main goroutine of the `agent-deck` process is reported.
 
-Who decides: the company that sets `crash_dsn` turns crash reports on for its machines, and each person can turn them off. So they do not need the usage-data yes, but a no does stop them:
+Who decides: the company that sets `crash_dsn` offers crash reports for its machines, but they stay off until each person says yes to usage data (`agent-deck telemetry on`, or yes at the CLI or TUI question). A `crash_dsn` a person puts in their own `config.toml` is their own choice and needs no separate yes. A no stops them either way:
 
 - `agent-deck telemetry off`, or answering no to the usage-data question (CLI or TUI), turns crash reports off at once and on every later run. `telemetry status` then shows `Crash reports: off (consent was declined)`. Running `agent-deck telemetry on` and saying yes lifts it.
 - Every off switch above also turns them off, and `telemetry status` names the one that applies: `DO_NOT_TRACK`, `AGENTDECK_TELEMETRY=0` or `log`, `[telemetry] disabled = true`, a `config.toml` that cannot be read, a managed `telemetry_level = "off"`, or a managed file that cannot be read or does not validate (then a `crash_dsn` in `config.toml` does not apply either).
 - They are never sent from CI.
-- Not yet answered (undecided) with a DSN set: on. `telemetry status` shows `Crash reports: on (managed DSN)` or `on (config DSN)`; the DSN itself is never shown.
+- Not yet answered (undecided): with a managed DSN, off; `telemetry status` shows `Crash reports: off (waiting for your yes: agent-deck telemetry on)`. With a DSN in your own `config.toml`, on: `Crash reports: on (config DSN)`. The DSN itself is never shown. After a yes, a managed DSN shows `on (managed DSN)`.
 
 No free text leaves the machine. Session titles, group names and prompts reach error text unquoted as often as quoted, and no pattern can tell them from the code's own words, so each event is rebuilt from an allow-list:
 
