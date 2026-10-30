@@ -330,41 +330,6 @@ func NextSessionOrder(instances []*Instance, groupPath string) int {
 	return nextOrder(inGroup)
 }
 
-// renumberDuplicateOrders rewrites a group's session Orders to 0..N-1 when two
-// sessions share an Order but were created at different times (e.g. a session
-// saved with sort_order 0 during a reload, #2933), so an affected database
-// fixes itself on load. Existing Order decides the sequence and CreatedAt
-// breaks ties. Groups without such a tie are left untouched, gaps included;
-// ties with equal CreatedAt carry no ordering information and keep their
-// storage order.
-func renumberDuplicateOrders(sessions []*Instance) {
-	firstAt := make(map[int]time.Time, len(sessions))
-	needed := false
-	for _, s := range sessions {
-		at, ok := firstAt[s.Order]
-		if !ok {
-			firstAt[s.Order] = s.CreatedAt
-			continue
-		}
-		if !at.Equal(s.CreatedAt) {
-			needed = true
-			break
-		}
-	}
-	if !needed {
-		return
-	}
-	sort.SliceStable(sessions, func(i, j int) bool {
-		if sessions[i].Order != sessions[j].Order {
-			return sessions[i].Order < sessions[j].Order
-		}
-		return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
-	})
-	for i, s := range sessions {
-		s.Order = i
-	}
-}
-
 // NewGroupTree creates a new group tree from instances
 func NewGroupTree(instances []*Instance) *GroupTree {
 	tree := &GroupTree{
@@ -407,7 +372,6 @@ func NewGroupTree(instances []*Instance) *GroupTree {
 	// instances without a Status set behave identically to the prior
 	// Order-only sort.
 	for _, group := range tree.Groups {
-		renumberDuplicateOrders(group.Sessions)
 		SortInstancesByActionable(group.Sessions)
 	}
 
@@ -482,7 +446,6 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 	// instances without a Status set behave identically to the prior
 	// Order-only sort.
 	for _, group := range tree.Groups {
-		renumberDuplicateOrders(group.Sessions)
 		SortInstancesByActionable(group.Sessions)
 	}
 
@@ -1826,7 +1789,6 @@ func (t *GroupTree) SyncWithInstances(instances []*Instance) {
 
 	// Sort sessions within each group by persisted Order
 	for _, group := range t.Groups {
-		renumberDuplicateOrders(group.Sessions)
 		sort.SliceStable(group.Sessions, func(i, j int) bool {
 			return group.Sessions[i].Order < group.Sessions[j].Order
 		})

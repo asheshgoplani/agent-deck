@@ -2,7 +2,6 @@ package session
 
 import (
 	"testing"
-	"time"
 )
 
 // Issue #2933: AddSession must place a new session after the highest Order in
@@ -29,50 +28,6 @@ func TestIssue2933_AddSessionUsesMaxOrderPlusOne(t *testing.T) {
 	if n.Order != 6 {
 		t.Fatalf("AddSession on orders {0,5,5}: got Order %d, want 6", n.Order)
 	}
-}
-
-// Issue #2933: a group loaded with duplicate orders is renumbered 0..N, with
-// created_at breaking ties, so an already-affected database fixes itself.
-func TestIssue2933_LoadRenumbersDuplicateOrders(t *testing.T) {
-	SetGroupSortMode("creation")
-	t.Cleanup(func() { SetGroupSortMode("creation") })
-
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	mk := func() []*Instance {
-		// Stored order: old0(0) old1(1) old2(2) plus a newer session saved with
-		// sort_order 0 during a reload, and storage handing them back in
-		// sort_order order (newest first among the 0s).
-		return []*Instance{
-			{ID: "new", Title: "new", GroupPath: "g", Order: 0, CreatedAt: base.Add(3 * time.Hour)},
-			{ID: "old0", Title: "old0", GroupPath: "g", Order: 0, CreatedAt: base},
-			{ID: "old1", Title: "old1", GroupPath: "g", Order: 1, CreatedAt: base.Add(time.Hour)},
-			{ID: "old2", Title: "old2", GroupPath: "g", Order: 2, CreatedAt: base.Add(2 * time.Hour)},
-		}
-	}
-	want := []string{"old0", "new", "old1", "old2"}
-
-	check := func(t *testing.T, tree *GroupTree) {
-		t.Helper()
-		got := tree.Groups["g"].Sessions
-		if len(got) != len(want) {
-			t.Fatalf("got %d sessions, want %d", len(got), len(want))
-		}
-		for i, inst := range got {
-			if inst.ID != want[i] || inst.Order != i {
-				t.Fatalf("position %d: got %s (Order %d), want %s (Order %d)", i, inst.ID, inst.Order, want[i], i)
-			}
-		}
-	}
-
-	t.Run("NewGroupTree", func(t *testing.T) { check(t, NewGroupTree(mk())) })
-	t.Run("NewGroupTreeWithGroups", func(t *testing.T) {
-		check(t, NewGroupTreeWithGroups(mk(), []*GroupData{{Name: "g", Path: "g", Expanded: true}}))
-	})
-	t.Run("SyncWithInstances", func(t *testing.T) {
-		tree := NewGroupTreeWithGroups(nil, []*GroupData{{Name: "g", Path: "g", Expanded: true}})
-		tree.SyncWithInstances(mk())
-		check(t, tree)
-	})
 }
 
 // Issue #2933: a group without duplicates keeps its stored orders untouched
