@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -150,6 +151,279 @@ func TestAttachStdinPump_ForwardsInputAndInterceptsDetach(t *testing.T) {
 	// Bytes ahead of the detach key are forwarded; the detach key itself is not.
 	if got := out.String(); got != "hello" {
 		t.Errorf("forwarded %q, want %q", got, "hello")
+	}
+}
+
+// syncBuffer is a pump output the test can read while the pump writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitFor blocks until the pump has forwarded exactly want.
+func (b *syncBuffer) waitFor(t *testing.T, want string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if b.String() == want {
+			return
+		}
+	}
+	t.Fatalf("forwarded %q, want %q", b.String(), want)
+}
+
+// runPumpUntilDetach runs pump, writes each input only once the pump has
+// forwarded everything expected so far (so each is a read of its own, as
+// separate keystrokes are), then Ctrl+Q, and returns what reached tmux.
+func runPumpUntilDetach(t *testing.T, pump *attachStdinPump, w *os.File, steps ...[2]string) string {
+	t.Helper()
+	out := &syncBuffer{}
+	pump.out = out
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	for _, step := range steps {
+		if _, err := w.Write([]byte(step[0])); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		out.waitFor(t, step[1])
+	}
+	if _, err := w.Write([]byte{0x11}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case res := <-done:
+		if !res.interrupted {
+			t.Error("interrupted = false on the detach key, want true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pump did not exit on the detach key; forwarded %q", out.String())
+	}
+	return out.String()
+}
+
+// TestAttachStdinPump_AltEscapeStringIntroducerDoesNotFreezeInput pins the
+// em-dash freeze (#2931): with Option-as-Meta (Terminal.app, iTerm2 "Esc+"),
+// Alt+Shift+- sends ESC _, the APC introducer. The reply filter took it for a
+// terminal reply and discarded everything after it waiting for a terminator,
+// Ctrl+Q included, so the attach could only be escaped by closing the tab.
+func TestAttachStdinPump_AltEscapeStringIntroducerDoesNotFreezeInput(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+
+	got := runPumpUntilDetach(t, pump, w,
+		[2]string{"\x1b_", "\x1b_"},
+		[2]string{"a", "\x1b_a"},
+	)
+	if want := "\x1b_a"; got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
+// fullReadPrefix fills the pump's 32-byte read up to the last two bytes, so
+// ESC plus an introducer written after it ends a full read.
+var fullReadPrefix = strings.Repeat("x", 30)
+
+// A full read can end on a reply's introducer while the rest of the reply is
+// already waiting: that is still a reply, and its payload must not reach the
+// pane as typed text.
+func TestAttachStdinPump_DiscardsReplyCutByAFullRead(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+
+	got := runPumpUntilDetach(t, pump, w,
+		[2]string{fullReadPrefix + "\x1bP>|iTerm2 3.6.10\x1b\\k", fullReadPrefix + "k"},
+	)
+	if want := fullReadPrefix + "k"; got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
+// A full read ending on ESC _ with nothing else waiting is still the key.
+func TestAttachStdinPump_AltEscapeStringIntroducerEndingAFullRead(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+
+	got := runPumpUntilDetach(t, pump, w,
+		[2]string{fullReadPrefix + "\x1b_", fullReadPrefix + "\x1b_"},
+		[2]string{"a", fullReadPrefix + "\x1b_a"},
+	)
+	if want := fullReadPrefix + "\x1b_a"; got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
+// Keys queued right behind a chord that ends a full read are held with it,
+// not discarded as reply payload, so a Ctrl+Q among them still detaches.
+func TestAttachStdinPump_AltEscapeStringIntroducerWithKeysQueuedBehindIt(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+	out := &syncBuffer{}
+	pump.out = out
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte(fullReadPrefix + "\x1b_a\x11")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case res := <-done:
+		if !res.interrupted {
+			t.Error("interrupted = false on the detach key, want true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pump did not exit on the detach key queued behind ESC _; forwarded %q", out.String())
+	}
+	if got, want := out.String(), fullReadPrefix+"\x1b_a"; got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
+// Over ssh a terminal reply can reach the pump in pieces some milliseconds
+// apart. A reply that terminates within attachHeldInputWindow is still a
+// reply, outside the quarantine too: discarded, or forwarded whole for the
+// OSC 11 color reply tmux consumes, never typed into the pane.
+func TestAttachStdinPump_ReplySplitByANetworkGapIsNotTyped(t *testing.T) {
+	cases := []struct {
+		name, first, rest, want string
+	}{
+		{"dcs_xtversion", "\x1bP>|iTerm2 3.6", ".10\x1b\\k", "k"},
+		{"apc_kitty_graphics", "\x1b_Gi=31;", "OK\x1b\\k", "k"},
+		{"osc11_color", "\x1b]11;rgb:1e1e/", "1e1e/1e1e\x1b\\k", "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\k"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+			out := &syncBuffer{}
+			pump.out = out
+			holding := make(chan struct{}, 1)
+			pump.onHold = func() { holding <- struct{}{} }
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := runPump(ctx, pump)
+
+			if _, err := w.Write([]byte(tc.first)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			// The first piece must be a read of its own, held by the pump,
+			// or the test would pass without crossing reads.
+			select {
+			case <-holding:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the pump never held the first piece of the reply")
+			}
+			time.Sleep(30 * time.Millisecond) // the network gap
+			if _, err := w.Write([]byte(tc.rest)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			out.waitFor(t, tc.want)
+			if _, err := w.Write([]byte{0x11}); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("pump did not exit on the detach key")
+			}
+			if got := out.String(); got != tc.want {
+				t.Errorf("forwarded %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The hold window runs from the introducer, not from the last byte, so keys
+// typed steadily right after the chord are released within it instead of
+// waiting for a pause in typing.
+func TestAttachStdinPump_KeysTypedSteadilyAfterTheChordAreReleasedWithinTheWindow(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+	out := &syncBuffer{}
+	pump.out = out
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte("\x1b_")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	const keys = 15 // one every 20ms: 300ms, three windows, never idle
+	for i := range keys {
+		time.Sleep(20 * time.Millisecond)
+		if _, err := w.Write([]byte("a")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if i == 9 { // about 200ms, twice attachHeldInputWindow
+			if got := out.String(); !strings.HasPrefix(got, "\x1b_a") {
+				t.Errorf("after %d steady keys forwarded %q, want the chord and keys released within attachHeldInputWindow", i+1, got)
+			}
+		}
+	}
+	if got := out.String(); !strings.HasPrefix(got, "\x1b_a") {
+		t.Errorf("after %d steady keys forwarded %q, want the chord and keys released within the hold window", keys, got)
+	}
+	if _, err := w.Write([]byte{0x11}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pump did not exit on the detach key; forwarded %q", out.String())
+	}
+	if got, want := out.String(), "\x1b_"+strings.Repeat("a", keys); got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
+// Typed in the post-attach quarantine, ESC _ may be a reply, so it is not
+// typed into the pane; but once attachHeldInputWindow has passed without a
+// terminator it is dropped, and the keys after it, Ctrl+Q included, are
+// input again. Before, it stayed in discard mode, past the quarantine too,
+// and swallowed every later key: the #2931 freeze for a chord typed right
+// after attaching.
+func TestAttachStdinPump_UnterminatedEscapeStringInTheQuarantineDoesNotFreezeInput(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+	pump.startTime = time.Now() // armed: inside the post-attach quarantine
+	out := &syncBuffer{}
+	pump.out = out
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte("\x1b_")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(2 * attachHeldInputWindow) // past the window, still in the quarantine
+	if _, err := w.Write([]byte("abc")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	out.waitFor(t, "abc")
+	if _, err := w.Write([]byte{0x11}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case res := <-done:
+		if !res.interrupted {
+			t.Error("interrupted = false on the detach key, want true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pump did not exit on the detach key; forwarded %q", out.String())
+	}
+	if got := out.String(); got != "abc" {
+		t.Errorf("forwarded %q, want %q", got, "abc")
 	}
 }
 
