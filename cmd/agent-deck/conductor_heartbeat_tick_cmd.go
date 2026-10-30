@@ -63,6 +63,11 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 			(inst.GroupPath != name && !strings.HasPrefix(inst.GroupPath, name+"/")) {
 			continue
 		}
+		// Archived children neither count nor wake the conductor, as in
+		// statusInstances. Their completion records still arrive via the inbox.
+		if inst.IsArchived() {
+			continue
+		}
 		_ = inst.UpdateStatus()
 		in.Sessions = append(in.Sessions, session.HeartbeatSessionView{
 			Title: inst.Title, Status: inst.Status, Path: inst.ProjectPath,

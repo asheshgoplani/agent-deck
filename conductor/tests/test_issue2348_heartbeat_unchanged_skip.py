@@ -20,7 +20,7 @@ class _StopLoop(Exception):
     pass
 
 
-def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_payloads=None):
+def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_payloads=None, sent=None):
     """Drive heartbeat_loop for len(session_lists) ticks; return per-tick bytes sent."""
     ticks = iter(session_lists)
     inbox_ticks = iter(inbox_counts or [0] * len(session_lists))
@@ -47,6 +47,8 @@ def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_pay
 
     def fake_send(_session, message, **_kwargs):
         per_tick[-1] += len(message.encode())
+        if sent is not None:
+            sent.append(message)
         return True, "[STATUS] All clear.", None
 
     async def fake_running(_name, _profile):
@@ -121,4 +123,45 @@ def test_replaced_inbox_record_at_same_count_wakes(monkeypatch, tmp_path):
 def test_unreadable_inbox_does_not_silence_heartbeat(monkeypatch, tmp_path):
     conductor = [{"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}]
     per_tick = _run_loop(monkeypatch, tmp_path, [conductor], [0], ["__unreadable__"])
+    assert per_tick[0] > 0, per_tick
+
+
+ARCHIVED_WAITING = {"title": "old-worker", "status": "waiting", "group": "ops", "path": "/src/old", "archived": True}
+ARCHIVED_ERROR = {"title": "old-crash", "status": "error", "group": "ops/sub", "path": "/src/crash", "archived": True}
+ARCHIVED_STOPPED = {"title": "old-done", "status": "stopped", "group": "ops", "path": "/src/done", "archived": True}
+
+
+def test_archived_children_do_not_wake(monkeypatch, tmp_path):
+    per_tick = _run_loop(monkeypatch, tmp_path, [[ARCHIVED_WAITING], [ARCHIVED_ERROR], [ARCHIVED_WAITING, ARCHIVED_ERROR]])
+    assert per_tick == [0, 0, 0], per_tick
+
+
+def test_archiving_stops_wakes_and_unarchiving_restores_them(monkeypatch, tmp_path):
+    live = {**ARCHIVED_WAITING, "archived": False}
+    per_tick = _run_loop(monkeypatch, tmp_path, [[live], [ARCHIVED_WAITING], [live]])
+    assert per_tick[0] > 0 and per_tick[1] == 0 and per_tick[2] > 0, per_tick
+
+
+def test_archived_children_are_left_out_of_counts_and_details(monkeypatch, tmp_path):
+    sent: list[str] = []
+    rows = WAITING + [ARCHIVED_WAITING, ARCHIVED_ERROR, ARCHIVED_STOPPED]
+    _run_loop(monkeypatch, tmp_path, [rows], sent=sent)
+    assert len(sent) == 1, sent
+    assert "1 waiting, 1 running, 0 idle, 0 error, 0 stopped." in sent[0]
+    assert "api-fix" in sent[0]
+    assert "old-" not in sent[0]
+
+
+def test_inbox_still_wakes_when_only_archived_children_remain(monkeypatch, tmp_path):
+    conductor = {"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}
+    sent: list[str] = []
+    per_tick = _run_loop(monkeypatch, tmp_path, [[conductor, ARCHIVED_STOPPED]], [1], sent=sent)
+    assert per_tick[0] > 0, per_tick
+    assert "Inbox: 1 pending" in sent[0] and "0 stopped" in sent[0]
+
+
+def test_archived_conductor_row_keeps_its_inbox_lookup(monkeypatch, tmp_path):
+    # The child filter must not reach the full list the inbox lookup reads.
+    conductor = {"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops", "archived": True}
+    per_tick = _run_loop(monkeypatch, tmp_path, [[conductor]], [1])
     assert per_tick[0] > 0, per_tick

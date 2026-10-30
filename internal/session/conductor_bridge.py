@@ -5061,6 +5061,11 @@ async def heartbeat_loop(
                         continue
                     if s_group != name and not s_group.startswith(f"{name}/"):
                         continue
+                    # Archived children neither count nor wake the conductor, as
+                    # in `status`. `sessions` keeps them: the inbox lookup below
+                    # reads the full list.
+                    if s.get("archived"):
+                        continue
                     scoped_sessions.append(s)
 
                 waiting = sum(1 for s in scoped_sessions if s.get("status", "") == "waiting")
