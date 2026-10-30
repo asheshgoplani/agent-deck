@@ -126,6 +126,16 @@ func TestMergeBackgroundWork(t *testing.T) {
 	finished := scanTranscriptBackground(lines)
 	shells := scanTranscriptBackground(restamp(lines[:34], now.Add(-20*time.Second)))
 	row := tmux.BackgroundWork{Kind: tmux.BackgroundKindWorkflow, Task: "probe-two-agents", Step: 1, Steps: 2, Elapsed: "22s", Source: "pane"}
+	awaiting := tmux.BackgroundWork{Kind: tmux.BackgroundKindAgent, Task: "1 background agent", Source: "pane"}
+	agentPending := transcriptBackgroundScan{Pending: []transcriptBackgroundTask{{ID: "a1", Kind: tmux.BackgroundKindAgent, Name: "probe agent", At: now.Add(-time.Hour)}}}
+	turnAt := now.Add(-time.Hour)
+	countedZero := transcriptBackgroundScan{TurnAgentsKnown: true, TurnAt: turnAt} // 0, or absent from a Claude Code that writes it
+	oldPositive := transcriptBackgroundScan{TurnAgents: 1, TurnAgentsKnown: true, TurnAt: turnAt}
+	noCountField := transcriptBackgroundScan{TurnAt: turnAt}
+	// A launch with no terminal notification, older than the zero count: the
+	// task died unreported, and Claude Code no longer counts it.
+	diedBeforeZero := transcriptBackgroundScan{TurnAgentsKnown: true, TurnAt: turnAt, Pending: []transcriptBackgroundTask{{ID: "a1", Kind: tmux.BackgroundKindAgent, Name: "probe agent", At: turnAt.Add(-time.Minute)}}}
+	launchedAfterZero := transcriptBackgroundScan{TurnAgentsKnown: true, TurnAt: turnAt, Pending: []transcriptBackgroundTask{{ID: "a2", Kind: tmux.BackgroundKindAgent, Name: "probe agent", At: turnAt.Add(time.Minute)}}}
 
 	cases := []struct {
 		name     string
@@ -148,6 +158,18 @@ func TestMergeBackgroundWork(t *testing.T) {
 		{"footer counter named from transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, shells, true, time.Time{}, tmux.BackgroundKindBash, "Sleep for 50 seconds in background", false},
 		{"footer counter, no transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, transcriptBackgroundScan{}, false, time.Time{}, "", "", false},
 		{"nothing anywhere", tmux.BackgroundWork{}, finished, true, time.Time{}, "", "", false},
+		{"Waiting line alone", awaiting, transcriptBackgroundScan{}, false, time.Time{}, tmux.BackgroundKindAgent, "1 background agent", true},
+		{"Waiting line, agent launch pending", awaiting, agentPending, true, time.Time{}, tmux.BackgroundKindAgent, "probe agent", true},
+		// Only a count Claude Code wrote, down to zero, proves the line is history.
+		{"Waiting line, count field absent", awaiting, noCountField, true, time.Time{}, tmux.BackgroundKindAgent, "1 background agent", true},
+		{"Waiting line, old positive count", awaiting, oldPositive, true, time.Time{}, tmux.BackgroundKindAgent, "1 background agent", true},
+		{"Waiting line, agent launched after the zero count", awaiting, launchedAfterZero, true, time.Time{}, tmux.BackgroundKindAgent, "probe agent", true},
+		{"stale Waiting line vetoed by a zero count", awaiting, countedZero, true, now, "", "", false},
+		// The veto stops the pane sightings, so the last one still bounds the hold.
+		{"stale Waiting line vetoed past an unreported launch", awaiting, diedBeforeZero, true, now.Add(-5 * time.Minute), "", "", false},
+		{"vetoed Waiting line, last sighting holds", awaiting, diedBeforeZero, true, now.Add(-time.Minute), tmux.BackgroundKindAgent, "probe agent", false},
+		{"stale Waiting line vetoed by finished transcript", awaiting, finished, true, now, "", "", false},
+		{"stale workflow Waiting line vetoed", tmux.BackgroundWork{Kind: tmux.BackgroundKindWorkflow, Task: "1 dynamic workflow", Source: "pane"}, finished, true, now, "", "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -156,6 +178,37 @@ func TestMergeBackgroundWork(t *testing.T) {
 				t.Fatalf("merge = %+v paneShown=%v, want kind %q task %q paneShown=%v", got, paneShown, c.wantKind, c.wantTask, c.wantPane)
 			}
 		})
+	}
+}
+
+// The count on the last turn_duration can lag one notification behind: the
+// field report (a conductor held running for a day by its pane's "Waiting
+// for 1 background agent" line) ended with pendingBackgroundAgentCount 1 and
+// that agent's completed notification right after it.
+func TestScanTranscriptBackground_CountLagsLastNotification(t *testing.T) {
+	launch := `{"type":"user","isSidechain":false,"timestamp":"2026-10-09T15:46:41Z","toolUseResult":{"agentId":"ab0b","isAsync":true,"status":"async_launched","description":"review"},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"launched"}]}}`
+	turn := `{"type":"system","subtype":"turn_duration","isSidechain":false,"timestamp":"2026-10-09T15:47:34Z","pendingBackgroundAgentCount":1}`
+	done := `{"type":"user","isSidechain":false,"timestamp":"2026-10-09T15:47:34Z","message":{"content":"<task-notification>\n<task-id>ab0b</task-id>\n<status>completed</status>\n</task-notification>"}}`
+	if sc := scanTranscriptBackground([]string{launch, turn, done}); !sc.awaitedLineStale(tmux.BackgroundKindAgent) {
+		t.Fatalf("scan = %+v, want the Waiting line proven stale", sc)
+	}
+	if sc := scanTranscriptBackground([]string{launch, turn}); sc.awaitedLineStale(tmux.BackgroundKindAgent) {
+		t.Fatal("an agent Claude Code still counts must keep the Waiting line")
+	}
+	// Claude Code omits a zero count, but one too old to write the field
+	// omits it always: absent counts as zero only once the tail shows it.
+	unstamped := `{"type":"system","subtype":"turn_duration","isSidechain":false,"timestamp":"2026-10-09T15:48:00Z"}`
+	if sc := scanTranscriptBackground([]string{launch, unstamped, done}); sc.awaitedLineStale(tmux.BackgroundKindAgent) {
+		t.Fatal("a tail that never shows the count field proves nothing")
+	}
+	if sc := scanTranscriptBackground([]string{launch, turn, done, unstamped}); !sc.awaitedLineStale(tmux.BackgroundKindAgent) {
+		t.Fatal("an absent count after the field was seen is zero")
+	}
+	// A restart zeroes the counts only until the next turn_duration: on a
+	// Claude Code that never writes the field, that one proves nothing.
+	startup := `{"type":"attachment","isSidechain":false,"timestamp":"2026-10-09T15:40:00Z","attachment":{"hookName":"SessionStart:startup"}}`
+	if sc := scanTranscriptBackground([]string{startup, launch, unstamped}); sc.awaitedLineStale(tmux.BackgroundKindAgent) {
+		t.Fatal("a launch after a restart must keep the Waiting line on a Claude Code that never writes the count")
 	}
 }
 
