@@ -675,7 +675,7 @@ infra: restart all error sessions    → routes to conductor-infra
 ```
 ops: check the frontend session      → routes to conductor-ops (reply in thread)
 /ad-status                           → aggregated status across all profiles
-/ad-sessions                         → list all sessions
+/ad-sessions                         → list active sessions
 /ad-restart [name]                   → restart a conductor
 /ad-help                             → list available commands
 ```
