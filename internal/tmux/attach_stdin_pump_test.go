@@ -307,6 +307,8 @@ func TestAttachStdinPump_ReplySplitByANetworkGapIsNotTyped(t *testing.T) {
 			pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
 			out := &syncBuffer{}
 			pump.out = out
+			holding := make(chan struct{}, 1)
+			pump.onHold = func() { holding <- struct{}{} }
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -314,6 +316,13 @@ func TestAttachStdinPump_ReplySplitByANetworkGapIsNotTyped(t *testing.T) {
 
 			if _, err := w.Write([]byte(tc.first)); err != nil {
 				t.Fatalf("write: %v", err)
+			}
+			// The first piece must be a read of its own, held by the pump,
+			// or the test would pass without crossing reads.
+			select {
+			case <-holding:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the pump never held the first piece of the reply")
 			}
 			time.Sleep(30 * time.Millisecond) // the network gap
 			if _, err := w.Write([]byte(tc.rest)); err != nil {
@@ -351,10 +360,15 @@ func TestAttachStdinPump_KeysTypedSteadilyAfterTheChordAreReleasedWithinTheWindo
 		t.Fatalf("write: %v", err)
 	}
 	const keys = 15 // one every 20ms: 300ms, three windows, never idle
-	for range keys {
+	for i := range keys {
 		time.Sleep(20 * time.Millisecond)
 		if _, err := w.Write([]byte("a")); err != nil {
 			t.Fatalf("write: %v", err)
+		}
+		if i == 9 { // about 200ms, twice attachHeldInputWindow
+			if got := out.String(); !strings.HasPrefix(got, "\x1b_a") {
+				t.Errorf("after %d steady keys forwarded %q, want the chord and keys released within attachHeldInputWindow", i+1, got)
+			}
 		}
 	}
 	if got := out.String(); !strings.HasPrefix(got, "\x1b_a") {
@@ -370,6 +384,46 @@ func TestAttachStdinPump_KeysTypedSteadilyAfterTheChordAreReleasedWithinTheWindo
 	}
 	if got, want := out.String(), "\x1b_"+strings.Repeat("a", keys); got != want {
 		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
+// Typed in the post-attach quarantine, ESC _ may be a reply, so it is not
+// typed into the pane; but once attachHeldInputWindow has passed without a
+// terminator it is dropped, and the keys after it, Ctrl+Q included, are
+// input again. Before, it stayed in discard mode, past the quarantine too,
+// and swallowed every later key: the #2931 freeze for a chord typed right
+// after attaching.
+func TestAttachStdinPump_UnterminatedEscapeStringInTheQuarantineDoesNotFreezeInput(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+	pump.startTime = time.Now() // armed: inside the post-attach quarantine
+	out := &syncBuffer{}
+	pump.out = out
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte("\x1b_")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(2 * attachHeldInputWindow) // past the window, still in the quarantine
+	if _, err := w.Write([]byte("abc")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	out.waitFor(t, "abc")
+	if _, err := w.Write([]byte{0x11}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case res := <-done:
+		if !res.interrupted {
+			t.Error("interrupted = false on the detach key, want true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pump did not exit on the detach key; forwarded %q", out.String())
+	}
+	if got := out.String(); got != "abc" {
+		t.Errorf("forwarded %q, want %q", got, "abc")
 	}
 }
 

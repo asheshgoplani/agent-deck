@@ -571,19 +571,38 @@ func TestFilterKeysOnIdleForwardsColorReply(t *testing.T) {
 	require.False(t, f.Holding())
 }
 
-// Inside the quarantine replies are expected: nothing is held, and a reply
-// split right after its introducer is still discarded across reads.
-func TestFilterKeysOnIdleHoldsNothingWhenArmed(t *testing.T) {
+// Inside the quarantine a reply split right after its introducer is held and
+// still discarded across reads once it terminates.
+func TestFilterKeysOnIdleStillDiscardsSplitReplyWhenArmed(t *testing.T) {
 	f := Filter{KeysOnIdle: true}
 
 	got := f.Consume([]byte("\x1bP"), true, false)
 	require.Empty(t, got)
-	require.False(t, f.Holding())
-	require.Nil(t, f.FlushIdle())
+	require.True(t, f.Holding())
 
 	got = f.Consume([]byte(">|iTerm2 3.6.10\x1b\\k"), true, false)
 	require.Equal(t, []byte("k"), got)
 	require.False(t, f.Active())
+}
+
+// An escape string begun inside the quarantine may be a reply, so FlushIdle
+// drops it rather than typing it, and the filter goes back to idle: the
+// keys after it, Ctrl+Q included, are input again instead of being
+// discarded until a terminator that never comes.
+func TestFilterKeysOnIdleDropsUnterminatedStringBegunWhenArmed(t *testing.T) {
+	f := Filter{KeysOnIdle: true}
+
+	got := f.Consume([]byte("\x1b_a"), true, false)
+	require.Empty(t, got)
+	require.True(t, f.Holding())
+
+	require.Nil(t, f.FlushIdle())
+	require.False(t, f.Active())
+
+	got = f.Consume([]byte("b\x11"), true, false)
+	require.Equal(t, []byte("b\x11"), got)
+	got = f.Consume([]byte("c"), false, false)
+	require.Equal(t, []byte("c"), got)
 }
 
 // Without KeysOnIdle (the dashboard's byte-at-a-time reader) nothing is
@@ -601,14 +620,20 @@ func TestFilterHoldsNothingWithoutKeysOnIdle(t *testing.T) {
 	require.False(t, f.Active())
 }
 
-// No reply is heldInputMaxLen bytes long: past it the held string is
-// released as input instead of growing without bound.
-func TestFilterKeysOnIdleReleasesOversizedHeldInput(t *testing.T) {
-	f := Filter{KeysOnIdle: true}
-
+// No reply is heldInputMaxLen bytes long: past it the held string is ended
+// instead of growing without bound, released as input outside the quarantine
+// and dropped inside it.
+func TestFilterKeysOnIdleEndsOversizedHeldInput(t *testing.T) {
 	typed := "\x1b_" + strings.Repeat("a", heldInputMaxLen)
+
+	f := Filter{KeysOnIdle: true}
 	got := f.Consume([]byte(typed), false, false)
 	require.Equal(t, []byte(typed), got)
+	require.False(t, f.Active())
+
+	f = Filter{KeysOnIdle: true}
+	got = f.Consume([]byte(typed), true, false)
+	require.Equal(t, []byte("a"), got, "only the byte after the dropped string passes")
 	require.False(t, f.Active())
 }
 

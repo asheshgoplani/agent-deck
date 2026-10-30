@@ -289,6 +289,11 @@ type attachStdinPump struct {
 	ioErrors  chan<- error // buffered; sends are best-effort
 
 	tmuxIgnoresColorReplies bool
+
+	// onHold, when set, is called each time the reply filter starts holding
+	// an escape string. Test seam: lets a test write the next piece of a
+	// split reply only once the pump holds the first.
+	onHold func()
 }
 
 func tmuxParsesColorReplies(ver string) bool {
@@ -355,15 +360,18 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 		armed := time.Since(p.startTime) < attachReplyQuarantine
 		chunk = replyFilter.Consume(chunk, armed, false)
 		// A reply arrives in one piece, terminator included. An escape
-		// string still open when attachHeldInputWindow has passed, or when
-		// stdin goes quiet until then, was typed (Option-as-Meta
-		// Alt+Shift+- is ESC _, #2931): release it, and any keys held
-		// behind it, so they reach the pane and the detach check below.
+		// string still open once attachHeldInputWindow has passed was typed
+		// (Option-as-Meta Alt+Shift+- is ESC _, #2931): end it, so the keys
+		// behind it reach the pane and the detach check below. FlushIdle
+		// releases it as input, or drops it if it began in the quarantine.
 		if !replyFilter.Holding() {
 			heldSince = time.Time{}
 		} else {
 			if heldSince.IsZero() {
 				heldSince = time.Now()
+				if p.onHold != nil {
+					p.onHold()
+				}
 			}
 			wait := time.Until(heldSince.Add(attachHeldInputWindow))
 			if wait <= 0 || !PollFdReady(fd, wait) {
