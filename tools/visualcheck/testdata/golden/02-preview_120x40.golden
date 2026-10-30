@@ -5,7 +5,7 @@ SESSIONS                                   │ PREVIEW
 1·▾ alpha (7) ● 1 ◐ 1                      │ claude-i18n  ◐ waiting
    ├─ ■ opencode-idle opencode             │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle claude                 │ ⏱ <age>
-   ├─ ◐ claude-waiting claude              │ 👁️ no viewers
+   ├─ ◐ claude-waiting claude              │ ◉ no viewers
    └─ ■ claude-stopped claude              │  claude   beta
     ▾ backend (3) ● 1                      │ ─────────────────────────────── Claude ───────────────────────────────
      ├─ ✕ codex-idle codex                 │ Status:  ● Connected

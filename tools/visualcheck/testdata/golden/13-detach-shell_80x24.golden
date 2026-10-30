@@ -5,7 +5,7 @@ SESSIONS                     │ PREVIEW
 1·▾ alpha (7) ● 1 ◐ 1        │ shell-live  ○ idle
    ├─ ■ opencode-idle        │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle          │ ⏱ <age>
-   ├─ ◐ claude-waiting       │ 👁️ no viewers
+   ├─ ◐ claude-waiting       │ ◉ no viewers
    └─ ■ claude-stopped       │  shell   beta
     ▾ backend (3) ● 1        │
      ├─ ✕ codex-idle         │ ────────────────── Output ──────────────────

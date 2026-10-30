@@ -5,7 +5,7 @@ SESSIONS                                   │ PREVIEW
 1·▾ alpha (8) ● 1 ◐ 2                      │ claude-waiting (fork)  ◐ waiting
    ├─ ■ opencode-idle opencode             │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle claude                 │ ⏱ <age>
-   ├─ ◐ claude-waiting claude              │ 👁️ no viewers
+   ├─ ◐ claude-waiting claude              │ ◉ no viewers
    ├─ ■ claude-stopped claude              │  claude   alpha
   ▶└─ ◐ claude-… claude [fork/claude-...]  │ ────────────────────────────── Worktree ──────────────────────────────
     ▾ backend (3) ● 1                      │ Branch:  fork/claude-waiting
