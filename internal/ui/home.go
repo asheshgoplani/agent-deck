@@ -2739,6 +2739,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Skip in-memory state update (reload will handle that), but persist to disk
 			uiLog.Debug("reload_save_session_created", slog.String("id", msg.instance.ID), slog.String("title", msg.instance.Title))
 			h.instancesMu.Lock()
+			// Put it last in its group; a zero Order would land mid-group (#2933).
+			msg.instance.Order = session.NextSessionOrder(h.instances, msg.instance.GroupPath)
 			h.instances = append(h.instances, msg.instance)
 			h.instancesMu.Unlock()
 			// Force save to persist the session even during reload
@@ -2836,6 +2838,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// CRITICAL: Save the forked session to JSON immediately to prevent orphaning
 			uiLog.Debug("reload_save_session_forked", slog.String("id", msg.instance.ID), slog.String("title", msg.instance.Title))
 			h.instancesMu.Lock()
+			// Put it last in its group; a zero Order would land mid-group (#2933).
+			msg.instance.Order = session.NextSessionOrder(h.instances, msg.instance.GroupPath)
 			h.instances = append(h.instances, msg.instance)
 			h.instancesMu.Unlock()
 			h.forceSaveInstances()
