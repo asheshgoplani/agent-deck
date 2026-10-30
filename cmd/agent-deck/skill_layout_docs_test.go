@@ -146,12 +146,10 @@ func TestAgentDeckSkillEvalsCoverEveryArea(t *testing.T) {
 var removedSkillPath = regexp.MustCompile(`skills/(fleet|session-share|deck-retro|deck-repro)\b|\.\./(fleet|session-share|deck-retro|deck-repro)/|recall/SKILL\.md|\.github/skills/agent-deck-contributor`)
 
 // removedSkillPathAllowed lists files that may still name a removed path:
-// history, and the eval-smoke path filter, which needs a workflow-scope edit
-// (pending owner review) before it can follow the move.
+// history, and this test's own pattern.
 var removedSkillPathAllowed = map[string]string{
 	"CHANGELOG.md": "",
 	"cmd/agent-deck/skill_layout_docs_test.go": "",
-	".github/workflows/eval-smoke.yml":         "      - '.github/skills/agent-deck-contributor/scripts/self-check.sh'",
 }
 
 // No file in the repo may point at a skill path that was folded away, so a

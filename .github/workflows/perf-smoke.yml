@@ -20,7 +20,7 @@ on:
       - 'cmd/agent-deck/main.go'
       - 'cmd/agent-deck/coldstart_perf_test.go'
       - 'internal/health/**'
-      - 'internal/ui/home.go'
+      - 'internal/ui/home*.go'
       - 'internal/tmux/**'
       - 'internal/testutil/perfbudget.go'
       - 'internal/testutil/perfbudget_test.go'
