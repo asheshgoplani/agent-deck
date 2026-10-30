@@ -1,7 +1,17 @@
 name: Synthetic fleet performance
 on:
   workflow_dispatch:
+  # Advisory, off the PR critical path (post-tag CI queue): on a PR this
+  # runs only when its own files change; the code it covers is checked
+  # after merge on push to main and nightly.
   pull_request:
+    paths:
+      - 'tools/bench/**'
+      - 'bench/**'
+      - '.github/workflows/bench-fleet.yml'
+  schedule: [{ cron: '20 2 * * *' }]
+  push:
+    branches: [main]
     paths:
       - 'tools/bench/**'
       - 'bench/**'

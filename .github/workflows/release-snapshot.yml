@@ -17,7 +17,18 @@
 name: Release Snapshot (PR drift check)
 
 on:
+  # Advisory, off the PR critical path (post-tag CI queue): on a PR this
+  # runs only when the release config or workflows change; the code it covers is checked
+  # after merge on push to main and nightly.
   pull_request:
+    paths:
+      - '.goreleaser.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-snapshot.yml'
+  schedule: [{ cron: '40 2 * * *' }]
+  workflow_dispatch: {}
+  push:
+    branches: [main]
     paths:
       - '.goreleaser.yml'
       - 'cmd/agent-deck/**'

@@ -36,7 +36,26 @@ that never reports blocks the merge forever (see the header comment in
 | `session-persistence.yml` | PR touching tmux/session lifecycle paths, or `workflow_dispatch` | Path filter. Runs the eight `TestPersistence_*` tests (race-detector on) plus `scripts/verify-session-persistence.sh` end-to-end. Covers the class of bug where a single SSH logout destroys every managed tmux session on Linux+systemd. See the "Session persistence: mandatory test coverage" section in the root `CLAUDE.md`. The same tests also run inside `Full test suite (PR gate)`, which is required. |
 | `lighthouse-ci.yml` | PR touching `internal/web/**`, `.lighthouserc.json`, `tests/lighthouse/**`, or the workflow itself; also re-runs on `labeled` / `unlabeled` so the override below is reactive | Path filter. Two-layer Lighthouse gate against `agent-deck web --no-tui`: (1) absolute thresholds in `.lighthouserc.json` (`total-byte-weight`, `resource-summary:script:size`, `cumulative-layout-shift` as hard error; FCP/LCP/TBT/Speed Index as soft warn); (2) bundle-delta gate (`tests/lighthouse/compare-deltas.mjs`) that fails if a single PR grows `total-byte-weight` or `script:size` by more than 5% vs the base ref. Reinstated in v1.7.70 after the `--no-tui` flag fixed the bubbletea/headless-CI start failure that disabled the gate in v1.7.42. **Maintainer override on the delta gate**: apply the `lighthouse-regression-acknowledged` label (auto-created by the workflow) to acknowledge an intentional regression; the workflow re-runs on the `labeled` event and the check turns green. The absolute thresholds in layer (1) do not participate in the override. |
 | `go-test.yml` (`native-ssh`, `native-ssh-macos`) | Every PR, but skipped unless the `changes` job reports Go-relevant files (same answer the shards use) | Not a ruleset context. Runs `scripts/ci-native-ssh.sh` against a real sshd on Linux and macOS and uploads the evidence artifact. Despite the "Required" in the job display name, only `Full test suite (PR gate)` from this workflow is in the ruleset. |
-| `go-test.yml` (`comms-matrix`, calling `comms-matrix.yml`) | Every PR, but skipped unless the `changes` job reports Go-relevant files | Not a ruleset context. Calls `comms-matrix.yml` with `advisory: true`, so a failing rig leg adds a warning annotation and a summary line instead of turning the run red. |
+| `go-test.yml` (`comms-matrix`, calling `comms-matrix.yml`) | PRs only when the rig changes (`tests/comms_matrix/**`, `comms-matrix.yml`, `sandbox/Dockerfile`; the `changes` job's `comms` output); every Go push to main; nightly via `comms-matrix.yml`'s own schedule | Not a ruleset context. Calls `comms-matrix.yml` with `advisory: true`, so a failing rig leg adds a warning annotation and a summary line instead of turning the run red. |
+
+### Advisory suites kept off the PR critical path
+
+Shared GitHub-hosted runners are the bottleneck on a PR, so suites that are
+not ruleset contexts and whose path filter used to match most Go changes now
+run on a PR only when their own files change. The code they cover is checked
+after merge (push to main) and nightly:
+
+| Workflow | On a PR | After merge |
+|---|---|---|
+| `structure-advisory.yml` | the workflow itself | push to main (measures the pushed commit against the previous one) |
+| `functional-check.yml` | `tools/funccheck/**`, the workflow | push to main on the old paths, nightly |
+| `bench-fleet.yml` | `tools/bench/**`, `bench/**`, the workflow | push to main on the old paths, nightly |
+| `release-snapshot.yml` | `.goreleaser.yml`, `release.yml`, the workflow | push to main on the old paths, nightly |
+| `govulncheck.yml` | `go.mod`, `go.sum`, the workflow | every push to main, nightly |
+
+The narrowly path-filtered suites (`eval-smoke`, `session-persistence`,
+`perf-smoke`, `tmux-systemd-user-acceptance`, `runtime-health-acceptance`,
+`web-tests`) keep their PR filters and gain a nightly run as a backstop.
 
 ## Release automation (tag-triggered)
 

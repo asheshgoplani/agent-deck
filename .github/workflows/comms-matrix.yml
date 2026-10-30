@@ -15,6 +15,10 @@ on:
         type: boolean
         default: false
         required: false
+  # Nightly run (post-tag CI queue): PRs run the rig only when it changes,
+  # so this catches product changes that break it. inputs.advisory is
+  # empty on a schedule, so a failing leg turns this run red.
+  schedule: [{ cron: '0 2 * * *' }]
 
 permissions:
   contents: read
