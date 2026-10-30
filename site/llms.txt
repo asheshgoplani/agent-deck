@@ -1,0 +1,33 @@
+# Agent Deck
+
+> Agent Deck is a free, open-source (MIT) terminal session manager for AI coding agents. One TUI shows every Claude Code, Codex, Gemini CLI, OpenCode and other agent session (running, waiting, idle, error) and switches between them with one key. It is a single Go binary built on tmux and Bubble Tea, and runs on macOS, Linux and Windows (WSL).
+
+Agent Deck adds AI awareness on top of tmux: smart status detection, session forking with inherited conversation context, an MCP manager and MCP socket pool, a skills manager, git worktrees, Docker sandboxes, cost tracking, remote SSH instances, a browser web UI, and "conductors" (persistent agent sessions that supervise other sessions and can be reached from Telegram, Slack, Discord or Mattermost). A native macOS app is in development.
+
+Install: `curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash` or `brew install asheshgoplani/tap/agent-deck`, then run `agent-deck`.
+
+## Docs
+
+- [Full reference for LLMs](https://agent-deck.com/llms-full.txt): install, features, conductors, remotes, web mode, configuration basics and FAQ in one plain-text file
+- [FAQ](https://agent-deck.com/faq.html): common questions about Agent Deck
+- [README](https://github.com/asheshgoplani/agent-deck#readme): the main project documentation
+- [CLI reference](https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/cli-reference.md): every command and flag
+- [Configuration reference](https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/config-reference.md): config.toml keys, MCPs, custom tools, socket pool, Docker
+- [TUI reference](https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/tui-reference.md): keyboard shortcuts and status indicators
+- [Conductor guide](https://github.com/asheshgoplani/agent-deck/tree/main/docs/conductor): quickstart, architecture and channel setup
+- [Troubleshooting](https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/troubleshooting.md): common issues, recovery and uninstalling
+
+## Project
+
+- [Website](https://agent-deck.com/): overview, install and demo
+- [GitHub repository](https://github.com/asheshgoplani/agent-deck): source code, issues and discussions
+- [Releases](https://github.com/asheshgoplani/agent-deck/releases/latest): latest release binaries and notes
+- [Changelog](https://github.com/asheshgoplani/agent-deck/blob/main/CHANGELOG.md): release history
+- [Discord](https://discord.gg/e4xSs6NBN8): community chat and support
+- [Contributing](https://github.com/asheshgoplani/agent-deck/blob/main/CONTRIBUTING.md): how to contribute
+
+## Optional
+
+- [Repository llms-full.txt](https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt): the longer in-repo LLM context (README plus the agent-deck skill guide)
+- [Agent skill](https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/SKILL.md): the Claude Code skill for driving Agent Deck from an agent
+- [Telemetry](https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md): what the opt-in app telemetry and the website page-view counter send

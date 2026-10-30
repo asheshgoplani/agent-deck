@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Agent Deck FAQ - Install, Setup and Common Questions</title>
+    <meta name="title" content="Agent Deck FAQ - Install, Setup and Common Questions">
+    <meta name="description" content="Answers to common Agent Deck questions: installing on macOS, Linux and WSL, Homebrew, tmux, updating, uninstalling, supported agents, privacy, remotes, conductors and the Mac app.">
+    <meta name="author" content="Ashesh Goplani">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <link rel="canonical" href="https://agent-deck.com/faq.html">
+
+    <meta name="theme-color" content="#1a1b26">
+    <meta name="application-name" content="Agent Deck">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://agent-deck.com/faq.html">
+    <meta property="og:title" content="Agent Deck FAQ - Install, Setup and Common Questions">
+    <meta property="og:description" content="Answers to common Agent Deck questions: installing on macOS, Linux and WSL, Homebrew, tmux, updating, uninstalling, supported agents, privacy, remotes, conductors and the Mac app.">
+    <meta property="og:image" content="https://agent-deck.com/og-image.svg">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Agent Deck - Your AI agent command center showing status indicators for multiple coding sessions">
+    <meta property="og:site_name" content="Agent Deck">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://agent-deck.com/faq.html">
+    <meta name="twitter:title" content="Agent Deck FAQ - Install, Setup and Common Questions">
+    <meta name="twitter:description" content="Answers to common Agent Deck questions: installing on macOS, Linux and WSL, Homebrew, tmux, updating, uninstalling, supported agents, privacy, remotes, conductors and the Mac app.">
+    <meta name="twitter:image" content="https://agent-deck.com/og-image.svg">
+    <meta name="twitter:creator" content="@AsheshGoplani">
+
+    <!-- Favicon - Status Grid Logo -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 32'%3E%3Crect fill='%231a1b26' width='48' height='32' rx='4'/%3E%3Ccircle cx='10' cy='16' r='5' fill='%239ece6a'/%3E%3Ccircle cx='24' cy='16' r='5' fill='%23e0af68'/%3E%3Ccircle cx='38' cy='16' r='5' fill='%23565f89'/%3E%3C/svg%3E">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 32'%3E%3Crect fill='%231a1b26' width='48' height='32' rx='4'/%3E%3Ccircle cx='10' cy='16' r='5' fill='%239ece6a'/%3E%3Ccircle cx='24' cy='16' r='5' fill='%23e0af68'/%3E%3Ccircle cx='38' cy='16' r='5' fill='%23565f89'/%3E%3C/svg%3E">
+
+    <!-- LLM documentation reference -->
+    <link rel="alternate" type="text/plain" href="https://agent-deck.com/llms.txt" title="LLM Summary">
+
+    <!-- Schema.org FAQPage: question and answer text matches the visible page exactly -->
+    <script type="application/ld+json">
+{
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+        {
+            "@type": "Question",
+            "name": "What is Agent Deck?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Agent Deck is a terminal session manager for AI coding agents. It runs each agent session in tmux and shows them all in one dashboard with live status (running, waiting, idle, error), so you can switch between them with one keystroke. It also handles forking, git worktrees, MCP servers, sessions on remote machines and long-running conductor sessions. It is one Go binary, agent-deck, with a TUI, a CLI and a web UI."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Which AI coding agents does it support?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Claude Code and Gemini CLI have full integration (status, MCP, resume, and fork for Claude). Codex, OpenCode, Copilot, Cursor (terminal), Crush, pi, Oh My Pi, Hermes Agent, Muse Code and DeepSeek Harness have built-in support with status detection and launch. Any other terminal tool works as a custom tool via [tools.*] in config.toml, or as a plain shell session."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Which operating systems does it run on?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "macOS and Linux natively, and Windows through WSL (Windows Subsystem for Linux). There is no native Windows build; install WSL first, then run the installer inside it. WSL2 is recommended for full feature support, including MCP socket pooling."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "How do I install it?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Run curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash, then start it with agent-deck. Alternatives: Homebrew with brew install asheshgoplani/tap/agent-deck, Go with go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest, or build from source with make install in a clone of the repository."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Do I need tmux?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. Agent Deck runs every session inside tmux, so tmux is required. The install script checks for it and offers to install it if it is missing. It can also add an optional tmux config for mouse scrolling and clipboard copy; skip that with --skip-tmux-config."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Will it interfere with my existing tmux setup?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "No. Agent Deck creates its own tmux sessions with the prefix agentdeck_*, and your existing sessions are untouched. The installer backs up your ~/.tmux.conf before adding its optional config block."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "How do I update Agent Deck?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Agent Deck checks for updates automatically, and by default the TUI installs an available update on its own. For a standalone install you can also run agent-deck update; for a Homebrew install run brew upgrade asheshgoplani/tap/agent-deck. On machines where the TUI is not open every day, agent-deck update --install-timer adds a daily update run."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Homebrew installed an older version than the latest release. Why?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "The Homebrew tap is updated by the release pipeline and has at times lagged behind GitHub Releases. Run brew update and then brew upgrade asheshgoplani/tap/agent-deck, and compare agent-deck --version with the latest release on GitHub. If the tap is still behind, report it on the issue tracker."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "How do I uninstall it?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Run agent-deck uninstall for an interactive uninstall, or agent-deck uninstall --keep-data to remove only the binary and keep your sessions. --dry-run previews what would be removed. It removes the binary (or the Homebrew package), the agent-deck block in ~/.tmux.conf, and the agent-deck config, data and cache folders."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Is Agent Deck free? What is the license?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. Agent Deck is free and open source under the MIT license. The agents themselves are billed by their own vendors: Agent Deck runs the unmodified claude CLI with your own login, and never reuses your login token to call Anthropic itself."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Does Agent Deck send any data anywhere?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Usage telemetry is opt-in and off by default: nothing is sent unless you say yes to a one-time question in the TUI, and it never includes prompts, output, titles, paths or names. agent-deck telemetry preview shows exactly what would be sent, and agent-deck telemetry off or DO_NOT_TRACK=1 turns it off. Feedback and bug reports are sent only after you confirm the full text. Agent Deck also checks GitHub for new releases."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "How does status detection work?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Agent Deck polls each session and reads tool hooks where they exist, then shows running (green), waiting for your input (yellow), idle (gray) or error (red). Codex and pi report status through hooks you install once with agent-deck codex-hooks install and agent-deck pi-hooks install. Waiting sessions also appear in your tmux status bar."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "What does forking a session do?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "A fork is a new session that inherits the parent's conversation through the tool's own fork, supported for Claude Code, Codex, OpenCode, pi and Oh My Pi. Press f for a quick fork or Shift+F for the fork dialog. By default a quick fork gets its own git worktree and branch, carries the parent's uncommitted changes and matches its Docker sandbox."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "How do I manage MCP servers?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Define your MCP servers once in ~/.config/agent-deck/config.toml, then press m on a session to toggle them per project (LOCAL) or for all projects (GLOBAL); the session restarts with the new set. With pool_all = true, the MCP socket pool shares each server across all sessions so it runs once instead of once per session."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Can several agents work on the same repository?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes, with git worktrees. agent-deck add . -c claude --worktree feature/a --new-branch creates a session in its own worktree and branch, so agents never overwrite each other's files. agent-deck worktree finish merges the branch, removes the worktree and deletes the session."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "How do I search my past conversations?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Turn on Recall with [recall] enabled = true in config.toml. It indexes the transcripts of Claude, Codex, Gemini, pi, OpenCode and Hermes on this machine; press G in the TUI or use agent-deck recall search. To search the session list itself, press /."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Can I manage sessions on other machines?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. agent-deck remote add dev user@dev-box registers a machine over SSH, and its sessions appear in your list with live status. You can create, attach, send to, fork and stop them from your own terminal. agent-deck is installed on the remote if it is missing, and agent-deck remote update --all keeps remotes current."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "What is a conductor?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "A conductor is a long-running agent session that supervises your other sessions. It watches for sessions that need help, answers routine questions and escalates the rest to you. Create one with agent-deck conductor setup <name>. You can talk to it from your phone through optional Telegram, Slack, Discord or Mattermost bridges, and run it on Claude Code or Codex."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Is there a web UI?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. agent-deck web starts a browser UI on http://127.0.0.1:8420 with session terminals, a fleet board, costs and settings. --read-only shows output only. To listen on a non-loopback address you must protect it with --token or --token-file; without one, Agent Deck refuses to start it."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Is there a Mac app?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "A native macOS app is in preview. It is built on the same agent-deck core, so it shows the sessions you already have, and its Browser panel lets agents open the reports and pages they make. There is no public download yet."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Can I use different Claude accounts?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. Add named accounts under [profiles.<name>.claude] with their own config_dir, then create a session with --account <name> or pick it in the New Session dialog. agent-deck session switch-account <session> <account> moves an existing session to another account, conversation included."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Can I run agents in a sandbox?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. Tick \"Run in Docker sandbox\" when creating a session, or set default_enabled = true under [docker]. The project folder is mounted into the container and the rest of your system stays protected. Press E on a sandboxed session to open a shell in its container."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Why can't I drag to select text in the TUI?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "The TUI uses mouse reporting so clicks and scrolling work, so your terminal does not see a drag as a selection. Hold Shift while dragging (Option in iTerm2), or use the copy keys: c copies the last AI response and V copies the visible terminal text."
+            }
+        },
+        {
+            "@type": "Question",
+            "name": "Where do I get help or report a bug?",
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Run agent-deck feedback bug to file a GitHub issue from your terminal; it shows you the full, scrubbed text before anything is sent. You can also ask on Discord or in GitHub Discussions, and ? in the TUI shows every shortcut."
+            }
+        }
+    ]
+}
+    </script>
+
+    <!-- Schema.org breadcrumb -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Agent Deck", "item": "https://agent-deck.com/"},
+            {"@type": "ListItem", "position": 2, "name": "FAQ", "item": "https://agent-deck.com/faq.html"}
+        ]
+    }
+    </script>
+
+    <!-- PostHog pageviews (EU, cookieless, pageviews only). Skipped entirely under
+         Do Not Track or Global Privacy Control. See TELEMETRY.md, "Website". -->
+    <script>
+        (function () {
+            var dnt = navigator.doNotTrack === '1' || navigator.doNotTrack === 'yes' ||
+                window.doNotTrack === '1' || navigator.msDoNotTrack === '1' ||
+                navigator.globalPrivacyControl === true;
+            if (dnt) return;
+            !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],Object.defineProperty(u,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e}}),Object.defineProperty(u.people,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(){return u.toString(1)+".people (stub)"}}),o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagResult isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+            posthog.init('phc_C2gvPAmkpoba6aB8Pyk9DwTwGV7swUU5sG4G6FcavLiv', {
+                api_host: 'https://eu.i.posthog.com',
+                persistence: 'memory',
+                respect_dnt: true,
+                capture_pageview: true,
+                capture_pageleave: false,
+                autocapture: false,
+                disable_session_recording: true,
+                disable_surveys: true,
+                person_profiles: 'identified_only',
+                // Nothing beyond pageviews, whatever the shared project settings say.
+                advanced_disable_flags: true,
+                advanced_disable_decide: true,
+                capture_heatmaps: false,
+                capture_dead_clicks: false,
+                capture_performance: false,
+                capture_exceptions: false,
+                disable_web_experiments: true
+            });
+        })();
+    </script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        // Tokyo Night palette
+                        'tn-bg': '#1a1b26',
+                        'tn-surface': '#24283b',
+                        'tn-border': '#414868',
+                        'tn-text': '#c0caf5',
+                        'tn-dim': '#565f89',
+                        'tn-accent': '#7aa2f7',
+                        'tn-purple': '#bb9af7',
+                        'tn-cyan': '#7dcfff',
+                        'tn-green': '#9ece6a',
+                        'tn-yellow': '#e0af68',
+                        'tn-orange': '#ff9e64',
+                        'tn-red': '#f7768e',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        code, .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Long commands in answers must wrap on phones */
+        p code {
+            overflow-wrap: anywhere;
+        }
+
+        /* Smooth scrolling */
+        html {
+            scroll-behavior: smooth;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1a1b26;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #414868;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #565f89;
+        }
+
+        /* Code block styling */
+        .code-block {
+            position: relative;
+        }
+        .code-block button {
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .code-block:hover button {
+            opacity: 1;
+        }
+
+        /* Gradient text */
+        .gradient-text {
+            background: linear-gradient(135deg, #7aa2f7 0%, #bb9af7 50%, #7dcfff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Video container */
+        .video-container {
+            border: 1px solid #414868;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Status indicators animation */
+        @keyframes pulse-green {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .status-running {
+            animation: pulse-green 2s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body class="bg-tn-bg text-tn-text min-h-screen">
+    <!-- Header -->
+    <header class="fixed top-0 left-0 right-0 z-50 bg-tn-bg/80 backdrop-blur-md border-b border-tn-border">
+        <nav class="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between" aria-label="Main">
+            <a href="/" class="flex items-center gap-3 text-xl font-semibold" aria-label="Agent Deck home">
+                <span class="flex items-center gap-0.5 mono text-sm bg-tn-surface px-1.5 py-0.5 rounded border border-tn-border">
+                    <span class="text-tn-border">[</span><span class="text-tn-green">●</span><span class="text-tn-border">│</span><span class="text-tn-yellow">◐</span><span class="text-tn-border">│</span><span class="text-tn-dim">○</span><span class="text-tn-border">]</span>
+                </span>
+            </a>
+            <div class="flex items-center gap-4 sm:gap-6 text-sm sm:text-base">
+                <a href="/" class="text-tn-dim hover:text-tn-text transition-colors">Home</a>
+                <a href="/#install" class="text-tn-dim hover:text-tn-text transition-colors">Install</a>
+                <a href="/faq.html" class="text-tn-text" aria-current="page">FAQ</a>
+                <a href="https://github.com/asheshgoplani/agent-deck" target="_blank" rel="noopener"
+                   class="text-tn-dim hover:text-tn-text transition-colors flex items-center gap-2" aria-label="GitHub">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="hidden sm:inline">GitHub</span>
+                </a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="pt-24 pb-16">
+        <section class="max-w-3xl mx-auto px-4 sm:px-6">
+            <p class="text-sm mb-4"><a href="/" class="text-tn-accent hover:underline">&larr; Back to Agent Deck</a></p>
+            <h1 class="text-3xl md:text-4xl font-bold mb-3"><span class="gradient-text">Frequently Asked Questions</span></h1>
+            <p class="text-tn-dim mb-8">Installing, updating and using Agent Deck. Can't find your answer? Ask on <a href="https://discord.gg/e4xSs6NBN8" class="text-tn-accent hover:underline">Discord</a> or in <a href="https://github.com/asheshgoplani/agent-deck/discussions" class="text-tn-accent hover:underline">GitHub Discussions</a>.</p>
+
+            <nav class="bg-tn-surface rounded-lg border border-tn-border p-5 mb-10" aria-label="Questions">
+                <h2 class="text-sm font-semibold uppercase tracking-wide text-tn-dim mb-3">Questions</h2>
+                <ol class="list-decimal list-inside space-y-1 text-sm">
+                    <li><a href="#what-is" class="text-tn-dim hover:text-tn-text transition-colors">What is Agent Deck?</a></li>
+                    <li><a href="#agents" class="text-tn-dim hover:text-tn-text transition-colors">Which AI coding agents does it support?</a></li>
+                    <li><a href="#os" class="text-tn-dim hover:text-tn-text transition-colors">Which operating systems does it run on?</a></li>
+                    <li><a href="#install" class="text-tn-dim hover:text-tn-text transition-colors">How do I install it?</a></li>
+                    <li><a href="#tmux" class="text-tn-dim hover:text-tn-text transition-colors">Do I need tmux?</a></li>
+                    <li><a href="#tmux-setup" class="text-tn-dim hover:text-tn-text transition-colors">Will it interfere with my existing tmux setup?</a></li>
+                    <li><a href="#updating" class="text-tn-dim hover:text-tn-text transition-colors">How do I update Agent Deck?</a></li>
+                    <li><a href="#brew-behind" class="text-tn-dim hover:text-tn-text transition-colors">Homebrew installed an older version than the latest release. Why?</a></li>
+                    <li><a href="#uninstall" class="text-tn-dim hover:text-tn-text transition-colors">How do I uninstall it?</a></li>
+                    <li><a href="#cost" class="text-tn-dim hover:text-tn-text transition-colors">Is Agent Deck free? What is the license?</a></li>
+                    <li><a href="#data" class="text-tn-dim hover:text-tn-text transition-colors">Does Agent Deck send any data anywhere?</a></li>
+                    <li><a href="#status" class="text-tn-dim hover:text-tn-text transition-colors">How does status detection work?</a></li>
+                    <li><a href="#fork" class="text-tn-dim hover:text-tn-text transition-colors">What does forking a session do?</a></li>
+                    <li><a href="#mcp" class="text-tn-dim hover:text-tn-text transition-colors">How do I manage MCP servers?</a></li>
+                    <li><a href="#worktrees" class="text-tn-dim hover:text-tn-text transition-colors">Can several agents work on the same repository?</a></li>
+                    <li><a href="#recall" class="text-tn-dim hover:text-tn-text transition-colors">How do I search my past conversations?</a></li>
+                    <li><a href="#remotes" class="text-tn-dim hover:text-tn-text transition-colors">Can I manage sessions on other machines?</a></li>
+                    <li><a href="#conductor" class="text-tn-dim hover:text-tn-text transition-colors">What is a conductor?</a></li>
+                    <li><a href="#web" class="text-tn-dim hover:text-tn-text transition-colors">Is there a web UI?</a></li>
+                    <li><a href="#mac-app" class="text-tn-dim hover:text-tn-text transition-colors">Is there a Mac app?</a></li>
+                    <li><a href="#accounts" class="text-tn-dim hover:text-tn-text transition-colors">Can I use different Claude accounts?</a></li>
+                    <li><a href="#sandbox" class="text-tn-dim hover:text-tn-text transition-colors">Can I run agents in a sandbox?</a></li>
+                    <li><a href="#select-text" class="text-tn-dim hover:text-tn-text transition-colors">Why can't I drag to select text in the TUI?</a></li>
+                    <li><a href="#help" class="text-tn-dim hover:text-tn-text transition-colors">Where do I get help or report a bug?</a></li>
+                </ol>
+            </nav>
+
+            <div class="space-y-4">
+                <article id="what-is" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">What is Agent Deck?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Agent Deck is a terminal session manager for AI coding agents. It runs each agent session in tmux and shows them all in one dashboard with live status (running, waiting, idle, error), so you can switch between them with one keystroke. It also handles forking, git worktrees, MCP servers, sessions on remote machines and long-running conductor sessions. It is one Go binary, <code class="text-tn-cyan">agent-deck</code>, with a TUI, a CLI and a web UI.</p>
+                </article>
+                <article id="agents" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Which AI coding agents does it support?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Claude Code and Gemini CLI have full integration (status, MCP, resume, and fork for Claude). Codex, OpenCode, Copilot, Cursor (terminal), Crush, pi, Oh My Pi, Hermes Agent, Muse Code and DeepSeek Harness have built-in support with status detection and launch. Any other terminal tool works as a custom tool via <code class="text-tn-cyan">[tools.*]</code> in config.toml, or as a plain shell session.</p>
+                </article>
+                <article id="os" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Which operating systems does it run on?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">macOS and Linux natively, and Windows through WSL (Windows Subsystem for Linux). There is no native Windows build; install WSL first, then run the installer inside it. WSL2 is recommended for full feature support, including MCP socket pooling.</p>
+                </article>
+                <article id="install" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">How do I install it?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Run <code class="text-tn-cyan">curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash</code>, then start it with <code class="text-tn-cyan">agent-deck</code>. Alternatives: Homebrew with <code class="text-tn-cyan">brew install asheshgoplani/tap/agent-deck</code>, Go with <code class="text-tn-cyan">go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest</code>, or build from source with <code class="text-tn-cyan">make install</code> in a clone of the repository.</p>
+                </article>
+                <article id="tmux" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Do I need tmux?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Yes. Agent Deck runs every session inside tmux, so tmux is required. The install script checks for it and offers to install it if it is missing. It can also add an optional tmux config for mouse scrolling and clipboard copy; skip that with <code class="text-tn-cyan">--skip-tmux-config</code>.</p>
+                </article>
+                <article id="tmux-setup" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Will it interfere with my existing tmux setup?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">No. Agent Deck creates its own tmux sessions with the prefix <code class="text-tn-cyan">agentdeck_*</code>, and your existing sessions are untouched. The installer backs up your <code class="text-tn-cyan">~/.tmux.conf</code> before adding its optional config block.</p>
+                </article>
+                <article id="updating" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">How do I update Agent Deck?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Agent Deck checks for updates automatically, and by default the TUI installs an available update on its own. For a standalone install you can also run <code class="text-tn-cyan">agent-deck update</code>; for a Homebrew install run <code class="text-tn-cyan">brew upgrade asheshgoplani/tap/agent-deck</code>. On machines where the TUI is not open every day, <code class="text-tn-cyan">agent-deck update --install-timer</code> adds a daily update run.</p>
+                </article>
+                <article id="brew-behind" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Homebrew installed an older version than the latest release. Why?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">The Homebrew tap is updated by the release pipeline and has at times lagged behind GitHub Releases. Run <code class="text-tn-cyan">brew update</code> and then <code class="text-tn-cyan">brew upgrade asheshgoplani/tap/agent-deck</code>, and compare <code class="text-tn-cyan">agent-deck --version</code> with the latest release on GitHub. If the tap is still behind, report it on the issue tracker.</p>
+                </article>
+                <article id="uninstall" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">How do I uninstall it?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Run <code class="text-tn-cyan">agent-deck uninstall</code> for an interactive uninstall, or <code class="text-tn-cyan">agent-deck uninstall --keep-data</code> to remove only the binary and keep your sessions. <code class="text-tn-cyan">--dry-run</code> previews what would be removed. It removes the binary (or the Homebrew package), the agent-deck block in <code class="text-tn-cyan">~/.tmux.conf</code>, and the agent-deck config, data and cache folders.</p>
+                </article>
+                <article id="cost" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Is Agent Deck free? What is the license?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Yes. Agent Deck is free and open source under the MIT license. The agents themselves are billed by their own vendors: Agent Deck runs the unmodified <code class="text-tn-cyan">claude</code> CLI with your own login, and never reuses your login token to call Anthropic itself.</p>
+                </article>
+                <article id="data" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Does Agent Deck send any data anywhere?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Usage telemetry is opt-in and off by default: nothing is sent unless you say yes to a one-time question in the TUI, and it never includes prompts, output, titles, paths or names. <code class="text-tn-cyan">agent-deck telemetry preview</code> shows exactly what would be sent, and <code class="text-tn-cyan">agent-deck telemetry off</code> or <code class="text-tn-cyan">DO_NOT_TRACK=1</code> turns it off. Feedback and bug reports are sent only after you confirm the full text. Agent Deck also checks GitHub for new releases.</p>
+                </article>
+                <article id="status" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">How does status detection work?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Agent Deck polls each session and reads tool hooks where they exist, then shows running (green), waiting for your input (yellow), idle (gray) or error (red). Codex and pi report status through hooks you install once with <code class="text-tn-cyan">agent-deck codex-hooks install</code> and <code class="text-tn-cyan">agent-deck pi-hooks install</code>. Waiting sessions also appear in your tmux status bar.</p>
+                </article>
+                <article id="fork" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">What does forking a session do?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">A fork is a new session that inherits the parent's conversation through the tool's own fork, supported for Claude Code, Codex, OpenCode, pi and Oh My Pi. Press <code class="text-tn-cyan">f</code> for a quick fork or <code class="text-tn-cyan">Shift+F</code> for the fork dialog. By default a quick fork gets its own git worktree and branch, carries the parent's uncommitted changes and matches its Docker sandbox.</p>
+                </article>
+                <article id="mcp" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">How do I manage MCP servers?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Define your MCP servers once in <code class="text-tn-cyan">~/.config/agent-deck/config.toml</code>, then press <code class="text-tn-cyan">m</code> on a session to toggle them per project (LOCAL) or for all projects (GLOBAL); the session restarts with the new set. With <code class="text-tn-cyan">pool_all = true</code>, the MCP socket pool shares each server across all sessions so it runs once instead of once per session.</p>
+                </article>
+                <article id="worktrees" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Can several agents work on the same repository?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Yes, with git worktrees. <code class="text-tn-cyan">agent-deck add . -c claude --worktree feature/a --new-branch</code> creates a session in its own worktree and branch, so agents never overwrite each other's files. <code class="text-tn-cyan">agent-deck worktree finish</code> merges the branch, removes the worktree and deletes the session.</p>
+                </article>
+                <article id="recall" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">How do I search my past conversations?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Turn on Recall with <code class="text-tn-cyan">[recall] enabled = true</code> in config.toml. It indexes the transcripts of Claude, Codex, Gemini, pi, OpenCode and Hermes on this machine; press <code class="text-tn-cyan">G</code> in the TUI or use <code class="text-tn-cyan">agent-deck recall search</code>. To search the session list itself, press <code class="text-tn-cyan">/</code>.</p>
+                </article>
+                <article id="remotes" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Can I manage sessions on other machines?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Yes. <code class="text-tn-cyan">agent-deck remote add dev user@dev-box</code> registers a machine over SSH, and its sessions appear in your list with live status. You can create, attach, send to, fork and stop them from your own terminal. agent-deck is installed on the remote if it is missing, and <code class="text-tn-cyan">agent-deck remote update --all</code> keeps remotes current.</p>
+                </article>
+                <article id="conductor" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">What is a conductor?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">A conductor is a long-running agent session that supervises your other sessions. It watches for sessions that need help, answers routine questions and escalates the rest to you. Create one with <code class="text-tn-cyan">agent-deck conductor setup &lt;name&gt;</code>. You can talk to it from your phone through optional Telegram, Slack, Discord or Mattermost bridges, and run it on Claude Code or Codex.</p>
+                </article>
+                <article id="web" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Is there a web UI?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Yes. <code class="text-tn-cyan">agent-deck web</code> starts a browser UI on http://127.0.0.1:8420 with session terminals, a fleet board, costs and settings. <code class="text-tn-cyan">--read-only</code> shows output only. To listen on a non-loopback address you must protect it with <code class="text-tn-cyan">--token</code> or <code class="text-tn-cyan">--token-file</code>; without one, Agent Deck refuses to start it.</p>
+                </article>
+                <article id="mac-app" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Is there a Mac app?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">A native macOS app is in preview. It is built on the same agent-deck core, so it shows the sessions you already have, and its Browser panel lets agents open the reports and pages they make. There is no public download yet.</p>
+                </article>
+                <article id="accounts" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Can I use different Claude accounts?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Yes. Add named accounts under <code class="text-tn-cyan">[profiles.&lt;name&gt;.claude]</code> with their own <code class="text-tn-cyan">config_dir</code>, then create a session with <code class="text-tn-cyan">--account &lt;name&gt;</code> or pick it in the New Session dialog. <code class="text-tn-cyan">agent-deck session switch-account &lt;session&gt; &lt;account&gt;</code> moves an existing session to another account, conversation included.</p>
+                </article>
+                <article id="sandbox" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Can I run agents in a sandbox?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Yes. Tick "Run in Docker sandbox" when creating a session, or set <code class="text-tn-cyan">default_enabled = true</code> under <code class="text-tn-cyan">[docker]</code>. The project folder is mounted into the container and the rest of your system stays protected. Press <code class="text-tn-cyan">E</code> on a sandboxed session to open a shell in its container.</p>
+                </article>
+                <article id="select-text" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Why can't I drag to select text in the TUI?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">The TUI uses mouse reporting so clicks and scrolling work, so your terminal does not see a drag as a selection. Hold <code class="text-tn-cyan">Shift</code> while dragging (<code class="text-tn-cyan">Option</code> in iTerm2), or use the copy keys: <code class="text-tn-cyan">c</code> copies the last AI response and <code class="text-tn-cyan">V</code> copies the visible terminal text.</p>
+                </article>
+                <article id="help" class="faq-item bg-tn-surface/50 rounded-lg border border-tn-border p-5 scroll-mt-24">
+                    <h2 class="font-semibold text-lg mb-2">Where do I get help or report a bug?</h2>
+                    <p class="text-tn-dim text-sm leading-relaxed">Run <code class="text-tn-cyan">agent-deck feedback bug</code> to file a GitHub issue from your terminal; it shows you the full, scrubbed text before anything is sent. You can also ask on Discord or in GitHub Discussions, and <code class="text-tn-cyan">?</code> in the TUI shows every shortcut.</p>
+                </article>
+            </div>
+
+            <div class="mt-12 bg-gradient-to-r from-tn-accent/10 via-tn-purple/10 to-tn-cyan/10 rounded-lg border border-tn-accent/30 p-6 text-center">
+                <h2 class="text-xl font-bold mb-2">Ready to try it?</h2>
+                <p class="text-tn-dim text-sm mb-4">One command on macOS, Linux or WSL.</p>
+                <code class="text-tn-green text-sm break-all">curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash</code>
+                <p class="mt-4 text-sm"><a href="/" class="text-tn-accent hover:underline">Back to the home page</a></p>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-tn-border py-12">
+        <div class="max-w-5xl mx-auto px-6">
+            <!-- Social Links & Support -->
+            <div class="flex flex-col md:flex-row items-center justify-between gap-6 mb-8">
+                <!-- Social Links -->
+                <div class="flex items-center gap-4">
+                    <a href="https://github.com/asheshgoplani/agent-deck" target="_blank" rel="noopener"
+                       class="text-tn-dim hover:text-tn-text transition-colors" title="GitHub" aria-label="GitHub">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    </a>
+                    <a href="https://twitter.com/AsheshGoplani" target="_blank" rel="noopener"
+                       class="text-tn-dim hover:text-tn-text transition-colors" title="Twitter/X" aria-label="Twitter/X">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                    </a>
+                    <a href="https://linkedin.com/in/asheshgoplani" target="_blank" rel="noopener"
+                       class="text-tn-dim hover:text-tn-text transition-colors" title="LinkedIn" aria-label="LinkedIn">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+                    </a>
+                </div>
+
+                <!-- Buy Me a Coffee -->
+                <a href="https://buymeacoffee.com/asheshgoplani" target="_blank" rel="noopener"
+                   class="inline-flex items-center gap-2 px-4 py-2 bg-tn-yellow/10 text-tn-yellow rounded-lg hover:bg-tn-yellow/20 transition-colors">
+                    <span>☕</span>
+                    <span class="text-sm font-medium">Buy me a coffee</span>
+                </a>
+            </div>
+
+
+
+            <nav class="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm mb-6" aria-label="Footer">
+                <a href="/" class="text-tn-dim hover:text-tn-text transition-colors">Home</a>
+                <a href="/faq.html" class="text-tn-dim hover:text-tn-text transition-colors">FAQ</a>
+                <a href="https://github.com/asheshgoplani/agent-deck#documentation" class="text-tn-dim hover:text-tn-text transition-colors">Docs</a>
+                <a href="https://github.com/asheshgoplani/agent-deck/releases" class="text-tn-dim hover:text-tn-text transition-colors">Releases</a>
+                <a href="https://discord.gg/e4xSs6NBN8" class="text-tn-dim hover:text-tn-text transition-colors">Discord</a>
+                <a href="/llms.txt" class="text-tn-dim hover:text-tn-text transition-colors">llms.txt</a>
+            </nav>
+
+            <div class="text-center text-tn-dim text-sm">
+                <p>
+                    MIT License &copy; 2025&ndash;2026
+                    <a href="https://github.com/asheshgoplani" class="hover:text-tn-text transition-colors">Ashesh Goplani</a>
+                </p>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

@@ -26,6 +26,6 @@ Or via Homebrew: `brew install asheshgoplani/tap/agent-deck`
 
 - GitHub: https://github.com/asheshgoplani/agent-deck
 - Full documentation for LLMs: https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt
-- Website: https://asheshgoplani.github.io/agent-deck/
+- Website: https://agent-deck.com/
 - Discord: https://discord.gg/e4xSs6NBN8
 - Latest release: https://github.com/asheshgoplani/agent-deck/releases/latest

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Page not found - Agent Deck</title>
+    <meta name="description" content="This page does not exist. Go back to Agent Deck, the terminal session manager for AI coding agents.">
+    <meta name="robots" content="noindex">
+    <meta name="theme-color" content="#1a1b26">
+    <link rel="icon" href="/logo.svg" type="image/svg+xml">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        // Tokyo Night palette (same as index.html)
+                        'tn-bg': '#1a1b26',
+                        'tn-surface': '#24283b',
+                        'tn-border': '#414868',
+                        'tn-text': '#c0caf5',
+                        'tn-dim': '#565f89',
+                        'tn-accent': '#7aa2f7',
+                        'tn-purple': '#bb9af7',
+                        'tn-cyan': '#7dcfff',
+                        'tn-green': '#9ece6a',
+                        'tn-yellow': '#e0af68',
+                        'tn-orange': '#ff9e64',
+                        'tn-red': '#f7768e',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #1a1b26; color: #c0caf5; }
+        code, .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .gradient-text {
+            background: linear-gradient(135deg, #7aa2f7 0%, #bb9af7 50%, #7dcfff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+    </style>
+</head>
+<body class="bg-tn-bg text-tn-text min-h-screen flex flex-col">
+    <header class="border-b border-tn-border">
+        <nav class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-3 text-xl font-semibold" aria-label="Agent Deck home">
+                <span class="flex items-center gap-0.5 mono text-sm bg-tn-surface px-1.5 py-0.5 rounded border border-tn-border">
+                    <span class="text-tn-border">[</span><span class="text-tn-green">●</span><span class="text-tn-border">│</span><span class="text-tn-yellow">◐</span><span class="text-tn-border">│</span><span class="text-tn-dim">○</span><span class="text-tn-border">]</span>
+                </span>
+                <span>Agent Deck</span>
+            </a>
+            <a href="https://github.com/asheshgoplani/agent-deck" target="_blank" rel="noopener"
+               class="text-tn-dim hover:text-tn-text transition-colors">GitHub</a>
+        </nav>
+    </header>
+
+    <main class="flex-1 flex items-center">
+        <section class="max-w-3xl mx-auto px-6 py-20 text-center">
+            <div class="mono text-sm inline-block bg-tn-surface border border-tn-border rounded-lg px-4 py-3 mb-8 text-left">
+                <div><span class="text-tn-dim">$</span> agent-deck session attach <span class="text-tn-cyan">this-page</span></div>
+                <div><span class="text-tn-red">✕</span> <span class="text-tn-red">error:</span> session not found <span class="text-tn-dim">(404)</span></div>
+            </div>
+            <h1 class="text-4xl md:text-5xl font-bold mb-4"><span class="gradient-text">Page not found</span></h1>
+            <p class="text-tn-dim text-lg mb-10">The page you asked for does not exist or has moved.</p>
+            <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+                <a href="/" class="px-6 py-3 rounded-lg bg-tn-accent text-tn-bg font-semibold hover:opacity-90 transition-opacity">Back to Agent Deck</a>
+                <a href="/faq.html" class="px-6 py-3 rounded-lg border border-tn-border text-tn-text hover:bg-tn-surface transition-colors">Read the FAQ</a>
+            </div>
+        </section>
+    </main>
+
+    <footer class="border-t border-tn-border py-8 text-center text-tn-dim text-sm">
+        <p>MIT License &copy; 2025 <a href="https://github.com/asheshgoplani" class="hover:text-tn-text transition-colors">Ashesh Goplani</a></p>
+    </footer>
+</body>
+</html>

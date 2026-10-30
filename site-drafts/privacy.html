@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Datenschutzerklärung (Privacy policy) - Agent Deck</title>
+    <meta name="description" content="Privacy policy (Datenschutzerklärung) for agent-deck.com according to the GDPR (DSGVO).">
+    <meta name="theme-color" content="#1a1b26">
+    <link rel="canonical" href="https://agent-deck.com/privacy.html">
+    <link rel="icon" href="/logo.svg" type="image/svg+xml">
+
+    <!--
+      DRAFT. Fill every {{PLACEHOLDER}} with real details, delete the sections
+      marked "IF ..." that do not apply, then move this file to site/privacy.html.
+      Moving it live is also what switches on the email sign-up box
+      (together with signupFormAction in site/site-config.js).
+      See site-drafts/README.md. Not legal advice: have it checked if unsure.
+    -->
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'tn-bg': '#1a1b26',
+                        'tn-surface': '#24283b',
+                        'tn-border': '#414868',
+                        'tn-text': '#c0caf5',
+                        'tn-dim': '#565f89',
+                        'tn-accent': '#7aa2f7',
+                        'tn-purple': '#bb9af7',
+                        'tn-cyan': '#7dcfff',
+                        'tn-green': '#9ece6a',
+                        'tn-yellow': '#e0af68',
+                        'tn-orange': '#ff9e64',
+                        'tn-red': '#f7768e',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #1a1b26; color: #c0caf5; }
+        .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .legal h2 { font-size: 1.35rem; font-weight: 600; margin-top: 2.75rem; margin-bottom: 0.75rem; color: #c0caf5; }
+        .legal h3 { font-size: 1.05rem; font-weight: 600; margin-top: 1.75rem; margin-bottom: 0.5rem; color: #c0caf5; }
+        .legal p, .legal address, .legal li { line-height: 1.7; color: #a9b1d6; font-style: normal; }
+        .legal p, .legal address, .legal ul { margin-bottom: 1rem; }
+        .legal ul { list-style: disc; padding-left: 1.5rem; }
+        .legal a { color: #7aa2f7; }
+        .legal a:hover { text-decoration: underline; }
+        .legal .h-de { color: #565f89; font-size: 0.9em; font-weight: 400; }
+    </style>
+</head>
+<body class="bg-tn-bg text-tn-text min-h-screen flex flex-col">
+    <header class="border-b border-tn-border">
+        <nav class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-3 text-xl font-semibold" aria-label="Agent Deck home">
+                <span class="flex items-center gap-0.5 mono text-sm bg-tn-surface px-1.5 py-0.5 rounded border border-tn-border">
+                    <span class="text-tn-border">[</span><span class="text-tn-green">●</span><span class="text-tn-border">│</span><span class="text-tn-yellow">◐</span><span class="text-tn-border">│</span><span class="text-tn-dim">○</span><span class="text-tn-border">]</span>
+                </span>
+                <span>Agent Deck</span>
+            </a>
+            <a href="/" class="text-tn-dim hover:text-tn-text transition-colors">Home</a>
+        </nav>
+    </header>
+
+    <main class="flex-1">
+        <article class="legal max-w-3xl mx-auto px-6 py-16">
+            <h1 class="text-3xl md:text-4xl font-bold mb-2">Datenschutzerklärung</h1>
+            <p class="text-tn-dim">Privacy policy for agent-deck.com according to the EU General Data Protection Regulation (GDPR / DSGVO). Last updated: {{LAST_UPDATED_DATE}}.</p>
+            <p>This policy covers this website only. The Agent Deck software you install has its own, opt-in telemetry, described in <a href="https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md" rel="noopener">TELEMETRY.md</a>.</p>
+
+            <h2>1. Verantwortlicher <span class="h-de">(Controller)</span></h2>
+            <address>
+                {{OWNER_FULL_NAME}}<br>
+                {{STREET_ADDRESS}}<br>
+                {{POSTCODE_CITY}}<br>
+                {{COUNTRY}}<br>
+                Email: <a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>
+            </address>
+            <p>We have not appointed a data protection officer because we are not required to. For any privacy question, write to the email address above.</p>
+
+            <h2>2. Überblick <span class="h-de">(Summary)</span></h2>
+            <ul>
+                <li>This site sets <strong>no cookies</strong> and uses no browser storage for tracking.</li>
+                <li>Like every website, it is delivered by a host that sees your IP address (section 3).</li>
+                <li>The page loads styling and fonts from third-party servers (section 4).</li>
+                <li>We count page views without cookies, and not at all if your browser sends Do Not Track or Global Privacy Control (section 5).</li>
+                <li>If you sign up for emails, your email address is stored by our newsletter provider, only after you confirm it (section 6).</li>
+            </ul>
+
+            <h2>3. Hosting und Server-Logfiles <span class="h-de">(Hosting and server logs)</span></h2>
+            <p>This website is hosted on GitHub Pages, a service of GitHub, Inc., 88 Colin P. Kelly Jr. Street, San Francisco, CA 94107, USA. When you open a page, your browser sends technical data to GitHub's servers: your IP address, date and time of the request, the page requested, the referring page, and your browser and operating system (user agent). GitHub needs this data to deliver the page and to keep the service secure, and may store it in log files. We do not have access to these logs and do not combine them with other data.</p>
+            <p>Legal basis: Art. 6(1)(f) GDPR. Our legitimate interest is presenting this website reliably and securely. GitHub processes data in the USA. Transfers to the USA rely on the EU-U.S. Data Privacy Framework where the recipient is certified under it (Art. 45 GDPR), and otherwise on the EU Standard Contractual Clauses (Art. 46 GDPR). See <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement" rel="noopener">GitHub's privacy statement</a>.</p>
+
+            <h2>4. Externe Inhalte <span class="h-de">(Third-party content: styling and fonts)</span></h2>
+            <h3>Tailwind CSS (cdn.tailwindcss.com)</h3>
+            <p>To style the pages, your browser loads a script from cdn.tailwindcss.com, provided by Tailwind Labs Inc., USA. Loading it sends your IP address, the time of the request and your user agent to that server. No cookies are set. Legal basis: Art. 6(1)(f) GDPR, our legitimate interest in a consistent, working design. The data may be processed in the USA.</p>
+
+            <!-- IF the site still loads Google Fonts from fonts.googleapis.com (site/index.html does today). Delete this block once the fonts are self-hosted. -->
+            <h3>Google Fonts</h3>
+            <p>The home page loads the fonts "Inter" and "JetBrains Mono" from Google Fonts, a service of Google Ireland Limited, Gordon House, Barrow Street, Dublin 4, Ireland. Your browser connects to Google's servers (fonts.googleapis.com, fonts.gstatic.com), which sends your IP address to Google. Google may process data in the USA. Legal basis: Art. 6(1)(f) GDPR, our interest in a consistent appearance. See <a href="https://policies.google.com/privacy" rel="noopener">Google's privacy policy</a>.</p>
+            <!-- END IF Google Fonts -->
+
+            <h2>5. Zugriffsstatistik <span class="h-de">(Page-view counting with PostHog)</span></h2>
+            <!-- IF the PostHog snippet is still in site/index.html (it is today). Delete this section if it is removed. -->
+            <p>To see how many people visit, the home page counts page views with PostHog, a service of PostHog Inc., using its EU cloud (eu.i.posthog.com, hosted in the EU). One page-view event is sent per page load: the page address, the referring page, and basic technical data that the PostHog script attaches (browser, operating system, screen size). Clicks, session recordings and surveys are switched off. The PostHog project is set to discard IP addresses.</p>
+            <ul>
+                <li><strong>No cookies, no storage:</strong> the random visitor id is kept in memory only and forgotten when you leave the page, so every visit is a new anonymous visitor.</li>
+                <li><strong>Do Not Track and Global Privacy Control:</strong> if your browser sends either signal, the PostHog script is not loaded at all.</li>
+                <li>You can also block eu.i.posthog.com and eu-assets.i.posthog.com with a content blocker.</li>
+            </ul>
+            <p>Legal basis: Art. 6(1)(f) GDPR, our legitimate interest in knowing how the site is used in aggregate. PostHog processes the data on our behalf under a data processing agreement (Art. 28 GDPR). Details: <a href="https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md#website" rel="noopener">TELEMETRY.md, "Website"</a>.</p>
+            <!-- END IF PostHog -->
+
+            <h2>6. Newsletter und Mac-App-Warteliste <span class="h-de">(Email newsletter and Mac app waitlist)</span></h2>
+            <p>You can sign up for our occasional newsletter and/or a one-time notification when the Agent Deck Mac app is available.</p>
+            <h3>What we process</h3>
+            <p>Your email address and which list(s) you chose. To prove your consent, our newsletter provider also records the time of sign-up and of confirmation and the IP address used for each.</p>
+            <h3>Double opt-in</h3>
+            <p>After you submit the form, you receive an email asking you to confirm your address. You are only added to the list once you click the confirmation link. If you do not confirm, your address is not used for any mailing and is deleted by the provider after a short period.</p>
+            <h3>Legal basis and withdrawal</h3>
+            <p>Your consent, Art. 6(1)(a) GDPR. You can withdraw it at any time with the unsubscribe link in every email, or by writing to <a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>. Withdrawal does not affect the lawfulness of emails sent before it. We do not use the address for anything else and do not pass it on to anyone other than the provider below.</p>
+            <h3>Newsletter provider (processor)</h3>
+            <p>Sign-ups are sent directly from your browser to, and stored and mailed by:<br>
+                {{NEWSLETTER_PROVIDER_NAME_AND_ADDRESS}}</p>
+            <p>The provider processes the data on our behalf under a data processing agreement (Art. 28 GDPR). Its privacy policy: {{NEWSLETTER_PROVIDER_PRIVACY_URL}}.</p>
+            <!-- IF the provider processes data outside the EU/EEA (for example Buttondown or Kit, USA). Delete for an EU provider that stores data in the EU (for example MailerLite). -->
+            <p>The provider processes data in the USA. The transfer relies on the EU-U.S. Data Privacy Framework if the provider is certified under it (Art. 45 GDPR), and otherwise on the EU Standard Contractual Clauses included in the provider's data processing agreement (Art. 46 GDPR).</p>
+            <!-- END IF outside EU -->
+            <p>The provider may measure whether emails are opened and which links are clicked; where we can switch this off, we do. {{NEWSLETTER_TRACKING_NOTE_OPTIONAL}}</p>
+            <h3>Storage period</h3>
+            <p>We keep your address while you are subscribed. After you unsubscribe, it is deleted, except that it may be kept on a block list so we never email you again by mistake (Art. 6(1)(f) GDPR, our legitimate interest in respecting your choice). The Mac app waitlist ends with the launch notification; we then delete those addresses unless you also chose the newsletter.</p>
+
+            <h2>7. Links zu anderen Websites <span class="h-de">(Links)</span></h2>
+            <p>This site links to GitHub, Discord, X (Twitter), LinkedIn and Buy Me a Coffee. Nothing is sent to these services until you click a link; from then on their own privacy policies apply.</p>
+
+            <h2>8. Ihre Rechte <span class="h-de">(Your rights)</span></h2>
+            <p>You have the right to access your data (Art. 15 GDPR), to rectification (Art. 16), to erasure (Art. 17), to restriction of processing (Art. 18), to data portability (Art. 20), and to withdraw consent at any time with effect for the future (Art. 7(3)). Write to <a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>.</p>
+            <p><strong>Right to object (Art. 21 GDPR):</strong> where we process data on the basis of Art. 6(1)(f) GDPR, you may object at any time on grounds relating to your particular situation.</p>
+            <p>You also have the right to lodge a complaint with a data protection supervisory authority (Art. 77 GDPR), in particular in the EU member state of your residence, your place of work or the place of the alleged infringement. {{SUPERVISORY_AUTHORITY_OPTIONAL}}</p>
+
+            <h2>9. Änderungen <span class="h-de">(Changes)</span></h2>
+            <p>We update this policy when the website or the services it uses change. The current version is always on this page.</p>
+
+            <p class="mt-12 text-sm text-tn-dim">See also our <a href="/impressum.html">Impressum (Legal notice)</a>.</p>
+        </article>
+    </main>
+
+    <footer class="border-t border-tn-border py-8 text-center text-tn-dim text-sm">
+        <p>
+            <a href="/" class="hover:text-tn-text transition-colors">Agent Deck</a>
+            &middot; <a href="/impressum.html" class="hover:text-tn-text transition-colors">Impressum</a>
+            &middot; <a href="/privacy.html" class="hover:text-tn-text transition-colors">Privacy</a>
+        </p>
+    </footer>
+</body>
+</html>

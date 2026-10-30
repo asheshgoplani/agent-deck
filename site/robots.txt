@@ -1,5 +1,32 @@
+# agent-deck.com: everything is public. Search engines and AI crawlers are welcome.
 User-agent: *
 Allow: /
 
-Sitemap: https://asheshgoplani.github.io/agent-deck/sitemap.xml
+User-agent: GPTBot
+Allow: /
 
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+Sitemap: https://agent-deck.com/sitemap.xml

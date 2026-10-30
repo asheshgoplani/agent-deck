@@ -1,0 +1,325 @@
+# Agent Deck: full reference for LLMs
+
+> Agent Deck is a free, open-source (MIT) terminal session manager for AI coding agents. One TUI shows every agent session (running, waiting, idle, error) and switches between them with one key. Single Go binary, built on tmux and Bubble Tea. macOS, Linux, Windows (WSL).
+
+Website: https://agent-deck.com/
+FAQ: https://agent-deck.com/faq.html
+Short index: https://agent-deck.com/llms.txt
+GitHub: https://github.com/asheshgoplani/agent-deck
+Latest release: https://github.com/asheshgoplani/agent-deck/releases/latest
+Discord: https://discord.gg/e4xSs6NBN8
+License: MIT. Author and maintainer: Ashesh Goplani (https://github.com/asheshgoplani).
+
+This file summarizes the README and the in-repo docs as of release v1.16.34 (October 2026). For the exhaustive, always-current text, read the README on GitHub and the references under `skills/agent-deck/references/` in the repository. The longer in-repo LLM file is https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt.
+
+---
+
+## 1. What problem it solves
+
+Running Claude Code on ten projects, Codex on five more and another agent in the background means many terminals and no idea which one is waiting for you. Agent Deck is "mission control": one terminal lists every session with its live status, and one keystroke attaches to any of them. Groups, search, forking, git worktrees, cost tracking and a phone-reachable conductor keep a whole fleet manageable.
+
+Compared with plain tmux, Agent Deck adds AI-specific behaviour: it knows whether an agent is working or waiting for input, forks conversations with their context, manages MCP servers and skills per session, searches across past conversations, and organizes sessions in groups. Its tmux sessions use the prefix `agentdeck_*`, so existing tmux sessions are not touched.
+
+---
+
+## 2. Install
+
+Works on macOS, Linux and Windows via WSL (WSL2 recommended).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash
+```
+
+Other methods:
+
+```bash
+brew install asheshgoplani/tap/agent-deck                              # Homebrew
+go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest   # Go
+git clone https://github.com/asheshgoplani/agent-deck.git && cd agent-deck && make install   # source
+```
+
+Then run `agent-deck`.
+
+Uninstall: `agent-deck uninstall` (interactive) or `agent-deck uninstall --keep-data` (binary only, keep sessions).
+
+Shell completion: `agent-deck completion <bash|zsh|fish>`, for example `echo 'source <(agent-deck completion zsh)' >> ~/.zshrc`.
+
+Updates: Agent Deck checks for updates itself. Manual installs update with `agent-deck update`; Homebrew installs with `brew upgrade asheshgoplani/tap/agent-deck`. Unattended install is on by default (`[updates] auto_install`); `agent-deck update --install-timer` adds a daily run (launchd on macOS, systemd user timer on Linux). Scripts and CI should set `AGENTDECK_SKIP_UPDATE_CHECK=1`.
+
+---
+
+## 3. Quick start
+
+```bash
+agent-deck                        # launch the TUI
+agent-deck add . -c claude        # add the current directory as a Claude Code session
+agent-deck session fork my-proj   # fork a supported session
+agent-deck session send my-proj --message-file task.md   # send a multi-line prompt
+agent-deck session remove my-proj # remove a stopped/errored session (transcripts kept)
+agent-deck mcp attach my-proj exa # attach an MCP server to a session
+agent-deck skill attach my-proj docs --source pool --restart   # attach a skill and restart
+agent-deck web                    # browser UI on http://127.0.0.1:8420
+```
+
+In the new-session dialog (`n`), Enter creates the session from any row using what is filled in (this folder, last-used tool, selected group, folder name as title). `N` on the home screen creates a session without the dialog. Ctrl+S creates from any field.
+
+### Key shortcuts (TUI)
+
+| Key | Action |
+|-----|--------|
+| Enter | Attach to session |
+| Ctrl+Q | Detach from session |
+| n | New session |
+| f / F | Fork (quick / dialog) |
+| A / Shift+U | Archive / unarchive |
+| ^ | Show archived sessions |
+| m | MCP Manager |
+| s | Skills Manager |
+| o | Send a message to the selected session |
+| Shift+Q | Queue a message after the current turn |
+| $ | Cost dashboard |
+| M | Move session to group |
+| S | Settings |
+| / | Fuzzy search sessions |
+| G | Recall: global search across every conversation on this machine |
+| r / R | Rename / restart |
+| d | Delete (Ctrl+Z undoes recent deletes while the TUI is open) |
+| E | Container shell (sandboxed sessions) |
+| c / B | Copy last AI response / session info |
+| C | Context inspector |
+| V / Y | Copy visible terminal text / a fenced code block |
+| Ctrl+E | Feedback dialog |
+| ? | Full help |
+
+Navigation: `j`/`k` or arrows move through the list, `1`-`9` jump to root groups, `Alt+j`/`Alt+k` move within the current group. Filters in search: `!` running, `@` waiting, `#` idle, `&` error, `0` clears. To select text with the mouse, hold Shift while dragging (Option in iTerm2).
+
+---
+
+## 4. Features
+
+### Status detection
+
+| Status | Symbol | Meaning |
+|--------|--------|---------|
+| Running | green ● | Agent is working |
+| Waiting | yellow ◐ | Needs your input |
+| Idle | gray ○ | Ready for commands |
+| Error | red ✕ | Something went wrong |
+
+Some tools report status through hooks for accuracy: `agent-deck codex-hooks install`, `agent-deck pi-hooks install`, `agent-deck hermes-hooks install`.
+
+### Notification bar
+
+Waiting sessions appear in the tmux status bar, e.g. `⚡ [1] frontend [2] api [3] backend`. Press Ctrl+b, release, then 1-6 to jump to one.
+
+### Multi-tool support
+
+| Tool | Integration |
+|------|-------------|
+| Claude Code | Full: status, MCP, fork, resume |
+| Gemini CLI | Full: status, MCP, resume |
+| OpenCode | Status, MCP, organization, fork |
+| OpenCode 2 (`opencode2`) | Status, MCP, model/agent selection, launch, resume, fork |
+| Codex | Status, MCP, organization, conductor, fork |
+| Copilot | Status, organization, launch |
+| Crush | Status, organization, launch |
+| Muse Code (`muse`) | Status, organization, launch, resume |
+| Cursor (terminal) | Status (hook-driven), MCP, organization |
+| Hermes Agent | Status (hook-driven), organization, launch |
+| pi (`pi-coding-agent`) | Status (hook-driven), organization, launch, resume, fork |
+| DeepSeek Harness (`dsh`) | Status, organization, launch, restart |
+| Oh My Pi (`omp`) | Status, organization, launch, restart, resume, fork, project skills |
+| Custom tools | Any terminal tool via `[tools.*]` in config.toml |
+
+Hide unused tools from the picker with `[ui].hidden_tools`.
+
+Claude Code note: Agent Deck runs the unmodified `claude` CLI with your own login and never reuses a login token itself. For heavy unattended orchestration, use an API key or a Team/Enterprise plan; long-lived logins can use `claude setup-token` passed as `CLAUDE_CODE_OAUTH_TOKEN` through `[claude] env_file`.
+
+### Forking sessions
+
+`f` quick-forks the selected session; `Shift+F` opens the fork dialog. A fork inherits the parent's conversation through each tool's native fork (Claude, OpenCode, pi, Codex, Oh My Pi and Codex-compatible custom tools), from the TUI, the CLI (`agent-deck session fork <id>`) or the web UI. Quick fork by default creates a new git worktree and branch, carries uncommitted changes, matches the parent's Docker isolation and inherits Claude launch options. Defaults live in `[fork]`:
+
+```toml
+[fork]
+worktree      = true
+with_state    = true
+with_ignored  = false   # copying gitignored files is opt-in
+docker        = "auto"  # auto | on | off
+branch_prefix = "fork/"
+```
+
+### MCP Manager and MCP socket pool
+
+Press `m` to toggle MCP servers per session or globally (Space toggles, Tab cycles LOCAL/GLOBAL); Agent Deck restarts the session for you. Define MCPs once in config.toml. With `pool_all = true`, MCP processes are shared across sessions over Unix sockets so each server runs once; a health check restarts crashed servers behind a reconnecting proxy.
+
+### Skills Manager
+
+Press `s` on a Claude session to attach or detach skills from a pool (`~/.config/agent-deck/skills/pool`). Project state is written to `.agent-deck/skills.toml` and materialized into `.claude/skills`.
+
+### Search and Recall
+
+`/` fuzzy-searches sessions; `G` opens Recall, a full-text search across past agent conversations on the machine.
+
+### Groups
+
+Sessions live in nested groups. Groups can be declared in config so they exist on startup:
+
+```toml
+[groups."projects/devops"]
+create = true
+default_path = "~/repos/devops"
+```
+
+Per-group Claude config (`[groups."<name>".claude] config_dir` / `env_file`) lets one profile host groups on different Claude accounts. `agent-deck session switch-account <session> <account>` moves an existing session, conversation included.
+
+### Git worktrees
+
+Several agents can work on one repository without conflicts:
+
+- `agent-deck add . -c claude --worktree feature/a --new-branch`
+- `agent-deck worktree finish "My Session"` merges the branch, removes the worktree and deletes the session
+- `agent-deck worktree cleanup` removes orphaned worktrees
+- `[worktree] default_location = "sibling" | "subdirectory" | <path>`
+
+Supports sparse checkout, `.worktreeinclude` for copying gitignored files, setup/destruction scripts, bare repositories and Jujutsu (jj) workspaces.
+
+### Docker sandbox
+
+Run sessions in isolated containers with the project bind-mounted read-write. Tick "Run in Docker sandbox" or set `[docker] default_enabled = true`; `E` opens a container shell; `agent-deck try <name> --sandbox` starts a quick experiment. Tool logins are shared into containers, except the macOS Keychain Claude login, which gets its own `/login` inside the sandbox.
+
+### Archive
+
+`A` archives a session (stops the process, keeps conversation, metadata, worktree and parent link); `Shift+U` restores it; `^` shows archived sessions.
+
+### Cost tracking and provider quota
+
+Press `$` (or open `/costs` in the web UI) for today/week/month token costs, top sessions and model breakdown, with optional budget limits and CSV/JSON export. `agent-deck costs sync` backfills from Claude transcripts. `agent-deck usage` shows how much of each provider's 5-hour and weekly plan window is left, using numbers from the providers.
+
+### Watchers
+
+Watchers route inbound events to conductors: `webhook` (signed HTTP POST), `github` (HMAC-verified repository webhooks), `ntfy` (push topics) and `slack` (via a Cloudflare Worker bridge into ntfy). See `docs/WATCHER-SETUP.md`.
+
+### Feedback and telemetry
+
+`Ctrl+E` or `agent-deck feedback` posts a rating and note to a public GitHub Discussion through your own `gh` login, only after you confirm. App telemetry is opt-in and off by default (`agent-deck telemetry preview|status|off`, or `DO_NOT_TRACK=1`). The website counts page views with PostHog EU without cookies, and not at all under Do Not Track or Global Privacy Control. Details: https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md
+
+---
+
+## 5. Conductors
+
+A conductor is a persistent agent session that watches your other sessions, answers routine questions when confident, and escalates the rest to you. It can be paired with Telegram, Slack, Discord or Mattermost so you can supervise the fleet from your phone.
+
+```bash
+agent-deck conductor setup work --description "Work fleet"   # wizard: conductor, bridge, heartbeat
+agent-deck session start conductor-work
+# then message your bot: /status
+```
+
+- Create as many conductors per profile as you need; a conductor can run on Codex instead of Claude Code.
+- One bot per conductor: bot tokens are never shared between conductors (a second poller on the same Telegram token causes conflicts). Tokens live in the conductor's channel state directory with mode 600, never in git.
+- New sessions launched from inside a conductor inherit it as their parent, so the conductor is notified when they finish or need input.
+- Optional watchdog daemon: `documentation/WATCHDOG.md`.
+
+Full guide: https://github.com/asheshgoplani/agent-deck/tree/main/docs/conductor
+
+---
+
+## 6. Remote instances (SSH)
+
+Manage Agent Deck running on other machines from your local TUI:
+
+```bash
+agent-deck remote add dev user@dev-box     # installs agent-deck on the remote if missing
+agent-deck remote list                     # remotes with versions
+agent-deck remote sessions [dev]           # browse remote sessions
+agent-deck remote attach dev my-session    # attach to one
+agent-deck remote drain dev                # pull finished/stalled reports into the local inbox
+agent-deck remote update --all             # update remote binaries
+```
+
+Remote sessions show live status in the same group layout as local ones. Pressing `n` on a remote group creates the session on that remote over SSH. Remotes are configured under `[remotes]` in config.toml; `remote list|sessions|drain` support `--json`.
+
+---
+
+## 7. Web mode
+
+```bash
+agent-deck web                                  # browser UI on 127.0.0.1:8420
+agent-deck web --read-only                      # output only
+agent-deck web --listen 127.0.0.1:9000
+agent-deck web --token-file ~/.config/agent-deck/web-token --listen 0.0.0.0:8420 --no-tui
+agent-deck web --push                           # browser push notifications
+```
+
+The web UI has the Command Center fleet view, a session terminal, costs, archive and settings. Binding a non-loopback address without `--token` or `--token-file` is refused. For a reverse proxy or Tailscale Serve name, add `--allowed-host <name>`.
+
+---
+
+## 8. Mac app (preview)
+
+A native macOS app for Agent Deck is in development. It builds on the same CLI and event bus: for example, `agent-deck open report.html` shows an HTML page in the app's Browser panel for a session, and the opt-in `agent-deck browser` commands let agents drive tabs in that panel (off by default; enable with `agent-deck config set browser.enabled true` and `agent-deck config set macapp.plugins true --yes`). The terminal app and CLI described above are the released product today. Release news is posted on GitHub releases and Discord; agent-deck.com may offer an email waitlist.
+
+---
+
+## 9. Configuration basics
+
+- Config file: `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`).
+- Profiles: `agent-deck -p work` runs a separate profile with its own sessions; per-profile overrides go under `[profiles.<name>]`.
+- Claude config dir, global and per profile:
+
+```toml
+[claude]
+config_dir = "~/.claude"
+
+[profiles.work.claude]
+config_dir = "~/.claude-team"
+```
+
+  Check which one is active with `agent-deck hooks status [-p work]`.
+- Other common sections: `[worktree]`, `[docker]`, `[fork]`, `[groups."<name>"]`, `[tools.<name>]` for custom tools, `[updates]`, `[web]`, `[remotes]`, `[ui]`, `[telemetry]`, MCP definitions and `pool_all` for the socket pool.
+- `agent-deck config set <key> <value>` changes a setting from the shell.
+
+Full reference: https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/config-reference.md
+
+---
+
+## 10. Using Agent Deck from an agent
+
+The repository ships an agent skill. In Claude Code:
+
+```
+/plugin marketplace add asheshgoplani/agent-deck
+/plugin install agent-deck@agent-deck
+```
+
+Any LLM can be pointed at https://agent-deck.com/llms-full.txt (this file) or the in-repo llms-full.txt.
+
+Useful scripting commands: `agent-deck session send <session> --message-file <file>`, `agent-deck session output <session>`, `agent-deck list --json`, `agent-deck status`.
+
+---
+
+## 11. FAQ (short answers)
+
+- How is this different from tmux? It is tmux plus AI awareness: status detection, forking with context, MCP and skills management, cross-conversation search and groups.
+- Does it work on Windows? Yes, via WSL; WSL2 is recommended for full support including MCP socket pooling.
+- Will it interfere with my tmux setup? No. It uses its own `agentdeck_*` sessions. The installer backs up `~/.tmux.conf` before adding optional config; skip it with `--skip-tmux-config`.
+- Can I use different Claude accounts? Yes, per profile, per group or per conductor; see Configuration basics.
+- Is it free? Yes, MIT-licensed and open source.
+- Is it an alternative to claude-squad? Yes; it adds forking, an MCP manager and socket pool, global search, conductors and support for many more tools.
+- Where do I get help? Discord (https://discord.gg/e4xSs6NBN8), GitHub Discussions, or `agent-deck feedback`.
+
+More: https://agent-deck.com/faq.html and the FAQ section of the README.
+
+---
+
+## 12. Links
+
+- Website: https://agent-deck.com/
+- GitHub: https://github.com/asheshgoplani/agent-deck
+- Releases: https://github.com/asheshgoplani/agent-deck/releases
+- Changelog: https://github.com/asheshgoplani/agent-deck/blob/main/CHANGELOG.md
+- CLI reference: https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/cli-reference.md
+- TUI reference: https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/tui-reference.md
+- Troubleshooting: https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/troubleshooting.md
+- Contributing: https://github.com/asheshgoplani/agent-deck/blob/main/CONTRIBUTING.md
+- Discord: https://discord.gg/e4xSs6NBN8

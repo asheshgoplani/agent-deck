@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Impressum (Legal notice) - Agent Deck</title>
+    <meta name="description" content="Impressum (legal notice) for agent-deck.com according to § 5 DDG.">
+    <meta name="theme-color" content="#1a1b26">
+    <link rel="canonical" href="https://agent-deck.com/impressum.html">
+    <link rel="icon" href="/logo.svg" type="image/svg+xml">
+
+    <!--
+      DRAFT. Fill every {{PLACEHOLDER}} with the owner's real details, then move
+      this file to site/impressum.html. See site-drafts/README.md.
+      Not legal advice: have it checked if you are unsure.
+    -->
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'tn-bg': '#1a1b26',
+                        'tn-surface': '#24283b',
+                        'tn-border': '#414868',
+                        'tn-text': '#c0caf5',
+                        'tn-dim': '#565f89',
+                        'tn-accent': '#7aa2f7',
+                        'tn-purple': '#bb9af7',
+                        'tn-cyan': '#7dcfff',
+                        'tn-green': '#9ece6a',
+                        'tn-yellow': '#e0af68',
+                        'tn-orange': '#ff9e64',
+                        'tn-red': '#f7768e',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #1a1b26; color: #c0caf5; }
+        .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .legal h2 { font-size: 1.25rem; font-weight: 600; margin-top: 2.5rem; margin-bottom: 0.75rem; color: #c0caf5; }
+        .legal p, .legal address { margin-bottom: 1rem; line-height: 1.7; color: #a9b1d6; font-style: normal; }
+        .legal a { color: #7aa2f7; }
+        .legal a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body class="bg-tn-bg text-tn-text min-h-screen flex flex-col">
+    <header class="border-b border-tn-border">
+        <nav class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-3 text-xl font-semibold" aria-label="Agent Deck home">
+                <span class="flex items-center gap-0.5 mono text-sm bg-tn-surface px-1.5 py-0.5 rounded border border-tn-border">
+                    <span class="text-tn-border">[</span><span class="text-tn-green">●</span><span class="text-tn-border">│</span><span class="text-tn-yellow">◐</span><span class="text-tn-border">│</span><span class="text-tn-dim">○</span><span class="text-tn-border">]</span>
+                </span>
+                <span>Agent Deck</span>
+            </a>
+            <a href="/" class="text-tn-dim hover:text-tn-text transition-colors">Home</a>
+        </nav>
+    </header>
+
+    <main class="flex-1">
+        <article class="legal max-w-3xl mx-auto px-6 py-16">
+            <h1 class="text-3xl md:text-4xl font-bold mb-2">Impressum</h1>
+            <p class="text-tn-dim">Legal notice according to § 5 DDG (Digitale-Dienste-Gesetz)</p>
+
+            <h2>Angaben gemäß § 5 DDG <span class="text-tn-dim text-base font-normal">(Provider)</span></h2>
+            <address>
+                {{OWNER_FULL_NAME}}<br>
+                {{STREET_ADDRESS}}<br>
+                {{POSTCODE_CITY}}<br>
+                {{COUNTRY}}
+            </address>
+
+            <h2>Kontakt <span class="text-tn-dim text-base font-normal">(Contact)</span></h2>
+            <p>
+                Email: <a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a><br>
+                Phone: {{PHONE_OPTIONAL}}
+            </p>
+
+            <h2>Umsatzsteuer-ID <span class="text-tn-dim text-base font-normal">(VAT ID)</span></h2>
+            <p>VAT identification number according to § 27a Umsatzsteuergesetz: {{VAT_ID_IF_ANY}}</p>
+
+            <h2>Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV <span class="text-tn-dim text-base font-normal">(Responsible for content)</span></h2>
+            <address>
+                {{OWNER_FULL_NAME}}<br>
+                {{STREET_ADDRESS}}<br>
+                {{POSTCODE_CITY}}
+            </address>
+
+            <h2>Verbraucherstreitbeilegung <span class="text-tn-dim text-base font-normal">(Consumer dispute resolution)</span></h2>
+            <p>We are neither willing nor obliged to take part in dispute resolution proceedings before a consumer arbitration board (Verbraucherschlichtungsstelle).</p>
+
+            <h2>Haftung für Links <span class="text-tn-dim text-base font-normal">(Links to other sites)</span></h2>
+            <p>This site links to external websites such as GitHub and Discord. We have no influence on their content, and their operators are responsible for it. We checked the linked pages when we added the links and found no unlawful content. If we learn of an infringement, we will remove the link promptly.</p>
+
+            <h2>Open-source software</h2>
+            <p>Agent Deck is open-source software published under the MIT License. The source code is at <a href="https://github.com/asheshgoplani/agent-deck" rel="noopener">github.com/asheshgoplani/agent-deck</a>.</p>
+
+            <p class="mt-12 text-sm text-tn-dim">See also our <a href="/privacy.html">Datenschutzerklärung (Privacy policy)</a>.</p>
+        </article>
+    </main>
+
+    <footer class="border-t border-tn-border py-8 text-center text-tn-dim text-sm">
+        <p>
+            <a href="/" class="hover:text-tn-text transition-colors">Agent Deck</a>
+            &middot; <a href="/impressum.html" class="hover:text-tn-text transition-colors">Impressum</a>
+            &middot; <a href="/privacy.html" class="hover:text-tn-text transition-colors">Privacy</a>
+        </p>
+    </footer>
+</body>
+</html>
