@@ -136,6 +136,10 @@ func claudeLikeFake(t *testing.T, phase string) (*tmux.Session, string) {
 	return claudeLikeFakeControl(t, phase, nil)
 }
 
+// claudeLikeFakeIgnoresHangup, as an extra key, launches the fake ignoring
+// SIGHUP instead of writing a control field.
+const claudeLikeFakeIgnoresHangup = "ignore_sighup"
+
 // claudeLikeFakeControl is claudeLikeFake with extra control-file fields,
 // e.g. "hold_queue" to keep queued input behind the turn.
 func claudeLikeFakeControl(t *testing.T, phase string, extra map[string]any) (*tmux.Session, string) {
@@ -172,16 +176,24 @@ func claudeLikeFakeControl(t *testing.T, phase string, extra map[string]any) (*t
 	}
 	writeJSON(filepath.Join(dir, "fake-running.json"), map[string]string{dir: transcript})
 	control := map[string]any{"id": phase, "phase": phase}
+	launch := "python3 -I " + filepath.Join(dir, "claude")
 	for k, v := range extra {
+		if k == claudeLikeFakeIgnoresHangup {
+			// Like Claude Code 2.1.27+, survive tmux's SIGHUP (#2921).
+			launch = "trap '' HUP; exec " + launch
+			continue
+		}
 		control[k] = v
 	}
 	writeJSON(transcript+".input-control.json", control)
 
 	sess := tmux.NewSession(fmt.Sprintf("guarded-busy-%d", time.Now().UnixNano()), dir)
-	if err := sess.Start("python3 -I " + filepath.Join(dir, "claude")); err != nil {
+	if err := sess.Start(launch); err != nil {
 		t.Fatalf("start fake: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Kill() })
+	// KillAndWait, not Kill: the fake writes into dir every 50ms, and TempDir
+	// removes dir as soon as this returns (#2921).
+	t.Cleanup(func() { _ = sess.KillAndWait() })
 	want := "All four steps ran."
 	if phase == "busy" {
 		want = "Thundering"
