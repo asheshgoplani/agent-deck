@@ -201,9 +201,20 @@ HEARTBEAT_SKIP_LIMIT = 3
 # Mirror the deployed bridge's file logging (<data>/conductor/bridge.log) when
 # the conductor data dir already exists. Guard so importing this module in an
 # environment without that dir (e.g. CI/tests) never fails at import time.
+def _stdout_is_log_file() -> bool:
+    """True when stdout already is bridge.log, as under the launchd plist and
+    systemd unit (issue #2946); adding a FileHandler then logs every line twice."""
+    try:
+        out = os.fstat(sys.stdout.fileno())
+        log_file = os.stat(LOG_PATH)
+    except (AttributeError, OSError, ValueError):
+        return False
+    return (out.st_dev, out.st_ino) == (log_file.st_dev, log_file.st_ino)
+
+
 _log_handlers = [logging.StreamHandler(sys.stdout)]
 try:
-    if CONDUCTOR_DIR.exists():
+    if CONDUCTOR_DIR.exists() and not _stdout_is_log_file():
         _log_handlers.append(logging.FileHandler(LOG_PATH, encoding="utf-8"))
 except OSError:
     pass
