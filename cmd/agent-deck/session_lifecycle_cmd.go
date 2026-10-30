@@ -707,8 +707,9 @@ func handleSessionRestart(profile string, args []string) {
 		fmt.Println("boots run at once, skips auth-held sessions, and STOPS early if several")
 		fmt.Println("restarts in a row die on authentication (reported as auth_tripped).")
 		fmt.Println()
-		fmt.Println("Run from inside the session it restarts, the restart is handed to a detached")
-		fmt.Println("agent-deck (it ends the calling pane); the receipt names its pid and log file.")
+		fmt.Println("When run inside a session it restarts (including with --all), this command hands")
+		fmt.Println("the work to a detached agent-deck before the pane ends.")
+		fmt.Println("The receipt names the detached process's pid and log file.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -736,6 +737,9 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	if *all {
+		if handOffSelfRestartAll(out, profile, args, instances) {
+			return
+		}
 		restartAllSessions(profile, out, storage, instances, groups, envFlags.Map())
 		return
 	}
