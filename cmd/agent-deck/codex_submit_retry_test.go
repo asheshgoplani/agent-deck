@@ -61,7 +61,7 @@ func TestCodexSubmitRetryStaysBoundedWithoutAcceptance(t *testing.T) {
 	const message = "Refresh the current project status and save the evidence."
 	target := &mockSendRetryTarget{statuses: []string{"waiting"}, panes: []string{issue2536CodexDraft(message)}}
 	delivery, err := verifyContentArrival(target, message, sendRetryOptions{tool: "codex", maxRetries: 3}, sendArrivalBaseline{paneOK: true, statusOK: true}, false)
-	if err == nil || delivery != deliveryTypedNotSubmitted || target.sendEnterCalls != 2 {
+	if err == nil || delivery != deliveryTypedNotSubmitted || target.sendEnterCalls != 1 {
 		t.Fatalf("delivery=%s err=%v Enter=%d", delivery, err, target.sendEnterCalls)
 	}
 }

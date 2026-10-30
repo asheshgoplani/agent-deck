@@ -220,6 +220,9 @@ socket write has no keystroke boundary to check at.
   the paste and Enter, the result is `delivery: "typed_not_submitted"` with
   the number of typed batches and the pane tail in the error text. Nothing is
   retyped.
+- Codex only, opt-in: with `AGENTDECK_CODEX_SUBMIT_RETRY=1` a submit whose
+  text stays unsent in the composer gets one guarded Enter retry. Off by
+  default. See [codex-submit-retry.md](codex-submit-retry.md).
 - A menu needs picker evidence: a picker instruction ("navigate", "Enter to
   select", "Enter to confirm"), or other menu chrome ("Allow once", "Esc to
   cancel", …) beside at least two selectable choices. Text inside the live
