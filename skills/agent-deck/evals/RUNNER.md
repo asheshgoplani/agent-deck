@@ -7,7 +7,10 @@ One skill, one eval set. Never use `claude -p` (or the skill-creator's `run_loop
 | `promises.json` | What the skill teaches: one entry per teaching unit, with the file, heading and a verbatim `anchor` that must stay in the text, plus `checked_by` for promises a deterministic checker covers |
 | `evals.json` | Task evals (`evals`, `agent_friendliness_evals`) and trigger evals (`trigger_evals`) |
 | `check.py` | Deterministic checks and grading. No model calls |
-| `run.sh` | Runs every deterministic eval: `check.py static` and `mutate`, plus the script tests |
+| `run.sh` | Runs every deterministic eval: `check.py static` and `mutate`, plus the script tests (`--flows` adds `flows.sh`) |
+| `flows.sh` | Agent-flow evals: send, child completion and inbox against a real binary, real tmux and a fake Claude (below) |
+| `flows/fake-claude` | The fake Claude those evals launch: writes a transcript and fires hooks, never calls a model |
+| `flows/tmux-guard` | The `tmux` on their PATH: forwards only calls that name the private socket, refuses the rest |
 | `drift-allow.json` | Invocations the CLI drift check skips on purpose, each with a reason |
 
 ## One command
@@ -36,6 +39,43 @@ skills/agent-deck/evals/run.sh --answers a.json # also grade model answers (belo
 - `mutate` deletes whole sections. A fact changed in place survives `static` when another cited source, or a sibling clause, still satisfies the `must`. Examples: a default flipped from 2s to 30s, or `confirmation:"unknown"` rewritten while cli-reference still says it. The model runs catch some of these; the drift checks catch none.
 - Config defaults and values are not compared with the Go source: only the key names are checked.
 - A flag listed in the root help is accepted on every subcommand.
+
+## Agent-flow evals
+
+```bash
+skills/agent-deck/evals/flows.sh                      # builds this checkout; ~1 min
+skills/agent-deck/evals/flows.sh --binary ./agent-deck --socket my-evals --only child-done-ok
+skills/agent-deck/evals/run.sh --flows                # the skill evals plus these
+```
+
+They drive the flows a parent agent uses with its children, the way the skill teaches them, against a real `agent-deck` binary and a real tmux server. The agent is `flows/fake-claude`, a shell script that answers `EVAL_*` tokens: it writes the Claude transcript, runs `agent-deck hook-handler` for SessionStart, UserPromptSubmit and Stop, and prints the completion sentinel when asked. Never a model, never `claude -p`.
+
+Isolation: a throwaway HOME and XDG dirs under a short `<work dir>/adflow.*` path (`--work-dir`, default `$TMPDIR` or `/tmp`; flows.sh refuses a work dir whose tmux socket path would pass 100 bytes), an allowlisted environment (`env -i`), `TMUX_TMPDIR` inside it, and `[tmux] socket_name` set to a private name (`--socket`, default `agent-deck-evals-<pid>`). The `tmux` on PATH is `flows/tmux-guard`: it forwards a call only when it names `-L <that socket>` (or is `tmux -V`), and refuses and logs anything else. The sandbox and the private server are removed on exit; the per-eval logs and `tmux-calls.log` stay in `--log-dir`.
+
+| Eval | What it does | Passes when |
+|---|---|---|
+| `send-reply` | `add` + `session start` a parent, `session send` (default: waits for the composer) a token | `session output` shows the agent's reply to it |
+| `child-done-ok` | `launch --parent` a child whose turn ends in `status=ok` | `session children --json` shows `done_status` ok and the summary; `inbox drain --json` returns that completion exactly once; after another `notify-daemon --once`, a second drain does not return it |
+| `child-done-fail` | the same with `status=fail` | the same, with fail |
+| `child-last-wins` | the child prints a fail sentinel, then an ok one, in one reply | ok with the second summary |
+| `child-bad-sentinel` | the child prints the marker with `status=maybe` | no `done_status`, no completion in the inbox |
+| `child-no-sentinel` | the child replies without the marker | no `done_status`, no completion in the inbox |
+| `inbox-routing` | a second parent with its own child | the completion is listed and drained under its own parent only |
+| `isolation` (always last) | reads `tmux-calls.log` | every agent-deck tmux call named the private socket (the rest are `-V`), none refused, the server socket is inside the sandbox, the eval sessions are on it, and the guard refuses a default-socket call |
+
+### What they prove
+
+- `session send` gets a message into a Claude-style pane and `session output` reads the answer back from the transcript.
+- A child launched with `--parent` is linked to it; its sentinel, read from the transcript after its Stop hook, reaches `session children` and the parent's durable inbox through `notify-daemon --once`; ok and fail, the summary, and last-sentinel-wins all survive the whole path; a drained completion is not delivered again; a malformed or missing sentinel is never reported as a completion; one parent never receives another parent's child.
+- With `[tmux] socket_name` set, every tmux call from the agent-deck processes in the sandbox (CLI, notifier, the hook handler run from the pane) names that `-L` socket (checked on every run from the guard log, not assumed).
+
+### What they do not prove
+
+- Real Claude Code. The fake draws a Claude-like composer and writes transcript lines in the shape agent-deck reads; a change in Claude's real screen, transcript or hooks is not caught here. Codex, Gemini and other tools are not covered.
+- The long-running `notify-daemon`, wake-ups of an idle parent (the nudge typed into the parent), `session send --wait`/`--stream`/`--queue`, `session children --follow`, `inbox peek`/`export`, remote (`remote drain`, SSH) and sandbox-provider flows: none of these run.
+- Timing under load: each eval polls with a generous deadline (20-40 s), so a slow regression passes as long as it finishes in time.
+- That a model follows the skill: these evals check the product's side of the contract, not whether an agent prints the sentinel or drains its inbox. The model-run task evals below cover what the skill tells the agent.
+- The default tmux server and a user's own `~/.tmux.conf` are never touched, so behaviour without `socket_name` (the default for most users) is not exercised.
 
 ## Task evals with a model
 
