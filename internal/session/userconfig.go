@@ -1176,6 +1176,16 @@ type TelemetrySettings struct {
 
 	// Level is "full" (default) or "basic". Config can only lower the level.
 	Level string `toml:"level,omitempty"`
+
+	// OrgID is an opaque org id (a-z, 0-9, inner dashes, 3-40 chars, or a
+	// UUID) added as the "org" property to detailed events. A managed
+	// configuration's org_id wins over it. Default: none.
+	OrgID string `toml:"org_id,omitempty"`
+
+	// CrashDSN turns on crash and error reports to this Sentry DSN
+	// (https://<public key>@<host>/<project>). A managed configuration's
+	// crash_dsn wins over it. Default: none (crash reports off).
+	CrashDSN string `toml:"crash_dsn,omitempty"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.

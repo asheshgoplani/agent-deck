@@ -34,7 +34,7 @@ func SchemaMarkdown() string {
 	for _, p := range Envelope {
 		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", p.Key, cell(p.propType()), cell(p.Doc))
 	}
-	b.WriteString("\nPostHog additionally receives `$process_person_profile: false`, `$geoip_disable: true` and `$lib: agent-deck` on every detailed event.\n")
+	b.WriteString("\nPostHog additionally receives `$process_person_profile: false`, `$geoip_disable: true` and `$lib: agent-deck` on every detailed event, and `org` (the opaque org id from the managed configuration or `[telemetry].org_id`) only when one is set.\n")
 	b.WriteString("\n#### Bucket edges\n\nLower edge inclusive, upper edge exclusive.\n\n| Bucket | Values |\n|---|---|\n")
 	for _, bk := range bucketOrder {
 		fmt.Fprintf(&b, "| `%s` | %s |\n", bk, cell(codeList(bucketLabels[bk])))

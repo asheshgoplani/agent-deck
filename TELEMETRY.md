@@ -56,6 +56,7 @@ Any of these, at any time:
 | `DO_NOT_TRACK=1` | Any truthy value turns everything off ([Console Do Not Track](https://consoledonottrack.com)). |
 | `AGENTDECK_TELEMETRY=0` | Any value other than `1`, `true`, `yes`, `on` or `log` turns everything off. None of these values turns telemetry on. |
 | `[telemetry] disabled = true` | In `config.toml`. An unreadable config also counts as off. |
+| `"telemetry_level": "off"` in the managed file | Set by a company for its machines (see **Managed configuration**). A managed file that cannot be read or validated also counts as off. |
 
 ## Controls
 
@@ -88,6 +89,42 @@ The project key never appears in `preview`, `show-last` or log-mode output: thos
 `[telemetry] level = "basic"` in `config.toml` can lower the level but never raise it.
 
 Lowering the level also covers data already waiting in the local spool, including events kept across a re-consent: at the next upload (and in `telemetry preview`), events that `basic` does not record are deleted unsent, and the rest are sent without `hour_local`, `weekday_local` or `ds_session`, with the timestamp pinned to 12:00.
+
+## Managed configuration (company installs)
+
+A company can place a managed file on its machines (an MDM profile or the installer pkg writes it; the person does not edit it): `/Library/Application Support/AgentDeck/managed.json` on macOS, `/etc/agent-deck/managed.json` on Linux, or the path in `AGENTDECK_MANAGED_CONFIG` (set but empty: no managed file). Unknown keys are ignored.
+
+```json
+{"org_id": "pilot-7f3k2", "telemetry_level": "basic", "crash_dsn": "https://public@example.invalid/1", "update_channel": "pilot"}
+```
+
+- `org_id`: an opaque id (lowercase letters, digits and inner dashes, 3 to 40 characters, or a UUID; no dots, `@` or spaces, so no email or domain). Detailed events then carry it as the `org` property: which company, never which person. Events stay personless (`$process_person_profile: false`, no `$groups`); `install.tick` never carries it. `[telemetry] org_id` in `config.toml` sets it when the managed file does not. Use a random id, not the company name.
+- `telemetry_level`: a ceiling. `off` turns telemetry off, `basic` lowers it, `full` (or absent) changes nothing. It never grants consent and never raises the level a person chose: each person still answers the question, and `telemetry off` or `level basic` always works.
+- `crash_dsn`: turns on crash and error reports (below) for that company's Sentry project.
+- `update_channel`: `stable` or `pilot`; read and shown in `telemetry status`, not yet used by `agent-deck update`.
+
+`agent-deck telemetry status` shows the org id (or `none`) with its source, the managed file and whether crash reports are on. It never prints the DSN.
+
+## Crash reports (off by default)
+
+Crash and error reports go to a Sentry project only when a DSN is configured at run time: `crash_dsn` in the managed file, else `[telemetry] crash_dsn` in `config.toml`. No DSN is compiled in. Today only a panic in the main goroutine of the `agent-deck` process is reported.
+
+Who decides: the company that sets `crash_dsn` turns crash reports on for its machines, and each person can turn them off. So they do not need the usage-data yes, but a no does stop them:
+
+- `agent-deck telemetry off`, or answering no to the usage-data question (CLI or TUI), turns crash reports off at once and on every later run. `telemetry status` then shows `Crash reports: off (consent was declined)`. Running `agent-deck telemetry on` and saying yes lifts it.
+- Every off switch above also turns them off, and `telemetry status` names the one that applies: `DO_NOT_TRACK`, `AGENTDECK_TELEMETRY=0` or `log`, `[telemetry] disabled = true`, a `config.toml` that cannot be read, a managed `telemetry_level = "off"`, or a managed file that cannot be read or does not validate (then a `crash_dsn` in `config.toml` does not apply either).
+- They are never sent from CI.
+- Not yet answered (undecided) with a DSN set: on. `telemetry status` shows `Crash reports: on (managed DSN)` or `on (config DSN)`; the DSN itself is never shown.
+
+No free text leaves the machine. Session titles, group names and prompts reach error text unquoted as often as quoted, and no pattern can tell them from the code's own words, so each event is rebuilt from an allow-list:
+
+- the exception type of each error in the chain (a Go type name such as `*fmt.wrapError`);
+- in place of every error message and panic value, `msg:` plus the first 12 hex characters of the SHA-256 of the message, after the first line is kept, quoted text, paths, home, tokens, keys, emails, hosts, IPs and user names are replaced by placeholders, and every run of digits by `0`. Equal messages group together across machines; the words are not sent;
+- stack frames: function, package, line, and a file name relative to the repository or only its base name;
+- breadcrumb categories (code-chosen names; anything else becomes `other`), never their message or data;
+- the release (`agent-deck@<version>`) and the tags `os`, `arch` and `org` (only when set).
+
+Request, user, server name, contexts, extra data, modules and source lines are never sent. `SENTRY_DSN`, `SENTRY_RELEASE`, `SENTRY_ENVIRONMENT` and `SENTRY_TAGS_*` are ignored. `SENTRYGODEBUG=httpdump=1` prints each request to the local stderr (it does not change what is sent).
 
 ## When and where data is sent
 
@@ -187,7 +224,7 @@ Schema version: 3. Detailed events carry the envelope; install.tick uses only it
 | `install_week` | pattern `^[0-9]{4}-W[0-9]{2}$` | ISO week of first seen, e.g. 2026-W39 |
 | `pre_v2` | bool | install first seen before the v2 build |
 
-PostHog additionally receives `$process_person_profile: false`, `$geoip_disable: true` and `$lib: agent-deck` on every detailed event.
+PostHog additionally receives `$process_person_profile: false`, `$geoip_disable: true` and `$lib: agent-deck` on every detailed event, and `org` (the opaque org id from the managed configuration or `[telemetry].org_id`) only when one is set.
 
 #### Bucket edges
 

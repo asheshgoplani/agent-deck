@@ -123,6 +123,11 @@ func (s *State) toPostHog(l spoolLine) phEvent {
 	for k, v := range l.P {
 		props[k] = v
 	}
+	if org := OrgID(); org != "" {
+		// Set by the company's managed config (or config.toml): which
+		// company, never which person. A plain property, not $groups.
+		props["org"] = org
+	}
 	return phEvent{
 		Event: l.E, DistinctID: s.InstallID, UUID: l.U,
 		Timestamp:  fmt.Sprintf("%sT%02d:00:00Z", l.D, hour),

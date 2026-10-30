@@ -16,6 +16,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/evanw/esbuild v0.28.2
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/getsentry/sentry-go v0.49.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.20.3

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/crashreport"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -77,9 +78,14 @@ type TelemetryDialog struct {
 // NewTelemetryDialog creates a hidden dialog wired to the real package.
 func NewTelemetryDialog() *TelemetryDialog {
 	return &TelemetryDialog{
-		saveState:    telemetry.SaveState,
-		declineState: func(s *telemetry.State) error { return telemetry.Disable(s.ConsentVersion, time.Now()) },
-		now:          time.Now,
+		saveState: telemetry.SaveState,
+		declineState: func(s *telemetry.State) error {
+			err := telemetry.Disable(s.ConsentVersion, time.Now())
+			// A no to usage data covers crash reports too (TELEMETRY.md).
+			crashreport.Close()
+			return err
+		},
+		now: time.Now,
 		canConsent: func() bool {
 			return telemetry.Interactive() && !telemetry.HardDisabled() && !telemetry.LogMode()
 		},
