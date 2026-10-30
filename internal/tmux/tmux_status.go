@@ -1252,6 +1252,11 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	if strings.EqualFold(tool, "opencode") {
 		spinnerContent = blankOpenCodeBlockArtLines(content)
 	}
+	// pi: a "── ⠴ Working ──" banner left above an idle composer is residue,
+	// not a live turn (#2948); only the banner on the composer counts.
+	if tool == "pi" {
+		spinnerContent = piLiveSpinnerContent(content, spinnerChars)
+	}
 	char, spinnerLine, found := findSpinnerInContent(spinnerContent, spinnerChars)
 
 	// Get or create spinner tracker
