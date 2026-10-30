@@ -43,8 +43,8 @@ func TestDecideCrashReporting(t *testing.T) {
 		want      string
 	}{
 		{"nothing configured", managed.Result{}, "", nil, nil, false, "off (no DSN configured)"},
-		{"managed DSN", withDSN, "", nil, nil, true, "on (managed DSN)"},
-		{"managed wins over config", withDSN, "https://other@example.invalid/2", nil, nil, true, "on (managed DSN)"},
+		{"managed DSN", withDSN, "", nil, grantForTest, true, "on (managed DSN)"},
+		{"managed wins over config", withDSN, "https://other@example.invalid/2", nil, grantForTest, true, "on (managed DSN)"},
 		{"config DSN", managed.Result{}, fakeCrashDSN, nil, nil, true, "on (config DSN)"},
 		{"invalid config DSN", managed.Result{}, "https://a:b@example.invalid/1", nil, nil, false, "not a valid DSN"},
 		{"DO_NOT_TRACK", withDSN, "", map[string]string{telemetry.EnvDoNotTrack: "1"}, nil, false, "off (" + string(telemetry.ReasonEnvDNT) + ")"},
@@ -58,6 +58,11 @@ func TestDecideCrashReporting(t *testing.T) {
 		{"invalid managed file, valid config DSN", invalidManaged, fakeCrashDSN, nil, func(*testing.T) { telemetry.SetManaged(invalidManaged) },
 			false, "off (" + string(telemetry.ReasonManagedError) + ")"},
 		{"declined consent, managed DSN", withDSN, "", nil, declineForTest, false, "off (" + string(telemetry.ReasonDeclined) + ")"},
+		// A company's managed DSN does not turn crash reports on by itself:
+		// the person's own yes is needed. A DSN they put in their own
+		// config.toml is their choice.
+		{"undecided consent, managed DSN", withDSN, "", nil, undecidedForTest, false, "off (" + reasonManagedNeedsConsent + ")"},
+		{"undecided consent, config DSN", managed.Result{}, fakeCrashDSN, nil, undecidedForTest, true, "on (config DSN)"},
 		{"declined consent, config DSN", managed.Result{}, fakeCrashDSN, nil, declineForTest, false, "off (" + string(telemetry.ReasonDeclined) + ")"},
 	}
 	for _, tc := range cases {
@@ -78,6 +83,19 @@ func TestDecideCrashReporting(t *testing.T) {
 			}
 		})
 	}
+}
+
+// undecidedForTest pins the stored consent at undecided (no answer yet).
+func undecidedForTest(t *testing.T) { consentForTest(t, telemetry.ConsentUndecided) }
+
+// grantForTest pins the stored consent at granted (a yes to usage data).
+func grantForTest(t *testing.T) { consentForTest(t, telemetry.ConsentGranted) }
+
+func consentForTest(t *testing.T, c telemetry.Consent) {
+	t.Helper()
+	prev := crashConsent
+	crashConsent = func() telemetry.Consent { return c }
+	t.Cleanup(func() { crashConsent = prev })
 }
 
 // declineForTest stores a declined consent in the isolated HOME, as
@@ -104,10 +122,11 @@ func TestTelemetryOffTurnsCrashReportsOff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateManaged(t)
+			grantForTest(t)
 			managedConfig = withDSN
 			crashState = decideCrashReporting(withDSN, "")
 			if !crashState.On() {
-				t.Fatalf("precondition: crash reports %s, want on (undecided + managed DSN)", crashState)
+				t.Fatalf("precondition: crash reports %s, want on (yes + managed DSN)", crashState)
 			}
 			if code, _, errOut := runTel(t, tc.stdin, true, tc.args...); code != 0 {
 				t.Fatalf("%v exit %d: %s", tc.args, code, errOut)
@@ -170,6 +189,7 @@ func TestTelemetryStatusShowsOrgManagedAndCrash(t *testing.T) {
 	managedConfig = managed.LoadFile(p)
 	telemetry.SetManaged(managedConfig)
 	telemetry.SetOrgID(managedConfig.OrgID, "")
+	grantForTest(t)
 	crashState = decideCrashReporting(managedConfig, "")
 
 	code, out, _ := runTel(t, "", true, "status")
