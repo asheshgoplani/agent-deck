@@ -105,6 +105,21 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 	if pool == nil {
 		config, _ := LoadUserConfig()
 		if config != nil && config.MCPPool.Enabled {
+			// Apply this config's pool allowlist, exactly as the TUI path does
+			// via ShouldPool. Sockets are keyed by name and shared by every
+			// config home of the user; without this check a config that never
+			// opted a name in attaches to another config's process of that
+			// name, env and credentials included.
+			allow := &mcppool.PoolConfig{
+				Enabled:     config.MCPPool.Enabled,
+				PoolAll:     config.MCPPool.PoolAll,
+				ExcludeMCPs: config.MCPPool.ExcludeMCPs,
+				PoolMCPs:    config.MCPPool.PoolMCPs,
+			}
+			if !allow.Allows(name) {
+				mcpCatLog.Debug("pool_excluded_cli", slog.String("mcp", name), slog.String("scope", scope))
+				return MCPServerConfig{}, false
+			}
 			if socketPath := getExternalSocketPath(name); socketPath != "" {
 				mcpCatLog.Info("external_socket_discovered", slog.String("mcp", name), slog.String("scope", scope), slog.String("socket", socketPath))
 				return MCPServerConfig{
