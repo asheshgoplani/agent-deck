@@ -43,7 +43,7 @@ var ambiguousWide = func() *runewidth.Condition {
 
 // wrapTerm is a deliberately small terminal model for #2334: enough of a VT
 // (printing with auto-wrap and scrolling, CR/LF, CUP/CUU/CUD/CUF/CUB, EL, ED,
-// DECAWM, alt screen) to replay Bubble Tea's renderer output, with a
+// DECAWM, DECSTBM, alt screen) to replay Bubble Tea's renderer output, with a
 // pluggable width convention so the same bytes can be drawn the way each
 // kind of terminal would.
 type wrapTerm struct {
@@ -54,10 +54,13 @@ type wrapTerm struct {
 	lastY    int
 	autowrap bool
 	conv     widthConvention
+	// top, bot are the DECSTBM scroll region (0-based, inclusive). A real
+	// terminal keeps it across alt-screen switches until something resets it.
+	top, bot int
 }
 
 func newWrapTerm(w, h int, conv widthConvention) *wrapTerm {
-	t := &wrapTerm{w: w, h: h, autowrap: true, conv: conv}
+	t := &wrapTerm{w: w, h: h, autowrap: true, conv: conv, bot: h - 1}
 	t.clear()
 	return t
 }
@@ -81,11 +84,15 @@ func (t *wrapTerm) lineFeed() {
 	if t.x >= t.w {
 		t.x = t.w - 1 // LF clears the pending-wrap state
 	}
-	if t.y == t.h-1 {
-		t.cells = append(t.cells[1:], t.blankRow())
+	if t.y == t.bot {
+		// Scroll only the region; rows outside it stay put.
+		copy(t.cells[t.top:t.bot], t.cells[t.top+1:t.bot+1])
+		t.cells[t.bot] = t.blankRow()
 		return
 	}
-	t.y++
+	if t.y < t.h-1 {
+		t.y++
+	}
 }
 
 // put draws one glyph of cw cells, wrapping or clipping at the right margin
@@ -201,6 +208,12 @@ func (t *wrapTerm) escape(seq string) {
 		t.x = min(t.w-1, t.x+arg(0, 1))
 	case 'D':
 		t.x = max(0, min(t.x, t.w-1)-arg(0, 1))
+	case 'r':
+		top, bot := arg(0, 1)-1, min(arg(1, t.h), t.h)-1
+		if top < bot {
+			t.top, t.bot = top, bot
+			t.x, t.y = 0, 0
+		}
 	case 'K':
 		for i := min(t.x, t.w-1); i < t.w; i++ {
 			t.cells[t.y][i] = " "
