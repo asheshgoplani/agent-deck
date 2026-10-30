@@ -27,6 +27,36 @@ var resumeCheckRetryDelay = 200 * time.Millisecond
 // to type /clear and a follow-up prompt.
 var clearRebindMtimeGrace = 5 * time.Second
 
+// hookPinPaneActivity reads the pane's last-activity time (unix seconds, 0
+// when unknown) for the terminal-hook hold below. A var so tests can replay a
+// pane that has been quiet for hours without waiting for it.
+var hookPinPaneActivity = func(s *tmux.Session) int64 {
+	if s == nil {
+		return 0
+	}
+	return s.GetCachedWindowActivity()
+}
+
+// hookHeldByTerminalEventLocked reports whether a pi "waiting" hook event
+// (turn_end, session_start) still decides status after its freshness window
+// (issue #2896). pi writes no hook between turns, so a quiet idle session's
+// last event is that turn end: expiring it after hookFastPathWindow handed a
+// session that sat at its prompt for days back to the pane alone, which could
+// keep reading a stale frame as running. The hold lasts until the next hook
+// event or new pane activity after the window (activity inside the window is
+// the turn's own final redraw). An unknown activity time (cold cache) keeps
+// the hold: a new turn writes turn_start. Only "waiting" holds: a stale
+// session_shutdown ("dead") may have dropped to a fallback shell, and a stale
+// running event is what the window exists to expire. Caller holds i.mu.
+func (i *Instance) hookHeldByTerminalEventLocked() bool {
+	if !strings.EqualFold(strings.TrimSpace(i.Tool), "pi") ||
+		i.hookStatus != "waiting" || i.hookLastUpdate.IsZero() {
+		return false
+	}
+	activity := hookPinPaneActivity(i.tmuxSession)
+	return activity <= 0 || activity <= i.hookLastUpdate.Add(hookFastPathWindow).Unix()
+}
+
 func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
 	if !IsCodexCompatible(tool) {
 		return hookFastPathWindow

@@ -2427,7 +2427,8 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
 	if HookStatusTool(i.Tool) && i.hookStatus != "" &&
-		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
+		(time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) ||
+			i.hookHeldByTerminalEventLocked()) {
 		i.hookLagFlipped = false
 		i.bgWorkActive = false
 		i.bgWork = tmux.BackgroundWork{}
