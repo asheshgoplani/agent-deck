@@ -27,6 +27,7 @@ type NotificationManager struct {
 	showAll      bool           // Show all sessions vs only waiting
 	minimal      bool           // Show compact icon+count summary only (no names, no key bindings)
 	statusCounts map[Status]int // Per-status counts across all sessions (for minimal mode)
+	sortMode     string         // NotificationSortWaiting (default) or NotificationSortLastAccessed
 	mu           sync.RWMutex
 }
 
@@ -41,7 +42,16 @@ func NewNotificationManager(maxShown int, showAll, minimal bool) *NotificationMa
 		showAll:      showAll,
 		minimal:      minimal,
 		statusCounts: make(map[Status]int),
+		sortMode:     NotificationSortWaiting,
 	}
+}
+
+// SetSortMode sets the bar order from [notifications] sort (#2949).
+// Unknown values fall back to NotificationSortWaiting.
+func (nm *NotificationManager) SetSortMode(mode string) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	nm.sortMode = normalizeNotificationSort(mode)
 }
 
 // IsMinimal reports whether this manager is in minimal (icon+count) mode.
@@ -321,13 +331,31 @@ func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentS
 		added = append(added, inst.ID)
 	}
 
-	// Sort ALL entries by WaitingSince (newest first)
-	// This ensures correct ordering regardless of how entries were added
-	sort.Slice(nm.entries, func(i, j int) bool {
-		return nm.entries[i].WaitingSince.After(nm.entries[j].WaitingSince)
-	})
+	if nm.sortMode == NotificationSortLastAccessed {
+		// #2949: most recently attached first, like Alt+Tab. Read the access
+		// time fresh on every sync so entries already on the bar move when the
+		// user attaches to them. Never-accessed sessions (zero time) sort last;
+		// ties keep the waiting order.
+		accessed := make(map[string]time.Time, len(instances))
+		for _, inst := range instances {
+			accessed[inst.ID] = inst.GetLastAccessedAtThreadSafe()
+		}
+		sort.SliceStable(nm.entries, func(i, j int) bool {
+			ai, aj := accessed[nm.entries[i].SessionID], accessed[nm.entries[j].SessionID]
+			if !ai.Equal(aj) {
+				return ai.After(aj)
+			}
+			return nm.entries[i].WaitingSince.After(nm.entries[j].WaitingSince)
+		})
+	} else {
+		// Sort ALL entries by WaitingSince (newest first)
+		// This ensures correct ordering regardless of how entries were added
+		sort.Slice(nm.entries, func(i, j int) bool {
+			return nm.entries[i].WaitingSince.After(nm.entries[j].WaitingSince)
+		})
+	}
 
-	// Trim to maxShown (keeps the newest sessions)
+	// Trim to maxShown (keeps the first sessions in the chosen order)
 	if len(nm.entries) > nm.maxShown {
 		nm.entries = nm.entries[:nm.maxShown]
 	}

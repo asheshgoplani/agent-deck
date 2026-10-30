@@ -1117,6 +1117,7 @@ enabled = true         # tmux status-bar notification bar
 max_shown = 6
 show_all = false
 minimal = false
+sort = "waiting"       # or "last_accessed"
 transition_events = true
 desktop = false        # OS notification when a session needs input
 ```
@@ -1127,6 +1128,7 @@ desktop = false        # OS notification when a session needs input
 | `max_shown` | int | `6` | Maximum sessions listed in the bar. |
 | `show_all` | bool | `false` | List every session with a status icon instead of only waiting ones. |
 | `minimal` | bool | `false` | Compact icon+count summary instead of names. Disables the `Ctrl+b 1-6` jump bindings and ignores `show_all`. |
+| `sort` | string | `"waiting"` | Order of the bar, and so which session each `Ctrl+b` number key jumps to. `"waiting"` lists the session that started waiting most recently first. `"last_accessed"` lists the session you attached to most recently first, like Alt+Tab; sessions never attached to come last. Any other value is treated as `"waiting"`. |
 | `transition_events` | bool | `true` | Send a tmux message to a session's **parent** when a child transitions (e.g. running → waiting). Per-session override: `agent-deck session set-transition-notify <id> off`. |
 | `desktop` | bool | `false` | Raise an **OS notification** when a session starts waiting for input or errors out. |
 

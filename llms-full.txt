@@ -126,6 +126,8 @@ Waiting sessions appear right in your tmux status bar. Press `Ctrl+b 1-6` to jum
 ⚡ [1] frontend [2] api [3] backend
 ```
 
+The newest waiting session is `[1]`. To order the bar by the session you attached to most recently instead, like Alt+Tab, set `sort = "last_accessed"` under `[notifications]` in `config.toml` (default: `"waiting"`).
+
 ### Git Worktrees
 
 Multiple agents can work on the same repo without conflicts. Each worktree is an isolated working directory with its own branch.
