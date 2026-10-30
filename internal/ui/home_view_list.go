@@ -284,7 +284,7 @@ func (h *Home) renderItem(
 	case session.ItemTypeWindow:
 		h.renderWindowItem(b, item, selected)
 	case session.ItemTypeRemoteGroup:
-		h.renderRemoteGroupItem(b, item, selected, listWidth)
+		h.renderRemoteGroupItemSuffix(b, item, selected, listWidth, h.remoteRepeatSuffix(item, itemIndex))
 	case session.ItemTypeRemoteSession:
 		h.renderRemoteSessionItemAtWidth(b, item, selected, listWidth)
 	case session.ItemTypeDivider:
@@ -622,7 +622,29 @@ func remoteRowGutter(selected bool) string {
 }
 
 // renderRemoteGroupItem renders a remote group header (e.g., "remotes/dev")
+// remoteRepeatSuffix is the " (idle)" / " (stopped)" suffix for a remote group
+// header that "Active on top" repeats below the divider (#2947), matching
+// what a repeated local header gets in renderGroupItem.
+func (h *Home) remoteRepeatSuffix(item session.Item, itemIndex int) string {
+	if h.groupViewMode != session.GroupViewActiveTop || item.Level == 0 {
+		return ""
+	}
+	for i := 0; i < itemIndex && i < len(h.flatItems); i++ {
+		it := h.flatItems[i]
+		if it.Type == session.ItemTypeRemoteGroup && it.RemoteName == item.RemoteName && it.Path == item.Path {
+			return " (" + h.viewModeOpts.ActiveTopBottomLabel() + ")"
+		}
+	}
+	return ""
+}
+
 func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, selected bool, listWidth int) {
+	h.renderRemoteGroupItemSuffix(b, item, selected, listWidth, "")
+}
+
+// renderRemoteGroupItemSuffix is renderRemoteGroupItem with nameSuffix added
+// after a sub-group's name.
+func (h *Home) renderRemoteGroupItemSuffix(b *strings.Builder, item session.Item, selected bool, listWidth int, nameSuffix string) {
 	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // yellow
 	countStyle := DimStyle
 	expandIcon := "▾"
@@ -654,7 +676,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 			remoteRowGutter(selected),        // align with group hotkey gutter
 			strings.Repeat("  ", item.Level), // nest under the remote header
 			expandIcon,
-			nameStyle.Render(segName),
+			nameStyle.Render(segName+nameSuffix),
 			countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
 			remoteStatusSuffix(counts.running, counts.waiting, stale),
 		)

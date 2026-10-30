@@ -759,7 +759,8 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			// active view, empty remote groups get a header row too, like an
 			// empty local group; any filter or the archived view hides them.
 			showEmptyGroups := !viewArchived && h.timeFilter == session.TimeFilterAll && h.statusFilter == ""
-			rows := buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups)
+			// #2947: "Active on top" splits each remote's own section too.
+			rows := buildRemoteFlatItemsForViewMode(remoteName, sessions, collapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups, h.groupViewMode, h.viewModeOpts)
 			for _, row := range rows {
 				// An empty group's header has no session to count; give it
 				// a zero entry so the renderer never falls back to a scan.

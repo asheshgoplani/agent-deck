@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -204,6 +205,100 @@ func buildRemoteFlatItemsWithEmptyGroups(remoteName string, sessions []session.R
 	}
 
 	return items
+}
+
+// buildRemoteFlatItemsForViewMode is buildRemoteFlatItemsWithEmptyGroups with
+// the "Active on top" view mode applied inside this one remote's section
+// (#2947). The host header stays first; below it come the groups holding a
+// live session with only those sessions, then a divider, then the groups again
+// with the rest. Empty groups go below the divider. A parent row and its
+// children move as one block (live if any of them is), so a child never
+// renders away from its parent, and a folded group shows once: on top when
+// anything under it is live. Every other mode, a folded host, or a remote
+// with nothing to split builds the rows exactly as before.
+func buildRemoteFlatItemsForViewMode(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths []string, includeEmpty bool, mode session.GroupViewMode, opts session.ViewModeOptions) []session.Item {
+	remoteRoot := "remotes/" + remoteName
+	if mode != session.GroupViewActiveTop || collapsed[remoteRoot] {
+		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+	}
+	top, bottom := splitRemoteSessionsActiveTop(remoteRoot, sessions, collapsed, opts)
+	if len(top) == 0 {
+		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+	}
+	bottomRows := buildRemoteFlatItemsWithEmptyGroups(remoteName, bottom, collapsed, order, groupPaths, includeEmpty)
+	if len(bottomRows) <= 1 { // only the host header: nothing sits below
+		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+	}
+	rows := buildRemoteFlatItemsWithEmptyGroups(remoteName, top, collapsed, order, groupPaths, false)
+	rows = append(rows, session.Item{Type: session.ItemTypeDivider, DividerLabel: mode.DividerLabel(opts)})
+	return append(rows, bottomRows[1:]...)
+}
+
+// splitRemoteSessionsActiveTop sorts one remote's sessions into the rows
+// above and below the active-on-top divider, keeping each slice in input
+// order. Status comes from the remote's last snapshot; an archived row never
+// counts as live (#1945).
+func splitRemoteSessionsActiveTop(remoteRoot string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, opts session.ViewModeOptions) (top, bottom []session.RemoteSessionInfo) {
+	live := func(s session.RemoteSessionInfo) bool {
+		return !s.Archived && opts.CountsAsActive(session.Status(s.Status))
+	}
+	// unit names what a row moves with: its outermost folded ancestor group,
+	// or else its parent block in its bucket (the same nesting the builder
+	// draws, see remoteNestedParents).
+	buckets := make(map[string][]int)
+	for i := range sessions {
+		g := normalizeRemoteGroupPath(sessions[i].Group)
+		buckets[g] = append(buckets[g], i)
+	}
+	unit := make([]string, len(sessions))
+	for g, idxs := range buckets {
+		folded := ""
+		prefix := ""
+		for _, seg := range strings.Split(g, "/") {
+			prefix = joinGroupSegment(prefix, seg)
+			if collapsed[remoteRoot+"/"+prefix] {
+				folded = prefix
+				break
+			}
+		}
+		if folded != "" {
+			for _, i := range idxs {
+				unit[i] = "fold\x00" + folded
+			}
+			continue
+		}
+		ids := make([]string, len(idxs))
+		parents := make([]string, len(idxs))
+		for k, i := range idxs {
+			ids[k] = sessions[i].ID
+			parents[k] = sessions[i].ParentSessionID
+		}
+		nested := remoteNestedParents(ids, parents)
+		for k, i := range idxs {
+			root := ids[k]
+			if p, ok := nested[root]; ok {
+				root = p
+			}
+			unit[i] = "row\x00" + g + "\x00" + root
+			if root == "" {
+				unit[i] = fmt.Sprintf("idx\x00%d", i) // ID-less rows stand alone
+			}
+		}
+	}
+	liveUnit := make(map[string]bool)
+	for i := range sessions {
+		if live(sessions[i]) {
+			liveUnit[unit[i]] = true
+		}
+	}
+	for i := range sessions {
+		if liveUnit[unit[i]] {
+			top = append(top, sessions[i])
+		} else {
+			bottom = append(bottom, sessions[i])
+		}
+	}
+	return top, bottom
 }
 
 // remoteNestedParents decides which rows of one remote group bucket nest
