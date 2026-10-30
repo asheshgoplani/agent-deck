@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -25,6 +26,12 @@ const codexNotifyLine = `notify = ["agent-deck", "codex-notify"]`
 var codexNotifyLog = logging.ForComponent(logging.CompSession)
 
 var codexNotifyTableRe = regexp.MustCompile(`(?m)^\s*\[notify\]\s*$`)
+
+// A [table] or [[array]] header: dotted bare or quoted keys (TOML v1.0).
+var codexTableHeaderRe = regexp.MustCompile(`(?m)^\s*\[\[?\s*` + codexTOMLKey + `(?:\s*\.\s*` + codexTOMLKey + `)*\s*\]\]?\s*(#.*)?$`)
+
+const codexTOMLKey = `(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')`
+
 var codexNotifyKeyRe = regexp.MustCompile(`(?m)^\s*notify\s*=`)
 var codexNotifyExactRe = regexp.MustCompile(`(?m)^\s*notify\s*=\s*\[\s*["']agent-deck["']\s*,\s*["']codex-notify["']\s*\]\s*$`)
 var codexNotifyExactLineRe = regexp.MustCompile(`^\s*notify\s*=\s*\[\s*["']agent-deck["']\s*,\s*["']codex-notify["']\s*\]\s*$`)
@@ -494,7 +501,12 @@ func printCodexHooksUsage(w io.Writer) {
 
 func handleCodexHooksInstall() {
 	configPath := getCodexConfigPath()
-	content, _ := readFileOrEmpty(configPath)
+	content, err := readFileOrEmpty(configPath)
+	if err != nil {
+		// Never treat an unreadable config as empty: the write below would replace it.
+		fmt.Fprintf(os.Stderr, "Error reading codex config: %v\n", err)
+		exitCLI(1)
+	}
 
 	block := codexNotifyMarkerBegin + "\n" +
 		codexNotifyLine + "\n" +
@@ -504,17 +516,21 @@ func handleCodexHooksInstall() {
 		begin := strings.Index(content, codexNotifyMarkerBegin)
 		endRel := strings.Index(content[begin:], codexNotifyMarkerEnd)
 		if endRel != -1 {
+			// Below a [table], notify would be a key of that table. Moving the
+			// block would reorder the user's file, so ask them to.
+			if codexTableHeaderRe.MatchString(content[:begin]) {
+				fmt.Fprintf(os.Stderr, "Error: the agent-deck notify block in %s sits below a [table], where notify belongs to that table.\n", configPath)
+				fmt.Fprintln(os.Stderr, "Move the block above every table, or remove it and rerun 'agent-deck codex-hooks install'.")
+				exitCLI(1)
+			}
+			// Replace the block where it stands; every other byte stays as it was.
 			end := begin + endRel + len(codexNotifyMarkerEnd)
-			updated := strings.TrimSpace(content[:begin] + content[end:])
-			updated = prependCodexNotifyBlock(block, updated)
-			if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-				exitCLI(1)
+			replacement := strings.TrimSuffix(block, "\n")
+			if strings.HasPrefix(content[end:], "\r\n") {
+				replacement = strings.ReplaceAll(replacement, "\n", "\r\n")
 			}
-			if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-				exitCLI(1)
-			}
+			updated := content[:begin] + replacement + content[end:]
+			writeCodexConfig(configPath, updated)
 			fmt.Println("Codex notify hook upgraded successfully.")
 			fmt.Printf("Config: %s\n", configPath)
 			return
@@ -523,14 +539,7 @@ func handleCodexHooksInstall() {
 
 	if updated, removed := removeLegacyCodexNotifyTable(content); removed {
 		updated = prependCodexNotifyBlock(block, strings.TrimSpace(updated))
-		if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-			exitCLI(1)
-		}
-		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			exitCLI(1)
-		}
+		writeCodexConfig(configPath, updated)
 		fmt.Println("Codex notify hook upgraded successfully.")
 		fmt.Printf("Config: %s\n", configPath)
 		return
@@ -551,14 +560,7 @@ func handleCodexHooksInstall() {
 
 	newContent := prependCodexNotifyBlock(block, content)
 
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-		exitCLI(1)
-	}
-	if err := os.WriteFile(configPath, []byte(newContent), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-		exitCLI(1)
-	}
+	writeCodexConfig(configPath, newContent)
 
 	fmt.Println("Codex notify hook installed successfully.")
 	fmt.Printf("Config: %s\n", configPath)
@@ -580,34 +582,20 @@ func handleCodexHooksUninstall() {
 			exitCLI(1)
 		}
 		end := begin + endRel + len(codexNotifyMarkerEnd)
-		updated := content[:begin] + content[end:]
-		updated = strings.TrimSpace(updated)
-		if updated != "" {
-			updated += "\n"
-		}
-
-		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			exitCLI(1)
-		}
+		rest := strings.TrimPrefix(strings.TrimPrefix(content[end:], "\r"), "\n")
+		writeCodexConfig(configPath, content[:begin]+rest)
 		fmt.Println("Codex notify hook removed successfully.")
 		return
 	}
 
 	if updated, removed := removeLegacyCodexNotifyTable(content); removed {
-		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			exitCLI(1)
-		}
+		writeCodexConfig(configPath, updated)
 		fmt.Println("Codex notify hook removed successfully.")
 		return
 	}
 
 	if updated, removed := removeExactCodexNotifyLine(content); removed {
-		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			exitCLI(1)
-		}
+		writeCodexConfig(configPath, updated)
 		fmt.Println("Codex notify hook removed successfully.")
 		return
 	}
@@ -702,6 +690,30 @@ func getCodexConfigPath() string {
 		return filepath.Join(os.TempDir(), ".codex", "config.toml")
 	}
 	return p
+}
+
+// writeCodexConfig replaces config.toml atomically, so a crash can't leave it
+// torn. It keeps the file's mode (0644 for a new file) and, like os.WriteFile,
+// refuses a file the user can't write: the rename would otherwise replace it.
+func writeCodexConfig(configPath, content string) {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(configPath); err == nil {
+		mode = info.Mode().Perm()
+		f, err := os.OpenFile(configPath, os.O_WRONLY, 0)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
+			exitCLI(1)
+		}
+		_ = f.Close()
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
+		exitCLI(1)
+	}
+	if err := atomicfile.WriteFileDurable(configPath, []byte(content), mode); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
+		exitCLI(1)
+	}
 }
 
 func readFileOrEmpty(path string) (string, error) {
