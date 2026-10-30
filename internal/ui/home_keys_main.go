@@ -451,7 +451,7 @@ func (h *Home) handleJumpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // hasModalVisible returns true if any modal dialog or overlay is currently visible
 func (h *Home) hasModalVisible() bool {
 	return h.initialLoading || h.isQuitting || h.notesEditing || h.jumpMode ||
-		h.setupWizard.IsVisible() || h.settingsPanel.IsVisible() ||
+		h.setupWizard.IsVisible() || h.onboarding.IsVisible() || h.settingsPanel.IsVisible() ||
 		(h.toolVisibilityPanel != nil && h.toolVisibilityPanel.IsVisible()) ||
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.agentsPanel.IsVisible() || // hotkeyAgentsPanel overlay

@@ -180,6 +180,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		editSessionDialog:         NewEditSessionDialog(),
 		skillDialog:               NewSkillDialog(),
 		setupWizard:               NewSetupWizard(),
+		onboarding:                NewOnboardingOverlay(),
 		settingsPanel:             NewSettingsPanel(),
 		analyticsPanel:            NewAnalyticsPanel(),
 		geminiModelDialog:         NewGeminiModelDialog(),

@@ -32,6 +32,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	defer h.recordFocusedSession()
 	model, cmd := h.updateInner(msg)
+	if queued := h.takeOnboardingCmds(); queued != nil {
+		cmd = tea.Batch(cmd, queued)
+	}
 	if !h.fullRepaint {
 		return model, cmd
 	}

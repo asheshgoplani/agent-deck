@@ -275,6 +275,7 @@ func (h *HelpOverlay) View() string {
 	triggersKey := h.key(hotkeyTriggers, "alt+t")
 	agentsPanelKey := h.key(hotkeyAgentsPanel, "alt+a")
 	reportKey := h.key(hotkeyReportProblem, "Z")
+	showAroundKey := h.key(hotkeyShowAround, "alt+w")
 	groupKey := h.key(hotkeyCreateGroup, "g")
 	undoKey := h.key(hotkeyUndoDelete, "Ctrl+Z")
 	archiveKey := h.key(hotkeyArchiveSession, "A")
@@ -327,6 +328,7 @@ func (h *HelpOverlay) View() string {
 				{restartKey, "Restart selected session"},
 				{detachKey, "Detach from session"},
 				{helpKey, "Open this help"},
+				{showAroundKey, "Show me around: what you can do"},
 			},
 		},
 		{

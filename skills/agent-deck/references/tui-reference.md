@@ -18,6 +18,28 @@ fixed navigation keys (`j`/`k`/`h`/`l`/`G`, jump-mode hints) stay Latin only,
 and in jump mode a Cyrillic letter falls through to its twin's action. Attached
 panes are untouched: they receive the raw bytes exactly as typed.
 
+### First run
+
+A fresh install (no `config.toml`, no sessions) opens a **Welcome** instead of
+the setup wizard. It shows once; `Esc` skips it and it does not come back.
+
+- It lists Claude Code, Codex, Gemini CLI and Pi as installed or not, with the
+  install command for each missing one, and offers a plain shell when none is
+  installed.
+- For Claude and Codex it shows whether you are signed in, from the tool's own
+  status command (`claude auth status`, `codex login status`; only the exit
+  code is read). `l` on a tool that is not signed in starts a session running
+  the tool's own login (`claude auth login`, `codex login`) and attaches you to it;
+  come back with `Ctrl+Q` and the Welcome confirms the sign-in. agent-deck never
+  reads or stores a token. The check uses the account a new session would use
+  (`[claude] default_account`).
+- `↑`/`↓` pick an agent, `Enter` opens the New Session dialog with it and this
+  folder filled in, and `Enter` again starts the session: two keys from the
+  Welcome to a running session.
+- After that first session, **What you can do** opens once. `Alt+W` ("Show me
+  around", `show_around`) opens it any time; `Tab` there goes to the agents and
+  sign-in page.
+
 ### Navigation
 
 | Key | Action |
@@ -178,6 +200,7 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Alt+T` | Triggers panel — every launchd job, systemd unit, watcher and bridge that wakes a session (`triggers`, **rebindable**) |
 | `Ctrl+E` | Open feedback dialog |
 | `Z` | Report a problem or idea: a short form, then the full GitHub issue text, filed only after you press `y` (`report_problem`, **rebindable**) |
+| `Alt+W` | Show me around: "What you can do" (sessions, switching, send, conductor, remotes, each with its key), then `Tab` for your agents and sign-in (`show_around`, **rebindable**) |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |
 
 ### Worktree Shortcuts

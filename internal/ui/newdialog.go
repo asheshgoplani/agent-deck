@@ -756,6 +756,17 @@ func (d *NewDialog) SetSize(width, height int) {
 	}
 }
 
+// SetPath replaces the pre-filled project path of an open dialog, keeping the
+// cursor at the end and the soft-select a pre-fill gets.
+func (d *NewDialog) SetPath(path string) {
+	if path == "" {
+		return
+	}
+	d.pathInput.SetValue(path)
+	d.pathInput.CursorEnd()
+	d.pathSoftSelected = true
+}
+
 // SetPathSuggestions sets the available path suggestions for autocomplete
 func (d *NewDialog) SetPathSuggestions(paths []string) {
 	d.allPathSuggestions = paths

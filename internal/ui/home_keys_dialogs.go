@@ -332,6 +332,8 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.newDialog.Hide()
 		h.clearError()           // Clear any validation error
 		h.pendingRemoteName = "" // #1353: drop the remote target on cancel
+		// Cancelled: no first session, so nothing to show around after it.
+		h.onboardingTourAfterCreate = false
 		return h, nil
 	}
 
