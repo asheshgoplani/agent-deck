@@ -64,10 +64,13 @@ func AppendSpool(profileDir string, rec SpoolRecord) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	if st, err := f.Stat(); err == nil && st.Size() > maxSpoolBytes {
-		return errors.New("trace: spool full, record dropped")
+		return errors.Join(errors.New("trace: spool full, record dropped"), spoolClose(f))
 	}
 	_, err = f.Write(line)
-	return err
+	return errors.Join(err, spoolClose(f))
 }
+
+// spoolClose closes the writable spool handle; a test swaps it to check that
+// a failed close is reported.
+var spoolClose = func(f *os.File) error { return f.Close() }
