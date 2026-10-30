@@ -25,6 +25,17 @@ import (
 // heartbeatTickStateFile is written next to meta.json in the conductor's home.
 const heartbeatTickStateFile = "heartbeat-tick.json"
 
+// heartbeatTickPendingFile holds the state of the last printed tick until
+// heartbeat.sh confirms its send with --commit-message. Issue #2944: the send
+// itself drains the inbox, so the commit cannot rebuild the tick to recover
+// that state; it must reuse what the printing call computed.
+const heartbeatTickPendingFile = "heartbeat-tick.pending.json"
+
+type heartbeatTickPending struct {
+	MessageSHA256 string             `json:"message_sha256"`
+	State         HeartbeatTickState `json:"state"`
+}
+
 // HeartbeatSessionView is the slice of a child session a tick looks at.
 type HeartbeatSessionView struct {
 	Title  string
@@ -155,7 +166,54 @@ func SaveHeartbeatTickState(name string, st HeartbeatTickState) error {
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(st)
+	return writeHeartbeatJSON(path, st)
+}
+
+func heartbeatMessageSHA256(msg string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(msg)))
+}
+
+// SaveHeartbeatTickPending records the state a printed tick will leave behind
+// once its send is confirmed by CommitHeartbeatTickPending.
+func SaveHeartbeatTickPending(name, msg string, st HeartbeatTickState) error {
+	path, err := heartbeatTickStatePath(name)
+	if err != nil {
+		return err
+	}
+	return writeHeartbeatJSON(filepath.Join(filepath.Dir(path), heartbeatTickPendingFile),
+		heartbeatTickPending{MessageSHA256: heartbeatMessageSHA256(msg), State: st})
+}
+
+// CommitHeartbeatTickPending saves the pending state when msg is exactly the
+// message the last printing tick produced. It reports false, saving nothing,
+// when there is no pending tick or it belongs to a different message.
+func CommitHeartbeatTickPending(name, msg string) (bool, error) {
+	path, err := heartbeatTickStatePath(name)
+	if err != nil {
+		return false, err
+	}
+	pendingPath := filepath.Join(filepath.Dir(path), heartbeatTickPendingFile)
+	data, err := os.ReadFile(pendingPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var p heartbeatTickPending
+	if json.Unmarshal(data, &p) != nil || p.MessageSHA256 != heartbeatMessageSHA256(msg) {
+		return false, nil
+	}
+	if err := SaveHeartbeatTickState(name, p.State); err != nil {
+		return false, err
+	}
+	// A leftover pending file is harmless: it matches only this same message.
+	_ = os.Remove(pendingPath)
+	return true, nil
+}
+
+func writeHeartbeatJSON(path string, v any) error {
+	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}

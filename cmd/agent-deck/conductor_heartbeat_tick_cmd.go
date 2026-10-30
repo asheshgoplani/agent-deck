@@ -76,8 +76,18 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 
 	msg, next := session.BuildHeartbeatTick(in, prev)
 	if *commitMessage != "" {
+		// The send being committed may itself have drained the inbox
+		// (#2944), so prefer the state the printing tick recorded.
+		committed, err := session.CommitHeartbeatTickPending(name, *commitMessage)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "heartbeat-tick: save state: %v\n", err)
+			exitCLI(1)
+		}
+		if committed {
+			return
+		}
 		if msg != *commitMessage {
-			fmt.Fprintln(os.Stderr, "heartbeat-tick: inputs changed before commit; next tick will retry")
+			fmt.Fprintln(os.Stderr, "heartbeat-tick: message is not the last printed tick; state not saved")
 			exitCLI(1)
 		}
 		if err := session.SaveHeartbeatTickState(name, next); err != nil {
@@ -92,6 +102,9 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 		}
 	}
 	if msg != "" {
+		if err := session.SaveHeartbeatTickPending(name, msg, next); err != nil {
+			fmt.Fprintf(os.Stderr, "heartbeat-tick: save pending state: %v\n", err)
+		}
 		fmt.Println(msg)
 	}
 }
