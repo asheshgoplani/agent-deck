@@ -59,6 +59,20 @@ concurrency:
 permissions:
   contents: read
 
+# Runner routing (owner-approved 2026-10-31). The changes job, the test
+# shards and the Full test suite (PR gate) run on the deckbox deck-ci
+# self-hosted runners ONLY for a pull_request whose head branch lives in
+# this repo (push access needed to create one), and only while the repo
+# variable DECK_CI_RUNNERS is exactly 'on'. Everything else stays on
+# ubuntu-latest: fork PRs, Dependabot PRs (third-party dependency code),
+# pushes to main (the hosted VM keeps checking systemd, docker and the
+# newest bash/tmux after every merge), tags and manual runs. This file
+# never uses pull_request_target. The expression is NOT the security
+# barrier, because a fork PR runs the fork's copy of this file: the runner
+# itself refuses any fork job (deck-ci job-started hook) and the repo
+# requires approval for every outside contributor's run. Kill switch: set
+# DECK_CI_RUNNERS to anything else (or delete it) and every job is hosted
+# again on its next run.
 jobs:
   comms-matrix:
     # Advisory for the first week; promote only after clean real-PR runs.
@@ -77,7 +91,7 @@ jobs:
   # pattern mirrors the push paths list above.
   changes:
     name: Detect Go-relevant changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.DECK_CI_RUNNERS == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && fromJSON('["self-hosted","linux","x64","deck-ci"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       go: ${{ steps.gochanges.outputs.go }}
@@ -99,6 +113,9 @@ jobs:
             echo "go=false" >> "$GITHUB_OUTPUT"
             echo "No Go-relevant changes; passing the gate without running the suite."
           fi
+      - name: Clean self-hosted workspace
+        if: always() && runner.environment == 'self-hosted'
+        run: find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
 
   # The suite, split by package group across runners (#2169). `go test`
   # already runs every package in its own process, so a split changes
@@ -110,7 +127,7 @@ jobs:
     name: Test shard (${{ matrix.shard.name }})
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.DECK_CI_RUNNERS == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && fromJSON('["self-hosted","linux","x64","deck-ci"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -149,14 +166,26 @@ jobs:
           go-version-file: go.mod
 
       # tmux + zoxide back the session and quick-open picker tests that the
-      # suite exercises for real; mirror release.yml.
+      # suite exercises for real; mirror release.yml. The deck-ci runner
+      # image ships both and has no sudo, so apt runs only on GitHub-hosted
+      # runners. The versions are printed either way so a red shard shows
+      # which userland it ran on (deck-ci and ubuntu-latest differ, see
+      # RUNNER-PARITY in the owner notes).
       - name: Install tmux and zoxide
         timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y tmux zoxide
+          if [ "$RUNNER_ENVIRONMENT" = "self-hosted" ]; then
+            command -v tmux >/dev/null && command -v zoxide >/dev/null || {
+              echo "::error::self-hosted runner image lacks tmux or zoxide"; exit 1; }
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y tmux zoxide
+          fi
+          echo "runner: $RUNNER_ENVIRONMENT $RUNNER_NAME"
           tmux -V
           zoxide --version
+          bash --version | head -1
+          git --version
 
       - name: Resolve packages
         id: pkgs
@@ -205,6 +234,17 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # Self-hosted runners are ephemeral (one job, then the container is
+      # removed), but never rely on that alone: stop this job's tmux server
+      # and empty the workspace and temp dir so no file, socket or process
+      # can reach the next job if a runner is ever reused.
+      - name: Clean self-hosted workspace
+        if: always() && runner.environment == 'self-hosted'
+        run: |
+          tmux kill-server 2>/dev/null || true
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+
   # The single required context the main ruleset names. It passes when the
   # diff is not Go-relevant or every Go shard passed. It fails (and never
   # skips) otherwise, so a docs-only PR still reports. The comms matrix is
@@ -213,13 +253,21 @@ jobs:
     name: Full test suite (PR gate)
     needs: [changes, shard]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.DECK_CI_RUNNERS == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && fromJSON('["self-hosted","linux","x64","deck-ci"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      # A failed or cancelled changes job leaves outputs.go empty, which
+      # would read as "no Go changes" (more likely now that it can run on a
+      # self-hosted runner that goes away); only a successful changes job
+      # may pass the gate without the shards.
       - name: Gate on shard results
         run: |
+          echo "changes: ${{ needs.changes.result }}"
           echo "go-relevant: ${{ needs.changes.outputs.go }}"
           echo "shards: ${{ needs.shard.result }}"
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "Change detection ${{ needs.changes.result }}; failing closed."; exit 1
+          fi
           if [ "${{ needs.changes.outputs.go }}" != "true" ]; then
             echo "No Go-relevant changes; gate passes."; exit 0
           fi

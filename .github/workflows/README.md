@@ -16,7 +16,7 @@ it from the gate; keep the ruleset and this table in lockstep.
 | Context | Workflow (job) | What it gates |
 |---|---|---|
 | `intake` | `pr-intake.yml` (`intake`) | PR description format against the contract in `.github/INTAKE.md`: required headings, one AI-disclosure box, a real "What actually bothered you" section. Labels `intake:clean` or `needs-info` and posts one comment; it never closes or requests changes. The job itself exits green in both outcomes, so what the ruleset enforces today is that `intake` has reported on the current tip; a `needs-info` body is surfaced by label and comment for the human merger. |
-| `Full test suite (PR gate)` | `go-test.yml` (`full-test-suite`) | The exact release-gate test step (`gotestsum`, `-race ./...`) on every PR, no path filter, short-circuiting when the diff touches nothing Go-related. |
+| `Full test suite (PR gate)` | `go-test.yml` (`full-test-suite`) | The exact release-gate test step (`gotestsum`, `-race ./...`) on every PR, no path filter, short-circuiting when the diff touches nothing Go-related. For same-repo PR branches, and only while the repo variable `DECK_CI_RUNNERS` is `on`, the `changes`, shard and gate jobs run on the deckbox `deck-ci` self-hosted runners; fork PRs, Dependabot PRs and pushes stay on `ubuntu-latest` (see the routing comment in `go-test.yml`). |
 | `golangci` | `golangci-lint.yml` (`golangci`) | `golangci-lint` over the whole module. |
 | `analyze` | `codeql.yml` (`analyze`) | CodeQL security analysis of the Go code. |
 
