@@ -33,11 +33,14 @@ const attachOutputDrainTimeout = 250 * time.Millisecond
 // an attached session.
 const attachReplyQuarantine = 500 * time.Millisecond
 
-// attachHeldInputIdle is how long the stdin pump waits for the rest of an
-// unterminated escape string before releasing it as typed input. Replies are
-// written in one piece, so their remainder is already waiting; a typed
-// Option-as-Meta chord is delayed by at most this much.
-const attachHeldInputIdle = 10 * time.Millisecond
+// attachHeldInputWindow is how long, from its introducer, the stdin pump
+// holds an unterminated escape string before releasing it as typed input.
+// A terminal writes a reply in one piece, but over ssh the pieces can arrive
+// some milliseconds apart; a reply that terminates within the window is still
+// discarded. Measured from the introducer rather than from the last byte, so
+// keys typed right after an Option-as-Meta chord are delayed by at most this
+// much, however fast they keep coming.
+const attachHeldInputWindow = 100 * time.Millisecond
 
 // AttachStdinPollInterval bounds how long the stdin reader may sit inside
 // poll(2) before it re-checks the attach context. A blocking os.Stdin.Read
@@ -306,6 +309,8 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 	buf := make([]byte, 32)
 	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies, KeysOnIdle: true}
 	fd := int(p.in.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
+	// heldSince is when replyFilter started holding; zero when it is not.
+	var heldSince time.Time
 
 	reportErr := func(err error) {
 		select {
@@ -350,11 +355,21 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 		armed := time.Since(p.startTime) < attachReplyQuarantine
 		chunk = replyFilter.Consume(chunk, armed, false)
 		// A reply arrives in one piece, terminator included. An escape
-		// string still open once stdin is idle was typed (Option-as-Meta
+		// string still open when attachHeldInputWindow has passed, or when
+		// stdin goes quiet until then, was typed (Option-as-Meta
 		// Alt+Shift+- is ESC _, #2931): release it, and any keys held
 		// behind it, so they reach the pane and the detach check below.
-		if replyFilter.Holding() && !PollFdReady(fd, attachHeldInputIdle) {
-			chunk = append(chunk, replyFilter.FlushIdle()...)
+		if !replyFilter.Holding() {
+			heldSince = time.Time{}
+		} else {
+			if heldSince.IsZero() {
+				heldSince = time.Now()
+			}
+			wait := time.Until(heldSince.Add(attachHeldInputWindow))
+			if wait <= 0 || !PollFdReady(fd, wait) {
+				chunk = append(chunk, replyFilter.FlushIdle()...)
+				heldSince = time.Time{}
+			}
 		}
 		if len(chunk) == 0 {
 			continue

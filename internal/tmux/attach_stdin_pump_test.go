@@ -290,6 +290,89 @@ func TestAttachStdinPump_AltEscapeStringIntroducerWithKeysQueuedBehindIt(t *test
 	}
 }
 
+// Over ssh a terminal reply can reach the pump in pieces some milliseconds
+// apart. A reply that terminates within attachHeldInputWindow is still a
+// reply, outside the quarantine too: discarded, or forwarded whole for the
+// OSC 11 color reply tmux consumes, never typed into the pane.
+func TestAttachStdinPump_ReplySplitByANetworkGapIsNotTyped(t *testing.T) {
+	cases := []struct {
+		name, first, rest, want string
+	}{
+		{"dcs_xtversion", "\x1bP>|iTerm2 3.6", ".10\x1b\\k", "k"},
+		{"apc_kitty_graphics", "\x1b_Gi=31;", "OK\x1b\\k", "k"},
+		{"osc11_color", "\x1b]11;rgb:1e1e/", "1e1e/1e1e\x1b\\k", "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\k"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+			out := &syncBuffer{}
+			pump.out = out
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := runPump(ctx, pump)
+
+			if _, err := w.Write([]byte(tc.first)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			time.Sleep(30 * time.Millisecond) // the network gap
+			if _, err := w.Write([]byte(tc.rest)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			out.waitFor(t, tc.want)
+			if _, err := w.Write([]byte{0x11}); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("pump did not exit on the detach key")
+			}
+			if got := out.String(); got != tc.want {
+				t.Errorf("forwarded %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The hold window runs from the introducer, not from the last byte, so keys
+// typed steadily right after the chord are released within it instead of
+// waiting for a pause in typing.
+func TestAttachStdinPump_KeysTypedSteadilyAfterTheChordAreReleasedWithinTheWindow(t *testing.T) {
+	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17})
+	out := &syncBuffer{}
+	pump.out = out
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte("\x1b_")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	const keys = 15 // one every 20ms: 300ms, three windows, never idle
+	for range keys {
+		time.Sleep(20 * time.Millisecond)
+		if _, err := w.Write([]byte("a")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if got := out.String(); !strings.HasPrefix(got, "\x1b_a") {
+		t.Errorf("after %d steady keys forwarded %q, want the chord and keys released within the hold window", keys, got)
+	}
+	if _, err := w.Write([]byte{0x11}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pump did not exit on the detach key; forwarded %q", out.String())
+	}
+	if got, want := out.String(), "\x1b_"+strings.Repeat("a", keys); got != want {
+		t.Errorf("forwarded %q, want %q", got, want)
+	}
+}
+
 // TestAttachStdinPump_SwallowsStaleDAReplyDuringQuarantine reproduces #2356:
 // switching sessions (Windows Terminal, v1.16.16) leaked literal DA1/DA2
 // device-attributes reply text into the new session's prompt. The reply the
