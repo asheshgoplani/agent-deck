@@ -5,6 +5,7 @@
 // per-card counts. Same rule as `remote sessions` text output (#2972).
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'preact'
+import { waitFor } from '@testing-library/preact'
 import { html } from 'htm/preact'
 
 vi.mock('../../../internal/web/static/app/api.js', () => ({
@@ -35,10 +36,11 @@ describe('Fleet pane remote cards', () => {
     const c = document.createElement('div')
     document.body.appendChild(c)
     render(html`<${FleetPane}/>`, c)
-    await new Promise(r => setTimeout(r, 20))
+    // The card appears only after the mount effect's fetch resolves and
+    // Preact re-renders; wait for it instead of a fixed sleep.
+    await waitFor(() => expect(c.querySelector('[data-testid="fleet-remote-card"][data-remote-name="box"]')).not.toBeNull())
 
     const card = c.querySelector('[data-testid="fleet-remote-card"][data-remote-name="box"]')
-    expect(card).not.toBeNull()
     const tiles = [...card.querySelectorAll('[data-testid="fleet-remote-session-tile"]')]
       .map(t => t.getAttribute('data-session-id'))
     expect(tiles).toEqual(['live-1'])
