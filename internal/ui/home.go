@@ -2042,7 +2042,7 @@ func (h *Home) backgroundStatusUpdate() {
 		if sharedStatuses != nil {
 			for _, inst := range instances {
 				if s, ok := sharedStatuses[inst.ID]; ok && s.Acknowledged {
-					inst.SetAcknowledgedFromShared(true)
+					inst.SetAcknowledgedFromSharedAt(s.AcknowledgedAt)
 				}
 			}
 		}
@@ -2565,6 +2565,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			h.instancesMu.Lock()
 			oldCount := len(h.instances)
+			session.CarryOverReloadState(h.instances, msg.instances)
 			h.instances = msg.instances
 			newCount := len(msg.instances)
 			uiLog.Debug("reload_load_sessions", slog.Int("old_count", oldCount), slog.Int("new_count", newCount), slog.String("profile", h.profile))
@@ -6455,6 +6456,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				tmuxSess := item.Session.GetTmuxSession()
 				if tmuxSess != nil {
+					// Visit time first: a publish in between then sees no
+					// visit, never a cleared mark with the old visit time.
+					item.Session.ClearAcknowledgedAt()
 					tmuxSess.ResetAcknowledged()
 					// Persist to SQLite so background sync doesn't overwrite.
 					//
@@ -7020,7 +7024,7 @@ func (h *Home) attachSelectedLegacy() tea.Cmd {
 		parentInst.SyncSessionIDsToTmux()
 		parentInst.MarkAccessed()
 		if parentInst.GetStatusThreadSafe() == session.StatusWaiting {
-			tmuxSess.Acknowledge()
+			parentInst.AcknowledgeVisit()
 			if db := statedb.GetGlobal(); db != nil {
 				_ = db.SetAcknowledged(parentInst.ID, true)
 			}
@@ -7568,7 +7572,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// - YELLOW (waiting) sessions turn gray when user looks at them
 	// - Detach just lets polling take over naturally
 	if inst.GetStatusThreadSafe() == session.StatusWaiting {
-		tmuxSess.Acknowledge()
+		inst.AcknowledgeVisit()
 		// Persist ack to SQLite so other instances see it
 		if db := statedb.GetGlobal(); db != nil {
 			_ = db.SetAcknowledged(inst.ID, true)

@@ -1553,6 +1553,35 @@ func (s *Session) CachedSubstateDetail() string {
 	return s.lastSubstateDetail
 }
 
+// SetCachedSubstateForTest seeds the cached substate so tests outside this
+// package can exercise layers that read it without classifying a real pane.
+func (s *Session) SetCachedSubstateForTest(sub Substate, detail string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastSubstate, s.lastSubstateDetail = sub, detail
+}
+
+// InheritCachedSubstate takes over prev's cached substate when both objects
+// carry the same tmux session name and this one has not classified anything
+// yet. The name is the only check: a restart through respawn-pane keeps the
+// name, so the old label shows until the next classification replaces it.
+func (s *Session) InheritCachedSubstate(prev *Session) {
+	if prev == nil || prev == s || prev.TmuxName() != s.TmuxName() {
+		return
+	}
+	// Read prev's pair under one lock, so a status pass between two reads
+	// cannot mix frames. Write s under its own lock: holding both would risk
+	// a lock-order inversion with any caller that inherits the other way round.
+	prev.mu.Lock()
+	sub, detail := prev.lastSubstate, prev.lastSubstateDetail
+	prev.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastSubstate == SubstateNone {
+		s.lastSubstate, s.lastSubstateDetail = sub, detail
+	}
+}
+
 // CachedSubstate returns the last substate computed by GetStatus/GetSubstate
 // WITHOUT capturing the pane. Use it on the TUI render hot path, where the
 // background status loop already keeps the value fresh and a per-row capture

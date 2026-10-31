@@ -696,11 +696,40 @@ func (i *Instance) CachedSubstate() Substate {
 	return i.reconcileSubstate(tmuxSess.CachedSubstate())
 }
 
+// CarryOverReloadState hands in-memory per-session state that a storage reload
+// cannot rebuild from SQLite from the outgoing sessions to their replacements.
+// Today that is the cached substate: without it the sidebar's detail line
+// vanishes on every reload until the next status pass re-classifies the pane.
+func CarryOverReloadState(prev, next []*Instance) {
+	old := make(map[string]*tmux.Session, len(prev))
+	for _, inst := range prev {
+		if ts := inst.GetTmuxSession(); ts != nil {
+			old[inst.ID] = ts
+		}
+	}
+	for _, inst := range next {
+		if ts := inst.GetTmuxSession(); ts != nil {
+			ts.InheritCachedSubstate(old[inst.ID])
+		}
+	}
+}
+
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance
 // (read from SQLite). This transitions a YELLOW (waiting) session to GRAY (idle)
 // without requiring the user to interact with this specific TUI instance.
 func (i *Instance) SetAcknowledgedFromShared(ack bool) {
-	if !ack || i.tmuxSession == nil {
+	if !ack {
+		return
+	}
+	i.SetAcknowledgedFromSharedAt(time.Time{})
+}
+
+// SetAcknowledgedFromSharedAt applies a shared acknowledgment together with
+// the visit time the other TUI stored for it (zero when unknown), so a later
+// cold hook read here orders the Stop against that visit, not the one loaded
+// at startup.
+func (i *Instance) SetAcknowledgedFromSharedAt(at time.Time) {
+	if i.tmuxSession == nil {
 		return
 	}
 
@@ -712,4 +741,25 @@ func (i *Instance) SetAcknowledgedFromShared(ack bool) {
 	}
 
 	i.tmuxSession.Acknowledge()
+	i.noteVisit(at)
+}
+
+// AcknowledgeVisit marks the session seen because the user just looked at it
+// (attach, embedded focus, notification switch) and records the visit time in
+// memory, matching the time SetAcknowledged stores in SQLite.
+func (i *Instance) AcknowledgeVisit() {
+	if ts := i.GetTmuxSession(); ts != nil {
+		ts.Acknowledge()
+	}
+	i.noteVisit(time.Now())
+}
+
+// noteVisit moves the in-memory visit time forward to at. It never moves it
+// back, so an older shared row cannot undo a newer local visit.
+func (i *Instance) noteVisit(at time.Time) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if at.After(i.acknowledgedAt) {
+		i.acknowledgedAt = at
+	}
 }

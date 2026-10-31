@@ -48,8 +48,8 @@ func refreshSnapshotHookStatuses(snapshot *MenuSnapshot, loader func() map[strin
 // shared sessionstatus.Derive helper. The web read-path runs in
 // Stale waiting remains durable for tools with start+stop hooks. Legacy Codex
 // notify has no start edge, so its stale completion must yield to the live
-// snapshot instead (#2189). The DTO does not carry the per-instance
-// Acknowledged bit yet, so Acknowledged=false is the conservative default.
+// snapshot instead (#2189). The session's "seen" mark keeps a turn the user
+// already looked at idle.
 func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now time.Time) {
 	if sess == nil {
 		return
@@ -60,7 +60,16 @@ func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now
 		Hook:              hs,
 		Now:               now,
 		AllowStaleWaiting: !session.IsCodexCompatible(sess.Tool),
+		Acknowledged:      sess.Acknowledged,
 		InstanceID:        sess.ID,
 	})
+	// Same call as the Codex fast path in Instance.updateStatus: a completion
+	// older than the user's last visit was already seen. The seen mark must
+	// be set too: a session marked unread can be published before its visit
+	// time is cleared.
+	if out.Status == session.StatusWaiting && hs != nil && session.IsCodexCompatible(sess.Tool) &&
+		sess.Acknowledged && session.HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, sess.AcknowledgedAt) {
+		out.Status = session.StatusIdle
+	}
 	sess.Status = out.Status
 }
