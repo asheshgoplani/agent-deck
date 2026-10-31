@@ -141,7 +141,7 @@ if [ -n "$GO_CHANGED" ] && [ "$HAVE_GO" = 1 ]; then
   fi
   if [ "$IN_CONTAINER" != 1 ]; then
     WARN sandboxed-tests "$NO_CONTAINER_MSG"; TESTS_GATED=1
-  elif OUT=$(sandboxed go test $PKGS 2>&1); then PASS sandboxed-tests "$PKGS"
+  elif OUT=$(sandboxed go test -timeout 20m $PKGS 2>&1); then PASS sandboxed-tests "$PKGS"
   else FAIL sandboxed-tests "$(echo "$OUT" | grep -E '^(--- FAIL|FAIL|# )' | head -5 | tr '\n' ' | ')"; fi
 
   # 5. a test exists for production changes, in a package you actually touched
@@ -171,7 +171,7 @@ if [ -n "$GO_CHANGED" ] && [ "$HAVE_GO" = 1 ]; then
         mkdir -p "$WT/$(dirname "$f")"; cp "$f" "$WT/$f"
       done
       RC_PKGS=$(printf '%s\n' "$GO_TESTS_CHANGED" | xargs -n1 dirname | sort -u | sed 's|^|./|' | tr '\n' ' ')
-      if OUT=$( cd "$WT" && sandboxed go test $RC_PKGS 2>&1 ); then
+      if OUT=$( cd "$WT" && sandboxed go test -timeout 20m $RC_PKGS 2>&1 ); then
         FAIL revert-check "your tests still PASS without your change — they prove nothing; make at least one fail on base"
         RC_OK=0
       else

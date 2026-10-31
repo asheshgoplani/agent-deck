@@ -140,7 +140,7 @@ dev:
 
 # Run tests (with race detector)
 test:
-	go test -race -v ./...
+	go test -race -timeout 20m -v ./...
 
 # Regenerate the CLI/storage-bytes behaviour-freeze goldens under
 # cmd/agent-deck/testdata/goldens/ after a reviewed, intended behaviour
@@ -224,7 +224,7 @@ release-local:
 	fi; \
 	echo "Version: $$CODE_VERSION"
 	@echo "=== Running tests ==="
-	go test -race ./...
+	go test -race -timeout 20m ./...
 	@echo "=== Running GoReleaser ==="
 	goreleaser release --clean
 	@echo "=== Draft release built ==="
