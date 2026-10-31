@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -80,6 +81,7 @@ func TestIssue2896_PiTurnEndYieldsToNewPaneActivity(t *testing.T) {
 // session_shutdown (dead: pi may have dropped to a fallback shell) still go
 // back to the pane after the window.
 func TestIssue2896_PiNonWaitingHookStillExpires(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	skipIfNoTmuxBinary(t)
 	for _, hs := range []struct{ status, event string }{
 		{"running", "turn_start"},
