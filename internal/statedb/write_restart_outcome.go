@@ -94,9 +94,10 @@ func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (Wri
 		res, err := s.db.Exec(
 			`UPDATE instances
 			   SET tmux_session = ?, status = ?, tool = ?,
-			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
+			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END
 			 WHERE id = ?`,
-			tmuxSession, status, tool, status, id,
+			tmuxSession, status, tool, status, status, id,
 		)
 		if err != nil {
 			return err

@@ -32,6 +32,12 @@ func (d crashDecision) String() string {
 
 var crashState = crashDecision{Reason: "no DSN configured"}
 
+// reasonManagedNeedsConsent: a managed DSN waits for the person's own yes.
+const reasonManagedNeedsConsent = "waiting for your yes: agent-deck telemetry on"
+
+// crashConsent reads the stored usage-data consent; a test seam.
+var crashConsent = func() telemetry.Consent { return telemetry.LoadState().Consent }
+
 // decideCrashReporting: crash reports need a DSN from the managed file or
 // config.toml (the managed one wins) and no off switch:
 //   - every telemetry hard-off (DO_NOT_TRACK, AGENTDECK_TELEMETRY=0 or log,
@@ -41,9 +47,10 @@ var crashState = crashDecision{Reason: "no DSN configured"}
 //     the prompt): the person's no covers crash reports too,
 //   - CI.
 //
-// An undecided consent does not block them: the company that set the DSN
-// turned them on for its machines and each person can turn them off
-// (TELEMETRY.md "Crash reports").
+// A managed DSN also needs the person's own yes to usage data: the company
+// can offer crash reports, but they stay off until the person agrees. A DSN
+// the person put in their own config.toml is their choice and needs no
+// separate yes (TELEMETRY.md "Crash reports").
 func decideCrashReporting(m managed.Result, configDSN string) crashDecision {
 	d := crashDecision{dsn: m.CrashDSN, Source: "managed"}
 	switch {
@@ -66,6 +73,9 @@ func decideCrashReporting(m managed.Result, configDSN string) crashDecision {
 	}
 	if telemetry.IsCI() {
 		return crashDecision{Reason: "running in CI"}
+	}
+	if d.Source == "managed" && crashConsent() != telemetry.ConsentGranted {
+		return crashDecision{Reason: reasonManagedNeedsConsent}
 	}
 	return d
 }

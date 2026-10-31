@@ -91,9 +91,15 @@ func (h *Home) publishWebSessionStates(instances []*session.Instance) {
 		if inst == nil {
 			continue
 		}
+		acknowledged := false
+		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			acknowledged = tmuxSess.IsAcknowledged()
+		}
 		states[inst.ID] = menudata.MenuSessionState{
-			Status: inst.GetStatusThreadSafe(),
-			Tool:   inst.GetToolThreadSafe(),
+			Status:         inst.GetStatusThreadSafe(),
+			Tool:           inst.GetToolThreadSafe(),
+			Acknowledged:   acknowledged,
+			AcknowledgedAt: inst.AcknowledgedAt(),
 		}
 	}
 	menuData.UpdateSessionStates(states, time.Now())
@@ -945,7 +951,7 @@ func (h *Home) consumeAckSignal() string {
 	inst := h.instanceByID[signalSessionID]
 	if inst != nil {
 		if ts := inst.GetTmuxSession(); ts != nil {
-			ts.Acknowledge()
+			inst.AcknowledgeVisit()
 			// Persist ack to SQLite so other instances see it
 			if db := statedb.GetGlobal(); db != nil {
 				_ = db.SetAcknowledged(inst.ID, true)

@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/provider"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -829,23 +831,7 @@ func handleRemoteSessions(args []string) {
 
 		if !jsonOutput {
 			fmt.Printf("\n═══ Remote: %s (%s) ═══\n\n", name, rc.Host)
-			if len(sessions) == 0 {
-				fmt.Println("  No sessions found.")
-			} else {
-				fmt.Printf("  %-20s %-15s %-10s %s\n", "TITLE", "TOOL", "STATUS", "ID")
-				fmt.Printf("  %s\n", strings.Repeat("-", 60))
-				for _, s := range sessions {
-					title := s.Title
-					if len(title) > 20 {
-						title = title[:17] + "..."
-					}
-					id := s.ID
-					if len(id) > 8 {
-						id = id[:8]
-					}
-					fmt.Printf("  %-20s %-15s %-10s %s\n", title, s.Tool, s.Status, id)
-				}
-			}
+			writeRemoteSessionsText(os.Stdout, sessions)
 		}
 	}
 
@@ -857,6 +843,38 @@ func handleRemoteSessions(args []string) {
 	}
 	if envelope && len(output.Errors) != 0 {
 		exitCLI(1)
+	}
+}
+
+// writeRemoteSessionsText prints one remote's session table for the text
+// output of `remote sessions`. Archived rows are left out (#2972): `list
+// --json` on the remote keeps them with "archived": true, and an archived
+// session keeps a live-looking status. The JSON outputs still carry them.
+// Titles are cut by display width, so a multi-byte character is never split.
+func writeRemoteSessionsText(w io.Writer, sessions []session.RemoteSessionInfo) {
+	live := make([]session.RemoteSessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		if !s.Archived {
+			live = append(live, s)
+		}
+	}
+	archived := len(sessions) - len(live)
+	if len(live) == 0 {
+		fmt.Fprintln(w, "  No sessions found.")
+	} else {
+		fmt.Fprintf(w, "  %-20s %-15s %-10s %s\n", "TITLE", "TOOL", "STATUS", "ID")
+		fmt.Fprintf(w, "  %s\n", strings.Repeat("-", 60))
+		for _, s := range live {
+			title := runewidth.FillRight(truncateWidth(s.Title, 20), 20)
+			id := s.ID
+			if len(id) > 8 {
+				id = id[:8]
+			}
+			fmt.Fprintf(w, "  %s %-15s %-10s %s\n", title, s.Tool, s.Status, id)
+		}
+	}
+	if archived > 0 {
+		fmt.Fprintf(w, "  (%d archived not shown; --json lists them)\n", archived)
 	}
 }
 

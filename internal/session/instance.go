@@ -651,6 +651,7 @@ type Instance struct {
 	// carrying one must not revert ClaudeSessionID to the stalled copy.
 	claudeSupersededIDs         map[string]struct{}
 	hookLastUpdate              time.Time // When hook status was last received
+	acknowledgedAt              time.Time // When the user last marked this session seen (from SQLite on load)
 	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
 	skipRecoveryTurn            bool      // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
 	restartReason               string    // SetRestartReason: why the next restart happens, for its resume note
@@ -2408,7 +2409,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
-			if i.tmuxSession != nil && (hs.Status == "running" || hs.Status == "waiting") {
+			// A "waiting" event older than the user's last visit is the turn
+			// they already saw: keep the visit, or every reload undoes it. A
+			// permission prompt or notification still needs an answer, so it
+			// always resets, as UpdateHookStatus treats it.
+			needsAnswer := hs.Event == "PermissionRequest" || hs.Event == "Notification"
+			if i.tmuxSession != nil && (hs.Status == "running" ||
+				(hs.Status == "waiting" && (needsAnswer || !HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, i.acknowledgedAt)))) {
 				i.tmuxSession.ResetAcknowledged()
 			}
 		}
@@ -2494,11 +2501,16 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			if IsCodexCompatible(i.Tool) {
 				// Codex completion should surface as attention-needed.
 				// Keep this as waiting and let tmux settle to idle if the user
-				// has acknowledged and no new activity appears.
-				if i.tmuxSession != nil {
-					i.tmuxSession.ResetAcknowledged()
+				// has acknowledged and no new activity appears. A completion
+				// older than the user's last visit was already seen.
+				if HookPredatesVisit(i.hookLastUpdate, time.Time{}, i.acknowledgedAt) {
+					i.Status = StatusIdle
+				} else {
+					if i.tmuxSession != nil {
+						i.tmuxSession.ResetAcknowledged()
+					}
+					i.Status = StatusWaiting
 				}
-				i.Status = StatusWaiting
 			} else {
 				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
 				// ends, including the turn that launched a Workflow, background
@@ -3213,4 +3225,30 @@ func (i *Instance) CaptureLoadedMCPs() {
 	}
 
 	i.LoadedMCPNames = mcpInfo.AllNames()
+}
+
+// HookPredatesVisit reports whether a hook event happened before the user's
+// last visit. The hook "ts" is whole seconds, so without the handler's
+// received time a Stop in the visit's own second counts as newer: a seen turn
+// shown as new beats a new turn shown as seen.
+func HookPredatesVisit(updated, received, visit time.Time) bool {
+	if !received.IsZero() {
+		return received.Before(visit)
+	}
+	return updated.Before(visit.Truncate(time.Second))
+}
+
+// AcknowledgedAt returns when the user last marked this session seen, as
+// loaded from storage, or zero when unknown.
+func (i *Instance) AcknowledgedAt() time.Time {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.acknowledgedAt
+}
+
+// ClearAcknowledgedAt drops the visit time once the session is marked unread.
+func (i *Instance) ClearAcknowledgedAt() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.acknowledgedAt = time.Time{}
 }
