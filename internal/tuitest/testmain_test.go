@@ -22,6 +22,10 @@ func TestMain(m *testing.M) {
 // the isolated TMUX_TMPDIR and HOME temp dirs are removed (2026-06-07
 // pty-exhaustion incident class).
 func runTestMain(m *testing.M) int {
+	// Pin the Go build and module caches before HOME moves: the in-test
+	// `go build` of agent-deck would otherwise start from an empty cache
+	// under the isolated HOME (see testutil.PinGoCaches).
+	testutil.PinGoCaches()
 	// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir, never
 	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
 	// See internal/testutil/homeenv.go for the postmortem.

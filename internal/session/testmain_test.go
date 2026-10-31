@@ -229,6 +229,10 @@ func runTestMain(m *testing.M) int {
 	// profiles/<p>/state.db, worker-scratch, logs) lands in a temp dir, never
 	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
 	// See internal/testutil/homeenv.go for the postmortem.
+	// Pin the Go build and module caches before HOME moves: the in-test
+	// `go build` of agent-deck would otherwise start from an empty cache
+	// under the isolated HOME (see testutil.PinGoCaches).
+	testutil.PinGoCaches()
 	cleanupHome := testutil.IsolateHome()
 	defer cleanupHome()
 	// Most session tests replace HOME per case and remove it immediately.

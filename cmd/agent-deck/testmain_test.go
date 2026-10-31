@@ -47,7 +47,7 @@ func runTestMain(m *testing.M) int {
 		// runs `go build` itself (eval harness sandbox, goldens) would
 		// otherwise find an empty $HOME/.cache/go-build under the isolated
 		// HOME and recompile the whole module, about a minute per CI shard.
-		pinGoCaches()
+		testutil.PinGoCaches()
 		// Build shared CLI fixture before HOME/XDG isolation so Go caches never
 		// become read-only debris inside a per-test directory.
 		if err := ensureChannelsCLIBinary(); err != nil {
@@ -160,21 +160,5 @@ func widenTestParallelism() {
 	})
 	if !explicit {
 		_ = flag.Set("test.parallel", strconv.Itoa(2*runtime.GOMAXPROCS(0)))
-	}
-}
-
-// pinGoCaches exports GOCACHE and GOMODCACHE with the values the go command
-// resolves for the real HOME, unless the caller already set them.
-func pinGoCaches() {
-	names := []string{"GOCACHE", "GOMODCACHE"}
-	out, err := exec.Command("go", append([]string{"env"}, names...)...).Output()
-	if err != nil {
-		return
-	}
-	values := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	for i, name := range names {
-		if i < len(values) && os.Getenv(name) == "" && strings.TrimSpace(values[i]) != "" {
-			os.Setenv(name, strings.TrimSpace(values[i]))
-		}
 	}
 }
