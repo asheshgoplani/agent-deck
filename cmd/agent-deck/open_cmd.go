@@ -208,7 +208,9 @@ func resolveOpenTarget(target string) (path, webURL string, err error) {
 		// for a loopback, private or link-local address (macapp.CheckRemoteURL).
 		if openCallerIsRemote() {
 			if err := macapp.CheckRemoteURL(webURL); err != nil {
-				return "", "", err
+				// A page this box serves can still reach the app as files,
+				// bundled over the app's own connection to the box.
+				return "", "", fmt.Errorf("%w; to show a page from this host, open its file instead: agent-deck open <file>", err)
 			}
 		}
 		return "", webURL, nil
