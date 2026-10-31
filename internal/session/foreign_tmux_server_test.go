@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,10 +38,10 @@ var (
 	foreignTUIBinErr  error
 )
 
-// foreignTUIBinary builds the agent-deck binary once, with the caller's
-// environment (call it before HOME is redirected, or the module cache moves).
-func foreignTUIBinary(t *testing.T) string {
-	t.Helper()
+// buildForeignTUIBinary builds the agent-deck binary at most once per test
+// binary. TestMain pins GOCACHE/GOMODCACHE before HOME is isolated, so the
+// build reuses the real caches.
+func buildForeignTUIBinary() {
 	foreignTUIBinOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "ad-foreign-bin-")
 		if err != nil {
@@ -53,10 +54,44 @@ func foreignTUIBinary(t *testing.T) string {
 			foreignTUIBinErr = fmt.Errorf("%v: %s", err, out)
 		}
 	})
+}
+
+// foreignTUIBinary returns the shared agent-deck binary, waiting for the
+// background build TestMain started (or building it here when none did).
+func foreignTUIBinary(t *testing.T) string {
+	t.Helper()
+	buildForeignTUIBinary()
 	if foreignTUIBinErr != nil {
 		t.Fatalf("build agent-deck: %v", foreignTUIBinErr)
 	}
 	return foreignTUIBin
+}
+
+// prebuildForeignTUIBinary starts the shared binary's build in the
+// background on a full package run (no -run filter), as CI runs it. On a
+// GitHub runner that build is about a minute of cold compile (CI run
+// 41158827633: TestCrashedSession_TUIOnItsOwnServerShowsError 72 s, of which
+// its subtests are 14.5 s); the session tests run one at a time, so the
+// build overlaps them instead of adding to the shard. The returned func
+// waits for the build and removes the binary; TestMain calls it after m.Run.
+func prebuildForeignTUIBinary() func() {
+	if !flag.Parsed() {
+		flag.Parse()
+	}
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buildForeignTUIBinary()
+	}()
+	return func() {
+		<-done
+		if foreignTUIBin != "" {
+			_ = os.RemoveAll(filepath.Dir(foreignTUIBin))
+		}
+	}
 }
 
 // startTUIInForeignTmuxServer replays the audit's command: a private tmux

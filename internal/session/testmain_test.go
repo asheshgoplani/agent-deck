@@ -277,6 +277,10 @@ func runTestMain(m *testing.M) int {
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"
 	os.Setenv("AGENTDECK_PROFILE", "_test")
 
+	// Overlap the shared agent-deck build with the first tests.
+	waitPrebuild := prebuildForeignTUIBinary()
+	defer waitPrebuild()
+
 	// Run tests
 	code := m.Run()
 
