@@ -74,7 +74,7 @@ type Filter struct {
 	// this, the filter discards every later key, the detach key included,
 	// waiting for a terminator that typing never produces. Set it only when
 	// the caller calls FlushIdle once its hold window has passed, as the
-	// attach stdin pump does.
+	// attach stdin pump and the dashboard input (#2974) do.
 	KeysOnIdle bool
 
 	mode                filterMode

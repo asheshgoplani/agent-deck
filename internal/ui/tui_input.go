@@ -75,7 +75,9 @@ func NewTUIInput(stdin *os.File) io.Reader {
 		ready: func(d time.Duration) bool { return pollFdReady(fd, d) },
 		// Only output ready to return: an incomplete sequence in inBuf needs
 		// new bytes, which the poll waits for.
-		pending: func() bool { return len(c.outBuf) > 0 || c.err != nil },
+		// A held escape string whose window has passed is released without
+		// new bytes (#2974).
+		pending: func() bool { return len(c.outBuf) > 0 || c.err != nil || c.heldDue() },
 	}
 }
 

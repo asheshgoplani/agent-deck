@@ -605,7 +605,7 @@ func TestFilterKeysOnIdleDropsUnterminatedStringBegunWhenArmed(t *testing.T) {
 	require.Equal(t, []byte("c"), got)
 }
 
-// Without KeysOnIdle (the dashboard's byte-at-a-time reader) nothing is
+// Without KeysOnIdle (a caller with no idle flush) nothing is
 // held, and an introducer keeps starting a discarded reply as before.
 func TestFilterHoldsNothingWithoutKeysOnIdle(t *testing.T) {
 	var f Filter
