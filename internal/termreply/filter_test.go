@@ -605,7 +605,7 @@ func TestFilterKeysOnIdleDropsUnterminatedStringBegunWhenArmed(t *testing.T) {
 	require.Equal(t, []byte("c"), got)
 }
 
-// Without KeysOnIdle (the dashboard's byte-at-a-time reader) nothing is
+// Without KeysOnIdle (a caller with no idle flush) nothing is
 // held, and an introducer keeps starting a discarded reply as before.
 func TestFilterHoldsNothingWithoutKeysOnIdle(t *testing.T) {
 	var f Filter
@@ -644,4 +644,22 @@ func TestFilterKeysOnIdleDropsHeldInputOnFinal(t *testing.T) {
 	require.Empty(t, f.Consume([]byte("\x1b_a"), false, false))
 	require.Empty(t, f.Consume(nil, false, true))
 	require.False(t, f.Active())
+}
+
+// HoldGeneration changes when one Consume ends a hold and begins the next,
+// so a caller timing its window can tell the second hold from the first.
+func TestFilterHoldGenerationChangesForBackToBackHolds(t *testing.T) {
+	f := Filter{KeysOnIdle: true}
+	f.Consume([]byte("\x1b_a"), false, false)
+	first := f.HoldGeneration()
+	if !f.Holding() {
+		t.Fatal("first escape string not held")
+	}
+	f.Consume([]byte("\x1b\\\x1b_"), false, false)
+	if !f.Holding() {
+		t.Fatal("second escape string not held")
+	}
+	if f.HoldGeneration() == first {
+		t.Fatal("HoldGeneration unchanged for a new hold")
+	}
 }
