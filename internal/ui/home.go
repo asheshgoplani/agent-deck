@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"al.essio.dev/pkg/shellescape"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -5163,47 +5162,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 // createSessionFromGlobalSearch creates a new Agent Deck session from global search result
 func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd {
 	return func() tea.Msg {
-		// Derive title from CWD or session ID
-		title := "Claude Session"
-		projectPath := result.CWD
-		if result.CWD != "" {
-			parts := strings.Split(result.CWD, "/")
-			if len(parts) > 0 {
-				title = parts[len(parts)-1]
-			}
-		}
-		if projectPath == "" {
-			projectPath = "."
-		}
-		// #1706: "." (and any relative CWD a search result carries) must not be
-		// persisted as project_path — tmux resolves it against the tmux server's
-		// cwd, and the Claude project slug derived from it would point elsewhere
-		// again.
-		if resolved, resErr := session.ResolveProjectPath(projectPath); resErr == nil {
-			projectPath = resolved
-		}
-
-		// Create instance. Issue #666: resolveNewSessionGroup rescues empty
-		// cursor-group (Window / RemoteGroup / placeholder flatItems) so
-		// the empty string never reaches NewInstanceWithGroupAndTool, which
-		// would otherwise override the extractGroupPath default with "".
-		inst := session.NewInstanceWithGroupAndTool(title, projectPath, h.resolveNewSessionGroup(), "claude")
-		inst.ClaudeSessionID = result.SessionID
-		// #1815: the user picked this exact conversation for this brand-new
-		// instance — an explicit ownership declaration, not a disk-scan
-		// guess. Route it through the chokepoint like every other explicit
-		// writer (launch_cmd.go, mutators.go) instead of relying on a fresh
-		// instance's taint map being empty by construction.
-		session.MarkClaudeSessionIDVerified(inst)
-
-		// Build resume command with config dir and permission flags
-		userConfig, _ := session.LoadUserConfig()
-		opts := session.NewClaudeOptions(userConfig)
-
-		inst.Command = globalSearchClaudeCommand(inst, result.SessionID, opts)
-
-		// Persist options so restarts use per-session settings
-		_ = inst.SetClaudeOptions(opts)
+		// Issue #666: resolveNewSessionGroup rescues empty cursor-group
+		// (Window / RemoteGroup / placeholder flatItems) so the empty string
+		// never reaches NewInstanceWithGroupAndTool, which would otherwise
+		// override the extractGroupPath default with "".
+		inst := newGlobalSearchInstance(result, h.resolveNewSessionGroup())
 
 		// Start the session
 		if err := inst.Start(); err != nil {
@@ -5215,56 +5178,54 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 	}
 }
 
-// globalSearchClaudeCommand builds the claude resume command for a global
-// search hit. sessionID comes from an indexed transcript's "sessionId" field
-// (recall NativeID), i.e. file data, so it is shell-quoted like every other
-// claude resume id; ordinary UUIDs are left byte-identical.
-func globalSearchClaudeCommand(inst *session.Instance, sessionID string, opts *session.ClaudeOptions) string {
-	// Build command - only set CLAUDE_CONFIG_DIR if explicitly configured
-	// If not explicit, let the tmux shell's environment handle it
-	// This is critical for WSL and other environments where users have
-	// CLAUDE_CONFIG_DIR set in their .bashrc/.zshrc
-	var cmdBuilder strings.Builder
-	if session.IsClaudeConfigDirExplicitForGroup(inst.GroupPath) {
-		configDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
-		// #1815 (Codex review on #1830): quote exactly as
-		// Instance.buildBashExportPrefix does (instance.go, audit F2) —
-		// this string is baked into inst.Command and ends up in a
-		// `bash -c` payload, so an unquoted config_dir containing
-		// whitespace, ;, or $(...) breaks the command or injects.
-		cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir)))
+// newGlobalSearchInstance builds the claude instance for a global search hit,
+// bound to the picked conversation and ready for Start().
+//
+// It deliberately leaves Command as the base "claude" command and does not
+// build a resume command line itself. Start() routes an instance with a
+// ClaudeSessionID through buildClaudeResumeCommand, which resolves
+// [claude].command, exports CLAUDE_CONFIG_DIR (quoted), applies the
+// permission flags from the ClaudeOptions set below, runs the #1815 resume
+// identity guard, picks --resume or --session-id from the transcript on disk
+// and shell-quotes the id (result.SessionID is transcript file data). Any
+// other Command is treated there as a custom claude binary, so a baked
+// `exec claude --resume <id>` would be spliced in as the binary and the pane
+// would die on `exec exec claude ...` (exit 127).
+func newGlobalSearchInstance(result *GlobalSearchResult, group string) *session.Instance {
+	// Derive title from CWD or session ID
+	title := "Claude Session"
+	projectPath := result.CWD
+	if result.CWD != "" {
+		parts := strings.Split(result.CWD, "/")
+		if len(parts) > 0 {
+			title = parts[len(parts)-1]
+		}
 	}
-	// #1815: the TUI picker builds a resume command too, so it routes
-	// through the same resume-time identity guard as restart / start /
-	// fork. The id was just recorded onto inst above (the user picked
-	// this conversation FOR this session), so the check passes by
-	// construction today — it is here so a future change that reuses an
-	// existing instance here cannot resume a conversation that instance
-	// does not own. Only the identity half applies: the user's explicit
-	// pick must not be downgraded to a fresh session by the
-	// conversation-data heuristics.
-	//
-	// exec so the agent replaces the wrapper shell and leads the pane,
-	// matching buildClaudeResumeCommand and the fresh-start path
-	if allowed, _ := session.ResumeIdentityAllowed(inst, sessionID); allowed {
-		cmdBuilder.WriteString("exec claude --resume ")
-		cmdBuilder.WriteString(shellescape.Quote(sessionID))
-	} else {
-		freshID := session.NewClaudeSessionUUID()
-		inst.ClaudeSessionID = freshID
-		// #1815: a freshly minted id is vouched ownership, same as every
-		// other minted-id writer (Instance.replaceRefusedClaudeSessionID,
-		// buildClaudeCommandWithMessage's own mint path).
-		session.MarkClaudeSessionIDVerified(inst)
-		cmdBuilder.WriteString("exec claude --session-id ")
-		cmdBuilder.WriteString(freshID)
+	if projectPath == "" {
+		projectPath = "."
 	}
-	if opts.SkipPermissions {
-		cmdBuilder.WriteString(" --dangerously-skip-permissions")
-	} else if opts.AllowSkipPermissions {
-		cmdBuilder.WriteString(" --allow-dangerously-skip-permissions")
+	// #1706: "." (and any relative CWD a search result carries) must not be
+	// persisted as project_path — tmux resolves it against the tmux server's
+	// cwd, and the Claude project slug derived from it would point elsewhere
+	// again.
+	if resolved, resErr := session.ResolveProjectPath(projectPath); resErr == nil {
+		projectPath = resolved
 	}
-	return cmdBuilder.String()
+
+	inst := session.NewInstanceWithGroupAndTool(title, projectPath, group, "claude")
+	inst.Command = "claude"
+	inst.ClaudeSessionID = result.SessionID
+	// #1815: the user picked this exact conversation for this brand-new
+	// instance — an explicit ownership declaration, not a disk-scan
+	// guess. Route it through the chokepoint like every other explicit
+	// writer (launch_cmd.go, mutators.go) instead of relying on a fresh
+	// instance's taint map being empty by construction.
+	session.MarkClaudeSessionIDVerified(inst)
+
+	// Persist options so start and later restarts use per-session settings
+	userConfig, _ := session.LoadUserConfig()
+	_ = inst.SetClaudeOptions(session.NewClaudeOptions(userConfig))
+	return inst
 }
 
 // handleMouse handles mouse events (click to select, double-click to activate)
