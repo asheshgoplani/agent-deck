@@ -8,8 +8,9 @@
 #   exact-sha  a `push` run of go-test.yml on main whose head_sha is the tag
 #              commit itself.
 #   same-tree  a `pull_request` run of go-test.yml for a same-repository PR
-#              that was squash-merged AS the tag commit, where the PR head
-#              has the tag commit's tree AND the tag commit's single parent.
+#              into main that was squash-merged AS the tag commit, run on that
+#              PR's head branch, where the PR head has the tag commit's tree
+#              AND the tag commit's single parent.
 #              A pull_request run tests GitHub's merge of the head into the
 #              base of that moment. main only moves forward, so that base is
 #              an ancestor of the tag commit's parent, which is the head's
@@ -73,17 +74,26 @@ read -r TAG_TREE TAG_PARENTS <<<"$tag_info"
 [ -n "${TAG_TREE:-}" ] || no_reuse "commit ${TAG_SHA} has no tree in the API answer"
 log "tag commit ${TAG_SHA} tree ${TAG_TREE} parents ${TAG_PARENTS:-<none>}"
 
-# same_tree_heads: PR head shas that qualify for the same-tree rule.
+# same_tree_heads: "head_sha head_ref" lines for PR heads that qualify for
+# the same-tree rule.
 same_tree_heads() {
-  local prs head repo info tree parents
+  local prs head ref base repo info tree parents
   # Only a single-parent (squash or rebase) tag commit can qualify.
   case "${TAG_PARENTS:-}" in "" | *" "*) return 0 ;; esac
   prs=$(gh api "repos/${REPO}/commits/${TAG_SHA}/pulls" \
-    --jq '.[] | select(.merged_at != null and .merge_commit_sha == "'"${TAG_SHA}"'") | "\(.head.sha) \(.head.repo.full_name)"') || return 0
-  while read -r head repo; do
+    --jq '.[] | select(.merged_at != null and .merge_commit_sha == "'"${TAG_SHA}"'") | "\(.head.sha) \(.head.ref) \(.base.ref) \(.head.repo.full_name)"') || return 0
+  while read -r head ref base repo; do
     [ -n "${head:-}" ] || continue
     if [ "$repo" != "$REPO" ]; then
       log "skip PR head ${head}: from ${repo}, not ${REPO}"
+      continue
+    fi
+    if [ "$base" != main ]; then
+      log "skip PR head ${head}: merged into base ${base}, not main"
+      continue
+    fi
+    if [ -z "$ref" ] || [ "$ref" = null ]; then
+      log "skip PR head ${head}: no head branch in the API answer"
       continue
     fi
     info=$(commit_info "$head") || continue
@@ -96,7 +106,7 @@ same_tree_heads() {
       log "skip PR head ${head}: parent ${parents} != tag parent ${TAG_PARENTS}"
       continue
     fi
-    echo "$head"
+    echo "$head $ref"
   done <<<"$prs"
 }
 
@@ -122,10 +132,12 @@ deadline=$(( $(date +%s) + WAIT_SECONDS ))
 heads=$(same_tree_heads)
 while :; do
   pending=""
-  # Each candidate: "<sha> <event> <match>"
-  candidates="${TAG_SHA} push exact-sha"
-  for h in $heads; do candidates+=$'\n'"${h} pull_request same-tree"; done
-  while read -r sha event match; do
+  # Each candidate: "<sha> <event> <match> <branch the run must be on>"
+  candidates="${TAG_SHA} push exact-sha main"
+  while read -r h ref; do
+    [ -n "${h:-}" ] && candidates+=$'\n'"${h} pull_request same-tree ${ref}"
+  done <<<"$heads"
+  while read -r sha event match want_branch; do
     runs=$(runs_for "$sha" "$event") || { log "could not list ${event} runs for ${sha}"; continue; }
     while read -r id status conclusion head_sha branch path url; do
       [ -n "${id:-}" ] || continue
@@ -135,6 +147,10 @@ while :; do
       fi
       if [ "$event" = push ] && [ "$branch" != main ]; then
         log "skip run ${url}: push to ${branch}, not main"
+        continue
+      fi
+      if [ "$event" = pull_request ] && [ "$branch" != "$want_branch" ]; then
+        log "skip run ${url}: on branch ${branch}, not the PR head branch ${want_branch}"
         continue
       fi
       if [ "$status" != completed ]; then

@@ -115,11 +115,20 @@ func commitPath(sha string) string { return "repos/" + reuseRepo + "/git/commits
 
 func pullsPath() string { return "repos/" + reuseRepo + "/commits/" + reuseTagSHA + "/pulls" }
 
+// reuseHeadRef is the merged PR's head branch; a pull_request run counts only
+// on that branch.
+const reuseHeadRef = "release/v1"
+
 func mergedPR(headSHA, headRepo string) []map[string]any {
+	return mergedPRInto(headSHA, headRepo, "main")
+}
+
+func mergedPRInto(headSHA, headRepo, baseRef string) []map[string]any {
 	return []map[string]any{{
 		"merged_at":        "2026-10-31T14:45:00Z",
 		"merge_commit_sha": reuseTagSHA,
-		"head":             map[string]any{"sha": headSHA, "repo": map[string]string{"full_name": headRepo}},
+		"head":             map[string]any{"sha": headSHA, "ref": reuseHeadRef, "repo": map[string]string{"full_name": headRepo}},
+		"base":             map[string]any{"ref": baseRef},
 	}}
 }
 
@@ -264,6 +273,23 @@ func TestReleaseTestReuse(t *testing.T) {
 			wantReuse: "false", wantLog: "someone/agent-deck",
 		},
 		{
+			name: "PR run on another branch than the merged PR head is not reused",
+			mutate: func(fx reuseFixture) {
+				fx[prRunsPath(reuseHeadSHA)] = runsJSON(runJSON(12, "completed", "success", reuseHeadSHA, "other-branch"))
+				fx[jobsPath("12")] = greenJobs
+			},
+			wantReuse: "false", wantLog: "not the PR head branch",
+		},
+		{
+			name: "PR merged into another base than main is not reused",
+			mutate: func(fx reuseFixture) {
+				fx[pullsPath()] = mergedPRInto(reuseHeadSHA, reuseRepo, "release-1.x")
+				fx[prRunsPath(reuseHeadSHA)] = runsJSON(runJSON(12, "completed", "success", reuseHeadSHA, reuseHeadRef))
+				fx[jobsPath("12")] = greenJobs
+			},
+			wantReuse: "false", wantLog: "base release-1.x",
+		},
+		{
 			name: "merge commit tag (two parents) never uses the same-tree rule",
 			mutate: func(fx reuseFixture) {
 				fx[commitPath(reuseTagSHA)] = commitJSON(reuseTree, reuseParent, reuseOther)
@@ -404,6 +430,9 @@ func TestReleaseWorkflowGatesOnTests(t *testing.T) {
 		"    uses: ./.github/workflows/go-test.yml\n    with:\n      shards_only: true\n",
 		"run: bash scripts/ci/release-test-reuse.sh",
 		"Require the checkout to be the tested commit",
+		// A failed reuse lookup alone falls back to the shards; once the
+		// release job succeeded it is no failure to page anyone about.
+		"    if: failure() && needs.release.result != 'success'\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("release.yml lost %q", want)

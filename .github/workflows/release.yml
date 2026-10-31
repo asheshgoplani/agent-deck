@@ -709,7 +709,11 @@ jobs:
   # and is an ancestor through tests and release anyway.)
   notify-failure:
     needs: [ref-check, tests, eval, release]
-    if: failure()
+    # failure() also sees a failed `reuse` lookup (an ancestor). That only
+    # sends the release to the shards; once the release job succeeded there
+    # is nothing to alert on. Any failure that kept the release from
+    # succeeding still alerts.
+    if: failure() && needs.release.result != 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions: {}
