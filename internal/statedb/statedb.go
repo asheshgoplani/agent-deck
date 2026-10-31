@@ -1373,7 +1373,7 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 		// Only read the prior value when someone listens: the write path
 		// stays one statement for every caller otherwise.
 		return withBusyRetry(func() error {
-			_, err := s.db.Exec(writeStatusSQL, status, tool, status, id)
+			_, err := s.db.Exec(writeStatusSQL, status, tool, status, status, id)
 			return err
 		})
 	}
@@ -1388,7 +1388,7 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 		// The edge is claimed by the write that changes the row: when the
 		// TUI and the notify daemon both write the same transition, only
 		// one UPDATE matches status IS NOT ?, so only one publishes.
-		res, err := s.db.Exec(writeStatusSQL+` AND status IS NOT ?`, status, tool, status, id, status)
+		res, err := s.db.Exec(writeStatusSQL+` AND status IS NOT ?`, status, tool, status, status, id, status)
 		if err != nil {
 			return err
 		}
@@ -1396,7 +1396,7 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 		changed = n > 0 && from != status
 		if n == 0 {
 			// Same status: still refresh tool and the acknowledged reset.
-			_, err = s.db.Exec(writeStatusSQL, status, tool, status, id)
+			_, err = s.db.Exec(writeStatusSQL, status, tool, status, status, id)
 		}
 		return err
 	})
@@ -1418,7 +1418,7 @@ func (s *StateDB) WriteStatusIfCurrent(id, expected, status, tool string) (bool,
 		if observe != nil {
 			_ = s.db.QueryRow(`SELECT tmux_session FROM instances WHERE id = ?`, id).Scan(&tmuxName)
 		}
-		res, err := s.db.Exec(writeStatusSQL+` AND status = ?`, status, tool, status, id, expected)
+		res, err := s.db.Exec(writeStatusSQL+` AND status = ?`, status, tool, status, status, id, expected)
 		if err != nil {
 			return err
 		}
@@ -1436,9 +1436,13 @@ func (s *StateDB) WriteStatusIfCurrent(id, expected, status, tool string) (bool,
 // status and its update, where a second writer can interleave.
 var afterStatusRead func()
 
+// A running write clears the seen mark and its visit time together, so an
+// unacked row never keeps an old acknowledged_at that an older binary's later
+// ack (which does not stamp the time) would revive past the Migrate backfill.
 const writeStatusSQL = `UPDATE instances
 	 SET status = ?, tool = ?,
-	     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+	     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
+	     acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END
 	 WHERE id = ?`
 
 // StatusChange is one status row transition written through WriteStatus.
@@ -1576,7 +1580,8 @@ func (s *StateDB) PersistInstanceStatusesTx(updates []InstanceStatusUpdate) erro
 		stmt, err := tx.Prepare(
 			`UPDATE instances
 			   SET status = ?,
-			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
+			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END
 			 WHERE id = ?`,
 		)
 		if err != nil {
@@ -1585,7 +1590,7 @@ func (s *StateDB) PersistInstanceStatusesTx(updates []InstanceStatusUpdate) erro
 		defer stmt.Close()
 
 		for _, u := range updates {
-			if _, err := stmt.Exec(u.Status, u.Status, u.ID); err != nil {
+			if _, err := stmt.Exec(u.Status, u.Status, u.Status, u.ID); err != nil {
 				return err
 			}
 		}

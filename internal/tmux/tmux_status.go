@@ -1557,7 +1557,9 @@ func (s *Session) SetCachedSubstateForTest(sub Substate, detail string) {
 }
 
 // InheritCachedSubstate takes over prev's cached substate when both objects
-// describe the same pane and this one has not classified anything yet.
+// carry the same tmux session name and this one has not classified anything
+// yet. The name is the only check: a restart through respawn-pane keeps the
+// name, so the old label shows until the next classification replaces it.
 func (s *Session) InheritCachedSubstate(prev *Session) {
 	if prev == nil || prev == s || prev.TmuxName() != s.TmuxName() {
 		return

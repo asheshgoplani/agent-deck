@@ -1585,6 +1585,11 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 	// rebuilt from its stored status alone, as before.
 	if acks, ackErr := s.db.ReadAllStatuses(); ackErr == nil {
 		for _, d := range data.Instances {
+			// Running/starting stays authoritative, as in
+			// SetAcknowledgedFromShared: no seen mark and no visit time.
+			if d.Status == StatusRunning || d.Status == StatusStarting {
+				continue
+			}
 			if sr, ok := acks[d.ID]; ok && sr.Acknowledged {
 				d.Acknowledged, d.AcknowledgedAt = true, sr.AcknowledgedAt
 			}

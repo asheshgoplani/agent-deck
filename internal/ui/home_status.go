@@ -891,7 +891,7 @@ func (h *Home) syncNotificationsBackground() {
 	if sessionToAcknowledgeID != "" {
 		if inst, ok := h.instanceByID[sessionToAcknowledgeID]; ok {
 			if ts := inst.GetTmuxSession(); ts != nil {
-				ts.Acknowledge()
+				inst.AcknowledgeVisit()
 				// Persist ack to SQLite so other instances see it
 				if db := statedb.GetGlobal(); db != nil {
 					_ = db.SetAcknowledged(inst.ID, true)

@@ -2042,7 +2042,7 @@ func (h *Home) backgroundStatusUpdate() {
 		if sharedStatuses != nil {
 			for _, inst := range instances {
 				if s, ok := sharedStatuses[inst.ID]; ok && s.Acknowledged {
-					inst.SetAcknowledgedFromShared(true)
+					inst.SetAcknowledgedFromSharedAt(s.AcknowledgedAt)
 				}
 			}
 		}
@@ -7024,7 +7024,7 @@ func (h *Home) attachSelectedLegacy() tea.Cmd {
 		parentInst.SyncSessionIDsToTmux()
 		parentInst.MarkAccessed()
 		if parentInst.GetStatusThreadSafe() == session.StatusWaiting {
-			tmuxSess.Acknowledge()
+			parentInst.AcknowledgeVisit()
 			if db := statedb.GetGlobal(); db != nil {
 				_ = db.SetAcknowledged(parentInst.ID, true)
 			}
@@ -7572,7 +7572,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// - YELLOW (waiting) sessions turn gray when user looks at them
 	// - Detach just lets polling take over naturally
 	if inst.GetStatusThreadSafe() == session.StatusWaiting {
-		tmuxSess.Acknowledge()
+		inst.AcknowledgeVisit()
 		// Persist ack to SQLite so other instances see it
 		if db := statedb.GetGlobal(); db != nil {
 			_ = db.SetAcknowledged(inst.ID, true)

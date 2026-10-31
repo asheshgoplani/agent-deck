@@ -718,7 +718,18 @@ func CarryOverReloadState(prev, next []*Instance) {
 // (read from SQLite). This transitions a YELLOW (waiting) session to GRAY (idle)
 // without requiring the user to interact with this specific TUI instance.
 func (i *Instance) SetAcknowledgedFromShared(ack bool) {
-	if !ack || i.tmuxSession == nil {
+	if !ack {
+		return
+	}
+	i.SetAcknowledgedFromSharedAt(time.Time{})
+}
+
+// SetAcknowledgedFromSharedAt applies a shared acknowledgment together with
+// the visit time the other TUI stored for it (zero when unknown), so a later
+// cold hook read here orders the Stop against that visit, not the one loaded
+// at startup.
+func (i *Instance) SetAcknowledgedFromSharedAt(at time.Time) {
+	if i.tmuxSession == nil {
 		return
 	}
 
@@ -730,4 +741,25 @@ func (i *Instance) SetAcknowledgedFromShared(ack bool) {
 	}
 
 	i.tmuxSession.Acknowledge()
+	i.noteVisit(at)
+}
+
+// AcknowledgeVisit marks the session seen because the user just looked at it
+// (attach, embedded focus, notification switch) and records the visit time in
+// memory, matching the time SetAcknowledged stores in SQLite.
+func (i *Instance) AcknowledgeVisit() {
+	if ts := i.GetTmuxSession(); ts != nil {
+		ts.Acknowledge()
+	}
+	i.noteVisit(time.Now())
+}
+
+// noteVisit moves the in-memory visit time forward to at. It never moves it
+// back, so an older shared row cannot undo a newer local visit.
+func (i *Instance) noteVisit(at time.Time) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if at.After(i.acknowledgedAt) {
+		i.acknowledgedAt = at
+	}
 }
