@@ -302,8 +302,14 @@ func countRemoteFleet(remotes []RemoteFleetRemote) RemoteFleetCounts {
 		} else {
 			counts.RemotesOffline++
 		}
-		counts.Sessions += len(remote.Sessions)
 		for _, remoteSession := range remote.Sessions {
+			// An archived session keeps a live-looking status: leave it out of
+			// the counts, as `remote sessions` text output does (#2972). The
+			// row stays in Sessions with "archived": true.
+			if remoteSession.Archived {
+				continue
+			}
+			counts.Sessions++
 			switch remoteSession.Status {
 			case "running", "starting":
 				counts.Running++
