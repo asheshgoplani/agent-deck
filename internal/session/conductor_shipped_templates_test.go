@@ -159,8 +159,8 @@ func TestShippedV11624PerNameTemplatesAreCurrent(t *testing.T) {
 
 // TestShippedV11628SharedTemplateMigratesToHarnessControl pins that the shared
 // instructions file v1.16.25 through v1.16.29 wrote (hash rendered from the
-// v1.16.28 and v1.16.29 tags' source, identical for every agent) is the newest
-// reconstructed generation, so adding the `/cmd` quick command migrates those
+// v1.16.28 and v1.16.29 tags' source, identical for every agent) is among the
+// four newest reconstructed generations, so adding the `/cmd` quick command migrates those
 // conductors in place instead of treating them as user-edited.
 func TestShippedV11628SharedTemplateMigratesToHarnessControl(t *testing.T) {
 	const v11628Shared = "ca0ef2c586139fc84ce2fffdd3e82dfd023657ec41a60422f4bc2ac508caf377"
@@ -176,13 +176,13 @@ func TestShippedV11628SharedTemplateMigratesToHarnessControl(t *testing.T) {
 			}
 			oldGenerations := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
 			shipped := -1
-			for i, g := range oldGenerations[:3] {
+			for i, g := range oldGenerations[:4] {
 				if fmtHash(g) == v11628Shared {
 					shipped = i
 				}
 			}
 			if shipped < 0 {
-				t.Fatalf("none of the three newest reconstructed generations is what v1.16.28 shipped %s", v11628Shared)
+				t.Fatalf("none of the four newest reconstructed generations is what v1.16.28 shipped %s", v11628Shared)
 			}
 			path := filepath.Join(t.TempDir(), spec.InstructionsFileName)
 			if err := os.WriteFile(path, []byte(oldGenerations[shipped]), 0o644); err != nil {
@@ -204,7 +204,7 @@ func TestShippedV11628SharedTemplateMigratesToHarnessControl(t *testing.T) {
 
 // Review M2: the no-op notice rule and the /cmd quick command land in
 // separate PRs, so a release can carry the rule without /cmd. The shared
-// file that release writes is the newest reconstructed generation and
+// file that release writes is the generation after the pre-#2972 one and
 // migrates to the /cmd template in place.
 func TestNoOpRuleOnlySharedTemplateMigratesToHarnessControl(t *testing.T) {
 	for _, agent := range []string{ConductorAgentClaude, ConductorAgentCodex, ConductorAgentHermes} {
@@ -214,13 +214,13 @@ func TestNoOpRuleOnlySharedTemplateMigratesToHarnessControl(t *testing.T) {
 				t.Fatal(err)
 			}
 			current := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-			ruleOnly := renderConductorInstructionsTemplate(preHarnessControlConductorInstructionsTemplate(conductorSharedClaudeMDTemplate), "", DefaultProfile, spec)
+			ruleOnly := renderConductorInstructionsTemplate(preHarnessControlConductorInstructionsTemplate(preArchivedSessionsConductorInstructionsTemplate(conductorSharedClaudeMDTemplate)), "", DefaultProfile, spec)
 			if ruleOnly == current || !strings.Contains(ruleOnly, "**No-op notices get no reply.**") || strings.Contains(ruleOnly, "/cmd <session>") {
 				t.Fatal("the rule-only generation must carry the no-op rule and no /cmd row")
 			}
 			oldGenerations := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-			if len(oldGenerations) == 0 || oldGenerations[0] != ruleOnly {
-				t.Fatal("the rule-only release is not the newest reconstructed generation")
+			if len(oldGenerations) < 2 || oldGenerations[1] != ruleOnly {
+				t.Fatal("the rule-only release is not the generation after the pre-#2972 one")
 			}
 			path := filepath.Join(t.TempDir(), spec.InstructionsFileName)
 			if err := os.WriteFile(path, []byte(ruleOnly), 0o644); err != nil {
