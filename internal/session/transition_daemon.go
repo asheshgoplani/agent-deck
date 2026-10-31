@@ -93,6 +93,13 @@ type TransitionDaemon struct {
 	// re-observation of the same turn from a new one.
 	lastSelfTurn map[string]TurnJournalEntry
 
+	// codexTurns is the per-(profile, child) memory of observed Codex runs
+	// that makes every real Codex turn end yield exactly one record
+	// (issue #2900, codex_turn_tracker.go). codexComposerIdle replaces the
+	// fallback's pane probe in tests (nil: codexPaneAtComposer).
+	codexTurns        map[string]map[string]*codexTurnTrack
+	codexComposerIdle func(*Instance) bool
+
 	// turnLiveCheck decides whether an instance is a live session or a stale
 	// registry row. A seam because the real check probes tmux, which a unit test
 	// cannot and should not do — and testing this logic is the whole point after a
@@ -667,6 +674,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
 	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
+	// Issue #2900: open a Codex run for every child seen running, before any
+	// emission path of this pass can decide a turn end.
+	d.observeCodexRuns(profile, byID, statuses, time.Now())
+
 	// Issue #2481: a child seen running starts a new run, so the next observed
 	// flip is a new turn unless a path journals one for it first.
 	d.forgetJournaledTurnsOfRunning(profile, statuses)
@@ -730,6 +741,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// Issue #2806: an idle child whose process died; no turn, so not emitTurn.
 	d.confirmIdleExits(profile, byID, prev, statuses, notifyEnabled, time.Now())
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
+	// Issue #2900: a Codex run that ended at the composer with no record from
+	// the paths above gets exactly one now.
+	d.emitCodexTurnFallbacks(profile, byID, statuses, notifyEnabled, time.Now())
 	d.emitDoneSignals(profile, byID, hookStatuses)
 	d.wakeForInfoDigests(profile, byID, statuses)
 
@@ -1637,7 +1651,14 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 	}
 
 	event := strings.ToLower(strings.TrimSpace(hs.Event))
-	switch strings.ToLower(strings.TrimSpace(tool)) {
+	toolKey := strings.ToLower(strings.TrimSpace(tool))
+	if IsCodexCompatible(tool) {
+		// Issue #2900: a custom tool wrapping Codex writes the same notify
+		// hook file; keyed on the literal "codex" its turn ends never
+		// produced a candidate.
+		toolKey = "codex"
+	}
+	switch toolKey {
 	case "claude":
 		// SessionStart is intentionally excluded (initial prompt isn't task completion).
 		if event == "stop" || event == "permissionrequest" || event == "notification" {

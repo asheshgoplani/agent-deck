@@ -25,6 +25,13 @@ const codexNotifyLine = `notify = ["agent-deck", "codex-notify"]`
 
 var codexNotifyLog = logging.ForComponent(logging.CompSession)
 
+// codexWriterLockBudget bounds how long a notify writer waits for the
+// per-instance writer lock before it gives up on the event (issue #2900).
+const (
+	codexWriterLockBudget = 3 * time.Second
+	codexWriterLockRetry  = 5 * time.Millisecond
+)
+
 var codexNotifyTableRe = regexp.MustCompile(`(?m)^\s*\[notify\]\s*$`)
 
 // A [table] or [[array]] header: dotted bare or quoted keys (TOML v1.0).
@@ -368,15 +375,26 @@ func writeCodexHookStatusDone(instanceID, status, sessionID, event, turnID strin
 		return
 	}
 	defer closeChecked(lock)
+	// Issue #2900: a turn end that gives up on the lock is a lost turn. The
+	// old 100 ms budget lost one whenever overlapping notify processes (the
+	// title helper, a subagent, the main thread) or a slow disk held it that
+	// long. codex-notify runs detached from Codex, so waiting longer costs
+	// nobody anything; the budget stays bounded so a wedged writer cannot
+	// pile up notify processes.
 	locked := false
-	for attempt := 0; attempt < 20; attempt++ {
+	deadline := time.Now().Add(codexWriterLockBudget)
+	for {
 		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
 			locked = true
 			break
 		}
-		time.Sleep(5 * time.Millisecond)
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(codexWriterLockRetry)
 	}
 	if !locked {
+		logCodexNotifyDropped("writer_lock_timeout", instanceID, sessionID, turnID, event, codexNotifyHome())
 		return
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
@@ -395,6 +413,7 @@ func writeCodexHookStatusDone(instanceID, status, sessionID, event, turnID strin
 				slog.String("instance", instanceID),
 				slog.String("path", path),
 				slog.Int("bytes", len(data)))
+			logCodexNotifyDropped("status_unreadable", instanceID, sessionID, turnID, event, codexNotifyHome())
 			return
 		}
 	} else if !os.IsNotExist(err) {
@@ -402,6 +421,7 @@ func writeCodexHookStatusDone(instanceID, status, sessionID, event, turnID strin
 			slog.String("instance", instanceID),
 			slog.String("path", path),
 			slog.String("error", err.Error()))
+		logCodexNotifyDropped("status_unreadable", instanceID, sessionID, turnID, event, codexNotifyHome())
 		return
 	}
 	sessionID = strings.TrimSpace(sessionID)
