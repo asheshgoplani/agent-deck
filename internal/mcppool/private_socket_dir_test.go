@@ -86,11 +86,11 @@ func TestDiscoverExistingSockets_AdoptsOwnSocketInPrivateDir(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(dir, "mcp-own.sock")
+	sock := filepath.Join(dir, SocketFileName("own", "cat", nil, nil))
 	listenUnixT(t, sock)
 
 	pool, _ := NewPool(context.Background(), &PoolConfig{Enabled: true})
-	if n := pool.DiscoverExistingSockets(); n != 1 {
+	if n := pool.DiscoverExistingSockets(map[string]SocketSpec{"own": {Command: "cat"}}); n != 1 {
 		t.Fatalf("DiscoverExistingSockets = %d, want 1", n)
 	}
 	if got := pool.GetSocketPath("own"); got != sock {
@@ -109,26 +109,27 @@ func TestDiscoverExistingSockets_RejectsUnsafeSockets(t *testing.T) {
 	elsewhere := shortTempDir(t)
 	live := filepath.Join(elsewhere, "x.sock")
 	listenUnixT(t, live)
-	if err := os.Symlink(live, filepath.Join(dir, "mcp-link.sock")); err != nil {
+	if err := os.Symlink(live, filepath.Join(dir, SocketFileName("link", "cat", nil, nil))); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "mcp-file.sock"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, SocketFileName("file", "cat", nil, nil)), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
+	specs := map[string]SocketSpec{"link": {Command: "cat"}, "file": {Command: "cat"}, "open": {Command: "cat"}}
 	pool, _ := NewPool(context.Background(), &PoolConfig{Enabled: true})
-	if n := pool.DiscoverExistingSockets(); n != 0 {
+	if n := pool.DiscoverExistingSockets(specs); n != 0 {
 		t.Fatalf("DiscoverExistingSockets = %d, want 0 (unsafe sockets adopted)", n)
 	}
 
 	// Own live socket, but the directory is world-writable: refused.
-	sock := filepath.Join(dir, "mcp-open.sock")
+	sock := filepath.Join(dir, SocketFileName("open", "cat", nil, nil))
 	listenUnixT(t, sock)
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if n := pool.DiscoverExistingSockets(); n != 0 {
+	if n := pool.DiscoverExistingSockets(specs); n != 0 {
 		t.Fatalf("DiscoverExistingSockets = %d, want 0 in a world-writable dir", n)
 	}
 }
@@ -210,7 +211,7 @@ func TestSocketProxyStart_LogFallbackNotInSharedTemp(t *testing.T) {
 	assertPrivateOwnedDir(t, filepath.Join(tmp, strings.Split(rel, string(filepath.Separator))[0]))
 }
 
-// A socket adopted by discovery learns its command from the later Start call,
+// A socket adopted by discovery records the definition it was matched on,
 // so RestartProxy can respawn it locally if the serving instance exits.
 func TestDiscoveredSocket_StartRecordsCommandForRestart(t *testing.T) {
 	isolateDataDir(t)
@@ -218,10 +219,11 @@ func TestDiscoveredSocket_StartRecordsCommandForRestart(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	listenUnixT(t, filepath.Join(dir, "mcp-adopt.sock"))
+	args := []string{"-c", "sleep 30"}
+	listenUnixT(t, filepath.Join(dir, SocketFileName("adopt", "sh", args, nil)))
 
 	pool, _ := NewPool(context.Background(), &PoolConfig{Enabled: true})
-	if n := pool.DiscoverExistingSockets(); n != 1 {
+	if n := pool.DiscoverExistingSockets(map[string]SocketSpec{"adopt": {Command: "sh", Args: args}}); n != 1 {
 		t.Fatalf("DiscoverExistingSockets = %d, want 1", n)
 	}
 	if err := pool.Start("adopt", "sh", []string{"-c", "sleep 30"}, nil); err != nil {

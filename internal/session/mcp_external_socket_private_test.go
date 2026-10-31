@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/mcppool"
 )
 
 func shortSessTempDir(t *testing.T) string {
@@ -54,18 +55,19 @@ func TestGetExternalSocketPath_UsesPrivatePoolSocketDir(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	own := filepath.Join(dir, "mcp-own.sock")
+	def := MCPDef{Command: "cat"}
+	own := filepath.Join(dir, mcppool.SocketFileName("own", "cat", nil, nil))
 	listenUnixSess(t, own)
-	if got := getExternalSocketPath("own"); got != own {
+	if got := getExternalSocketPath("own", def); got != own {
 		t.Fatalf("getExternalSocketPath(own) = %q, want %q", got, own)
 	}
 
 	live := filepath.Join(shortSessTempDir(t), "x.sock")
 	listenUnixSess(t, live)
-	if err := os.Symlink(live, filepath.Join(dir, "mcp-link.sock")); err != nil {
+	if err := os.Symlink(live, filepath.Join(dir, mcppool.SocketFileName("link", "cat", nil, nil))); err != nil {
 		t.Fatal(err)
 	}
-	if got := getExternalSocketPath("link"); got != "" {
+	if got := getExternalSocketPath("link", def); got != "" {
 		t.Fatalf("getExternalSocketPath(link) = %q, want empty for a symlinked socket", got)
 	}
 
@@ -74,7 +76,7 @@ func TestGetExternalSocketPath_UsesPrivatePoolSocketDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if got := getExternalSocketPath("own"); got != "" {
+	if got := getExternalSocketPath("own", def); got != "" {
 		t.Fatalf("getExternalSocketPath(own) = %q, want empty in a world-writable dir", got)
 	}
 }

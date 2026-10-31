@@ -136,7 +136,7 @@ func buildCodexMCPServers(enabledNames []string) map[string]codexMCPServer {
 			continue
 		}
 
-		if socketCfg, used := tryPoolSocket(pool, name, "codex"); used {
+		if socketCfg, used := tryPoolSocket(pool, name, def, "codex"); used {
 			servers[name] = codexMCPServer{
 				Command: socketCfg.Command,
 				Args:    socketCfg.Args,

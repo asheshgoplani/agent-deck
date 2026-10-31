@@ -46,9 +46,11 @@ func httpMCPServerConfig(def MCPDef) MCPServerConfig {
 // This allows CLI commands to use sockets created by the TUI without needing pool initialization.
 // It looks only in this user's private pool socket dir and only accepts sockets
 // owned by this uid (mcppool.ExternalSocketPath); the old shared
-// /tmp/agentdeck-mcp-<name>.sock location is never trusted.
-func getExternalSocketPath(mcpName string) string {
-	return mcppool.ExternalSocketPath(mcpName)
+// /tmp/agentdeck-mcp-<name>.sock location is never trusted. The socket must
+// serve def's command, args and env: another config home's process of the
+// same name is never attached (#2966).
+func getExternalSocketPath(mcpName string, def MCPDef) string {
+	return mcppool.ExternalSocketPath(mcpName, def.Command, def.Args, def.Env)
 }
 
 // tryPoolSocket attempts to resolve an MCP to a pool socket in order of preference:
@@ -57,7 +59,7 @@ func getExternalSocketPath(mcpName string) string {
 //  3. Fallback to stdio (last resort, logged as error for visibility)
 //
 // Returns (config, true) if socket was found, or (empty, false) to fall through to stdio.
-func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, bool) {
+func tryPoolSocket(pool *mcppool.Pool, name string, def MCPDef, scope string) (MCPServerConfig, bool) {
 	// Case 1: Pool exists and should manage this MCP
 	if pool != nil && pool.ShouldPool(name) {
 		// Try in-memory pool state first (fastest)
@@ -72,7 +74,7 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 
 		// Pool says not running, but check if socket exists on disk
 		// (handles race during pool initialization or stale in-memory state)
-		if socketPath := getExternalSocketPath(name); socketPath != "" {
+		if socketPath := getExternalSocketPath(name, def); socketPath != "" {
 			mcpCatLog.Warn("pool_stale_disk_recovery", slog.String("mcp", name), slog.String("scope", scope),
 				slog.String("socket", socketPath),
 				slog.String("detail", "pool.IsRunning=false but socket alive on disk, using disk socket"))
@@ -106,10 +108,9 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 		config, _ := LoadUserConfig()
 		if config != nil && config.MCPPool.Enabled {
 			// Apply this config's pool allowlist, exactly as the TUI path does
-			// via ShouldPool. Sockets are keyed by name and shared by every
-			// config home of the user; without this check a config that never
-			// opted a name in attaches to another config's process of that
-			// name, env and credentials included.
+			// via ShouldPool. The socket dir is shared by every config home of
+			// the user; a config that never opted a name in must not attach to
+			// any pool socket of that name.
 			allow := &mcppool.PoolConfig{
 				Enabled:     config.MCPPool.Enabled,
 				PoolAll:     config.MCPPool.PoolAll,
@@ -120,7 +121,7 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 				mcpCatLog.Debug("pool_excluded_cli", slog.String("mcp", name), slog.String("scope", scope))
 				return MCPServerConfig{}, false
 			}
-			if socketPath := getExternalSocketPath(name); socketPath != "" {
+			if socketPath := getExternalSocketPath(name, def); socketPath != "" {
 				mcpCatLog.Info("external_socket_discovered", slog.String("mcp", name), slog.String("scope", scope), slog.String("socket", socketPath))
 				return MCPServerConfig{
 					Command: "agent-deck",
@@ -289,7 +290,7 @@ func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []st
 				continue
 			}
 
-			if socketCfg, used := tryPoolSocket(pool, name, "local"); used {
+			if socketCfg, used := tryPoolSocket(pool, name, def, "local"); used {
 				agentDeckServers[name] = socketCfg
 				continue
 			}
@@ -673,7 +674,7 @@ func buildManagedMCPServers(enabledNames []string, scope string) map[string]MCPS
 			mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", scope), slog.String("transport", cfg.Type), slog.String("url", def.URL))
 			continue
 		}
-		if socketCfg, used := tryPoolSocket(pool, name, scope); used {
+		if socketCfg, used := tryPoolSocket(pool, name, def, scope); used {
 			mcpServers[name] = socketCfg
 			continue
 		}
@@ -830,7 +831,7 @@ func writeUserMCPLocked(enabledNames []string) error {
 			}
 
 			// Try to use pool socket for this MCP (stdio only)
-			if socketCfg, used := tryPoolSocket(pool, name, "user"); used {
+			if socketCfg, used := tryPoolSocket(pool, name, def, "user"); used {
 				mcpServers[name] = socketCfg
 				continue
 			}
