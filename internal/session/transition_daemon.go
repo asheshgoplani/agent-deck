@@ -93,6 +93,15 @@ type TransitionDaemon struct {
 	// re-observation of the same turn from a new one.
 	lastSelfTurn map[string]TurnJournalEntry
 
+	// codexTurns is the per-(profile, child) memory of observed Codex runs
+	// that makes every real Codex turn end yield exactly one record
+	// (issue #2900, codex_turn_tracker.go). codexComposerIdle replaces the
+	// fallback's pane probe and codexFallbackAfter its delay in tests (nil
+	// and 0: codexPaneAtComposer and codexTurnFallbackAfter).
+	codexTurns         map[string]map[string]*codexTurnTrack
+	codexComposerIdle  func(*Instance) bool
+	codexFallbackAfter time.Duration // 0: codexTurnFallbackAfter
+
 	// turnLiveCheck decides whether an instance is a live session or a stale
 	// registry row. A seam because the real check probes tmux, which a unit test
 	// cannot and should not do — and testing this logic is the whole point after a
@@ -667,6 +676,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
 	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
+	// Issue #2900: open a Codex run for every child seen running, before any
+	// emission path of this pass can decide a turn end.
+	d.observeCodexRuns(profile, byID, statuses, time.Now())
+
 	// Issue #2481: a child seen running starts a new run, so the next observed
 	// flip is a new turn unless a path journals one for it first.
 	d.forgetJournaledTurnsOfRunning(profile, statuses)
@@ -730,6 +743,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// Issue #2806: an idle child whose process died; no turn, so not emitTurn.
 	d.confirmIdleExits(profile, byID, prev, statuses, notifyEnabled, time.Now())
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
+	// Issue #2900: a Codex run that ended at the composer with no record from
+	// the paths above gets exactly one now.
+	d.emitCodexTurnFallbacks(profile, byID, statuses, notifyEnabled, time.Now())
 	d.emitDoneSignals(profile, byID, hookStatuses)
 	d.wakeForInfoDigests(profile, byID, statuses)
 
@@ -738,6 +754,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// auto_refresh_idle_builds, default on).
 	d.runIdleBuildRefreshPass(profile, instances, statuses, substates)
 	d.sweepRestartTokens(profile, byID, statuses, time.Now())
+	d.sweepFreshStartTokens(byID, time.Now())
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
@@ -915,8 +932,12 @@ func (d *TransitionDaemon) seedTurnBaseline(profile string, byID map[string]*Ins
 			continue
 		}
 		signal := d.turnSignal(inst)
-		if lastTo, lastHash, ok := d.notifier.lastNotifiedTurn(id); ok && (lastTo != to || lastHash != signal) {
-			continue // changed while down: recordTerminalTurns notifies it once
+		if lastTo, lastHash, ok := d.notifier.lastNotifiedTurn(id); ok && (lastTo != to || lastHash != signal) &&
+			!(lastTo == to && d.codexRunRecordCovers(inst, to)) {
+			// Changed while down: recordTerminalTurns notifies it once. A
+			// Codex record under a run signal never equals the hook signal
+			// (issue #2900): it is seeded when the hook holds nothing newer.
+			continue
 		}
 		seen[id] = to + "|" + signal
 	}
@@ -1637,7 +1658,14 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 	}
 
 	event := strings.ToLower(strings.TrimSpace(hs.Event))
-	switch strings.ToLower(strings.TrimSpace(tool)) {
+	toolKey := strings.ToLower(strings.TrimSpace(tool))
+	if IsCodexCompatible(tool) {
+		// Issue #2900: a custom tool wrapping Codex writes the same notify
+		// hook file; keyed on the literal "codex" its turn ends never
+		// produced a candidate.
+		toolKey = "codex"
+	}
+	switch toolKey {
 	case "claude":
 		// SessionStart is intentionally excluded (initial prompt isn't task completion).
 		if event == "stop" || event == "permissionrequest" || event == "notification" {

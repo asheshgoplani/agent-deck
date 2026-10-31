@@ -429,6 +429,8 @@ body[data-rail="hidden"] .rightrail { display: none; }
 
 .work-head .spacer { flex: 0 0 10px; }
 .work-head .actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+/* #2680: back-to-list control; phone layout only (see the 720px block). */
+.mob-back { display: none; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1080,6 +1082,14 @@ body[data-rail="hidden"] .rightrail { display: none; }
   }
   .work-head .actions .btn { padding: 6px 8px; font-size: 12px; }
   .work-head .actions .btn .kbd { display: none; }
+  .work-head .mob-back {
+    display: inline-flex; align-items: center; gap: 2px;
+    min-height: 32px; padding: 4px 10px 4px 6px; flex-shrink: 0;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--card); color: var(--text);
+    font: inherit; font-size: 12.5px; cursor: pointer;
+  }
+  .work-head .mob-back:active { background: var(--accent-soft); color: var(--accent); }
 
   /* fleet pane mobile tweaks */
   .fleet { padding: 12px 12px 80px; gap: 16px; }

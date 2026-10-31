@@ -25,6 +25,8 @@ termios.tcsetattr(0, termios.TCSANOW, attrs)
 sys.stdout.write('\033[?2004h'); sys.stdout.flush()  # Claude enables bracketed paste
 phase, phase_id, draft, queued, pending, submits = None, None, '', [], [], 0
 hold_queue = False
+late = os.path.exists('.fake-late-transcript')  # like a fresh Claude: no transcript before the first prompt
+held = []  # .fake-hold-submit: a prompt taken at the prompt reaches the transcript once the file is gone
 started = time.monotonic()
 rendered_rows = 0
 def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -67,6 +69,10 @@ def submit(text):
     else:
         rec = {'type': 'user', 'uuid': str(uuid.uuid4()), 'timestamp': now(), 'sessionId': session_id,
                'message': {'role': 'user', 'content': text}}
+        if os.path.exists('.fake-hold-submit'):
+            held.append(rec)
+            with open(os.path.join(here, 'held'), 'a') as out: out.write(text + '\n')
+            return
         append(rec)
         if rid and rid in text: receipt(rid, [rec], 'turn')
 def absorb():
@@ -92,12 +98,13 @@ def poll_phase():
     if (c.get('id'), c.get('phase')) != (phase_id, phase):
         phase_id, phase = c.get('id'), c.get('phase')
         # booting: a resumed Claude starting up, busy on screen with no new turn in the transcript
-        append({'type': 'system', 'subtype': 'turn_duration', 'uuid': 'fixture-idle-' + str(phase_id), 'timestamp': now(), 'durationMs': 1000}
+        rec = ({'type': 'system', 'subtype': 'turn_duration', 'uuid': 'fixture-idle-' + str(phase_id), 'timestamp': now(), 'durationMs': 1000}
                if phase == 'idle' else
                {'type': 'system', 'subtype': 'informational', 'uuid': 'fixture-boot-' + str(phase_id), 'timestamp': now()}
                if phase in ('booting', 'banner') else
                {'type': 'user', 'uuid': 'fixture-busy-' + str(phase_id), 'timestamp': now(),
                 'message': {'role': 'user', 'content': 'Owned fixture work before queued input.'}})
+        if not (late and rec['type'] != 'user' and not os.path.exists(path)): append(rec)
         render()
     tmp = state_path + '.tmp'
     with open(tmp, 'w') as out: json.dump({'id': phase_id, 'phase': phase, 'busy_bytes': 0, 'submits': submits, 'draft': draft}, out)
@@ -107,6 +114,7 @@ render()
 last_tick = 0
 while True:
     poll_phase(); absorb()
+    if held and not os.path.exists('.fake-hold-submit'): append(*held); held.clear()
     if phase in ('busy', 'stream', 'booting') and time.monotonic() - last_tick > 1: render(); last_tick = time.monotonic()
     if not select.select([0], [], [], 0.05)[0]: continue
     chunk = ESC_RE.sub(b'', os.read(0, 65536))  # drops bracketed-paste 200~/201~ framing

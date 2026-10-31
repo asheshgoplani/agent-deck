@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
@@ -93,5 +95,47 @@ func TestHandleCodexNotify_DropLogsReason(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWriteCodexHookStatus_WaitsOutWriterLockContention pins issue #2900: a
+// turn end whose writer finds the per-instance lock held (an overlapping
+// notify process, a slow disk) gave up after 100 ms and the turn end never
+// reached the hook status. It now waits for the lock, within a bound.
+func TestWriteCodexHookStatus_WaitsOutWriterLockContention(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_HOOK_GENERATION", "")
+	if err := os.MkdirAll(getHooksDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const instanceID = "inst-2900-lock"
+	lock, err := os.OpenFile(filepath.Join(getHooksDir(), instanceID+".codex-writer.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeChecked(lock)
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		time.Sleep(400 * time.Millisecond)
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	}()
+
+	writeCodexHookStatus(instanceID, "waiting", "thread-2900", "agent-turn-complete", "turn-2900")
+	<-released
+
+	data, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
+	if err != nil {
+		t.Fatalf("turn end lost under writer-lock contention: %v", err)
+	}
+	var got hookStatusFile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "waiting" || got.CodexCompletedGeneration != "thread-2900:turn-2900" {
+		t.Fatalf("status after contention = %#v", got)
 	}
 }
