@@ -75,9 +75,9 @@ func (p *Pool) ShouldPool(mcpName string) bool {
 // Allows reports whether this pool config lets mcpName be served from a pool
 // socket. It is the one decision for both the TUI pool (ShouldPool) and the
 // CLI path, which has no Pool and must still honour pool_mcps / exclude_mcps:
-// pool sockets are keyed by name and shared by every config home of the user,
-// so a config that did not opt a name in must never attach to another
-// config's process of that name.
+// every config home of the user shares the pool socket dir, so a config that
+// did not opt a name in must never attach to another config's process of
+// that name.
 func (c *PoolConfig) Allows(mcpName string) bool {
 	if c == nil || !c.Enabled {
 		return false
@@ -422,17 +422,23 @@ type SocketSpec struct {
 // with a different command, args or env is never adopted (#2966). Only
 // sockets that pass verifyOwnedSocket are adopted; the old world-writable
 // /tmp/agentdeck-mcp-*.sock locations are never trusted. Dead sockets of this
-// user in the socket dir, including pre-#2966 name-only ones, are removed.
+// user for this config's names (definition-keyed and pre-#2966 name-only)
+// are removed when a dial is refused.
 // Returns count of discovered sockets.
 func (p *Pool) DiscoverExistingSockets(specs map[string]SocketSpec) int {
 	warnLegacyTmpSockets()
 
 	sockDir := mcpSocketDir()
-	if matches, err := filepath.Glob(filepath.Join(sockDir, "mcp-*.sock")); err != nil {
-		poolLog.Warn("socket_scan_failed", slog.String("error", err.Error()))
-	} else {
-		for _, socketPath := range matches {
-			if verifyOwnedSocket(socketPath) == nil && !isSocketAliveCheck(socketPath) {
+	// Remove dead sockets this config would use: its definition-keyed path
+	// and the pre-#2966 name-only path of each pooled name. Only a refused
+	// dial counts as dead; a slow or busy owner keeps its socket. Sockets of
+	// other names and definitions belong to other config homes.
+	for name, spec := range specs {
+		for _, socketPath := range []string{
+			socketPathIn(sockDir, name, spec.Command, spec.Args, spec.Env),
+			legacySocketPath(sockDir, name),
+		} {
+			if verifyOwnedSocket(socketPath) == nil && socketRefused(socketPath) {
 				poolLog.Debug("stale_socket_removed", slog.String("path", socketPath))
 				_ = os.Remove(socketPath)
 			}
@@ -449,7 +455,7 @@ func (p *Pool) DiscoverExistingSockets(specs map[string]SocketSpec) int {
 			continue
 		}
 
-		socketPath := filepath.Join(sockDir, SocketFileName(name, spec.Command, spec.Args, spec.Env))
+		socketPath := socketPathIn(sockDir, name, spec.Command, spec.Args, spec.Env)
 		if err := verifyOwnedSocket(socketPath); err != nil {
 			if !os.IsNotExist(err) {
 				poolLog.Warn("external_socket_rejected", slog.String("mcp", name), slog.String("error", err.Error()))

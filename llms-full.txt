@@ -1103,7 +1103,9 @@ show_pool_status = true     # Show 🔌 indicator
 
 **Benefits:** 30 sessions x 5 MCPs = 150 processes -> 5 shared processes (90% memory savings).
 
-**Socket location:** `<data dir>/sockets/mcp-{name}.sock` (for example `~/.agent-deck/sockets/`), private to your user. Sockets under `/tmp/agentdeck-mcp-*.sock` from old versions are ignored.
+**Socket location:** `<data dir>/sockets/mcp-<name>-<id>.sock` (for example `~/.agent-deck/sockets/`), private to your user. `<id>` is a short digest of the MCP's `command`, `args` and `env`, so several config homes that pool the same name with a different definition (for example another token) each run their own process, and only an identical definition shares one. A long name is shortened to keep the path within the 104-byte unix socket limit. The log is `<data dir>/logs/mcppool/<name>-<id>_socket.log`.
+
+**Upgrading from a version with name-only sockets (`mcp-<name>.sock`):** sessions started before the upgrade keep that path in their MCP config. The pool also answers on `mcp-<name>.sock` while no other process does (the first definition of that name to start claims it), so those sessions reconnect without a restart. New sessions use the `mcp-<name>-<id>.sock` path. Restart an old session to move it to its own definition's socket. Sockets under `/tmp/agentdeck-mcp-*.sock` from old versions are ignored.
 
 ## [mcps.*] Section
 
