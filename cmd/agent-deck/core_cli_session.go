@@ -79,17 +79,16 @@ func cliSessionStart(profile string, args []string) {
 			printEnvelope(res)
 			return
 		}
-		out.Success(
-			fmt.Sprintf("Queued session: %s (group at cap %d)", started.Title, started.MaxConcurrent),
-			map[string]interface{}{
-				"success":        true,
-				"id":             started.ID,
-				"title":          started.Title,
-				"status":         "queued",
-				"group":          started.Group,
-				"max_concurrent": started.MaxConcurrent,
-			},
-		)
+		data := map[string]interface{}{
+			"success":        true,
+			"id":             started.ID,
+			"title":          started.Title,
+			"status":         "queued",
+			"group":          started.Group,
+			"max_concurrent": started.MaxConcurrent,
+		}
+		noteUnarchived(out, started.Unarchived, started.Title, data)
+		out.Success(fmt.Sprintf("Queued session: %s (group at cap %d)", started.Title, started.MaxConcurrent), data)
 		return
 	}
 
@@ -133,6 +132,7 @@ func cliSessionStart(profile string, args []string) {
 	if started.ClaudeSessionID != "" {
 		jsonData["claude_session_id"] = started.ClaudeSessionID
 	}
+	noteUnarchived(out, started.Unarchived, started.Title, jsonData)
 	if started.Message != "" {
 		jsonData["message"] = started.Message
 		jsonData["message_pending"] = false
@@ -311,6 +311,7 @@ func cliSessionRestart(profile string, args []string) {
 		if restarted.Warning != "" {
 			data["warning"] = restarted.Warning
 		}
+		noteUnarchived(out, restarted.Unarchived, restarted.Title, data)
 		out.Success(fmt.Sprintf("Restarted session: %s", restarted.Title), data)
 	}
 	res.Finish()

@@ -105,44 +105,56 @@ func handleSessionStart(profile string, args []string) {
 	tree := session.NewGroupTreeWithGroups(instances, groups)
 	max := session.GroupMaxConcurrent(tree, inst.GroupPath)
 	if session.ShouldQueue(instances, inst.GroupPath, max) {
+		// A queued session is on its way to running: it leaves the archive
+		// now, or the drain that starts it later would start it hidden.
 		inst.MarkQueued(initialMessage)
-		if err := saveSessionData(storage, instances, groups); err != nil {
+		unarchived, err := session.UnarchiveAround(inst, "start", storage.PersistArchived, func() error {
+			return saveSessionData(storage, instances, groups)
+		})
+		if err != nil {
 			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
-		out.Success(
-			fmt.Sprintf("Queued session: %s (group at cap %d)", inst.Title, max),
-			map[string]interface{}{
-				"success":        true,
-				"id":             inst.ID,
-				"title":          inst.Title,
-				"status":         "queued",
-				"group":          inst.GroupPath,
-				"max_concurrent": max,
-			},
-		)
+		data := map[string]interface{}{
+			"success":        true,
+			"id":             inst.ID,
+			"title":          inst.Title,
+			"status":         "queued",
+			"group":          inst.GroupPath,
+			"max_concurrent": max,
+		}
+		noteUnarchived(out, unarchived, inst.Title, data)
+		out.Success(fmt.Sprintf("Queued session: %s (group at cap %d)", inst.Title, max), data)
 		return
 	}
 
-	// Start the session (with or without initial message).
-	if initialMessage != "" {
-		if err := inst.StartWithMessage(initialMessage); err != nil {
-			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
-			exitCLI(1)
+	// Start the session (with or without initial message). An archived
+	// session is unarchived durably first; a failed start restores the
+	// exact archive timestamp.
+	var spawnErr error
+	unarchived, err := session.UnarchiveAround(inst, "start", storage.PersistArchived, func() error {
+		var startErr error
+		if initialMessage != "" {
+			startErr = inst.StartWithMessage(initialMessage)
+		} else {
+			startErr = inst.Start()
 		}
-	} else {
-		if err := inst.Start(); err != nil {
-			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
-			exitCLI(1)
+		if startErr != nil {
+			return startErr
 		}
+		// #2099: Start() returning nil only means tmux accepted the spawn.
+		// Read the result back before claiming success: a pane that died at
+		// once (or was never created) exits non-zero with the recorded
+		// reason instead of a false "Started".
+		spawnErr = inst.VerifySpawned(spawnVerifyWait)
+		return spawnErr
+	})
+	if spawnErr != nil {
+		failSpawnVerification(out, "start", storage, instances, groups, inst, spawnErr)
 	}
-
-	// #2099: Start() returning nil only means tmux accepted the spawn. Read
-	// the result back before claiming success: a pane that died at once (or
-	// was never created) exits non-zero with the recorded reason instead of
-	// a false "Started".
-	if err := inst.VerifySpawned(spawnVerifyWait); err != nil {
-		failSpawnVerification(out, "start", storage, instances, groups, inst, err)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
+		exitCLI(1)
 	}
 
 	// Capture session ID from tmux env before saving to JSON
@@ -200,12 +212,28 @@ func handleSessionStart(profile string, args []string) {
 	if inst.ClaudeSessionID != "" {
 		jsonData["claude_session_id"] = inst.ClaudeSessionID
 	}
+	noteUnarchived(out, unarchived, inst.Title, jsonData)
 	if initialMessage != "" {
 		jsonData["message"] = initialMessage
 		jsonData["message_pending"] = false
 		out.Success(fmt.Sprintf("Started session: %s (message sent)", inst.Title), jsonData)
 	} else {
 		out.Success(fmt.Sprintf("Started session: %s", inst.Title), jsonData)
+	}
+}
+
+// noteUnarchived reports that a start or restart took the session out of the
+// archive: "unarchived": true in the --json payload, and an "Unarchived
+// session" line before the success line in text mode (quiet mode prints
+// neither line). It does nothing when the session was not archived, so the
+// output of an ordinary start is unchanged.
+func noteUnarchived(out *CLIOutput, unarchived bool, title string, data map[string]interface{}) {
+	if !unarchived {
+		return
+	}
+	data["unarchived"] = true
+	if !out.jsonMode {
+		out.Success(fmt.Sprintf("Unarchived session: %s", title), nil)
 	}
 }
 
@@ -809,14 +837,23 @@ func handleSessionRestart(profile string, args []string) {
 		inst.SetRestartReason(session.RestartReasonIdleBuildRefresh)
 	}
 
-	// Restart the session
-	if err := inst.RestartWithEnv(envFlags.Map()); err != nil {
+	// Restart the session. An archived session is unarchived durably first;
+	// a failed restart restores the exact archive timestamp.
+	var spawnErr error
+	unarchived, err := session.UnarchiveAround(inst, "restart", storage.PersistArchived, func() error {
+		if restartErr := inst.RestartWithEnv(envFlags.Map()); restartErr != nil {
+			return restartErr
+		}
+		// #2099: confirm the new pane is actually there before reporting success.
+		spawnErr = inst.VerifySpawned(spawnVerifyWait)
+		return spawnErr
+	})
+	if spawnErr != nil {
+		failSpawnVerification(out, "restart", storage, instances, groups, inst, spawnErr)
+	}
+	if err != nil {
 		out.Error(fmt.Sprintf("failed to restart session: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
-	}
-	// #2099: confirm the new pane is actually there before reporting success.
-	if err := inst.VerifySpawned(spawnVerifyWait); err != nil {
-		failSpawnVerification(out, "restart", storage, instances, groups, inst, err)
 	}
 	// Stamp the persisted freshness marker so subsequent watchdog ticks see
 	// this session as "just started" and skip (issue #30).
@@ -846,6 +883,7 @@ func handleSessionRestart(profile string, args []string) {
 	if warning != "" {
 		data["warning"] = warning
 	}
+	noteUnarchived(out, unarchived, inst.Title, data)
 	out.Success(fmt.Sprintf("Restarted session: %s", inst.Title), data)
 
 	// Journaled after the verdict, same reasoning as handleSessionStop.

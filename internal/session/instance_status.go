@@ -701,17 +701,33 @@ func (i *Instance) CachedSubstate() Substate {
 // Today that is the cached substate: without it the sidebar's detail line
 // vanishes on every reload until the next status pass re-classifies the pane.
 func CarryOverReloadState(prev, next []*Instance) {
+	for _, p := range reloadCarryPairs(prev, next) {
+		p.next.InheritCachedSubstate(p.prev)
+	}
+}
+
+// reloadCarryPair is one rebuilt tmux session and the one the same Instance
+// ID had before the reload (nil when the ID is new).
+type reloadCarryPair struct {
+	prev, next *tmux.Session
+}
+
+// reloadCarryPairs matches each incoming session with its outgoing
+// predecessor by Instance ID. Instances without a tmux session are skipped.
+func reloadCarryPairs(prev, next []*Instance) []reloadCarryPair {
 	old := make(map[string]*tmux.Session, len(prev))
 	for _, inst := range prev {
 		if ts := inst.GetTmuxSession(); ts != nil {
 			old[inst.ID] = ts
 		}
 	}
+	pairs := make([]reloadCarryPair, 0, len(next))
 	for _, inst := range next {
 		if ts := inst.GetTmuxSession(); ts != nil {
-			ts.InheritCachedSubstate(old[inst.ID])
+			pairs = append(pairs, reloadCarryPair{prev: old[inst.ID], next: ts})
 		}
 	}
+	return pairs
 }
 
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance

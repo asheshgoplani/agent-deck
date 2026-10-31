@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+
+- Restart every open TUI after upgrading. While an older TUI is still running next to the new version, it can save a session as seen with an old visit time, so that session may show as unseen once for no reason (#2986).
+
 ## [1.16.35] - 2026-10-31
 
 ### Highlights

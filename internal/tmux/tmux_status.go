@@ -1553,14 +1553,6 @@ func (s *Session) CachedSubstateDetail() string {
 	return s.lastSubstateDetail
 }
 
-// SetCachedSubstateForTest seeds the cached substate so tests outside this
-// package can exercise layers that read it without classifying a real pane.
-func (s *Session) SetCachedSubstateForTest(sub Substate, detail string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.lastSubstate, s.lastSubstateDetail = sub, detail
-}
-
 // InheritCachedSubstate takes over prev's cached substate when both objects
 // carry the same tmux session name and this one has not classified anything
 // yet. The name is the only check: a restart through respawn-pane keeps the

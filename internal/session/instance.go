@@ -2507,8 +2507,11 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				// Codex completion should surface as attention-needed.
 				// Keep this as waiting and let tmux settle to idle if the user
 				// has acknowledged and no new activity appears. A completion
-				// older than the user's last visit was already seen.
-				if HookPredatesVisit(i.hookLastUpdate, time.Time{}, i.acknowledgedAt) {
+				// older than the user's last visit was already seen, unless
+				// it was marked unread since (another TUI, the CLI or web
+				// clears the mark without this instance's visit time).
+				if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() &&
+					HookPredatesVisit(i.hookLastUpdate, time.Time{}, i.acknowledgedAt) {
 					i.Status = StatusIdle
 				} else {
 					if i.tmuxSession != nil {

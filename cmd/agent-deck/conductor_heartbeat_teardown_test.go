@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 func TestConductorTeardownReportsHeartbeatOff(t *testing.T) {
@@ -217,8 +219,18 @@ func TestConductorHeartbeatTickArchivedWaitingChildDoesNotWake(t *testing.T) {
 		t.Fatalf("control: live waiting child must wake, stdout=%q", out)
 	}
 
-	run(nil, "", "session", "archive", "worker")
-	run(nil, "", "session", "start", "worker")
+	// An archived session with a live waiting pane. `session start` now
+	// unarchives (it used to leave the flag set), and `session archive`
+	// stops the pane, so set the flag in the state DB, as an older binary
+	// or a TUI racing an archive could leave it.
+	db, err := statedb.Open(filepath.Join(home, ".local", "share", "agent-deck", "profiles", "ch_support_test", "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetArchived(added.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
 	stopHook()
 	listed := run(nil, "", "list", "--json")
 	if !strings.Contains(listed, `"status": "waiting"`) || !strings.Contains(listed, `"archived": true`) {

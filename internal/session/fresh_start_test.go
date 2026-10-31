@@ -210,7 +210,9 @@ func TestIssue2954_PaneReadOnlyForATokenHolder(t *testing.T) {
 			stubRestartPIDs(t).hook = sessionStartNow()
 			reads := 0
 			restartPaneSubstate = func(*Instance) string { reads++; return string(SubstateIdleAtEmptyPrompt) }
-			f.child.GetTmuxSession().SetCachedSubstateForTest(c.cached, "")
+			prevCached := turnCachedSubstate
+			t.Cleanup(func() { turnCachedSubstate = prevCached })
+			turnCachedSubstate = func(*Instance) Substate { return c.cached }
 			if c.token {
 				f.freshStart(time.Now())
 			}

@@ -525,31 +525,14 @@ type mcpRestartedMsg struct {
 
 // restartWithArchiveTransition makes restart from the archived view a durable
 // unarchive + restart operation. If restart fails, it restores the exact archive
-// timestamp so the session does not move lists without a running process.
+// timestamp so the session does not move lists without a running process. The
+// CLI, the core registry and the web mutator share session.UnarchiveAround.
 func restartWithArchiveTransition(
 	inst *session.Instance,
 	persist func(*session.Instance) error,
 	restart func() error,
 ) (bool, error) {
-	if !inst.IsArchived() {
-		return false, restart()
-	}
-
-	archivedAt := inst.ArchivedAtThreadSafe()
-	inst.SetArchivedAtThreadSafe(time.Time{})
-	if err := persist(inst); err != nil {
-		inst.SetArchivedAtThreadSafe(archivedAt)
-		return false, fmt.Errorf("failed to unarchive session before restart: %w", err)
-	}
-
-	if err := restart(); err != nil {
-		inst.SetArchivedAtThreadSafe(archivedAt)
-		if rollbackErr := persist(inst); rollbackErr != nil {
-			return false, fmt.Errorf("restart failed: %w; restoring archive state failed: %v", err, rollbackErr)
-		}
-		return false, err
-	}
-	return true, nil
+	return session.UnarchiveAround(inst, "restart", persist, restart)
 }
 
 // restartSession restarts a session, unarchiving it first when invoked from

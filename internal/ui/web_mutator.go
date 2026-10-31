@@ -174,7 +174,10 @@ func (m *WebMutator) StartSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	return inst.Start()
+	// Starting an archived session unarchives it durably first, as the CLI
+	// and the TUI do; a failed start restores the exact archive timestamp.
+	_, err = session.UnarchiveAround(inst, "start", m.persistArchived, inst.Start)
+	return err
 }
 
 // StopSession kills (stops) a running session by ID.
@@ -214,7 +217,21 @@ func (m *WebMutator) RestartSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	return inst.RestartFrom(telemetry.SurfaceWeb)
+	_, err = session.UnarchiveAround(inst, "restart", m.persistArchived, func() error {
+		return inst.RestartFrom(telemetry.SurfaceWeb)
+	})
+	return err
+}
+
+// persistArchived writes one session's archive timestamp with the scoped
+// update (session.Storage.PersistArchived) for UnarchiveAround.
+func (m *WebMutator) persistArchived(inst *session.Instance) error {
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+	return storage.PersistArchived(inst)
 }
 
 // DeleteSession kills a session and removes it from persistent storage.

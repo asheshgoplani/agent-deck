@@ -224,6 +224,36 @@ func TestCodexWaitingFastPath_ClearedVisitShowsWaiting(t *testing.T) {
 	}
 }
 
+// #2986 item 3: "mark unread" from another TUI, the CLI or web clears the
+// seen mark but leaves this instance's visit time in place. The Codex fast
+// path must honor the mark, not the visit time alone, so the completion
+// shows waiting right away instead of after the next reload.
+func TestCodexWaitingFastPath_UnreadMarkWithVisitTimeShowsWaiting(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	t.Setenv("HOME", t.TempDir())
+
+	inst := NewInstanceWithTool("codex-ack-unread-mark", t.TempDir(), "codex")
+	if err := inst.tmuxSession.Start("sleep 300"); err != nil {
+		t.Fatalf("tmux start: %v", err)
+	}
+	t.Cleanup(func() { _ = inst.tmuxSession.Kill() })
+	inst.tmuxSession.Acknowledge()
+	inst.acknowledgedAt = time.Now()
+	// Marked unread elsewhere: the seen mark drops, the visit time stays.
+	inst.tmuxSession.ApplySharedAcknowledged(false)
+
+	inst.hookStatus = "waiting"
+	inst.hookEvent = "Stop"
+	inst.hookLastUpdate = time.Now().Add(-2 * time.Second)
+
+	if err := inst.UpdateStatus(); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	if got := inst.GetStatusThreadSafe(); got != StatusWaiting {
+		t.Fatalf("status = %q after marking unread with the visit time kept, want %q", got, StatusWaiting)
+	}
+}
+
 // A permission prompt or notification still needs an answer, even one older
 // than the visit, so the rebuilt session shows it as waiting again. This
 // holds on the cold read and on the first hook a rebuilt instance is fed.

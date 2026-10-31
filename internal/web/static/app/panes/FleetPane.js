@@ -17,8 +17,12 @@ const EMPTY_REMOTE_COUNTS = {
   running: 0, waiting: 0, idle: 0, error: 0, stopped: 0,
 }
 
+// Live sessions of one remote. /api/remotes keeps archived rows (archived:
+// true) like `remote sessions --json`; an archived session keeps a
+// live-looking status, so the card leaves it out, as the server-side counts
+// and `remote sessions` text output do (#2972).
 function remoteSessions(remote) {
-  return Array.isArray(remote?.sessions) ? remote.sessions : []
+  return Array.isArray(remote?.sessions) ? remote.sessions.filter(s => !s?.archived) : []
 }
 
 function remoteHealth(remote) {
