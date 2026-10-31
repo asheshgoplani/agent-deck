@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // Tests for the codex subagent-thread rebind gate and restart safety net
@@ -583,6 +584,7 @@ func seedCodexRolloutCwd(t *testing.T, codexHome, sid, threadSource, cwd string)
 }
 
 func TestResolveCodexDetectionCandidateRejectsSubagent(t *testing.T) {
+	testutil.RequireTmux(t)
 	inst, codexHome := newCodexGateInstance(t)
 	userSID := uniqueSID(t)
 	subSID := uniqueSID(t)
@@ -595,6 +597,7 @@ func TestResolveCodexDetectionCandidateRejectsSubagent(t *testing.T) {
 }
 
 func TestResolveCodexDetectionCandidateRejectsGuardianReview(t *testing.T) {
+	testutil.RequireTmux(t)
 	inst, codexHome := newCodexGateInstance(t)
 	userSID := uniqueSID(t)
 	guardianSID := uniqueSID(t)

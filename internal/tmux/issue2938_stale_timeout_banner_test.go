@@ -65,6 +65,7 @@ func TestIssue2938_TimeoutBannerStillCurrentWhenOwned(t *testing.T) {
 // generation shows the old banner above an idle pi composer, mark it
 // interactive the way the hook does, and the status must not be error.
 func TestIssue2938_GetStatusRestartedPaneWithStaleBannerIsNotError(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	fixture := filepath.Join("testdata", "pane_status", "pi-issue2938-restarted-stale-timeout-banner.txt")
 	abs, err := filepath.Abs(fixture)
 	if err != nil {

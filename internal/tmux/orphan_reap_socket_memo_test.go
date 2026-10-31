@@ -28,6 +28,7 @@ import (
 // or wedged server is what makes a query ride its full cap.
 
 func TestIsLiveTmuxClientOrServer_MemoizesAnUnreachableSocketForTheSweep(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	if runtime.GOOS != "linux" {
 		t.Skip("resolving a candidate's own socket reads /proc/<pid>/environ; linux-only by construction")
 	}
