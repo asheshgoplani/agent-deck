@@ -66,6 +66,17 @@ func buildRemoteFlatItemsWithGroups(remoteName string, sessions []session.Remote
 // group renders as "name (0)". This is the remote's own list, so a remote too
 // old to report one simply shows no empty groups.
 func buildRemoteFlatItemsWithEmptyGroups(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths []string, includeEmpty bool) []session.Item {
+	var emptyPaths []string
+	if includeEmpty {
+		emptyPaths = groupPaths
+	}
+	return buildRemoteRows(remoteName, sessions, collapsed, order, groupPaths, emptyPaths)
+}
+
+// buildRemoteRows is buildRemoteFlatItemsWithEmptyGroups with the two uses of
+// the group list apart: groupPaths only ranks siblings, and each path in
+// emptyPaths that holds none of sessions gets a header-only row.
+func buildRemoteRows(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths, emptyPaths []string) []session.Item {
 	items := make([]session.Item, 0, len(sessions)+2)
 
 	remoteRoot := "remotes/" + remoteName
@@ -99,13 +110,11 @@ func buildRemoteFlatItemsWithEmptyGroups(remoteName string, sessions []session.R
 	for g := range buckets {
 		bucketPaths = append(bucketPaths, g)
 	}
-	if includeEmpty {
-		for _, p := range groupPaths {
-			g := normalizeRemoteGroupPath(p)
-			if _, has := buckets[g]; !has {
-				buckets[g] = nil // header only, no session rows
-				bucketPaths = append(bucketPaths, g)
-			}
+	for _, p := range emptyPaths {
+		g := normalizeRemoteGroupPath(p)
+		if _, has := buckets[g]; !has {
+			buckets[g] = nil // header only, no session rows
+			bucketPaths = append(bucketPaths, g)
 		}
 	}
 	sortRemoteGroupPaths(bucketPaths, remoteGroupRank(groupPaths))
@@ -225,13 +234,55 @@ func buildRemoteFlatItemsForViewMode(remoteName string, sessions []session.Remot
 	if len(top) == 0 {
 		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
 	}
-	bottomRows := buildRemoteFlatItemsWithEmptyGroups(remoteName, bottom, collapsed, order, groupPaths, includeEmpty)
-	if len(bottomRows) <= 1 { // only the host header: nothing sits below
+	// Only a group with no session anywhere under it is empty. A group whose
+	// sessions all went on top is not, and must not come back below the
+	// divider as a header with nothing under it.
+	var emptyPaths []string
+	if includeEmpty {
+		emptyPaths = genuinelyEmptyRemoteGroups(remoteRoot, sessions, collapsed, groupPaths)
+	}
+	if len(bottom) == 0 && len(emptyPaths) == 0 { // nothing sits below
 		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
 	}
-	rows := buildRemoteFlatItemsWithEmptyGroups(remoteName, top, collapsed, order, groupPaths, false)
+	bottomRows := buildRemoteRows(remoteName, bottom, collapsed, order, groupPaths, emptyPaths)
+	rows := buildRemoteRows(remoteName, top, collapsed, order, groupPaths, nil)
 	rows = append(rows, session.Item{Type: session.ItemTypeDivider, DividerLabel: mode.DividerLabel(opts)})
 	return append(rows, bottomRows[1:]...)
+}
+
+// genuinelyEmptyRemoteGroups returns the paths of groupPaths that hold no
+// session, directly or in a subgroup. A path inside a folded group that does
+// hold sessions is left out too: that folded header already shows once, with
+// its sessions, and the empty path would only draw it a second time.
+func genuinelyEmptyRemoteGroups(remoteRoot string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, groupPaths []string) []string {
+	occupied := make(map[string]bool) // every group path, and each ancestor, holding a session
+	for i := range sessions {
+		prefix := ""
+		for _, seg := range strings.Split(normalizeRemoteGroupPath(sessions[i].Group), "/") {
+			prefix = joinGroupSegment(prefix, seg)
+			occupied[prefix] = true
+		}
+	}
+	var out []string
+	for _, p := range groupPaths {
+		g := normalizeRemoteGroupPath(p)
+		if occupied[g] {
+			continue
+		}
+		underOccupiedFold := false
+		prefix := ""
+		for _, seg := range strings.Split(g, "/") {
+			prefix = joinGroupSegment(prefix, seg)
+			if collapsed[remoteRoot+"/"+prefix] && occupied[prefix] {
+				underOccupiedFold = true
+				break
+			}
+		}
+		if !underOccupiedFold {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // splitRemoteSessionsActiveTop sorts one remote's sessions into the rows
