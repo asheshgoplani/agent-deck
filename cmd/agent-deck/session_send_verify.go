@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -608,6 +609,14 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	}
 
 	checks := opts.verificationChecks(false)
+	// Opt-in Codex submit retry (docs/codex-submit-retry.md). Off by default;
+	// with the switch unset none of the state below is read.
+	retryCodexSubmit := opts.tool == "codex" && os.Getenv("AGENTDECK_CODEX_SUBMIT_RETRY") == "1"
+	attrib := send.EnterAttribution{Message: message}
+	// prevUnsent: the previous capture, one checkDelay earlier, already showed
+	// this send's text unsent in the composer. codexRetried: the one retry
+	// this send is allowed has been pressed.
+	prevUnsent, codexRetried := false, false
 
 	// obs is the reader of record for the verdict (issue #1793): it sees
 	// every frame this loop captures and decides what an exhausted budget
@@ -634,6 +643,22 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			obs.Observe(send.CaptureOutcome(raw, captureErr))
 			if obs.TurnStarted() {
 				return deliverySubmitted, nil
+			}
+			// Retry only a submit that was really swallowed. The first capture
+			// comes right after the paste and its Enter, when Codex often still
+			// shows the text because it has not processed that Enter yet, so
+			// the text must be unsent in two captures a checkDelay apart, on a
+			// frame that does not already show the turn starting (checked
+			// above). One retry per send, never on the last check.
+			if retryCodexSubmit {
+				unsent := captureErr == nil && send.ComposerHoldsUnsentMessage(raw, message, tmux.StripANSI)
+				if unsent && prevUnsent && !codexRetried && i < checks-1 {
+					guard := &promptGuardTarget{sendRetryTarget: target, tool: "codex"}
+					if guard.check(raw, nil) == nil {
+						codexRetried = attrib.NudgeEnter(guard, send.Captured(raw), tmux.StripANSI)
+					}
+				}
+				prevUnsent = unsent
 			}
 			if n, markers, ok := paneArrivalCounts(raw, message); captureErr == nil && ok {
 				content := tmux.StripANSI(raw)
