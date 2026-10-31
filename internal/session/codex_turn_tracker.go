@@ -28,8 +28,9 @@ import (
 //     carried, or to the last notified one) or empty, the record carries a
 //     signal minted from the run instead, so no dedup can mistake it for the
 //     previous turn;
-//   - a hook completion that lands after a run-signal record for the same
-//     run is that turn's late evidence, absorbed instead of a second record;
+//   - a hook completion stamped within codexLateHookSlack of a run-signal
+//     record for the same run is that turn's late evidence, absorbed instead
+//     of a second record; one stamped later is a new turn;
 //   - a run nobody decided (the snapshot edge never fired or was refused)
 //     is emitted by emitCodexTurnFallbacks once the pane has sat at its
 //     composer for codexTurnFallbackAfter.
@@ -38,10 +39,16 @@ const (
 	// codexTurnFallbackAfter is how long a Codex child must have been off
 	// running, at a terminal status, before the fallback emits its turn.
 	codexTurnFallbackAfter = 8 * time.Second
-	// codexLateHookWindow bounds how long after a run-signal record a newer
-	// hook completion still counts as that turn's late notify. A new turn in
-	// that window is seen running first, which opens a new run.
-	codexLateHookWindow = 60 * time.Second
+	// codexLateHookSlack bounds how much later than a run-signal record a
+	// hook completion may be stamped and still be that turn's late notify:
+	// the notify writer's lock budget (3 s), one slow poll interval, and one
+	// second for the hook file's whole-second timestamp. A completion stamped
+	// later is a new turn, even when no poll saw it running (Codex's legacy
+	// notify sends no turn start, and a fast follow-up can fit in one poll
+	// gap). The same bound tells, after a daemon restart, whether the hook
+	// file still holds the evidence of the turn last recorded under a run
+	// signal.
+	codexLateHookSlack = 3*time.Second + notifyPollSlow + time.Second
 )
 
 // codexTurnTrack is the daemon's per-child memory of observed Codex runs.
@@ -127,11 +134,17 @@ func (d *TransitionDaemon) codexTurnGate(profile string, inst *Instance, event *
 	if inst == nil || !IsCodexCompatible(inst.Tool) || !isRecordableTurnStatus(event.ToStatus) {
 		return false, noop
 	}
+	hook := strings.TrimSpace(event.LastOutputHash)
 	tr := d.codexTrack(profile, inst.ID, false)
 	if tr == nil || tr.epoch == 0 {
-		return false, noop // no run observed since this daemon started: as before
+		// No run observed since this daemon started. After a restart the
+		// last record may carry a run signal no one can rebuild; the hook
+		// evidence it covered is not a new turn.
+		if hook != "" && d.codexRunRecordCovers(inst, event.ToStatus) {
+			return true, noop
+		}
+		return false, noop // as before
 	}
-	hook := strings.TrimSpace(event.LastOutputHash)
 	if tr.decidedEpoch == tr.epoch {
 		if !tr.decidedRun {
 			return false, noop // same run, decided on its hook signal: the notifier's dedup applies
@@ -144,13 +157,18 @@ func (d *TransitionDaemon) codexTurnGate(profile string, inst *Instance, event *
 			return false, noop
 		case hook == tr.absorbedHook:
 			return true, noop // the late hook already absorbed, re-observed
-		case now.Sub(tr.decidedAt) < codexLateHookWindow:
+		case !codexHookStampedAfter(inst.ID, tr.decidedAt.Add(codexLateHookSlack)):
 			tr.absorbedHook = hook
 			sessionLog.Debug("codex_turn_late_hook_absorbed",
 				slog.String("instance", inst.ID), slog.Uint64("run", tr.epoch))
 			return true, noop
 		}
-		return false, noop
+		// A completion stamped after the decided run could have reported is
+		// a new turn that ran between two polls: open a run for it.
+		tr.epoch++
+		tr.runStart = now
+		sessionLog.Debug("codex_turn_unobserved_run",
+			slog.String("instance", inst.ID), slog.Uint64("run", tr.epoch))
 	}
 	if tr.running {
 		// The pane still shows the run working. A hook candidate now is
@@ -221,9 +239,13 @@ func (d *TransitionDaemon) emitCodexTurnFallbacks(profile string, byID map[strin
 	if !notifyEnabled || d.codexTurns == nil {
 		return
 	}
+	after := d.codexFallbackAfter
+	if after <= 0 {
+		after = codexTurnFallbackAfter
+	}
 	for id, tr := range d.codexTurns[profile] {
 		if tr.epoch == 0 || tr.decidedEpoch == tr.epoch || tr.running ||
-			now.Sub(tr.lastRunning) < codexTurnFallbackAfter {
+			now.Sub(tr.lastRunning) < after {
 			continue
 		}
 		to := normalizeStatusString(statuses[id])
@@ -274,4 +296,31 @@ func codexContentAtComposer(tool, content string) bool {
 		return false
 	}
 	return true
+}
+
+// codexHookStampedAfter reports whether the child's hook status file holds a
+// completion stamped after t. No readable file reads as not after.
+func codexHookStampedAfter(instanceID string, t time.Time) bool {
+	hs := readHookStatusForPass(instanceID)
+	return hs != nil && !hs.UpdatedAt.IsZero() && hs.UpdatedAt.After(t)
+}
+
+// codexRunRecordCovers reports whether the child's last record carries a
+// Codex run signal for status to and the hook file holds nothing newer than
+// that record could have absorbed. The run signal lives only in the daemon
+// that minted it, so after a restart nothing can rebuild it and every
+// comparison against the hook signal fails; without this, a recycled daemon
+// woke the parent again for a turn it had already handled (issue #2900
+// review). A hook completion stamped later is a turn that ended while the
+// daemon was down, and is still recorded.
+func (d *TransitionDaemon) codexRunRecordCovers(inst *Instance, to string) bool {
+	if d.notifier == nil || inst == nil || !IsCodexCompatible(inst.Tool) {
+		return false
+	}
+	lastTo, lastHash, at, ok := d.notifier.lastNotifiedRecord(inst.ID)
+	if !ok || !strings.HasPrefix(lastHash, "codex-run:") ||
+		attentionClass(lastTo) != attentionClass(normalizeStatusString(to)) {
+		return false
+	}
+	return !codexHookStampedAfter(inst.ID, at.Add(codexLateHookSlack))
 }

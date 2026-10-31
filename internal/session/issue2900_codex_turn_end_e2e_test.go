@@ -54,7 +54,8 @@ func TestIssue2900_E2E_FakeCodexTurnEndsEachYieldOneRecord(t *testing.T) {
 		t.Skip("real tmux e2e")
 	}
 	f := newCodexTurnFixture(t, "codex")
-	f.d.codexComposerIdle = nil // the real pane probe
+	f.d.codexComposerIdle = nil              // the real pane probe
+	f.d.codexFallbackAfter = 2 * time.Second // keeps the test short
 
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-codex.sh")
@@ -117,7 +118,7 @@ func TestIssue2900_E2E_FakeCodexTurnEndsEachYieldOneRecord(t *testing.T) {
 			t.Fatalf("turn %d (%s): the fake codex was never seen running", n, mode)
 		}
 		// Past the delayed notify and the fallback delay.
-		waitPasses(codexTurnFallbackAfter + 6*time.Second)
+		waitPasses(f.d.codexFallbackAfter + 5*time.Second)
 		if got := f.records(t) - base; got != n {
 			t.Fatalf("turn %d (%s notify): %d records since start, want %d", n, mode, got, n)
 		}

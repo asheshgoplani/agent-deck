@@ -96,9 +96,11 @@ type TransitionDaemon struct {
 	// codexTurns is the per-(profile, child) memory of observed Codex runs
 	// that makes every real Codex turn end yield exactly one record
 	// (issue #2900, codex_turn_tracker.go). codexComposerIdle replaces the
-	// fallback's pane probe in tests (nil: codexPaneAtComposer).
-	codexTurns        map[string]map[string]*codexTurnTrack
-	codexComposerIdle func(*Instance) bool
+	// fallback's pane probe and codexFallbackAfter its delay in tests (nil
+	// and 0: codexPaneAtComposer and codexTurnFallbackAfter).
+	codexTurns         map[string]map[string]*codexTurnTrack
+	codexComposerIdle  func(*Instance) bool
+	codexFallbackAfter time.Duration // 0: codexTurnFallbackAfter
 
 	// turnLiveCheck decides whether an instance is a live session or a stale
 	// registry row. A seam because the real check probes tmux, which a unit test
@@ -929,8 +931,12 @@ func (d *TransitionDaemon) seedTurnBaseline(profile string, byID map[string]*Ins
 			continue
 		}
 		signal := d.turnSignal(inst)
-		if lastTo, lastHash, ok := d.notifier.lastNotifiedTurn(id); ok && (lastTo != to || lastHash != signal) {
-			continue // changed while down: recordTerminalTurns notifies it once
+		if lastTo, lastHash, ok := d.notifier.lastNotifiedTurn(id); ok && (lastTo != to || lastHash != signal) &&
+			!(lastTo == to && d.codexRunRecordCovers(inst, to)) {
+			// Changed while down: recordTerminalTurns notifies it once. A
+			// Codex record under a run signal never equals the hook signal
+			// (issue #2900): it is seeded when the hook holds nothing newer.
+			continue
 		}
 		seen[id] = to + "|" + signal
 	}

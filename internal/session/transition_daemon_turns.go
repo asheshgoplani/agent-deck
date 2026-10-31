@@ -46,7 +46,9 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 // derived from one status snapshot (nil: read one here).
 func (d *TransitionDaemon) emitTurnWith(profile string, inst *Instance, byID map[string]*Instance, from, to string, ts time.Time, observedFlip bool, pi *piTurnVerdict) (TransitionNotificationEvent, bool) {
 	event, ok := d.emitTurnInner(profile, inst, byID, from, to, ts, observedFlip, pi)
-	if ok {
+	// A transiently failed commit leaves the run open so the fallback (or
+	// the next poll) retries it.
+	if ok && event.DeliveryResult != transitionDeliveryFailed {
 		// Issue #2900: whatever decided this turn (a record, a restart
 		// judgement, a drop), the Codex run it ended is not lost.
 		d.noteCodexTurnDecided(profile, inst, to, time.Now())

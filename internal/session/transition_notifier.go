@@ -815,6 +815,17 @@ func (n *TransitionNotifier) lastNotifiedTurn(childID string) (to, outputHash st
 	return rec.To, rec.OutputHash, true
 }
 
+// lastNotifiedRecord is lastNotifiedTurn plus the record's time.
+func (n *TransitionNotifier) lastNotifiedRecord(childID string) (to, outputHash string, at time.Time, ok bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	rec, ok := n.state.Records[strings.TrimSpace(childID)]
+	if !ok {
+		return "", "", time.Time{}, false
+	}
+	return rec.To, rec.OutputHash, time.Unix(rec.At, 0), true
+}
+
 // loadState reads the persisted last-notified records. A missing file is the
 // first-ever start; an unreadable or corrupt file is logged and treated the same
 // way (fresh, empty state) so the daemon still comes up — the restart seed then
