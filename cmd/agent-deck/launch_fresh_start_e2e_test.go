@@ -61,6 +61,9 @@ func (e *deliveryEnv) launchChild(title string, parent *fakeTarget, message stri
 		e.t.Fatal(err)
 	}
 	writeFile(e.t, filepath.Join(l.project, ".fake-phase"), "idle", 0o600)
+	// A fresh start leaves its token only with Claude's hooks installed in
+	// the child's config dir (the fake fires them itself).
+	e.mustRun("hooks", "install")
 	for _, m := range append([]string{".fake-late-transcript"}, markers...) {
 		writeFile(e.t, filepath.Join(l.project, m), "", 0o600)
 	}

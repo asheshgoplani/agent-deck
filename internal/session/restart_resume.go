@@ -64,7 +64,7 @@ const restartResumeMaxScan = 1 << 20
 const restartTokenOrphanAge = 24 * time.Hour
 
 // restartBootTimeout is how long the new process has to reach its prompt. It
-// also bounds a fresh-start token's life (fresh_start.go).
+// also bounds a fresh start's wait for its boot to show (fresh_start.go).
 // AGENTDECK_RESTART_BOOT_TIMEOUT overrides it (tests).
 func restartBootTimeout() time.Duration {
 	if d, err := time.ParseDuration(os.Getenv("AGENTDECK_RESTART_BOOT_TIMEOUT")); err == nil && d > 0 {
