@@ -851,6 +851,33 @@ func archivedAtUnix(t time.Time) int64 {
 	return t.UTC().Unix()
 }
 
+// upsertInstanceSQL is the full-row write shared by SaveInstance and
+// saveInstancesOnce. InstanceRow does not model the seen mark (acknowledged /
+// acknowledged_at): it is written only by targeted paths (SetAcknowledged*,
+// and the running-write reset in WriteStatus & co.). INSERT OR REPLACE deletes
+// and re-inserts the row, so leaving those columns out reset them to their
+// defaults on every full save, wiping a mark another process wrote after this
+// process loaded its snapshot (#2986 item 2). The stored values are carried
+// over inside the statement itself (the VALUES subqueries run before the
+// replace deletes the old row), so a concurrent SetAcknowledged cannot be lost
+// in a pre-fetch/commit window. A row saved as "running" clears both, the same
+// rule as writeStatusSQL.
+//
+// Trailing parameters after pin: status, id, status, id.
+const upsertInstanceSQL = `
+		INSERT OR REPLACE INTO instances (
+			id, title, project_path, group_path, sort_order,
+			command, wrapper, tool, status, tmux_session, tmux_socket_name,
+			created_at, last_accessed,
+			parent_session_id, is_conductor, no_transition_notify,
+			worktree_path, worktree_repo, worktree_branch, account,
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin,
+			acknowledged, acknowledged_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			CASE WHEN ? = 'running' THEN 0 ELSE COALESCE((SELECT acknowledged FROM instances WHERE id = ?), 0) END,
+			CASE WHEN ? = 'running' THEN 0 ELSE COALESCE((SELECT acknowledged_at FROM instances WHERE id = ?), 0) END)
+	`
+
 // SaveInstance inserts or replaces a single instance.
 func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	toolData := inst.ToolData
@@ -889,22 +916,14 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	if autoName {
 		autoNameInt = 1
 	}
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO instances (
-			id, title, project_path, group_path, sort_order,
-			command, wrapper, tool, status, tmux_session, tmux_socket_name,
-			created_at, last_accessed,
-			parent_session_id, is_conductor, no_transition_notify,
-			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+	_, err := s.db.Exec(upsertInstanceSQL,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
 		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
+		inst.Status, inst.ID, inst.Status, inst.ID,
 	)
 	return err
 }
@@ -1070,16 +1089,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 		}
 	}
 
-	stmt, err := tx.Prepare(`
-		INSERT OR REPLACE INTO instances (
-			id, title, project_path, group_path, sort_order,
-			command, wrapper, tool, status, tmux_session, tmux_socket_name,
-			created_at, last_accessed,
-			parent_session_id, is_conductor, no_transition_notify,
-			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
+	stmt, err := tx.Prepare(upsertInstanceSQL)
 	if err != nil {
 		return err
 	}
@@ -1117,6 +1127,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
 			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
+			inst.Status, inst.ID, inst.Status, inst.ID,
 		); err != nil {
 			return err
 		}
