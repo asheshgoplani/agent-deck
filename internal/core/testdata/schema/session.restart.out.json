@@ -21,6 +21,10 @@
     "title": {
       "type": "string"
     },
+    "unarchived": {
+      "description": "The session was archived and the restart unarchived it",
+      "type": "boolean"
+    },
     "warning": {
       "type": "string"
     }

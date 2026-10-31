@@ -27,12 +27,15 @@ type SessionRestartIn struct {
 // SessionRestartOut is the output of session.restart. A single restart fills
 // the top-level fields; restart --all fills All.
 type SessionRestartOut struct {
-	ID      string         `json:"id,omitempty"`
-	Title   string         `json:"title,omitempty"`
-	Skipped bool           `json:"skipped,omitempty" doc:"The freshness or auth guard skipped the restart"`
-	Reason  string         `json:"reason,omitempty" doc:"Why the restart was skipped"`
-	Warning string         `json:"warning,omitempty"`
-	All     *RestartAllOut `json:"all,omitempty"`
+	ID      string `json:"id,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Skipped bool   `json:"skipped,omitempty" doc:"The freshness or auth guard skipped the restart"`
+	Reason  string `json:"reason,omitempty" doc:"Why the restart was skipped"`
+	Warning string `json:"warning,omitempty"`
+	// Unarchived reports that the session was archived and this restart
+	// unarchived it (durably) first.
+	Unarchived bool           `json:"unarchived,omitempty" doc:"The session was archived and the restart unarchived it"`
+	All        *RestartAllOut `json:"all,omitempty"`
 }
 
 // RestartAllOut summarises restart --all.
@@ -111,11 +114,21 @@ func (deps Deps) sessionRestart(ctx context.Context, in SessionRestartIn) (Sessi
 		inst.SetRestartReason(session.RestartReasonIdleBuildRefresh)
 	}
 
-	if err := inst.RestartWithEnv(in.Env); err != nil {
-		return SessionRestartOut{}, &Error{Code: CodeInvalid, Message: fmt.Sprintf("failed to restart session: %v", err), Cause: err}
+	// Restarting an archived session unarchives it durably first; a failed
+	// restart (or spawn verification) restores the exact archive timestamp.
+	var spawnErr error
+	out.Unarchived, err = session.UnarchiveAround(inst, "restart", d.storage.PersistArchived, func() error {
+		if restartErr := inst.RestartWithEnv(in.Env); restartErr != nil {
+			return restartErr
+		}
+		spawnErr = inst.VerifySpawned(SpawnVerifyWait)
+		return spawnErr
+	})
+	if spawnErr != nil {
+		return SessionRestartOut{}, d.failSpawn("restart", inst, spawnErr)
 	}
-	if err := inst.VerifySpawned(SpawnVerifyWait); err != nil {
-		return SessionRestartOut{}, d.failSpawn("restart", inst, err)
+	if err != nil {
+		return SessionRestartOut{}, &Error{Code: CodeInvalid, Message: fmt.Sprintf("failed to restart session: %v", err), Cause: err}
 	}
 	inst.LastStartedAt = time.Now()
 	// A warning is both part of the typed result and an envelope warning;

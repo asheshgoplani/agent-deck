@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -28,6 +29,9 @@ type SessionStartOut struct {
 	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 	Message         string `json:"message,omitempty" doc:"Initial message that was sent"`
 	Warning         string `json:"warning,omitempty" doc:"Recovery was not sent or submission is uncertain"`
+	// Unarchived reports that the session was archived and this start
+	// unarchived it (durably) before starting or queueing it.
+	Unarchived bool `json:"unarchived,omitempty" doc:"The session was archived and the start unarchived it"`
 	// Instance is the in-process handle of the started session (for a
 	// surface that attaches to it). Never serialized.
 	Instance *session.Instance `json:"-"`
@@ -64,26 +68,47 @@ func (deps Deps) sessionStart(ctx context.Context, in SessionStartIn) (SessionSt
 	tree := session.NewGroupTreeWithGroups(d.instances, d.groups)
 	max := session.GroupMaxConcurrent(tree, inst.GroupPath)
 	if session.ShouldQueue(d.instances, inst.GroupPath, max) {
+		// A queued session is on its way to running: it leaves the archive
+		// now, or the drain that starts it later would start it hidden.
 		inst.MarkQueued(in.Message)
-		if err := d.saveOr("failed to save queued state"); err != nil {
+		unarchived, err := session.UnarchiveAround(inst, "start", d.storage.PersistArchived, func() error {
+			return d.saveOr("failed to save queued state")
+		})
+		if err != nil {
+			var ce *Error
+			if !errors.As(err, &ce) {
+				err = &Error{Code: CodeInvalid, Message: err.Error(), Cause: err}
+			}
 			return SessionStartOut{}, err
 		}
+		out.Unarchived = unarchived
 		out.Status = StartStatusQueued
 		out.MaxConcurrent = max
 		return out, nil
 	}
 
-	if in.Message != "" {
-		err = inst.StartWithMessage(in.Message)
-	} else {
-		err = inst.Start()
+	// Starting an archived session unarchives it durably first; a failed
+	// start (or spawn verification) restores the exact archive timestamp.
+	var spawnErr error
+	out.Unarchived, err = session.UnarchiveAround(inst, "start", d.storage.PersistArchived, func() error {
+		var startErr error
+		if in.Message != "" {
+			startErr = inst.StartWithMessage(in.Message)
+		} else {
+			startErr = inst.Start()
+		}
+		if startErr != nil {
+			return startErr
+		}
+		// #2099: nil from Start only means tmux accepted the spawn.
+		spawnErr = inst.VerifySpawned(SpawnVerifyWait)
+		return spawnErr
+	})
+	if spawnErr != nil {
+		return SessionStartOut{}, d.failSpawn("start", inst, spawnErr)
 	}
 	if err != nil {
 		return SessionStartOut{}, &Error{Code: CodeInvalid, Message: fmt.Sprintf("failed to start session: %v", err), Cause: err}
-	}
-	// #2099: nil from Start only means tmux accepted the spawn.
-	if err := inst.VerifySpawned(SpawnVerifyWait); err != nil {
-		return SessionStartOut{}, d.failSpawn("start", inst, err)
 	}
 	if !in.NoWait {
 		inst.PostStartSync(PostStartSyncWait)
