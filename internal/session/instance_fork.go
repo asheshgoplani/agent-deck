@@ -260,6 +260,13 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 // under. An SSH or sandboxed target runs the command elsewhere, where a local
 // lookup says nothing, so it keeps "claude".
 //
+// The lookup runs in agent-deck's own environment and working directory, not
+// the pane's: the fork runs after `cd <workdir>`, and env_file and
+// [shell].env_files can change its PATH. A relative path such as
+// ./bin/wrapper is therefore checked against agent-deck's cwd. A command only
+// the pane's PATH provides falls back to "claude", and one only agent-deck's
+// PATH provides is not found when the pane runs it.
+//
 // A command with leading assignments is returned behind `env`: it is spliced
 // after `exec`, and `exec FLAG=1 wrapper` makes bash look for a program named
 // "FLAG=1". `exec env FLAG=1 wrapper` sets the variables and runs the wrapper,
