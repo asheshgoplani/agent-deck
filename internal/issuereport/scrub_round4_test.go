@@ -161,33 +161,54 @@ func TestScrub_IdempotentAndPreviewRoundTrips(t *testing.T) {
 			for i, rp := range review3Repros {
 				checkRoundTrip(t, fmt.Sprintf("repro%d", i+1), rp.r, Diagnostics{Version: "1.16.30", OS: "linux", LogExcerpt: rp.log})
 			}
-			fails := 0
-			for seed := cfg.seeds[0]; seed <= cfg.seeds[1] && fails < 5; seed++ {
-				r := rand.New(rand.NewSource(seed))
-				var log []string
-				for n := r.Intn(30); n >= 0; n-- {
-					log = append(log, fuzzText(r, 1+r.Intn(12)))
-				}
-				kind := KindBug
-				if seed%7 == 0 {
-					kind = KindIdea
-				}
-				rep := Report{Kind: kind, Title: fuzzText(r, r.Intn(6)), WhatHappened: fuzzText(r, 1+r.Intn(15)),
-					Expected: fuzzText(r, r.Intn(8)), Steps: fuzzText(r, r.Intn(8)), Tool: fuzzText(r, r.Intn(2))}
-				d := Diagnostics{Version: "1.16.30", OS: "Linux (Ubuntu 24.04.5 LTS)", Arch: "amd64",
-					Terminal: "xterm-256color, tmux 3.4", LogExcerpt: strings.Join(log, "\n")}
-				for _, s := range []string{rep.Title, rep.WhatHappened, d.LogExcerpt} {
-					once := Scrub(s, testHome)
-					if twice := Scrub(once, testHome); twice != once {
-						fails++
-						t.Errorf("seed %d: Scrub not idempotent\nin:    %q\nonce:  %q\ntwice: %q", seed, s, once, twice)
-					}
-				}
-				if !checkRoundTrip(t, fmt.Sprintf("seed %d", seed), rep, d) {
-					fails++
-				}
+			// The seeds run in parallel chunks under this subtest, which
+			// owns the identity above; its cleanup runs after every chunk.
+			for lo := cfg.seeds[0]; lo <= cfg.seeds[1]; lo += roundTripChunk {
+				hi := min(lo+roundTripChunk-1, cfg.seeds[1])
+				t.Run(fmt.Sprintf("seeds %d-%d", lo, hi), func(t *testing.T) {
+					t.Parallel()
+					checkRoundTripSeeds(t, lo, hi)
+				})
 			}
 		})
+	}
+}
+
+// roundTripChunk is how many generated reports one parallel subtest of
+// TestScrub_IdempotentAndPreviewRoundTrips checks. Each report is pure CPU
+// work under -race (CI run 41158827633: 209.7 s for the test, one core).
+const roundTripChunk = 25
+
+// checkRoundTripSeeds checks the generated reports of seeds lo..hi: Scrub
+// is idempotent on each field and the Build preview round-trips. It stops
+// after five failures to keep the output readable.
+func checkRoundTripSeeds(t *testing.T, lo, hi int64) {
+	t.Helper()
+	fails := 0
+	for seed := lo; seed <= hi && fails < 5; seed++ {
+		r := rand.New(rand.NewSource(seed))
+		var log []string
+		for n := r.Intn(30); n >= 0; n-- {
+			log = append(log, fuzzText(r, 1+r.Intn(12)))
+		}
+		kind := KindBug
+		if seed%7 == 0 {
+			kind = KindIdea
+		}
+		rep := Report{Kind: kind, Title: fuzzText(r, r.Intn(6)), WhatHappened: fuzzText(r, 1+r.Intn(15)),
+			Expected: fuzzText(r, r.Intn(8)), Steps: fuzzText(r, r.Intn(8)), Tool: fuzzText(r, r.Intn(2))}
+		d := Diagnostics{Version: "1.16.30", OS: "Linux (Ubuntu 24.04.5 LTS)", Arch: "amd64",
+			Terminal: "xterm-256color, tmux 3.4", LogExcerpt: strings.Join(log, "\n")}
+		for _, s := range []string{rep.Title, rep.WhatHappened, d.LogExcerpt} {
+			once := Scrub(s, testHome)
+			if twice := Scrub(once, testHome); twice != once {
+				fails++
+				t.Errorf("seed %d: Scrub not idempotent\nin:    %q\nonce:  %q\ntwice: %q", seed, s, once, twice)
+			}
+		}
+		if !checkRoundTrip(t, fmt.Sprintf("seed %d", seed), rep, d) {
+			fails++
+		}
 	}
 }
 

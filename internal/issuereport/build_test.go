@@ -234,6 +234,7 @@ func TestNewIssueURL_SmallIsUntrimmed(t *testing.T) {
 
 // A huge log is cut first, newest lines kept, and the user's text stays whole.
 func TestNewIssueURL_HugeLogTrimsLogFirst(t *testing.T) {
+	t.Parallel() // pure CPU, no env or identity change; overlaps the other long case
 	var lines []string
 	for i := 0; i < 20000; i++ {
 		lines = append(lines, "log line number "+strings.Repeat("x", 30)+" #"+strconv.Itoa(i))
@@ -268,6 +269,7 @@ func TestNewIssueURL_HugeLogTrimsLogFirst(t *testing.T) {
 
 // When the user text alone is too long, it is cut too and the URL still fits.
 func TestNewIssueURL_HugeTextStillFits(t *testing.T) {
+	t.Parallel() // pure CPU, no env or identity change; overlaps the other long case
 	d := testDiag
 	d.LogExcerpt = strings.Repeat("noise\n", 5000)
 	is := Build(Report{Kind: KindBug, Title: strings.Repeat("T", 300), WhatHappened: strings.Repeat("é ü long text ", 3000),
