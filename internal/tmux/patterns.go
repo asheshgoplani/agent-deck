@@ -59,12 +59,16 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 		}
 	case "kimi":
 		return &RawPatterns{
-			BusyPatterns: []string{`re:(?m)^\s*🌘 Retrying \(\d+/\d+\)`},
+			BusyPatterns: []string{
+				`re:(?m)^\s*[🌑🌒🌓🌔🌕🌖🌗🌘] Retrying \(\d+/\d+\)`,
+				`re:(?m)^\s*[🌑🌒🌓🌔🌕🌖🌗🌘] · Tip:`,
+			},
 			PromptPatterns: []string{
 				`re:(?m)^\s*│ >`,
 				`re:(?m)^\s*Trust this folder\?\s*$`,
+				`re:(?m)^\s*▶ Run this command\?\s*$`,
 			},
-			SpinnerChars: []string{"🌘"},
+			SpinnerChars: []string{"🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"},
 		}
 	case "opencode":
 		return &RawPatterns{

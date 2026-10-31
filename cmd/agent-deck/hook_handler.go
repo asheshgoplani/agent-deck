@@ -391,6 +391,10 @@ func isKimiHookPayload(p hookPayload) bool {
 func mapHookEventToStatus(p hookPayload) string {
 	if isKimiHookPayload(p) {
 		switch normalizeHookEventKey(p.HookEventName) {
+		case "turnstarted":
+			return "running"
+		case "interrupt", "stopfailure":
+			return "waiting"
 		case "posttooluse", "posttoolusefailure":
 			return "running"
 		}
@@ -436,8 +440,8 @@ func mapEventToStatus(event string) string {
 		return "waiting"
 	case "onsessionfinalize":
 		return "dead" // Hermes process exit / session reset — the real session end
-	case "turnstart", "turnstarted":
-		return "running" // a turn began (one LLM response + its tool calls)
+	case "turnstart":
+		return "running" // pi: a turn began (one LLM response + its tool calls)
 	case "turnend":
 		return "waiting" // pi: the turn finished, back at the prompt
 	case "sessionshutdown":
@@ -455,8 +459,8 @@ func mapEventToStatus(event string) string {
 		return "running"
 	case "userpromptsubmit", "beforesubmitprompt":
 		return "running" // user sent prompt, agent is processing
-	case "stop", "interrupt", "stopfailure":
-		return "waiting" // agent finished or was interrupted, back at prompt
+	case "stop":
+		return "waiting" // agent finished, back at prompt waiting for user
 	case "permissionrequest":
 		return "waiting" // agent needs permission approval
 	case "notification":

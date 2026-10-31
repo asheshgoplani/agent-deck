@@ -484,6 +484,16 @@
    "daemonish": false
   },
   {
+   "id": "CAP-CLI-050",
+   "area": "CLI",
+   "name": "kimi-hooks install|uninstall|status",
+   "surfaces_raw": "CLI",
+   "surfaces": [
+    "CLI"
+   ],
+   "daemonish": false
+  },
+  {
    "id": "CAP-TUI-001",
    "area": "TUI",
    "name": "Home screen: session list / group tree navigation",
@@ -2953,6 +2963,17 @@
    "evidence": "evidence/cli/ev-CAP-CLI-049-CLI.txt",
    "status": "verified",
    "notes": "ResolveSession verified across all three modes: exact title, ID prefix (>=6 chars), exact path. CLIOutput: --json error shape {success:false,error,code} confirmed; codes NOT_FOUND (exit 2) and AMBIGUO"
+  },
+  {
+   "id": "CAP-CLI-050",
+   "area": "CLI",
+   "name": "kimi-hooks install|uninstall|status",
+   "surface": "CLI",
+   "automated_test": "",
+   "user_verified": "",
+   "evidence": "",
+   "status": "pending",
+   "notes": "Kimi-specific user-level verification is pending; no Kimi evidence has been captured."
   },
   {
    "id": "CAP-TUI-001",

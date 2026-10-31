@@ -27,7 +27,7 @@ func WriteKimiOwnedSessionID(instanceID, sessionID string) error {
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return fmt.Errorf("empty kimi session id")
+		return fmt.Errorf("empty Kimi session id")
 	}
 	path := filepath.Join(hermesHookScope(instanceID, false), instanceID+kimiOwnedSessionSuffix)
 	if current, ok := readKimiOwnedSession(path); ok && current.ID == sessionID {

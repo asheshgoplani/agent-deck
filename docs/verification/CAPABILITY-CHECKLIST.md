@@ -1,10 +1,10 @@
 # agent-deck Capability Verification Checklist
 
-Derived from `01-CAPABILITY-SPEC.md` — 227 capabilities, 399 capability×surface rows. CAP-CLI-041 and CAP-WATCH-013 (`creds-refresh`) were removed with the command; their IDs are retired.
+Derived from `01-CAPABILITY-SPEC.md` — 228 capabilities, 400 capability×surface rows. CAP-CLI-041 and CAP-WATCH-013 (`creds-refresh`) were removed with the command; their IDs are retired.
 
 **Status legend:** `verified` · `broken` · `partial` · `untestable-locally` · `deferred` · `pending`.
 
-**Totals:** broken=1 · partial=43 · pending=115 · untestable-locally=27 · verified=213
+**Totals:** broken=1 · partial=43 · pending=116 · untestable-locally=27 · verified=213
 
 ## CAP-SESS (13 caps, 32 rows) — partial:2, pending:11, untestable-locally:1, verified:18
 
@@ -43,7 +43,7 @@ Derived from `01-CAPABILITY-SPEC.md` — 227 capabilities, 399 capability×surfa
 | CAP-SESS-011 | CLI |  | verified | 2026-06-11 | evidence/sess/ev-CAP-SESS-011-CLI.txt | Hard-killing the tmux session (simulating pane/agent death) flips status from idle to error on the next UpdateStatus pol |
 | CAP-SESS-013 | CLI |  | verified | 2026-06-11 | evidence/sess/ev-CAP-SESS-013-CLI.txt | Started grpsess1 with TELEGRAM_BOT_TOKEN=SECRET in parent env. tmux session env contains NO TELEGRAM var; child shell ex |
 
-## CAP-CLI (48 caps, 55 rows) — partial:9, pending:1, untestable-locally:4, verified:41
+## CAP-CLI (49 caps, 56 rows) — partial:9, pending:2, untestable-locally:4, verified:41
 
 | CAP-ID | Surface | Capability | Status | Verified | Evidence | Notes |
 |---|---|---|---|---|---|---|
@@ -98,6 +98,7 @@ Derived from `01-CAPABILITY-SPEC.md` — 227 capabilities, 399 capability×surfa
 | CAP-CLI-047 | CLI | feedback | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-047-CLI.txt | feedback --help documents the disclose-before-post contract (#679: shows URL/gh login/exact body, default-N confirm, no  |
 | CAP-CLI-048 | CLI | debug-dump / version / help | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-048-CLI.txt | version, --version, -v all print 'Agent Deck v1.9.56-verify' exit 0 (offline, no network); debug-dump writes debug-dump- |
 | CAP-CLI-049 | CLI | shared CLI infrastructure (resolution, output, exit-code con | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-049-CLI.txt | ResolveSession verified across all three modes: exact title, ID prefix (>=6 chars), exact path. CLIOutput: --json error  |
+| CAP-CLI-050 | CLI | kimi-hooks install\|uninstall\|status | pending |  |  | Kimi-specific user-level verification is pending; no Kimi evidence has been captured. |
 | CAP-CLI-028 | daemon |  | untestable-locally | 2026-06-11 | evidence/cli/ev-CAP-CLI-028-CLI.txt | Heartbeat launchd/systemd daemon + bridge.py + transition-notifier as long-lived daemons require a real systemd/launchd  |
 | CAP-CLI-035 | daemon |  | untestable-locally | 2026-06-11 | evidence/cli/ev-CAP-CLI-035-CLI.txt | The daemon-side consumers (transition notifier reading these status files, DrainForStopHook stdout block injection) are  |
 | CAP-CLI-037 | daemon |  | untestable-locally | 2026-06-11 | evidence/cli/ev-CAP-CLI-037-CLI.txt | The long-lived daemon loop (SIGINT/SIGTERM context, watchBinaryVersion re-exec every 60s, #1214 stale-daemon recycle) is |

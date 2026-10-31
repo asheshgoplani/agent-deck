@@ -54,7 +54,7 @@ func InjectKimiHooks(configDir string) (bool, error) {
 	}
 	lock, err := AcquireConfigFileLock(configPath)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("acquire Kimi config lock: %w", err)
 	}
 	defer lock.Release()
 
@@ -122,7 +122,7 @@ func RemoveKimiHooks(configDir string) (bool, error) {
 	}
 	lock, err := AcquireConfigFileLock(configPath)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("acquire Kimi config lock: %w", err)
 	}
 	defer lock.Release()
 

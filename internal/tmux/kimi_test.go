@@ -22,9 +22,15 @@ func TestKimiRealFrameClassification(t *testing.T) {
 	}{
 		{name: "kimi-local-2.4.1-idle", want: FrameWaiting},
 		{name: "kimi-local-2.4.1-busy-retry", want: FrameActive},
+		{name: "kimi-local-2.4.1-busy-retry-cycle-13", want: FrameActive},
+		{name: "kimi-local-2.4.1-busy-generation", want: FrameActive},
+		{name: "kimi-local-2.4.1-busy-generation-cycle-12", want: FrameActive},
+		{name: "kimi-local-2.4.1-busy-generation-cycle-13", want: FrameActive},
+		{name: "kimi-local-2.4.1-busy-generation-cycle-14", want: FrameActive},
 		{name: "kimi-local-2.4.1-interrupted", want: FrameWaiting},
 		{name: "kimi-local-2.4.1-provider-failure", want: FrameError},
 		{name: "kimi-local-2.4.1-folder-trust", want: FrameWaiting},
+		{name: "kimi-local-2.4.1-tool-permission", want: FrameWaiting},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join("testdata", "status_corpus", tt.name+".txt"))
@@ -49,6 +55,34 @@ func TestKimiHistoricalRetryDoesNotOutliveSubmittedTurn(t *testing.T) {
 		" ╰────────────────────────────────╯\n"
 	if got := ClassifyPaneFrame("kimi", content); got != FrameWaiting {
 		t.Fatalf("historical retry classified current turn as %q, want waiting", got)
+	}
+}
+
+func TestKimiHistoricalGenerationTipDoesNotOutliveSubmittedTurn(t *testing.T) {
+	content := " ❯ first\n" +
+		"  Assistant transcript quoting a prior live footer:\n" +
+		"  🌑 · Tip: /sessions to browse and resume earlier sessions\n" +
+		" ❯ second\n" +
+		"   Interrupted by user\n" +
+		" ╭────────────────────────────────╮\n" +
+		" │ >                              │\n" +
+		" ╰────────────────────────────────╯\n"
+	if got := ClassifyPaneFrame("kimi", content); got != FrameWaiting {
+		t.Fatalf("historical generation tip classified current turn as %q, want waiting", got)
+	}
+}
+
+func TestKimiHistoricalPermissionPanelDoesNotOutliveSubmittedTurn(t *testing.T) {
+	content := " ❯ first\n" +
+		"  Assistant transcript quoting a prior approval panel:\n" +
+		"   ▶ Run this command?\n" +
+		" ❯ second\n" +
+		"   Interrupted by user\n" +
+		" ╭────────────────────────────────╮\n" +
+		" │ >                              │\n" +
+		" ╰────────────────────────────────╯\n"
+	if got := ClassifyPaneFrame("kimi", content); got != FrameWaiting {
+		t.Fatalf("historical permission panel classified current turn as %q, want waiting", got)
 	}
 }
 

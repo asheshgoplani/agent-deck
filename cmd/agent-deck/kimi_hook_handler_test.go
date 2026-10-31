@@ -41,6 +41,13 @@ func TestKimiHookEventMapping(t *testing.T) {
 			t.Errorf("non-Kimi %s changed to %q, want waiting", event, got)
 		}
 	}
+
+	for _, event := range []string{"TurnStarted", "Interrupt", "StopFailure"} {
+		payload := hookPayload{HookEventName: event}
+		if got := mapHookEventToStatus(payload); got != "" {
+			t.Errorf("non-Kimi %s changed to %q, want empty", event, got)
+		}
+	}
 }
 
 func TestKimiHookHandlerWritesOnlyStatus(t *testing.T) {

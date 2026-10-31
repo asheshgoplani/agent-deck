@@ -548,7 +548,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 					}
 				}
 				if installed && h.hookWatcher == nil {
-					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
+					if hookWatcher, err := session.NewStatusFileWatcher(nil); err != nil {
+						uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
+					} else {
 						h.hookWatcher = hookWatcher
 						go hookWatcher.Start()
 					}
