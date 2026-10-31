@@ -21,7 +21,9 @@ import (
 //
 // This pins the technique: the emitted assignment must survive a real shell
 // with the value intact, for paths a user can legitimately have (spaces) and
-// for hostile ones.
+// for hostile ones. The global-search call site no longer builds a command at
+// all (it leaves the export to buildBashExportPrefix via Start); the technique
+// is kept pinned so a future TUI-side builder cannot regress to the raw form.
 func TestIssue1830_GlobalSearchConfigDirIsQuoted(t *testing.T) {
 	for _, bin := range []string{"bash", "printenv"} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -43,7 +45,7 @@ func TestIssue1830_GlobalSearchConfigDirIsQuoted(t *testing.T) {
 
 	for name, dir := range dirs {
 		t.Run(name, func(t *testing.T) {
-			// Exactly the construction the fixed call site uses.
+			// The quoting buildBashExportPrefix applies to the same value.
 			assignment := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(dir))
 
 			// Run it the way it is ultimately run: as a bash -c payload where
