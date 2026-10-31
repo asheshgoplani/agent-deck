@@ -1241,7 +1241,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		TmuxSession:         tmuxName,
 		TmuxSocketName:      inst.TmuxSocketName,
 		CreatedAt:           inst.CreatedAt,
-		LastAccessed:        inst.LastAccessedAt,
+		LastAccessed:        inst.GetLastAccessedAtThreadSafe(),
 		ParentSessionID:     inst.ParentSessionID,
 		IsConductor:         inst.IsConductor,
 		NoTransitionNotify:  inst.NoTransitionNotify,

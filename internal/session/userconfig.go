@@ -1990,6 +1990,32 @@ type NotificationsConfig struct {
 	// on by default; this covers the operator, including TOP-LEVEL sessions with
 	// no parent, which the transition path cannot reach at all.
 	Desktop bool `toml:"desktop,omitempty"`
+
+	// Sort picks the order of the notification bar (and so which session each
+	// Ctrl+b 1-9 key jumps to). "waiting" (default) lists the session that
+	// started waiting most recently first. "last_accessed" lists the session
+	// you attached to most recently first, like Alt+Tab (#2949). Any other
+	// value falls back to "waiting".
+	Sort string `toml:"sort,omitempty"`
+}
+
+// Notification bar sort modes for [notifications] sort.
+const (
+	NotificationSortWaiting      = "waiting"
+	NotificationSortLastAccessed = "last_accessed"
+)
+
+// GetSort returns the normalized notification bar sort mode. Unknown or empty
+// values return NotificationSortWaiting so the default order never changes.
+func (n NotificationsConfig) GetSort() string {
+	return normalizeNotificationSort(n.Sort)
+}
+
+func normalizeNotificationSort(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), NotificationSortLastAccessed) {
+		return NotificationSortLastAccessed
+	}
+	return NotificationSortWaiting
 }
 
 // GetDesktopEnabled reports whether desktop notifications are enabled.

@@ -1179,15 +1179,26 @@ func (inst *Instance) SetToolThreadSafe(t string) {
 // the attach path (see attachSession's no-synchronous-save note); one
 // UPDATE is not.
 func (inst *Instance) MarkAccessed() {
-	inst.LastAccessedAt = time.Now()
+	now := time.Now()
+	inst.mu.Lock()
+	inst.LastAccessedAt = now
+	inst.mu.Unlock()
 	if err := inst.withOwningStateDB(func(db *statedb.StateDB) error {
-		return db.WriteLastAccessed(inst.ID, inst.LastAccessedAt)
+		return db.WriteLastAccessed(inst.ID, now)
 	}); err != nil && !errors.Is(err, errNoStateDB) {
 		sessionLog.Debug("last_accessed_persist_failed",
 			slog.String("instance", inst.ID),
 			slog.String("error", err.Error()),
 		)
 	}
+}
+
+// GetLastAccessedAtThreadSafe returns LastAccessedAt under the read lock, for
+// readers off the UI goroutine such as the notification bar sync (#2949).
+func (inst *Instance) GetLastAccessedAtThreadSafe() time.Time {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	return inst.LastAccessedAt
 }
 
 // GetLastActivityTime returns when the session was last active (content changed)
@@ -1228,8 +1239,8 @@ func (inst *Instance) DisplayLastActivityTime() time.Time {
 	if ok {
 		return ts
 	}
-	if !inst.LastAccessedAt.IsZero() {
-		return inst.LastAccessedAt
+	if la := inst.GetLastAccessedAtThreadSafe(); !la.IsZero() {
+		return la
 	}
 	return inst.CreatedAt
 }

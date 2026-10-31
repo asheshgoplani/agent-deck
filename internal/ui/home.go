@@ -7630,7 +7630,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// of escape codes races with the Bubble Tea renderer.
 
 		// Update last accessed time to detach time (more accurate than attach time)
-		inst.MarkAccessed()
+		h.markDetachAccessed(inst)
 
 		// NOTE: We don't acknowledge on detach anymore.
 		// Acknowledgment happens on ATTACH (only if session was waiting/yellow).
@@ -7696,6 +7696,28 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 
 		return statusUpdateMsg{attachedSessionID: inst.ID, attachedWorkDir: currentWorkDir, detachedAt: detachedAt}
 	})
+}
+
+// markDetachAccessed stamps the detach time on the session that was on screen
+// when the user detached. That is attached unless the user jumped away with
+// the notification bar's Ctrl+b 1-9 keys during the attach, which
+// consumeAckSignal recorded in lastNotifSwitchID (#2949). The value is only
+// read here; the detach paths below still consume it for cursor sync.
+func (h *Home) markDetachAccessed(attached *session.Instance) {
+	target := attached
+	h.lastNotifSwitchMu.Lock()
+	switchedID := h.lastNotifSwitchID
+	h.lastNotifSwitchMu.Unlock()
+	if switchedID != "" && (attached == nil || switchedID != attached.ID) {
+		h.instancesMu.RLock()
+		if switched := h.instanceByID[switchedID]; switched != nil {
+			target = switched
+		}
+		h.instancesMu.RUnlock()
+	}
+	if target != nil {
+		target.MarkAccessed()
+	}
 }
 
 func (h *Home) followAttachReturnCwd(msg statusUpdateMsg) {
@@ -8366,7 +8388,7 @@ func (h *Home) renderSessionItem(
 			hookStatus = h.hookWatcher.GetHookStatus(inst.ID)
 		}
 		confirmedTs, confirmedObserved := inst.LastObservedActivity()
-		ts := sessionActivityTime(inst.CreatedAt, inst.LastStartedAt, inst.LastActivityAt(), inst.LastAccessedAt, confirmedTs, confirmedObserved, hookStatus)
+		ts := sessionActivityTime(inst.CreatedAt, inst.LastStartedAt, inst.LastActivityAt(), inst.GetLastAccessedAtThreadSafe(), confirmedTs, confirmedObserved, hookStatus)
 		timestampBadge = tsStyle.Render(" " + formatRelativeTime(ts))
 	}
 
@@ -8879,7 +8901,7 @@ func (h *Home) openLocalNewSessionDialog() tea.Cmd {
 		existing, ok := pathMap[p]
 		if !ok {
 			// First time seeing this path.
-			accessTime := inst.LastAccessedAt
+			accessTime := inst.GetLastAccessedAtThreadSafe()
 			if accessTime.IsZero() {
 				accessTime = inst.CreatedAt // Fall back to creation time.
 			}
@@ -8889,7 +8911,7 @@ func (h *Home) openLocalNewSessionDialog() tea.Cmd {
 			}
 		} else {
 			// Update if this instance was accessed more recently.
-			accessTime := inst.LastAccessedAt
+			accessTime := inst.GetLastAccessedAtThreadSafe()
 			if accessTime.IsZero() {
 				accessTime = inst.CreatedAt
 			}

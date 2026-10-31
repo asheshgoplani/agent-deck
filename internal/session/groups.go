@@ -264,7 +264,7 @@ func SortInstancesByActionable(insts []*Instance) {
 			if pi != pj {
 				return pi < pj
 			}
-			ai, aj := insts[i].LastAccessedAt, insts[j].LastAccessedAt
+			ai, aj := insts[i].GetLastAccessedAtThreadSafe(), insts[j].GetLastAccessedAtThreadSafe()
 			if !ai.Equal(aj) {
 				return ai.After(aj)
 			}
@@ -1853,7 +1853,7 @@ func mostRecentPathForSessions(sessions []*Instance) string {
 		if s.ProjectPath == "" {
 			continue
 		}
-		if mostRecent == nil || s.LastAccessedAt.After(mostRecent.LastAccessedAt) {
+		if mostRecent == nil || s.GetLastAccessedAtThreadSafe().After(mostRecent.GetLastAccessedAtThreadSafe()) {
 			mostRecent = s
 		}
 	}

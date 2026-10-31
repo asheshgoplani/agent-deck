@@ -379,6 +379,8 @@ Waiting sessions appear right in your tmux status bar. Press `Ctrl+b`, release, 
 ⚡ [1] frontend [2] api [3] backend
 ```
 
+By default the session that started waiting most recently is `[1]`. To order the bar by the session you used most recently instead, like Alt+Tab, set `sort = "last_accessed"` under `[notifications]` in `config.toml` (default: `"waiting"`). Only visits through the agent-deck TUI count: attaching from its session list and jumping with the bar's `Ctrl+b` number keys. Attaching with the `agent-deck` CLI or the web UI does not change the order. `minimal = true` ignores `sort`.
+
 ### Git Worktrees
 
 Multiple agents can work on the same repo without conflicts. Each worktree is an isolated working directory with its own branch.

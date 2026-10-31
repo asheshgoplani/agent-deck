@@ -865,46 +865,13 @@ func (h *Home) syncNotificationsBackground() {
 		return
 	}
 
-	// Phase 1: Check for signal file from Ctrl+b 1-6 shortcuts
-	// CRITICAL: This must be done in background sync too, because the foreground
-	// sync might not run when user is attached to a session (tea.Exec pauses TUI)
-	var sessionToAcknowledgeID string
-	if signalSessionID := tmux.ReadAndClearAckSignal(); signalSessionID != "" {
-		sessionToAcknowledgeID = signalSessionID
-		notifLog.Debug("signal_found", slog.String("session_id", signalSessionID))
-
-		// Track notification switch during attach for cursor sync on detach
-		if h.isAttaching.Load() {
-			h.lastNotifSwitchMu.Lock()
-			h.lastNotifSwitchID = signalSessionID
-			h.lastNotifSwitchMu.Unlock()
-			notifLog.Debug("attach_switch_recorded", slog.String("session_id", signalSessionID))
-		}
-	}
+	// Phase 1: Ctrl+b 1-9 jump signal (see consumeAckSignal).
+	sessionToAcknowledgeID := h.consumeAckSignal()
 
 	// Get current instances (copy to avoid race with main goroutine)
 	h.instancesMu.RLock()
 	instances := make([]*session.Instance, len(h.instances))
 	copy(instances, h.instances)
-
-	// Phase 2: Acknowledge the session if signal was received
-	if sessionToAcknowledgeID != "" {
-		if inst, ok := h.instanceByID[sessionToAcknowledgeID]; ok {
-			if ts := inst.GetTmuxSession(); ts != nil {
-				inst.AcknowledgeVisit()
-				// Persist ack to SQLite so other instances see it
-				if db := statedb.GetGlobal(); db != nil {
-					_ = db.SetAcknowledged(inst.ID, true)
-				}
-				_ = inst.UpdateStatus()
-				notifLog.Debug(
-					"session_acknowledged",
-					slog.String("title", inst.Title),
-					slog.String("status", string(inst.Status)),
-				)
-			}
-		}
-	}
 	h.instancesMu.RUnlock()
 
 	// Detect currently attached session (may be the user's session during tea.Exec)
@@ -951,6 +918,59 @@ func (h *Home) syncNotificationsBackground() {
 	// This fixes the bug where key bindings became stale when TUI was paused (tea.Exec).
 	// updateKeyBindings() is thread-safe via boundKeysMu.
 	h.updateKeyBindings()
+}
+
+// consumeAckSignal handles the signal file written by the notification bar's
+// Ctrl+b 1-9 jumps (and tmux.WriteAckSignal). It returns the target session ID,
+// or "" when there is no signal.
+// CRITICAL: This must be done in background sync too, because the foreground
+// sync might not run when user is attached to a session (tea.Exec pauses TUI).
+//
+// The target is acknowledged and marked accessed: a jump is a visit, so
+// [notifications] sort = "last_accessed" (#2949), the session switcher and the
+// MRU toggle all see it. The stamp happens here, off the UI goroutine, because
+// the UI loop is parked inside tea.Exec for the whole attach and the bar must
+// reorder while the user is still in tmux; LastAccessedAt readers therefore
+// go through GetLastAccessedAtThreadSafe.
+func (h *Home) consumeAckSignal() string {
+	signalSessionID := tmux.ReadAndClearAckSignal()
+	if signalSessionID == "" {
+		return ""
+	}
+	notifLog.Debug("signal_found", slog.String("session_id", signalSessionID))
+
+	// Track notification switch during attach for cursor sync on detach
+	if h.isAttaching.Load() {
+		h.lastNotifSwitchMu.Lock()
+		h.lastNotifSwitchID = signalSessionID
+		h.lastNotifSwitchMu.Unlock()
+		notifLog.Debug("attach_switch_recorded", slog.String("session_id", signalSessionID))
+	}
+
+	h.instancesMu.RLock()
+	inst := h.instanceByID[signalSessionID]
+	if inst != nil {
+		if ts := inst.GetTmuxSession(); ts != nil {
+			inst.AcknowledgeVisit()
+			// Persist ack to SQLite so other instances see it
+			if db := statedb.GetGlobal(); db != nil {
+				_ = db.SetAcknowledged(inst.ID, true)
+			}
+			_ = inst.UpdateStatus()
+			notifLog.Debug(
+				"session_acknowledged",
+				slog.String("title", inst.Title),
+				slog.String("status", string(inst.Status)),
+			)
+		}
+	}
+	h.instancesMu.RUnlock()
+
+	// Outside instancesMu: MarkAccessed persists one row to the state DB.
+	if inst != nil {
+		inst.MarkAccessed()
+	}
+	return signalSessionID
 }
 
 // updateKeyBindings updates tmux key bindings based on current notification entries.
