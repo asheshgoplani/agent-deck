@@ -58,6 +58,10 @@ func (d *TransitionDaemon) emitTurnWith(profile string, inst *Instance, byID map
 	return event, ok
 }
 
+// turnCachedSubstate is the substate the last status pass cached for the
+// child's pane (a seam for tests; it never captures the pane).
+var turnCachedSubstate = func(inst *Instance) Substate { return inst.CachedSubstate() }
+
 func (d *TransitionDaemon) emitTurnInner(profile string, inst *Instance, byID map[string]*Instance, from, to string, ts time.Time, observedFlip bool, pi *piTurnVerdict) (TransitionNotificationEvent, bool) {
 	event := TransitionNotificationEvent{
 		ChildSessionID: inst.ID,
@@ -66,7 +70,7 @@ func (d *TransitionDaemon) emitTurnInner(profile string, inst *Instance, byID ma
 		FromStatus:     from,
 		ToStatus:       to,
 		Timestamp:      ts,
-		Substate:       string(inst.CachedSubstate()),
+		Substate:       string(turnCachedSubstate(inst)),
 		ExitCode:       inst.ExitCode(),
 	}
 	if event.Timestamp.IsZero() {
