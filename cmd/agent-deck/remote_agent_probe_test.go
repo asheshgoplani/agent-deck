@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,6 +17,8 @@ func TestRemoteAgent_InProcessProbeMatchesCLI(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
+	// Without tmux `list --json` adds "viewers": [] that the probe omits.
+	testutil.RequireTmux(t)
 	home := t.TempDir()
 	project := filepath.Join(home, "proj")
 	if err := os.MkdirAll(project, 0o755); err != nil {
