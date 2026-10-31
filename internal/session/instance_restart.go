@@ -432,8 +432,13 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 	// a token first, so the parent gets no false completion (#2792,
 	// restart_resume.go).
 	noteRestartToken(i, time.Now())
+	// A resuming restart leaves no fresh-start token (#2954, fresh_start.go):
+	// its boot is the restart's to judge. Nor does what the resume builder
+	// noted. (RestartFresh, a new conversation, gets one through Start.)
+	clearFreshStartToken(i.ID)
 	queued := i.leftQueue()
 	err := i.restart(env)
+	i.launchesFresh = false
 	if err != nil {
 		clearRestartToken(i.ID)
 	} else {

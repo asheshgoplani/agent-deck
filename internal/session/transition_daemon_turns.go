@@ -22,7 +22,9 @@ import (
 //     a finished record (no separate transition record).
 //
 // Tools without a readable Claude transcript take the legacy path: the size
-// or Codex signal, no text, treated as urgent. That is today's behaviour.
+// or Codex signal, no text, treated as urgent. That is today's behaviour,
+// except for a restart's boot (#2792) and a fresh start's boot (#2954), which
+// are not turns.
 //
 // observedFlip is true when the caller SAW the child run and stop (the
 // snapshot edge). An observed flip with an unchanged transcript is a real turn
@@ -109,6 +111,17 @@ func (d *TransitionDaemon) emitTurnWith(profile string, inst *Instance, byID map
 		return event, true
 	case restartBoot:
 		return d.emitRestartBoot(inst, event, tok, selfConductor), true
+	}
+	// Issue #2954: nor is a fresh start's arrival at its empty prompt
+	// (fresh_start.go). A resuming restart leaves no fresh-start token.
+	switch ftok, verdict := judgeFreshStart(inst, to, event.Timestamp, event.Substate); verdict {
+	case freshStartNotYet:
+		// Only the poll pass (recordTerminalTurns) retries a false: it keeps
+		// its key uncommitted. The snapshot edge and hook candidates discard it.
+		return event, false
+	case freshStartBoot:
+		result := d.emitFreshStartBoot(inst, event, ftok, selfConductor)
+		return result, result.DeliveryResult != transitionDeliveryFailed
 	}
 	event.restartJudged = true
 

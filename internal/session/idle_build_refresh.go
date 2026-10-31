@@ -262,7 +262,7 @@ func (d *TransitionDaemon) runIdleBuildRefreshPass(profile string, instances []*
 		c := idleRefreshCandidate{
 			Tool:            inst.Tool,
 			Status:          statuses[inst.ID],
-			NotLocal:        inst.SSHHost != "" || inst.IsSandboxed() || strings.TrimSpace(inst.Wrapper) != "",
+			NotLocal:        inst.notLocal(),
 			Conductor:       inst.IsConductor,
 			Probed:          wasProbed,
 			HasConversation: idleRefreshConversationID(inst) != "",

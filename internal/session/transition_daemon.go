@@ -738,6 +738,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// auto_refresh_idle_builds, default on).
 	d.runIdleBuildRefreshPass(profile, instances, statuses, substates)
 	d.sweepRestartTokens(profile, byID, statuses, time.Now())
+	d.sweepFreshStartTokens(byID, time.Now())
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
