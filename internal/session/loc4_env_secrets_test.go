@@ -29,6 +29,25 @@ func loc4CaptureLogs(t *testing.T) *bytes.Buffer {
 	return buf
 }
 
+// loc4RetireSpawnWatchers supersedes inst's spawn goroutines and waits for
+// them to return.
+func loc4RetireSpawnWatchers(inst *Instance) {
+	inst.bumpSpawnGenAndBarrier()
+	inst.waitForFastDeathWatchers()
+}
+
+// loc4RequireNoLiveSpawnWatchers fails when a spawn goroutine of inst is
+// still running, i.e. could still write to a captured log buffer.
+func loc4RequireNoLiveSpawnWatchers(t *testing.T, inst *Instance) {
+	t.Helper()
+	liveSpawnWatchers.mu.Lock()
+	n := liveSpawnWatchers.n[inst]
+	liveSpawnWatchers.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d spawn goroutine(s) of %s still running while the test reads its captured logs", n, inst.ID)
+	}
+}
+
 func loc4UseToolEnv(t *testing.T, env map[string]string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -162,6 +181,9 @@ func TestLOC4_RestartLogsAndArgvOmitEnvValues(t *testing.T) {
 	inst.tmuxSession = tmux.ReconnectSessionLazy(tmuxName, tmuxName, projectDir, "opencode", "waiting")
 
 	buf := loc4CaptureLogs(t)
+	// Registered after loc4CaptureLogs, so it runs first: the spawn goroutines
+	// are joined before the loggers are swapped back and TempDirs removed.
+	t.Cleanup(func() { loc4RetireSpawnWatchers(inst) })
 	const secret = "loc4-live-SECRET-token"
 	if err := inst.RestartWithEnv(map[string]string{
 		"LOC4_SECRET_TOKEN": secret,
@@ -182,6 +204,11 @@ func TestLOC4_RestartLogsAndArgvOmitEnvValues(t *testing.T) {
 		t.Fatalf("restarted process did not receive the env value: got %q (err %v)", seen, err)
 	}
 
+	// The restart's spawn goroutines (fast-death watcher, ownership
+	// attribution) log into buf for the whole spawn window; buf is a plain
+	// bytes.Buffer, so reading it while they run is a data race.
+	loc4RetireSpawnWatchers(inst)
+	loc4RequireNoLiveSpawnWatchers(t, inst)
 	if strings.Contains(buf.String(), secret) {
 		t.Errorf("restart logs leaked the env value:\n%s", buf.String())
 	}
