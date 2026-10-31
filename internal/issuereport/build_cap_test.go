@@ -32,8 +32,12 @@ func TestBuild_HugeFieldsStaySendable(t *testing.T) {
 		"huge log":        {Report{Kind: KindBug, WhatHappened: big, Steps: big}, Diagnostics{Version: big, OS: big, Terminal: big, Tool: big, LogExcerpt: hugeLog}},
 		"huge log only":   {Report{Kind: KindBug, WhatHappened: "x"}, Diagnostics{LogExcerpt: hugeLog}},
 	}
+	// The cases are pure CPU work under -race (CI run 41158827633: 199.4 s
+	// in one core), so they run in parallel; the identity set above is
+	// cleaned up only after all of them finish.
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			is := Build(tc.r, tc.d)
 			if len(is.Body) > MaxBodyLen {
 				t.Fatalf("body is %d bytes, over %d", len(is.Body), MaxBodyLen)
