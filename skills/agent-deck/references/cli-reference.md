@@ -827,7 +827,7 @@ Needs two opt-ins, neither a security boundary: `agent-deck config set browser.e
 agent-deck file bundle /abs/report/index.html --session <id> > report.tar
 ```
 
-Streams an uncompressed tar of the folder (a file argument exports its parent folder, so relative assets keep their paths). Capped at 20 MiB including tar overhead; symlinks and special files are refused; nothing is written on the host and no partial archive is emitted on failure.
+Streams an uncompressed tar of the folder (a file argument exports its parent folder, so relative assets keep their paths). Capped at 20 MiB including tar overhead; when a file's folder is bigger, the page, the files it references and then the smallest other files that fit are exported, and an export that cannot fit names the biggest files; symlinks and special files are refused; nothing is written on the host and no partial archive is emitted on failure.
 
 ## Fleet Recovery Commands
 

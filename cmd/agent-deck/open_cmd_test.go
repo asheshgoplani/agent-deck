@@ -559,3 +559,18 @@ func TestOpenTargetRefusesInternalAddressesFromARemote(t *testing.T) {
 		t.Fatal("a Linux host or an SSH session counts as a remote")
 	}
 }
+
+// A box page served on the tailnet stays refused from a remote, and the
+// refusal tells the owner the way that works: open the page file itself.
+func TestOpenTargetTailnetRefusalSuggestsTheFile(t *testing.T) {
+	restore := openCallerIsRemote
+	defer func() { openCallerIsRemote = restore }()
+	openCallerIsRemote = func() bool { return true }
+	_, _, err := resolveOpenTarget("http://mybox.tail1234.ts.net:8787/mac/index.html")
+	if !errors.Is(err, macapp.ErrInternalAddress) {
+		t.Fatalf("tailnet URL from a remote: %v", err)
+	}
+	if !strings.Contains(err.Error(), "tailnet name") || !strings.Contains(err.Error(), "agent-deck open <file>") {
+		t.Errorf("refusal does not point to opening the file: %v", err)
+	}
+}
