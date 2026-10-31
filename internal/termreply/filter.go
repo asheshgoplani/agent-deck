@@ -86,6 +86,9 @@ type Filter struct {
 	holding   bool
 	heldArmed bool // begun inside the quarantine: dropped, not released
 	held      []byte
+	// holdGen counts holds begun, so a caller can tell a new hold from the
+	// one it already timed (HoldGeneration).
+	holdGen uint64
 
 	// usedReplyKind tracks, per reply category, whether a whitelisted DA/DSR
 	// reply has already been passed through to tmux while armed. See
@@ -130,6 +133,13 @@ func (f *Filter) ResetReplyBudget() {
 // Holding reports whether an unterminated escape string is held for FlushIdle.
 func (f *Filter) Holding() bool {
 	return f.holding
+}
+
+// HoldGeneration changes each time a hold begins. A caller timing its hold
+// window compares it to tell a new hold from one it is already timing, also
+// when one Consume ends a hold and begins the next.
+func (f *Filter) HoldGeneration() uint64 {
+	return f.holdGen
 }
 
 // FlushIdle ends the held escape string once the caller's hold window has
@@ -255,6 +265,7 @@ func (f *Filter) beginHold(armed bool, introducer byte) {
 		return
 	}
 	f.holding = true
+	f.holdGen++
 	f.heldArmed = armed
 	f.held = append(f.held[:0], escapeByte, introducer)
 }

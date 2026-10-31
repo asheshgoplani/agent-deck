@@ -341,8 +341,10 @@ type csiuReader struct {
 	replyFilter termreply.Filter
 	replyWindow uint64
 	// heldSince is when replyFilter started holding an unterminated escape
-	// string (KeysOnIdle); zero when it holds none.
+	// string (KeysOnIdle); zero when it holds none. heldGen is the filter's
+	// HoldGeneration for that hold, so a new hold gets its own window.
 	heldSince time.Time
+	heldGen   uint64
 	// pollFn checks whether more bytes follow a lone ESC within a timeout.
 	pollFn func(time.Duration) bool
 	// yieldEmpty makes Read return (0, nil) when a chunk produced nothing
@@ -427,6 +429,12 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 				copied := copy(p, processed[:inputTokenPrefix(processed, len(p))])
 				c.outBuf = append(c.outBuf, processed[copied:]...)
 				return copied, nil
+			}
+			// Dropped (begun armed). A yielding reader was called only
+			// because the hold was due: the source may have nothing, so
+			// do not block on it (#2692).
+			if c.yieldEmpty {
+				return 0, nil
 			}
 			continue
 		}
@@ -571,8 +579,8 @@ func (c *csiuReader) consume(chunk []byte, final bool) []byte {
 	// behind it, as input. FlushIdle drops it instead if it began armed.
 	if !c.replyFilter.Holding() {
 		c.heldSince = time.Time{}
-	} else if c.heldSince.IsZero() {
-		c.heldSince = time.Now()
+	} else if gen := c.replyFilter.HoldGeneration(); c.heldSince.IsZero() || gen != c.heldGen {
+		c.heldSince, c.heldGen = time.Now(), gen // a new hold: its own window
 	}
 	if c.heldDue() {
 		c.releaseHeld()
