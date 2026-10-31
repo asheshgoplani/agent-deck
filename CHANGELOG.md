@@ -11,6 +11,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Restart every open TUI after upgrading. While an older TUI is still running next to the new version, it can save a session as seen with an old visit time, so that session may show as unseen once for no reason (#2986).
 
+## [1.16.35] - 2026-10-31
+
+### Highlights
+
+- A fresh install opens a Welcome: it shows which coding agents are installed and signed in, offers each tool's own login, and gets you to a first session in two keys. `Alt+W` ("Show me around") brings the tour back any time (see New features).
+- Opt-in tool-call tracing for Claude and Codex sessions, with an `agent-deck trace` command to read it. Off by default (see New features).
+- Company installs: an org-managed config file can cap telemetry and set an org id, and crash reports stay off unless a crash-report address is configured. A company-set crash-report address waits for your own yes before anything is sent (see New features and Security).
+- A session you have opened stays seen: it no longer goes back to waiting after a reload or a detach. Restart every open agent-deck TUI once after upgrading (see Fixes and Upgrading).
+- Pooled MCP servers are no longer shared between config homes that run the same name with a different command, args or env (see Fixes and Upgrading).
+- Conductor fixes: archived sessions no longer show in the chat bridge's session list or wake the conductor, the OS heartbeat saves its state again, and `bridge.log` no longer has every line twice. Run `agent-deck conductor setup <name>` again to get the bridge fixes (see Fixes and Upgrading).
+- Many fixes from community contributors: status that stuck at running or flipped to error, typing an em dash freezing an attached session, forks that ignored a Claude wrapper command, and more (see Fixes).
+
+### New features
+
+- First-run Welcome in the TUI. It appears only on a fresh install (no `config.toml`, no sessions, never shown before); an install that already has sessions keeps the setup wizard as before. It lists Claude Code, Codex, Gemini CLI and Pi, shows the install command for any that are missing, and offers a plain shell if none is found. For Claude and Codex it runs the tool's own status command (`claude auth status`, `codex login status`) and reads only the exit code; no credentials file or token is read. `l` runs the tool's own login (`claude auth login`, `codex login`) and re-checks when you come back. `Enter` opens the New Session dialog filled in with the highlighted agent and folder, and the next `Enter` creates the session. "What you can do" explains sessions, switching, send, conductors and remotes; it opens once after your first session and any time with `Alt+W` (rebindable as `[hotkeys] show_around`), and it is listed in the help overlay. `Esc` skips at every step (#2959).
+- Tool-call tracing (opt-in): with `[trace] level = "metadata"` or `"summaries"` (or `AGENTDECK_TRACE`), Claude and Codex hooks record turns and tool calls into a per-profile `trace.db`. Arguments and results are never stored; summaries only describe the shape of a call (command word and length, file name and size, key names) and pass a secret scrubber. New commands: `agent-deck trace [session-id]`, `trace stats`, `trace ingest` and `trace hook`. The default, `off`, writes nothing (#2955).
+- Managed installs: agent-deck reads an org-managed `managed.json` (`/Library/Application Support/AgentDeck/managed.json` on macOS, `/etc/agent-deck/managed.json` on Linux, or `AGENTDECK_MANAGED_CONFIG`) with `org_id`, `telemetry_level`, `crash_dsn` and `update_channel`. The managed telemetry level is a ceiling: it can lower or turn off telemetry, never turn it on or raise your own level. A file that does not validate turns telemetry and crash reports off. An org id (from the managed file or `[telemetry] org_id`) is sent with detailed usage events only when set (#2958).
+- Crash reports (opt-in): off unless a crash-report DSN is configured. Each report is rebuilt from an allow-list before it is sent: no free text, user info, headers, request data or environment; error messages are replaced by a short hash. Declining usage data (`agent-deck telemetry off`, or no at the prompt) turns crash reports off too. `agent-deck telemetry status` shows the org id, the managed file and whether crash reports are on and why not (#2958).
+- When a Codex notify payload is dropped (a turn end with no rollout, or a subagent thread), agent-deck writes one `codex_notify_dropped` line to `debug.log` with the reason, when `AGENTDECK_DEBUG` is set. The message text is never logged. Which payloads are dropped is unchanged (#2900, #2924; thanks @sakost for the report).
+- "Active on top" (`t`) now also applies inside each remote's section: groups with a live session come first, then an "idle / done" (or "stopped / done") divider and the rest. Fold state, parent and child rows, and `[ui] active_includes_idle` are honoured, and archived rows never count as live. Only the controller's TUI list changes (#2947, #2980; thanks @mglmnz for the report).
+- Codex sends (opt-in): with `AGENTDECK_CODEX_SUBMIT_RETRY=1`, a message left typed in the Codex composer but never submitted gets one more Enter. It retries only when two captures one check apart both still show this send's own unsent text and the turn has not started, at most once per send, and it never clears or retypes input. Unset, nothing changes (#2833, #2978; thanks @xinlei55555).
+- Notification bar order (opt-in): `[notifications] sort = "last_accessed"` puts the session you used most recently at `[1]`, like Alt+Tab, so the `Ctrl+b` number for a session you use often stops changing. Sessions never used come last, and with more sessions than `max_shown` the most recently used ones stay on the bar. A visit is an attach from the TUI list or a jump with the bar's `Ctrl+b` number keys; attaching with the CLI or web UI does not count. The default, `"waiting"`, keeps today's order, and `minimal = true` ignores the key (#2949, #2981; thanks @llogen for the report).
+
+### Security
+
+- Crash reports from a company-managed `crash_dsn` (in `managed.json` or `AGENTDECK_MANAGED_CONFIG`) no longer turn on for someone who has not answered the usage-data question. They start only after your own yes (`agent-deck telemetry on`, or yes at the CLI or TUI question); until then `agent-deck telemetry status` shows `Crash reports: off (waiting for your yes: agent-deck telemetry on)`. A no, and every existing off switch, still turns them off. A `crash_dsn` you put in your own `config.toml` behaves as before (#2975).
+- Pooled MCP sockets are now named by the MCP's definition (`mcp-<name>-<12 hex>.sock`, covering command, args and env), not by name only. Before, two config homes that pooled the same name with different settings silently used one process, including its env such as a different access token. Identical definitions still share one process (#2966, #2982).
+- `golang.org/x/net` is updated to v0.62.0, which fixes GO-2026-6860 and GO-2026-6866 in its `html` package. govulncheck reports that agent-deck does not call the affected code (#2965).
+- A dev-only test dependency, vitest, is updated to 4.1.12 for two `@vitest/mocker` advisories (GHSA-xp26-3454-mjgp, GHSA-qxg6-89mg-rqv8) (#2971).
+
+### Fixes
+
+- Conductor bridge: Telegram `/sessions`, Slack and Discord `/ad-sessions` and Mattermost `!sessions` list only active sessions; archived ones showed with a live-looking status (#2945, #2956; thanks @mineralinis for the report and @sharjeelajmalsemantic786).
+- Conductor heartbeat: archived children are left out of the counts and no longer wake the conductor, in both the bridge and the OS heartbeat. Completion records from archived children still reach the conductor's inbox (#2957; thanks @sharjeelajmalsemantic786).
+- The OS heartbeat saves its state again for a tick that carried inbox records; before, the heartbeat's own send drained the inbox and the save never matched (#2944, #2969; thanks @mineralinis for the report).
+- Under launchd and systemd, each line of the conductor's `bridge.log` is written once instead of twice (#2946, #2968; thanks @mineralinis for the report).
+- A quiet pi session sitting at its prompt stays at `waiting` instead of going back to `running` for days (#2896, #2967; thanks @koenzhao for the report).
+- After `session restart`, an old "Session startup timed out" message left in the pane's scrollback no longer flips a healthy session to `error` about two minutes later (#2938, #2970; thanks @koenzhao for the report).
+- A stale "Waiting for N background agents" line no longer keeps a Claude session at `running` once its transcript shows the work is done (#2927; thanks @kickinrad).
+- pi, Codex and Gemini sessions are detected as their own tool again instead of as Claude, so the right status patterns apply (#2828; thanks @jwiegley).
+- Typing an em dash (Option+Shift+-) with Option-as-Meta in an attached session no longer freezes all input and Ctrl+Q (#2931, #2932; thanks @eugenest for the report and the fix).
+- Forking a Claude session uses the configured `[claude] command` when it is a real executable (for example a wrapper script), instead of a bare `claude`. Aliases and remote or sandboxed forks still use `claude` (#2939, #2940; thanks @imkarrer for the report and the fix).
+- `agent-deck launch -mcp` and `mcp attach` respect `pool_mcps` and `exclude_mcps`, so a config no longer attaches to another config's pooled MCP server (#2952, #2953; thanks @jwr456 for the report and the fix).
+- `session restart --all` run from inside one of its sessions hands the batch to a detached process instead of ending partway (#2934; thanks @Oscar-Williams). `session switch` run on its own session does the same (#2897, #2925; thanks @Oscar-Williams for the idea and @bautrey for the original report).
+- "Restart fresh" no longer refuses with "this session still owns processes from an earlier spawn" when the old process is slow to exit (#2921, #2963).
+- `agent-deck codex-hooks install` and `uninstall` keep your `config.toml` intact: an unreadable file is never overwritten, the agent-deck block is replaced in place with your line endings, comments and blank lines are kept, and writes are atomic. A block placed below a `[table]` is refused with a clear message (#2930; thanks @kickinrad).
+- In the web UI, the live stream recovers on its own when it closes during a recovery check, instead of waiting for a reload (#2926; thanks @kickinrad).
+- Session rows with an attached viewer line up with their neighbours on every terminal; the viewer badge is now `◉` (#2943; thanks @Canonical111).
+- A scroll region left set on the terminal by another program no longer makes the deck scroll inside a band and leave stale rows on screen. Every full repaint and every detach resets it (#2964).
+- New Session dialog: the empty Name field previews exactly the name that will be created (with `~`, `.` and the `-2` suffix resolved); two quick creates in one folder get two names; Cancel on "Directory Not Found" goes back to the dialog with what you typed; with a worktree on, Branch is filled from the derived name (#2913, #2962).
+- With `group_sort = "creation"`, a session created or forked while the TUI is reloading goes last in its group instead of near the top (#2933, #2973; thanks @eugenechabanov for the report and the code reading).
+- Sandbox providers: an interrupted or timed-out create cleans up the sandbox it may have made, Ctrl-C waits for a rollback or destroy to finish, a second provisioning with the same name is refused, `remote remove` on a sandbox remote warns that the sandbox keeps running and points to `remote destroy`, and the New Session "Where" row says which settings it cannot carry instead of dropping them silently (#2918, #2961).
+- `remote list --json` and `remote sessions --json` print `[]` when no remotes are configured, instead of plain text (#2920, #2923).
+- A session you have already opened no longer goes back to ◐ (waiting) after a storage reload or a detach, and its detail label no longer blinks away. The "seen" mark and the time of your visit are now kept, and a hook is compared with that visit the same way in the TUI, CLI and web (#2950, #2951, #2985; thanks @pedro-lb for the report and the fix).
+- A pi session that finished its turn no longer stays `running` for hours because pi left its old "Working" banner in the chat area. A live banner on the composer still counts as busy (#2948, #2979; thanks @koenzhao for the report).
+- Typing an em dash (Option+Shift+-) with Option-as-Meta on the dashboard itself no longer freezes it; the held keys are released after 100 ms, the same rule attached sessions got in #2932 (#2974, #2983).
+- `agent-deck remote sessions` text output leaves out the remote's archived sessions and says how many were hidden; `--json` still lists them with `"archived": true`. Long or multi-byte titles are cut by display width, so they are never split and the columns stay aligned. The conductor template's `/sessions` guidance now says to skip archived rows (#2972, #2984).
+
+### Under the hood
+
+- Agent-flow evals: `skills/agent-deck/evals/flows.sh` drives a real agent-deck and tmux with a fake Claude to check send, child completion and inbox routing end to end, in an isolated HOME and tmux socket (#2960).
+- CI path filters in four workflows now point at the files the `home.go` / `instance.go` split created, so changes there run those checks again (#2908).
+- The pi hook ordering test drops a fixed 1.5 s wait, saving about a minute of CI (#2928; thanks @kickinrad).
+- Dependency updates: google.golang.org/api 0.308.0 and modernc.org/sqlite 1.61.0 (SQLite 3.54.1) (#2936). New dependency: `github.com/getsentry/sentry-go` v0.49.0, used only when crash reports are configured (#2958).
+
+### Upgrading
+
+- Conductor bridge fixes (archived sessions in the session list and heartbeat, `bridge.log` lines written twice) are in the bridge script. The shared conductor template's `/sessions` row (skip archived rows) changed too. An existing conductor picks these up when you run `agent-deck conductor setup <name>` again; a template file written by the previous release is recognised and updated in place.
+- The viewer badge in the session list changes from an eye emoji to `◉`.
+- Restart every open agent-deck TUI once after upgrading. The state database gets a new `acknowledged_at` column, and while old and new TUIs share it, one session can flip back to unseen once.
+- MCP pool: sessions started before the upgrade keep working on the old `mcp-<name>.sock` path without a restart. New sessions and the CLI use the new definition-keyed socket; restarting an old session moves it there. The per-MCP log is now `<name>-<id>_socket.log`.
+
+### Known issues
+
+- In the New Session dialog, Enter with a path suggestion list shown still creates with the typed path, and the web create dialog still needs a name.
+- Follow-ups to the "seen" and archived-row fixes are tracked in #2986: the web view can show a Claude session as seen when a newer Stop arrived, a full save from another process can reset the seen mark, "mark unread" from elsewhere reaches a Codex session only after the next reload, and the older `conductor-claude.md` / `conductor-hermes.md` templates still lack the archived-row skip.
+- A dashboard escape string that never ends (for example a very large clipboard reply, or one split by more than 100 ms over a slow SSH link) is now released as keys instead of dropped, and can trigger single-letter hotkeys. This is the same tradeoff attached sessions have had since #2932.
+
 ## [1.16.34] - 2026-10-25
 
 ### Highlights
