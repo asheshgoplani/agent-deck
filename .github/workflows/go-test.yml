@@ -64,9 +64,13 @@ jobs:
     # Advisory for the first week; promote only after clean real-PR runs.
     # advisory: true keeps a failing rig leg from turning the whole Go tests
     # run red; the leg reports a warning in its summary instead.
+    # Off the PR critical path (post-tag CI queue): on a PR the four rig
+    # legs run only when the rig itself changes (changes.outputs.comms);
+    # every Go push to main still runs them, and comms-matrix.yml runs
+    # nightly on its own schedule.
     name: Comms matrix advisory
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.comms == 'true'
     uses: ./.github/workflows/comms-matrix.yml
     with:
       advisory: true
@@ -81,6 +85,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       go: ${{ steps.gochanges.outputs.go }}
+      comms: ${{ steps.commschanges.outputs.comms }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -98,6 +103,21 @@ jobs:
           else
             echo "go=false" >> "$GITHUB_OUTPUT"
             echo "No Go-relevant changes; passing the gate without running the suite."
+          fi
+      # The advisory comms matrix runs on a PR only when the rig changes.
+      # On push to main it follows the Go answer above.
+      - name: Detect comms rig changes
+        id: commschanges
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "comms=${{ steps.gochanges.outputs.go }}" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha }}"
+          if git diff --name-only "$base"...HEAD | grep -qE '(^tests/comms_matrix/|^\.github/workflows/comms-matrix\.yml$|^sandbox/Dockerfile$)'; then
+            echo "comms=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "comms=false" >> "$GITHUB_OUTPUT"
+            echo "Comms rig unchanged; the advisory comms matrix runs on main and nightly."
           fi
 
   # The suite, split by package group across runners (#2169). `go test`

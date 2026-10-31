@@ -28,6 +28,10 @@ on:
       - '.github/workflows/perf-smoke.yml'
       - 'docs/perf-budget-suite.md'
   workflow_dispatch: {}
+  # Nightly backstop (post-tag CI queue): the PR trigger above stays
+  # path-filtered; this run covers changes that reach this code from
+  # outside those paths.
+  schedule: [{ cron: '20 3 * * *' }]
 
 # Every job here builds or launches the agent-deck binary. Since v1.16.7 a
 # TUI or daemon installs a newer release on its own and restarts in place;
