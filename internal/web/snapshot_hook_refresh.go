@@ -54,21 +54,25 @@ func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now
 	if sess == nil {
 		return
 	}
+	// The published seen mark covers only turns that ended before the visit,
+	// as on the cold read: if the TUI missed a running edge, a Stop newer
+	// than the visit is still unseen.
+	acked := sess.Acknowledged && hs != nil &&
+		session.HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, sess.AcknowledgedAt)
 	out := sessionstatus.Derive(sessionstatus.Input{
 		Tool:              sess.Tool,
 		PriorStatus:       sess.Status,
 		Hook:              hs,
 		Now:               now,
 		AllowStaleWaiting: !session.IsCodexCompatible(sess.Tool),
-		Acknowledged:      sess.Acknowledged,
+		Acknowledged:      acked,
 		InstanceID:        sess.ID,
 	})
 	// Same call as the Codex fast path in Instance.updateStatus: a completion
 	// older than the user's last visit was already seen. The seen mark must
 	// be set too: a session marked unread can be published before its visit
 	// time is cleared.
-	if out.Status == session.StatusWaiting && hs != nil && session.IsCodexCompatible(sess.Tool) &&
-		sess.Acknowledged && session.HookPredatesVisit(hs.UpdatedAt, hs.ReceivedAt, sess.AcknowledgedAt) {
+	if out.Status == session.StatusWaiting && session.IsCodexCompatible(sess.Tool) && acked {
 		out.Status = session.StatusIdle
 	}
 	sess.Status = out.Status

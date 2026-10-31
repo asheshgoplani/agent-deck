@@ -474,3 +474,32 @@ func TestApplyHookStatusToMenuSession_CodexCompletionBeforeVisitIsIdle(t *testin
 		t.Fatalf("completion marked unread: status = %q, want %q", unread.Status, session.StatusWaiting)
 	}
 }
+
+// #2986 item 1: the TUI's published seen mark only covers turns that ended
+// before the visit. If the TUI missed a running edge, a Claude Stop newer
+// than the visit must still show as waiting on the web, matching the
+// cold-read rule.
+func TestApplyHookStatusToMenuSession_ClaudeStopAfterVisitIsWaiting(t *testing.T) {
+	now := time.Now()
+	hook := &session.HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: now.Add(-2 * time.Second)}
+
+	fresh := &MenuSession{ID: "claude-fresh", Tool: "claude", Status: session.StatusIdle, Acknowledged: true, AcknowledgedAt: now.Add(-5 * time.Second)}
+	applyHookStatusToMenuSession(fresh, hook, now)
+	if fresh.Status != session.StatusWaiting {
+		t.Fatalf("Stop after the visit: status = %q, want %q", fresh.Status, session.StatusWaiting)
+	}
+
+	// The same Stop before the visit was already seen.
+	seen := &MenuSession{ID: "claude-seen", Tool: "claude", Status: session.StatusWaiting, Acknowledged: true, AcknowledgedAt: now}
+	applyHookStatusToMenuSession(seen, hook, now)
+	if seen.Status != session.StatusIdle {
+		t.Fatalf("Stop before the visit: status = %q, want %q", seen.Status, session.StatusIdle)
+	}
+
+	// Not seen at all: waiting regardless of the visit time.
+	unread := &MenuSession{ID: "claude-unread", Tool: "claude", Status: session.StatusIdle, AcknowledgedAt: now}
+	applyHookStatusToMenuSession(unread, hook, now)
+	if unread.Status != session.StatusWaiting {
+		t.Fatalf("Stop marked unread: status = %q, want %q", unread.Status, session.StatusWaiting)
+	}
+}
