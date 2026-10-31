@@ -42,6 +42,7 @@ func TestIssue2481_LogMaintenanceSparesAgentDeckLogs(t *testing.T) {
 	ownLogs := []string{"transition-notifier.log", "notifier-missed.log", "notifier-orphans.log", "notifier-probe-stalls.log"}
 
 	t.Run("orphan cleanup", func(t *testing.T) {
+		skipIfNoTmuxBinary(t) // CleanupOrphanedLogs needs tmux list-sessions to tell orphans apart
 		for _, name := range ownLogs {
 			write(name, 4096)
 		}

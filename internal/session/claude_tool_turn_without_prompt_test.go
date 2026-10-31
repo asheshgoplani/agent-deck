@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // A Claude turn that starts itself (task notification, inbox injection, a
@@ -51,6 +53,7 @@ const toolTurnLiveSpinnerPane = "⏺ Bash(sleep 30)\n" +
 	toolTurnComposer
 
 func TestClaudeToolTurnWithoutPromptReportsRunning(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	panes := map[string]string{
 		"todo-list":    toolTurnTodoPane,
 		"active-form":  toolTurnActiveFormPane,

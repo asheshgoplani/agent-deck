@@ -22,6 +22,7 @@ import (
 // session.MarkClaudeSessionIDVerified before the session ever reaches the
 // resume chokepoint.
 func TestIssue1830_TUICreateResumeByIDVouchesOwnership(t *testing.T) {
+	skipIfNoTmuxBinaryUI(t)
 	const wantID = "a1a1a1a1-2222-4333-8444-555555555555"
 
 	opts := session.NewClaudeOptions(nil)

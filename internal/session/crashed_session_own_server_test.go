@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // visualcheck review, 2026-09-23: after the foreign-tmux-server guard
@@ -150,6 +152,7 @@ func killPrivateServer(realTmux, flag, name, tmpdir string) {
 // socket). A session that crashed mid-turn must read error in the shared
 // status row, the list row and the header tally.
 func TestCrashedSession_TUIOnItsOwnServerShowsError(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	skipIfNoTmuxBinary(t)
 	bin := foreignTUIBinary(t)
 	realTmux, err := exec.LookPath("tmux")

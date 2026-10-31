@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func recoveryFixture(t *testing.T, conductor bool) (*Instance, string) {
@@ -128,6 +130,7 @@ func TestConductorRecoveryDraftDoesNotFailSpawn(t *testing.T) {
 }
 
 func TestConductorRecoveryDroppedEnterIsUncertain(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, capture := recoveryFixture(t, false)
 	body := "#!/bin/sh\nprintf '\\033[2J\\033[H❯ '\nwhile IFS= read -r line; do printf 'enter\\n' >> '" + capture + "'; printf '\\033[2J\\033[H❯ %s' \"$line\"; done\n"
 	if err := os.WriteFile(inst.Command, []byte(body), 0700); err != nil {
@@ -166,6 +169,7 @@ func TestConductorRecoveryMenuNeverReceivesInput(t *testing.T) {
 }
 
 func TestConductorRecoveryExplicitMessage(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, capture := recoveryFixture(t, true)
 	// A regular explicit initial message owns the one initial turn. Put its
 	// prompt in the existing launch helper's bottom-of-pane scan window.
@@ -190,6 +194,7 @@ func TestConductorRecoveryExplicitMessage(t *testing.T) {
 }
 
 func TestConductorRecoverySlowStartup(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, capture := recoveryFixture(t, true)
 	b, err := os.ReadFile(inst.Command)
 	if err != nil {
@@ -251,6 +256,7 @@ func TestConductorRecoveryEmptyMessageAndDurableState(t *testing.T) {
 }
 
 func TestConductorRecoverySerializesWithOtherSenders(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, capture := recoveryFixture(t, true)
 	lock, err := AcquireSendLock(inst.ID, time.Second)
 	if err != nil {

@@ -130,6 +130,7 @@ const uxAuditFrame = "claude-local-macapp-ux-audit-lollygagging_8a428ef2"
 // and the daemon must send the parent nothing. A child that is gone on every
 // server still reads error and still reaches the parent.
 func TestForeignTmuxServer_NestedTUIDoesNotFlipLiveSessionsToError(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	skipIfNoTmuxBinary(t)
 	bin := foreignTUIBinary(t)
 	for n, c := range []struct {

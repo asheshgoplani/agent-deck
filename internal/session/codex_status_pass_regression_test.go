@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -199,6 +200,7 @@ func TestStatusPassSweepPinsOwnershipBeyondTTL(t *testing.T) {
 }
 
 func TestStatusPassKnownEnvironmentRotation(t *testing.T) {
+	testutil.SkipShort(t, "waits out the real 30s tmux environment cache TTL")
 	dir, _ := statusPassFixture(t, 2)
 	inst := passInstance(1, "")
 	inst.CodexSessionID = "old"
