@@ -135,24 +135,40 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # cmd/agent-deck alone takes ~9 min, so it is cut three ways by test
-        # name; the other groups fit one runner each.
+        # Shards are cut so the slowest one sets the gate, not one big
+        # package: cmd/agent-deck and internal/session are single packages
+        # whose tests run one after another (~9 and ~14 min of test time),
+        # and REST's longest package (internal/issuereport) runs ~8 min on
+        # its own. Those groups are cut by test name. In each group the
+        # named shards take -run ranges and the last shard takes -skip of
+        # all of them, so a test whose name fits no range still runs there.
+        # tests/ci/go-test-shards.test.sh proves every test lands in exactly
+        # one shard. Ranges come from the per-test times in the gotestsum
+        # JSON of green main runs; re-cut when a shard drifts past the rest.
         shard:
           - name: cmd-a
             packages: ./cmd/...
-            run: '^Test[A-F]'
+            run: '^Test[A-I]'
           - name: cmd-b
             packages: ./cmd/...
-            run: '^Test[G-R]'
-          - name: cmd-c
-            packages: ./cmd/...
-            run: '^Test[S-Z_a-z0-9]'
-          - name: session
+            skip: '^Test[A-I]'
+          - name: session-a
             packages: ./internal/session/...
+            run: '^Test[A-C]'
+          - name: session-b
+            packages: ./internal/session/...
+            run: '^Test[D-I]'
+          - name: session-c
+            packages: ./internal/session/...
+            skip: '^Test[A-I]'
           - name: ui-web
             packages: ./internal/ui/... ./internal/web/... ./tests/...
-          - name: rest
+          - name: rest-a
             packages: REST
+            run: '^Test[A-R]'
+          - name: rest-b
+            packages: REST
+            skip: '^Test[A-R]'
           # The shared-state ordering proof (scripts/ci-shared-state-proof.sh)
           # runs beside the shards instead of after them.
           - name: proof
@@ -178,11 +194,17 @@ jobs:
           tmux -V
           zoxide --version
 
+      # The shard test checks that the matrix runs every Go test exactly once
+      # (no name-range gap, no overlap, no package the REST filter drops).
+      # The REST filter is anchored on whole path segments: an unanchored
+      # /internal/session also dropped internal/sessionref and
+      # internal/sessionstatus, so no shard ran their tests.
       - name: Resolve packages
         id: pkgs
         run: |
+          bash tests/ci/go-test-shards.test.sh
           if [ "${{ matrix.shard.packages }}" = "REST" ]; then
-            pkgs=$(go list ./... | grep -vE '/cmd/|/internal/session|/internal/ui|/internal/web|/tests/' | tr '\n' ' ')
+            pkgs=$(go list ./... | grep -vE '/(cmd|internal/session|internal/ui|internal/web|tests)(/|$)' | tr '\n' ' ')
           elif [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
             pkgs="PROOF"
           else
@@ -195,14 +217,18 @@ jobs:
         timeout-minutes: 30
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
+          SHARD_PACKAGES: ${{ steps.pkgs.outputs.packages }}
+          SHARD_RUN: ${{ matrix.shard.run }}
+          SHARD_SKIP: ${{ matrix.shard.skip }}
         run: |
           go install gotest.tools/gotestsum@v1.13.0
           if [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
             bash scripts/ci-shared-state-proof.sh
-          elif [ -n "${{ matrix.shard.run }}" ]; then
-            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m -run '${{ matrix.shard.run }}'
           else
-            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m
+            args=(-race -timeout 20m)
+            if [ -n "$SHARD_RUN" ]; then args+=(-run "$SHARD_RUN"); fi
+            if [ -n "$SHARD_SKIP" ]; then args+=(-skip "$SHARD_SKIP"); fi
+            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="$SHARD_PACKAGES" -- "${args[@]}"
           fi
 
       # Name the failing tests in the job summary (#2133) so a red shard says

@@ -30,6 +30,10 @@ var (
 	goTestTimeoutArg = regexp.MustCompile(`(?:^|\s)-{1,2}timeout[= ](\S+)`)
 	goTestRunArg     = regexp.MustCompile(`(?:^|\s)-{1,2}run[= ]`)
 	ciGotestsumLine  = regexp.MustCompile(`gotestsum [^\n]*-- [^\n]*-timeout (\S+)`)
+	// The shards may pass the go test flags through a bash array:
+	//   args=(-race -timeout 20m) ... gotestsum ... -- "${args[@]}"
+	ciGotestsumArgs  = regexp.MustCompile(`gotestsum [^\n]*-- "\$\{args\[@\]\}"`)
+	ciArgsTimeout    = regexp.MustCompile(`\bargs=\([^)\n]*-timeout ([^\s)]+)`)
 	shellPackageList = regexp.MustCompile(`\$\{?[A-Za-z_][A-Za-z0-9_]*`)
 )
 
@@ -39,11 +43,43 @@ func ciPackageTimeout(repoRoot string) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	m := ciGotestsumLine.FindSubmatch(raw)
-	if m == nil {
-		return 0, fmt.Errorf("go-test.yml: no gotestsum ... -- ... -timeout <d> line")
+	return ciTimeoutFromWorkflow(raw)
+}
+
+// ciTimeoutFromWorkflow finds the -timeout in the shards' gotestsum call,
+// written either inline after `--` or in the bash array that call expands.
+func ciTimeoutFromWorkflow(raw []byte) (time.Duration, error) {
+	if m := ciGotestsumLine.FindSubmatch(raw); m != nil {
+		return time.ParseDuration(string(m[1]))
 	}
-	return time.ParseDuration(string(m[1]))
+	if ciGotestsumArgs.Match(raw) {
+		if m := ciArgsTimeout.FindSubmatch(raw); m != nil {
+			return time.ParseDuration(string(m[1]))
+		}
+	}
+	return 0, fmt.Errorf("go-test.yml: no gotestsum ... -- ... -timeout <d> line")
+}
+
+func TestCITimeoutFromWorkflowReadsInlineAndArrayForms(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"inline", "gotestsum --packages=\"$P\" -- -race -timeout 20m\n", 20 * time.Minute, true},
+		{"bash array", "args=(-race -timeout 25m)\nif x; then args+=(-run y); fi\ngotestsum --packages=\"$P\" -- \"${args[@]}\"\n", 25 * time.Minute, true},
+		{"array without timeout", "args=(-race)\ngotestsum -- \"${args[@]}\"\n", 0, false},
+		{"no gotestsum", "args=(-race -timeout 20m)\ngo test \"${args[@]}\"\n", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ciTimeoutFromWorkflow([]byte(tc.in))
+			if (err == nil) != tc.ok || got != tc.want {
+				t.Fatalf("got %v, %v; want %v, ok=%v", got, err, tc.want, tc.ok)
+			}
+		})
+	}
 }
 
 // joinContinuations folds backslash-continued lines so a `go test` spread
