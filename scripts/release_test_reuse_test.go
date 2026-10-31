@@ -145,10 +145,9 @@ func baseFixture() reuseFixture {
 }
 
 type reuseResult struct {
-	out    map[string]string
-	log    string
-	exit   int
-	called string
+	out  map[string]string
+	log  string
+	exit int
 }
 
 func runReuse(t *testing.T, fx reuseFixture, env ...string) reuseResult {
