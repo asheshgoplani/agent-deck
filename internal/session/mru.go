@@ -50,13 +50,13 @@ func NewMRUHistoryFromInstances(instances []*Instance, capacity int) *MRUHistory
 
 	seeded := make([]*Instance, 0, len(instances))
 	for _, inst := range instances {
-		if inst == nil || inst.LastAccessedAt.IsZero() {
+		if inst == nil || inst.GetLastAccessedAtThreadSafe().IsZero() {
 			continue
 		}
 		seeded = append(seeded, inst)
 	}
 	sort.SliceStable(seeded, func(i, j int) bool {
-		return seeded[i].LastAccessedAt.Before(seeded[j].LastAccessedAt)
+		return seeded[i].GetLastAccessedAtThreadSafe().Before(seeded[j].GetLastAccessedAtThreadSafe())
 	})
 
 	for _, inst := range seeded {

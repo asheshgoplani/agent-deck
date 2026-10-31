@@ -1238,8 +1238,8 @@ func (inst *Instance) DisplayLastActivityTime() time.Time {
 	if ok {
 		return ts
 	}
-	if !inst.LastAccessedAt.IsZero() {
-		return inst.LastAccessedAt
+	if la := inst.GetLastAccessedAtThreadSafe(); !la.IsZero() {
+		return la
 	}
 	return inst.CreatedAt
 }

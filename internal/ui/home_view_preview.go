@@ -946,7 +946,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		previewHookStatus = h.hookWatcher.GetHookStatus(selected.ID)
 	}
 	confirmedTs, confirmedObserved := selected.LastObservedActivity()
-	activityTime := sessionActivityTime(selected.CreatedAt, selected.LastStartedAt, selected.LastActivityAt(), selected.LastAccessedAt, confirmedTs, confirmedObserved, previewHookStatus)
+	activityTime := sessionActivityTime(selected.CreatedAt, selected.LastStartedAt, selected.LastActivityAt(), selected.GetLastAccessedAtThreadSafe(), confirmedTs, confirmedObserved, previewHookStatus)
 	activityStr := formatRelativeTime(activityTime)
 	if selectedStatus == session.StatusRunning {
 		activityStr = "active now"

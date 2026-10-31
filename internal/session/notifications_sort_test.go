@@ -119,3 +119,51 @@ func TestNotificationSort_ConfigKeyParses(t *testing.T) {
 		t.Fatalf("default GetSort() = %q, want %q", got, NotificationSortWaiting)
 	}
 }
+
+// MarkAccessed (no state DB here, so the persist step is a no-op) must feed
+// the last_accessed order, not only a hand-set LastAccessedAt.
+func TestNotificationSort_MarkAccessedFeedsSort(t *testing.T) {
+	nm := NewNotificationManager(6, false, false)
+	nm.SetSortMode(NotificationSortLastAccessed)
+	insts := sortFixture(time.Now())
+	nm.SyncFromInstances(insts, "")
+	assertNotifOrder(t, nm, "c", "b", "a")
+
+	insts[0].MarkAccessed()
+	nm.SyncFromInstances(insts, "")
+	assertNotifOrder(t, nm, "a", "c", "b")
+}
+
+// The notification bar's Ctrl+b 1-9 jump stamps the access time from the
+// background sync goroutine while the UI goroutine sorts by it (group
+// "actionable" order, MRU seed, path suggestions). Run under -race.
+func TestNotificationSort_MarkAccessedConcurrentWithReaders(t *testing.T) {
+	SetGroupSortMode("actionable")
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+
+	nm := NewNotificationManager(6, true, false)
+	nm.SetSortMode(NotificationSortLastAccessed)
+	insts := sortFixture(time.Now())
+	for _, inst := range insts {
+		inst.ProjectPath = "/tmp/p-" + inst.ID
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			insts[i%len(insts)].MarkAccessed()
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		nm.SyncFromInstances(insts, "")
+		sorted := append([]*Instance(nil), insts...)
+		SortInstancesByActionable(sorted)
+		_ = NewMRUHistoryFromInstances(insts, DefaultMRUCapacity)
+		_ = mostRecentPathForSessions(insts)
+		for _, inst := range insts {
+			_ = inst.DisplayLastActivityTime()
+		}
+	}
+	<-done
+}
