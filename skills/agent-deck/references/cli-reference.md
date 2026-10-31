@@ -47,7 +47,7 @@ agent-deck add [path] [options]
 |------|-------------|
 | `-t, --title` | Session title |
 | `-g, --group` | Group path |
-| `-c, --cmd` | Tool/command (claude, codex, gemini, opencode, pi, shell, copilot, crush, muse, cursor, hermes, deepseek, or a custom command string) — `shell` is a plain terminal with no AI tool attached |
+| `-c, --cmd` | Tool/command (claude, codex, gemini, opencode, pi, shell, copilot, crush, muse, cursor, hermes, kimi, deepseek, or a custom command string) — `shell` is a plain terminal with no AI tool attached |
 | `--wrapper` | Wrapper command; use `{command}` placeholder |
 | `--parent` | Parent session (creates child) |
 | `--no-parent` | Disable automatic parent linking |
@@ -1463,6 +1463,16 @@ agent-deck pi-hooks uninstall
 ```
 
 pi turn-level status uses an agent-deck extension installed into pi's global extension directory (`~/.pi/agent/extensions/agent-deck.ts`, or under `PI_CODING_AGENT_DIR` when set). It forwards `session_start`, `turn_start`, `turn_end` and `session_shutdown`; restart running pi sessions after installing. `status` reports `INSTALLED`, `OUTDATED` (reinstall to upgrade), `FOREIGN` (a file agent-deck did not write is in the way) or `NOT INSTALLED`. Without it, pi status falls back to pane detection.
+
+## Kimi Hook Commands
+
+```bash
+agent-deck kimi-hooks install
+agent-deck kimi-hooks status
+agent-deck kimi-hooks uninstall
+```
+
+Kimi Code lifecycle status uses native entries in `config.toml` under the explicit `[kimi].config_dir`, else `KIMI_CODE_HOME`, else `~/.kimi-code`. Installation preserves existing settings and unrelated hooks and is idempotent. The TUI asks once before modifying this file; declining performs no write and is remembered. Uninstall removes only the exact agent-deck-owned commands and durably suppresses the automatic prompt; explicit install is a new opt-in and the repair/upgrade path. Without hooks, Kimi still launches and uses pane-based status.
 
 ## DeepSeek Commands
 

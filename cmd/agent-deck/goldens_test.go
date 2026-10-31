@@ -117,6 +117,8 @@ var excludedCommands = []excludedCommand{
 	{"gemini-hooks uninstall", "mutates Gemini hook config"},
 	{"hermes-hooks install", "mutates Hermes hook config"},
 	{"hermes-hooks uninstall", "mutates Hermes hook config"},
+	{"kimi-hooks install", "mutates Kimi hook config"},
+	{"kimi-hooks uninstall", "mutates Kimi hook config"},
 	{"cursor-hooks install", "mutates Cursor hook config"},
 	{"cursor-hooks uninstall", "mutates Cursor hook config"},
 	{"tmux-hooks install", "mutates the live tmux server's hook slot"},
@@ -188,6 +190,7 @@ func safeSpecs() []goldenSpec {
 		{"codex_hooks_status", []string{"codex-hooks", "status"}, 0},
 		{"gemini_hooks_status", []string{"gemini-hooks", "status"}, 0},
 		{"hermes_hooks_status", []string{"hermes-hooks", "status"}, 0},
+		{"kimi_hooks_status", []string{"kimi-hooks", "status"}, 0},
 		{"cursor_hooks_status", []string{"cursor-hooks", "status"}, 0},
 		// exit 1: no tmux server is running yet in a fresh sandbox (today's real behaviour).
 		{"tmux_hooks_status", []string{"tmux-hooks", "status"}, 1},
@@ -269,7 +272,7 @@ func helpSpecs() []goldenSpec {
 	topLevel := []string{
 		"add", "launch", "accounts", "doctor", "health", "try", "list", "remove", "rename",
 		"status", "session", "fleet", "mcp", "skill", "codex-hooks", "gemini-hooks",
-		"hermes-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "group",
+		"hermes-hooks", "kimi-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "group",
 		"worktree", "usage", "recall", "web", "remote", "conductor", "agents", "agent",
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
 		"uninstall", "completion", "costs", "config", "inbox", "feedback", "whats-new",
@@ -286,6 +289,7 @@ func helpSpecs() []goldenSpec {
 		"codex-hooks install", "codex-hooks uninstall", "codex-hooks status",
 		"gemini-hooks install", "gemini-hooks uninstall", "gemini-hooks status",
 		"hermes-hooks install", "hermes-hooks uninstall", "hermes-hooks status",
+		"kimi-hooks install", "kimi-hooks uninstall", "kimi-hooks status",
 		"cursor-hooks install", "cursor-hooks uninstall", "cursor-hooks status",
 		"tmux-hooks install", "tmux-hooks uninstall", "tmux-hooks status",
 		"pi-hooks install", "pi-hooks uninstall", "pi-hooks status",

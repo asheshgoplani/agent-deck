@@ -278,7 +278,7 @@ queue never passes it.
 ## Harnesses
 
 `harness list --json` returns one object per harness (claude, codex, gemini,
-opencode, pi, hermes):
+opencode, pi, hermes, kimi):
 
 ```json
 { "name": "codex", "display_name": "Codex", "binary": "codex",
@@ -295,7 +295,9 @@ that order of precedence. `logged_in` reads marker files only, never a
 secret: Claude `.claude.json` `oauthAccount` (or `.credentials.json`) in each
 config dir, Codex `auth.json` in each CODEX_HOME, Gemini `oauth_creds.json`,
 OpenCode and Pi `auth.json`, Hermes `.env`; an API key in the environment
-also counts. `version` comes from `<binary> --version` (3 s timeout). The
+also counts. Kimi has no documented sign-in status command suitable for this
+contract, so its `logged_in` is null rather than guessed from credentials.
+`version` comes from `<binary> --version` (3 s timeout). The
 install/login table is `internal/harness/table.go`, versioned with the
 release; override any entry in config.toml:
 

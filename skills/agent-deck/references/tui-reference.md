@@ -246,7 +246,7 @@ completion content are never rendered.
 
 **Fields (order: Name → Tool → Model → Reasoning effort → Path):**
 - Session name (optional: left empty, it is the folder name, made unique and cut to 50 characters; the empty field previews that exact name). With a worktree on, an empty name's branch is taken from that name
-- Command (claude/gemini/opencode/codex/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
+- Command (claude/gemini/opencode/codex/kimi/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
 - Model ID (claude/codex/gemini/opencode): empty means the tool default; `↓` or `Space` opens the list of known IDs, or type any ID (CLI: `--model`)
 - Reasoning effort (claude/codex): `←`/`→` or `Space` cycles the levels (CLI: `--effort`)
 - Project path (required, supports `~/`)
@@ -390,6 +390,7 @@ Before the restart is armed (by the key or on its own) the TUI checks the file i
 | OpenCode | 🌐 | Cyan |
 | Codex | 💻 | Cyan |
 | Cursor | 📝 | Blue |
+| Kimi Code | 🌙 | Purple |
 | Shell | 🐚 | Default |
 
 ## Color Scheme (Tokyo Night)

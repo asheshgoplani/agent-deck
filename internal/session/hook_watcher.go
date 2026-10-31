@@ -205,7 +205,7 @@ func (o PiOrphanRun) expired(now time.Time) bool {
 // HookStatus holds the decoded status from a hook status file.
 type HookStatus struct {
 	Status                   string    // running, idle, waiting, dead
-	SessionID                string    // Claude session ID
+	SessionID                string    // Native session ID reported by the hook
 	Event                    string    // Hook event name
 	UpdatedAt                time.Time // When this status was received
 	CodexStartedGeneration   string
@@ -260,6 +260,8 @@ type HookStatus struct {
 	// only, so 0 again after ClearHookStatus removes it: a judge reads the
 	// count with readHookTurnSeq, which also reads <id>.turnseq.
 	TurnSeq uint64
+	// ClientType identifies the native hook source (Kimi uses "kimi_code_cli").
+	ClientType string
 }
 
 // hookGenerationForInstance resolves generation authority by instance, not by
@@ -602,6 +604,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			TranscriptPath           string        `json:"transcript_path"`
 			Cwd                      string        `json:"cwd"`
 			Platform                 string        `json:"platform"`
+			ClientType               string        `json:"client_type"`
 			CodexStartedGeneration   string        `json:"codex_started_generation"`
 			CodexCompletedGeneration string        `json:"codex_completed_generation"`
 			CodexStartedSessionID    string        `json:"codex_started_session_id"`
@@ -634,6 +637,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			TranscriptPath:           raw.TranscriptPath,
 			Cwd:                      raw.Cwd,
 			Platform:                 raw.Platform,
+			ClientType:               raw.ClientType,
 			CodexStartedGeneration:   raw.CodexStartedGeneration,
 			CodexCompletedGeneration: raw.CodexCompletedGeneration,
 			CodexStartedSessionID:    raw.CodexStartedSessionID,
@@ -791,6 +795,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		TranscriptPath           string        `json:"transcript_path"`
 		Cwd                      string        `json:"cwd"`
 		Platform                 string        `json:"platform"`
+		ClientType               string        `json:"client_type"`
 		CodexStartedGeneration   string        `json:"codex_started_generation"`
 		CodexCompletedGeneration string        `json:"codex_completed_generation"`
 		CodexStartedSessionID    string        `json:"codex_started_session_id"`
@@ -830,6 +835,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		TranscriptPath:           status.TranscriptPath,
 		Cwd:                      status.Cwd,
 		Platform:                 status.Platform,
+		ClientType:               status.ClientType,
 		CodexStartedGeneration:   status.CodexStartedGeneration,
 		CodexCompletedGeneration: status.CodexCompletedGeneration,
 		CodexStartedSessionID:    status.CodexStartedSessionID,

@@ -187,6 +187,9 @@ func pruneHermesAbandonedScope(instanceID, dir string) {
 	if _, err := os.Stat(filepath.Join(dir, instanceID+".generation.json")); err == nil {
 		return
 	}
+	if _, err := os.Stat(filepath.Join(dir, instanceID+kimiOwnedSessionSuffix)); err == nil {
+		return
+	}
 	// The abandoned scope's own-session record moves to the active scope when
 	// that has none (a sandbox toggle must not lose the conversation a later
 	// restart resumes), and is removed otherwise, so it does not outlive the

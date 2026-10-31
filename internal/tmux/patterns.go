@@ -36,6 +36,8 @@ type ResolvedPatterns struct {
 	SpinnerActivePattern    *regexp.Regexp
 }
 
+var kimiErrorBannerRe = regexp.MustCompile(`(?m)^\s*Error: \[[^\]\r\n]+\]`)
+
 // DefaultRawPatterns returns the built-in detection patterns for a known tool.
 // Returns nil for unknown tools (they have no defaults).
 func DefaultRawPatterns(toolName string) *RawPatterns {
@@ -54,6 +56,15 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 		return &RawPatterns{
 			BusyPatterns:   []string{"esc to cancel"},
 			PromptPatterns: []string{"gemini>", "Type your message"},
+		}
+	case "kimi":
+		return &RawPatterns{
+			BusyPatterns: []string{`re:(?m)^\s*🌘 Retrying \(\d+/\d+\)`},
+			PromptPatterns: []string{
+				`re:(?m)^\s*│ >`,
+				`re:(?m)^\s*Trust this folder\?\s*$`,
+			},
+			SpinnerChars: []string{"🌘"},
 		}
 	case "opencode":
 		return &RawPatterns{

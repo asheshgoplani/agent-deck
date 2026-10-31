@@ -31,7 +31,7 @@ type statusPaneCorpusEntry struct {
 // (DefaultRawPatterns). Each one's detector is run over every corpus frame.
 var statusCorpusDetectorTools = []string{
 	"claude", "codewhale", "codex", "copilot", "cursor", "deepseek", "gemini",
-	"muse", "omp", "opencode", "openclaw", "pi", "shell",
+	"kimi", "muse", "omp", "opencode", "openclaw", "pi", "shell",
 }
 
 // statusCorpusForeignRunning lists the detectors that do read some other

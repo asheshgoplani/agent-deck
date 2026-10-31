@@ -685,6 +685,8 @@ func (i *Instance) getToolEnvFile() string {
 		return config.OMP.EnvFile
 	case "cursor":
 		return config.Cursor.EnvFile
+	case "kimi":
+		return config.Kimi.EnvFile
 	case "hermes":
 		if name := conductorNameFromInstance(i); name != "" {
 			if conductorEnv := config.GetConductorHermesEnvFile(name); conductorEnv != "" {

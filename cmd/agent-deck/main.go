@@ -754,6 +754,9 @@ func main() {
 		case "hermes-hooks":
 			handleHermesHooks(args[1:])
 			return
+		case "kimi-hooks":
+			handleKimiHooks(args[1:])
+			return
 		case "cursor-hooks":
 			handleCursorHooks(args[1:])
 			return
@@ -1670,7 +1673,7 @@ var commandRegistry = map[string]bool{
 	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
-	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
+	"hermes-hooks": true, "kimi-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "msg": true, "feedback": true, "whats-new": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true, "completion": true,
@@ -4800,6 +4803,7 @@ func printHelp() {
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
 	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
+	fmt.Println("  kimi-hooks       Manage Kimi Code hook integration")
 	fmt.Println("  cursor-hooks     Manage Cursor Agent CLI hook integration")
 	fmt.Println("  tmux-hooks       Manage the window policy hook on the tmux server")
 	fmt.Println("  pi-hooks         Manage pi (pi-coding-agent) hook integration")
@@ -4866,6 +4870,9 @@ func printHelp() {
 	fmt.Println("  hermes-hooks install      Install Hermes Agent hooks")
 	fmt.Println("  hermes-hooks uninstall    Remove Hermes Agent hooks")
 	fmt.Println("  hermes-hooks status       Show Hermes hooks install status")
+	fmt.Println("  kimi-hooks install        Install Kimi Code hooks")
+	fmt.Println("  kimi-hooks uninstall      Remove Kimi Code hooks")
+	fmt.Println("  kimi-hooks status         Show Kimi Code hooks install status")
 	fmt.Println("  cursor-hooks install      Install Cursor hooks")
 	fmt.Println("  cursor-hooks uninstall    Remove Cursor hooks")
 	fmt.Println("  cursor-hooks status       Show Cursor hooks install status")

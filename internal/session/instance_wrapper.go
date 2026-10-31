@@ -479,6 +479,8 @@ func (i *Instance) DisplaySessionID() string {
 		return i.OpenCodeSessionID
 	case i.Tool == "codex":
 		return i.CodexSessionID
+	case i.Tool == "kimi":
+		return i.KimiSessionID
 	default:
 		return i.GetGenericSessionID()
 	}

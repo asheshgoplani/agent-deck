@@ -69,6 +69,11 @@ func ClassifyPaneFrame(tool, content string) FrameVerdict {
 // trim it records whether the frame shows an open menu or an error that
 // outranks that work (s.lastBackgroundBlocked). Caller holds s.mu.
 func (s *Session) prepareFrame(content string) string {
+	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand())
+	if tool == "kimi" {
+		s.lastBackgroundWork, s.lastBackgroundBlocked = BackgroundWork{}, false
+		return trimKimiToCurrentTurn(content)
+	}
 	if !s.isClaudeTool() {
 		s.lastBackgroundWork, s.lastBackgroundBlocked = BackgroundWork{}, false
 		return content
@@ -77,6 +82,34 @@ func (s *Session) prepareFrame(content string) string {
 	trimmed := trimClaudeTrailingRoster(content)
 	s.lastBackgroundBlocked = s.backgroundWorkOutrankedLocked(trimmed)
 	return trimmed
+}
+
+var (
+	kimiSubmittedPromptRe = regexp.MustCompile(`^\s*❯\s+`)
+	kimiComposerRe        = regexp.MustCompile(`^\s*│ >`)
+)
+
+func trimKimiToCurrentTurn(content string) string {
+	lines := strings.Split(content, "\n")
+	composer := -1
+	for i, line := range lines {
+		if kimiComposerRe.MatchString(line) {
+			composer = i
+		}
+	}
+	if composer < 0 {
+		return content
+	}
+	submitted := -1
+	for i := 0; i < composer; i++ {
+		if kimiSubmittedPromptRe.MatchString(lines[i]) {
+			submitted = i
+		}
+	}
+	if submitted < 0 {
+		return content
+	}
+	return strings.Join(lines[submitted+1:], "\n")
 }
 
 // claudeFooterRe matches the mode line under Claude's input box, the last line

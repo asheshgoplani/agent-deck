@@ -10,6 +10,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides)
 - [[group_defaults] Section](#group_defaults-section)
 - [[gemini] Section](#gemini-section)
+- [[kimi] Section](#kimi-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
 - [[models] Section](#models-section)
@@ -282,6 +283,31 @@ command = "gemini"                   # Binary/invocation override
 | `default_model` | string | `""` | Model to use (e.g., `"gemini-2.5-flash"`). Empty uses Gemini's default. |
 | `env_file` | string | `""` | A .env file sourced for Gemini sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"gemini"` | Override the binary/invocation. Supports flags. |
+
+## [kimi] Section
+
+Kimi Code CLI integration settings for the official `kimi` executable (`@moonshot-ai/kimi-code`), not the legacy `kimi-cli`.
+
+```toml
+[kimi]
+command = "kimi"
+config_dir = "~/.kimi-code"
+env_file = "~/.config/agent-deck/kimi.env"
+default_model = "kimi-code/kimi-for-coding"
+yolo_mode = false
+hooks_enabled = true
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `"kimi"` | Binary or invocation to launch. A noncanonical custom command is passed through without derived `--session`, `--model`, or `--yolo` flags, so wrappers retain control of their arguments. Standard agent-deck instance/profile/tool environment is still supplied for hooks. |
+| `config_dir` | string | `""` | Explicit Kimi data root, exported as `KIMI_CODE_HOME`. Empty preserves the ambient `KIMI_CODE_HOME` or Kimi's own `~/.kimi-code` default. The root contains configuration, native sessions, and credentials; do not share it unintentionally. |
+| `env_file` | string | `""` | Environment file sourced for Kimi sessions only, after global `[shell].env_files`. It may contain credentials or routing variables; restrict its permissions and never commit secrets. See [Path Resolution](#path-resolution). |
+| `default_model` | string | `""` | Model alias passed as `--model` for fresh sessions only. Empty uses Kimi's configured default. Existing conversations resume without this flag. |
+| `yolo_mode` | bool | `false` | Adds `--yolo` on fresh launch and resume. Kimi documents this as skipping approval for routine edits and commands, including file writes and shell execution; enable it only in trusted working directories. |
+| `hooks_enabled` | bool | `true` | Allows the one-time Kimi hook-consent prompt. Even when true, agent-deck does not change Kimi's `config.toml` before consent. False disables the automatic prompt; explicit `agent-deck kimi-hooks install` remains available. Uninstall durably suppresses future prompts until an explicit install opts in again. |
+
+Hook installation targets `config.toml` under the explicitly configured `config_dir`, else ambient `KIMI_CODE_HOME`, else `~/.kimi-code`. It preserves existing providers, models, credentials, permissions, and unrelated hooks. Use `agent-deck kimi-hooks install`, `status`, and `uninstall` to manage the entries explicitly. Restart/resume uses only the native session ID reported by the managed instance's own hooks; no newest-transcript fallback is used.
 
 ## [opencode] Section
 

@@ -18,6 +18,7 @@ Agent Deck works with any terminal-based AI tool:
 | **Muse Code** (`muse`) | Status detection, organization, launch, resume |
 | **Cursor** (terminal) | Status detection (hook-driven), MCP, organization |
 | **Hermes Agent** | Status detection (hook-driven, `agent-deck hermes-hooks install`), organization, launch |
+| **Kimi Code** (`kimi`) | Status detection (hook-driven with pane fallback), organization, launch, native session-ID persistence, restart/resume |
 | **pi** (`pi-coding-agent`) | Status detection (hook-driven), organization, launch, resume, fork |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
@@ -52,6 +53,16 @@ agent-deck pi-hooks status
 ```
 
 Restart running pi sessions after installing. Without the extension a pi session's status is read from the pane, which is slower and occasionally wrong; with it, agent-deck uses pi's own turn events and falls back to the pane only when no recent event is available. `PI_CODING_AGENT_DIR` is honored if you set it.
+
+Kimi Code status uses its native lifecycle hooks. Agent Deck asks once before changing Kimi's `config.toml`; declining is remembered and leaves the file untouched. You can also opt in, inspect, or remove the integration explicitly:
+
+```bash
+agent-deck kimi-hooks install
+agent-deck kimi-hooks status
+agent-deck kimi-hooks uninstall
+```
+
+Hooks are installed in `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`), preserving existing settings and unrelated hooks. Without them, launch, interactive prompts, and pane-based status still work. Kimi's own session ID is saved from the managed session's hooks and used for exact `kimi --session <id>` restart/resume; agent-deck does not guess from the newest transcript. Native fork, Recall ingestion, model catalog integration, and account switching are not currently supported for Kimi.
 
 DeepSeek Harness is the `dsh` binary from [`@deepseek-ai/dsh`](https://github.com/deepseek-ai/deepseek-harness)
 (`npm install -g @deepseek-ai/dsh`). It boots *profiles*: `web` (a browser UI served

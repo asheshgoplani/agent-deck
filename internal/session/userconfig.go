@@ -75,7 +75,7 @@ type UserConfig struct {
 	Health HealthSettings `toml:"health,omitempty"`
 
 	// DefaultTool is the pre-selected AI tool when creating new sessions
-	// Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
+	// Valid values: "claude", "gemini", "opencode", "codex", "pi", "kimi", or any custom tool name
 	// If empty or invalid, defaults to "shell" (no pre-selection)
 	DefaultTool string `toml:"default_tool,omitempty"`
 
@@ -214,6 +214,9 @@ type UserConfig struct {
 
 	// Hermes defines Hermes Agent CLI integration settings
 	Hermes HermesSettings `toml:"hermes,omitempty"`
+
+	// Kimi defines Kimi Code CLI integration settings
+	Kimi KimiSettings `toml:"kimi,omitempty"`
 
 	// DeepSeek defines DeepSeek Harness (`dsh`) integration settings
 	DeepSeek DeepSeekSettings `toml:"deepseek,omitempty"`
@@ -3309,6 +3312,27 @@ type HermesSettings struct {
 	WorkspaceDir string `toml:"workspace_dir,omitempty"`
 }
 
+// KimiSettings defines Kimi Code CLI configuration.
+type KimiSettings struct {
+	// Command is the Kimi CLI command or invocation to use. Default: "kimi".
+	Command string `toml:"command,omitempty"`
+	// ConfigDir is exported as KIMI_CODE_HOME. Empty preserves the ambient environment.
+	ConfigDir string `toml:"config_dir,omitempty"`
+	// EnvFile is sourced before launching Kimi. Optional.
+	EnvFile string `toml:"env_file,omitempty"`
+	// DefaultModel is passed with --model for fresh sessions only. Optional.
+	DefaultModel string `toml:"default_model,omitempty"`
+	// YoloMode enables --yolo for fresh and resumed sessions. Default: false.
+	YoloMode bool `toml:"yolo_mode,omitempty"`
+	// HooksEnabled controls automatic consent prompting for hook installation.
+	// Installed hooks continue to update status when this is false. Default: true.
+	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`
+}
+
+func (c *KimiSettings) GetHooksEnabled() bool {
+	return c.HooksEnabled == nil || *c.HooksEnabled
+}
+
 // CrushSettings defines charmbracelet/crush CLI configuration (Issue #940).
 // Binary: `crush` from github.com/charmbracelet/crush. Interactive TUI.
 // Key flags: --yolo, --session/-s <id>, --continue/-C, --cwd, --debug.
@@ -5173,6 +5197,10 @@ func GetToolCommand(toolName string) string {
 		if config.Hermes.Command != "" {
 			return config.Hermes.Command
 		}
+	case "kimi":
+		if config.Kimi.Command != "" {
+			return config.Kimi.Command
+		}
 	case "omp":
 		if config.OMP.Command != "" {
 			return config.OMP.Command
@@ -5222,6 +5250,8 @@ func GetToolIcon(toolName string) string {
 		return "📝"
 	case "hermes":
 		return "☤"
+	case "kimi":
+		return "🌙"
 	case "deepseek":
 		return "🐋"
 	case "pi":
@@ -5877,7 +5907,7 @@ func CreateExampleConfig() error {
 
 # Default AI tool for new sessions
 # When creating a new session (pressing 'n'), this tool will be pre-selected
-# Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
+# Valid values: "claude", "gemini", "opencode", "codex", "pi", "kimi", or any custom tool name
 # Leave commented out or empty to default to shell (no pre-selection)
 # default_tool = "claude"
 

@@ -133,6 +133,13 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.clearHermesOwnedSessionID()
 	}
 
+	if i.Tool == "kimi" {
+		i.KimiSessionID = ""
+		i.kimiBoundAt = time.Time{}
+		i.persistKimiSessionBinding("", time.Unix(0, 0))
+		i.clearKimiOwnedSessionID()
+	}
+
 	if i.Tool == "deepseek" {
 		// Same contract as hermes: drop the discovered resume ID so the next
 		// launch boots a new dsh session instead of reopening the old one.
@@ -367,7 +374,7 @@ func (i *Instance) killInternal(sync bool) error {
 	i.mu.Unlock()
 	// (gen already bumped at the top of killInternal, before the tmux kill —
 	// see the comment there for why it must happen first, not here.)
-	if i.GetToolThreadSafe() == "hermes" {
+	if tool := i.GetToolThreadSafe(); tool == "hermes" || tool == "kimi" {
 		i.clearHermesHookArtifacts()
 	}
 
@@ -599,11 +606,11 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		defer func() { i.restartEnv = nil }()
 	}
 	// Generation publication is the restart invalidation boundary. Commit it
-	// before any signal/kill reaches the old Hermes process, so its delayed
-	// hooks cannot overwrite the replacement's starting seed.
-	if i.Tool == "hermes" {
+	// before any signal/kill reaches the old process, so its delayed hooks
+	// cannot overwrite the replacement's starting seed.
+	if i.Tool == "hermes" || i.Tool == "kimi" {
 		if _, err := i.seedHermesHookGeneration("starting", false); err != nil {
-			return fmt.Errorf("seed hermes restart generation: %w", err)
+			return fmt.Errorf("seed %s restart generation: %w", i.Tool, err)
 		}
 	}
 
@@ -1033,6 +1040,12 @@ func (i *Instance) restart(env map[string]string) (err error) {
 			return fmt.Errorf("seed hermes restart baseline: %w", err)
 		}
 		command = i.buildHermesCommand(i.Command)
+	} else if i.Tool == "kimi" {
+		i.prepareKimiResume()
+		if _, err := i.seedHermesHookGeneration("waiting", false); err != nil {
+			return fmt.Errorf("seed kimi restart baseline: %w", err)
+		}
+		command = i.buildKimiCommand(i.Command)
 	} else if i.Tool == "deepseek" {
 		// Re-discover the workspace's newest dsh session on EVERY restart, for
 		// the same self-healing reason as hermes: a pruned session yields the
@@ -1223,13 +1236,15 @@ func (i *Instance) RestartFresh() error {
 	i.prepareRestartMCPConfig()
 	i.spawnGen.Add(1)
 
-	// Rotate the Hermes hook generation before the binding is cleared and the
-	// old process is killed, as Restart does: a late hook from the old process
-	// then fails the generation check instead of writing its id back.
-	if i.Tool == "hermes" {
+	// Rotate the hook generation before the binding is cleared and the old
+	// process is killed: a late hook then fails the generation check instead
+	// of writing its id back.
+	if i.Tool == "hermes" || i.Tool == "kimi" {
 		if _, err := i.seedHermesHookGeneration("starting", false); err != nil {
-			return fmt.Errorf("seed hermes fresh restart generation: %w", err)
+			return fmt.Errorf("seed %s fresh restart generation: %w", i.Tool, err)
 		}
+	}
+	if i.Tool == "hermes" {
 		i.hermesStartFresh = true
 	}
 
@@ -1466,6 +1481,9 @@ func (i *Instance) CanRestart() bool {
 	if i.Tool == "hermes" {
 		return true
 	}
+	if i.Tool == "kimi" {
+		return true
+	}
 
 	// DeepSeek Harness is restartable: a restart re-boots the same profile in
 	// the same workspace against the same $DSH_HOME, so every conversation dsh
@@ -1509,8 +1527,8 @@ func (i *Instance) CanRestartFresh() bool {
 	if i.Tool == "codex" {
 		return i.CodexSessionID != ""
 	}
-	// Hermes fresh-restart discards the resume binding and starts a new session.
-	if i.Tool == "hermes" {
+	// Hermes and Kimi fresh-restart discard the resume binding and start a new session.
+	if i.Tool == "hermes" || i.Tool == "kimi" {
 		return true
 	}
 	// DeepSeek fresh-restart is only meaningful when there is a resume binding

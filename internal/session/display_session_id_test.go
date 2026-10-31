@@ -33,6 +33,11 @@ func TestDisplaySessionID(t *testing.T) {
 			want: "cdx-789",
 		},
 		{
+			name: "kimi",
+			inst: &Instance{Tool: "kimi", KimiSessionID: "kimi-native", GenericSessionID: "not-kimi"},
+			want: "kimi-native",
+		},
+		{
 			name: "claude without id",
 			inst: &Instance{Tool: "claude"},
 			want: "",

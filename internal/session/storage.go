@@ -234,6 +234,9 @@ type InstanceData struct {
 	// HermesDetectedAt is when the binding was recorded (tool_data
 	// hermes_detected_at); restart compares it with the hook record.
 	HermesDetectedAt time.Time `json:"-"`
+
+	KimiSessionID  string    `json:"kimi_session_id,omitempty"`
+	KimiDetectedAt time.Time `json:"-"`
 }
 
 // GroupData represents serializable group data
@@ -1243,6 +1246,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// can only ever be "restarted" into dsh's usage error.
 	toolData = WriteDeepSeekTaskToToolData(toolData, inst.DeepSeekTask)
 	toolData = WriteHermesSessionIDToToolData(toolData, inst.HermesSessionID)
+	toolData = WriteKimiSessionIDToToolData(toolData, inst.KimiSessionID)
 	toolData = WriteCrossHarnessLineageToToolData(toolData, inst.SupersededBy, inst.Supersedes)
 
 	return &statedb.InstanceRow{
@@ -1432,6 +1436,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
 			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
+			KimiSessionID:             ReadKimiSessionIDFromToolData(r.ToolData),
+			KimiDetectedAt:            ReadKimiDetectedAtFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1582,6 +1588,8 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
 			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
+			KimiSessionID:             ReadKimiSessionIDFromToolData(r.ToolData),
+			KimiDetectedAt:            ReadKimiDetectedAtFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1908,6 +1916,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			DeepSeekTask:                 instData.DeepSeekTask,
 			HermesSessionID:              instData.HermesSessionID,
 			hermesBoundAt:                instData.HermesDetectedAt,
+			KimiSessionID:                instData.KimiSessionID,
+			kimiBoundAt:                  instData.KimiDetectedAt,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			TrackCommandExit:             instData.TrackCommandExit,
 			PiSocketExported:             instData.PiSocketExported,

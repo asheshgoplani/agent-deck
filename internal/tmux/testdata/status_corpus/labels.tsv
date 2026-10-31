@@ -116,3 +116,8 @@ codex-idle-quoted-status-continuation	codex	waiting	SOURCE-DERIVED quoted prose 
 codex-idle-quoted-prose-last-line	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
 codex-idle-historical-status-then-rule	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
 codex-idle-ctrlc-prose	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
+kimi-local-2.4.1-idle	kimi	waiting	REAL Kimi Code 2.4.1 idle composer; captured in disposable container with mock provider; concrete path redacted
+kimi-local-2.4.1-busy-retry	kimi	active	REAL Kimi Code 2.4.1 retrying provider connection; live composer remains visible; session ID and path redacted
+kimi-local-2.4.1-interrupted	kimi	waiting	REAL Kimi Code 2.4.1 after user interruption; idle composer; session ID and path redacted
+kimi-local-2.4.1-provider-failure	kimi	error	REAL Kimi Code 2.4.1 terminal provider.connection_error banner above idle composer; session ID and path redacted
+kimi-local-2.4.1-folder-trust	kimi	waiting	REAL Kimi Code 2.4.1 folder-trust screen; not a tool-permission capture

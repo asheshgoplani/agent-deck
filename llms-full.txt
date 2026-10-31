@@ -156,6 +156,7 @@ Agent Deck works with any terminal-based AI tool:
 | **OpenCode** | Status detection, organization |
 | **Codex** | Status detection, organization |
 | **Cursor** (terminal) | Status detection, organization |
+| **Kimi Code** (`kimi`) | Status detection (hook-driven with pane fallback), organization, launch, native session-ID persistence, restart/resume |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 ## Installation
@@ -696,7 +697,7 @@ agent-deck add [path] [options]
 |------|-------------|
 | `-t, --title` | Session title |
 | `-g, --group` | Group path |
-| `-c, --cmd` | Command (claude, gemini, opencode, codex, custom) |
+| `-c, --cmd` | Command (claude, gemini, opencode, codex, kimi, custom) |
 | `--parent` | Parent session (creates child) |
 | `--mcp` | Attach MCP (repeatable) |
 
@@ -1591,7 +1592,7 @@ Complete reference for agent-deck Terminal UI features.
 **Fields:**
 - Session name (required)
 - Project path (required, supports `~/`)
-- Command (claude/gemini/opencode/codex/custom)
+- Command (claude/gemini/opencode/codex/kimi/custom)
 - Parent group (auto-selected)
 
 **Controls:** `Tab` move fields | `Enter` create | `Esc` cancel

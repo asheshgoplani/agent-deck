@@ -523,6 +523,7 @@ type Home struct {
 	pendingHooksPrompt       bool // True if user should be prompted to install Claude hooks
 	claudeHooksBoxShown      bool // The fallback Claude hooks box was shown this run (showClaudeHooksBox)
 	pendingHermesHooksPrompt bool // True if user should be prompted to install Hermes hooks
+	pendingKimiHooksPrompt   bool // True if user should be prompted to install Kimi hooks
 
 	// hints is the one-key onboarding hint bar (onboarding_hints.go, ASK-211).
 	hints onboardingHints
