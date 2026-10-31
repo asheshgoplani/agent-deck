@@ -12,9 +12,12 @@ import (
 )
 
 // cliPoolTwoHomes models two config homes of one user on one machine. They
-// share the pool socket dir, because sockets are keyed by MCP name alone.
-// "Home B" runs a real pool serving `served`; "home A" (the config the CLI
+// share the pool socket dir.
+// "Home B" runs a real pool serving `served` (each as catDef); "home A" (the config the CLI
 // path reads) gets homeAConfig. Returns home B's socket path per name.
+// catDef is the definition home B serves every name with.
+var catDef = MCPDef{Command: "cat"}
+
 func cliPoolTwoHomes(t *testing.T, homeAConfig string, served ...string) map[string]string {
 	t.Helper()
 	// Short root: unix socket paths are capped at ~108 bytes.
@@ -51,7 +54,7 @@ func cliPoolTwoHomes(t *testing.T, homeAConfig string, served ...string) map[str
 // socket for a name this config pools.
 func TestCLIPoolFindsAllowlistedSocket(t *testing.T) {
 	paths := cliPoolTwoHomes(t, "[mcp_pool]\nenabled = true\npool_mcps = [\"shared\"]\n", "shared")
-	cfg, used := tryPoolSocket(nil, "shared", "user")
+	cfg, used := tryPoolSocket(nil, "shared", catDef, "user")
 	require.True(t, used)
 	require.Equal(t, "agent-deck", cfg.Command)
 	require.Equal(t, []string{"mcp-proxy", paths["shared"]}, cfg.Args)
@@ -61,20 +64,32 @@ func TestCLIPoolFindsAllowlistedSocket(t *testing.T) {
 // is another config's process, with that config's env.
 func TestCLIPoolRefusesNonAllowlistedSocket(t *testing.T) {
 	cliPoolTwoHomes(t, "[mcp_pool]\nenabled = true\npool_mcps = [\"shared\"]\n", "shared", "other")
-	_, used := tryPoolSocket(nil, "other", "user")
+	_, used := tryPoolSocket(nil, "other", catDef, "user")
 	require.False(t, used, "a name outside pool_mcps must fall back to stdio")
 }
 
 func TestCLIPoolHonoursExcludeUnderPoolAll(t *testing.T) {
 	cliPoolTwoHomes(t, "[mcp_pool]\nenabled = true\npool_all = true\nexclude_mcps = [\"other\"]\n", "shared", "other")
-	_, used := tryPoolSocket(nil, "other", "user")
+	_, used := tryPoolSocket(nil, "other", catDef, "user")
 	require.False(t, used, "an excluded name must fall back to stdio")
-	_, used = tryPoolSocket(nil, "shared", "user")
+	_, used = tryPoolSocket(nil, "shared", catDef, "user")
 	require.True(t, used)
 }
 
 func TestCLIPoolDisabledNeverAttaches(t *testing.T) {
 	cliPoolTwoHomes(t, "[mcp_pool]\nenabled = false\npool_mcps = [\"shared\"]\n", "shared")
-	_, used := tryPoolSocket(nil, "shared", "user")
+	_, used := tryPoolSocket(nil, "shared", catDef, "user")
 	require.False(t, used)
+}
+
+// #2966: an allowlisted name whose live socket serves another home's
+// definition (same name, different env) is not attached; the CLI falls back
+// to stdio with this home's own definition instead.
+func TestCLIPoolRefusesSocketOfDifferentDefinition(t *testing.T) {
+	cliPoolTwoHomes(t, "[mcp_pool]\nenabled = true\npool_mcps = [\"shared\"]\n", "shared")
+	mine := MCPDef{Command: "cat", Env: map[string]string{"GITHUB_TOKEN": "personal"}}
+	_, used := tryPoolSocket(nil, "shared", mine, "user")
+	require.False(t, used, "another home's process for the same name must not be attached")
+	_, used = tryPoolSocket(nil, "shared", MCPDef{Command: "cat", Args: []string{"-u"}}, "user")
+	require.False(t, used, "different args must not attach either")
 }

@@ -16,7 +16,7 @@ func TestNewSocketProxy_RefusesUnverifiedLiveSocketWithoutUnlinking(t *testing.T
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(dir, socketFileName("busy"))
+	sock := filepath.Join(dir, SocketFileName("busy", "true", nil, nil))
 	listenUnixT(t, sock)
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestNewSocketProxy_SymlinkAtSocketPathNotRemoved(t *testing.T) {
 	elsewhere := shortTempDir(t)
 	live := filepath.Join(elsewhere, "x.sock")
 	listenUnixT(t, live)
-	link := filepath.Join(dir, socketFileName("linked"))
+	link := filepath.Join(dir, SocketFileName("linked", "true", nil, nil))
 	if err := os.Symlink(live, link); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestSocketProxyStop_ExternalLiveSocketKept(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(dir, socketFileName("shared"))
+	sock := filepath.Join(dir, SocketFileName("shared", "true", nil, nil))
 	listenUnixT(t, sock)
 
 	p, err := NewSocketProxy(context.Background(), "shared", "true", nil, nil)
@@ -88,11 +88,11 @@ func TestRestartProxy_AdoptedLiveSocketKept(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(dir, socketFileName("adopted"))
+	sock := filepath.Join(dir, SocketFileName("adopted", "true", nil, nil))
 	listenUnixT(t, sock)
 
 	pool, _ := NewPool(context.Background(), &PoolConfig{Enabled: true})
-	if n := pool.DiscoverExistingSockets(); n != 1 {
+	if n := pool.DiscoverExistingSockets(map[string]SocketSpec{"adopted": {Command: "true"}}); n != 1 {
 		t.Fatalf("DiscoverExistingSockets = %d, want 1", n)
 	}
 	_ = pool.RestartProxy("adopted")

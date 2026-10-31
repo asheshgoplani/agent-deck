@@ -228,7 +228,7 @@ func buildOpenCodeMCPServers(enabledNames []string) map[string]opencodeMCPServer
 		}
 
 		// Pool socket -> stdio via nc
-		if socketCfg, used := tryPoolSocket(pool, name, "opencode"); used {
+		if socketCfg, used := tryPoolSocket(pool, name, def, "opencode"); used {
 			cmd := []string{}
 			if socketCfg.Command != "" {
 				cmd = append([]string{socketCfg.Command}, socketCfg.Args...)

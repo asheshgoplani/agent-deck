@@ -222,7 +222,7 @@ func WriteCursorGlobalMCP(enabledNames []string) error {
 				continue
 			}
 
-			if socketCfg, used := tryPoolSocket(pool, name, "global"); used {
+			if socketCfg, used := tryPoolSocket(pool, name, def, "global"); used {
 				mcpServers[name] = socketCfg
 				continue
 			}

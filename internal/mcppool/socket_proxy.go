@@ -3,6 +3,8 @@ package mcppool
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -186,9 +189,40 @@ func fallbackLogDir(sub string) string {
 	return filepath.Join(privateTempFallback("agentdeck"), "logs", sub)
 }
 
-// socketFileName is the on-disk name of an MCP's pool socket.
-func socketFileName(name string) string {
-	return fmt.Sprintf("mcp-%s.sock", name)
+// SocketFileName is the on-disk name of the pool socket that serves MCP name
+// with this command, args and env: "mcp-<name>-<identity>.sock".
+//
+// Every config home of a user shares the socket dir. Keying the socket by name
+// alone let one home attach to another home's process of the same name, with
+// that home's env and credentials (#2966). With the definition in the name, a
+// live socket is reused only by a home that would run exactly the same
+// process; a home with a different definition starts its own.
+func SocketFileName(name, command string, args []string, env map[string]string) string {
+	return fmt.Sprintf("mcp-%s-%s.sock", name, socketIdentity(command, args, env))
+}
+
+// socketIdentity is a short digest of command, args and env (keys sorted).
+// Each field is length-prefixed, so different splits never hash alike. Twelve
+// hex digits keep the socket path well inside the sun_path limit.
+func socketIdentity(command string, args []string, env map[string]string) string {
+	h := sha256.New()
+	field := func(s string) { fmt.Fprintf(h, "%d:%s;", len(s), s) }
+	field(command)
+	fmt.Fprintf(h, "a%d;", len(args))
+	for _, a := range args {
+		field(a)
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintf(h, "e%d;", len(keys))
+	for _, k := range keys {
+		field(k)
+		field(env[k])
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 // verifyOwnedSocket checks that path is a unix socket (not a symlink) owned by
@@ -237,11 +271,12 @@ func removeStaleOwnSocket(path string) {
 }
 
 // ExternalSocketPath returns the pool socket for mcpName when another
-// agent-deck process of this user (normally the TUI) is serving it: the socket
-// must sit in this user's private pool socket dir, be owned by this uid, and
-// accept connections. Otherwise it returns "".
-func ExternalSocketPath(mcpName string) string {
-	socketPath := filepath.Join(mcpSocketDir(), socketFileName(mcpName))
+// agent-deck process of this user (normally the TUI) is serving it with the
+// same command, args and env: the socket must sit in this user's private pool
+// socket dir, be owned by this uid, and accept connections. Otherwise it
+// returns "".
+func ExternalSocketPath(mcpName, command string, args []string, env map[string]string) string {
+	socketPath := filepath.Join(mcpSocketDir(), SocketFileName(mcpName, command, args, env))
 	if err := verifyOwnedSocket(socketPath); err != nil {
 		if !os.IsNotExist(err) {
 			proxyLog.Warn("external_socket_rejected", slog.String("mcp", mcpName), slog.String("error", err.Error()))
@@ -259,7 +294,7 @@ func NewSocketProxy(ctx context.Context, name, command string, args []string, en
 
 	sockDir := mcpSocketDir()
 	_ = os.MkdirAll(sockDir, 0700)
-	socketPath := filepath.Join(sockDir, socketFileName(name))
+	socketPath := filepath.Join(sockDir, SocketFileName(name, command, args, env))
 
 	// Check if socket already exists and is alive (another agent-deck
 	// instance of this user owns it). A socket we do not own, or one in a
