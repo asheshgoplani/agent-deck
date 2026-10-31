@@ -45,11 +45,16 @@ permissions:
 
 jobs:
   # The test shards check out github.ref, so a dispatch must run on the tag
-  # it publishes; from any other ref it would test a different commit.
+  # it publishes; from any other ref it would test a different commit. It also
+  # resolves the commit the tag points at now, which every later job checks
+  # against what it actually tests or builds.
   ref-check:
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    permissions: {}
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
     steps:
       - name: Require the dispatch ref to be the tag
         env:
@@ -61,23 +66,167 @@ jobs:
             exit 1
           fi
 
-  # The same parallel shards that gate PRs (go-test.yml), without the jobs PRs
-  # don't require.
-  tests:
+      - name: Resolve the tag commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          read -r type sha < <(gh api "repos/${REPO}/git/ref/tags/${TAG}" --jq '.object | "\(.type) \(.sha)"')
+          # An annotated tag points at a tag object; follow it to the commit.
+          while [ "$type" = tag ]; do
+            read -r type sha < <(gh api "repos/${REPO}/git/tags/${sha}" --jq '.object | "\(.type) \(.sha)"')
+          done
+          if [ "$type" != commit ]; then
+            echo "::error::Tag ${TAG} points at a ${type}, not a commit."
+            exit 1
+          fi
+          if [ "$sha" != "$RUN_SHA" ]; then
+            echo "::error::Tag ${TAG} is at ${sha} but this run is for ${RUN_SHA} (the tag moved?). Re-run on the tag."
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Tag ${TAG} is commit ${sha}."
+
+  # #2929: the tag commit is normally the squash merge of the release PR, and
+  # the PR-gate `Go tests` run on that PR head (same tree, same parent) or the
+  # main push run on the commit itself has already run every shard. When one
+  # of those is green, reuse it instead of running the 15-25 minute race suite
+  # a second time on the same code. scripts/ci/release-test-reuse.sh holds the
+  # rules; it can only answer "reuse" for a verified green run on the same
+  # commit or the same tree, never fail or skip anything else.
+  reuse:
     needs: ref-check
+    runs-on: ubuntu-latest
+    # The script waits at most REUSE_WAIT_SECONDS for a candidate still running.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      reuse: ${{ steps.lookup.outputs.reuse }}
+      run_url: ${{ steps.lookup.outputs.run_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.ref-check.outputs.sha }}
+          persist-credentials: false
+      - name: Look for a green Go tests run on this commit or tree
+        id: lookup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG_SHA: ${{ needs.ref-check.outputs.sha }}
+          REUSE_WAIT_SECONDS: '1200'
+        run: bash scripts/ci/release-test-reuse.sh
+
+  # The same parallel shards that gate PRs (go-test.yml), without the jobs PRs
+  # don't require. Runs only when no green result could be reused.
+  tests:
+    needs: [ref-check, reuse]
+    if: ${{ !cancelled() && needs.ref-check.result == 'success' && needs.reuse.outputs.reuse != 'true' }}
     permissions:
       contents: read
     uses: ./.github/workflows/go-test.yml
     with:
       shards_only: true
 
+  # Evaluator harness full tier. Blocking: a release that fails eval is not
+  # published. See docs/rfc/EVALUATOR_HARNESS.md (#37). No PR workflow runs
+  # the eval_full tag (eval-smoke.yml runs eval_smoke only, path-filtered and
+  # advisory), so this is never reused; it runs beside the test gate instead
+  # of in front of GoReleaser. Until `eval_full` cases exist, this runs the
+  # eval_smoke suite with a longer timeout so smoke coverage is enforced at
+  # the release gate too, not just on PRs.
+  eval:
+    needs: ref-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.ref-check.outputs.sha }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      # zoxide backs the quick-open picker tests (#693, v1.7.54); tmux backs
+      # the session evals. Same as eval-smoke.yml and the go-test.yml shards.
+      - name: Install tmux and zoxide
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux zoxide
+          tmux -V
+          zoxide --version
+      - name: Run eval harness (full tier)
+        timeout-minutes: 10
+        env:
+          GOTOOLCHAIN: go1.26.10
+        # internal/ui is scoped to its eval cases (TestEval_*); the whole
+        # internal/ui suite already ran in the test shards and under -race it
+        # alone can outlast this step's 6m package timeout.
+        run: |
+          go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/...
+          go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m -run '^TestEval_' ./internal/ui/...
+
+  # Informational, as it always was (continue-on-error): it never gated a
+  # release, so it runs beside the release instead of in front of it, and
+  # nothing waits for it.
+  integration:
+    needs: ref-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.ref-check.outputs.sha }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install tmux and zoxide
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux zoxide
+      - name: Run integration tests (informational)
+        timeout-minutes: 15
+        run: go test -race -timeout 10m -tags integration ./internal/tmux/... ./internal/integration/... ./internal/tuitest/... ./internal/mcppool/...
+
   release:
-    needs: tests
+    needs: [ref-check, reuse, tests, eval]
+    # Build only after a verified green suite on this commit or tree: either
+    # the reused run (tests skipped) or the shards run here (tests success).
+    # Any failed, cancelled or missing gate leaves the release unbuilt.
+    if: >-
+      ${{ !cancelled()
+      && needs.ref-check.result == 'success'
+      && needs.eval.result == 'success'
+      && ((needs.reuse.result == 'success' && needs.reuse.outputs.reuse == 'true' && needs.tests.result == 'skipped')
+          || needs.tests.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     # Tag-push runs use the pushed tag; manual dispatch supplies it explicitly.
     env:
       REF_NAME: ${{ inputs.tag || github.ref_name }}
+      TESTED_SHA: ${{ needs.ref-check.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -187,26 +336,15 @@ jobs:
           fi
           echo "Version: $CODE"
 
-      - name: Run integration tests (informational)
-        timeout-minutes: 15
-        continue-on-error: true
-        run: go test -race -timeout 10m -tags integration ./internal/tmux/... ./internal/integration/... ./internal/tuitest/... ./internal/mcppool/...
-
-      # Evaluator harness full tier. Blocking — a release that fails eval
-      # does not get a tag. See docs/rfc/EVALUATOR_HARNESS.md (#37).
-      # Until `eval_full` cases exist, this runs the eval_smoke suite with
-      # a longer timeout so smoke coverage is enforced at the release gate
-      # too, not just on PRs.
-      - name: Run eval harness (full tier)
-        timeout-minutes: 10
-        env:
-          GOTOOLCHAIN: go1.26.10
-        # internal/ui is scoped to its eval cases (TestEval_*); the whole
-        # internal/ui suite already ran in the test shards and under -race it
-        # alone can outlast this step's 6m package timeout.
+      # The gate above tested ref-check's commit; build exactly that one.
+      - name: Require the checkout to be the tested commit
         run: |
-          go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/...
-          go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m -run '^TestEval_' ./internal/ui/...
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$HEAD_SHA" != "$TESTED_SHA" ]; then
+            echo "::error::Checked out ${HEAD_SHA}, but the test gate verified ${TESTED_SHA}."
+            exit 1
+          fi
+          echo "Building ${HEAD_SHA}, the commit the test gate verified."
 
       - name: Run GoReleaser
         timeout-minutes: 15
@@ -566,10 +704,11 @@ jobs:
           fi
           echo "Homebrew tap updated: ${TAP_REPO}/${TAP_FORMULA_PATH} is now ${VERSION}."
 
-  # Its own job so a failed ref check or test shard alerts too, not only a
-  # failed release step.
+  # Its own job so a failed ref check, test shard or eval alerts too, not only
+  # a failed release step. (`reuse` answers "no reuse" rather than failing,
+  # and is an ancestor through tests and release anyway.)
   notify-failure:
-    needs: [ref-check, tests, release]
+    needs: [ref-check, tests, eval, release]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 2
