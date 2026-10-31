@@ -16,32 +16,40 @@ func reloadPair(id, prevPane, nextPane string) (prev, next *Instance) {
 	return prev, next
 }
 
-// The TUI swaps in freshly loaded sessions on every storage reload. The
-// rebuilt session keeps the detail the old one last showed, so the sidebar
-// does not flash it away until the next status pass.
-func TestCarryOverReloadState_SameSessionKeepsSubstate(t *testing.T) {
+// The TUI swaps in freshly loaded sessions on every storage reload.
+// CarryOverReloadState hands each rebuilt tmux session the one the same
+// Instance ID had before, so the sidebar keeps the detail the old one last
+// showed until the next status pass. Whether a pair inherits (same pane name)
+// or starts clean (pane restarted between loads) is decided by
+// tmux.Session.InheritCachedSubstate and tested in internal/tmux
+// (TestInheritCachedSubstate_SamePaneKeepsDetail and
+// TestInheritCachedSubstate_DifferentPaneStaysEmpty).
+func TestCarryOverReloadState_PairsSameSessionByID(t *testing.T) {
 	prev, next := reloadPair("carry-same", "agentdeck_carry_1111", "agentdeck_carry_1111")
-	prev.tmuxSession.SetCachedSubstateForTest(SubstateIdleAtEmptyPrompt, "detail")
+	other, _ := reloadPair("carry-other", "agentdeck_carry_3333", "agentdeck_carry_3333")
 
-	CarryOverReloadState([]*Instance{prev}, []*Instance{next})
+	pairs := reloadCarryPairs([]*Instance{other, prev}, []*Instance{next})
 
-	if got := next.CachedSubstate(); got != SubstateIdleAtEmptyPrompt {
-		t.Fatalf("CachedSubstate after reload = %q, want %q", got, SubstateIdleAtEmptyPrompt)
+	if len(pairs) != 1 {
+		t.Fatalf("reloadCarryPairs returned %d pairs, want 1", len(pairs))
 	}
-	if got := next.SubstateDetail(); got != "detail" {
-		t.Fatalf("SubstateDetail after reload = %q, want %q", got, "detail")
+	if pairs[0].next != next.GetTmuxSession() {
+		t.Fatalf("pair.next is not the rebuilt session's tmux session")
+	}
+	if pairs[0].prev != prev.GetTmuxSession() {
+		t.Fatalf("pair.prev is not the tmux session the same ID had before the reload")
 	}
 }
 
-// A session whose pane changed (restarted between loads) starts clean.
-func TestCarryOverReloadState_RestartedPaneStartsClean(t *testing.T) {
-	prev, next := reloadPair("carry-restart", "agentdeck_carry_1111", "agentdeck_carry_2222")
-	prev.tmuxSession.SetCachedSubstateForTest(SubstateIdleAtEmptyPrompt, "")
+// A session that was not loaded before the reload has nothing to inherit.
+func TestCarryOverReloadState_NewSessionHasNoPrev(t *testing.T) {
+	prev, _ := reloadPair("carry-old", "agentdeck_carry_1111", "agentdeck_carry_1111")
+	_, next := reloadPair("carry-new", "agentdeck_carry_2222", "agentdeck_carry_2222")
 
-	CarryOverReloadState([]*Instance{prev}, []*Instance{next})
+	pairs := reloadCarryPairs([]*Instance{prev}, []*Instance{next})
 
-	if got := next.CachedSubstate(); got != SubstateNone {
-		t.Fatalf("CachedSubstate after reload = %q, want none for a restarted pane", got)
+	if len(pairs) != 1 || pairs[0].prev != nil {
+		t.Fatalf("reloadCarryPairs = %+v, want one pair with no prev", pairs)
 	}
 }
 
