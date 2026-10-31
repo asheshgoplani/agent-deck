@@ -576,7 +576,11 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	// A pi run identity is not collapsed against a record with none: that
 	// record is a session_start (or legacy) wake, and the first real run after a
 	// restart must not be swallowed by it.
-	if (event.LastOutputHash == "" || record.OutputHash == "") && !(record.OutputHash == "" && strings.HasPrefix(event.LastOutputHash, "pi-run:")) &&
+	//
+	// Likewise a Codex run signal (issue #2900): the daemon mints one only for
+	// a run it saw start after the child's last decided turn, so a record
+	// without a signal before it is an earlier turn, never this one.
+	if (event.LastOutputHash == "" || record.OutputHash == "") && !(record.OutputHash == "" && (strings.HasPrefix(event.LastOutputHash, "pi-run:") || strings.HasPrefix(event.LastOutputHash, "codex-run:"))) &&
 		record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
 		return true
 	}
@@ -754,7 +758,10 @@ var readHookStatusForPass = readHookStatusFile
 // watcher persists a completed generation and a monotonic sequence. Both are
 // stable across notifier polls and process restarts.
 func codexTurnSignal(inst *Instance) string {
-	if inst == nil || !strings.EqualFold(strings.TrimSpace(inst.Tool), "codex") {
+	// Issue #2900: any Codex-compatible tool (a custom tool wrapping Codex)
+	// has the same hook generation; without it its turns fell back to the
+	// 90-second window.
+	if inst == nil || !IsCodexCompatible(inst.Tool) {
 		return ""
 	}
 	hs := readHookStatusFile(inst.ID)
@@ -806,6 +813,17 @@ func (n *TransitionNotifier) lastNotifiedTurn(childID string) (to, outputHash st
 		return "", "", false
 	}
 	return rec.To, rec.OutputHash, true
+}
+
+// lastNotifiedRecord is lastNotifiedTurn plus the record's time.
+func (n *TransitionNotifier) lastNotifiedRecord(childID string) (to, outputHash string, at time.Time, ok bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	rec, ok := n.state.Records[strings.TrimSpace(childID)]
+	if !ok {
+		return "", "", time.Time{}, false
+	}
+	return rec.To, rec.OutputHash, time.Unix(rec.At, 0), true
 }
 
 // loadState reads the persisted last-notified records. A missing file is the
