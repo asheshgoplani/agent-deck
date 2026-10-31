@@ -118,7 +118,8 @@ jobs:
             echo "No Go-relevant changes; passing the gate without running the suite."
           fi
       # The detector's own cases (a few throwaway git repos, under a second).
-      # A broken detector fails this job, and with it the gate.
+      # A broken detector fails this job, and with it the gate. This tests
+      # the PR's copy of the script; the decision below uses the base's copy.
       - name: Self-test the version-only detector
         if: github.event_name == 'pull_request' && steps.gochanges.outputs.go == 'true'
         run: bash tests/ci/version-only-diff.test.sh
@@ -133,7 +134,15 @@ jobs:
           # HEAD is the PR merge commit (base + PR), so base..HEAD is exactly
           # what this run would test on top of the base tree.
           result=false
-          detect=.github/scripts/version-only-diff.sh
+          # The detector comes from the BASE sha, never the PR tree, so a PR
+          # that edits the script cannot vote itself into the short path.
+          # A base without the script (its first landing) means no.
+          detect="$RUNNER_TEMP/version-only-diff.sh"
+          if ! git show "$BASE_SHA:.github/scripts/version-only-diff.sh" > "$detect" 2>/dev/null; then
+            echo "Base $BASE_SHA has no .github/scripts/version-only-diff.sh; running the full shards."
+            echo "version_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if version=$(bash "$detect" diff "$BASE_SHA" HEAD); then
             echo "Version-only diff: $version"
             if gh api "repos/$REPO/actions/workflows/go-test.yml/runs?head_sha=$BASE_SHA&event=push&branch=main&per_page=20" > "$RUNNER_TEMP/runs.json" \
@@ -255,7 +264,8 @@ jobs:
   # Version-only release PRs (see the changes job): the base tree already
   # passed every shard, so this checks what the diff can break: the binary
   # builds and vets, reports the new Version, the changelog has its heading,
-  # and the version, release-readiness and toolchain-pin tests pass.
+  # and the version, release-readiness, update-path and toolchain-pin tests
+  # pass.
   version-only:
     name: Version-only release check
     needs: changes
@@ -292,6 +302,9 @@ jobs:
         run: |
           go install gotest.tools/gotestsum@v1.13.0
           gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="./cmd/agent-deck ./scripts" -- -race -timeout 20m -run '^(TestVersionOutput_|TestParseAgentDeckVersion|TestRemoteVersionJSON_|TestReleaseReadiness_|TestGotestsumVersionAgreement|TestGolangciLintVersionAgreement)'
+          # The update path test builds the new Version and an older one and
+          # runs the manual and auto-install paths against a fake release.
+          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output-update.json --packages="./internal/releasetests" -- -race -timeout 20m -run '^TestReleaseReadiness_UpdatePath$'
 
   # The single required context the main ruleset names. It passes when the
   # diff is not Go-relevant, when a version-only release PR passed its
