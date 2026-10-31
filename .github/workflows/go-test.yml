@@ -41,6 +41,8 @@ on:
       - 'tests/comms_matrix/**'
       - '.github/workflows/comms-matrix.yml'
       - 'sandbox/Dockerfile'
+      - '.github/scripts/version-only-diff.sh'
+      - 'tests/ci/version-only-diff.test.sh'
 
 # One in-flight run per PR (or per branch on push). Rapid follow-up pushes
 # cancel the stale run instead of stacking 20-minute jobs.
@@ -75,12 +77,28 @@ jobs:
   # full race suite for a README tweak is waste. Decide once here; the shards,
   # the gate, the comms matrix and the native SSH jobs read the answer. The
   # pattern mirrors the push paths list above.
+  #
+  # It also spots a version-only release PR (ASK-161, #2929): the diff
+  # touches only CHANGELOG.md and the single `var Version = "X.Y.Z"` line of
+  # cmd/agent-deck/main.go (parsed from the patch), and the PR's base sha
+  # already has a successful push "Go tests" run on main in which every
+  # shard passed. The PR tree is then that green tree plus one string
+  # constant, so the shards are skipped and the "Version-only release check"
+  # job (build, vet, version and release tests) gates it instead. Anything
+  # else, or any API error, means version_only=false and the full shards.
+  # The tag sha's own push run below still runs the whole suite.
   changes:
     name: Detect Go-relevant changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # actions: read lets the read-only GITHUB_TOKEN look up the base sha's
+    # push run. No secret is used, so fork PRs take the same path.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       go: ${{ steps.gochanges.outputs.go }}
+      version_only: ${{ steps.versiononly.outputs.version_only }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -93,12 +111,41 @@ jobs:
             echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           base="${{ github.event.pull_request.base.sha }}"
-          if git diff --name-only "$base"...HEAD | grep -qE '(\.go$|^go\.mod$|^go\.sum$|^\.github/workflows/go-test\.yml$|^scripts/ci-shared-state-proof\.sh$|^scripts/ci-test-summary\.py$|^tests/known-flaky\.txt$|^tests/ci/ci-test-summary\.test\.sh$|^scripts/ci-native-ssh\.sh$|^tests/comms_matrix/|^\.github/workflows/comms-matrix\.yml$|^sandbox/Dockerfile$)'; then
+          if git diff --name-only "$base"...HEAD | grep -qE '(\.go$|^go\.mod$|^go\.sum$|^\.github/workflows/go-test\.yml$|^scripts/ci-shared-state-proof\.sh$|^scripts/ci-test-summary\.py$|^tests/known-flaky\.txt$|^tests/ci/ci-test-summary\.test\.sh$|^scripts/ci-native-ssh\.sh$|^tests/comms_matrix/|^\.github/workflows/comms-matrix\.yml$|^sandbox/Dockerfile$|^\.github/scripts/version-only-diff\.sh$|^tests/ci/version-only-diff\.test\.sh$)'; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
             echo "go=false" >> "$GITHUB_OUTPUT"
             echo "No Go-relevant changes; passing the gate without running the suite."
           fi
+      # The detector's own cases (a few throwaway git repos, under a second).
+      # A broken detector fails this job, and with it the gate.
+      - name: Self-test the version-only detector
+        if: github.event_name == 'pull_request' && steps.gochanges.outputs.go == 'true'
+        run: bash tests/ci/version-only-diff.test.sh
+      - name: Detect a version-only release PR on a green base
+        id: versiononly
+        if: github.event_name == 'pull_request' && steps.gochanges.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # HEAD is the PR merge commit (base + PR), so base..HEAD is exactly
+          # what this run would test on top of the base tree.
+          result=false
+          detect=.github/scripts/version-only-diff.sh
+          if version=$(bash "$detect" diff "$BASE_SHA" HEAD); then
+            echo "Version-only diff: $version"
+            if gh api "repos/$REPO/actions/workflows/go-test.yml/runs?head_sha=$BASE_SHA&event=push&branch=main&per_page=20" > "$RUNNER_TEMP/runs.json" \
+              && run_id=$(bash "$detect" pick-run "$RUNNER_TEMP/runs.json" "$BASE_SHA" "$REPO") \
+              && gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" > "$RUNNER_TEMP/jobs.json" \
+              && shards=$(bash "$detect" shards-green "$RUNNER_TEMP/jobs.json"); then
+              result=true
+              echo "Base $BASE_SHA passed the full suite in https://github.com/$REPO/actions/runs/$run_id ($shards); skipping the shards."
+              echo "Version-only release PR: base run https://github.com/$REPO/actions/runs/$run_id ($shards); shards skipped." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "version_only=$result" >> "$GITHUB_OUTPUT"
 
   # The suite, split by package group across runners (#2169). `go test`
   # already runs every package in its own process, so a split changes
@@ -109,7 +156,7 @@ jobs:
   shard:
     name: Test shard (${{ matrix.shard.name }})
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go == 'true' && needs.changes.outputs.version_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -205,23 +252,78 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Version-only release PRs (see the changes job): the base tree already
+  # passed every shard, so this checks what the diff can break: the binary
+  # builds and vets, reports the new Version, the changelog has its heading,
+  # and the version, release-readiness and toolchain-pin tests pass.
+  version-only:
+    name: Version-only release check
+    needs: changes
+    if: needs.changes.outputs.version_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build, vet and check the version
+        run: |
+          go build -o "$RUNNER_TEMP/agent-deck" ./cmd/agent-deck
+          go vet ./cmd/agent-deck ./scripts
+          want=$(sed -n 's/^var Version = "\([0-9][0-9.]*\)".*/\1/p' cmd/agent-deck/main.go)
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/cache"
+          got=$(HOME="$RUNNER_TEMP/home" XDG_CACHE_HOME="$RUNNER_TEMP/cache" "$RUNNER_TEMP/agent-deck" version </dev/null)
+          echo "main.go: $want; binary: $got"
+          [ "$got" = "Agent Deck v$want" ] || { echo "binary reports '$got', want 'Agent Deck v$want'"; exit 1; }
+          grep -F "## [$want]" CHANGELOG.md >/dev/null || { echo "CHANGELOG.md has no '## [$want]' heading"; exit 1; }
+
+      - name: Run the version and release tests
+        timeout-minutes: 10
+        env:
+          PERF_BUDGET_MULTIPLIER: '2.0'
+        run: |
+          go install gotest.tools/gotestsum@v1.13.0
+          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="./cmd/agent-deck ./scripts" -- -race -timeout 20m -run '^(TestVersionOutput_|TestParseAgentDeckVersion|TestRemoteVersionJSON_|TestReleaseReadiness_|TestGotestsumVersionAgreement|TestGolangciLintVersionAgreement)'
+
   # The single required context the main ruleset names. It passes when the
-  # diff is not Go-relevant or every Go shard passed. It fails (and never
-  # skips) otherwise, so a docs-only PR still reports. The comms matrix is
-  # advisory and deliberately does not feed this gate.
+  # diff is not Go-relevant, when a version-only release PR passed its
+  # version check, or when every Go shard passed. It fails (and never
+  # skips) otherwise, so a docs-only PR still reports. It also fails when
+  # the changes job itself did not succeed, so a broken detector never
+  # reads as "not Go-relevant". The comms matrix is advisory and
+  # deliberately does not feed this gate.
   full-test-suite:
     name: Full test suite (PR gate)
-    needs: [changes, shard]
+    needs: [changes, shard, version-only]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Gate on shard results
         run: |
+          echo "changes: ${{ needs.changes.result }}"
           echo "go-relevant: ${{ needs.changes.outputs.go }}"
+          echo "version-only: ${{ needs.changes.outputs.version_only }} (${{ needs.version-only.result }})"
           echo "shards: ${{ needs.shard.result }}"
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "Change detection did not succeed."; exit 1
+          fi
           if [ "${{ needs.changes.outputs.go }}" != "true" ]; then
             echo "No Go-relevant changes; gate passes."; exit 0
+          fi
+          if [ "${{ needs.changes.outputs.version_only }}" = "true" ]; then
+            if [ "${{ needs.version-only.result }}" = "success" ]; then
+              echo "Version-only release PR on a green base; version check passed."; exit 0
+            fi
+            echo "Version-only release check failed or was cancelled."; exit 1
           fi
           if [ "${{ needs.shard.result }}" = "success" ]; then
             echo "All shards passed."; exit 0
