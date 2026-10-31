@@ -178,11 +178,17 @@ jobs:
           tmux -V
           zoxide --version
 
+      # The shard test checks that the matrix runs every Go test exactly once
+      # (no name-range gap, no overlap, no package the REST filter drops).
+      # The REST filter is anchored on whole path segments: an unanchored
+      # /internal/session also dropped internal/sessionref and
+      # internal/sessionstatus, so no shard ran their tests.
       - name: Resolve packages
         id: pkgs
         run: |
+          bash tests/ci/go-test-shards.test.sh
           if [ "${{ matrix.shard.packages }}" = "REST" ]; then
-            pkgs=$(go list ./... | grep -vE '/cmd/|/internal/session|/internal/ui|/internal/web|/tests/' | tr '\n' ' ')
+            pkgs=$(go list ./... | grep -vE '/(cmd|internal/session|internal/ui|internal/web|tests)(/|$)' | tr '\n' ' ')
           elif [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
             pkgs="PROOF"
           else
