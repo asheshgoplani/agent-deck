@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,7 @@ func defect317StartedSession(t *testing.T, title string) (home, id string) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
+	testutil.RequireTmux(t) // starts a real session pane
 	home = t.TempDir()
 	id = addExitStatusSession(t, home, title, "#!/bin/sh\nsleep 600\n")
 	stdout, stderr, code := runAgentDeck(t, home, "-p", "_test", "session", "start", id)

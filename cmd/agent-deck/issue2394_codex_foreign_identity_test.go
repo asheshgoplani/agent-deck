@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,7 @@ import (
 // rollout (no accepted generation) and output read the sibling's reply. The
 // thread the pane's live Codex process holds open outranks the pane value.
 func TestIssue2394_HydratePrefersLiveThreadOverGuessedPaneIdentity(t *testing.T) {
+	testutil.RequireTmux(t)
 	root := t.TempDir()
 	home := filepath.Join(root, "codex")
 	t.Setenv("CODEX_HOME", home)

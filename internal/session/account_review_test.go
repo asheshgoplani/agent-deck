@@ -10,6 +10,8 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/stretchr/testify/require"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func accountReviewConfig(t *testing.T, config string) string {
@@ -51,6 +53,7 @@ func TestAccountReviewShellValidationMatchesProvenance(t *testing.T) {
 }
 
 func TestAccountReviewFallbackShellRestartKeepsTypedCommandAccount(t *testing.T) {
+	testutil.RequireTmux(t)
 	home := accountReviewConfig(t, "[profiles.saved]\n[profiles.ambient]\n")
 	t.Setenv("SHELL", "/bin/bash")
 	t.Setenv("AGENTDECK_ACCOUNT", "ambient")

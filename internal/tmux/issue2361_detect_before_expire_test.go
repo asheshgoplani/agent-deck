@@ -71,6 +71,7 @@ func startPaneRunning(t *testing.T, name, cmd, tool, readyMarker string) *Sessio
 // return the printed frame, never the shell's echo of the typed command line
 // (which carries the marker too). The delay stands in for a loaded CI runner.
 func TestStartPaneRunning_ReturnsOnPrintedOutputNotTypedCommand(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	frame, err := os.ReadFile(filepath.Join("testdata", "status_corpus", "synth-claude-idle-12-subagent-rows.txt"))
 	if err != nil {
 		t.Fatalf("read corpus frame: %v", err)
@@ -96,6 +97,7 @@ func TestStartPaneRunning_ReturnsOnPrintedOutputNotTypedCommand(t *testing.T) {
 // past startupStateWindow. GetStatus must resolve the overdue clock via the
 // new alive probe instead of expiring the pane.
 func TestIssue2361_PromptOverdueResolvesWithoutRespawn(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	s := startPaneWithContent(t, "issue2361-prompt-overdue", realisticClaudeDoneContent, "claude", "Cooked for 32s")
 
 	oldPID, _ := s.getPaneProcessTree()
@@ -132,6 +134,7 @@ func TestIssue2361_PromptOverdueResolvesWithoutRespawn(t *testing.T) {
 // case), with startupAt backdated past startupStateWindow. Same invariant as
 // the prompt case: resolve, don't expire.
 func TestIssue2361_BusyOverdueResolvesWithoutRespawn(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	const busyFixture = "Working on task...\nctrl+c to interrupt\n"
 	s := startPaneWithContent(t, "issue2361-busy-overdue", busyFixture, "claude", "ctrl+c to interrupt")
 
@@ -171,6 +174,7 @@ func TestIssue2361_BusyOverdueResolvesWithoutRespawn(t *testing.T) {
 // capture the roster hides the prompt and the live pane is respawned into the
 // timeout hold.
 func TestIssue2361_RosterUnderFooterOverdueResolvesWithoutRespawn(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	frame, err := os.ReadFile(filepath.Join("testdata", "status_corpus", "synth-claude-idle-12-subagent-rows.txt"))
 	if err != nil {
 		t.Fatalf("read corpus frame: %v", err)
@@ -211,6 +215,7 @@ func TestIssue2361_RosterUnderFooterOverdueResolvesWithoutRespawn(t *testing.T) 
 // startupAt is backdated past the window. This is the case that proves the
 // new probe cannot loosen #1892 beyond what detection already accepted.
 func TestIssue2361_StuckContentStillExpires(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	s := startPaneWithContent(t, "issue2361-stuck-still-expires", issue2361StuckPaneContent, "claude", "zfadsffa")
 
 	s.mu.Lock()
@@ -252,6 +257,7 @@ func TestIssue2361_StuckContentStillExpires(t *testing.T) {
 // style, using the afterStartupAliveProbe test hook added alongside
 // startupShowsAgentAlive for exactly this race window.
 func TestIssue2361_AliveProbeCannotCrossGenerationClaim(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	s := startPaneWithContent(t, "issue2361-generation-race", realisticClaudeDoneContent, "claude", "Cooked for 32s")
 
 	s.mu.Lock()
@@ -295,6 +301,7 @@ func TestIssue2361_AliveProbeCannotCrossGenerationClaim(t *testing.T) {
 // spinner title must not vouch for a replacement that shows neither busy nor
 // prompt. The overdue probe ignores the title; the stuck pane still expires.
 func TestIssue2361_StaleSpinnerTitleDoesNotVouchForStuckPane(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	s := startPaneWithContent(t, "issue2361-stale-title", issue2361StuckPaneContent, "claude", "zfadsffa")
 	// s.tmuxCmd is the socket-aware factory, so this targets the test's
 	// isolated tmux server, never the user's.

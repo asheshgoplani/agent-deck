@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestCompletionCollectionContract(t *testing.T) {
@@ -139,6 +141,7 @@ func TestRemoteSwitchProbeFailureIsUnknown(t *testing.T) {
 }
 
 func TestCompletionRemovalRequiresPaneAbsence(t *testing.T) {
+	testutil.RequireTmux(t)
 	for _, requireHooks := range []bool{false, true} {
 		for _, orphan := range []bool{false, true} {
 			t.Run(fmt.Sprintf("hooks=%v/orphan=%v", requireHooks, orphan), func(t *testing.T) {

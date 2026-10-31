@@ -77,6 +77,7 @@ func TestIssue2948_SharedSpinnerScanUnchanged(t *testing.T) {
 // End to end on a real pane: an idle pi pane carrying the stale banner reads
 // waiting through GetStatus, not running.
 func TestIssue2948_GetStatusStaleBannerPaneIsWaiting(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	s := startPaneWithContent(t, "issue2948-getstatus", issue2948Pane(t), "pi --no-skills", "(auto)")
 	s.mu.Lock()
 	s.startupAt = time.Now().Add(-startupStateWindow - time.Second)

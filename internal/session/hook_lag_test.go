@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -104,6 +105,7 @@ func cliPass(t *testing.T, inst *Instance) (Status, Substate) {
 }
 
 func TestAudit_B_HookLagFlipsToWaitingAfterTwoSamples(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, cleanup := startHookLagInstance(t, "idle", auditConductorIdlePane)
 	defer cleanup()
 
@@ -140,6 +142,7 @@ func TestAudit_B_HookLagFlipsToWaitingAfterTwoSamples(t *testing.T) {
 }
 
 func TestAudit_B_LiveSpinnerNeverContradicted(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, cleanup := startHookLagInstance(t, "busy", auditConductorBusyPane)
 	defer cleanup()
 
@@ -157,6 +160,7 @@ func TestAudit_B_LiveSpinnerNeverContradicted(t *testing.T) {
 // this test fails on (delta 1 per spaced pass) and the current tree passes
 // (delta 0).
 func TestAudit_B_RunningFastPathMakesNoTmuxCalls(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, cleanup := startHookLagInstance(t, "quiet", auditConductorIdlePane)
 	defer cleanup()
 
@@ -182,6 +186,7 @@ func TestAudit_B_RunningFastPathMakesNoTmuxCalls(t *testing.T) {
 // one-pass CLI invocations: the first samples, the second samples again and
 // flips, the third reports the flip from the record alone.
 func TestAudit_B_HookLagPersistsAcrossCLIProcesses(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, cleanup := startHookLagInstance(t, "persist", auditConductorIdlePane)
 	defer cleanup()
 	storage, err := NewStorageWithProfile("_test-hook-lag")

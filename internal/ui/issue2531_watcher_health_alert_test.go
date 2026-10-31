@@ -17,6 +17,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
 )
@@ -228,6 +229,7 @@ func issue2531AlertText(name string) string {
 // the watcher row has no conductor (as `watcher create` leaves it), and the
 // conductor its events route to must still get the alert.
 func TestIssue2531_HealthAlertReachesTheConductorTheWatcherRoutesTo(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	const name = "hook-2531-routed"
 	env := newIssue2531Env(t, name, "")
 	env.run(t)
@@ -248,6 +250,7 @@ func TestIssue2531_HealthAlertReachesTheConductorTheWatcherRoutesTo(t *testing.T
 // conductor set on the watcher row (the column still wins when set), a
 // watcher that stays in error must alert once, not on every health tick.
 func TestIssue2531_HealthAlertIsSentOncePerTransition(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	const name = "hook-2531-column"
 	env := newIssue2531Env(t, name, issue2531Conductor)
 	env.run(t)

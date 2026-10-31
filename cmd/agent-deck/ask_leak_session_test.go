@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // askInTestContainer reports whether this test runs in the test container
@@ -27,12 +29,14 @@ func askInTestContainer() bool {
 
 // requireAskTools fails the test when a tool the leak checks need is
 // missing in the test container (a silent skip there would pass a leak
-// test that checked nothing); elsewhere it skips.
+// test that checked nothing); elsewhere, and under -short (distro build
+// sandboxes, #2937), it skips. CI runs without -short in the container.
 func requireAskTools(t *testing.T, tools ...string) {
 	t.Helper()
+	testutil.SkipShort(t, "runs the ask leak check end to end")
 	for _, tool := range tools {
 		if _, err := exec.LookPath(tool); err != nil {
-			if askInTestContainer() {
+			if askInTestContainer() && !testing.Short() {
 				t.Fatalf("%s is missing in the test container: the leak check cannot run", tool)
 			}
 			t.Skipf("requires %s", tool)

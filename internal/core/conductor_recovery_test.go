@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestConductorRecoveryWarningsThroughRegistry(t *testing.T) {
+	testutil.RequireTmux(t)
 	dir := t.TempDir()
 	command := filepath.Join(dir, "claude")
 	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf '\\033[2J\\033[H❯ operator draft'\nwhile IFS= read -r line; do :; done\n"), 0700); err != nil {

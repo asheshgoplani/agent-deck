@@ -46,6 +46,10 @@ func startDaemon(t *testing.T, home string, env []string) (*exec.Cmd, daemonStat
 	t.Helper()
 	cmd := exec.Command(channelsCLIBinary(t), "daemon", "serve")
 	cmd.Env = agentDeckTestEnv(home, env)
+	// Bound Wait when a grandchild (the tmux server the daemon starts)
+	// still holds the output pipe after the daemon exits: without it the
+	// cleanup's <-exited blocked until the package timeout (#2937).
+	cmd.WaitDelay = 5 * time.Second
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {

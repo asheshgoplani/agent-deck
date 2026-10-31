@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestPreToolUseUpgrade(t *testing.T) {
@@ -64,6 +66,7 @@ func TestPreToolUseUpgrade(t *testing.T) {
 }
 
 func TestPreToolClaudeTurnWithoutPrompt(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	for _, afterStop := range []bool{false, true} {
 		t.Run(fmt.Sprintf("after-stop=%v", afterStop), func(t *testing.T) {
 			inst, cleanup := startHookLagInstance(t, "pretool", auditConductorBusyPane)

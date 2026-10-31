@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -185,6 +187,7 @@ func TestIssue1793_CanonicalPane_DeliversUpToTheLimit(t *testing.T) {
 // ErrCanonicalLineOverflow and type NOTHING, so the caller reports a failure
 // instead of a success and the composer is left uncorrupted.
 func TestIssue1793_CanonicalPane_OverLimitLineIsMeasuredLostThenRefused(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	limit := canonicalBufferBytes()
 	// One byte past what fits: body + terminator = limit + 1.
 	body := strings.Repeat("A", limit)

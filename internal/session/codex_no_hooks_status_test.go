@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // "Remotes always green" (status-light matrix 2026-09-18, Finding 1): a codex
@@ -125,6 +127,7 @@ func TestCodexNoHooks_InProcessHoldStillConfirmsOnSecondSample(t *testing.T) {
 // Table over the #2189/#2190 hook fixtures and the hook-less case, all in a
 // fresh process that loaded the row as "running".
 func TestCodexFreshProcess_HookAndPaneTable(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	cases := []struct {
 		name    string
 		frame   string

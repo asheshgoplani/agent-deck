@@ -6,11 +6,13 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/stretchr/testify/require"
 )
 
 func TestObservedRuntimeRenderingPreservesLaunchTool(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}

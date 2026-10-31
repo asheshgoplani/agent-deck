@@ -93,6 +93,7 @@ func TestIssue1892_RestartedGenerationIgnoresPreservedTimeoutBanner(t *testing.T
 }
 
 func TestIssue1892_RespawnCannotCrossTimeoutGenerationClaim(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	s := NewSession("issue1892-generation-race", t.TempDir())
 	if err := s.Start("sleep 300"); err != nil {
 		t.Fatalf("start inert pane: %v", err)
@@ -117,6 +118,7 @@ func TestIssue1892_RespawnCannotCrossTimeoutGenerationClaim(t *testing.T) {
 }
 
 func TestIssue1892_GetStatusDoesNotReturnTimeoutForReplacementGeneration(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	s := NewSession("issue1892-timeout-return-race", t.TempDir())
 	if err := s.Start("sleep 300"); err != nil {
 		t.Fatalf("start inert pane: %v", err)
@@ -148,6 +150,7 @@ func TestIssue1892_GetStatusDoesNotReturnTimeoutForReplacementGeneration(t *test
 // from #1892.  Once the bounded startup window is exhausted, that is a failed
 // handover, not an ordinary waiting session.
 func TestIssue1892_StartupWithoutAgentSignalTimesOutHonesty(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	s := NewSession("issue1892-timeout", t.TempDir())
 	if err := s.Start("sleep 300"); err != nil {
 		t.Fatalf("start inert pane: %v", err)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -98,6 +99,7 @@ func TestA5_ShellCounterHoldIsBoundedByTheLaunch(t *testing.T) {
 // Pane only (no transcript), tmux path, a fresh process that loaded the row
 // as running (what the daemon left): waiting with the idle substate.
 func TestA5_LeftoverShellPaneOnlyIsWaiting(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	for _, p := range a5Panes {
 		t.Run(p.name, func(t *testing.T) {
 			inst, cleanup := startPaneInstance(t, "claude", "a5-pane-only", p.frame)
@@ -123,6 +125,7 @@ func TestA5_LeftoverShellPaneOnlyIsWaiting(t *testing.T) {
 // than the hold is waiting; a fresh launch is running background-work, and
 // the same launch past the hold is waiting again.
 func TestA5_LeftoverShellTranscriptHold(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	for _, p := range a5Panes {
 		for _, hook := range []bool{true, false} {

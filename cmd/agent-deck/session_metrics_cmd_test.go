@@ -214,6 +214,9 @@ func TestRemoteSessionMetricsForwardingAndUnknownRemote(t *testing.T) {
 // End to end: a daemon pass observes running->waiting for a registered
 // session, and the CLI derives one turn from the journal it wrote.
 func TestSessionMetricsReportsDaemonObservedTurn(t *testing.T) {
+	// Resolve the binary (and the -short skip) before the transition daemon
+	// starts: a skip after it left async bus writes racing TempDir cleanup.
+	channelsCLIBinary(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))

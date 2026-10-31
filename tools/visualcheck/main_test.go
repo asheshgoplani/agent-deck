@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestCapturePanePreservesLeadingSpaces(t *testing.T) {
@@ -160,9 +162,8 @@ func runVisualCheckTest(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("run on the g14 test box; see README.md")
 	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Fatal("tmux required")
-	}
+	testutil.RequireTmux(t)
+	testutil.SkipShort(t, "builds and drives the real agent-deck binary")
 	bin := os.Getenv("VISUALCHECK_BINARY")
 	_, thisFile, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))

@@ -9,6 +9,7 @@ import (
 )
 
 func TestListAgentDeckCodexSessionIDsOnSocket(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	const socket = "codex-bindings-batch-test"
 	run := func(args ...string) {
 		t.Helper()
@@ -37,6 +38,7 @@ func TestListAgentDeckCodexSessionIDsOnSocket(t *testing.T) {
 // environment (verified on tmux 3.3a, 3.6a and 3.7b); only session-level
 // values are bindings.
 func TestListAgentDeckCodexSessionIDsOnSocketIgnoresGlobalEnvironment(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	const socket = "codex-bindings-global-test"
 	run := func(env []string, args ...string) {
 		t.Helper()

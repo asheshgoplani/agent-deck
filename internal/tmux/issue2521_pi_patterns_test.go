@@ -60,6 +60,7 @@ func TestIssue2521PiBusy(t *testing.T) {
 }
 
 func TestIssue2521PiOverduePane(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	for _, tc := range []struct{ name, content, want string }{
 		{"idle", pi2521Footer, "waiting"},
 		{"busy", pi2521Busy, "active"},
