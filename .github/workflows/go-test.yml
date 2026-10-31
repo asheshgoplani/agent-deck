@@ -179,10 +179,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      # setup-go's own cache is off here: its single go.sum key is saved by
+      # whichever Go job finishes first (govulncheck on main), so it never held
+      # a -race test build, and every PR shard tried to save a copy of it.
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+          cache: false
+
+      # Read-only restore of the -race build cache that go-race-cache.yml
+      # saves on main (newest bucket first). Shards never save, so the seven
+      # shards no longer race for one key and PR runs add nothing to the
+      # repo's cache budget. Keep the key parts in lockstep with that file.
+      - name: Restore race build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+          restore-keys: |
+            go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+            go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
       # tmux + zoxide back the session and quick-open picker tests that the
       # suite exercises for real; mirror release.yml.
