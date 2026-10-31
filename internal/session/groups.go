@@ -729,12 +729,17 @@ func (t *GroupTree) flatten(foldedParents map[string]bool) []Item {
 
 		// Add sessions if expanded
 		if group.Expanded {
-			// Separate parent sessions from sub-sessions
+			// Separate top-level rows from nested sub-sessions. A sub-session
+			// nests only when its parent is a top-level row of this group
+			// (rendersNested); otherwise it is drawn as a top-level row at its
+			// own slice position, so the move functions, which use the same
+			// predicate, reorder it among the other top-level rows (#2995).
 			parentSessions := []*Instance{}
 			subSessionsByParent := make(map[string][]*Instance) // parentID -> sub-sessions
+			topLevel := topLevelSessionsByID(group.Sessions)
 
 			for _, sess := range group.Sessions {
-				if sess.IsSubSession() {
+				if rendersNested(sess, topLevel) {
 					subSessionsByParent[sess.ParentSessionID] = append(subSessionsByParent[sess.ParentSessionID], sess)
 				} else {
 					parentSessions = append(parentSessions, sess)
@@ -753,23 +758,9 @@ func (t *GroupTree) flatten(foldedParents map[string]bool) []Item {
 				stablePinPartition(subSessionsByParent[parentID])
 			}
 
-			// Count total top-level items (parent sessions + orphan sub-sessions whose parent is in different group)
-			// For determining IsLastInGroup, we need to know how many top-level items there are
+			// Every top-level row, orphaned sub-sessions included, is in
+			// parentSessions; IsLastInGroup is decided against this count.
 			topLevelCount := len(parentSessions)
-			for parentID, subs := range subSessionsByParent {
-				// Check if parent is in this group
-				parentInGroup := false
-				for _, p := range parentSessions {
-					if p.ID == parentID {
-						parentInGroup = true
-						break
-					}
-				}
-				if !parentInGroup {
-					// Parent is not in this group, so sub-sessions appear as top-level
-					topLevelCount += len(subs)
-				}
-			}
 
 			topLevelIndex := 0
 			for _, sess := range parentSessions {
@@ -796,6 +787,11 @@ func (t *GroupTree) flatten(foldedParents map[string]bool) []Item {
 					Level:         groupLevel + 1,
 					Path:          group.Path,
 					IsLastInGroup: isLastInGroup,
+					// An orphaned sub-session (parent in another group, deleted,
+					// or in the other archive partition) is drawn at top-level
+					// indent but keeps the flag: it is still a sub-session, and
+					// RecomputeTreeConnectors relies on it.
+					IsSubSession: sess.IsSubSession(),
 				})
 
 				// Add sub-sessions immediately after parent (skipped when folded)
@@ -823,36 +819,6 @@ func (t *GroupTree) flatten(foldedParents map[string]bool) []Item {
 				delete(subSessionsByParent, sess.ID)
 
 				topLevelIndex++
-			}
-
-			// Add any orphaned sub-sessions (parent not in this group). Collect
-			// the remaining map entries into a slice and sort by Order so the
-			// emission order is deterministic — iterating subSessionsByParent
-			// directly would use Go's randomized map order and shuffle these
-			// rows between renders.
-			orphans := make([]*Instance, 0, len(subSessionsByParent))
-			for _, subs := range subSessionsByParent {
-				orphans = append(orphans, subs...)
-			}
-			sort.SliceStable(orphans, func(i, j int) bool {
-				if orphans[i].Order != orphans[j].Order {
-					return orphans[i].Order < orphans[j].Order
-				}
-				// Tie-break on ID so equal-Order orphans (collected from the
-				// randomized subSessionsByParent map) still emit in a stable,
-				// run-independent order rather than leaking map-iteration order.
-				return orphans[i].ID < orphans[j].ID
-			})
-			for _, sub := range orphans {
-				topLevelIndex++
-				items = append(items, Item{
-					Type:          ItemTypeSession,
-					Session:       sub,
-					Level:         groupLevel + 1,
-					Path:          group.Path,
-					IsLastInGroup: topLevelIndex == topLevelCount,
-					IsSubSession:  true, // Still a sub-session, just orphaned in this group
-				})
 			}
 		}
 	}
@@ -969,13 +935,58 @@ func (t *GroupTree) moveGroupAmongSiblings(path string, delta int) {
 	t.rebuildGroupList()
 }
 
-// MoveSessionUp moves a session up among its visual siblings: top-level
-// sessions (empty ParentSessionID) reorder among other top-level sessions
-// in the same group; sub-sessions reorder among other sub-sessions of the
-// same parent. Non-siblings interleaved in the flat slice are skipped.
+// topLevelSessionsByID indexes the sessions of one group that have no parent.
+// It is the lookup rendersNested needs; build it once per group.
+func topLevelSessionsByID(sessions []*Instance) map[string]*Instance {
+	top := make(map[string]*Instance, len(sessions))
+	for _, s := range sessions {
+		if !s.IsSubSession() {
+			top[s.ID] = s
+		}
+	}
+	return top
+}
+
+// rendersNested reports whether Flatten draws inst nested under its parent:
+// inst has a parent, and that parent is a top-level session of the same group
+// in the same archive partition. Any other sub-session (parent in another
+// group, parent deleted, parent itself a sub-session, or parent archived while
+// the child is not) is drawn as a top-level row.
 //
-// When a sub-session has no previous same-parent sibling (it is at the
-// top of its parent's children block), it is promoted to top-level and
+// Flatten and MoveSessionUp/Down must share this predicate. When they
+// disagreed, a row drawn at top level was still moved as a sub-session, found
+// no same-parent sibling, and Shift+Up/Down silently did nothing (#2995).
+func rendersNested(inst *Instance, topLevel map[string]*Instance) bool {
+	if !inst.IsSubSession() {
+		return false
+	}
+	parent, ok := topLevel[inst.ParentSessionID]
+	return ok && SameArchivePartition(parent, inst)
+}
+
+// sameMoveTier reports whether a and b are visual siblings for
+// MoveSessionUp/Down: both drawn as top-level rows of the group, or both
+// nested under the same parent. Archive partitions never mix.
+func sameMoveTier(a, b *Instance, topLevel map[string]*Instance) bool {
+	if !SameArchivePartition(a, b) {
+		return false
+	}
+	aNested, bNested := rendersNested(a, topLevel), rendersNested(b, topLevel)
+	if aNested != bNested {
+		return false
+	}
+	return !aNested || a.ParentSessionID == b.ParentSessionID
+}
+
+// MoveSessionUp moves a session up among its visual siblings: rows drawn at
+// top level reorder among the group's other top-level rows; nested
+// sub-sessions reorder among the other children of the same parent.
+// Non-siblings interleaved in the flat slice are skipped. "Drawn at top
+// level" includes orphaned sub-sessions whose parent is in another group or
+// gone (rendersNested, #2995); they keep their parent link.
+//
+// When a nested sub-session has no previous same-parent sibling (it is at
+// the top of its parent's children block), it is promoted to top-level and
 // inserted in the slice immediately before the parent. At the group's
 // top boundary (no previous top-level peer) the call is a no-op;
 // cross-group moves remain on the M shortcut.
@@ -985,16 +996,18 @@ func (t *GroupTree) MoveSessionUp(inst *Instance) {
 		return
 	}
 
+	topLevel := topLevelSessionsByID(group.Sessions)
+	nested := rendersNested(inst, topLevel)
 	currentIdx, prevSiblingIdx, parentIdx := -1, -1, -1
 	for i, s := range group.Sessions {
 		if s.ID == inst.ID {
 			currentIdx = i
 			continue
 		}
-		if currentIdx < 0 && s.ParentSessionID == inst.ParentSessionID && SameArchivePartition(s, inst) {
+		if currentIdx < 0 && sameMoveTier(s, inst, topLevel) {
 			prevSiblingIdx = i
 		}
-		if inst.ParentSessionID != "" && s.ID == inst.ParentSessionID {
+		if nested && s.ID == inst.ParentSessionID {
 			parentIdx = i
 		}
 	}
@@ -1005,7 +1018,7 @@ func (t *GroupTree) MoveSessionUp(inst *Instance) {
 	switch {
 	case prevSiblingIdx >= 0:
 		group.Sessions[currentIdx], group.Sessions[prevSiblingIdx] = group.Sessions[prevSiblingIdx], group.Sessions[currentIdx]
-	case inst.ParentSessionID != "" && parentIdx >= 0:
+	case nested && parentIdx >= 0:
 		// Promote sub-session to top-level: clear parent and reposition
 		// the slice entry immediately before the parent so the renderer
 		// shows it as a top-level peer just above the parent's block.
@@ -1029,8 +1042,8 @@ func (t *GroupTree) MoveSessionUp(inst *Instance) {
 // See MoveSessionUp for the sibling-aware semantics; this is the symmetric
 // case that swaps with the next same-parent session in the slice.
 //
-// When a sub-session has no following same-parent sibling (it is at the
-// bottom of its parent's children block), it is promoted to top-level
+// When a nested sub-session has no following same-parent sibling (it is at
+// the bottom of its parent's children block), it is promoted to top-level
 // at its current slice position so the renderer shows it as a top-level
 // peer immediately after the parent's block. At the group's bottom
 // boundary (no following top-level peer) the call is a no-op.
@@ -1040,13 +1053,15 @@ func (t *GroupTree) MoveSessionDown(inst *Instance) {
 		return
 	}
 
+	topLevel := topLevelSessionsByID(group.Sessions)
+	nested := rendersNested(inst, topLevel)
 	currentIdx, nextSiblingIdx := -1, -1
 	for i, s := range group.Sessions {
 		if s.ID == inst.ID {
 			currentIdx = i
 			continue
 		}
-		if currentIdx >= 0 && s.ParentSessionID == inst.ParentSessionID && SameArchivePartition(s, inst) && nextSiblingIdx < 0 {
+		if currentIdx >= 0 && sameMoveTier(s, inst, topLevel) && nextSiblingIdx < 0 {
 			nextSiblingIdx = i
 		}
 	}
@@ -1057,7 +1072,7 @@ func (t *GroupTree) MoveSessionDown(inst *Instance) {
 	switch {
 	case nextSiblingIdx >= 0:
 		group.Sessions[currentIdx], group.Sessions[nextSiblingIdx] = group.Sessions[nextSiblingIdx], group.Sessions[currentIdx]
-	case inst.ParentSessionID != "":
+	case nested:
 		// Promote sub-session to top-level. The slice entry already sits
 		// after the parent's other children, so just clearing the parent
 		// pointer is enough — the renderer will place it as a top-level
