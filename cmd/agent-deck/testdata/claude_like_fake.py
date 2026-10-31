@@ -94,6 +94,9 @@ def poll_phase():
     global phase, phase_id, hold_queue
     try: c = json.load(open(control_path))
     except (OSError, ValueError): return
+    # A held prompt released before this control file was written lands before its phase's record
+    # (only once the control file reads: an unreadable one returns above and releases nothing).
+    if held and not os.path.exists('.fake-hold-submit'): append(*held); held.clear()
     hold_queue = bool(c.get('hold_queue'))
     if (c.get('id'), c.get('phase')) != (phase_id, phase):
         phase_id, phase = c.get('id'), c.get('phase')
@@ -114,7 +117,6 @@ render()
 last_tick = 0
 while True:
     poll_phase(); absorb()
-    if held and not os.path.exists('.fake-hold-submit'): append(*held); held.clear()
     if phase in ('busy', 'stream', 'booting') and time.monotonic() - last_tick > 1: render(); last_tick = time.monotonic()
     if not select.select([0], [], [], 0.05)[0]: continue
     chunk = ESC_RE.sub(b'', os.read(0, 65536))  # drops bracketed-paste 200~/201~ framing

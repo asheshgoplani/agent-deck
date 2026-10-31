@@ -29,6 +29,9 @@ import (
 
 const freshStartLine = "Started; at its prompt, no turn yet."
 
+// quietWindow is how long a negative check waits: several daemon passes.
+const quietWindow = 7 * time.Second
+
 // stopHook fires the parent's Stop hook (a turn boundary) and returns what the
 // hook handler printed: a block decision, or nothing.
 func (e *deliveryEnv) stopHook(f *fakeTarget) string {
@@ -160,7 +163,7 @@ func TestIssue2954_LaunchBootIsQuietKickoffTurnIsUrgent(t *testing.T) {
 	child := e.launchChild("child", parent, kickoff+" reply pong", ".fake-hold-submit")
 	issue2530WaitFor(t, 30*time.Second, "the launch to type the kickoff", func() bool { return child.held(kickoff) })
 	e.waitRecords(parent, child.fakeTarget, 20*time.Second, func(r []map[string]any) bool { return len(r) >= 1 })
-	time.Sleep(2 * time.Second) // a negative check: nothing more arrives over the next passes
+	time.Sleep(quietWindow) // a negative check: nothing more arrives over the next passes
 	e.wantQuietBoot(parent, child.fakeTarget, "before the kickoff reached the transcript")
 
 	// The kickoff reaches the transcript and its turn runs.
@@ -226,9 +229,11 @@ func (e *deliveryEnv) heartbeatTUI() *statedb.StateDB {
 // With the TUI running the daemon has no cached substate for the child: it
 // reads the pane of the token holder, which shows the empty prompt. The test
 // writes the row the TUI would for that pane; the launch leaves it starting.
+// Past the boot timeout (short here) the operator sees the child, still with
+// no turn: waiting -> idle is the same boot, not news.
 func TestIssue2954_LaunchBootWithTUIStatusesIsQuiet(t *testing.T) {
 	t.Parallel()
-	e := newRestartEnv(t)
+	e := newRestartEnv(t, "AGENTDECK_RESTART_BOOT_TIMEOUT=3s")
 	parent := e.startFake("parent", "idle", "")
 	db := e.heartbeatTUI()
 	child := e.launchChild("child", parent, "")
@@ -237,14 +242,20 @@ func TestIssue2954_LaunchBootWithTUIStatusesIsQuiet(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.waitRecords(parent, child.fakeTarget, 20*time.Second, func(r []map[string]any) bool { return len(r) >= 1 })
-	time.Sleep(2 * time.Second) // a negative check: nothing more arrives over the next passes
+	time.Sleep(quietWindow) // a negative check: nothing more arrives over the next passes
 	e.wantQuietBoot(parent, child.fakeTarget, "with TUI statuses")
+	// The quiet window already ran past the boot timeout.
+	if err := db.WriteStatus(child.id, "idle", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(quietWindow) // a negative check: nothing more arrives over the next passes
+	e.wantQuietBoot(parent, child.fakeTarget, "acknowledged past the boot timeout")
 	// Precondition: the daemon was in TUI mode. Probing panes itself, it
 	// would write the pane's idle over a row the TUI set to running.
 	if err := db.WriteStatus(child.id, "running", "claude"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(3 * time.Second) // a negative check: a probing daemon rewrites the row within a pass
+	time.Sleep(quietWindow) // a negative check: a probing daemon rewrites the row within a pass
 	if rows, err := db.ReadAllStatuses(); err != nil || rows[child.id].Status != "running" {
 		t.Fatalf("precondition: the daemon must take statuses from the DB, row %+v (%v)", rows[child.id], err)
 	}
