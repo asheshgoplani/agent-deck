@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,6 +92,8 @@ func reloadedCodexIdentity(t *testing.T, profile, id string) string {
 }
 
 func TestIssue2400_ArchiveKeepsLiveCodexIdentity(t *testing.T) {
+	testutil.RequireTmux(t)
+	testutil.RequireTmux(t)
 	const profile = "codex_archive_2400"
 	inst := startCodexFirstTurnPane(t, profile)
 
@@ -105,6 +108,8 @@ func TestIssue2400_ArchiveKeepsLiveCodexIdentity(t *testing.T) {
 }
 
 func TestIssue2396_FirstTurnOutputIsBoundToItsConversation(t *testing.T) {
+	testutil.RequireTmux(t)
+	testutil.RequireTmux(t)
 	const profile = "codex_first_turn_2396"
 	inst := startCodexFirstTurnPane(t, profile)
 

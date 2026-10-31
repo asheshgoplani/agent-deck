@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // A fresh Codex composer (0.155+) owns its thread before any rollout exists:
@@ -14,6 +15,8 @@ import (
 // send guard must accept that thread with an empty prior generation, and the
 // first rollout turn must then produce the exact accepted-turn receipt.
 func TestCodexAcceptanceGuardAcceptsFreshComposerThread(t *testing.T) {
+	testutil.RequireTmux(t)
+	testutil.RequireTmux(t)
 	root := t.TempDir()
 	home := filepath.Join(root, "codex")
 	t.Setenv("CODEX_HOME", home)

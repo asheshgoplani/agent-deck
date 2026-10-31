@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // Issue #2921: TestGuardedSendLeavesBusyOperatorDraftAlone failed on its
@@ -21,6 +23,7 @@ import (
 // fake here ignores SIGHUP, as Claude Code 2.1.27+ does, which turns the
 // scheduling race into a certain one: it outlives kill-session.
 func TestIssue2921ClaudeLikeFakeIsGoneWhenItsCleanupReturns(t *testing.T) {
+	testutil.RequireTmux(t)
 	if runtime.GOOS != "linux" {
 		t.Skip("finds the fake's process through /proc")
 	}

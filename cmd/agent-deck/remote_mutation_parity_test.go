@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 // Two independent registries receive equivalent local and SSH operations.
 // Compare successful JSON schemas and independently inspect each side effect.
 func TestRemoteSuccessfulMutationParity(t *testing.T) {
+	testutil.RequireTmux(t)
 	parallelSubprocessTest(t)
 	bin := channelsCLIBinary(t)
 	controller, server, local, shim := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()

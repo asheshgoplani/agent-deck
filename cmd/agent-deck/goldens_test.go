@@ -25,6 +25,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/triggers"
 )
 
@@ -401,6 +402,9 @@ var (
 
 func goldensBinary(t *testing.T) string {
 	t.Helper()
+	// Skip before the Once: a skip inside it would leave it done with no
+	// binary linked for the next caller.
+	testutil.SkipShort(t, "runs the real agent-deck binary end to end")
 	goldensBinOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "ad-goldens-bin-")
 		if err != nil {
@@ -452,6 +456,9 @@ func (b *buildFailure) Error() string { return b.err.Error() + "\n" + b.output }
 // env slice to run the binary with.
 func goldensSandbox(t *testing.T) (home string, env []string) {
 	t.Helper()
+	// The goldens record what the binary reports against a private, known-empty
+	// tmux server, so they need the tmux binary (absent in some distro build sandboxes).
+	testutil.RequireTmux(t)
 	home = t.TempDir()
 
 	t.Setenv("HOME", home)

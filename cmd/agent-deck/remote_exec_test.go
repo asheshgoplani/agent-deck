@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 // Exercise the actual CLI boundary over an authenticated SSH connection.
 // The server runs each remote command under a separate HOME.
 func TestRemoteCommandParity(t *testing.T) {
+	testutil.RequireTmux(t)
 	parallelSubprocessTest(t)
 	bin := channelsCLIBinary(t)
 	controller, remote, shim := t.TempDir(), t.TempDir(), t.TempDir()
