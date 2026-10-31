@@ -242,7 +242,6 @@ func appendCodexTurnStart(path, turnID string) error {
 
 func TestCodexAcceptanceGuardHydratesLegacyIdentity(t *testing.T) {
 	testutil.RequireTmux(t)
-	testutil.RequireTmux(t)
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
 	project := filepath.Join(home, "project")
@@ -383,7 +382,6 @@ func countCodexAcceptanceArtifacts(t *testing.T) int {
 
 func TestLegacyCodexIdentityHydrationRefusesUntrustedCandidates(t *testing.T) {
 	testutil.RequireTmux(t)
-	testutil.RequireTmux(t)
 	const candidate = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	const mismatch = "11111111-2222-4333-8444-666666666666"
 	tests := []struct {
@@ -454,7 +452,6 @@ func TestLegacyCodexIdentityHydrationRefusesUntrustedCandidates(t *testing.T) {
 
 func TestLegacyCodexIdentityHydrationRequiresCurrentGeneration(t *testing.T) {
 	testutil.RequireTmux(t)
-	testutil.RequireTmux(t)
 	home := filepath.Join(t.TempDir(), "codex")
 	t.Setenv("CODEX_HOME", home)
 	project := filepath.Join(t.TempDir(), "project")
@@ -496,7 +493,6 @@ func TestLegacyCodexIdentityHydrationRequiresCurrentGeneration(t *testing.T) {
 }
 
 func TestFailedLegacyCodexHydrationPreservesOtherIdentities(t *testing.T) {
-	testutil.RequireTmux(t)
 	testutil.RequireTmux(t)
 	inst := session.NewInstanceWithTool("legacy-unrelated-identities", t.TempDir(), "codex")
 	inst.ClaudeSessionID = "claude-before"
