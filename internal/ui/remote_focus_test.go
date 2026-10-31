@@ -36,6 +36,10 @@ func buildRemoteFocusHome(t *testing.T) (*Home, []*session.Instance) {
 	t.Helper()
 	home, insts := buildFocusHome(t)
 	home.storage = nil // keep fold saves out of the shared test profile
+	// NewHome restores the `t` view mode an earlier test may have saved to the
+	// shared test profile. Since #2947 that mode also splits remote rows, so
+	// pin Normal: these frames are about focus, not view modes.
+	home.groupViewMode = session.GroupViewNormal
 	home.remoteSessions = map[string][]session.RemoteSessionInfo{"dev": remoteFocusSessions()}
 	home.remoteGroupsCollapsed = map[string]bool{
 		"remotes/dev":          true,

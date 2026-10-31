@@ -1393,19 +1393,22 @@ func (h *Home) reorderRemoteGroup(item session.Item, delta int) tea.Cmd {
 }
 
 // visibleRemoteGroupSiblings lists the group headers currently on screen for
-// one remote that share groupPath's parent, in screen order.
+// one remote that share groupPath's parent, each once, in the remote's own
+// order. "Active on top" can show a header twice and out of that order
+// (#2947), so screen order alone would misjudge the edge.
 func (h *Home) visibleRemoteGroupSiblings(remoteName, groupPath string) []string {
 	parent := ""
 	if i := strings.LastIndex(groupPath, "/"); i >= 0 {
 		parent = groupPath[:i]
 	}
 	var siblings []string
+	seen := make(map[string]bool)
 	for _, it := range h.flatItems {
 		if it.Type != session.ItemTypeRemoteGroup || it.RemoteName != remoteName {
 			continue
 		}
 		p := remoteGroupPathFromItem(it)
-		if p == "" {
+		if p == "" || seen[p] {
 			continue
 		}
 		pp := ""
@@ -1413,9 +1416,14 @@ func (h *Home) visibleRemoteGroupSiblings(remoteName, groupPath string) []string
 			pp = p[:i]
 		}
 		if pp == parent {
+			seen[p] = true
 			siblings = append(siblings, p)
 		}
 	}
+	h.remoteSessionsMu.RLock()
+	rank := remoteGroupRank(h.remoteGroups[remoteName])
+	h.remoteSessionsMu.RUnlock()
+	sortRemoteGroupPaths(siblings, rank)
 	return siblings
 }
 
