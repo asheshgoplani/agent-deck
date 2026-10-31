@@ -655,6 +655,7 @@ type Instance struct {
 	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
 	skipRecoveryTurn            bool      // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
 	restartReason               string    // SetRestartReason: why the next restart happens, for its resume note
+	launchesFresh               bool      // the Claude command last built starts a new conversation (#2954, fresh_start.go)
 	codexStartedGeneration      string
 	codexCompletedGeneration    string
 	codexStartedSessionID       string
@@ -1723,7 +1724,9 @@ func (i *Instance) Start() (startErr error) {
 	}
 	i.retireFastDeathWatchers() // #2805
 	i.setInteractiveShellLaunchEnv()
+	noteFreshStart(i, time.Now()) // #2954: before the spawn, so the daemon judges its boot
 	if err := i.tmuxSession.Start(command); err != nil {
+		clearFreshStartToken(i.ID)
 		// #1580: persist the tmux-level failure so the preview / session show /
 		// lifecycle log can surface it instead of a bare "error".
 		i.recordTmuxStartFailure(command, err)
@@ -2125,7 +2128,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	}
 	i.retireFastDeathWatchers() // #2805
 	i.setInteractiveShellLaunchEnv()
+	noteFreshStart(i, time.Now()) // #2954, sister path to Start()
 	if err := i.tmuxSession.Start(command); err != nil {
+		clearFreshStartToken(i.ID)
 		// #1580: persist the tmux-level failure (sister path to Start()).
 		i.recordTmuxStartFailure(diagnosticCommand, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)

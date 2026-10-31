@@ -27,6 +27,8 @@ import (
 // restartFakeClaude is deliveryFakeClaude plus --resume and the session
 // hooks, which it skips when .fake-nohooks exists in the project. With
 // .fake-quick-start it resumes straight to its prompt, as real Claude does.
+// With .fake-late-transcript the transcript is first written by the first
+// prompt, as a fresh Claude does (#2954).
 const restartFakeClaude = `#!/bin/sh
 sid=nosid
 while [ $# -gt 0 ]; do
@@ -37,7 +39,7 @@ cwd=$(pwd -P)
 proj="$HOME/.claude/projects/$(printf %s "$cwd" | sed 's/[^a-zA-Z0-9-]/-/g')"
 mkdir -p "$proj" "$cwd/.fake"
 t="$proj/$sid.jsonl"
-: >> "$t"
+[ -e "$cwd/.fake-late-transcript" ] || : >> "$t"
 phase=$(cat "$cwd/.fake-phase" 2>/dev/null || echo idle)
 printf '{"id":"%s-%s","phase":"%s"}' "$phase" "$$" "$phase" > "$t.input-control.json"
 printf '{"%s":"%s"}' "$cwd" "$t" > "$cwd/.fake/fake-running.json"
