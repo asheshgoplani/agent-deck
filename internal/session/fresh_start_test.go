@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +49,25 @@ func (f *turnTestFixture) idle() map[string]string {
 func (f *turnTestFixture) status(childStatus string) map[string]string {
 	return map[string]string{f.child.ID: childStatus, f.parent.ID: "waiting"}
 }
+
+// hookHistory writes child id's hook event history, the events stamped now in
+// order, as the hook handler does.
+func hookHistory(t *testing.T, id string, events ...string) {
+	t.Helper()
+	var b strings.Builder
+	for n, ev := range events {
+		fmt.Fprintf(&b, "{\"at\":%q,\"event\":%q}\n", time.Now().Add(time.Duration(n)*time.Millisecond).UTC().Format(time.RFC3339Nano), ev)
+	}
+	path := filepath.Join(filepath.Dir(hookStatusFilePath(id)), id+".events.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const otherConversation = "99999999-8888-4777-8666-555555555555"
 
 // sessionStartNow is the fresh process's SessionStart in its hook file.
 func sessionStartNow() *HookStatus {
@@ -115,22 +135,26 @@ func TestIssue2954_FreshStartBoot(t *testing.T) {
 			st.substate = string(SubstateIdleAtEmptyPrompt)
 			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
 		}, []string{freshStartLine}, true},
-		"pane not drawn within the boot timeout: news, token kept": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+		// Spent, so a later prompt adds no line after the urgent.
+		"pane not drawn within the boot timeout: news, token spent": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
 			st.substate = string(SubstateNone)
 			f.freshStart(time.Now().Add(-3 * time.Minute))
+			hookHistory(t, f.child.ID, "SessionStart")
 			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
-		}, []string{"urgent: "}, true},
+		}, []string{"urgent: "}, false},
 		// The boot timeout does not end the token: a child launched with no
 		// kickoff and acknowledged later (waiting -> idle, a new poll key, no
 		// transcript) is still at the boot, pending or read.
 		"acknowledged past the boot timeout, no turn": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
 			f.freshStart(time.Now().Add(-3 * time.Minute))
+			hookHistory(t, f.child.ID, "SessionStart")
 			f.d.recordTerminalTurns("default", f.byID, f.status("waiting"), nil)
 			f.d.sweepFreshStartTokens(f.byID, time.Now())
 			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
 		}, []string{freshStartLine}, true},
 		"acknowledged past the boot timeout after the parent read the line": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
 			f.freshStart(time.Now().Add(-3 * time.Minute))
+			hookHistory(t, f.child.ID, "SessionStart")
 			f.d.recordTerminalTurns("default", f.byID, f.status("waiting"), nil)
 			if got := f.drain(t); len(got) != 1 {
 				t.Fatalf("want the line drained, got %+v", got)
@@ -148,8 +172,42 @@ func TestIssue2954_FreshStartBoot(t *testing.T) {
 		// a SessionStart and a new, empty transcript. A row saved on another
 		// conversation than the start's spends the token.
 		"saved on another conversation than the start's": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
-			f.child.ClaudeSessionID = "99999999-8888-4777-8666-555555555555"
+			f.child.ClaudeSessionID = otherConversation
 			f.d.emitTurn("default", f.child, f.byID, "running", "idle", time.Now(), true)
+		}, []string{"urgent: "}, false},
+		// A turn falls between passes and its Stop is overwritten in the hook
+		// file before any pass reads it; the saved id does not move and no
+		// transcript resolves. The history and the hook file's id still show it.
+		"a turn, then a SessionStart of another conversation (#3010 review)": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			hookHistory(t, f.child.ID, "SessionStart", "UserPromptSubmit", "Stop", "SessionStart")
+			st.hook = sessionStartNow()
+			st.hook.SessionID = otherConversation
+			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
+		}, []string{"urgent: "}, false},
+		"a turn in the history only": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			hookHistory(t, f.child.ID, "SessionStart", "Stop")
+			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
+		}, []string{"urgent: "}, false},
+		"a second SessionStart in the history": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			hookHistory(t, f.child.ID, "SessionStart", "SessionStart")
+			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
+		}, []string{"urgent: "}, false},
+		"a SessionStart of another conversation in the hook file only": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			st.hook.SessionID = otherConversation
+			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
+		}, []string{"urgent: "}, false},
+		// The old process's async SessionEnd lands over the new SessionStart in
+		// the hook file; the history still holds that SessionStart.
+		"a late SessionEnd over the new SessionStart": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			hookHistory(t, f.child.ID, "SessionStart", "SessionEnd")
+			st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: time.Now()}
+			f.observeAllPaths(f.idle())
+		}, []string{freshStartLine}, true},
+		// With the history off or missing, turns may go unseen: the token ends
+		// at the boot timeout, as on main.
+		"no hook event history, past the boot timeout": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			f.freshStart(time.Now().Add(-3 * time.Minute))
+			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
 		}, []string{"urgent: "}, false},
 		// The transcript path resolving shows turns would be seen, with no
 		// hook event yet.
@@ -283,7 +341,8 @@ func TestIssue2954_SweepSpendsSilently(t *testing.T) {
 		left  bool
 	}{
 		{"within the boot timeout", 10 * time.Second, nil, true},
-		{"past the boot timeout, no turn", time.Minute, nil, true},
+		{"past the boot timeout, no turn", time.Minute, func(t *testing.T, f *turnTestFixture) { hookHistory(t, f.child.ID, "SessionStart") }, true},
+		{"past the boot timeout, no hook event history", time.Minute, nil, false},
 		{"a day, no turn", 25 * time.Hour, nil, false},
 		{"a turn", 10 * time.Second, func(t *testing.T, f *turnTestFixture) {
 			f.appendTurn(t, fxHuman("u1", "reply pong"), fxAssistantText("a1", "pong"))
@@ -383,6 +442,12 @@ func TestIssue2954_FreshCommandsLeaveAToken(t *testing.T) {
 		}, true, true},
 		{"configured path to a claude binary", func(t *testing.T, home string, inst *Instance) string {
 			writeConfigTOML(t, home, "[claude]\ncommand = \"/opt/tools/bin/claude\"\n")
+			return inst.buildClaudeCommand("claude")
+		}, true, true},
+		// The builder leaves CLAUDE_CONFIG_DIR to a path command: the child
+		// runs under the ambient dir, where the hooks are.
+		{"configured path to a claude binary, hooks only in the ambient dir", func(t *testing.T, home string, inst *Instance) string {
+			writeConfigTOML(t, home, "[claude]\ncommand = \"/opt/tools/bin/claude\"\nconfig_dir = \""+filepath.Join(home, "other-claude")+"\"\n")
 			return inst.buildClaudeCommand("claude")
 		}, true, true},
 		// Fresh, but its turns may not show on this host: no token.
@@ -489,6 +554,41 @@ func TestIssue2954_FailedSpawnLeavesNoToken(t *testing.T) {
 func TestIssue2954_RestartLeavesNoToken(t *testing.T) {
 	t.Run("resuming a conversation", func(t *testing.T) { restartLeavesNoToken(t, "--resume") })
 	t.Run("never interacted", func(t *testing.T) { restartLeavesNoToken(t, "--session-id") })
+	// A failed restart started nothing: the start's token stays. A restart
+	// that lost the spawn lock to a concurrent Start spends only the token it
+	// read before, and that Start keeps its own.
+	for name, c := range map[string]struct {
+		account string
+		won     bool
+	}{"a failed restart": {account: "no-such-slot"}, "lost the spawn lock to a concurrent start": {won: true}} {
+		t.Run(name, func(t *testing.T) {
+			home := isolatedHomeDir(t)
+			inst := newGuardInstance(t, home)
+			inst.Account = c.account
+			old := time.Now().Add(-time.Minute)
+			writeTokenFile(freshStartDir, inst.ID, ".json", freshStartToken{At: old})
+			newer := time.Now()
+			prevLock := instanceSpawnLockAcquireFn
+			t.Cleanup(func() { instanceSpawnLockAcquireFn = prevLock })
+			instanceSpawnLockAcquireFn = func(id string) (func(), error) {
+				if c.won { // the concurrent Start, done while this restart waited
+					writeTokenFile(freshStartDir, id, ".json", freshStartToken{At: newer})
+					recordInstanceSpawn(id)
+				}
+				return prevLock(id)
+			}
+			if err := inst.Restart(); (err != nil) == c.won {
+				t.Fatalf("precondition: restart error %v", err)
+			}
+			want := old
+			if c.won {
+				want = newer
+			}
+			if tok, ok := readFreshStartToken(inst.ID); !ok || !tok.At.Equal(want) {
+				t.Fatalf("token %+v (%v), want the one at %v", tok, ok, want)
+			}
+		})
+	}
 }
 
 func restartLeavesNoToken(t *testing.T, flag string) {

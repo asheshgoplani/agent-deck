@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -229,26 +231,32 @@ func (e *deliveryEnv) heartbeatTUI() *statedb.StateDB {
 // With the TUI running the daemon has no cached substate for the child: it
 // reads the pane of the token holder, which shows the empty prompt. The test
 // writes the row the TUI would for that pane; the launch leaves it starting.
-// Past the boot timeout (short here) the operator sees the child, still with
-// no turn: waiting -> idle is the same boot, not news.
+// Past the boot timeout (short here, well above the fake's 4 s SessionStart)
+// the operator sees the child, still with no turn: waiting -> idle is the same
+// boot, not news.
 func TestIssue2954_LaunchBootWithTUIStatusesIsQuiet(t *testing.T) {
 	t.Parallel()
-	e := newRestartEnv(t, "AGENTDECK_RESTART_BOOT_TIMEOUT=3s")
+	const bootTimeout = 10 * time.Second
+	e := newRestartEnv(t, "AGENTDECK_RESTART_BOOT_TIMEOUT="+bootTimeout.String())
 	parent := e.startFake("parent", "idle", "")
 	db := e.heartbeatTUI()
 	child := e.launchChild("child", parent, "")
 	child.wait(t)
+	pastTimeout := time.Now().Add(bootTimeout + 2*time.Second) // the token is older; plus one daemon pass
 	if err := db.WriteStatus(child.id, "waiting", "claude"); err != nil {
 		t.Fatal(err)
 	}
 	e.waitRecords(parent, child.fakeTarget, 20*time.Second, func(r []map[string]any) bool { return len(r) >= 1 })
 	time.Sleep(quietWindow) // a negative check: nothing more arrives over the next passes
 	e.wantQuietBoot(parent, child.fakeTarget, "with TUI statuses")
-	// The quiet window already ran past the boot timeout.
+	time.Sleep(time.Until(pastTimeout))
+	before := e.transitionsOnBus(child.id, "idle")
 	if err := db.WriteStatus(child.id, "idle", "claude"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(quietWindow) // a negative check: nothing more arrives over the next passes
+	// The daemon judged this row: its transition is on the event bus (after
+	// any record it committed for it).
+	issue2530WaitFor(t, 20*time.Second, "the daemon to judge the child's idle row", func() bool { return e.transitionsOnBus(child.id, "idle") > before })
 	e.wantQuietBoot(parent, child.fakeTarget, "acknowledged past the boot timeout")
 	// Precondition: the daemon was in TUI mode. Probing panes itself, it
 	// would write the pane's idle over a row the TUI set to running.
@@ -259,6 +267,38 @@ func TestIssue2954_LaunchBootWithTUIStatusesIsQuiet(t *testing.T) {
 	if rows, err := db.ReadAllStatuses(); err != nil || rows[child.id].Status != "running" {
 		t.Fatalf("precondition: the daemon must take statuses from the DB, row %+v (%v)", rows[child.id], err)
 	}
+}
+
+// transitionsOnBus counts the event bus's session.transition frames for child
+// id to status to.
+func (e *deliveryEnv) transitionsOnBus(id, to string) int {
+	n := 0
+	_ = filepath.WalkDir(e.root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".ndjson") || !strings.Contains(path, string(filepath.Separator)+"bus"+string(filepath.Separator)) {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		for sc.Scan() {
+			var fr struct {
+				Kind      string `json:"kind"`
+				SessionID string `json:"session_id"`
+				Data      struct {
+					ToStatus string `json:"to_status"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(sc.Bytes(), &fr) == nil && fr.Kind == "session.transition" && fr.SessionID == id && fr.Data.ToStatus == to {
+				n++
+			}
+		}
+		return nil
+	})
+	return n
 }
 
 // waitStatus waits until the session's status is want.
