@@ -10,6 +10,7 @@ The full contract is in [docs/PLUG-IN-ANY-MACHINE.md](../../docs/PLUG-IN-ANY-MAC
 |---------|---------------|-------|
 | [docker/](docker/) | A local Docker container with sshd, tmux and git | docker, ssh-keygen, python3 |
 | [ssh-vm/](ssh-vm/) | A VM from your own controller's HTTP API (template) | curl, python3, your API |
+| [azure-vm/](azure-vm/) | A small Azure Linux VM, ready with Claude Code, git and the project | az, ssh, ssh-keygen, python3 |
 
 ## Configure
 

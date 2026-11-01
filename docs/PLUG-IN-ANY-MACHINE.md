@@ -240,7 +240,8 @@ and starts the session there.
   providers you trust.
 - No secrets in argv or logs. agent-deck puts nothing but the action in argv.
   Providers should read tokens from env or files, not argv (the ssh-vm
-  example uses a 0600 curl config file).
+  example uses a 0600 curl config file; the azure-vm example passes its
+  service principal secret to `az login` on stdin).
 - Provider output is untrusted. agent-deck validates every field before it
   writes an SSH config or runs ssh.
 - Host keys are pinned or trusted on first use, per sandbox. Each sandbox has
@@ -263,6 +264,10 @@ and starts the session there.
 - [docker](../examples/providers/docker/): a local container, works as is.
 - [ssh-vm](../examples/providers/ssh-vm/): a template for a VM controller with
   an HTTP API.
+- [azure-vm](../examples/providers/azure-vm/): a small Azure Linux VM per
+  sandbox through the `az` CLI, in one resource group, with ssh open only to
+  your IP. Every resource is tagged, and list and destroy touch only tagged
+  ones. It comes up ready: Claude Code, git and the project folder.
 
 See [examples/providers/README.md](../examples/providers/README.md).
 
