@@ -41,6 +41,7 @@ const (
 	// that install could not prove stale. It is never a dead end.
 	ConfirmArchiveDestinationSwitch
 	ConfirmKillWindow
+	ConfirmDestroySandbox // destroy a provider sandbox and stop its sessions (TUI 'd' on its host header)
 )
 
 // ConfirmDialog handles confirmation for destructive actions

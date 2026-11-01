@@ -1053,6 +1053,9 @@ type Home struct {
 	// sandboxProvisioner replaces provider.Provision for a "new sandbox"
 	// Where pick (tests stub it); nil uses defaultSandboxProvisioner.
 	sandboxProvisioner func(ctx context.Context, opts provider.ProvisionOptions) (*provider.Provisioned, error)
+	// sandboxDestroyDeps replaces the remote and provider calls of a TUI
+	// sandbox destroy (tests); nil uses the real ones.
+	sandboxDestroyDeps *sandboxDestroyDeps
 	// sandboxProvisionMu guards the count of sandbox provisionings in
 	// flight; quit waits for them (waitSandboxProvisions) so a cancelled
 	// create still finishes its rollback (#2918).
