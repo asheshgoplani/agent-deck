@@ -128,7 +128,17 @@ func TestSandboxDestroy_ConfirmStopsSessionsThenDestroys(t *testing.T) {
 	if view := stripAnsi(h.View()); !strings.Contains(view, "destroying sandbox sb1") {
 		t.Fatalf("no visible progress line while the sandbox is destroyed:\n%s", view)
 	}
-	h = drainCmd(t, h, cmd)
+	// Deliver the result, but not the follow-up remote fetch it asks for:
+	// that would reach real ssh for the fake hosts.
+	result, ok := cmd().(sandboxDestroyedMsg)
+	if !ok {
+		t.Fatal("the destroy command did not report a sandboxDestroyedMsg")
+	}
+	model, refetch := h.Update(result)
+	h = model.(*Home)
+	if refetch == nil {
+		t.Fatal("a finished destroy must refetch the remotes so the rows drop out")
+	}
 
 	want := []string{"list sb1", "stop sb1 s1", "destroy sb1"}
 	if got := rec.got(); strings.Join(got, "|") != strings.Join(want, "|") {
