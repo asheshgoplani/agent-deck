@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.36] - 2026-11-02
+
+### Highlights
+
+- A freshly launched Claude child no longer wakes its parent with an urgent "idle" before its first message lands (see Fixes; thanks @tarekrached).
+- `agent-deck usage statusline-wrap` no longer wraps an already-wrapped status line again, and repairs a `settings.json` that grew from nested wraps (see Fixes).
+- On a phone, a tap on the web terminal opens the keyboard, and a "‹ Sessions" button takes you back to the list (see Fixes).
+- Auto-update notices a new release within one check interval (90 s by default) instead of up to two.
+
+### Fixes
+
+- Fresh starts: about a second after `agent-deck launch`, a Claude child sat at its empty prompt before its kickoff was typed, and that reached the parent as an urgent "idle". It is now one info line, and the start's token lasts until the child's first real turn, so a child that boots slowly does not page the parent either. A concurrent-restart race on the same session is fixed too (#2954, #2989, #3010, #3014; thanks @tarekrached for the report and the fixes).
+- Usage status line: installing the wrapper is idempotent. A correct wrap writes nothing, a renamed binary or a profile flag is recognised, and a nested wrap collapses to one after a backup of `settings.json`, with a warning (#3011, #3016; thanks @ofhtech for the report).
+- Codex: every real turn end now gives the parent a `running -> waiting` record. Some turn ends were dropped as duplicates, so the parent was not woken for up to two hours (#2900, #2998; thanks @sakost for the report).
+- TUI: Shift+Up/Down (and Ctrl+Up, `K`, `J`, `+`, `-`) now move a sub-session whose parent is in another group or was deleted. Such a row is drawn in its place among the top-level rows instead of always last, and the parent link is kept (#2995, #3005; thanks @godlen4332 for the report).
+- Global search: sessions started from it no longer exit with 127; they use your configured Claude command (#3008; thanks @imkarrer).
+- Web on phones: a one-finger tap focuses the terminal and opens the keyboard; scrolling works as before. With a session open, a "‹ Sessions" button (720 px wide or less) goes back to the list and keeps the terminal attached (#2680, #2997; thanks @bautrey for the report and @Totopo27 for the tap idea).
+- Seen state: the web view no longer shows a Claude session as seen when it stopped after your last visit; a save from another process keeps the seen mark; "mark unread" from elsewhere reaches a Codex session; the older conductor templates skip archived rows (#2986, #2988).
+- Starting or restarting an archived session from the CLI, web or a queued start now unarchives it first, and puts the archive time back if the start fails. The web Fleet pane and `/api/remotes` counts leave out archived remote sessions (#2988).
+- `agent-deck open <page.html>`: when the page's folder is over the 20 MiB bundle cap, the bundle keeps the page and the files it loads instead of failing. If even that is too big, the error names the archive size and the five biggest files (#2987).
+- Auto-update: the notify daemon and `web --no-tui` poll on every `check_interval` tick; every second tick was served from the cache (#3006).
+
+### Under the hood
+
+- Faster CI and releases: a release that only bumps the version reuses the green tests of its pull request instead of running the suite again, the test shards are rebalanced and use a warm `-race` build cache, and advisory suites run on a pull request only when their own files change (#2929, #2977, #2993, #2994, #3003, #3004, #3013; thanks @kickinrad for #2929).
+- `go test -short` passes in distro build sandboxes with no tmux, a read-only HOME or slow cores, which fixes the nix build (#2937, #2996; thanks @jmikedupont2 for the report). Local whole-suite runs use CI's 20 minute package timeout (#2990).
+- Test speed and flake fixes (#2991, #2992, #3015), and a doc comment on where a fork resolves the `claude` command (#3007; thanks @imkarrer).
+
 ### Upgrading
 
 - Restart every open TUI after upgrading. While an older TUI is still running next to the new version, it can save a session as seen with an old visit time, so that session may show as unseen once for no reason (#2986).
