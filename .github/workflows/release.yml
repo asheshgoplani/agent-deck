@@ -98,6 +98,11 @@ jobs:
   # a second time on the same code. scripts/ci/release-test-reuse.sh holds the
   # rules; it can only answer "reuse" for a verified green run on the same
   # commit or the same tree, never fail or skip anything else.
+  # Rule R (ASK-164): a version-only release PR run (#3003, shards skipped)
+  # also counts when the tag's parent has a push run with every shard green
+  # and the parent's own .github/scripts/version-only-diff.sh says the tag
+  # changes only the Version line and CHANGELOG.md. A failing or missing
+  # detector means the shards run.
   reuse:
     needs: ref-check
     runs-on: ubuntu-latest
@@ -115,6 +120,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.ref-check.outputs.sha }}
+          # The parent too: rule R runs the parent's detector on parent..tag.
+          fetch-depth: 2
           persist-credentials: false
       - name: Look for a green Go tests run on this commit or tree
         id: lookup
