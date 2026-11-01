@@ -432,17 +432,27 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 	// a token first, so the parent gets no false completion (#2792,
 	// restart_resume.go).
 	noteRestartToken(i, time.Now())
-	// A resuming restart leaves no fresh-start token (#2954, fresh_start.go):
-	// its boot is the restart's to judge. Nor does what the resume builder
-	// noted. (RestartFresh, a new conversation, gets one through Start.)
-	clearFreshStartToken(i.ID)
 	queued := i.leftQueue()
+	fresh, hadFresh := readFreshStartToken(i.ID)
 	err := i.restart(env)
+	lost := errors.Is(err, errRestartLostSpawn)
+	if lost {
+		err = nil
+	}
 	i.launchesFresh = false
 	if err != nil {
 		clearRestartToken(i.ID)
 	} else {
 		markRestartSpawned(i, time.Now())
+		// A resuming restart leaves no fresh-start token (#2954,
+		// fresh_start.go): its boot is the restart's to judge. Nor does what
+		// the resume builder noted. (RestartFresh, a new conversation, gets
+		// one through Start.) Only the token read before, and only when this
+		// restart spawned: a concurrent Start that won the spawn lock keeps
+		// its own, written before or after that read.
+		if hadFresh && !lost {
+			spendFreshStartToken(i.ID, fresh)
+		}
 	}
 	if err == nil {
 		// LastStartedAt covers restarts too (its contract), so the idle
@@ -459,6 +469,11 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 	return err
 }
 
+// errRestartLostSpawn is restart's report that a concurrent spawn won the
+// lock while it waited, so it spawned nothing (restartRecorded treats it as
+// success).
+var errRestartLostSpawn = errors.New("restart superseded by a concurrent spawn")
+
 func (i *Instance) restart(env map[string]string) (err error) {
 	if err := i.ValidateAccount(); err != nil {
 		return err
@@ -473,7 +488,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	// spawn won while this call waited for the lock, restart that fresh process
 	// so the requested environment is not silently discarded.
 	if spawnedSince(i.ID, beforeLock) && len(env) == 0 {
-		return nil
+		return errRestartLostSpawn
 	}
 	// #1873: the case this issue reports IS a restart — a pane that died during
 	// startup, a wrapped tree that escaped it, and a later legitimate restart

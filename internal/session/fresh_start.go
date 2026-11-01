@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,15 +28,22 @@ import (
 // identity in the inbox, so a second sighting, on another path or after a
 // daemon restart, folds into it. A pane that shows nothing recognisable yet,
 // or a prompt reached before the transcript path or a hook event since the
-// start shows that turns would be seen, is judged again next poll. A menu, a
-// login or model error is delivered as before. An error or a turn spends the
-// token, and so does the sweep past the boot timeout, silently.
+// start shows that turns would be seen, is judged again next poll, until the
+// boot timeout. A menu, a login or model error is delivered as before. An
+// error or a turn spends the token silently, and nothing else does before
+// restartTokenOrphanAge: a child launched with no kickoff and acknowledged
+// later (waiting -> idle at the same prompt) is still at its boot. That long
+// life is why the token needs Claude's hooks installed in its config dir:
+// with them every turn shows in the hook file's event history. Without that
+// history the token ends at the boot timeout, as on main.
 
 // freshStartDir holds the tokens under the runtime data dir.
 const freshStartDir = "fresh-start"
 
 type freshStartToken struct {
 	At time.Time `json:"at"`
+	// SessionID is the conversation the start runs (freshStartTurnSeen).
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // freshStartObservable reports whether claudeCmd runs the claude binary itself
@@ -48,14 +56,30 @@ func freshStartObservable(claudeCmd string) bool {
 
 // noteFreshStart writes i's token before the spawn when the command just built
 // starts a new conversation (launchesFresh, consumed here) whose turns this
-// host sees: not over SSH, in a sandbox or behind a wrapper, and with Claude's
-// hooks on. Otherwise it removes a stale one.
+// host sees: not over SSH, in a sandbox or behind a wrapper, with Claude's
+// hooks on and installed, without drift, in the child's config dir. A config
+// that does not load writes none. Otherwise it removes a stale one.
 func noteFreshStart(i *Instance, now time.Time) {
 	fresh := i.launchesFresh && IsClaudeCompatible(i.Tool) && !i.notLocal() && !i.hasEffectiveWrapper()
 	i.launchesFresh = false
 	clearFreshStartToken(i.ID)
-	if cfg, _ := LoadUserConfig(); fresh && (cfg == nil || cfg.Claude.GetHooksEnabled()) {
-		writeTokenFile(freshStartDir, i.ID, ".json", freshStartToken{At: now})
+	if !fresh {
+		return
+	}
+	if cfg, err := LoadUserConfig(); err != nil || (cfg != nil && !cfg.Claude.GetHooksEnabled()) {
+		return
+	}
+	// The dir the spawn runs under: the ambient one when the builder left
+	// CLAUDE_CONFIG_DIR to the command (#1822 F3), else what it exported.
+	dir, _ := SpawnClaudeConfigDirForInstance(i)
+	if i.configDirLeftToCommand {
+		if dir = AmbientClaudeConfigDir(); dir == "" {
+			home, _ := os.UserHomeDir()
+			dir = filepath.Join(home, ".claude")
+		}
+	}
+	if CheckClaudeHooksInstalled(dir) {
+		writeTokenFile(freshStartDir, i.ID, ".json", freshStartToken{At: now, SessionID: i.ClaudeSessionID})
 	}
 }
 
@@ -98,20 +122,31 @@ func hookEventSince(hs *HookStatus, tok freshStartToken) bool {
 
 // freshStartTurnSeen reports a turn since the start: a user or assistant
 // record in the transcript, or a hook event since the start other than the
-// process's own SessionStart and SessionEnd.
+// process's own SessionStart and SessionEnd, in the hook file or its history.
+// The hook file keeps only the last event, so a turn then a /clear (or a
+// claude -p that inherited the instance id) leaves just a SessionStart and a
+// new, empty transcript: an instance saved on another conversation than the
+// start's counts too, as does a SessionStart since the start of another
+// conversation, or a second one in the history. An id the row does not have
+// yet is no other conversation. With no history since the start (off, or the
+// hooks never fired) turns may go unseen: past the boot timeout it counts as
+// one, so the token is spent as on main.
 func freshStartTurnSeen(inst *Instance, tok freshStartToken) bool {
+	if tok.SessionID != "" && inst.ClaudeSessionID != "" && inst.ClaudeSessionID != tok.SessionID {
+		return true
+	}
 	if path := inst.GetJSONLPath(); path != "" {
 		if _, err := os.Stat(path); err == nil && !noTurnSince(path, 0) {
 			return true
 		}
 	}
-	hs := restartHookStatus(inst.ID)
-	if hs != nil {
-		if ev := strings.TrimSpace(hs.Event); strings.EqualFold(ev, "SessionStart") || strings.EqualFold(ev, "SessionEnd") {
-			return false
+	if hs := restartHookStatus(inst.ID); hookEventSince(hs, tok) && !hookSessionEnd(hs) {
+		if !strings.EqualFold(strings.TrimSpace(hs.Event), "SessionStart") || (tok.SessionID != "" && hs.SessionID != "" && hs.SessionID != tok.SessionID) {
+			return true
 		}
 	}
-	return hookEventSince(hs, tok)
+	turn, seen := hookHistoryTurnSince(inst.ID, tok.At)
+	return turn || (!seen && time.Since(tok.At) > restartBootTimeout())
 }
 
 // freshStartVerdict is what a flip is against the child's fresh-start token.
@@ -130,8 +165,12 @@ const (
 // that still shows nothing is not yet the boot. Nor is the empty prompt until
 // a turn would be seen right now: the transcript path resolves, or the hook
 // file holds an event since the start (SessionStart, written before the input
-// box draws). Otherwise a kickoff run where neither reaches would come back to
-// the prompt looking like the boot. The token's life bounds both waits.
+// box draws; a SessionEnd may be an older process's). Otherwise a kickoff run
+// where neither reaches would come back to the prompt looking like the boot.
+// The hook event history's SessionStart since the start is proof too: the old
+// process's SessionEnd can land over it in the hook file. The boot timeout
+// bounds both waits: past it the empty prompt or an unrecognised pane spends
+// the token and is news, so a later prompt adds no line after it.
 func judgeFreshStart(inst *Instance, to string, ts time.Time, substate string) (freshStartToken, freshStartVerdict) {
 	tok, ok := readFreshStartToken(inst.ID)
 	if !ok || ts.Before(tok.At.Truncate(time.Second)) {
@@ -148,13 +187,22 @@ func judgeFreshStart(inst *Instance, to string, ts time.Time, substate string) (
 	if substate == string(tmux.SubstateNone) {
 		substate = restartPaneSubstate(inst)
 	}
+	expired := time.Since(tok.At) > restartBootTimeout()
 	switch tmux.Substate(substate) {
 	case tmux.SubstateIdleAtEmptyPrompt:
-		if inst.GetJSONLPath() == "" && !hookEventSince(restartHookStatus(inst.ID), tok) {
-			return tok, freshStartNotYet
+		if hs := restartHookStatus(inst.ID); inst.GetJSONLPath() != "" || (hookEventSince(hs, tok) && !hookSessionEnd(hs)) || restartSessionStartSince(inst.ID, tok.At) {
+			return tok, freshStartBoot
 		}
-		return tok, freshStartBoot
+		if expired {
+			spendFreshStartToken(inst.ID, tok)
+			return tok, freshStartNews
+		}
+		return tok, freshStartNotYet
 	case tmux.SubstateNone:
+		if expired {
+			spendFreshStartToken(inst.ID, tok)
+			return tok, freshStartNews
+		}
 		return tok, freshStartNotYet
 	}
 	return tok, freshStartNews
@@ -176,8 +224,8 @@ func (d *TransitionDaemon) emitFreshStartBoot(inst *Instance, event TransitionNo
 	return d.commitRestartRecord(inst, event)
 }
 
-// sweepFreshStartTokens spends tokens silently: on a turn, past the boot
-// timeout, and after restartTokenOrphanAge for a session no profile has.
+// sweepFreshStartTokens spends tokens silently: on a turn, and past
+// restartTokenOrphanAge, whether or not a profile still has the session.
 func (d *TransitionDaemon) sweepFreshStartTokens(byID map[string]*Instance, now time.Time) {
 	dir, err := runtimeDataPath(freshStartDir)
 	if err != nil {
@@ -194,11 +242,7 @@ func (d *TransitionDaemon) sweepFreshStartTokens(byID map[string]*Instance, now 
 		switch {
 		case !ok:
 			clearFreshStartToken(id) // unreadable: nothing to judge by
-		case inst == nil:
-			if now.Sub(tok.At) > restartTokenOrphanAge {
-				spendFreshStartToken(id, tok)
-			}
-		case now.Sub(tok.At) > restartBootTimeout() || freshStartTurnSeen(inst, tok):
+		case now.Sub(tok.At) > restartTokenOrphanAge, inst != nil && freshStartTurnSeen(inst, tok):
 			spendFreshStartToken(id, tok)
 		}
 	}

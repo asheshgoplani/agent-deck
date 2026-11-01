@@ -292,6 +292,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 // in both cases there is no alias downstream to defer to.
 func (i *Instance) buildBashExportPrefix(skipConfigDirForCustomCommand bool) string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; export AGENTDECK_PROFILE=%s; ", shellescape.Quote(i.ID), shellescape.Quote(sessionProfileEnvValue()))
+	i.configDirLeftToCommand = skipConfigDirForCustomCommand
 	if IsClaudeConfigDirExplicitForInstance(i) && !skipConfigDirForCustomCommand {
 		// Issue #922 (reporter @bautrey): see applyWorkerScratchOverride.
 		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
