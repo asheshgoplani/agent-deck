@@ -130,8 +130,13 @@ jobs:
   tests:
     needs: [ref-check, reuse]
     if: ${{ !cancelled() && needs.ref-check.result == 'success' && needs.reuse.outputs.reuse != 'true' }}
+    # A called job may not ask for more than this grants, or GitHub fails the
+    # whole run at startup. go-test.yml's changes job reads the base sha's
+    # push run (actions: read) for version-only release PRs (#3003);
+    # scripts/release_workflow_permissions_test.go keeps these in step.
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/go-test.yml
     with:
       shards_only: true
