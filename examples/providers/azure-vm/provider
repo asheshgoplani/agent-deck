@@ -768,7 +768,7 @@ do_create() {
 		--admin-username "$C_USER" --authentication-type ssh \
 		--ssh-key-values "$CREATE_KEYDIR/id_ed25519.pub" \
 		--os-disk-name "$id-osdisk" --os-disk-size-gb "$C_DISK_GB" --storage-sku StandardSSD_LRS \
-		--os-disk-delete-option Delete --nic-delete-option Delete \
+		--os-disk-delete-option Delete \
 		--custom-data "$WORK/custom-data.yaml" --tags "${TAGS[@]}" --output none ||
 		die "creating the VM failed"
 

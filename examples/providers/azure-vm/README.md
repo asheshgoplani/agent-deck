@@ -112,6 +112,10 @@ sp_secret_file = /home/you/.config/agent-deck/azure-sp-secret
 # agent_deck_binary = /home/you/bin/agent-deck-linux-amd64
 ```
 
+If your region or subscription does not offer `Standard_B2s`, pick another
+small size from `az vm list-sizes -l <location> -o table` (for example
+`Standard_B2als_v2`).
+
 Needs on the machine that runs agent-deck: `az`, `ssh`, `ssh-keygen`,
 `python3`, and `curl` for `ssh_source = auto`. On macOS, `brew install
 coreutils` adds `gtimeout`, which bounds the cloud-init wait.
