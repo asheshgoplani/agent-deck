@@ -60,8 +60,7 @@ func freshStartObservable(claudeCmd string) bool {
 // hooks on and installed, without drift, in the child's config dir. A config
 // that does not load writes none. Otherwise it removes a stale one.
 func noteFreshStart(i *Instance, now time.Time) {
-	fresh := i.launchesFresh && IsClaudeCompatible(i.Tool) && !i.notLocal() && !i.hasEffectiveWrapper()
-	i.launchesFresh = false
+	fresh := i.launchesFresh.Swap(false) && IsClaudeCompatible(i.Tool) && !i.notLocal() && !i.hasEffectiveWrapper()
 	clearFreshStartToken(i.ID)
 	if !fresh {
 		return

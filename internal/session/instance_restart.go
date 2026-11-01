@@ -439,7 +439,7 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 	if lost {
 		err = nil
 	}
-	i.launchesFresh = false
+	i.launchesFresh.Store(false)
 	if err != nil {
 		clearRestartToken(i.ID)
 	} else {
