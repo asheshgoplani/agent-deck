@@ -31,12 +31,14 @@ RUN useradd --create-home --shell /bin/bash dev \
 # Claude Code, with the native installer (checksum-verified), as user dev.
 USER dev
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "$CLAUDE_CODE_VERSION" \
- && /home/dev/.local/bin/claude --version \
- && git config --global user.name "Sandbox Dev" \
+ && /home/dev/.local/bin/claude --version
+# Claude settings and git identity in their own layer, so editing them does
+# not download Claude Code again.
+RUN git config --global user.name "Sandbox Dev" \
  && git config --global user.email "dev@agent-deck-sandbox" \
  && git config --global init.defaultBranch main \
  && mkdir -p /home/dev/.claude \
- && printf '{"env":{"DISABLE_AUTOUPDATER":"1"}}\n' > /home/dev/.claude/settings.json
+ && printf '{"env":{"DISABLE_AUTOUPDATER":"1"},"skipDangerousModePermissionPrompt":true}\n' > /home/dev/.claude/settings.json
 USER root
 RUN ln -s /home/dev/.local/bin/claude /usr/local/bin/claude
 

@@ -271,8 +271,9 @@ func TestDockerExampleSetup_WritesLoginForAgentDeckClaudeSessions(t *testing.T) 
 		t.Fatalf("agent-deck config does not point [claude].env_file at the token: %v\n%s", err, cfg)
 	}
 	var claudeState struct {
-		HasCompletedOnboarding bool `json:"hasCompletedOnboarding"`
-		Projects               map[string]struct {
+		HasCompletedOnboarding        bool `json:"hasCompletedOnboarding"`
+		BypassPermissionsModeAccepted bool `json:"bypassPermissionsModeAccepted"`
+		Projects                      map[string]struct {
 			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
 		} `json:"projects"`
 	}
@@ -280,7 +281,7 @@ func TestDockerExampleSetup_WritesLoginForAgentDeckClaudeSessions(t *testing.T) 
 	if err := json.Unmarshal(raw, &claudeState); err != nil {
 		t.Fatalf(".claude.json: %v", err)
 	}
-	if !claudeState.HasCompletedOnboarding || !claudeState.Projects[filepath.Join(home, "shop")].HasTrustDialogAccepted {
+	if !claudeState.HasCompletedOnboarding || !claudeState.BypassPermissionsModeAccepted || !claudeState.Projects[filepath.Join(home, "shop")].HasTrustDialogAccepted {
 		t.Fatalf(".claude.json does not skip onboarding and trust the project: %s", raw)
 	}
 }

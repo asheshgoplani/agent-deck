@@ -15,7 +15,10 @@ screens are done, so a claude session on it shows Claude's prompt at once.
   `project_dir`, or, when neither is set, the small demo project at
   `/home/dev/demo` (from [demo-project](demo-project)).
 - `~/.claude.json` with onboarding done and the project (and `/home/dev`)
-  trusted, so no theme or trust prompt blocks the first session.
+  trusted, so no theme or trust prompt blocks the first session. The
+  one-time "Bypass Permissions mode" screen is accepted as well, because
+  agent-deck on the sandbox starts claude with `--dangerously-skip-permissions`
+  by default and this container is the disposable machine that mode is for.
 - Optional: a Claude login token, see below. Without one, the first claude
   session shows Claude's login screen.
 

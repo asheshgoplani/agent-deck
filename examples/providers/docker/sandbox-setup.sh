@@ -55,9 +55,12 @@ fi
 
 # Claude Code reads its onboarding and per-folder trust state from
 # ~/.claude.json. Mark onboarding done and trust the project (and the home
-# folder) so the first session goes straight to the prompt.
+# folder) so the first session goes straight to the prompt. agent-deck on
+# the sandbox starts claude with --dangerously-skip-permissions by default
+# (dangerous_mode), so the one-time "Bypass Permissions mode" screen is
+# accepted too: this machine is the disposable sandbox that screen asks for.
 trust='{"hasTrustDialogAccepted":true,"hasCompletedProjectOnboarding":true,"allowedTools":[]}'
-printf '{"hasCompletedOnboarding":true,"theme":"dark","autoUpdates":false,"numStartups":1,"projects":{"%s":%s,"%s":%s}}\n' \
+printf '{"hasCompletedOnboarding":true,"theme":"dark","autoUpdates":false,"numStartups":1,"bypassPermissionsModeAccepted":true,"projects":{"%s":%s,"%s":%s}}\n' \
 	"$HOME" "$trust" "$project" "$trust" >"$HOME/.claude.json"
 
 login=none

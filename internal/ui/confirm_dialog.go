@@ -759,7 +759,7 @@ func (c *ConfirmDialog) View() string {
 			hintStyle.Render(glueHintGroups("y delete · n cancel · ←/→ navigate · Enter select · Esc")))
 	case ConfirmDestroySandbox:
 		title = "⚠  Destroy Sandbox?"
-		warning = fmt.Sprintf("This will destroy the sandbox machine:\n\n  %s (%s, id %s)", c.remoteName, c.targetName, c.targetID)
+		warning = fmt.Sprintf("This will destroy the sandbox machine:\n\n  %s · %s · id %s", c.remoteName, c.targetName, c.targetID)
 		if c.sessionCount > 0 {
 			details = fmt.Sprintf("• %s on it will be stopped\n", pluralSessionCount(c.sessionCount))
 		} else {
