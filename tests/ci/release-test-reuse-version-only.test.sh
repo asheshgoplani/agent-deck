@@ -66,7 +66,9 @@ new_repo() {
   P=$(git -C "$D" rev-parse HEAD)
 }
 release_commit() { # release_commit [extra-file]
-  sed -i 's/"1.2.3"/"1.2.4"/' "$D/cmd/agent-deck/main.go"
+  # Portable in-place edit: BSD sed (macOS) takes -i's next arg as a suffix.
+  sed 's/"1.2.3"/"1.2.4"/' "$D/cmd/agent-deck/main.go" >"$D/main.go.tmp" &&
+    mv "$D/main.go.tmp" "$D/cmd/agent-deck/main.go"
   printf '# Changelog\n\n## [1.2.4] - 2026-02-01\n\n- new\n\n## [1.2.3] - 2026-01-01\n\n- old\n' >"$D/CHANGELOG.md"
   if [ -n "${1:-}" ]; then echo change >>"$D/$1"; fi
   git -C "$D" add -A && git -C "$D" commit -qm release
