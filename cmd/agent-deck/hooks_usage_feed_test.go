@@ -219,3 +219,16 @@ config_dir = "~/.claude-gone"
 		t.Errorf("status must not ask for an install that changes nothing:\n%s", out)
 	}
 }
+
+// TestPrintUsageFeedStatus_Warnings: a nested wrapper and an unusually large
+// settings.json are printed under the slot's row (#3011).
+func TestPrintUsageFeedStatus_Warnings(t *testing.T) {
+	var out bytes.Buffer
+	feeds := []session.UsageFeed{{Slot: "default", Wired: true, Depth: 3, Warnings: []string{"statusLine wrapper is nested 3 times", "settings.json is 4.8 MB, unusually large"}}}
+	printUsageFeedStatus(&out, feeds, nil, time.Now())
+	for _, want := range []string{"warning: statusLine wrapper is nested 3 times", "warning: settings.json is 4.8 MB, unusually large"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
