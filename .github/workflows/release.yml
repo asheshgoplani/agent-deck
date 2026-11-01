@@ -97,7 +97,8 @@ jobs:
   # of those is green, reuse it instead of running the 15-25 minute race suite
   # a second time on the same code. scripts/ci/release-test-reuse.sh holds the
   # rules; it can only answer "reuse" for a verified green run on the same
-  # commit or the same tree, never fail or skip anything else.
+  # commit or the same tree (or, rule R below, a version-only release PR run
+  # on a fully green base), never fail or skip anything else.
   # Rule R (ASK-164): a version-only release PR run (#3003, shards skipped)
   # also counts when the tag's parent has a push run with every shard green
   # and the parent's own .github/scripts/version-only-diff.sh says the tag
