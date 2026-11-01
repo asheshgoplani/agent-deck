@@ -650,13 +650,13 @@ type Instance struct {
 	// from by following a continued-in handoff (#2683). A late hook still
 	// carrying one must not revert ClaudeSessionID to the stalled copy.
 	claudeSupersededIDs         map[string]struct{}
-	hookLastUpdate              time.Time // When hook status was last received
-	acknowledgedAt              time.Time // When the user last marked this session seen (from SQLite on load)
-	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
-	skipRecoveryTurn            bool      // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
-	restartReason               string    // SetRestartReason: why the next restart happens, for its resume note
-	launchesFresh               bool      // the Claude command last built starts a new conversation (#2954, fresh_start.go)
-	configDirLeftToCommand      bool      // the export prefix last built left CLAUDE_CONFIG_DIR to the command (#1822 F3; noteFreshStart)
+	hookLastUpdate              time.Time   // When hook status was last received
+	acknowledgedAt              time.Time   // When the user last marked this session seen (from SQLite on load)
+	linkedClaudeSessionID       string      // Last Claude id confirmClaudeSessionLink wrote a session_links row for
+	skipRecoveryTurn            bool        // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
+	restartReason               string      // SetRestartReason: why the next restart happens, for its resume note
+	launchesFresh               atomic.Bool // the Claude command last built starts a new conversation (#2954, fresh_start.go)
+	configDirLeftToCommand      bool        // the export prefix last built left CLAUDE_CONFIG_DIR to the command (#1822 F3; noteFreshStart)
 	codexStartedGeneration      string
 	codexCompletedGeneration    string
 	codexStartedSessionID       string
