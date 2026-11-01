@@ -74,15 +74,19 @@ func checkCalled(t *testing.T, name string, granted map[string]int, seen map[str
 	}
 	seen[name] = true
 	wf := readWorkflow(t, name)
+	// Jobs without their own block get the workflow-level permissions.
+	asked := map[string]any{name + " (workflow level)": wf.Permissions}
 	for jobName, job := range wf.Jobs {
-		where := name + " job " + jobName
-		for scope, lvl := range perms(t, where, job.Permissions) {
+		asked[name+" job "+jobName] = job.Permissions
+		if called, ok := strings.CutPrefix(job.Uses, "./.github/workflows/"); ok {
+			checkCalled(t, called, granted, seen)
+		}
+	}
+	for where, p := range asked {
+		for scope, lvl := range perms(t, where, p) {
 			if lvl > granted[scope] {
 				t.Errorf("%s asks for %s: %s, but release.yml's tests job grants only %d (0 none, 1 read, 2 write)", where, scope, map[int]string{1: "read", 2: "write"}[lvl], granted[scope])
 			}
-		}
-		if called, ok := strings.CutPrefix(job.Uses, "./.github/workflows/"); ok {
-			checkCalled(t, called, granted, seen)
 		}
 	}
 }
