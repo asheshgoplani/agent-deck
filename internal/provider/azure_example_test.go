@@ -367,6 +367,28 @@ func TestAzureExampleProvider_DestroyDeletesEveryResourceAfterCheckingTags(t *te
 	}
 }
 
+// TestAzureExampleProvider_DestroyRechecksTagsBeforeEachDelete: a resource
+// that loses its tags between the listing and its delete is left alone.
+func TestAzureExampleProvider_DestroyRechecksTagsBeforeEachDelete(t *testing.T) {
+	w := newAzWorld(t, azBaseConf(""))
+	stdout, stderr, err := w.run(t, "create", azCreateReq)
+	if err != nil {
+		t.Fatalf("create failed: %v\n%s", err, stderr)
+	}
+	sb := azCreated(t, stdout)
+	w.extraEnv = []string{"FAKE_AZ_UNTAG_AFTER_LIST=" + sb.ID + "-ip"}
+	_, stderr, err = w.run(t, "destroy", `{"protocol":1,"action":"destroy","id":"`+sb.ID+`"}`)
+	if err == nil || !strings.Contains(stderr, "no longer carries") {
+		t.Fatalf("destroy deleted past a resource that lost its tags: err %v\n%s", err, stderr)
+	}
+	for _, r := range w.resources(t) {
+		if r.Name == sb.ID+"-ip" {
+			return
+		}
+	}
+	t.Fatal("the public IP that lost its tags was deleted")
+}
+
 func TestAzureExampleProvider_DestroyRefusesAnUntaggedVM(t *testing.T) {
 	w := newAzWorld(t, azBaseConf(""))
 	prefix := "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/" + azRG + "/providers/"

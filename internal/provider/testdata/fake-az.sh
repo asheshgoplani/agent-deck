@@ -14,6 +14,8 @@
 #                   example "vm create" or "vm run-command"
 #   FAKE_AZ_READY   "no": run-command reports cloud-init did not finish
 #   FAKE_VM_IP      the VMs' public IP (default 192.0.2.10)
+#   FAKE_AZ_UNTAG_AFTER_LIST  a resource name whose tags are dropped right
+#                   after `resource list` answers (someone retagged it)
 s="${FAKE_AZ_STATE:?FAKE_AZ_STATE not set}"
 printf '%s\n' "$*" >>"$s/argv.log"
 printf 'AZURE_CONFIG_DIR=%s\n' "${AZURE_CONFIG_DIR:-}" >>"$s/env.log"
@@ -141,6 +143,11 @@ elif w[:2] == ["resource", "tag"]:
     save()
 elif w[:2] == ["resource", "list"]:
     print(json.dumps([r for r in res if r["resourceGroup"] == opt("--resource-group")]))
+    untag = os.environ.get("FAKE_AZ_UNTAG_AFTER_LIST", "")
+    for r in res:
+        if untag and r["name"] == untag:
+            r["tags"] = {}
+    save()
 elif w[:2] == ["resource", "show"]:
     r = find_id(opt("--ids"))
     if r is None:
