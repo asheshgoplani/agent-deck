@@ -67,11 +67,18 @@ project_git = https://github.com/you/repo.git   # cloned with --depth 1 (public,
 project_name = repo                             # folder under /home/dev (default: from the URL or folder)
 
 claude_token_file = /home/you/.config/agent-deck/claude-token
+agent_deck_binary = /home/you/bin/agent-deck     # copied in, so no release download at create
 ```
 
 Each key can also come from env (`AGENTDECK_SANDBOX_PROJECT_GIT`,
 `AGENTDECK_SANDBOX_PROJECT_DIR`, `AGENTDECK_SANDBOX_PROJECT_NAME`,
-`AGENTDECK_SANDBOX_CLAUDE_TOKEN_FILE`); env wins over the file.
+`AGENTDECK_SANDBOX_CLAUDE_TOKEN_FILE`, `AGENTDECK_SANDBOX_AGENT_DECK_BINARY`);
+env wins over the file.
+
+`agent_deck_binary` copies a local agent-deck (built for linux and the
+sandbox's CPU) into `~/.local/bin` at create. Without it, agent-deck downloads
+its release onto the sandbox from GitHub, which fails when the anonymous
+GitHub API limit (60 requests an hour per IP) is used up.
 
 `claude_token_file` holds a token from `claude setup-token` (a bare token or a
 `CLAUDE_CODE_OAUTH_TOKEN=...` line). The provider refuses the file unless it

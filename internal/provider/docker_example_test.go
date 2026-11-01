@@ -54,6 +54,7 @@ cp | start | rm) cat >/dev/null 2>&1 || true ;;
 exec)
 	case "$*" in
 	*agent-deck-sandbox-setup*) cat >"$s/setup.stdin" ;;
+	*/home/dev/.local/bin/agent-deck*) cat >"$s/agent-deck.copied" ;;
 	*ssh_host_ed25519_key.pub*) echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGn3PMci37qtGRr0qkRvnuvhHEkIl6OupFa0wrBJQenu root@x" ;;
 	*) cat >/dev/null ;;
 	esac ;;
@@ -208,6 +209,21 @@ func TestDockerExampleProvider_DefaultsToDemoProjectWithoutLogin(t *testing.T) {
 	}
 	if got := string(stdin); got != "project_name=demo\n" {
 		t.Fatalf("setup stdin = %q, want only the demo project", got)
+	}
+}
+
+func TestDockerExampleProvider_CopiesAgentDeckBinaryIn(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "agent-deck")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho fake agent-deck\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := runExampleCreate(t, "agent_deck_binary = "+bin+"\n")
+	if run.err != nil {
+		t.Fatalf("create failed: %v\nstderr:\n%s", run.err, run.stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(run.state, "agent-deck.copied"))
+	if err != nil || string(got) != "#!/bin/sh\necho fake agent-deck\n" {
+		t.Fatalf("agent-deck binary not copied into ~/.local/bin of the sandbox: %v %q", err, got)
 	}
 }
 

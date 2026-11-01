@@ -11,3 +11,8 @@
 # A Claude Code login for claude sessions on the sandbox: a file holding a
 # token from 'claude setup-token', mode 0600, owned by you.
 # claude_token_file = /home/you/.config/agent-deck/claude-token
+
+# Copy this agent-deck binary (linux, the sandbox's CPU) into each new
+# sandbox, so agent-deck does not download a release from GitHub at create
+# (useful offline or when the GitHub API rate limit is hit).
+# agent_deck_binary = /home/you/bin/agent-deck
