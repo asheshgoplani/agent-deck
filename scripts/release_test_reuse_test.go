@@ -441,3 +441,31 @@ func TestReleaseWorkflowGatesOnTests(t *testing.T) {
 		t.Errorf("release.yml runs gotestsum itself again; the suite lives in go-test.yml")
 	}
 }
+
+// Rule R (ASK-164): tests/ci/release-test-reuse-version-only.test.sh builds
+// real git repos so the base sha's own version-only detector runs on real
+// objects. Run it from the Go suite so CI runs it whenever this package does.
+func TestReleaseTestReuseVersionOnlyRule(t *testing.T) {
+	for _, tool := range []string{"jq", "git"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			if os.Getenv("CI") != "" {
+				t.Fatalf("%s not installed on a CI runner; the rule R test needs it", tool)
+			}
+			t.Skipf("%s not installed; the rule R test needs it (CI runners have it)", tool)
+		}
+	}
+	script := filepath.Join("..", "tests", "ci", "release-test-reuse-version-only.test.sh")
+	cmd := exec.Command("bash", script)
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"TMPDIR=" + t.TempDir(),
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s failed: %v\n%s", script, err, out)
+	}
+	if !strings.Contains(string(out), "all release-test-reuse version-only cases pass") {
+		t.Fatalf("%s did not report a pass:\n%s", script, out)
+	}
+}

@@ -61,7 +61,7 @@ The narrowly path-filtered suites (`eval-smoke`, `session-persistence`,
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, gates on a green race suite for the tag commit (the `reuse` job reuses a green `Go tests` run on that commit, or on the release PR head with the same tree and parent; otherwise the `tests` job runs the `go-test.yml` shards on the tag), runs the blocking eval harness beside it (integration tests run beside it too, informational), runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs into a **draft** release, asserts the four tarballs + `checksums.txt` landed, verifies every tarball against its published SHA-256, signs SLSA build provenance — and only then publishes the release. Finally it pushes the Homebrew formula, best-effort. Replaces the pre-#332 manual `make release-local` step. |
+| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, gates on a green race suite for the tag commit (the `reuse` job reuses a green `Go tests` run on that commit, or on the release PR head with the same tree and parent, including a version-only release PR run on a fully green base (rule R); otherwise the `tests` job runs the `go-test.yml` shards on the tag), runs the blocking eval harness beside it (integration tests run beside it too, informational), runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs into a **draft** release, asserts the four tarballs + `checksums.txt` landed, verifies every tarball against its published SHA-256, signs SLSA build provenance — and only then publishes the release. Finally it pushes the Homebrew formula, best-effort. Replaces the pre-#332 manual `make release-local` step. |
 | `homebrew-verify.yml` | `workflow_run` after `release.yml` completes successfully (plus weekly cron, `workflow_dispatch`, and PRs touching install docs) | Probes the live tap: formula exists, its version matches `/releases/latest`, and every URL in it resolves. Moved off the tag-push trigger in #1759 because it used to race the release it was verifying. |
 
 ### The release tests the tag commit once, in the PR-gate shards (#2929)
@@ -78,7 +78,14 @@ it and the build step refuses any other checkout):
   must be a success whose `Full test suite (PR gate)` job and every
   `Test shard (...)` job concluded success on the latest attempt. A candidate
   still running is waited for up to 20 minutes. The reused run's URL is in the
-  job summary.
+  job summary. Rule R (ASK-164): that same-tree PR run also counts when it was
+  a version-only release PR run (shards skipped, `Version-only release check`
+  and the gate green) and, checked again by the release, the tag commit's
+  parent has a push run on main with the gate and every shard green and the
+  parent's own `.github/scripts/version-only-diff.sh` says parent..tag changes
+  only the `Version` line and `CHANGELOG.md`. A merge commit, any other change,
+  a base without the detector or without a fully green push run takes the
+  shards. Tested by `tests/ci/release-test-reuse-version-only.test.sh`.
 - **Run.** Anything else (no candidate, a red one, an API error, the deadline)
   runs `go-test.yml` itself as the `tests` job with `shards_only: true`: the
   same shards, invocation and package list as a PR, without the comms matrix
