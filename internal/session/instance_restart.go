@@ -433,6 +433,7 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 	// restart_resume.go).
 	noteRestartToken(i, time.Now())
 	queued := i.leftQueue()
+	fresh, hadFresh := readFreshStartToken(i.ID)
 	err := i.restart(env)
 	i.launchesFresh = false
 	if err != nil {
@@ -442,8 +443,11 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 		// A resuming restart leaves no fresh-start token (#2954,
 		// fresh_start.go): its boot is the restart's to judge. Nor does what
 		// the resume builder noted. (RestartFresh, a new conversation, gets
-		// one through Start.)
-		clearFreshStartToken(i.ID)
+		// one through Start.) Only the token read before: a concurrent Start
+		// that won the spawn lock keeps its own.
+		if hadFresh {
+			spendFreshStartToken(i.ID, fresh)
+		}
 	}
 	if err == nil {
 		// LastStartedAt covers restarts too (its contract), so the idle

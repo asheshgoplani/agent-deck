@@ -667,6 +667,29 @@ var restartSessionStartSince = func(id string, since time.Time) bool {
 	return false
 }
 
+// hookHistoryTurnSince reads child id's hook event history from since: seen
+// when it holds any event, turn when one is neither SessionStart nor
+// SessionEnd (a SessionEnd may be an older process's, landing late) or is a
+// second SessionStart.
+func hookHistoryTurnSince(id string, since time.Time) (turn, seen bool) {
+	starts := 0
+	for _, ev := range restartHookHistory(id) {
+		if ev.At.Before(since) {
+			continue
+		}
+		seen = true
+		switch e := strings.TrimSpace(ev.Event); {
+		case strings.EqualFold(e, "SessionStart"):
+			if starts++; starts > 1 {
+				return true, true
+			}
+		case !strings.EqualFold(e, "SessionEnd"):
+			return true, true
+		}
+	}
+	return false, seen
+}
+
 // restartHistoryClockLag bounds how much later the hook handler's history
 // line reads the clock than the hook file's ts (it loads the config and
 // writes the status file first): the same event can cross a second there.

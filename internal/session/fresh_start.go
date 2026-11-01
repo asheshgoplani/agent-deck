@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,7 +34,8 @@ import (
 // restartTokenOrphanAge: a child launched with no kickoff and acknowledged
 // later (waiting -> idle at the same prompt) is still at its boot. That long
 // life is why the token needs Claude's hooks installed in its config dir:
-// with them every turn shows in the hook file.
+// with them every turn shows in the hook file's event history. Without that
+// history the token ends at the boot timeout, as on main.
 
 // freshStartDir holds the tokens under the runtime data dir.
 const freshStartDir = "fresh-start"
@@ -67,7 +69,16 @@ func noteFreshStart(i *Instance, now time.Time) {
 	if cfg, err := LoadUserConfig(); err != nil || (cfg != nil && !cfg.Claude.GetHooksEnabled()) {
 		return
 	}
-	if CheckClaudeHooksInstalled(GetClaudeConfigDirForInstance(i)) {
+	// The dir the spawn runs under: the ambient one when the builder left
+	// CLAUDE_CONFIG_DIR to the command (#1822 F3), else what it exported.
+	dir, _ := SpawnClaudeConfigDirForInstance(i)
+	if i.configDirLeftToCommand {
+		if dir = AmbientClaudeConfigDir(); dir == "" {
+			home, _ := os.UserHomeDir()
+			dir = filepath.Join(home, ".claude")
+		}
+	}
+	if CheckClaudeHooksInstalled(dir) {
 		writeTokenFile(freshStartDir, i.ID, ".json", freshStartToken{At: now, SessionID: i.ClaudeSessionID})
 	}
 }
@@ -111,10 +122,15 @@ func hookEventSince(hs *HookStatus, tok freshStartToken) bool {
 
 // freshStartTurnSeen reports a turn since the start: a user or assistant
 // record in the transcript, or a hook event since the start other than the
-// process's own SessionStart and SessionEnd. An instance saved on another
-// conversation than the start's counts too: the hook file keeps only the last
-// event, so a turn then a /clear would leave just a SessionStart and a new,
-// empty transcript. An id the row does not have yet is no other conversation.
+// process's own SessionStart and SessionEnd, in the hook file or its history.
+// The hook file keeps only the last event, so a turn then a /clear (or a
+// claude -p that inherited the instance id) leaves just a SessionStart and a
+// new, empty transcript: an instance saved on another conversation than the
+// start's counts too, as does a SessionStart since the start of another
+// conversation, or a second one in the history. An id the row does not have
+// yet is no other conversation. With no history since the start (off, or the
+// hooks never fired) turns may go unseen: past the boot timeout it counts as
+// one, so the token is spent as on main.
 func freshStartTurnSeen(inst *Instance, tok freshStartToken) bool {
 	if tok.SessionID != "" && inst.ClaudeSessionID != "" && inst.ClaudeSessionID != tok.SessionID {
 		return true
@@ -124,13 +140,13 @@ func freshStartTurnSeen(inst *Instance, tok freshStartToken) bool {
 			return true
 		}
 	}
-	hs := restartHookStatus(inst.ID)
-	if hs != nil {
-		if ev := strings.TrimSpace(hs.Event); strings.EqualFold(ev, "SessionStart") || strings.EqualFold(ev, "SessionEnd") {
-			return false
+	if hs := restartHookStatus(inst.ID); hookEventSince(hs, tok) && !hookSessionEnd(hs) {
+		if !strings.EqualFold(strings.TrimSpace(hs.Event), "SessionStart") || (tok.SessionID != "" && hs.SessionID != "" && hs.SessionID != tok.SessionID) {
+			return true
 		}
 	}
-	return hookEventSince(hs, tok)
+	turn, seen := hookHistoryTurnSince(inst.ID, tok.At)
+	return turn || (!seen && time.Since(tok.At) > restartBootTimeout())
 }
 
 // freshStartVerdict is what a flip is against the child's fresh-start token.
@@ -151,9 +167,10 @@ const (
 // file holds an event since the start (SessionStart, written before the input
 // box draws; a SessionEnd may be an older process's). Otherwise a kickoff run
 // where neither reaches would come back to the prompt looking like the boot.
-// The boot timeout bounds both waits: past it the empty prompt spends the
-// token and is news, and an unrecognised pane is news but keeps the token (it
-// says nothing about turns).
+// The hook event history's SessionStart since the start is proof too: the old
+// process's SessionEnd can land over it in the hook file. The boot timeout
+// bounds both waits: past it the empty prompt or an unrecognised pane spends
+// the token and is news, so a later prompt adds no line after it.
 func judgeFreshStart(inst *Instance, to string, ts time.Time, substate string) (freshStartToken, freshStartVerdict) {
 	tok, ok := readFreshStartToken(inst.ID)
 	if !ok || ts.Before(tok.At.Truncate(time.Second)) {
@@ -173,7 +190,7 @@ func judgeFreshStart(inst *Instance, to string, ts time.Time, substate string) (
 	expired := time.Since(tok.At) > restartBootTimeout()
 	switch tmux.Substate(substate) {
 	case tmux.SubstateIdleAtEmptyPrompt:
-		if hs := restartHookStatus(inst.ID); inst.GetJSONLPath() != "" || (hookEventSince(hs, tok) && !hookSessionEnd(hs)) {
+		if hs := restartHookStatus(inst.ID); inst.GetJSONLPath() != "" || (hookEventSince(hs, tok) && !hookSessionEnd(hs)) || restartSessionStartSince(inst.ID, tok.At) {
 			return tok, freshStartBoot
 		}
 		if expired {
@@ -183,6 +200,7 @@ func judgeFreshStart(inst *Instance, to string, ts time.Time, substate string) (
 		return tok, freshStartNotYet
 	case tmux.SubstateNone:
 		if expired {
+			spendFreshStartToken(inst.ID, tok)
 			return tok, freshStartNews
 		}
 		return tok, freshStartNotYet

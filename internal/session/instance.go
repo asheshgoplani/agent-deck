@@ -656,6 +656,7 @@ type Instance struct {
 	skipRecoveryTurn            bool      // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
 	restartReason               string    // SetRestartReason: why the next restart happens, for its resume note
 	launchesFresh               bool      // the Claude command last built starts a new conversation (#2954, fresh_start.go)
+	configDirLeftToCommand      bool      // the export prefix last built left CLAUDE_CONFIG_DIR to the command (#1822 F3; noteFreshStart)
 	codexStartedGeneration      string
 	codexCompletedGeneration    string
 	codexStartedSessionID       string
