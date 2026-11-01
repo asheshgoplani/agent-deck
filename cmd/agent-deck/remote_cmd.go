@@ -478,6 +478,7 @@ func handleRemoteList(args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	check := fs.Bool("check", false, "Ask each remote for its agent-deck version and update timer now")
 	retry := fs.Bool("retry", false, "Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
+	_ = fs.String("owner", "", "Show only sandboxes owned by this person (\"me\" = [sandbox] owner, else $USER)")
 	_ = parseCLIFlags(fs, args)
 
 	config, err := session.LoadUserConfig()

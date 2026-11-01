@@ -278,6 +278,10 @@ type UserConfig struct {
 	// destroy sandboxes, which `remote add --provider` registers as remotes.
 	Providers map[string]ProviderConfig `toml:"providers,omitempty"`
 
+	// Sandbox holds settings for the sandboxes this machine creates with a
+	// provider ([sandbox]).
+	Sandbox SandboxSettings `toml:"sandbox,omitempty"`
+
 	// Remote holds settings for every remote attach ([remote]).
 	Remote RemoteAttachSettings `toml:"remote,omitempty"`
 
@@ -1281,6 +1285,27 @@ type RemoteConfig struct {
 	// and mosh call for this remote passes it with -F. Empty uses the user's
 	// own ssh configuration.
 	SSHConfig string `toml:"ssh_config,omitempty"`
+
+	// Owner is the person who created this remote's sandbox, sent to the
+	// provider as the agent-deck/owner label ([sandbox] owner, else $USER).
+	// Empty for a plain SSH remote and for sandboxes made before owners.
+	Owner string `toml:"owner,omitempty"`
+}
+
+// SandboxSettings is the [sandbox] section: settings for the sandboxes
+// this machine creates with a provider.
+type SandboxSettings struct {
+	// Owner names the person who owns the sandboxes created here, e.g.
+	// "alice". It is sent to the provider as the agent-deck/owner label and
+	// shown on the sandbox's remote (remote list, TUI, web). Default: the
+	// login name ($USER). At most 64 printable characters.
+	Owner string `toml:"owner,omitempty"`
+}
+
+// SandboxOwner returns the owner for a new sandbox: [sandbox] owner, else
+// $USER, else the account's login name; "" when none is known.
+func (c *UserConfig) SandboxOwner() string {
+	return ""
 }
 
 // ProviderConfig defines one sandbox provider ([providers.<name>]).

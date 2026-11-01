@@ -23,6 +23,10 @@ const (
 	// off (timeout, cancel) before the provider answered, it finds exactly
 	// the sandbox that request made, if any.
 	LabelCreateID = "agent-deck/create-id"
+	// LabelOwner names the person who created the sandbox
+	// (UserConfig.SandboxOwner), so a provider list or a cloud console
+	// shows whose machine it is.
+	LabelOwner = "agent-deck/owner"
 )
 
 const (
