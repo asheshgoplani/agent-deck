@@ -28,9 +28,13 @@ RUN useradd --create-home --shell /bin/bash dev \
 # does not have on PATH; the /usr/local/bin link above makes it found. The
 # same goes for claude below.
 
-# Claude Code, with the native installer (checksum-verified), as user dev.
+# Claude Code, with Anthropic's native installer (it checksum-verifies the
+# binary it downloads), as user dev. The installer is saved to a file and run
+# from there, not piped into a shell.
 USER dev
-RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "$CLAUDE_CODE_VERSION" \
+RUN curl -fsSL -o /home/dev/claude-install.sh https://claude.ai/install.sh \
+ && bash /home/dev/claude-install.sh "$CLAUDE_CODE_VERSION" \
+ && rm -f /home/dev/claude-install.sh \
  && /home/dev/.local/bin/claude --version
 # Claude settings and git identity in their own layer, so editing them does
 # not download Claude Code again.
