@@ -40,6 +40,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[costs.budgets] and [costs.run_budget]](#costsbudgets-and-costsrun_budget)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[providers.<name>] Sandbox providers](#providersname-sandbox-providers)
+- [[sandbox] Section](#sandbox-section)
 - [[health] Section](#health-section)
 - [[status] Section](#status-section)
 - [[performance] Section](#performance-section)
@@ -1273,13 +1274,27 @@ agent_deck_path = ""
 
 Provider output is untrusted and validated before use: sandbox id, host (DNS name or IP literal only), port, user, auth (`key` with a private key file that is a regular file, not a symlink, owned by you and mode `0600`/`0400`; or `agent`), labels, state and pinned host keys. A sandbox the provider created but agent-deck cannot use (invalid answer, ssh never answers, agent-deck cannot be installed) is destroyed again and the remote is not kept. A create that times out or is interrupted is followed by a `list`, and the sandbox carrying that request's `agent-deck/create-id` label is destroyed.
 
-A sandbox remote is an ordinary `[remotes.<name>]` entry with three more keys, all written by agent-deck:
+A sandbox remote is an ordinary `[remotes.<name>]` entry with four more keys, all written by agent-deck:
 
 | Key | Type | Description |
 |-----|------|-------------|
 | `provider` | string | The `[providers.<name>]` that created the sandbox. `remote destroy` only works on remotes that have it; `remote list` shows them as `sandbox (provider <name>)`. |
 | `sandbox_id` | string | The provider's id for the sandbox. |
 | `ssh_config` | string | Path of the sandbox's own ssh config, `<agent-deck data dir>/sandboxes/<remote>/ssh_config` (directory `0700`, files `0600`, beside `known_hosts` and `sandbox.json`). Every ssh and mosh call for the remote passes it with `-F`, so `~/.ssh/config`, `/etc/ssh/ssh_config` and `~/.ssh/known_hosts` are not used for it: `ProxyJump`, bastion or `ProxyCommand` settings there do not apply, and the provider must return a host and port that are reachable directly. Host keys the provider pins are checked strictly; without them the first key seen is trusted into the sandbox's own `known_hosts`. `host` is the alias `agentdeck-sb-<remote>`. |
+| `owner` | string | Who created the sandbox: `[sandbox] owner` (else `$USER`) when it was made, also sent to the provider as the `agent-deck/owner` label. `remote list` shows `owner: <name>` (and `"owner"` in `--json`), the TUI shows it on the sandbox's host row and preview, and the web fleet view on its card. `remote list --owner <name>` (or `--owner me`) lists only that person's sandboxes. Empty for sandboxes made before owners existed. |
+
+## [sandbox] Section
+
+Settings for the sandboxes this machine creates with a provider (`[providers.<name>]`, `remote add --provider`, `launch --provider`, the TUI's "new sandbox"). Not the Docker sandbox of the `[docker]` section.
+
+```toml
+[sandbox]
+owner = "alice"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `owner` | string | `$USER` | The person who owns the sandboxes created here. Sent with every create request as the label `agent-deck/owner` (the docker example stores it as the container label `agent-deck.label.agent-deck/owner`) and kept on the remote as `owner`. At most 64 printable characters; anything else is refused before a sandbox is created. |
 
 ## [health] Section
 
