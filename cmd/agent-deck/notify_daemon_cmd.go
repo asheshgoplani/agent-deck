@@ -352,6 +352,9 @@ func healClaudeHooksAtDaemonStart() {
 		case r.Changed:
 			log.Info("claude_usage_feed_wired", "slot", r.Slot, "command", r.Feed.Command)
 		}
+		for _, warning := range r.Feed.Warnings {
+			log.Warn("claude_usage_feed_warning", "slot", r.Slot, "warning", warning)
+		}
 	}
 	switch {
 	case err != nil:

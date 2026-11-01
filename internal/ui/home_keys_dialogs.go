@@ -831,6 +831,9 @@ func logUsageFeedResults(results []session.UsageFeedResult) {
 		case r.Changed:
 			uiLog.Info("claude_usage_feed_wired", slog.String("slot", r.Slot), slog.String("command", r.Feed.Command))
 		}
+		for _, warning := range r.Feed.Warnings {
+			uiLog.Warn("claude_usage_feed_warning", slog.String("slot", r.Slot), slog.String("warning", warning))
+		}
 	}
 }
 

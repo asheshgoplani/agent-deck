@@ -162,15 +162,9 @@ func isAgentDeckHookCommand(command string) bool {
 	if len(words) < 2 || words[1] != hookHandlerSubcommand {
 		return false
 	}
-	if words[0] == "agent-deck" {
-		return true
-	}
-	// An absolute form: ours if it is the binary the install would write now,
-	// or any agent-deck binary a previous install wrote.
-	if exe, err := hookExecutablePath(); err == nil && exe != "" && words[0] == exe {
-		return true
-	}
-	return strings.TrimSuffix(filepath.Base(words[0]), ".exe") == "agent-deck"
+	// The bare form, the binary the install would write now, or any
+	// agent-deck binary a previous install wrote (agent-deck-bin too, #3011).
+	return isAgentDeckProgram(words[0])
 }
 
 // stripLeadingEnvAssignments drops the leading VAR=value words a hook command
