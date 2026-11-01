@@ -41,14 +41,16 @@ type remoteLabels struct {
 }
 
 // remoteFleetRemoteView is one fleet remote plus its kind label
-// ("sandbox (provider docker)"; omitted for a plain remote).
+// ("sandbox (provider docker)") and its owner; both omitted for a plain
+// remote.
 type remoteFleetRemoteView struct {
 	session.RemoteFleetRemote
-	Kind string `json:"kind,omitempty"`
+	Kind  string `json:"kind,omitempty"`
+	Owner string `json:"owner,omitempty"`
 }
 
 // remoteFleetView is the /api/remotes body: the fleet snapshot with each
-// remote's kind label.
+// remote's kind label and owner.
 type remoteFleetView struct {
 	ObservedAt time.Time                 `json:"observedAt"`
 	Remotes    []remoteFleetRemoteView   `json:"remotes"`
@@ -58,13 +60,13 @@ type remoteFleetView struct {
 func labelRemoteFleet(snap session.RemoteFleetSnapshot, labels map[string]remoteLabels) remoteFleetView {
 	view := remoteFleetView{ObservedAt: snap.ObservedAt, Counts: snap.Counts, Remotes: make([]remoteFleetRemoteView, 0, len(snap.Remotes))}
 	for _, r := range snap.Remotes {
-		view.Remotes = append(view.Remotes, remoteFleetRemoteView{RemoteFleetRemote: r, Kind: labels[r.Name].Kind})
+		view.Remotes = append(view.Remotes, remoteFleetRemoteView{RemoteFleetRemote: r, Kind: labels[r.Name].Kind, Owner: labels[r.Name].Owner})
 	}
 	return view
 }
 
 // remoteLabelsFromConfig maps each sandbox remote to its
-// provider.DisplayKind; plain remotes are absent.
+// provider.DisplayKind and owner; plain remotes are absent.
 func remoteLabelsFromConfig(cfg *session.UserConfig) map[string]remoteLabels {
 	labels := map[string]remoteLabels{}
 	if cfg == nil {
@@ -72,7 +74,7 @@ func remoteLabelsFromConfig(cfg *session.UserConfig) map[string]remoteLabels {
 	}
 	for name, rc := range cfg.Remotes {
 		if kind := provider.DisplayKind(rc); kind != "" {
-			labels[name] = remoteLabels{Kind: kind}
+			labels[name] = remoteLabels{Kind: kind, Owner: rc.Owner}
 		}
 	}
 	return labels

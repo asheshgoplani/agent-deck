@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -1305,6 +1306,17 @@ type SandboxSettings struct {
 // SandboxOwner returns the owner for a new sandbox: [sandbox] owner, else
 // $USER, else the account's login name; "" when none is known.
 func (c *UserConfig) SandboxOwner() string {
+	if c != nil {
+		if owner := strings.TrimSpace(c.Sandbox.Owner); owner != "" {
+			return owner
+		}
+	}
+	if owner := strings.TrimSpace(os.Getenv("USER")); owner != "" {
+		return owner
+	}
+	if u, err := user.Current(); err == nil {
+		return strings.TrimSpace(u.Username)
+	}
 	return ""
 }
 

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -108,6 +110,10 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	if _, exists := cfg.Remotes[name]; exists {
 		return nil, fmt.Errorf("remote %q already exists (use 'agent-deck remote remove %s' or pick another --name)", name, name)
 	}
+	owner := cfg.SandboxOwner()
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
 
 	createID, err := randomHex(8)
 	if err != nil {
@@ -116,6 +122,9 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	labels := map[string]string{LabelRemote: name, LabelCreateID: createID}
 	if opts.Profile != "" {
 		labels[LabelProfile] = opts.Profile
+	}
+	if owner != "" {
+		labels[LabelOwner] = owner
 	}
 	progress(fmt.Sprintf("Creating sandbox %q with provider %q...", name, opts.Provider))
 	sb, err := client.Create(ctx, name, labels)
@@ -141,6 +150,7 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 		Provider:      opts.Provider,
 		SandboxID:     sb.ID,
 		SSHConfig:     sshConfig,
+		Owner:         owner,
 	}
 	if err := registerRemote(name, rc); err != nil {
 		return nil, rollback(client, name, sb.ID, false, err)
@@ -162,6 +172,24 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 		return nil, rollback(client, name, sb.ID, true, fmt.Errorf("installing agent-deck on sandbox %s: %w", sb.ID, err))
 	}
 	return &Provisioned{RemoteName: name, Remote: rc, Sandbox: *sb}, nil
+}
+
+// maxOwner caps the owner name, in runes.
+const maxOwner = 64
+
+// validateOwner refuses an owner name that cannot be a label value or a
+// display name: control or non-printable characters, or more than maxOwner
+// runes. Empty is allowed (no owner known; the label is left out).
+func validateOwner(owner string) error {
+	if !utf8.ValidString(owner) || utf8.RuneCountInString(owner) > maxOwner {
+		return fmt.Errorf("invalid [sandbox] owner: at most %d characters of UTF-8 text", maxOwner)
+	}
+	for _, r := range owner {
+		if !unicode.IsPrint(r) {
+			return errors.New("invalid [sandbox] owner: it contains a control or non-printable character")
+		}
+	}
+	return nil
 }
 
 // rollback undoes a failed provisioning and joins its failures to cause.

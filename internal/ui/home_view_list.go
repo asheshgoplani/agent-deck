@@ -698,12 +698,16 @@ func (h *Home) renderRemoteGroupItemSuffix(b *strings.Builder, item session.Item
 	versionState := h.remoteVersions[item.RemoteName]
 	poll, hasPoll := h.remotePolls[item.RemoteName]
 	pollActive := h.remotePollActive[item.RemoteName]
-	kind := provider.DisplayKind(h.remotePollConfig[item.RemoteName])
+	rc := h.remotePollConfig[item.RemoteName]
 	h.remoteSessionsMu.RUnlock()
 	kindMarker := ""
-	if kind != "" {
+	if kind := provider.DisplayKind(rc); kind != "" {
 		// A sandbox's host is an ssh alias that means nothing to the
-		// user; say what it is instead.
+		// user; say whose it is and what it is instead. The owner goes
+		// first so a narrow list, which cuts the row, still shows it.
+		if rc.Owner != "" {
+			kind = "owner: " + rc.Owner + " · " + kind
+		}
 		kindMarker = countStyle.Render(" · " + kind)
 	}
 

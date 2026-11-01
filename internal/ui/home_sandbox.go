@@ -43,10 +43,13 @@ type sandboxProvisionedMsg struct {
 }
 
 // remoteHostLabel is what the TUI shows as a remote's host: the sandbox
-// kind for a provider remote (its ssh alias means nothing to the user),
-// otherwise the configured host.
+// kind and owner for a provider remote (its ssh alias means nothing to the
+// user), otherwise the configured host.
 func remoteHostLabel(rc session.RemoteConfig) string {
 	if kind := provider.DisplayKind(rc); kind != "" {
+		if rc.Owner != "" {
+			return kind + " · owner: " + rc.Owner
+		}
 		return kind
 	}
 	return rc.Host
