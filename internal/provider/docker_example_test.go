@@ -16,7 +16,7 @@ import (
 	"testing"
 )
 
-const fakeToken = "sk-ant-oat01-FAKEtokenForTests_0123456789abcdefABCDEF"
+const fakeToken = "fake-oauth-FAKEtokenForTests_0123456789abcdefABCDEF"
 
 func exampleDockerDir(t *testing.T) string {
 	t.Helper()
