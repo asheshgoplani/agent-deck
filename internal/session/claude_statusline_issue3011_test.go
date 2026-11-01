@@ -20,7 +20,7 @@ func wrapStatusLine(program, slot, inner string) string {
 	return program + " -p " + slot + " usage statusline-wrap -- sh -c " + shellescape.Quote(inner)
 }
 
-func readFile(t *testing.T, path string) string {
+func readSettingsText(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -55,13 +55,13 @@ func TestIssue3011_InstallTwiceIsOneWrap(t *testing.T) {
 			if changed, err := InstallUsageFeed(dir, "default"); err != nil || !changed {
 				t.Fatalf("first install = %v, %v; want changed", changed, err)
 			}
-			first := readFile(t, path)
+			first := readSettingsText(t, path)
 			for i := 0; i < 3; i++ {
 				if changed, err := InstallUsageFeed(dir, "default"); err != nil || changed {
 					t.Fatalf("install #%d = %v, %v; want no change", i+2, changed, err)
 				}
 			}
-			if got := readFile(t, path); got != first {
+			if got := readSettingsText(t, path); got != first {
 				t.Fatalf("a repeat install rewrote settings.json:\n%s", got)
 			}
 			cmd, _ := statusLineCommand(t, path)
@@ -100,12 +100,12 @@ func TestIssue3011_NestedWrapCollapsesToOne(t *testing.T) {
 	if string(sl["padding"]) != "2" {
 		t.Fatalf("statusLine siblings lost: %v", sl)
 	}
-	data := readFile(t, path)
+	data := readSettingsText(t, path)
 	if !strings.Contains(data, `"model": "opus"`) || !strings.Contains(data, `"hooks": {}`) {
 		t.Fatalf("other keys changed:\n%s", data)
 	}
 	backups := settingsBackups(t, dir)
-	if len(backups) != 1 || readFile(t, backups[0]) != original {
+	if len(backups) != 1 || readSettingsText(t, backups[0]) != original {
 		t.Fatalf("want one backup holding the damaged file, got %v", backups)
 	}
 
@@ -192,7 +192,7 @@ func TestIssue3011_CorrectWrapWritesNothing(t *testing.T) {
 			t.Errorf("%q: install = %v, %v; want no change", command, changed, err)
 		}
 		after, _ := os.Stat(path)
-		if got := readFile(t, path); got != content || !after.ModTime().Equal(before.ModTime()) {
+		if got := readSettingsText(t, path); got != content || !after.ModTime().Equal(before.ModTime()) {
 			t.Errorf("%q: settings.json was rewritten:\n%s", command, got)
 		}
 		if _, err := os.Stat(usageFeedBackupPath(dir)); !os.IsNotExist(err) {
