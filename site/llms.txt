@@ -9,6 +9,7 @@ Install: `curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/
 ## Docs
 
 - [Full reference for LLMs](https://agent-deck.com/llms-full.txt): install, features, conductors, remotes, web mode, configuration basics and FAQ in one plain-text file
+- [Features](https://agent-deck.com/features.html): every feature in detail: install, status, forking, MCP manager, worktrees, remotes, conductors, Mac app preview, keyboard shortcuts
 - [FAQ](https://agent-deck.com/faq.html): common questions about Agent Deck
 - [README](https://github.com/asheshgoplani/agent-deck#readme): the main project documentation
 - [CLI reference](https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/cli-reference.md): every command and flag
@@ -19,7 +20,7 @@ Install: `curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/
 
 ## Project
 
-- [Website](https://agent-deck.com/): overview, install and demo
+- [Website](https://agent-deck.com/): short overview and install
 - [GitHub repository](https://github.com/asheshgoplani/agent-deck): source code, issues and discussions
 - [Releases](https://github.com/asheshgoplani/agent-deck/releases/latest): latest release binaries and notes
 - [Changelog](https://github.com/asheshgoplani/agent-deck/blob/main/CHANGELOG.md): release history

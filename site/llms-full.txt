@@ -3,6 +3,7 @@
 > Agent Deck is a free, open-source (MIT) terminal session manager for AI coding agents. One TUI shows every agent session (running, waiting, idle, error) and switches between them with one key. Single Go binary, built on tmux and Bubble Tea. macOS, Linux, Windows (WSL).
 
 Website: https://agent-deck.com/
+Features: https://agent-deck.com/features.html
 FAQ: https://agent-deck.com/faq.html
 Short index: https://agent-deck.com/llms.txt
 GitHub: https://github.com/asheshgoplani/agent-deck
@@ -10,7 +11,7 @@ Latest release: https://github.com/asheshgoplani/agent-deck/releases/latest
 Discord: https://discord.gg/e4xSs6NBN8
 License: MIT. Author and maintainer: Ashesh Goplani (https://github.com/asheshgoplani).
 
-This file summarizes the README and the in-repo docs as of release v1.16.34 (October 2026). For the exhaustive, always-current text, read the README on GitHub and the references under `skills/agent-deck/references/` in the repository. The longer in-repo LLM file is https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt.
+This file summarizes the README and the in-repo docs as of release v1.16.35 (October 2026). For the exhaustive, always-current text, read the README on GitHub and the references under `skills/agent-deck/references/` in the repository. The longer in-repo LLM file is https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt.
 
 ---
 

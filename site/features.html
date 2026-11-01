@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Primary Meta Tags - Problem-focused for search discovery -->
+    <title>Agent Deck Features - Install, Forking, MCP, Remotes, Conductors</title>
+    <meta name="title" content="Agent Deck Features - Install, Status, Forking, MCP, Remotes, Conductors">
+    <meta name="description" content="Everything Agent Deck does: install, live status for every agent, session forking, MCP manager, worktrees, Recall, Docker sandbox, remotes, conductors and the Mac app preview.">
+
+    <!-- Problem-based keywords for search discovery -->
+    <meta name="keywords" content="manage multiple Claude Code sessions, Claude Code session manager, Codex session manager, Gemini CLI manager, OpenCode session manager, switch between AI coding agents, tmux AI agents, Claude Code fork conversation, parallel AI coding sessions, git worktrees AI agents, MCP manager, AI agent orchestration, conductor Telegram Slack, Claude Code TUI, terminal multiplexer AI agents, manage coding assistants">
+
+    <meta name="author" content="Ashesh Goplani">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <link rel="canonical" href="https://agent-deck.com/features.html">
+
+    <!-- Additional SEO meta tags -->
+    <meta name="theme-color" content="#1a1b26">
+    <meta name="application-name" content="Agent Deck">
+    <meta name="generator" content="Agent Deck">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://agent-deck.com/features.html">
+    <meta property="og:title" content="Agent Deck Features - Install, Status, Forking, MCP, Remotes, Conductors">
+    <meta property="og:description" content="Everything Agent Deck does: install, live status for every agent, session forking, MCP manager, worktrees, Recall, Docker sandbox, remotes, conductors and the Mac app preview.">
+    <meta property="og:image" content="https://agent-deck.com/og-image.svg">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Agent Deck - Your AI agent command center showing status indicators for multiple coding sessions">
+    <meta property="og:site_name" content="Agent Deck">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://agent-deck.com/features.html">
+    <meta name="twitter:title" content="Agent Deck Features - Install, Status, Forking, MCP, Remotes, Conductors">
+    <meta name="twitter:description" content="Everything Agent Deck does: install, live status for every agent, session forking, MCP manager, worktrees, Recall, Docker sandbox, remotes, conductors and the Mac app preview.">
+    <meta name="twitter:image" content="https://agent-deck.com/og-image.svg">
+    <meta name="twitter:creator" content="@AsheshGoplani">
+
+    <!-- Favicon - Status Grid Logo -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 32'%3E%3Crect fill='%231a1b26' width='48' height='32' rx='4'/%3E%3Ccircle cx='10' cy='16' r='5' fill='%239ece6a'/%3E%3Ccircle cx='24' cy='16' r='5' fill='%23e0af68'/%3E%3Ccircle cx='38' cy='16' r='5' fill='%23565f89'/%3E%3C/svg%3E">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 32'%3E%3Crect fill='%231a1b26' width='48' height='32' rx='4'/%3E%3Ccircle cx='10' cy='16' r='5' fill='%239ece6a'/%3E%3Ccircle cx='24' cy='16' r='5' fill='%23e0af68'/%3E%3Ccircle cx='38' cy='16' r='5' fill='%23565f89'/%3E%3C/svg%3E">
+
+    <!-- LLM documentation reference -->
+    <link rel="alternate" type="text/plain" href="https://agent-deck.com/llms.txt" title="LLM Summary">
+    <link rel="alternate" type="text/plain" href="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt" title="LLM Documentation">
+
+    <!-- Schema.org structured data - Software Application -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Agent Deck",
+        "alternateName": ["agent-deck", "AgentDeck"],
+        "description": "Terminal session manager for AI coding agents. Run Claude Code, Codex, Gemini CLI, OpenCode, Copilot, Cursor, pi and other terminal agents from one dashboard with live status detection, session forking, git worktrees, an MCP manager, remote machines and conductors.",
+        "url": "https://agent-deck.com/",
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "Terminal Utility",
+        "operatingSystem": "macOS, Linux, Windows (WSL)",
+        "softwareVersion": "1.16.35",
+        "releaseNotes": "https://github.com/asheshgoplani/agent-deck/releases/tag/v1.16.35",
+        "downloadUrl": "https://github.com/asheshgoplani/agent-deck/releases/latest",
+        "installUrl": "https://github.com/asheshgoplani/agent-deck#installation",
+        "screenshot": "https://agent-deck.com/og-image.svg",
+        "softwareHelp": "https://agent-deck.com/faq.html",
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD",
+            "availability": "https://schema.org/InStock"
+        },
+        "author": {
+            "@type": "Person",
+            "name": "Ashesh Goplani",
+            "url": "https://github.com/asheshgoplani"
+        },
+        "publisher": {
+            "@type": "Person",
+            "name": "Ashesh Goplani"
+        },
+        "license": "https://opensource.org/licenses/MIT",
+        "isAccessibleForFree": true,
+        "keywords": ["Claude Code", "Codex", "Gemini CLI", "OpenCode", "AI coding agents", "session manager", "tmux", "TUI", "git worktrees", "MCP"],
+        "programmingLanguage": "Go",
+        "runtimePlatform": "tmux"
+    }
+    </script>
+
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Home", "item": "https://agent-deck.com/"},
+            {"@type": "ListItem", "position": 2, "name": "Features", "item": "https://agent-deck.com/features.html"}
+        ]
+    }
+    </script>
+
+    <!-- PostHog pageviews (EU, cookieless, pageviews only). Skipped entirely under
+         Do Not Track or Global Privacy Control. See TELEMETRY.md, "Website". -->
+    <script>
+        (function () {
+            var dnt = navigator.doNotTrack === '1' || navigator.doNotTrack === 'yes' ||
+                window.doNotTrack === '1' || navigator.msDoNotTrack === '1' ||
+                navigator.globalPrivacyControl === true;
+            if (dnt) return;
+            !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],Object.defineProperty(u,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e}}),Object.defineProperty(u.people,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(){return u.toString(1)+".people (stub)"}}),o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagResult isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+            posthog.init('phc_C2gvPAmkpoba6aB8Pyk9DwTwGV7swUU5sG4G6FcavLiv', {
+                api_host: 'https://eu.i.posthog.com',
+                persistence: 'memory',
+                respect_dnt: true,
+                capture_pageview: true,
+                capture_pageleave: false,
+                autocapture: false,
+                disable_session_recording: true,
+                disable_surveys: true,
+                person_profiles: 'identified_only',
+                // Nothing beyond pageviews, whatever the shared project settings say.
+                advanced_disable_flags: true,
+                advanced_disable_decide: true,
+                capture_heatmaps: false,
+                capture_dead_clicks: false,
+                capture_performance: false,
+                capture_exceptions: false,
+                disable_web_experiments: true
+            });
+        })();
+    </script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        // Tokyo Night palette
+                        'tn-bg': '#1a1b26',
+                        'tn-surface': '#24283b',
+                        'tn-border': '#414868',
+                        'tn-text': '#c0caf5',
+                        'tn-dim': '#9aa5ce',
+                        'tn-accent': '#7aa2f7',
+                        'tn-purple': '#bb9af7',
+                        'tn-cyan': '#7dcfff',
+                        'tn-green': '#9ece6a',
+                        'tn-yellow': '#e0af68',
+                        'tn-orange': '#ff9e64',
+                        'tn-red': '#f7768e',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+        /* Links inside running text are underlined so they stand out without colour alone. */
+        p a.text-tn-accent, li a.text-tn-accent { text-decoration: underline; text-underline-offset: 2px; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        code, .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Smooth scrolling */
+        html {
+            scroll-behavior: smooth;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1a1b26;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #414868;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #565f89;
+        }
+
+        /* Code block styling */
+        .code-block {
+            position: relative;
+        }
+        .code-block button {
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .code-block:hover button {
+            opacity: 1;
+        }
+
+        /* Gradient text */
+        .gradient-text {
+            background: linear-gradient(135deg, #7aa2f7 0%, #bb9af7 50%, #7dcfff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Video container */
+        .video-container {
+            border: 1px solid #414868;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Status indicators animation */
+        @keyframes pulse-green {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .status-running {
+            animation: pulse-green 2s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body class="bg-tn-bg text-tn-text min-h-screen">
+    <!-- Header -->
+    <header class="fixed top-0 left-0 right-0 z-50 bg-tn-bg/80 backdrop-blur-md border-b border-tn-border">
+        <nav class="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between" aria-label="Main">
+            <a href="/" class="flex items-center gap-3 text-xl font-semibold" aria-label="Agent Deck home">
+                <!-- Status Grid Logo -->
+                <span class="flex items-center gap-0.5 mono text-sm bg-tn-surface px-1.5 py-0.5 rounded border border-tn-border">
+                    <span class="text-tn-border">[</span><span class="text-tn-green">●</span><span class="text-tn-border">│</span><span class="text-tn-yellow">◐</span><span class="text-tn-border">│</span><span class="text-tn-dim">○</span><span class="text-tn-border">]</span>
+                </span>
+            </a>
+            <div class="flex items-center gap-4 sm:gap-6 text-sm sm:text-base">
+                <a href="/" class="text-tn-dim hover:text-tn-text transition-colors">Home</a>
+                <a href="/features.html" class="text-tn-text transition-colors" aria-current="page">Features</a>
+                <a href="/faq.html" class="text-tn-dim hover:text-tn-text transition-colors">FAQ</a>
+                <a href="https://github.com/asheshgoplani/agent-deck" target="_blank" rel="noopener"
+                   class="text-tn-dim hover:text-tn-text transition-colors flex items-center gap-2" aria-label="GitHub">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="hidden sm:inline">GitHub</span>
+                </a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="pt-20">
+        <!-- Page intro -->
+        <section class="max-w-3xl mx-auto px-4 sm:px-6 pt-8 pb-4 text-center">
+            <h1 class="text-3xl md:text-4xl font-bold"><span class="gradient-text">Agent Deck features</span></h1>
+            <p class="text-tn-dim mt-3">
+                Everything Agent Deck does, in one place.
+                <a href="https://github.com/asheshgoplani/agent-deck/releases/latest" target="_blank" rel="noopener" class="hover:text-tn-text underline decoration-dotted">Latest release</a> • MIT • macOS · Linux · Windows (WSL)
+            </p>
+            <nav class="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-2 text-sm" aria-label="On this page">
+                <a href="#install" class="text-tn-accent hover:underline">Install</a>
+                <a href="#features" class="text-tn-accent hover:underline">Status</a>
+                <a href="#forking" class="text-tn-accent hover:underline">Forking</a>
+                <a href="#mcp" class="text-tn-accent hover:underline">MCP</a>
+                <a href="#what-you-get" class="text-tn-accent hover:underline">What you get</a>
+                <a href="#tools" class="text-tn-accent hover:underline">Tools</a>
+                <a href="#remotes" class="text-tn-accent hover:underline">Remotes</a>
+                <a href="#conductor" class="text-tn-accent hover:underline">Conductors</a>
+                <a href="#mac-app" class="text-tn-accent hover:underline">Mac app</a>
+                <a href="#keyboard" class="text-tn-accent hover:underline">Keys</a>
+            </nav>
+        </section>
+
+        <!-- The Problem Section -->
+        <section class="max-w-3xl mx-auto px-4 sm:px-6 py-12 text-center">
+            <h2 class="text-2xl md:text-3xl font-bold mb-4">The Problem</h2>
+            <p class="text-lg md:text-xl text-tn-dim mb-4">
+                Running Claude Code on ten projects? OpenCode on five more? Another agent somewhere in the background?
+            </p>
+            <p class="text-base md:text-lg text-tn-dim">
+                <span class="text-tn-text font-medium">Managing many AI sessions gets messy fast.</span> Too many terminal tabs. Hard to track what's running, what's waiting, what's done. Switching between projects means hunting through windows.
+            </p>
+        </section>
+
+        <!-- Solution Callout -->
+        <section class="max-w-2xl mx-auto px-4 sm:px-6 pb-12 text-center">
+            <div class="bg-gradient-to-r from-tn-accent/10 via-tn-purple/10 to-tn-cyan/10 rounded-lg border border-tn-accent/30 p-6">
+                <h3 class="text-xl font-bold mb-2">The Solution</h3>
+                <p class="text-tn-dim">
+                    <span class="text-tn-text">Agent Deck is mission control for your AI coding agents.</span><br>
+                    One terminal shows every session, running, waiting or done, and one keystroke switches between them.
+                </p>
+            </div>
+        </section>
+
+        <!-- Installation Section -->
+        <section id="install" class="bg-tn-surface/50 py-12 scroll-mt-20">
+            <div class="max-w-2xl mx-auto px-4 sm:px-6">
+                <h2 class="text-2xl font-semibold text-center mb-2">Install</h2>
+                <p class="text-center text-tn-dim text-sm mb-6">macOS • Linux • Windows (WSL)</p>
+
+                <!-- Single install command -->
+                <div class="code-block bg-tn-bg rounded-lg p-5 border-2 border-tn-green mb-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-xs text-tn-green font-semibold uppercase tracking-wide">One command</span>
+                        <button type="button" onclick="copyCode(this, 'curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash')"
+                                class="text-xs text-tn-dim hover:text-tn-accent transition-colors px-2 py-1 rounded hover:bg-tn-surface">
+                            Copy
+                        </button>
+                    </div>
+                    <code class="text-tn-green text-sm sm:text-base break-all">curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash</code>
+                </div>
+
+                <p class="text-center text-tn-dim text-sm mb-6">
+                    The script checks for tmux (required) and offers to install it. Then run: <code class="text-tn-accent">agent-deck</code>
+                </p>
+
+                <!-- Other methods -->
+                <div class="grid sm:grid-cols-2 gap-3 mb-4">
+                    <div class="code-block bg-tn-bg rounded-lg p-4 border border-tn-border">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs text-tn-yellow font-semibold uppercase tracking-wide">Homebrew</span>
+                            <button type="button" onclick="copyCode(this, 'brew install asheshgoplani/tap/agent-deck')"
+                                    class="text-xs text-tn-dim hover:text-tn-accent transition-colors px-2 py-1 rounded hover:bg-tn-surface">
+                                Copy
+                            </button>
+                        </div>
+                        <code class="text-tn-cyan text-xs break-all">brew install asheshgoplani/tap/agent-deck</code>
+                    </div>
+                    <div class="code-block bg-tn-bg rounded-lg p-4 border border-tn-border">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs text-tn-yellow font-semibold uppercase tracking-wide">Go</span>
+                            <button type="button" onclick="copyCode(this, 'go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest')"
+                                    class="text-xs text-tn-dim hover:text-tn-accent transition-colors px-2 py-1 rounded hover:bg-tn-surface">
+                                Copy
+                            </button>
+                        </div>
+                        <code class="text-tn-cyan text-xs break-all">go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest</code>
+                    </div>
+                </div>
+
+                <p class="text-center text-tn-dim text-xs">
+                    <span class="text-tn-yellow">Windows:</span> <a href="https://learn.microsoft.com/en-us/windows/wsl/install" class="text-tn-accent hover:underline">Install WSL</a> first, then run the script inside WSL
+                    <span class="mx-2">•</span>
+                    <a href="/faq.html#updating" class="text-tn-accent hover:underline">Updating</a>
+                    <span class="mx-2">•</span>
+                    <a href="/faq.html#uninstall" class="text-tn-accent hover:underline">Uninstall</a>
+                </p>
+
+                <!-- Quick start -->
+                <div class="mt-8 bg-tn-bg rounded-lg border border-tn-border p-4 overflow-x-auto">
+                    <pre class="text-xs text-tn-text"><code><span class="text-tn-cyan">agent-deck</span>                        <span class="text-tn-dim"># Launch the TUI</span>
+<span class="text-tn-cyan">agent-deck add . -c claude</span>        <span class="text-tn-dim"># Add this folder with Claude Code</span>
+<span class="text-tn-cyan">agent-deck session fork my-proj</span>   <span class="text-tn-dim"># Fork a supported session</span>
+<span class="text-tn-cyan">agent-deck mcp attach my-proj exa</span> <span class="text-tn-dim"># Attach an MCP server</span>
+<span class="text-tn-cyan">agent-deck web</span>                    <span class="text-tn-dim"># Web UI on http://127.0.0.1:8420</span></code></pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- tmux Config Section -->
+        <section id="tmux-config" class="py-12 scroll-mt-20">
+            <div class="max-w-2xl mx-auto px-4 sm:px-6">
+                <h2 class="text-xl font-semibold text-center mb-2">Recommended tmux Config</h2>
+                <p class="text-center text-tn-dim text-sm mb-6">Mouse scroll, drag-to-copy, clipboard integration</p>
+
+                <!-- macOS Config -->
+                <details class="mb-3 bg-tn-surface rounded-lg border border-tn-border">
+                    <summary class="px-4 py-3 cursor-pointer text-sm font-medium flex items-center justify-between hover:bg-tn-bg/50 rounded-lg">
+                        <span>🍎 macOS</span>
+                        <span class="text-tn-dim text-xs">click to expand</span>
+                    </summary>
+                    <div class="px-4 pb-4">
+                        <div class="code-block bg-tn-bg rounded-lg p-3 border border-tn-border relative">
+                            <button type="button" onclick="copyCode(this, `# Terminal\nset -g default-terminal &quot;tmux-256color&quot;\nset -ag terminal-overrides &quot;,*256col*:Tc&quot;\n\n# Performance\nset -sg escape-time 0\nset -g history-limit 10000\n\n# Mouse (scroll + drag-to-copy)\nset -g mouse on\n\n# Clipboard\nset -s set-clipboard external\nbind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;pbcopy&quot;\nbind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;pbcopy&quot;`)"
+                                    class="absolute top-2 right-2 text-xs text-tn-dim hover:text-tn-accent transition-colors px-2 py-1 rounded hover:bg-tn-surface">
+                                Copy
+                            </button>
+                            <pre class="text-xs text-tn-cyan overflow-x-auto"><code># Terminal
+set -g default-terminal "tmux-256color"
+set -ag terminal-overrides ",*256col*:Tc"
+
+# Performance
+set -sg escape-time 0
+set -g history-limit 10000
+
+# Mouse (scroll + drag-to-copy)
+set -g mouse on
+
+# Clipboard
+set -s set-clipboard external
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
+bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"</code></pre>
+                        </div>
+                    </div>
+                </details>
+
+                <!-- Linux Config -->
+                <details class="mb-4 bg-tn-surface rounded-lg border border-tn-border">
+                    <summary class="px-4 py-3 cursor-pointer text-sm font-medium flex items-center justify-between hover:bg-tn-bg/50 rounded-lg">
+                        <span>🐧 Linux / WSL</span>
+                        <span class="text-tn-dim text-xs">click to expand</span>
+                    </summary>
+                    <div class="px-4 pb-4">
+                        <div class="code-block bg-tn-bg rounded-lg p-3 border border-tn-border relative">
+                            <button type="button" onclick="copyCode(this, `# Terminal\nset -g default-terminal &quot;tmux-256color&quot;\nset -ag terminal-overrides &quot;,*256col*:Tc&quot;\n\n# Performance\nset -sg escape-time 0\nset -g history-limit 10000\n\n# Mouse (scroll + drag-to-copy)\nset -g mouse on\n\n# Clipboard\nset -s set-clipboard external\nbind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;xclip -in -selection clipboard&quot;\nbind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;xclip -in -selection clipboard&quot;`)"
+                                    class="absolute top-2 right-2 text-xs text-tn-dim hover:text-tn-accent transition-colors px-2 py-1 rounded hover:bg-tn-surface">
+                                Copy
+                            </button>
+                            <pre class="text-xs text-tn-cyan overflow-x-auto"><code># Terminal
+set -g default-terminal "tmux-256color"
+set -ag terminal-overrides ",*256col*:Tc"
+
+# Performance
+set -sg escape-time 0
+set -g history-limit 10000
+
+# Mouse (scroll + drag-to-copy)
+set -g mouse on
+
+# Clipboard
+set -s set-clipboard external
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "xclip -in -selection clipboard"
+bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "xclip -in -selection clipboard"</code></pre>
+                        </div>
+                        <p class="text-xs text-tn-dim mt-2">For Wayland, use <code class="text-tn-purple">wl-copy</code> instead of xclip.</p>
+                    </div>
+                </details>
+
+                <p class="text-center text-tn-dim text-xs">
+                    Add to <code class="text-tn-cyan">~/.tmux.conf</code> then run: <code class="text-tn-cyan">tmux source-file ~/.tmux.conf</code>
+                </p>
+
+                <!-- What it does -->
+                <div class="mt-4 grid grid-cols-2 gap-2 text-xs">
+                    <div class="bg-tn-bg/50 rounded p-2 text-center">
+                        <span class="text-tn-green">Drag</span> <span class="text-tn-dim">→ copies to clipboard</span>
+                    </div>
+                    <div class="bg-tn-bg/50 rounded p-2 text-center">
+                        <span class="text-tn-green">Scroll</span> <span class="text-tn-dim">→ just works</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Status Detection Section -->
+        <section id="features" class="py-16 scroll-mt-20">
+            <div class="max-w-4xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8">
+                    <span class="inline-block px-3 py-1 bg-tn-green/10 text-tn-green text-xs font-semibold rounded-full uppercase tracking-wide mb-4">Status Detection</span>
+                    <h2 class="text-2xl font-semibold mb-4">🎯 See Every Agent at a Glance</h2>
+                    <p class="text-tn-dim max-w-2xl mx-auto">
+                        <span class="text-tn-text font-medium">Know what every agent is doing right now.</span> Smart polling and tool hooks tell running from waiting, so you only jump in where you're needed. Waiting sessions also show up in your tmux status bar.
+                    </p>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                    <div class="p-4 bg-tn-surface/50 rounded-lg">
+                        <div class="text-2xl mb-2 text-tn-green status-running">●</div>
+                        <h3 class="font-medium mb-1">Running</h3>
+                        <p class="text-tn-dim text-sm">Agent is actively working</p>
+                    </div>
+                    <div class="p-4 bg-tn-surface/50 rounded-lg">
+                        <div class="text-2xl mb-2 text-tn-yellow">◐</div>
+                        <h3 class="font-medium mb-1">Waiting</h3>
+                        <p class="text-tn-dim text-sm">Needs your input</p>
+                    </div>
+                    <div class="p-4 bg-tn-surface/50 rounded-lg">
+                        <div class="text-2xl mb-2 text-tn-dim">○</div>
+                        <h3 class="font-medium mb-1">Idle</h3>
+                        <p class="text-tn-dim text-sm">Ready for commands</p>
+                    </div>
+                    <div class="p-4 bg-tn-surface/50 rounded-lg">
+                        <div class="text-2xl mb-2 text-tn-red">✕</div>
+                        <h3 class="font-medium mb-1">Error</h3>
+                        <p class="text-tn-dim text-sm">Something went wrong</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Fork Feature - Highlight -->
+        <section id="forking" class="py-16 bg-gradient-to-b from-tn-surface/50 to-transparent scroll-mt-20">
+            <div class="max-w-4xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8">
+                    <span class="inline-block px-3 py-1 bg-tn-cyan/10 text-tn-cyan text-xs font-semibold rounded-full uppercase tracking-wide mb-4">Forking</span>
+                    <h2 class="text-2xl font-semibold mb-4">🍴 Explore Multiple Solutions in Parallel</h2>
+                    <p class="text-tn-dim max-w-2xl mx-auto mb-4">
+                        <span class="text-tn-text font-medium">Try different approaches without losing context.</span> Press <code class="text-tn-cyan">f</code> to fork a session through the tool's own fork: Claude Code, Codex, OpenCode, pi and Oh My Pi. Each fork inherits the full conversation history.
+                    </p>
+                    <p class="text-sm text-tn-yellow max-w-xl mx-auto">
+                        <span class="font-semibold">Comprehensive by default:</span> a quick fork gets its own git worktree and branch, carries the parent's uncommitted changes, and matches its Docker sandbox. <code>Shift+F</code> opens the dialog to tweak it.
+                    </p>
+                </div>
+
+                <!-- Fork Demo Video -->
+                <div class="video-container max-w-4xl mx-auto mb-8 bg-tn-surface rounded-lg border border-tn-border overflow-hidden">
+                    <video autoplay muted loop playsinline class="w-full">
+                        <source src="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/demos/fork-session.webm" type="video/webm">
+                        <source src="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/demos/fork-session.mp4" type="video/mp4">
+                        <img src="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/demos/fork-session.gif" alt="Fork Session Demo">
+                    </video>
+                </div>
+
+                <!-- Fork Use Cases -->
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="flex items-start gap-3 p-4 bg-tn-surface/50 rounded-lg">
+                        <span class="text-xl">🔀</span>
+                        <div>
+                            <h3 class="font-medium mb-1">Branching Explorations</h3>
+                            <p class="text-tn-dim text-sm">Try different implementation approaches from the same context</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3 p-4 bg-tn-surface/50 rounded-lg">
+                        <span class="text-xl">🧪</span>
+                        <div>
+                            <h3 class="font-medium mb-1">Experiment Safely</h3>
+                            <p class="text-tn-dim text-sm">Fork before risky changes, keep the original intact</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3 p-4 bg-tn-surface/50 rounded-lg">
+                        <span class="text-xl">🌳</span>
+                        <div>
+                            <h3 class="font-medium mb-1">Isolated Branches</h3>
+                            <p class="text-tn-dim text-sm">Each fork works in its own worktree, so forks never fight over files</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3 p-4 bg-tn-surface/50 rounded-lg">
+                        <span class="text-xl">📚</span>
+                        <div>
+                            <h3 class="font-medium mb-1">Ask "What If"</h3>
+                            <p class="text-tn-dim text-sm">Fork to ask side questions without derailing the main session</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- MCP Manager Section -->
+        <section id="mcp" class="py-16 bg-tn-surface/30 scroll-mt-20">
+            <div class="max-w-4xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8">
+                    <span class="inline-block px-3 py-1 bg-tn-purple/10 text-tn-purple text-xs font-semibold rounded-full uppercase tracking-wide mb-4">MCP Manager</span>
+                    <h2 class="text-2xl font-semibold mb-4">🔌 Add Superpowers On-Demand</h2>
+                    <p class="text-tn-dim max-w-2xl mx-auto mb-4">
+                        <span class="text-tn-text font-medium">Attach MCP servers without touching config files.</span> Need web search? Browser automation? GitHub integration? Toggle them on per project or globally. Agent Deck handles the restart automatically.
+                    </p>
+                    <p class="text-sm text-tn-yellow max-w-xl mx-auto">
+                        <span class="font-semibold">Running many sessions?</span> The MCP socket pool shares each MCP server across all sessions over Unix sockets, so it runs once instead of once per session. Turn it on with <code>pool_all = true</code>.
+                    </p>
+                </div>
+
+                <!-- MCP Demo Video -->
+                <div class="video-container max-w-4xl mx-auto mb-8 bg-tn-surface rounded-lg border border-tn-border overflow-hidden">
+                    <video autoplay muted loop playsinline poster="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/demos/manual-mcp-change-poster.webp" class="w-full">
+                        <source src="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/demos/manual-mcp-change-web.webm" type="video/webm">
+                        <source src="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/demos/manual-mcp-change-web.mp4" type="video/mp4">
+                        <img src="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/demos/manual-mcp-change-web.mp4" alt="MCP Manager Demo">
+                    </video>
+                </div>
+
+                <!-- MCP Features -->
+                <div class="grid md:grid-cols-3 gap-4 text-center mb-8">
+                    <div class="p-4 bg-tn-surface/50 rounded-lg">
+                        <div class="text-2xl mb-2">🔌</div>
+                        <h3 class="font-medium mb-1">Easy Toggle</h3>
+                        <p class="text-tn-dim text-sm">Press m to open, Space to toggle</p>
+                    </div>
+                    <div class="p-4 bg-tn-surface/50 rounded-lg">
+                        <div class="text-2xl mb-2">📁</div>
+                        <h3 class="font-medium mb-1">Two Scopes</h3>
+                        <p class="text-tn-dim text-sm">LOCAL (project) or GLOBAL (all), Tab to switch</p>
+                    </div>
+                    <div class="p-4 bg-tn-surface/50 rounded-lg">
+                        <div class="text-2xl mb-2">🔄</div>
+                        <h3 class="font-medium mb-1">Auto Restart</h3>
+                        <p class="text-tn-dim text-sm">The session restarts with the new MCPs</p>
+                    </div>
+                </div>
+
+                <!-- Add MCPs Config -->
+                <div class="bg-tn-bg rounded-lg border border-tn-border p-4 sm:p-6">
+                    <h3 class="text-lg font-semibold mb-3">Adding Available MCPs</h3>
+                    <p class="text-tn-dim text-sm mb-4">Define MCPs once in <code class="text-tn-cyan">~/.config/agent-deck/config.toml</code>, then toggle per project:</p>
+                    <div class="code-block bg-tn-surface rounded-lg p-4 overflow-x-auto">
+                        <pre class="text-xs text-tn-text"><code><span class="text-tn-dim"># GitHub integration</span>
+<span class="text-tn-purple">[mcps.github]</span>
+<span class="text-tn-cyan">command</span> = <span class="text-tn-green">"npx"</span>
+<span class="text-tn-cyan">args</span> = [<span class="text-tn-green">"-y"</span>, <span class="text-tn-green">"@modelcontextprotocol/server-github"</span>]
+<span class="text-tn-cyan">env</span> = { GITHUB_PERSONAL_ACCESS_TOKEN = <span class="text-tn-green">"ghp_your_token"</span> }
+<span class="text-tn-cyan">description</span> = <span class="text-tn-green">"GitHub repos, issues, PRs"</span>
+
+<span class="text-tn-dim"># Browser automation</span>
+<span class="text-tn-purple">[mcps.playwright]</span>
+<span class="text-tn-cyan">command</span> = <span class="text-tn-green">"npx"</span>
+<span class="text-tn-cyan">args</span> = [<span class="text-tn-green">"-y"</span>, <span class="text-tn-green">"@playwright/mcp@latest"</span>]
+<span class="text-tn-cyan">description</span> = <span class="text-tn-green">"Browser automation &amp; testing"</span></code></pre>
+                    </div>
+                    <p class="text-tn-dim text-xs mt-3">See the <a href="https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/config-reference.md" class="text-tn-cyan hover:underline">configuration reference</a> for more.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Features Grid -->
+        <section id="what-you-get" class="py-16 scroll-mt-20">
+            <div class="max-w-4xl mx-auto px-4 sm:px-6">
+                <h2 class="text-2xl font-semibold text-center mb-12">What You Get</h2>
+
+                <div class="grid sm:grid-cols-2 md:grid-cols-3 gap-8">
+                    <div class="text-center">
+                        <div class="text-3xl mb-4">🌳</div>
+                        <h3 class="font-semibold mb-2">Git Worktrees</h3>
+                        <p class="text-tn-dim text-sm">
+                            Many agents on one repo without conflicts. <code class="text-tn-cyan">--worktree</code> gives each session its own branch and folder; <code class="text-tn-cyan">worktree finish</code> merges and cleans up.
+                        </p>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl mb-4">🔍</div>
+                        <h3 class="font-semibold mb-2">Recall Search</h3>
+                        <p class="text-tn-dim text-sm">
+                            Press <code class="text-tn-cyan">G</code> to search every conversation on this machine across Claude, Codex, Gemini, pi, OpenCode and Hermes. Opt in with <code class="text-tn-cyan">[recall] enabled = true</code>.
+                        </p>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl mb-4">⚡</div>
+                        <h3 class="font-semibold mb-2">Switch Instantly</h3>
+                        <p class="text-tn-dim text-sm">
+                            Jump between sessions with one keystroke. <code class="text-tn-cyan">/</code> fuzzy-searches all sessions; filter by running, waiting, idle or error.
+                        </p>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl mb-4">📦</div>
+                        <h3 class="font-semibold mb-2">Docker Sandbox</h3>
+                        <p class="text-tn-dim text-sm">
+                            Run a session inside a Docker container. Your project folder is mounted so the agent works on your code while the rest of the system stays protected.
+                        </p>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl mb-4">💰</div>
+                        <h3 class="font-semibold mb-2">Cost Dashboard</h3>
+                        <p class="text-tn-dim text-sm">
+                            Press <code class="text-tn-cyan">$</code> for today, week and month token costs, top sessions and models, with optional budget limits.
+                        </p>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl mb-4">🌐</div>
+                        <h3 class="font-semibold mb-2">Web UI</h3>
+                        <p class="text-tn-dim text-sm">
+                            <code class="text-tn-cyan">agent-deck web</code> opens a browser view with session terminals, a fleet board, costs and push notifications.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Supported Tools -->
+        <section id="tools" class="bg-tn-surface/30 py-16 scroll-mt-20">
+            <div class="max-w-3xl mx-auto px-4 sm:px-6 text-center">
+                <h2 class="text-xl font-semibold mb-3">Supported Tools</h2>
+                <p class="text-tn-dim text-sm mb-8">Works with any terminal-based AI tool. These have built-in integration:</p>
+                <div class="flex flex-wrap justify-center gap-3">
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-cyan text-sm">Claude Code <span class="text-tn-cyan text-xs">(full)</span></span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-purple text-sm">Gemini CLI <span class="text-tn-purple text-xs">(full)</span></span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">Codex</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">OpenCode</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">Copilot</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">Cursor (terminal)</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">Crush</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">pi</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">Oh My Pi</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">Hermes Agent</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">Muse Code</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">DeepSeek Harness</span>
+                    <span class="px-4 py-2 bg-tn-bg rounded-full border border-tn-border text-sm">Custom tools &amp; any shell</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Remotes Section -->
+        <section id="remotes" class="py-16 scroll-mt-20">
+            <div class="max-w-4xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8">
+                    <span class="inline-block px-3 py-1 bg-tn-accent/10 text-tn-accent text-xs font-semibold rounded-full uppercase tracking-wide mb-4">Remotes</span>
+                    <h2 class="text-2xl font-semibold mb-4">🖥️ Manage Sessions on Other Machines</h2>
+                    <p class="text-tn-dim max-w-2xl mx-auto">
+                        <span class="text-tn-text font-medium">Your other boxes show up in the same list.</span> Register a machine over SSH and its sessions appear beside your local ones with live status. Create, attach, send, fork and stop them from your own terminal. agent-deck is installed on the remote if it's missing, and kept up to date.
+                    </p>
+                </div>
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="bg-tn-bg rounded-lg border border-tn-border p-4 overflow-x-auto">
+                        <pre class="text-xs text-tn-text"><code><span class="text-tn-cyan">agent-deck remote add dev user@dev-box</span>
+<span class="text-tn-cyan">agent-deck remote sessions dev</span>
+<span class="text-tn-cyan">agent-deck remote attach dev my-session</span>
+<span class="text-tn-cyan">agent-deck remote update --all</span></code></pre>
+                    </div>
+                    <div class="p-4 bg-tn-surface/50 rounded-lg">
+                        <h3 class="font-medium mb-1">🧪 Plug in any machine</h3>
+                        <p class="text-tn-dim text-sm">Sandbox providers make a fresh machine per session (a Docker container, a VM, anything with SSH), use it as a remote, and throw it away: <code class="text-tn-cyan">agent-deck launch --provider docker</code>.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Conductor Section -->
+        <section id="conductor" class="py-16 bg-gradient-to-b from-tn-surface/50 to-transparent scroll-mt-20">
+            <div class="max-w-4xl mx-auto px-4 sm:px-6">
+                <div class="text-center mb-8">
+                    <span class="inline-block px-3 py-1 bg-tn-orange/10 text-tn-orange text-xs font-semibold rounded-full uppercase tracking-wide mb-4">Conductors</span>
+                    <h2 class="text-2xl font-semibold mb-4">🎼 A Foreman for Your Fleet</h2>
+                    <p class="text-tn-dim max-w-2xl mx-auto mb-4">
+                        <span class="text-tn-text font-medium">A conductor is a long-running agent session that supervises all your others.</span> It watches for sessions that need help, answers routine questions, and escalates the interesting ones to you, so a waiting worker never sits forgotten.
+                    </p>
+                    <p class="text-sm text-tn-yellow max-w-xl mx-auto">
+                        Talk to it from your phone through optional <span class="font-semibold">Telegram, Slack, Discord or Mattermost</span> bridges. Watchers let GitHub events, webhooks and ntfy pushes wake it up.
+                    </p>
+                </div>
+                <div class="grid md:grid-cols-2 gap-4 items-center">
+                    <div class="bg-tn-bg rounded-lg border border-tn-border p-4 overflow-x-auto">
+                        <pre class="text-xs text-tn-text"><code><span class="text-tn-dim"># Set up a conductor (asks about Telegram/Slack)</span>
+<span class="text-tn-cyan">agent-deck conductor setup work --description "Work fleet"</span>
+<span class="text-tn-cyan">agent-deck session start conductor-work</span>
+
+<span class="text-tn-dim"># Then message your bot:</span>
+<span class="text-tn-green">/status</span></code></pre>
+                    </div>
+                    <div class="grid grid-cols-1 gap-3">
+                        <div class="flex items-start gap-3 p-3 bg-tn-surface/50 rounded-lg">
+                            <span class="text-xl">📱</span>
+                            <p class="text-tn-dim text-sm">Route a message to one conductor with <code class="text-tn-cyan">ops: check the frontend</code></p>
+                        </div>
+                        <div class="flex items-start gap-3 p-3 bg-tn-surface/50 rounded-lg">
+                            <span class="text-xl">🤖</span>
+                            <p class="text-tn-dim text-sm">Run conductors on Claude Code or Codex, as many as you need per profile</p>
+                        </div>
+                        <div class="flex items-start gap-3 p-3 bg-tn-surface/50 rounded-lg">
+                            <span class="text-xl">🔔</span>
+                            <p class="text-tn-dim text-sm">Children report back when they move from running to waiting, idle or error</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Mac App Preview -->
+        <section id="mac-app" class="py-16 scroll-mt-20">
+            <div class="max-w-3xl mx-auto px-4 sm:px-6">
+                <div class="bg-tn-surface rounded-lg border border-tn-purple/40 p-6 text-center">
+                    <span class="inline-block px-3 py-1 bg-tn-purple/10 text-tn-purple text-xs font-semibold rounded-full uppercase tracking-wide mb-4">Preview</span>
+                    <h2 class="text-2xl font-semibold mb-3">🍎 Try the Native Mac App (Preview)</h2>
+                    <p class="text-tn-dim max-w-xl mx-auto mb-3">
+                        A native macOS app for Agent Deck is in preview. It is built on the same agent-deck core, so it shows the sessions you already have, local and remote. Its Browser panel lets agents open the reports and pages they make.
+                    </p>
+                    <p class="text-tn-dim text-sm">There is no public download yet. Want to try it and tell us how it is? Ask on <a href="https://discord.gg/e4xSs6NBN8" target="_blank" rel="noopener" class="text-tn-accent hover:underline">Discord</a>.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Keyboard Shortcuts Preview -->
+        <section id="keyboard" class="py-16 bg-tn-surface/30 scroll-mt-20">
+            <div class="max-w-2xl mx-auto px-4 sm:px-6">
+                <h2 class="text-xl font-semibold text-center mb-8">Keyboard-First Design</h2>
+                <div class="bg-tn-surface rounded-lg border border-tn-border p-4 sm:p-6">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm mono">
+                        <div class="flex justify-between"><span class="text-tn-dim">Attach</span><span class="text-tn-accent">Enter</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">Detach</span><span class="text-tn-accent">Ctrl+Q</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">New Session</span><span class="text-tn-accent">n</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">Search / Recall</span><span class="text-tn-accent">/ · G</span></div>
+                        <div class="flex justify-between"><span class="text-tn-cyan">Fork (quick / dialog)</span><span class="text-tn-cyan">f · F</span></div>
+                        <div class="flex justify-between"><span class="text-tn-cyan">MCP Manager</span><span class="text-tn-cyan">m</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">Send a message</span><span class="text-tn-accent">o</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">Skills Manager</span><span class="text-tn-accent">s</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">Cost Dashboard</span><span class="text-tn-accent">$</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">Rename / Restart</span><span class="text-tn-accent">r · R</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">Archive</span><span class="text-tn-accent">A</span></div>
+                        <div class="flex justify-between"><span class="text-tn-dim">Full help</span><span class="text-tn-accent">?</span></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+
+    <!-- Footer -->
+    <footer class="border-t border-tn-border py-12">
+        <div class="max-w-5xl mx-auto px-6">
+            <!-- Social Links & Support -->
+            <div class="flex flex-col md:flex-row items-center justify-between gap-6 mb-8">
+                <!-- Social Links -->
+                <div class="flex items-center gap-4">
+                    <a href="https://github.com/asheshgoplani/agent-deck" target="_blank" rel="noopener"
+                       class="text-tn-dim hover:text-tn-text transition-colors" title="GitHub" aria-label="GitHub">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    </a>
+                    <a href="https://twitter.com/AsheshGoplani" target="_blank" rel="noopener"
+                       class="text-tn-dim hover:text-tn-text transition-colors" title="Twitter/X" aria-label="Twitter/X">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                    </a>
+                    <a href="https://linkedin.com/in/asheshgoplani" target="_blank" rel="noopener"
+                       class="text-tn-dim hover:text-tn-text transition-colors" title="LinkedIn" aria-label="LinkedIn">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+                    </a>
+                </div>
+
+                <!-- Buy Me a Coffee -->
+                <a href="https://buymeacoffee.com/asheshgoplani" target="_blank" rel="noopener"
+                   class="inline-flex items-center gap-2 px-4 py-2 bg-tn-yellow/10 text-tn-yellow rounded-lg hover:bg-tn-yellow/20 transition-colors">
+                    <span>☕</span>
+                    <span class="text-sm font-medium">Buy me a coffee</span>
+                </a>
+            </div>
+
+
+            <!-- Footer links -->
+            <nav class="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm mb-6" aria-label="Footer">
+                <a href="/faq.html" class="text-tn-dim hover:text-tn-text transition-colors">FAQ</a>
+                <a href="https://github.com/asheshgoplani/agent-deck#documentation" class="text-tn-dim hover:text-tn-text transition-colors">Docs</a>
+                <a href="https://github.com/asheshgoplani/agent-deck/releases" class="text-tn-dim hover:text-tn-text transition-colors">Releases</a>
+                <a href="https://discord.gg/e4xSs6NBN8" class="text-tn-dim hover:text-tn-text transition-colors">Discord</a>
+                <a href="/llms.txt" class="text-tn-dim hover:text-tn-text transition-colors">llms.txt</a>
+            </nav>
+
+            <!-- Copyright -->
+            <div class="text-center text-tn-dim text-sm">
+                <!-- Mini logo -->
+                <div class="mono text-xs mb-4 inline-block opacity-50">
+                    <span class="text-tn-border">[</span><span class="text-tn-green">●</span><span class="text-tn-border">│</span><span class="text-tn-yellow">◐</span><span class="text-tn-border">│</span><span class="text-tn-dim">○</span><span class="text-tn-border">]</span>
+                </div>
+                <p>
+                    MIT License &copy; 2025&ndash;2026
+                    <a href="https://github.com/asheshgoplani" class="hover:text-tn-text transition-colors">Ashesh Goplani</a>
+                </p>
+                <p class="mt-2">
+                    Built with
+                    <a href="https://github.com/charmbracelet/bubbletea" class="text-tn-accent hover:underline">Bubble Tea</a>
+                    &amp;
+                    <a href="https://github.com/tmux/tmux" class="text-tn-accent hover:underline">tmux</a>
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Copy to clipboard script -->
+    <script>
+        function copyCode(button, text) {
+            navigator.clipboard.writeText(text).then(() => {
+                const originalText = button.textContent;
+                button.textContent = 'Copied!';
+                button.classList.add('text-tn-green');
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.classList.remove('text-tn-green');
+                }, 2000);
+            });
+        }
+    </script>
+</body>
+</html>

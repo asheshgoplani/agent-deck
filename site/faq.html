@@ -298,7 +298,7 @@
                         'tn-surface': '#24283b',
                         'tn-border': '#414868',
                         'tn-text': '#c0caf5',
-                        'tn-dim': '#565f89',
+                        'tn-dim': '#9aa5ce',
                         'tn-accent': '#7aa2f7',
                         'tn-purple': '#bb9af7',
                         'tn-cyan': '#7dcfff',
@@ -314,6 +314,9 @@
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+        /* Links inside running text are underlined so they stand out without colour alone. */
+        p a.text-tn-accent, li a.text-tn-accent { text-decoration: underline; text-underline-offset: 2px; }
 
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -397,7 +400,8 @@
             </a>
             <div class="flex items-center gap-4 sm:gap-6 text-sm sm:text-base">
                 <a href="/" class="text-tn-dim hover:text-tn-text transition-colors">Home</a>
-                <a href="/#install" class="text-tn-dim hover:text-tn-text transition-colors">Install</a>
+                <a href="/features.html" class="text-tn-dim hover:text-tn-text transition-colors">Features</a>
+                <a href="/features.html#install" class="hidden sm:inline text-tn-dim hover:text-tn-text transition-colors">Install</a>
                 <a href="/faq.html" class="text-tn-text" aria-current="page">FAQ</a>
                 <a href="https://github.com/asheshgoplani/agent-deck" target="_blank" rel="noopener"
                    class="text-tn-dim hover:text-tn-text transition-colors flex items-center gap-2" aria-label="GitHub">
