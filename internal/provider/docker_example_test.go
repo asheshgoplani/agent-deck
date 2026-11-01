@@ -306,6 +306,9 @@ func TestDockerExampleSetup_RejectsAMalformedToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("setup accepted a token with shell syntax and spaces")
 	}
+	if !strings.Contains(stderr, "does not look like a token") {
+		t.Fatalf("setup did not say the token is malformed: %s", stderr)
+	}
 	if strings.Contains(stderr, "FAKEtoken") {
 		t.Fatal("setup printed the token")
 	}
