@@ -31,7 +31,7 @@ func readSettingsText(t *testing.T, path string) string {
 
 func settingsBackups(t *testing.T, dir string) []string {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, "settings.json.bak-agentdeck-*"))
+	matches, err := filepath.Glob(filepath.Join(dir, usageFeedSettingsBackupPrefix+"*"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,5 +201,48 @@ func TestIssue3011_CorrectWrapWritesNothing(t *testing.T) {
 		if b := settingsBackups(t, dir); len(b) != 0 {
 			t.Errorf("%q: a no-op install wrote %v", command, b)
 		}
+	}
+}
+
+// The repair backup must not stand in for the hooks heal's one-time backup
+// (backupSettingsOnce skips when a healBackupPrefix file exists).
+func TestIssue3011_RepairBackupDoesNotSuppressHealBackup(t *testing.T) {
+	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
+	nested := wrapStatusLine("/usr/local/bin/agent-deck", "default", wrapStatusLine("/usr/local/bin/agent-deck", "default", "x"))
+	dir := t.TempDir()
+	writeSettings(t, dir, `{"statusLine":{"type":"command","command":`+string(mustMarshal(nested))+`}}`)
+	if _, err := InstallUsageFeed(dir, "default"); err != nil {
+		t.Fatal(err)
+	}
+	if len(settingsBackups(t, dir)) != 1 {
+		t.Fatal("want the repair backup")
+	}
+	if err := backupSettingsOnce(dir); err != nil {
+		t.Fatal(err)
+	}
+	if heal, _ := filepath.Glob(filepath.Join(dir, healBackupPrefix+"*")); len(heal) != 1 {
+		t.Fatalf("heal backup = %v; the repair backup suppressed it", heal)
+	}
+}
+
+// A statusline backup saved by an affected release can hold a wrapper as
+// the "original"; uninstall restores the user's command it wraps, not the
+// wrapper.
+func TestIssue3011_UninstallUnwrapsStaleBackup(t *testing.T) {
+	exe := "/home/u/.local/bin/agent-deck-bin"
+	stubUsageFeedExecutable(t, exe)
+	current := wrapStatusLine(exe, "default", "~/.claude/statusline.sh")
+	stale := wrapStatusLine(exe, "default", current)
+	dir := t.TempDir()
+	path := writeSettings(t, dir, `{"statusLine":{"type":"command","command":`+string(mustMarshal(current))+`}}`)
+	backup := `{"installed_command":` + string(mustMarshal(current)) + `,"original_statusline":{"type":"command","command":` + string(mustMarshal(stale)) + `}}`
+	if err := os.WriteFile(usageFeedBackupPath(dir), []byte(backup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := RemoveUsageFeed(dir); err != nil || !removed {
+		t.Fatalf("RemoveUsageFeed = %v, %v", removed, err)
+	}
+	if cmd, _ := statusLineCommand(t, path); cmd != "~/.claude/statusline.sh" {
+		t.Fatalf("after uninstall command = %q, want the user's script", cmd)
 	}
 }

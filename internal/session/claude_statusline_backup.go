@@ -58,6 +58,11 @@ func saveUsageFeedBackup(configDir string, root jsonObject, current, next string
 		}
 	}
 	backup.PreviousCommand = current
+	if parsed, ok := parseUsageFeedCommand(current); ok && parsed.Depth > 1 {
+		// A nested wrapper (#3011) can be MBs; once collapsed it is never
+		// the command again, and restore falls back to unwrapping it.
+		backup.PreviousCommand = ""
+	}
 	backup.Command = next
 	data, err := json.Marshal(backup)
 	if err != nil {
@@ -92,7 +97,21 @@ func restoreUsageFeedBackup(configDir string, root *jsonObject, obj jsonObject) 
 			obj.del(key)
 		}
 	}
-	if len(obj) == 0 && (len(backup.Original) == 0 || string(backup.Original) == "null") {
+	// A backup saved by a release that did not recognise its own wrapper
+	// (#3011) can hold a wrapper as the original: restore what it wraps.
+	droppedWrapper := false
+	if parsed, ok := parseUsageFeedCommand(obj.getString("command")); ok {
+		droppedWrapper = parsed.Inner == ""
+		if parsed.Inner != "" {
+			obj.set("command", mustMarshal(parsed.Inner))
+		} else {
+			obj.del("command")
+			if obj.getString("type") == "command" {
+				obj.del("type")
+			}
+		}
+	}
+	if len(obj) == 0 && (droppedWrapper || len(backup.Original) == 0 || string(backup.Original) == "null") {
 		root.del("statusLine")
 	} else {
 		root.set("statusLine", mustMarshal(obj))

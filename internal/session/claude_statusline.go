@@ -82,8 +82,10 @@ type UsageFeed struct {
 const settingsLargeBytes = 1 << 20
 
 // usageFeedSettingsBackupPrefix names the copy of settings.json taken before
-// a nested statusLine wrapper is collapsed (healBackupPrefix's convention).
-const usageFeedSettingsBackupPrefix = healBackupPrefix + "statusline-"
+// a nested statusLine wrapper is collapsed. It must not match
+// healBackupPrefix+"*": backupSettingsOnce skips its one-time backup when
+// such a file exists.
+const usageFeedSettingsBackupPrefix = "settings.json.statusline-bak-agentdeck-"
 
 // usageFeedBlockedSlotDir is UsageFeed.Blocked for a slot whose config dir
 // is not there.
@@ -134,7 +136,9 @@ func isAgentDeckProgram(program string) bool {
 		return true
 	}
 	base := program[strings.LastIndexAny(program, `/\`)+1:]
-	base = strings.TrimSuffix(strings.TrimSuffix(base, ".exe"), ".EXE")
+	if len(base) > 4 && strings.EqualFold(base[len(base)-4:], ".exe") {
+		base = base[:len(base)-4]
+	}
 	return base == "agent-deck" || strings.HasPrefix(base, "agent-deck-")
 }
 
@@ -307,7 +311,7 @@ func UsageFeedStatus(configDir, slot string) UsageFeed {
 // binary path, any -p slot, nested any number of times, #3011) is unwrapped
 // to the user's innermost command first, so repeated installs never nest;
 // a nested one is collapsed to one level after settings.json is copied to
-// settings.json.bak-agentdeck-statusline-<ts>. A slot that cannot be wired (usageFeedBlocker:
+// settings.json.statusline-bak-agentdeck-<ts>. A slot that cannot be wired (usageFeedBlocker:
 // no config dir, a name the quota cache refuses) is skipped without error;
 // UsageFeedStatus names the reason. Returns whether the file was written.
 func InstallUsageFeed(configDir, slot string) (bool, error) {
