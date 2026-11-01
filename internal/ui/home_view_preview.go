@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/asheshgoplani/agent-deck/internal/provider"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -246,9 +247,15 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 
 		config, _ := session.LoadUserConfig()
 		host := item.RemoteName
+		hints := []string{"Press Enter on a session to attach via SSH"}
 		if config != nil && config.Remotes != nil {
 			if rc, ok := config.Remotes[item.RemoteName]; ok {
 				host = remoteHostLabel(rc)
+				if provider.IsSandbox(rc) {
+					if key := h.actionKey(hotkeyDelete); key != "" {
+						hints = append(hints, "Press "+key+" here to destroy this sandbox")
+					}
+				}
 			}
 		}
 
@@ -265,7 +272,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 			Icon:     "⬡",
 			Title:    "Remote: " + item.RemoteName,
 			Subtitle: fmt.Sprintf("Host: %s — %d sessions", host, count),
-			Hints:    []string{"Press Enter on a session to attach via SSH"},
+			Hints:    hints,
 		}
 		state.Body = remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields, time.Now(), emptyStateBodyLayout(state, width, height))
 		if poll.LastPollError != "" {
