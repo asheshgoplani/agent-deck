@@ -1,0 +1,298 @@
+package provider
+
+// The example docker provider's "ready machine" setup: the project and the
+// optional Claude login token. The provider runs for real against a fake
+// docker (a script that records its argv and the setup's stdin), and the
+// in-container setup script runs for real against a temp HOME.
+
+import (
+	"bytes"
+	"encoding/json"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const fakeToken = "sk-ant-oat01-FAKEtokenForTests_0123456789abcdefABCDEF"
+
+func exampleDockerDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join("..", "..", "examples", "providers", "docker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func needTools(t *testing.T, tools ...string) {
+	t.Helper()
+	for _, tool := range tools {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not found", tool)
+		}
+	}
+}
+
+// fakeDocker is a docker stand-in: it logs each argv line to argv.log,
+// keeps the label file docker create gets, saves the setup script's stdin
+// to setup.stdin and answers inspect with the labels and an ssh port.
+const fakeDocker = `#!/bin/sh
+s="$FAKE_DOCKER_STATE"
+printf '%s\n' "$*" >>"$s/argv.log"
+case "$1" in
+image) exit 0 ;;
+create)
+	while [ $# -gt 0 ]; do
+		[ "$1" = --label-file ] && cp "$2" "$s/labels"
+		shift
+	done
+	echo fakecid0123456789abcdef0123 ;;
+cp | start | rm) cat >/dev/null 2>&1 || true ;;
+exec)
+	case "$*" in
+	*agent-deck-sandbox-setup*) cat >"$s/setup.stdin" ;;
+	*ssh_host_ed25519_key.pub*) echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGn3PMci37qtGRr0qkRvnuvhHEkIl6OupFa0wrBJQenu root@x" ;;
+	*) cat >/dev/null ;;
+	esac ;;
+container)
+	python3 -I -c '
+import json, sys
+labels = dict(l.rstrip("\n").split("=", 1) for l in open(sys.argv[1]) if "=" in l)
+print(json.dumps([{"Id": "fakecid0123456789abcdef0123", "Config": {"Labels": labels},
+  "State": {"Status": "running"},
+  "NetworkSettings": {"Ports": {"22/tcp": [{"HostIp": "127.0.0.1", "HostPort": sys.argv[2]}]}}}]))
+' "$s/labels" "$FAKE_SSH_PORT" ;;
+*) echo "fake docker: unexpected $1" >&2; exit 1 ;;
+esac
+`
+
+// sshBanner listens on 127.0.0.1 and greets every connection like sshd.
+func sshBanner(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte("SSH-2.0-fake\r\n"))
+			_ = c.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close(); <-done })
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	return port
+}
+
+type providerRun struct {
+	stdout, stderr string
+	err            error
+	state          string
+}
+
+func runExampleCreate(t *testing.T, conf string) providerRun {
+	t.Helper()
+	needTools(t, "bash", "python3", "ssh-keygen", "timeout", "stat")
+	root := t.TempDir()
+	bin, state, tmp := filepath.Join(root, "bin"), filepath.Join(root, "state"), filepath.Join(root, "tmp")
+	for _, d := range []string{bin, state, tmp} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(fakeDocker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	confPath := filepath.Join(root, "docker-sandbox.conf")
+	if err := os.WriteFile(confPath, []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// #nosec G204 -- the example provider script from this repo.
+	cmd := exec.Command(filepath.Join(exampleDockerDir(t), "provider"), "create")
+	cmd.Env = []string{
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		"HOME=" + root,
+		"TMPDIR=" + tmp,
+		"FAKE_DOCKER_STATE=" + state,
+		"FAKE_SSH_PORT=" + sshBanner(t),
+		"AGENTDECK_SANDBOX_CONFIG=" + confPath,
+		"AGENTDECK_SANDBOX_IMAGE=agent-deck-sandbox:test",
+		"AGENTDECK_SANDBOX_WAIT=10",
+	}
+	cmd.Stdin = strings.NewReader(`{"protocol":1,"action":"create","name":"t1","labels":{"agent-deck/remote":"t1"}}`)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	return providerRun{stdout: out.String(), stderr: errb.String(), err: err, state: state}
+}
+
+func writeToken(t *testing.T, mode os.FileMode) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "claude-token")
+	if err := os.WriteFile(p, []byte(fakeToken+"\n"), mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, mode); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestDockerExampleProvider_TokenGoesThroughStdinOnly(t *testing.T) {
+	tok := writeToken(t, 0o600)
+	run := runExampleCreate(t, "project_name = shop\nclaude_token_file = "+tok+"\n")
+	if run.err != nil {
+		t.Fatalf("create failed: %v\nstderr:\n%s", run.err, run.stderr)
+	}
+	argv, err := os.ReadFile(filepath.Join(run.state, "argv.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := os.ReadFile(filepath.Join(run.state, "setup.stdin"))
+	if err != nil {
+		t.Fatalf("the setup script was not run: %v", err)
+	}
+	for name, text := range map[string]string{"docker argv": string(argv), "provider stdout": run.stdout, "provider stderr": run.stderr} {
+		if strings.Contains(text, "FAKEtoken") {
+			t.Fatalf("the token leaked into the %s", name)
+		}
+	}
+	if !strings.Contains(string(stdin), "claude_token="+fakeToken) || !strings.Contains(string(stdin), "project_name=shop") {
+		t.Fatalf("setup stdin lacks the token or the project name (token not shown)")
+	}
+	var resp struct {
+		Sandbox Sandbox `json:"sandbox"`
+	}
+	if err := json.Unmarshal([]byte(run.stdout), &resp); err != nil {
+		t.Fatalf("provider stdout is not one JSON object: %v\n%s", err, run.stdout)
+	}
+	if resp.Sandbox.Labels["project"] != "/home/dev/shop" || resp.Sandbox.Labels["claude-login"] != "token" {
+		t.Fatalf("sandbox labels = %v, want project /home/dev/shop and claude-login token", resp.Sandbox.Labels)
+	}
+}
+
+func TestDockerExampleProvider_RefusesAnUnsafeTokenFile(t *testing.T) {
+	tok := writeToken(t, 0o644)
+	run := runExampleCreate(t, "claude_token_file = "+tok+"\n")
+	if run.err == nil {
+		t.Fatal("create succeeded with a group/other-readable token file")
+	}
+	if !strings.Contains(run.stderr, "must be 0600 or 0400") {
+		t.Fatalf("stderr does not say why: %s", run.stderr)
+	}
+	if strings.Contains(run.stderr, "FAKEtoken") {
+		t.Fatal("the token leaked into stderr")
+	}
+	if argv, _ := os.ReadFile(filepath.Join(run.state, "argv.log")); strings.Contains(string(argv), "create") {
+		t.Fatal("a container was created although the token file was refused")
+	}
+}
+
+func TestDockerExampleProvider_DefaultsToDemoProjectWithoutLogin(t *testing.T) {
+	run := runExampleCreate(t, "")
+	if run.err != nil {
+		t.Fatalf("create failed: %v\nstderr:\n%s", run.err, run.stderr)
+	}
+	stdin, err := os.ReadFile(filepath.Join(run.state, "setup.stdin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(stdin); got != "project_name=demo\n" {
+		t.Fatalf("setup stdin = %q, want only the demo project", got)
+	}
+}
+
+// runSetup runs the in-container setup script with a temp HOME holding a
+// copied-in project folder.
+func runSetup(t *testing.T, stdin string) (home, stderr string, err error) {
+	t.Helper()
+	needTools(t, "bash")
+	home = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "shop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// #nosec G204 -- the example setup script from this repo.
+	cmd := exec.Command(filepath.Join(exampleDockerDir(t), "sandbox-setup.sh"))
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}
+	cmd.Stdin = strings.NewReader(stdin)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	err = cmd.Run()
+	return home, errb.String(), err
+}
+
+func TestDockerExampleSetup_WritesLoginForAgentDeckClaudeSessions(t *testing.T) {
+	home, stderr, err := runSetup(t, "project_name=shop\nproject_copied=1\nclaude_token=CLAUDE_CODE_OAUTH_TOKEN="+fakeToken+"\n")
+	if err != nil {
+		t.Fatalf("setup failed: %v\n%s", err, stderr)
+	}
+	if strings.Contains(stderr, "FAKEtoken") {
+		t.Fatal("setup printed the token")
+	}
+	envFile := filepath.Join(home, ".config", "agent-deck-sandbox", "claude.env")
+	st, err := os.Stat(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("claude.env mode = %o, want 600", st.Mode().Perm())
+	}
+	body, _ := os.ReadFile(envFile)
+	if string(body) != "export CLAUDE_CODE_OAUTH_TOKEN="+fakeToken+"\n" {
+		t.Fatal("claude.env does not export exactly the token (not shown)")
+	}
+	cfg, err := os.ReadFile(filepath.Join(home, ".config", "agent-deck", "config.toml"))
+	if err != nil || !strings.Contains(string(cfg), `env_file = "~/.config/agent-deck-sandbox/claude.env"`) {
+		t.Fatalf("agent-deck config does not point [claude].env_file at the token: %v\n%s", err, cfg)
+	}
+	var claudeState struct {
+		HasCompletedOnboarding bool `json:"hasCompletedOnboarding"`
+		Projects               map[string]struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		} `json:"projects"`
+	}
+	raw, _ := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err := json.Unmarshal(raw, &claudeState); err != nil {
+		t.Fatalf(".claude.json: %v", err)
+	}
+	if !claudeState.HasCompletedOnboarding || !claudeState.Projects[filepath.Join(home, "shop")].HasTrustDialogAccepted {
+		t.Fatalf(".claude.json does not skip onboarding and trust the project: %s", raw)
+	}
+}
+
+func TestDockerExampleSetup_NoTokenWritesNoLogin(t *testing.T) {
+	home, stderr, err := runSetup(t, "project_name=shop\nproject_copied=1\n")
+	if err != nil {
+		t.Fatalf("setup failed: %v\n%s", err, stderr)
+	}
+	for _, p := range []string{".config/agent-deck/config.toml", ".config/agent-deck-sandbox/claude.env"} {
+		if _, err := os.Stat(filepath.Join(home, p)); err == nil {
+			t.Fatalf("%s written without a token", p)
+		}
+	}
+	if !strings.Contains(stderr, "login none") {
+		t.Fatalf("summary does not say there is no login: %s", stderr)
+	}
+}
+
+func TestDockerExampleSetup_RejectsAMalformedToken(t *testing.T) {
+	home, stderr, err := runSetup(t, "project_name=shop\nproject_copied=1\nclaude_token=abc$(touch pwned) "+fakeToken+"\n")
+	if err == nil {
+		t.Fatal("setup accepted a token with shell syntax and spaces")
+	}
+	if strings.Contains(stderr, "FAKEtoken") {
+		t.Fatal("setup printed the token")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "agent-deck-sandbox", "claude.env")); err == nil {
+		t.Fatal("claude.env written for a malformed token")
+	}
+}
