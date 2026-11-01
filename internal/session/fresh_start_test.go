@@ -343,6 +343,7 @@ func TestIssue2954_SweepSpendsSilently(t *testing.T) {
 		{"within the boot timeout", 10 * time.Second, nil, true},
 		{"past the boot timeout, no turn", time.Minute, func(t *testing.T, f *turnTestFixture) { hookHistory(t, f.child.ID, "SessionStart") }, true},
 		{"past the boot timeout, no hook event history", time.Minute, nil, false},
+		{"past the boot timeout, only an old process's late SessionEnd", time.Minute, func(t *testing.T, f *turnTestFixture) { hookHistory(t, f.child.ID, "SessionEnd") }, false},
 		{"a day, no turn", 25 * time.Hour, nil, false},
 		{"a turn", 10 * time.Second, func(t *testing.T, f *turnTestFixture) {
 			f.appendTurn(t, fxHuman("u1", "reply pong"), fxAssistantText("a1", "pong"))
@@ -555,12 +556,14 @@ func TestIssue2954_RestartLeavesNoToken(t *testing.T) {
 	t.Run("resuming a conversation", func(t *testing.T) { restartLeavesNoToken(t, "--resume") })
 	t.Run("never interacted", func(t *testing.T) { restartLeavesNoToken(t, "--session-id") })
 	// A failed restart started nothing: the start's token stays. A restart
-	// that lost the spawn lock to a concurrent Start spends only the token it
-	// read before, and that Start keeps its own.
+	// that lost the spawn lock to a concurrent Start spawned nothing either:
+	// that Start keeps its token, written after the restart read the token
+	// (won) or before (startFirst, Start already holding the lock).
 	for name, c := range map[string]struct {
-		account string
-		won     bool
-	}{"a failed restart": {account: "no-such-slot"}, "lost the spawn lock to a concurrent start": {won: true}} {
+		account         string
+		won, startFirst bool
+	}{"a failed restart": {account: "no-such-slot"}, "lost the spawn lock to a concurrent start": {won: true},
+		"lost the spawn lock to a start that wrote its token first": {startFirst: true}} {
 		t.Run(name, func(t *testing.T) {
 			home := isolatedHomeDir(t)
 			inst := newGuardInstance(t, home)
@@ -573,11 +576,13 @@ func TestIssue2954_RestartLeavesNoToken(t *testing.T) {
 			instanceSpawnLockAcquireFn = func(id string) (func(), error) {
 				if c.won { // the concurrent Start, done while this restart waited
 					writeTokenFile(freshStartDir, id, ".json", freshStartToken{At: newer})
+				}
+				if c.won || c.startFirst {
 					recordInstanceSpawn(id)
 				}
 				return prevLock(id)
 			}
-			if err := inst.Restart(); (err != nil) == c.won {
+			if err := inst.Restart(); (err != nil) != (c.account != "") {
 				t.Fatalf("precondition: restart error %v", err)
 			}
 			want := old

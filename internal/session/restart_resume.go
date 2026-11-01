@@ -668,7 +668,7 @@ var restartSessionStartSince = func(id string, since time.Time) bool {
 }
 
 // hookHistoryTurnSince reads child id's hook event history from since: seen
-// when it holds any event, turn when one is neither SessionStart nor
+// when it holds a SessionStart, turn when one is neither SessionStart nor
 // SessionEnd (a SessionEnd may be an older process's, landing late) or is a
 // second SessionStart.
 func hookHistoryTurnSince(id string, since time.Time) (turn, seen bool) {
@@ -677,9 +677,9 @@ func hookHistoryTurnSince(id string, since time.Time) (turn, seen bool) {
 		if ev.At.Before(since) {
 			continue
 		}
-		seen = true
 		switch e := strings.TrimSpace(ev.Event); {
 		case strings.EqualFold(e, "SessionStart"):
+			seen = true
 			if starts++; starts > 1 {
 				return true, true
 			}
