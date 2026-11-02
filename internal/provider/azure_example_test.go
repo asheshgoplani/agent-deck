@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -571,5 +572,132 @@ func TestAzureExampleSetup_ReadyProjectAndLogin(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(home, ".claude.json"))
 	if !strings.Contains(string(raw), `"hasCompletedOnboarding":true`) || !strings.Contains(string(raw), filepath.Join(home, "shop")) {
 		t.Fatalf(".claude.json does not skip onboarding and trust the project: %s", raw)
+	}
+}
+
+// azDemoToken is an obviously fake Claude token: it passes the setup
+// script's shape check but is not shaped like any real key.
+const azDemoToken = "FAKE-DEMO-TOKEN-0000-not-a-real-key"
+
+func azSetupScript(t *testing.T) string {
+	t.Helper()
+	script, err := filepath.Abs(filepath.Join("..", "..", "examples", "providers", "azure-vm", "sandbox-setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+// TestAzureExampleSetup_NeverPrintsAnUnknownLine: a token on a line of its
+// own (a token file with a comment or a blank first line) is an unknown
+// setup line, and the error must not show it.
+func TestAzureExampleSetup_NeverPrintsAnUnknownLine(t *testing.T) {
+	azNeedTools(t)
+	for name, input := range map[string]string{
+		"comment line first": "project_name=shop\nproject_copied=1\nclaude_token=# my token\n" + azDemoToken + "\n",
+		"blank line first":   "project_name=shop\nproject_copied=1\nclaude_token=\n" + azDemoToken + "\n",
+		"token with an =":    "project_name=shop\nproject_copied=1\n" + azDemoToken + "=x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(home, "shop"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// #nosec G204 -- the example setup script from this repo.
+			cmd := exec.Command(azSetupScript(t))
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}
+			cmd.Stdin = strings.NewReader(input)
+			var out, errb bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &errb
+			err := cmd.Run()
+			if err == nil {
+				t.Fatal("setup accepted a stray line")
+			}
+			if strings.Contains(errb.String()+out.String(), "FAKE-DEMO-TOKEN") {
+				t.Fatalf("setup printed the token:\n%s", errb.String())
+			}
+			if !strings.Contains(errb.String(), "not shown") {
+				t.Fatalf("setup error does not say the line is not shown:\n%s", errb.String())
+			}
+		})
+	}
+}
+
+// TestAzureExampleProvider_MultiLineTokenFileNeverLeaks drives a create
+// through agent-deck's own client with a token file whose token sits on its
+// second line, and the real setup script behind the fake ssh. The token
+// must not reach the error, debug.log or any other file agent-deck writes.
+func TestAzureExampleProvider_MultiLineTokenFileNeverLeaks(t *testing.T) {
+	tok := azSecretFile(t, "# my claude token\n"+azDemoToken+"\n", 0o600)
+	w := newAzWorld(t, azBaseConf("claude_token_file = "+tok+"\nproject_name=shop\n"))
+	sshHome := filepath.Join(w.root, "vm-home")
+	if err := os.MkdirAll(filepath.Join(sshHome, "shop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w.extraEnv = []string{"FAKE_SSH_SETUP=" + azSetupScript(t), "FAKE_SSH_HOME=" + sshHome}
+	home := freshHome(t)
+	for _, kv := range w.env() {
+		k, v, _ := strings.Cut(kv, "=")
+		if k != "HOME" {
+			t.Setenv(k, v)
+		}
+	}
+	logDir := filepath.Join(home, ".agent-deck")
+	logging.Init(logging.Config{LogDir: logDir, Level: "debug", Debug: true})
+	t.Cleanup(logging.Shutdown)
+	if err := session.SaveUserConfig(&session.UserConfig{Providers: map[string]session.ProviderConfig{
+		"azure": {Command: azProviderPath(t), TimeoutSeconds: 30, CreateTimeoutSeconds: 60},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, err := Provision(ctx, ProvisionOptions{Provider: "azure", RemoteName: "az-leak", Profile: "_test",
+		WaitSSH: func(context.Context, string, session.RemoteConfig) error { return nil },
+		Install: func(context.Context, string, session.RemoteConfig) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("create succeeded with a token file that is not one line")
+	}
+	if strings.Contains(err.Error(), "FAKE-DEMO-TOKEN") {
+		t.Fatalf("the provider error shows the token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude_token_file") {
+		t.Fatalf("the error does not name claude_token_file: %v", err)
+	}
+	logging.Shutdown()
+	// Nothing under HOME (debug.log, config, ssh files, the VM's home) holds
+	// it. The fake's own recordings are left out: they stand for the wire.
+	for _, root := range []string{home, w.root} {
+		azNoTokenUnder(t, root, w.state)
+	}
+	// Refused before anything was made.
+	if strings.Contains(w.file(t, "argv.log"), "create") {
+		t.Fatalf("resources were made although the token file was refused:\n%s", w.file(t, "argv.log"))
+	}
+}
+
+// azNoTokenUnder fails the test for every file under root (skipping the
+// dir skip) that holds the demo token.
+func azNoTokenUnder(t *testing.T, root, skip string) {
+	t.Helper()
+	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == skip {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr == nil && bytes.Contains(b, []byte("FAKE-DEMO-TOKEN")) {
+			t.Errorf("the token is in %s", p)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatal(walkErr)
 	}
 }

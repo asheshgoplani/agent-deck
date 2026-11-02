@@ -292,6 +292,38 @@ def cmd_secretfile(path, what):
     if st.st_size == 0:
         die("%s %s is empty" % (what, path))
 
+TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=-]{20,4096}$")
+
+def cmd_tokenfile(path, mode):
+    # The Claude token file must hold exactly one line: the token, bare or
+    # as CLAUDE_CODE_OAUTH_TOKEN=... (export allowed). Its content is never
+    # printed: every error says "not shown". mode "emit" writes the one
+    # setup line claude_token=<token> to stdout (a pipe to ssh, not a log).
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(8192)
+    except OSError:
+        die("cannot read claude_token_file %s" % path)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        die("claude_token_file %s is not text (content not shown)" % path)
+    if text.endswith("\r\n"):
+        text = text[:-2]
+    elif text.endswith("\n"):
+        text = text[:-1]
+    if "\n" in text or "\r" in text:
+        die("claude_token_file %s must hold exactly one line, the token (no comments or blank lines; content not shown)" % path)
+    tok = text.strip()
+    if tok.startswith("export "):
+        tok = tok[len("export "):].strip()
+    if tok.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
+        tok = tok[len("CLAUDE_CODE_OAUTH_TOKEN="):]
+    if not TOKEN_RE.match(tok):
+        die("claude_token_file %s does not hold a token (content not shown)" % path)
+    if mode == "emit":
+        sys.stdout.write("claude_token=" + tok + "\n")
+
 # ---- cloud-init ----
 def cmd_cloudinit(here, user, version):
     def b64(p):
@@ -474,7 +506,7 @@ def cmd_ready():
 
 cmd, args = sys.argv[1], sys.argv[2:]
 {"request": cmd_request, "config": cmd_config, "cidr": cmd_cidr,
- "secretfile": cmd_secretfile, "cloudinit": cmd_cloudinit, "vmone": cmd_vmone,
+ "secretfile": cmd_secretfile, "tokenfile": cmd_tokenfile, "cloudinit": cmd_cloudinit, "vmone": cmd_vmone,
  "vmlist": cmd_vmlist, "vmfield": cmd_vmfield, "location": cmd_location,
  "destroyplan": cmd_destroyplan, "tagok": cmd_tagok, "ready": cmd_ready}[cmd](*args)
 '
@@ -670,7 +702,8 @@ ssh_vm() {
 }
 
 # setup_input: the setup script's stdin. The token goes from its file into
-# the pipe with cat; it is never in a variable, argv or a log.
+# the pipe as one checked claude_token= line; it is never in a shell
+# variable, argv or a log.
 setup_input() {
 	printf 'project_name=%s\n' "$C_NAME"
 	if [ -n "$C_DIR" ]; then
@@ -679,9 +712,7 @@ setup_input() {
 		printf 'project_git=%s\n' "$C_GIT"
 	fi
 	if [ -n "$C_TOKEN_FILE" ]; then
-		printf 'claude_token='
-		cat -- "$C_TOKEN_FILE"
-		printf '\n'
+		py tokenfile "$C_TOKEN_FILE" emit
 	fi
 }
 
@@ -707,6 +738,7 @@ do_create() {
 	load_config
 	if [ -n "$C_TOKEN_FILE" ]; then
 		py secretfile "$C_TOKEN_FILE" claude_token_file
+		py tokenfile "$C_TOKEN_FILE" check
 	fi
 	DEADLINE=$(($(date +%s) + C_READY))
 

@@ -17,9 +17,11 @@
 #   project_name=<name>   folder under $HOME (default demo)
 #   project_git=<url>     clone this repo into the folder
 #   project_copied=1      the provider already copied a folder there
-#   claude_token=<token>  a CLAUDE_CODE_OAUTH_TOKEN (claude setup-token)
+#   claude_token=<token>  a CLAUDE_CODE_OAUTH_TOKEN (claude setup-token),
+#                         at most once, the whole token on this one line
 # Output: nothing on stdout; one summary line on stderr. The token is never
-# printed.
+# printed, and neither is the content of a line this script does not know
+# (it could be a token that ended up on a line of its own).
 set -euo pipefail
 umask 077
 
@@ -32,14 +34,19 @@ name=demo
 git_url=""
 copied=0
 token=""
+seen_token=0
 while IFS= read -r line || [ -n "$line" ]; do
 	case "$line" in
 	project_name=*) name="${line#*=}" ;;
 	project_git=*) git_url="${line#*=}" ;;
 	project_copied=1) copied=1 ;;
-	claude_token=*) token="${line#*=}" ;;
+	claude_token=*)
+		[ "$seen_token" = 0 ] || die "more than one claude_token line (not shown)"
+		seen_token=1
+		token="${line#*=}"
+		;;
 	"") ;;
-	*) die "unknown setup line: ${line%%=*}" ;;
+	*) die "unknown setup line (content not shown)" ;;
 	esac
 done
 

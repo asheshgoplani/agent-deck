@@ -68,6 +68,9 @@ create can still roll back.
   you already have.
 - **Claude token** (`claude_token_file`, from `claude setup-token`): copied in
   after boot over ssh, on stdin. Never in custom-data, tags, argv or logs.
+  The file must be 0600 and hold exactly one line: the token (bare or as
+  `CLAUDE_CODE_OAUTH_TOKEN=...`), no comments or blank lines. Anything else
+  is refused before anything is made, and no error shows the file's content.
 - Values from config never start with `@` or `-`, so az never reads a file or
   sees an option where a value belongs.
 
