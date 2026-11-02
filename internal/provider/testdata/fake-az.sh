@@ -128,16 +128,24 @@ elif w[:3] == ["network", "vnet", "create"]:
 elif w[:3] == ["network", "public-ip", "create"]:
     add("Microsoft.Network/publicIPAddresses")
 elif w[:3] == ["network", "nic", "create"]:
-    add("Microsoft.Network/networkInterfaces")
+    # Like Azure, a NIC holds on to its VNet, public IP and NSG: they cannot
+    # be deleted while it exists.
+    rg = opt("--resource-group")
+    add("Microsoft.Network/networkInterfaces", {"refs": [
+        rid(rg, "Microsoft.Network/virtualNetworks", opt("--vnet-name")),
+        rid(rg, "Microsoft.Network/publicIPAddresses", opt("--public-ip-address")),
+        rid(rg, "Microsoft.Network/networkSecurityGroups", opt("--network-security-group"))]})
 elif w[:2] == ["vm", "create"]:
     shutil.copyfile(opt("--custom-data"), os.path.join(s, "custom-data"))
     rg, name = opt("--resource-group"), opt("--name")
     disk = {"id": rid(rg, "Microsoft.Compute/disks", opt("--os-disk-name")), "name": opt("--os-disk-name"),
             "type": "Microsoft.Compute/disks", "resourceGroup": rg, "subscription": SUBID, "tags": {}}
     res.append(disk)
+    # --os-disk-delete-option Delete: the OS disk goes with the VM. The NIC
+    # stays (the provider deletes it itself) and cannot go while the VM is.
     nic = rid(rg, "Microsoft.Network/networkInterfaces", opt("--nics"))
     add("Microsoft.Compute/virtualMachines", {"storageProfile": {"osDisk": {"managedDisk": {"id": disk["id"]}}},
-        "cascade": [disk["id"], nic]})
+        "cascade": [disk["id"]], "refs": [nic]})
 elif w[:2] == ["vm", "show"]:
     for r in res:
         if r["type"] == "Microsoft.Compute/virtualMachines" and r["name"] == opt("--name") and in_scope(r, opt("--resource-group")):
@@ -175,7 +183,11 @@ elif w[:2] == ["resource", "delete"]:
     r = find_id(opt("--ids"))
     if r is None:
         not_found(opt("--ids"))
-    gone = set([r["id"].lower()] + [c.lower() for c in r.get("cascade", [])])
+    me = r["id"].lower()
+    for x in res:
+        if x is not r and me in [y.lower() for y in x.get("refs", [])]:
+            fail("(InUse) %s is in use by %s and cannot be deleted." % (r["name"], x["name"]))
+    gone = set([me] + [c.lower() for c in r.get("cascade", [])])
     res[:] = [x for x in res if x["id"].lower() not in gone]
     save()
 else:
