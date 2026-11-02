@@ -9,8 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -307,4 +310,77 @@ func assertNotice(t *testing.T, h *Home, want ...string) {
 			t.Fatalf("notice does not say %q:\n%s", w, view)
 		}
 	}
+}
+
+// holdSandboxLock takes remoteName's sandbox lock the way another
+// agent-deck process holds it (an flock on its own open of the lock file)
+// until the test ends.
+func holdSandboxLock(t *testing.T, remoteName string) {
+	t.Helper()
+	dir, err := provider.SandboxDir(remoteName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locks := filepath.Join(filepath.Dir(dir), ".locks")
+	if err := os.MkdirAll(locks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(locks, remoteName+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+}
+
+// While a destroy of a sandbox runs, a second one of the same remote is
+// refused: d shows a notice instead of a second confirm, and a destroy
+// command started anyway changes nothing.
+func TestSandboxDestroy_SecondDestroyOfTheSameRemoteIsRefused(t *testing.T) {
+	h := sandboxHostHome(t, nil)
+	rec := &destroyRecorder{}
+	h.sandboxDestroyDeps = rec.deps()
+	h, _ = pressSandboxKey(h, "d")
+	h, first := pressSandboxKey(h, "y")
+	if first == nil {
+		t.Fatal("confirming the destroy returned no command")
+	}
+	// The first destroy has not finished (its command has not run).
+	h, _ = pressSandboxKey(h, "d")
+	if h.confirmDialog.IsVisible() && h.confirmDialog.GetConfirmType() == ConfirmDestroySandbox {
+		t.Fatal("d opened a second destroy confirm while the first destroy runs")
+	}
+	assertNotice(t, h, "sb1", "already being destroyed")
+
+	second, ok := h.destroySandboxCmd("sb1", 0)().(sandboxDestroyedMsg)
+	if !ok || !second.refused || second.err == nil || !strings.Contains(second.err.Error(), "already being destroyed") {
+		t.Fatalf("second destroy = %+v, want a refusal saying it is already being destroyed", second)
+	}
+	if got := rec.got(); len(got) != 0 {
+		t.Fatalf("calls = %v before the first destroy ran: the second one must call nothing", got)
+	}
+	if _, ok := first().(sandboxDestroyedMsg); !ok {
+		t.Fatal("the first destroy did not report a sandboxDestroyedMsg")
+	}
+	if got := rec.got(); strings.Join(got, "|") != "list sb1|destroy sb1" {
+		t.Fatalf("calls = %v, want one list and one destroy", got)
+	}
+}
+
+// Another agent-deck (a CLI `remote destroy`, or a create of the same
+// name) holds the remote: the TUI destroy is refused and changes nothing.
+func TestSandboxDestroy_RefusedWhileAnotherAgentDeckHoldsTheRemote(t *testing.T) {
+	h := sandboxHostHome(t, []session.RemoteSessionInfo{{ID: "s1", Status: "running"}})
+	rec := &destroyRecorder{sessions: []session.RemoteSessionInfo{{ID: "s1", Status: "running"}}}
+	h.sandboxDestroyDeps = rec.deps()
+	holdSandboxLock(t, "sb1")
+	h, _ = pressSandboxKey(h, "d")
+	h, cmd := pressSandboxKey(h, "y")
+	h = drainCmd(t, h, cmd)
+	if got := rec.got(); len(got) != 0 {
+		t.Fatalf("calls = %v, want none while another agent-deck holds the remote", got)
+	}
+	assertNotice(t, h, "Sandbox Not Destroyed", "busy", "Nothing was changed")
 }

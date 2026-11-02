@@ -219,7 +219,8 @@ func sweepInterruptedCreate(client *Client, name, createID string, cause error) 
 // DestroyRemote destroys a sandbox remote: provider destroy, then
 // unregister, then remove the sandbox files. When the provider fails the
 // remote stays registered, so the user can retry. Stopping the remote's
-// sessions and asking for confirmation are the caller's job.
+// sessions and asking for confirmation are the caller's job, and so is
+// holding LockRemote(remoteName) from before the sessions are listed.
 func DestroyRemote(ctx context.Context, remoteName string) error {
 	cfg, err := session.LoadUserConfig()
 	if err != nil {

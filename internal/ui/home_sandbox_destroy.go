@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -28,6 +29,8 @@ type sandboxDestroyDeps struct {
 	listSessions func(ctx context.Context, name string, rc session.RemoteConfig) ([]session.RemoteSessionInfo, error)
 	stopSession  func(ctx context.Context, name string, rc session.RemoteConfig, id string) error
 	destroy      func(ctx context.Context, name string) error
+	// lock takes the remote's sandbox lock (nil: provider.LockRemote).
+	lock func(name string) (func(), error)
 }
 
 func defaultSandboxDestroyDeps() *sandboxDestroyDeps {
@@ -40,12 +43,14 @@ func defaultSandboxDestroyDeps() *sandboxDestroyDeps {
 			return session.NewSSHRunner(name, rc).StopSession(ctx, id)
 		},
 		destroy: provider.DestroyRemote,
+		lock:    provider.LockRemote,
 	}
 }
 
 // sandboxOp is one sandbox create or destroy in flight, shown as a status
 // line above the list until it ends (and briefly after).
 type sandboxOp struct {
+	remote  string // the remote a destroy works on; "" for a create
 	label   string // "new sandbox (docker)", "destroying sandbox sb1"
 	step    string // last progress line
 	started time.Time
@@ -128,6 +133,17 @@ func (h *Home) sandboxStatusHeight() int {
 	return len(h.sandboxStatusLines(time.Now()))
 }
 
+// destroyRunning reports whether a destroy of remoteName is still running
+// in this TUI.
+func (h *Home) destroyRunning(remoteName string) bool {
+	for _, op := range h.sandboxOps {
+		if op.remote == remoteName && op.doneAt.IsZero() {
+			return true
+		}
+	}
+	return false
+}
+
 // sandboxRemote returns the config of remote name when it is a provider
 // sandbox.
 func sandboxRemote(name string) (session.RemoteConfig, bool) {
@@ -150,6 +166,11 @@ func (h *Home) openDestroySandboxConfirm(remoteName string) bool {
 	if !ok {
 		return false
 	}
+	if h.destroyRunning(remoteName) {
+		h.confirmDialog.ShowNotice("Sandbox Destroy Running",
+			fmt.Sprintf("Sandbox %s is already being destroyed.\n\nWait for that destroy to end; its result shows above the list.", remoteName))
+		return true
+	}
 	h.remoteSessionsMu.RLock()
 	count := liveSessionCount(h.remoteSessions[remoteName])
 	h.remoteSessionsMu.RUnlock()
@@ -166,7 +187,10 @@ type sandboxDestroyedMsg struct {
 	stopped    int
 	// refused is set when nothing was changed (the err says why).
 	refused bool
-	err     error
+	// busy is set when it was refused because another destroy (or a create
+	// of the same name) of this remote runs.
+	busy bool
+	err  error
 }
 
 // destroySandboxCmd destroys sandbox remote remoteName after the user agreed
@@ -178,13 +202,32 @@ func (h *Home) destroySandboxCmd(remoteName string, confirmed int) tea.Cmd {
 	if deps == nil {
 		deps = defaultSandboxDestroyDeps()
 	}
+	if h.destroyRunning(remoteName) {
+		return func() tea.Msg {
+			return sandboxDestroyedMsg{remoteName: remoteName, refused: true, busy: true,
+				err: fmt.Errorf("sandbox %s is already being destroyed", remoteName)}
+		}
+	}
+	lock := deps.lock
+	if lock == nil {
+		lock = provider.LockRemote
+	}
 	op := h.startSandboxOp("destroying sandbox "+remoteName, "listing its sessions...")
+	h.sandboxOps[op].remote = remoteName
 	baseCtx := h.ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
 	return func() tea.Msg {
 		msg := sandboxDestroyedMsg{op: op, remoteName: remoteName}
+		// Held until the destroy ends, so a CLI destroy of this remote or a
+		// create of the same name cannot run at the same time.
+		unlock, err := lock(remoteName)
+		if err != nil {
+			msg.refused, msg.busy, msg.err = true, errors.Is(err, provider.ErrRemoteBusy), err
+			return msg
+		}
+		defer unlock()
 		rc, ok := sandboxRemote(remoteName)
 		if !ok {
 			msg.refused = true
@@ -233,7 +276,9 @@ func (h *Home) handleSandboxDestroyed(msg sandboxDestroyedMsg) tea.Cmd {
 	if msg.err != nil {
 		h.endSandboxOp(msg.op, "")
 		body := fmt.Sprintf("Sandbox %s was not destroyed:\n\n%s\n\n", msg.remoteName, msg.err)
-		if msg.refused {
+		if msg.busy {
+			body += "Nothing was changed. Wait for the other create or destroy\nof this remote to end."
+		} else if msg.refused {
 			body += fmt.Sprintf("Nothing was changed. Press d again to retry, or run\n'agent-deck remote destroy %s --force' to destroy it anyway.", msg.remoteName)
 		} else {
 			body += "Its sessions may have been stopped; the sandbox and its remote\nare still there, so you can retry with d."

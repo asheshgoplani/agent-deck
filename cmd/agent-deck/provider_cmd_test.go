@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/provider"
@@ -394,5 +395,59 @@ func TestProviderList(t *testing.T) {
 	env.stdout.Reset()
 	if code := runProviderList(nil); code != 0 || !strings.Contains(env.stdout.String(), "fake") {
 		t.Fatalf("provider list: %d %s", code, env.stdout)
+	}
+}
+
+// Another agent-deck holds the remote's sandbox lock (a TUI destroy, or a
+// create of the same name, in progress): `remote destroy` refuses before it
+// lists or stops anything.
+func TestRemoteDestroy_RefusesWhileAnotherAgentDeckHoldsTheRemote(t *testing.T) {
+	env := newProviderTestEnv(t, nil)
+	provisionForTest(t, env, "d6")
+	env.list = []session.RemoteSessionInfo{{ID: "s1", Status: "running"}}
+	listed := 0
+	listSessions := providerDeps.listSessions
+	providerDeps.listSessions = func(ctx context.Context, name string, rc session.RemoteConfig) ([]session.RemoteSessionInfo, error) {
+		listed++
+		return listSessions(ctx, name, rc)
+	}
+	dir, err := provider.SandboxDir("d6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locks := filepath.Join(filepath.Dir(dir), ".locks")
+	if err := os.MkdirAll(locks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(locks, "d6.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := runRemoteDestroy([]string{"d6", "--yes"}); code != 1 {
+		t.Fatalf("exit %d, want 1 while another agent-deck holds the remote\nstdout: %s\nstderr: %s", code, env.stdout, env.stderr)
+	}
+	if !strings.Contains(env.stderr.String(), "busy") || !strings.Contains(env.stderr.String(), "Nothing was changed") {
+		t.Fatalf("stderr should say the remote is busy and nothing changed: %s", env.stderr)
+	}
+	if listed != 0 || len(env.stops) != 0 || len(env.lines("destroyed.log")) != 0 {
+		t.Fatalf("changed something: listed=%d stops=%q destroyed=%q", listed, env.stops, env.lines("destroyed.log"))
+	}
+	if _, ok := currentRemotes(t)["d6"]; !ok {
+		t.Fatal("remote unregistered")
+	}
+
+	// Once the other agent-deck lets go, the destroy works.
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	env.stderr.Reset()
+	if code := runRemoteDestroy([]string{"d6", "--yes"}); code != 0 {
+		t.Fatalf("exit %d after the lock was released: %s", code, env.stderr)
+	}
+	if len(env.lines("destroyed.log")) != 1 {
+		t.Fatal("not destroyed after the lock was released")
 	}
 }
