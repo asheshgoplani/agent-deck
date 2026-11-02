@@ -359,7 +359,9 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		// read entirely (a parent with records waiting for its own prompt
 		// costs two small file reads per poll, not a scan). A flag from another
 		// epoch (the ledger was restored) is never compared with Judged; no
-		// flag (nothing was ever addressed to the parent) is nothing new.
+		// flag (nothing was ever addressed to the parent) is nothing new. A
+		// parent whose flag is from an older epoch is scanned on every idle
+		// poll until its next record carries the new epoch (#3026 item 6).
 		flag, found := comms.ReadFlag(r.Dir, id)
 		if (!found || (flag.Epoch == f.Epoch && flag.Last <= f.Judged)) && (f.NextDue == 0 || now.UnixMilli() < f.NextDue) {
 			return
