@@ -402,8 +402,11 @@ def sandbox(vm):
     host = first_ip(vm.get("publicIps")) or first_ip(vm.get("privateIps")) or "unknown.invalid"
     labels = {"provider": PROVIDER}
     for k, v in t.items():
-        if k.startswith("agent-deck-") and k[len("agent-deck-"):] not in RESERVED and printable(v):
-            labels["agent-deck/" + k[len("agent-deck-"):]] = v
+        # Only keys a request label could have made (LABEL_RE): a tag added
+        # by hand with any other key would make agent-deck reject the reply.
+        m = LABEL_RE.match("agent-deck/" + k[len("agent-deck-"):]) if k.startswith("agent-deck-") else None
+        if m and m.group(1) not in RESERVED and printable(v):
+            labels["agent-deck/" + m.group(1)] = v
     kd = keydir_for(sid)
     key = os.path.join(kd, "id_ed25519") if kd else ""
     if key and os.path.isfile(key) and not os.path.islink(key):
@@ -651,7 +654,10 @@ destroy_resources() {
 	[ "$rc" -eq 0 ] || exit "$rc"
 	DESTROY_PLANNED=0
 	[ -z "$plan" ] || DESTROY_PLANNED="$(printf '%s\n' "$plan" | wc -l | tr -d ' ')"
-	for rid in $plan; do
+	# One id per line, read whole (never word-split or glob-expanded), on
+	# fd 3 so az cannot eat the list from stdin.
+	while IFS= read -r rid <&3; do
+		[ -n "$rid" ] || continue
 		if ! azc resource show --ids "$rid" --output json >"$WORK/one.json" 2>"$WORK/one.err"; then
 			if grep -qiE 'not ?found|ResourceNotFound|could not be found' "$WORK/one.err"; then
 				continue # already gone, for example deleted with its VM
@@ -666,7 +672,7 @@ destroy_resources() {
 			sed 's/^/az: /' "$WORK/one.err" >&2
 			die "az resource delete failed for $rid"
 		fi
-	done
+	done 3<<<"$plan"
 }
 
 # remove_keydir <dir>: delete only a key dir this provider made.

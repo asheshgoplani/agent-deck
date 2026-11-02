@@ -835,3 +835,61 @@ func TestAzureExampleProvider_RollbackOutlastsASlowDestroy(t *testing.T) {
 		t.Fatalf("resources left after the rollback: %+v", rs)
 	}
 }
+
+// TestAzureExampleProvider_ListSkipsTagKeysThatAreNotLabelKeys: a tag
+// someone added by hand with a key agent-deck labels cannot have must not
+// make the whole list reply invalid.
+func TestAzureExampleProvider_ListSkipsTagKeysThatAreNotLabelKeys(t *testing.T) {
+	w := newAzWorld(t, azBaseConf(""))
+	stdout, stderr, err := w.run(t, "create", azCreateReq)
+	if err != nil {
+		t.Fatalf("create failed: %v\n%s", err, stderr)
+	}
+	sb := azCreated(t, stdout)
+	rs := w.resources(t)
+	for i := range rs {
+		if rs[i].Name == sb.ID {
+			rs[i].Tags["agent-deck-cost center"] = "lab"
+			rs[i].Tags["agent-deck-"+strings.Repeat("x", 70)] = "long"
+			rs[i].Tags["agent-deck-Team_A"] = "ok"
+		}
+	}
+	w.seed(t, rs)
+	stdout, stderr, err = w.run(t, "list", `{"protocol":1,"action":"list"}`)
+	if err != nil {
+		t.Fatalf("list failed: %v\n%s", err, stderr)
+	}
+	var list struct {
+		Sandboxes []Sandbox `json:"sandboxes"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Sandboxes) != 1 {
+		t.Fatalf("list = %+v", list.Sandboxes)
+	}
+	if err := list.Sandboxes[0].Validate(); err != nil {
+		t.Fatalf("one bad tag key made the listed sandbox invalid: %v", err)
+	}
+	if list.Sandboxes[0].Labels["agent-deck/remote"] != "az1" {
+		t.Fatalf("good labels lost: %v", list.Sandboxes[0].Labels)
+	}
+}
+
+// TestAzureExampleProvider_DestroyTakesEachIDWhole: resource ids from the
+// plan are used whole, never word-split or glob-expanded.
+func TestAzureExampleProvider_DestroyTakesEachIDWhole(t *testing.T) {
+	w := newAzWorld(t, azBaseConf(""))
+	prefix := "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/" + azRG + "/providers/"
+	tags := map[string]string{"agent-deck-provider": "azure-vm", "agent-deck-sandbox": "adk-00000000cc"}
+	w.seed(t, []azResource{
+		{ID: prefix + "Microsoft.Compute/disks/adk-00000000cc data *", Name: "adk-00000000cc data *", Type: "Microsoft.Compute/disks", RG: azRG, Tags: tags},
+	})
+	_, stderr, err := w.run(t, "destroy", `{"protocol":1,"action":"destroy","id":"adk-00000000cc"}`)
+	if err != nil {
+		t.Fatalf("destroy: %v\n%s", err, stderr)
+	}
+	if rs := w.resources(t); len(rs) != 0 {
+		t.Fatalf("resources left: %+v", rs)
+	}
+}
