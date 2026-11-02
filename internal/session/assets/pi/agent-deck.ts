@@ -198,9 +198,13 @@ function isLive(sockPath: string): Promise<boolean> {
   });
 }
 
+// reply writes the one reply and then destroys the connection once it is
+// flushed. end() alone only half-closes: the socket stays open, and counted
+// against MAX_CONNECTIONS, until the client closes its side, so a client that
+// never does would hold a slot for the life of the pi session.
 function reply(conn: net.Socket, body: object): void {
   try {
-    if (!conn.destroyed) conn.end(JSON.stringify(body) + "\n");
+    if (!conn.destroyed) conn.end(JSON.stringify(body) + "\n", () => conn.destroy());
   } catch {
     // The client went away; there is nobody left to tell.
   }

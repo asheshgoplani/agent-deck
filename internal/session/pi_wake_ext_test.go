@@ -476,6 +476,38 @@ const scenarios = {
     return out;
   },
 
+  async replied_clients_never_close() {
+    // Busy, so every frame is answered at once (a refusal). Each client reads
+    // its reply and never closes or ends its side (allowHalfOpen), as a stuck
+    // or careless client would.
+    const rt = makeRuntime({ idle: false });
+    await rt.start();
+    const held = [];
+    for (let i = 0; i < 8; i++) {
+      const c = net.connect({ path: SOCK, allowHalfOpen: true });
+      c.on("error", () => {});
+      c.setEncoding("utf8");
+      const got = new Promise((resolve) => {
+        let buf = "";
+        c.on("data", (d) => { buf += d; if (buf.includes("\n")) resolve(buf.slice(0, buf.indexOf("\n"))); });
+        setTimeout(() => resolve(null), 3000);
+      });
+      await new Promise((r) => c.once("connect", r));
+      c.write(JSON.stringify(frame("NH" + i, LINE_C)) + "\n");
+      held.push({ c, got });
+    }
+    const replies = await Promise.all(held.map((h) => h.got));
+    await sleep(300);
+    // A ninth client, after the eight were answered: it must still be served.
+    // (The eight cannot see the difference themselves: end() and destroy() both
+    // send them a FIN, and a half-open client never emits close.)
+    const ninth = await ask(frame("NH9", LINE_C));
+    for (const h of held) h.c.destroy();
+    const out = { replied: replies.filter((r) => r !== null).length, ninth: ninth.reply };
+    await rt.stop();
+    return out;
+  },
+
   async concurrent_start() {
     // Two starters race for one path. Each binds privately and renames over the
     // public path, so the last one wins: one reachable listener, and the loser's
@@ -1387,6 +1419,19 @@ func TestPiWakeExtension_ConnectionsBeyondASmallLimitAreRefused(t *testing.T) {
 		t.Errorf("%v of 64 simultaneous idle connections stayed open, want at least 1 and at most 32 (a small maxConnections)", open)
 	}
 	wantAt(t, res, "after.state", "submitted") // the limit frees up with the connections
+}
+
+// A client that reads its reply and never closes its side must not keep one
+// of the extension's few connection slots: the extension destroys each
+// connection once its reply is flushed, so after eight such clients a ninth
+// is still answered. With end() alone the eight hold every slot and the ninth
+// is dropped unanswered.
+func TestPiWakeExtension_AnsweredClientsThatNeverCloseDoNotHoldConnectionSlots(t *testing.T) {
+	res, _ := runPiWake(t, "replied_clients_never_close", piWakeOpts{})
+	if n := numAt(t, res, "replied"); n != 8 {
+		t.Fatalf("%v of 8 clients got a reply, want 8", n)
+	}
+	assertRefusal(t, res, "ninth", "NH9", "busy")
 }
 
 func TestPiWakeExtension_HookStdoutCapCountsBytesAndTruncatesExactly(t *testing.T) {
