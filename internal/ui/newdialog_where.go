@@ -105,8 +105,8 @@ func (d *NewDialog) cycleWhere(delta int) {
 // sandbox pick: what the dialog does not carry there (#2918).
 const whereRemoteDefaultsNote = "Model, effort, Claude options: the remote's own defaults"
 
-// whereStartPromptNote, shown above it for a Claude session, says what
-// does travel besides name, tool and path: the start prompt the user typed.
+// whereStartPromptNote, shown above it for a Claude session with a typed
+// start prompt, says what does travel besides name, tool and path.
 const whereStartPromptNote = "Start prompt: sent"
 
 // GetWhereRemoteCreateOptions collects what a session created on a remote
@@ -154,7 +154,8 @@ func (d *NewDialog) renderWhereSection(content *strings.Builder, cur focusTarget
 	}
 	content.WriteString("\n")
 	if d.GetWhere().kind != whereLocal {
-		if d.isClaudeSelected() {
+		// Only when a prompt was typed: an empty one is never sent.
+		if d.GetClaudeStartQuery() != "" {
 			content.WriteString(valueStyle.Render("  " + whereStartPromptNote))
 			content.WriteString("\n")
 		}

@@ -107,15 +107,35 @@ func TestNewDialogWhereSubmit_CarriesTypedStartPrompt(t *testing.T) {
 	}
 }
 
-// For a Claude session the Where note says the start prompt travels; the
-// rest still comes from the remote's defaults.
+// For a Claude session with a typed start prompt the Where note says the
+// prompt travels; the rest still comes from the remote's defaults.
 func TestNewDialogWhereRow_NoteSaysStartPromptTravels(t *testing.T) {
 	cfg := whereTestConfig(nil, "docker")
 	h, _ := whereSubmitHome(t, cfg, 1)
 	h.newDialog.commandCursor = 1 // claude
 	h.newDialog.updateToolOptions()
+	h.newDialog.claudeOptions.SetStartQuery("run the tests")
 	view := stripAnsi(h.newDialog.View())
 	if !strings.Contains(view, "Start prompt: sent") || !strings.Contains(view, "remote's own defaults") {
 		t.Fatalf("Where note does not say the start prompt travels:\n%s", view)
+	}
+}
+
+// Review of #3019: "Start prompt: sent" must not claim a prompt is sent when
+// none was typed (empty or only spaces); the remote-defaults note stays.
+func TestNewDialogWhereRow_NoStartPromptNoteWithoutPrompt(t *testing.T) {
+	for _, typed := range []string{"", "   "} {
+		cfg := whereTestConfig(nil, "docker")
+		h, _ := whereSubmitHome(t, cfg, 1)
+		h.newDialog.commandCursor = 1 // claude
+		h.newDialog.updateToolOptions()
+		h.newDialog.claudeOptions.SetStartQuery(typed)
+		view := stripAnsi(h.newDialog.View())
+		if strings.Contains(view, "Start prompt") {
+			t.Fatalf("typed %q: Where note claims a start prompt is sent:\n%s", typed, view)
+		}
+		if !strings.Contains(view, "remote's own defaults") {
+			t.Fatalf("typed %q: remote-defaults note is gone:\n%s", typed, view)
+		}
 	}
 }
