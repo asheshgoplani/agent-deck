@@ -102,6 +102,37 @@ func TestPiRestart_IdleRestartIsOneInfoLine(t *testing.T) {
 	f.wantRecords(t, "the first run after the restarts", 4, 2)
 }
 
+// A session_start the old pi wrote before the restart (its last lifecycle write,
+// idle at its prompt) is not the resumed pi's boot: piBackAtPrompt bounds it by
+// the token. Until the resumed pi writes its own, the sweep inside the boot
+// timeout sends nothing and keeps the token.
+func TestPiRestart_PreTokenSessionStartIsNotTheBoot(t *testing.T) {
+	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
+	f := newTurnTestFixture(t)
+	piChild(f)
+	st := stubRestartPIDs(t)
+	usePiHookFile(t)
+	w := newPiWriter(t, f.child.ID, true)
+	w.TurnStart("run-A")
+	f.piPoll()
+	w.TurnEnd("run-A").Settle("run-A", "entry-1")
+	f.piPoll()
+	f.wantRecords(t, "the run before the restart", 1, 1)
+
+	w.Age(3 * time.Minute)
+	w.SessionStart()
+	st.piRestart(f, w, time.Now())
+	if _, ok := readRestartToken(f.child.ID); !ok {
+		t.Fatalf("a settles-capable pi child idle at its prompt gets a restart token")
+	}
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now().Add(10*time.Second)) // past restartBootSettle
+	f.wantRecords(t, "a pre-token session_start is not the boot", 1, 1)
+	if _, ok := readRestartToken(f.child.ID); !ok {
+		t.Fatalf("a pre-token session_start must not spend the token before the timeout")
+	}
+}
+
 // The sweep past the boot timeout: a resumed pi back at its prompt (its
 // session_start unseen) or already on a new run gets nothing, even while its
 // status reads running (past the 2-minute hook window the status comes from the
