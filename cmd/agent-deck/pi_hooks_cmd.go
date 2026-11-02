@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -51,7 +50,11 @@ func printPiHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  install      Install or upgrade the agent-deck pi extension")
 	fmt.Fprintln(w, "  uninstall    Remove the agent-deck pi extension")
-	fmt.Fprintln(w, "  status       Show current pi extension install status")
+	fmt.Fprintln(w, "  status       Show the extension install status, the pi version, whether")
+	fmt.Fprintln(w, "               the wake socket is on (or why not)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Status options:")
+	fmt.Fprintln(w, "  -p, --profile <name>  Profile to check the socket path for (default: current)")
 }
 
 func handlePiHooksInstall() {
@@ -126,7 +129,7 @@ func handlePiHooksStatus(args []string) {
 	fmt.Printf("Extension: %s\n", session.PiHookExtensionPath(dir))
 
 	// The path length does not depend on the instance, so any id will do.
-	sock := session.PiSocketPath(piHooksProfile(args), "status", childenv.ForLaunch(""))
+	sock := session.PiSocketPath(piHooksProfile(args), "status", session.PiStatusEnv())
 	if sock.Version != "" {
 		fmt.Printf("Pi: %s (via %s --version)\n", sock.Version, sock.Binary)
 	}

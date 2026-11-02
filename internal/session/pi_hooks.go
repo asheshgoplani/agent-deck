@@ -220,6 +220,16 @@ func PiSocketPath(profile, instanceID string, env []string) PiSocketInfo {
 	return piSocketProbe(profile, instanceID, env, bin, found)
 }
 
+// PiStatusEnv is the env `pi-hooks status` probes pi with: the launch env with
+// the spawn-path prelude's directories ahead of PATH, so status resolves the pi
+// a launch of a plain `pi` resolves. A command's own PATH= or other leading
+// assignments are not seen here; status has no session.
+func PiStatusEnv() []string {
+	_, _, pathEnv, _ := (&Instance{}).launchBinary("pi", "pi")
+	env := childenv.ForLaunch("")
+	return append(env[:len(env):len(env)], "PATH="+pathEnv)
+}
+
 // piSocketProbe is PiSocketPath for a pi binary the caller already resolved.
 func piSocketProbe(profile, instanceID string, env []string, bin string, found bool) PiSocketInfo {
 	info := PiSocketInfo{Binary: bin}
