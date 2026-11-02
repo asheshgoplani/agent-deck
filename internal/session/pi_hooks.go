@@ -21,6 +21,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
+	"github.com/asheshgoplani/agent-deck/internal/send"
 )
 
 // piHookExtensionSource is the pi extension agent-deck installs into pi's
@@ -170,10 +171,6 @@ const (
 	piSocketFloor = "1.2.0"
 	// piVersionTimeout bounds `pi --version`; a wedged pi must not stall a launch.
 	piVersionTimeout = 2 * time.Second
-	// piMaxSockPath is the longest unix socket path macOS accepts (sun_path is
-	// 104 bytes including the NUL); Linux allows 107, so one limit is used. A
-	// longer path is refused at launch, so the extension never tries to bind it.
-	piMaxSockPath = 103
 )
 
 // piVersionOutputCap bounds what is read of `pi --version`: a version is a few
@@ -273,8 +270,8 @@ func piSocketProbe(profile, instanceID string, env []string, bin string, found b
 		info.Reason, info.Detail = "no_runtime_dir", err.Error()
 		return info
 	}
-	if len(path) > piMaxSockPath {
-		info.Reason, info.Detail = "path_too_long", fmt.Sprintf("path %d bytes, limit %d", len(path), piMaxSockPath)
+	if len(path) > send.MaxSockPath {
+		info.Reason, info.Detail = "path_too_long", fmt.Sprintf("path %d bytes, limit %d", len(path), send.MaxSockPath)
 		return info
 	}
 	info.Path = path
