@@ -750,6 +750,9 @@ func TestInboxNudge_PiSocketRouteSurvivesEnrolmentEndingAfterDispatch(t *testing
 // spooled before Flush returns.
 func TestTransitionNotifier_FlushWaitsForASlowTypedLeg(t *testing.T) {
 	w := newPiWakeFixture(t, replyWith("submitted"))
+	// Relaunched without the socket and still enrolled (its marker drains at the
+	// next pass): the one state in which a listed pi's doorbell is typed.
+	w.parent.PiSocketExported = false
 	piWakeSocketFor = func(string, string) string { return filepath.Join(filepath.Dir(w.ext.path), "none.sock") }
 	w.d.notifier.wake.send = sendWakeNudge
 	release := w.typed.holdSends() // releases itself after 1.5 s

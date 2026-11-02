@@ -239,6 +239,39 @@ func TestPiLaunchedWithoutSocket_TypesTheDoorbell(t *testing.T) {
 	}
 }
 
+// Review item 4: enrolment follows the launch. A listed pi whose launch
+// exported no socket (here pi 1.1.0, below the floor) is not enrolled after a
+// daemon pass and keeps the inbox path (no marker, no ledger context), as
+// before this change; once a launch exports the socket (pi 1.3.0), the next
+// pass enrols it.
+func TestCommsConsumes_AListedPiEnrolsOnlyOnceALaunchExportedTheSocket(t *testing.T) {
+	piSocketShortData(t)
+	// Not newDeliverFixture: it enrols its parent while it is still a Claude.
+	f := &deliverFixture{commsFixture: newCommsFixture(t), clock: time.Now()}
+	f.parent.Tool = "pi"
+	t.Cleanup(SetCommsConsumersForTest([]string{f.parent.Title}))
+	f.l = f.d.commsLedgerFor(f.profileName())
+	if f.l == nil {
+		t.Fatal("ledger did not open")
+	}
+
+	f.launchPi(t, "1.1.0", false)
+	f.deliver(t, "waiting")
+	if _, ok := LoadCommsEnrollment(f.parent.ID); ok {
+		t.Fatal("a listed pi launched without the socket was enrolled")
+	}
+	if dl, ok := LedgerPromptContext(f.parent.ID, "hello", ""); ok {
+		dl.Done(false)
+		t.Fatal("a listed pi launched without the socket got ledger context; it must keep the inbox path")
+	}
+
+	f.launchPi(t, "1.3.0", true)
+	f.deliver(t, "waiting")
+	if en, ok := LoadCommsEnrollment(f.parent.ID); !ok || en.Tool != "pi" || en.Draining {
+		t.Fatalf("after a socket-exported launch the listed pi is not enrolled: %+v (found %v)", en, ok)
+	}
+}
+
 // ---- 3. a partial pane tree --------------------------------------------------
 
 // setPanePIDs points the pane-tree seam at (set, err). The seam answers the set

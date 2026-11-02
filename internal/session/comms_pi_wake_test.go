@@ -608,6 +608,9 @@ func TestCommsDeliver_PiUnavailableTypesOnceInTheBackground(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newPiWakeFixture(t, replyWith("submitted"))
+			// Relaunched without the socket: still enrolled (its marker drains
+			// at the next pass), so its doorbells reach the leg, typed.
+			w.parent.PiSocketExported = false
 			setup(w)
 			release := w.typed.holdSends()
 			defer release()
@@ -629,26 +632,29 @@ func TestCommsDeliver_PiUnavailableTypesOnceInTheBackground(t *testing.T) {
 	}
 }
 
-// Max 1: the typed fallback must not hold the ledger pass. Every parent's
-// delivery waits behind the pass, and the send can wait 45 s on a target's lock.
-func TestCommsDeliver_PiUnavailableTypedPathDoesNotBlockTheLedgerPass(t *testing.T) {
+// Max 1 asked that a typed fallback never hold the ledger pass. Since a pi
+// enrols only while its launch exports the socket (review item 4), the pass
+// never types into a pi at all: a listed pi relaunched without the socket is
+// drained by the next pass, which rings nothing and types nothing. Its doorbells
+// still reach the leg while the marker drains, and that typed send is dispatched
+// in the background (TestCommsDeliver_PiUnavailableTypesOnceInTheBackground).
+func TestCommsDeliver_PiRelaunchedWithoutTheSocketIsDrainedAndTheLedgerPassTypesNothing(t *testing.T) {
 	w := newPiWakeFixture(t, replyWith("submitted"))
+	w.parent.PiSocketExported = false
 	piWakeSocketFor = func(string, string) string { return filepath.Join(filepath.Dir(w.ext.path), "none.sock") }
-	release := w.typed.holdSends()
-	defer release()
 	w.urgent(t, "shipped the build")
 	start := time.Now()
 	w.deliver(t, "waiting")
 	if took := time.Since(start); took > 500*time.Millisecond {
-		t.Errorf("the ledger pass took %v while the typed send was held", took)
+		t.Errorf("the ledger pass took %v", took)
 	}
-	if typed := w.typed.waitTyped(t, 1); len(typed) != 1 {
-		t.Fatalf("typed %q, want the doorbell once", typed)
+	if en, ok := LoadCommsEnrollment(w.parent.ID); !ok || !en.Draining {
+		t.Fatalf("a listed pi relaunched without the socket is not draining: %+v (found %v)", en, ok)
 	}
-	if st := w.state(t); len(st.Inflight) != 1 || st.Inflight[0].State != comms.ReceiptTransportAccepted {
-		t.Errorf("a dispatched typed doorbell counts as accepted, as Claude's does: %+v", st.Inflight)
+	time.Sleep(300 * time.Millisecond)
+	if typed := w.typed.all(); len(typed) != 0 || w.ext.count() != 0 {
+		t.Errorf("the ledger pass rang a pi launched without the socket: typed %q, frames %d", typed, w.ext.count())
 	}
-	release()
 }
 
 // R2: a busy pi is refused, its records stay pending, and the next run start
