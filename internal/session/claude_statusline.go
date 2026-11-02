@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
@@ -66,7 +67,25 @@ type UsageFeed struct {
 	// the quota cache cannot store (the ingester would have nowhere to
 	// write). InstallUsageFeed skips such a slot; hooks status reports it.
 	Blocked string `json:"blocked,omitempty"`
+	// Depth is how many wrapper levels Command stacks (1 for a healthy
+	// wrapper, 0 when not a wrapper). Issue #3011: releases that did not
+	// recognise their own wrapper nested it once per heal.
+	Depth int `json:"depth,omitempty"`
+	// Warnings name a nested wrapper or an unusually large settings.json,
+	// for hooks status and hooks install to print.
+	Warnings []string `json:"warnings,omitempty"`
 }
+
+// settingsLargeBytes is the settings.json size hooks status warns at. A
+// normal file is a few KB; #3011's nested statusLine reached 4.8-14 MB and
+// Claude Code stopped loading it.
+const settingsLargeBytes = 1 << 20
+
+// usageFeedSettingsBackupPrefix names the copy of settings.json taken before
+// a nested statusLine wrapper is collapsed. It must not match
+// healBackupPrefix+"*": backupSettingsOnce skips its one-time backup when
+// such a file exists.
+const usageFeedSettingsBackupPrefix = "settings.json.statusline-bak-agentdeck-"
 
 // usageFeedBlockedSlotDir is UsageFeed.Blocked for a slot whose config dir
 // is not there.
@@ -83,10 +102,48 @@ func usageFeedBlocker(configDir, slot string) string {
 	return ""
 }
 
-// parseUsageFeedCommand recognises a feed wrapper: program, slot named by
-// -p/--profile (may be empty), and the wrapped command verbatim. ok is false
-// for any other statusLine command.
+// parseUsageFeedCommand recognises a feed wrapper: program and slot named by
+// -p/--profile (may be empty) of the outermost level, and the innermost
+// wrapped command verbatim, every nested wrapper level unwrapped (issue
+// #3011); Depth counts the levels. ok is false for any other statusLine
+// command.
 func parseUsageFeedCommand(command string) (feed UsageFeed, ok bool) {
+	feed, ok = parseUsageFeedLevel(command)
+	if !ok {
+		return feed, false
+	}
+	feed.Depth = 1
+	// Each level's inner command is strictly shorter, so this ends.
+	for {
+		next, nested := parseUsageFeedLevel(feed.Inner)
+		if !nested {
+			return feed, true
+		}
+		feed.Inner = next.Inner
+		feed.Depth++
+	}
+}
+
+// isAgentDeckProgram reports whether program (a command's first word) runs
+// an agent-deck binary: the one this binary pins now, or any path whose base
+// name is agent-deck or agent-deck-<suffix> (agent-deck-bin behind a
+// launcher script, #3011), with or without .exe and with / or \ separators.
+func isAgentDeckProgram(program string) bool {
+	if program == "" {
+		return false
+	}
+	if exe, err := hookExecutablePath(); err == nil && exe != "" && program == exe {
+		return true
+	}
+	base := program[strings.LastIndexAny(program, `/\`)+1:]
+	if len(base) > 4 && strings.EqualFold(base[len(base)-4:], ".exe") {
+		base = base[:len(base)-4]
+	}
+	return base == "agent-deck" || strings.HasPrefix(base, "agent-deck-")
+}
+
+// parseUsageFeedLevel recognises one wrapper level; see parseUsageFeedCommand.
+func parseUsageFeedLevel(command string) (feed UsageFeed, ok bool) {
 	head, inner := command, ""
 	if idx := strings.Index(command, usageFeedSeparator); idx >= 0 {
 		head, inner = command[:idx], command[idx+len(usageFeedSeparator):]
@@ -96,7 +153,7 @@ func parseUsageFeedCommand(command string) (feed UsageFeed, ok bool) {
 		return feed, false
 	}
 	words = stripLeadingEnvAssignments(words)
-	if len(words) == 0 || strings.TrimSuffix(filepath.Base(words[0]), ".exe") != "agent-deck" {
+	if len(words) == 0 || !isAgentDeckProgram(words[0]) {
 		return feed, false
 	}
 	feed.Program = words[0]
@@ -143,13 +200,53 @@ func shellSyntax(command string) bool {
 // executable when this binary is pinnable, else the program an existing
 // wrapper already names, else the bare "agent-deck" (see hookHandlerCommandFor).
 func usageFeedCommand(slot, inner, existingProgram string) string {
-	program := agentDeckHookCommandProgram(existingProgram)
-	cmd := program + " -p " + shellescape.Quote(slot) + " " + strings.Join(usageWrapWords, " ")
+	cmd := usageFeedHead(slot, agentDeckHookCommandProgram(existingProgram))
 	inner = strings.TrimSpace(inner)
 	if inner == "" {
 		return cmd
 	}
 	return cmd + usageFeedSeparator + "sh -c " + shellescape.Quote(inner)
+}
+
+// usageFeedHead is the wrapper without its wrapped command.
+func usageFeedHead(slot, program string) string {
+	return program + " -p " + shellescape.Quote(slot) + " " + strings.Join(usageWrapWords, " ")
+}
+
+// usageFeedAlreadyCorrect reports whether current is a single wrapper level
+// for slot naming the program want names, in the direct `-- <command>` form
+// earlier releases wrote (the healthy value in #3011). Such a wrapper runs
+// the same command as the sh -c form, so it is left exactly as it is rather
+// than rewritten on every install.
+func usageFeedAlreadyCorrect(current string, parsed UsageFeed, slot, want string) bool {
+	if parsed.Depth != 1 || parsed.FeedSlot != slot || parsed.Inner == "" || shellSyntax(parsed.Inner) {
+		return false
+	}
+	head := usageFeedHead(slot, shellescape.Quote(parsed.Program))
+	return strings.HasPrefix(want, head+usageFeedSeparator) && current == head+usageFeedSeparator+parsed.Inner
+}
+
+// usageFeedWarnings lists what hooks status should say about a slot's
+// statusLine: a nested wrapper and an unusually large settings.json.
+func usageFeedWarnings(depth, settingsBytes int) []string {
+	var warnings []string
+	if depth > 1 {
+		warnings = append(warnings, fmt.Sprintf("statusLine wrapper is nested %d times; run 'agent-deck hooks install' to collapse it to one", depth))
+	}
+	if settingsBytes >= settingsLargeBytes {
+		warnings = append(warnings, fmt.Sprintf("settings.json is %.1f MB, unusually large; Claude Code may fail to load it", float64(settingsBytes)/(1<<20)))
+	}
+	return warnings
+}
+
+// backupSettingsBeforeRepair copies settings.json (data) next to it before a
+// nested wrapper is collapsed, so the damaged file can still be inspected.
+func backupSettingsBeforeRepair(configDir string, data []byte) (string, error) {
+	backup := filepath.Join(configDir, usageFeedSettingsBackupPrefix+time.Now().Format("20060102-150405"))
+	if err := atomicfile.WriteFile(backup, data, 0o600); err != nil {
+		return "", fmt.Errorf("write %s: %w", backup, err)
+	}
+	return backup, nil
 }
 
 // agentDeckHookCommandProgram is the program word a fresh agent-deck entry
@@ -186,18 +283,20 @@ func statusLineObject(root jsonObject) (jsonObject, bool, error) {
 // Read-only.
 func UsageFeedStatus(configDir, slot string) UsageFeed {
 	feed := UsageFeed{Slot: slot, ConfigDir: configDir, Blocked: usageFeedBlocker(configDir, slot)}
-	root, _, err := readSettingsObject(filepath.Join(configDir, "settings.json"))
+	root, data, err := readSettingsObject(filepath.Join(configDir, "settings.json"))
 	if err != nil {
 		return feed
 	}
+	feed.Warnings = usageFeedWarnings(0, len(data))
 	obj, _, err := statusLineObject(root)
 	if err != nil {
 		return feed
 	}
 	feed.Command = obj.getString("command")
 	if parsed, ok := parseUsageFeedCommand(feed.Command); ok {
-		feed.Program, feed.FeedSlot, feed.Inner = parsed.Program, parsed.FeedSlot, parsed.Inner
+		feed.Program, feed.FeedSlot, feed.Inner, feed.Depth = parsed.Program, parsed.FeedSlot, parsed.Inner, parsed.Depth
 		feed.Wired = parsed.FeedSlot == slot
+		feed.Warnings = usageFeedWarnings(parsed.Depth, len(data))
 	}
 	return feed
 }
@@ -208,7 +307,11 @@ func UsageFeedStatus(configDir, slot string) UsageFeed {
 // inner command, and a slot with no statusLine gets a default display.
 // Every other key and the statusLine's own siblings (padding, type) survive
 // verbatim; nothing is written when nothing changes, and malformed JSON is
-// an error, never overwritten. A slot that cannot be wired (usageFeedBlocker:
+// an error, never overwritten. A wrapper that is already a wrapper (any
+// binary path, any -p slot, nested any number of times, #3011) is unwrapped
+// to the user's innermost command first, so repeated installs never nest;
+// a nested one is collapsed to one level after settings.json is copied to
+// settings.json.statusline-bak-agentdeck-<ts>. A slot that cannot be wired (usageFeedBlocker:
 // no config dir, a name the quota cache refuses) is skipped without error;
 // UsageFeedStatus names the reason. Returns whether the file was written.
 func InstallUsageFeed(configDir, slot string) (bool, error) {
@@ -235,12 +338,24 @@ func InstallUsageFeed(configDir, slot string) (bool, error) {
 	}
 	current := obj.getString("command")
 	inner, existingProgram := current, ""
-	if parsed, ok := parseUsageFeedCommand(current); ok {
+	parsed, wrapped := parseUsageFeedCommand(current)
+	if wrapped {
 		inner, existingProgram = parsed.Inner, parsed.Program
 	}
 	want := usageFeedCommand(slot, inner, existingProgram)
-	if current == want {
+	if current == want || (wrapped && usageFeedAlreadyCorrect(current, parsed, slot, want)) {
 		return false, nil
+	}
+	if len(data) >= settingsLargeBytes {
+		sessionLog.Warn("claude_settings_unusually_large", slog.String("config_dir", configDir), slog.Int("bytes", len(data)))
+	}
+	if parsed.Depth > 1 {
+		backup, err := backupSettingsBeforeRepair(configDir, data)
+		if err != nil {
+			return false, err
+		}
+		sessionLog.Warn("claude_usage_feed_nested_repaired", slog.String("config_dir", configDir),
+			slog.String("slot", slot), slog.Int("depth", parsed.Depth), slog.String("backup", backup))
 	}
 	if err := saveUsageFeedBackup(configDir, root, current, want); err != nil {
 		return false, err

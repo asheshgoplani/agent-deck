@@ -1152,6 +1152,15 @@ func installUsageFeeds(w io.Writer) {
 		default:
 			fmt.Fprintf(w, "  %-*s  already wired: %s\n", width, r.Slot, r.Feed.Command)
 		}
+		printUsageFeedWarnings(w, width, r.Feed.Warnings)
+	}
+}
+
+// printUsageFeedWarnings prints a slot's statusLine warnings (a nested
+// wrapper, an unusually large settings.json; #3011) under its row.
+func printUsageFeedWarnings(w io.Writer, width int, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(w, "  %-*s  warning: %s\n", width, "", warning)
 	}
 }
 
@@ -1220,6 +1229,7 @@ func printUsageFeedStatus(w io.Writer, feeds []session.UsageFeed, ages map[strin
 			cache = "cache " + shortDuration(age.Age) + " old"
 		}
 		fmt.Fprintf(w, "  %-*s  %s · %s\n", width, f.Slot, wiring, cache)
+		printUsageFeedWarnings(w, width, f.Warnings)
 	}
 	if unwired > 0 {
 		fmt.Fprintln(w, "Run 'agent-deck hooks install' to wire the usage feed (the accounts field reads it).")

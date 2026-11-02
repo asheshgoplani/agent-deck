@@ -18,6 +18,21 @@
 #              tree, which is the tag tree. A head with another parent (merged
 #              after main moved) does not qualify, whatever its tree.
 #
+#   version-only  (rule R, ASK-164) the same-tree PR run above, when it is
+#              a version-only release PR run (#3003): its shards were
+#              skipped, its `Version-only release check` and gate jobs
+#              concluded success, AND, checked here again from scratch:
+#              the tag commit's parent P (the PR's base) has a push run of
+#              go-test.yml on main whose gate job and every shard job
+#              concluded success, and P's own
+#              .github/scripts/version-only-diff.sh (never the tag's copy)
+#              says P..tag changes only the `var Version` line and
+#              CHANGELOG.md. The tag tree is then P's fully tested tree plus
+#              one version string, which the owner accepts as a full run.
+#              A base without the detector, a detector that says no or
+#              fails, a red or missing base run, or a merge commit all mean
+#              no: the release runs the shards.
+#
 # And the run itself must be a success whose `Full test suite (PR gate)` job
 # and every `Test shard (...)` job (at least one) concluded success on the
 # latest attempt. A run where the shards were skipped (a "no Go changes"
@@ -42,6 +57,8 @@ WAIT_SECONDS=${REUSE_WAIT_SECONDS:-1200}
 POLL_SECONDS=${REUSE_POLL_SECONDS:-30}
 WORKFLOW_PATH=.github/workflows/go-test.yml
 GATE_JOB='Full test suite (PR gate)'
+VERSION_ONLY_JOB='Version-only release check'
+DETECTOR_PATH=.github/scripts/version-only-diff.sh
 
 log() { echo "$*" >&2; }
 
@@ -128,8 +145,76 @@ jobs_green() {
     END { exit !(gate_seen && shards > 0 && !bad) }'
 }
 
+# Rule R, part 1 (git only, no API): does the tag parent's own detector say
+# parent..tag is version-only? Needs the parent's objects in the checkout
+# (release.yml fetches depth 2). Sets VO_OK=1 and VO_VERSION on yes.
+VO_OK=0
+VO_VERSION=""
+version_only_diff() {
+  local detect
+  case "${TAG_PARENTS:-}" in "" | *" "*) log "rule R: tag commit has ${TAG_PARENTS:-no} parent(s), not one"; return 0 ;; esac
+  detect=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/version-only-diff.XXXXXX") || return 0
+  if ! git show "${TAG_PARENTS}:${DETECTOR_PATH}" >"$detect" 2>/dev/null; then
+    log "rule R: base ${TAG_PARENTS} has no ${DETECTOR_PATH} (or it is not in this checkout)"
+    rm -f "$detect"
+    return 0
+  fi
+  if VO_VERSION=$(bash "$detect" diff "$TAG_PARENTS" "$TAG_SHA"); then
+    VO_OK=1
+    log "rule R: base ${TAG_PARENTS}'s detector says ${TAG_PARENTS}..${TAG_SHA} is version-only (${VO_VERSION})"
+  else
+    log "rule R: base ${TAG_PARENTS}'s detector says ${TAG_PARENTS}..${TAG_SHA} is not version-only"
+  fi
+  rm -f "$detect"
+}
+
+# vo_jobs_green RUN_ID -> 0 when the run is a version-only PR pass: exactly
+# one gate job and one version-only job, both success on the latest attempt,
+# and no shard job that concluded anything but skipped or success.
+vo_jobs_green() {
+  local jobs
+  jobs=$(gh api "repos/${REPO}/actions/runs/$1/jobs?filter=latest&per_page=100" \
+    --jq '.jobs[] | "\(.conclusion // "none")\t\(.name)"') || return 1
+  printf '%s\n' "$jobs" | awk -F'\t' -v gate="$GATE_JOB" -v vo="$VERSION_ONLY_JOB" '
+    $2 == gate { g++; if ($1 != "success") bad = 1 }
+    $2 == vo { v++; if ($1 != "success") bad = 1 }
+    index($2, "Test shard (") == 1 { if ($1 != "skipped" && $1 != "success") bad = 1 }
+    END { exit !(g == 1 && v == 1 && !bad) }'
+}
+
+# base_push_state -> "green URL" | "pending URL" | "none -": the tag parent's
+# push run of go-test.yml on main with the gate and every shard green.
+base_push_state() {
+  local runs id status conclusion head_sha branch path url state="none -"
+  runs=$(runs_for "$TAG_PARENTS" push) || { log "rule R: could not list push runs for base ${TAG_PARENTS}"; echo "none -"; return; }
+  while read -r id status conclusion head_sha branch path url; do
+    [ -n "${id:-}" ] || continue
+    if [ "$head_sha" != "$TAG_PARENTS" ] || [ "$path" != "$WORKFLOW_PATH" ] || [ "$branch" != main ]; then
+      log "rule R: skip base run ${url}: head ${head_sha} branch ${branch} path ${path}"
+      continue
+    fi
+    if [ "$status" != completed ]; then
+      log "rule R: base run ${url} is ${status}"
+      state="pending $url"
+      continue
+    fi
+    if [ "$conclusion" != success ]; then
+      log "rule R: skip base run ${url}: concluded ${conclusion}"
+      continue
+    fi
+    if ! jobs_green "$id"; then
+      log "rule R: skip base run ${url}: the gate job or a shard job did not conclude success"
+      continue
+    fi
+    echo "green $url"
+    return
+  done <<<"$runs"
+  echo "$state"
+}
+
 deadline=$(( $(date +%s) + WAIT_SECONDS ))
 heads=$(same_tree_heads)
+[ -z "$heads" ] || version_only_diff
 while :; do
   pending=""
   # Each candidate: "<sha> <event> <match> <branch the run must be on>"
@@ -163,6 +248,18 @@ while :; do
         continue
       fi
       if ! jobs_green "$id"; then
+        if [ "$match" = same-tree ] && [ "$VO_OK" = 1 ] && vo_jobs_green "$id"; then
+          read -r bstate burl <<<"$(base_push_state)"
+          case "$bstate" in
+            green)
+              answer true "$url" version-only "Reusing ${url} (version-only, rule R): the release PR's version-only check passed on the tree of tag commit ${TAG_SHA} (tree ${TAG_TREE}), its base ${TAG_PARENTS} passed every shard in ${burl}, and the base's detector says the tag changes only the Version line (${VO_VERSION}) and CHANGELOG.md; the release does not run the suite again." ;;
+            pending)
+              pending="$burl"
+              continue ;;
+          esac
+          log "skip run ${url} (version-only): base ${TAG_PARENTS} has no push run with every shard green"
+          continue
+        fi
         log "skip run ${url} (${match}): the gate job or a shard job did not conclude success"
         continue
       fi

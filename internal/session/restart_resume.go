@@ -64,7 +64,7 @@ const restartResumeMaxScan = 1 << 20
 const restartTokenOrphanAge = 24 * time.Hour
 
 // restartBootTimeout is how long the new process has to reach its prompt. It
-// also bounds a fresh-start token's life (fresh_start.go).
+// also bounds a fresh start's wait for its boot to show (fresh_start.go).
 // AGENTDECK_RESTART_BOOT_TIMEOUT overrides it (tests).
 func restartBootTimeout() time.Duration {
 	if d, err := time.ParseDuration(os.Getenv("AGENTDECK_RESTART_BOOT_TIMEOUT")); err == nil && d > 0 {
@@ -665,6 +665,29 @@ var restartSessionStartSince = func(id string, since time.Time) bool {
 		}
 	}
 	return false
+}
+
+// hookHistoryTurnSince reads child id's hook event history from since: seen
+// when it holds a SessionStart, turn when one is neither SessionStart nor
+// SessionEnd (a SessionEnd may be an older process's, landing late) or is a
+// second SessionStart.
+func hookHistoryTurnSince(id string, since time.Time) (turn, seen bool) {
+	starts := 0
+	for _, ev := range restartHookHistory(id) {
+		if ev.At.Before(since) {
+			continue
+		}
+		switch e := strings.TrimSpace(ev.Event); {
+		case strings.EqualFold(e, "SessionStart"):
+			seen = true
+			if starts++; starts > 1 {
+				return true, true
+			}
+		case !strings.EqualFold(e, "SessionEnd"):
+			return true, true
+		}
+	}
+	return false, seen
 }
 
 // restartHistoryClockLag bounds how much later the hook handler's history
