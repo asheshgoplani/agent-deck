@@ -71,7 +71,7 @@ func TestSessionFork_SandboxedPiForkNeverExportsTheSocket(t *testing.T) {
 	}
 
 	local := fork()
-	if !strings.Contains(local.ForkStartCommand, "AGENTDECK_PI_SOCKET=") || !local.PiSocketExported {
+	if !strings.Contains(local.ForkStartCommand, "AGENTDECK_PI_SOCKET=/") || !local.PiSocketExported {
 		t.Fatalf("test setup: a local pi fork must export the socket (flag %v): %q", local.PiSocketExported, local.ForkStartCommand)
 	}
 	sandboxed := fork("--sandbox")
