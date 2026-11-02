@@ -26,6 +26,10 @@ Every one of them is tagged `agent-deck-provider=azure-vm` and
 - `destroy` deletes only resources that carry both tags, the VM first. It
   reads each resource's tags again right before deleting it. If a VM with the
   sandbox's name exists without those tags, it refuses and deletes nothing.
+- `destroy` also fails, deletes nothing and keeps the ssh key when the config
+  (or `az account set`) no longer points at the resource group and
+  subscription the sandbox was made in, so a VM is never left running and
+  billed without its key. Its error names both places.
 - A failed `create` deletes everything it tagged, then its local key.
 
 ### Why one shared resource group

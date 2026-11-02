@@ -16,6 +16,10 @@
 #   FAKE_VM_IP      the VMs' public IP (default 192.0.2.10)
 #   FAKE_AZ_UNTAG_AFTER_LIST  a resource name whose tags are dropped right
 #                   after `resource list` answers (someone retagged it)
+# Resources live in a subscription (--subscription, default all zeros) and
+# a resource group; show and list see only the ones in the asked scope.
+#   FAKE_AZ_DEFAULT_SUB  az's current subscription (`az account set`), used
+#                   when a call has no --subscription
 s="${FAKE_AZ_STATE:?FAKE_AZ_STATE not set}"
 printf '%s\n' "$*" >>"$s/argv.log"
 printf 'AZURE_CONFIG_DIR=%s\n' "${AZURE_CONFIG_DIR:-}" >>"$s/env.log"
@@ -58,10 +62,16 @@ def save():
     with open(path, "w") as fh:
         json.dump(res, fh)
 
-SUB = "/subscriptions/00000000-0000-0000-0000-000000000000"
+DEFAULT_SUB = "00000000-0000-0000-0000-000000000000"
+CURRENT_SUB = os.environ.get("FAKE_AZ_DEFAULT_SUB", DEFAULT_SUB)
+SUBID = opt("--subscription", CURRENT_SUB)
+SUB = "/subscriptions/" + SUBID
 
 def rid(rg, typ, name):
     return "%s/resourceGroups/%s/providers/%s/%s" % (SUB, rg, typ, name)
+
+def in_scope(r, rg):
+    return r.get("subscription", DEFAULT_SUB) == SUBID and r["resourceGroup"] == rg
 
 def tags():
     out = {}
@@ -72,7 +82,7 @@ def tags():
 
 def add(typ, extra=None):
     rg, name = opt("--resource-group"), opt("--name")
-    r = {"id": rid(rg, typ, name), "name": name, "type": typ, "resourceGroup": rg, "tags": tags()}
+    r = {"id": rid(rg, typ, name), "name": name, "type": typ, "resourceGroup": rg, "subscription": SUBID, "tags": tags()}
     r.update(extra or {})
     res.append(r)
     save()
@@ -100,6 +110,11 @@ if w[:1] == ["login"]:
         fail("fake az: login must use --service-principal --password @-")
     with open(os.path.join(s, "login.stdin"), "w") as fh:
         fh.write(sys.stdin.read())
+elif w[:2] == ["account", "show"]:
+    # Only the form the provider uses: the current subscription id.
+    if opt("--query") != "id" or opt("--output") != "tsv":
+        fail("fake az: account show supports only --query id --output tsv")
+    print(CURRENT_SUB)
 elif w[:2] == ["group", "show"]:
     print(json.dumps({"name": opt("--name"), "location": "westeurope"}))
 elif w[:3] == ["network", "nsg", "create"]:
@@ -117,20 +132,20 @@ elif w[:2] == ["vm", "create"]:
     shutil.copyfile(opt("--custom-data"), os.path.join(s, "custom-data"))
     rg, name = opt("--resource-group"), opt("--name")
     disk = {"id": rid(rg, "Microsoft.Compute/disks", opt("--os-disk-name")), "name": opt("--os-disk-name"),
-            "type": "Microsoft.Compute/disks", "resourceGroup": rg, "tags": {}}
+            "type": "Microsoft.Compute/disks", "resourceGroup": rg, "subscription": SUBID, "tags": {}}
     res.append(disk)
     nic = rid(rg, "Microsoft.Network/networkInterfaces", opt("--nics"))
     add("Microsoft.Compute/virtualMachines", {"storageProfile": {"osDisk": {"managedDisk": {"id": disk["id"]}}},
         "cascade": [disk["id"], nic]})
 elif w[:2] == ["vm", "show"]:
     for r in res:
-        if r["type"] == "Microsoft.Compute/virtualMachines" and r["name"] == opt("--name") and r["resourceGroup"] == opt("--resource-group"):
+        if r["type"] == "Microsoft.Compute/virtualMachines" and r["name"] == opt("--name") and in_scope(r, opt("--resource-group")):
             print(json.dumps(vm_view(r)))
             break
     else:
         not_found(opt("--name"))
 elif w[:2] == ["vm", "list"]:
-    print(json.dumps([vm_view(r) for r in res if r["type"] == "Microsoft.Compute/virtualMachines" and r["resourceGroup"] == opt("--resource-group")]))
+    print(json.dumps([vm_view(r) for r in res if r["type"] == "Microsoft.Compute/virtualMachines" and in_scope(r, opt("--resource-group"))]))
 elif w[:3] == ["vm", "run-command", "invoke"]:
     ready = "" if os.environ.get("FAKE_AZ_READY") == "no" else "ready=yes\n"
     msg = "Enable succeeded: \n[stdout]\n" + ready + "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGn3PMci37qtGRr0qkRvnuvhHEkIl6OupFa0wrBJQenu root@vm\n\n[stderr]\n"
@@ -142,7 +157,7 @@ elif w[:2] == ["resource", "tag"]:
     r["tags"] = tags()
     save()
 elif w[:2] == ["resource", "list"]:
-    print(json.dumps([r for r in res if r["resourceGroup"] == opt("--resource-group")]))
+    print(json.dumps([r for r in res if in_scope(r, opt("--resource-group"))]))
     untag = os.environ.get("FAKE_AZ_UNTAG_AFTER_LIST", "")
     for r in res:
         if untag and r["name"] == untag:

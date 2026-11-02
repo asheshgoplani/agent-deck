@@ -701,3 +701,91 @@ func azNoTokenUnder(t *testing.T, root, skip string) {
 		t.Fatal(walkErr)
 	}
 }
+
+// TestAzureExampleProvider_DestroyFailsLoudlyWhenPlacementChanged: when the
+// config (or az's current subscription) no longer points where the sandbox
+// was made, destroy finds nothing there. It must not say ok and drop the
+// only ssh key while the VM keeps running (and billing) where it was made.
+func TestAzureExampleProvider_DestroyFailsLoudlyWhenPlacementChanged(t *testing.T) {
+	const otherSub = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	cases := []struct {
+		name, conf, env, want string
+		dropPlacement         bool
+	}{
+		{name: "resource group changed", conf: "resource_group = other-group\nssh_source = 100.64.0.0/10\n", want: "other-group"},
+		{name: "subscription changed", conf: azBaseConf("subscription = " + otherSub + "\n"), want: otherSub},
+		{name: "az current subscription switched", conf: azBaseConf(""), env: "FAKE_AZ_DEFAULT_SUB=" + otherSub, want: otherSub},
+		{name: "older key dir without a placement record", conf: "resource_group = other-group\nssh_source = 100.64.0.0/10\n", want: "other-group", dropPlacement: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newAzWorld(t, azBaseConf(""))
+			stdout, stderr, err := w.run(t, "create", azCreateReq)
+			if err != nil {
+				t.Fatalf("create failed: %v\n%s", err, stderr)
+			}
+			sb := azCreated(t, stdout)
+			keyDir := filepath.Dir(sb.Auth.KeyPath)
+			if tc.dropPlacement {
+				_ = os.Remove(filepath.Join(keyDir, "placement"))
+			}
+			before := len(w.resources(t))
+			if err := os.WriteFile(w.conf, []byte(tc.conf), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.env != "" {
+				w.extraEnv = []string{tc.env}
+			}
+			destroyReq := `{"protocol":1,"action":"destroy","id":"` + sb.ID + `"}`
+			stdout, stderr, err = w.run(t, "destroy", destroyReq)
+			if err == nil || strings.Contains(stdout, `"ok":true`) {
+				t.Fatalf("destroy said ok while the VM still runs elsewhere: err %v stdout %q\n%s", err, stdout, stderr)
+			}
+			for _, want := range []string{sb.ID, tc.want, keyDir} {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("destroy error does not name %q:\n%s", want, stderr)
+				}
+			}
+			if _, err := os.Stat(sb.Auth.KeyPath); err != nil {
+				t.Fatalf("the only ssh key was removed: %v", err)
+			}
+			if got := len(w.resources(t)); got != before {
+				t.Fatalf("resources changed: %d, want %d", got, before)
+			}
+			// Pointed back where it was made, destroy removes everything.
+			if err := os.WriteFile(w.conf, []byte(azBaseConf("")), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			w.extraEnv = nil
+			if _, stderr, err := w.run(t, "destroy", destroyReq); err != nil {
+				t.Fatalf("destroy after the config was put back: %v\n%s", err, stderr)
+			}
+			if rs := w.resources(t); len(rs) != 0 {
+				t.Fatalf("resources left: %+v", rs)
+			}
+			if _, err := os.Stat(keyDir); !os.IsNotExist(err) {
+				t.Fatalf("key dir %s not removed after a real destroy", keyDir)
+			}
+		})
+	}
+}
+
+// TestAzureExampleProvider_DestroyForgetsAVMDeletedByHand: where the
+// sandbox was made (same group and subscription) nothing is left, so destroy
+// is done and removes the key.
+func TestAzureExampleProvider_DestroyForgetsAVMDeletedByHand(t *testing.T) {
+	w := newAzWorld(t, azBaseConf(""))
+	stdout, stderr, err := w.run(t, "create", azCreateReq)
+	if err != nil {
+		t.Fatalf("create failed: %v\n%s", err, stderr)
+	}
+	sb := azCreated(t, stdout)
+	w.seed(t, []azResource{})
+	stdout, stderr, err = w.run(t, "destroy", `{"protocol":1,"action":"destroy","id":"`+sb.ID+`"}`)
+	if err != nil || strings.TrimSpace(stdout) != `{"protocol":1,"ok":true}` {
+		t.Fatalf("destroy: %v %q\n%s", err, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Dir(sb.Auth.KeyPath)); !os.IsNotExist(err) {
+		t.Fatal("key dir not removed")
+	}
+}

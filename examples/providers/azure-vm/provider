@@ -57,7 +57,8 @@
 # custom-data, tags, argv or a log. Nothing secret is printed.
 #
 # Local state: per sandbox a 0700 dir <state>/<id>.XXXXXXXX (mktemp) with a
-# fresh ed25519 key (0600) and the VM's host key. <state> is
+# fresh ed25519 key (0600), the VM's host key and a "placement" record of
+# the resource group and subscription it was made in. <state> is
 # AGENTDECK_AZURE_STATE_DIR, default
 # ${XDG_STATE_HOME:-$HOME/.local/state}/agent-deck/azure-vm.
 set -euo pipefail
@@ -604,6 +605,21 @@ azc() {
 	fi
 }
 
+# effective_sub: the subscription az works in: the configured one, else
+# az's current one.
+effective_sub() {
+	local sub
+	if [ -n "${C_SUB:-}" ]; then
+		printf '%s' "$C_SUB"
+		return 0
+	fi
+	sub="$(az account show --query id --output tsv --only-show-errors)" ||
+		die "az account show failed; set subscription in the config"
+	sub="$(printf '%s' "$sub" | tr -d '\r\n')"
+	[[ "$sub" =~ ^[0-9a-fA-F-]{36}$ ]] || die "az account show returned no usable subscription id"
+	printf '%s' "$sub"
+}
+
 # with_deadline <seconds> cmd...: run cmd, killed after <seconds> when
 # timeout (or gtimeout on macOS) exists.
 with_deadline() {
@@ -633,6 +649,8 @@ destroy_resources() {
 	rc=0
 	plan="$(py destroyplan "$id" <"$WORK/resources.json")" || rc=$?
 	[ "$rc" -eq 0 ] || exit "$rc"
+	DESTROY_PLANNED=0
+	[ -z "$plan" ] || DESTROY_PLANNED="$(printf '%s\n' "$plan" | wc -l | tr -d ' ')"
 	for rid in $plan; do
 		if ! azc resource show --ids "$rid" --output json >"$WORK/one.json" 2>"$WORK/one.err"; then
 			if grep -qiE 'not ?found|ResourceNotFound|could not be found' "$WORK/one.err"; then
@@ -659,7 +677,7 @@ remove_keydir() {
 	adk-??????????.*) ;;
 	*) return 0 ;;
 	esac
-	for f in id_ed25519 id_ed25519.pub host_key.pub known_hosts; do
+	for f in id_ed25519 id_ed25519.pub host_key.pub known_hosts placement; do
 		rm -f -- "$dir/$f"
 	done
 	rmdir -- "$dir" 2>/dev/null || true
@@ -775,6 +793,11 @@ do_create() {
 		C_LOCATION="$(py location <"$WORK/group.json")"
 	fi
 
+	# Where this sandbox lives, so destroy can tell a changed config from a
+	# sandbox that is gone.
+	printf 'resource_group=%s\nsubscription=%s\n' "$C_RG" "$(effective_sub)" >"$CREATE_KEYDIR/placement"
+	chmod 0600 "$CREATE_KEYDIR/placement"
+
 	# From here on every resource carries our tags, so a failure rolls back
 	# exactly what this run made.
 	CREATE_ID="$id"
@@ -881,14 +904,32 @@ do_status() {
 	py vmone "$id" <"$WORK/vm.json"
 }
 
+# placement_of <keydir> <key>: a value from the key dir's placement record.
+placement_of() {
+	[ -f "$1/placement" ] && [ ! -L "$1/placement" ] || return 0
+	sed -n "s/^$2=//p" "$1/placement" | head -n 1
+}
+
 do_destroy() {
-	local id="$1"
+	local id="$1" keydir sub made_rg made_sub
 	load_config
 	make_work
 	trap on_exit EXIT
 	az_login
+	keydir="$(keydir_of "$id")"
+	sub="$(effective_sub)"
+	if [ -n "$keydir" ] && [ -f "$keydir/placement" ]; then
+		made_rg="$(placement_of "$keydir" resource_group)"
+		made_sub="$(placement_of "$keydir" subscription)"
+		if [ "$made_rg" != "$C_RG" ] || [ "$made_sub" != "$sub" ]; then
+			die "not destroying $id: it was made in resource group $made_rg, subscription $made_sub, but the config now points at resource group $C_RG, subscription $sub. Nothing was deleted and its ssh key stays in $keydir; the VM may still be running (and billed) there. Set resource_group and subscription back (or az account set --subscription $made_sub) and run destroy again."
+		fi
+	fi
 	destroy_resources "$id"
-	remove_keydir "$(keydir_of "$id")"
+	if [ "$DESTROY_PLANNED" -eq 0 ] && [ -n "$keydir" ] && [ ! -f "$keydir/placement" ]; then
+		die "not finishing destroy of $id: nothing tagged agent-deck-sandbox=$id is in resource group $C_RG, subscription $sub, but its ssh key is still in $keydir, so it may live elsewhere (still running and billed). Check where it was made: if resource_group or subscription changed, set it back and run destroy again; if you deleted the VM yourself, remove $keydir and run destroy again. Nothing was deleted."
+	fi
+	remove_keydir "$keydir"
 	printf '{"protocol":1,"ok":true}\n'
 }
 
