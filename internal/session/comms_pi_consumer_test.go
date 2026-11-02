@@ -26,7 +26,8 @@ func newPiParentFixture(t *testing.T) *deliverFixture { return newPiParentFixtur
 func newPiParentFixtureIn(t *testing.T, profile string) *deliverFixture {
 	t.Helper()
 	f := &deliverFixture{commsFixture: newCommsFixture(t), clock: time.Now(), profile: profile}
-	f.parent.Tool = "pi"
+	// A listed pi parent whose launch exported the socket: only such a pi enrols.
+	f.parent.Tool, f.parent.PiSocketExported = "pi", true
 	if profile != "" {
 		f.parent.ID, f.parent.Title = "pi-"+profile, "conductor-"+profile
 		f.child.ID, f.child.ParentSessionID = "kid-"+profile, f.parent.ID
@@ -149,9 +150,16 @@ func (f *deliverFixture) promptEdge(t *testing.T, prompt, nonce string) {
 
 func TestCommsConsumes_ListedPiParentEnrols(t *testing.T) {
 	pi := NewInstanceWithTool("pi-parent", t.TempDir(), "pi")
+	pi.PiSocketExported = true
 	for _, list := range [][]string{{"*"}, {pi.ID}, {"pi-parent"}} {
 		if !commsConsumes(pi, list, map[string]int{"pi-parent": 1}) {
-			t.Errorf("a pi session listed by %v is not a ledger consumer", list)
+			t.Errorf("a socket-exported pi session listed by %v is not a ledger consumer", list)
+		}
+	}
+	pi.PiSocketExported = false
+	for _, list := range [][]string{{"*"}, {pi.ID}, {"pi-parent"}} {
+		if commsConsumes(pi, list, map[string]int{"pi-parent": 1}) {
+			t.Errorf("a pi session listed by %v whose launch exported no socket is a ledger consumer", list)
 		}
 	}
 	f := newPiParentFixture(t)

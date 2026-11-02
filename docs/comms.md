@@ -546,8 +546,18 @@ line only, through the same `session send --no-wait` the inbox wake uses).
 
 ### A listed pi parent
 
-A pi parent listed in `consumers` (pi >= 1.2.0, `agent-deck pi-hooks install`
-at extension v5) is enrolled like a Claude one (marker `tool: pi`). Pi has two
+A pi parent listed in `consumers` is enrolled like a Claude one (marker
+`tool: pi`) once its launch exported a socket path in `AGENTDECK_PI_SOCKET`
+(below: pi >= 1.2.0, `agent-deck pi-hooks install` at extension v5, a local
+launch); the daemon reads that from the persisted launch decision
+(`PiSocketExported`). A listed pi launched without it is not enrolled and keeps
+the inbox path with typed wakes, as before. `pi-hooks status` shows whether a
+local launch made now would export the socket and, if not, why; it does not
+say why a given session's launch did not (an SSH or sandboxed launch, or one
+made before the upgrade), though a local launch that left it off logged one
+`pi_wake_socket off` line with its reason. A listed pi relaunched without it is
+drained like a parent that left the list, and enrolled again once a launch
+exports the socket. Pi has two
 facilities that make it a full consumer: `before_agent_start`, which lets the
 extension return a message that joins the run's context, and
 `pi.sendMessage(..., {triggerTurn: true})`, which starts a run without
@@ -556,7 +566,7 @@ touching the editor.
 | | Claude parent | pi parent |
 |---|---|---|
 | Prompt-time context | `UserPromptSubmit` JSON envelope | `before_agent_start`: `hook-handler` prints plain text, the extension returns it as the run's message |
-| Wake | typed line (`session send --no-wait`) | a doorbell frame on the extension's unix socket; typed only as a fallback, below |
+| Wake | typed line (`session send --no-wait`) | a doorbell frame on the extension's unix socket; typed only while a marker drains after a launch without the socket, below |
 | Acknowledged by | the prompt names the record ids | the run that carries the doorbell's nonce (the hook), never the socket reply |
 | Injection accepted | when the hook printed it | when the extension echoes the delivery token (below), never on print |
 | Preview acks | no (injected whole) | no (injected whole) |
@@ -568,8 +578,9 @@ left alone, and its wakes stay typed as before.
 **The doorbell.** The launch exports a socket path in `AGENTDECK_PI_SOCKET`
 only when `pi --version` (run on the launch's own PATH, every launch) is at
 least 1.2.0 and the extension is current; otherwise a local launch sets it empty
-(so a pane cannot inherit one), and one `pi_wake_socket off` line says why and
-`agent-deck pi-hooks status` prints the same reason. The extension check reads
+(so a pane cannot inherit one), and one `pi_wake_socket off` line says why;
+`agent-deck pi-hooks status` runs the same checks for a launch made now, on the
+profile's path and the spawn PATH. The extension check reads
 the command's own `PI_CODING_AGENT_DIR` when it sets one, else agent-deck's. A
 wake is one NDJSON frame
 `{"v":1,"id":<nonce>,"line":<wake line>,"ids":[<record ids>]}`. The nonce is a
