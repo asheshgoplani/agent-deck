@@ -633,7 +633,7 @@
           "confirmation[`\\\"\\s:]*(is |=|stays |reads |of )?[`\\\"]?unknown"
         ],
         "must_not": [
-          "(?m)^(?![^\\n]*\\b(never|not|don't|do not|avoid|no|instead|skip|without|rather than|unless)\\b)[^\\n]*\\b(re-?send|send it again|retry the send)\\b"
+          "(?m)^(?![^\\n]*\\b(never|not|don't|do not|avoid|no|instead|skip|without|rather than|unless|blind)\\b)[^\\n]*\\b(re-?send|send it again|retry the send)\\b"
         ]
       }
     },
@@ -686,7 +686,8 @@
           "agent-deck launch",
           "--inherit-group",
           "session children",
-          "--until-done"
+          "--until-done",
+          "(run|start)\\w*[^\\n]{0,30}in the background|run_in_background"
         ],
         "must_not": [
           "agent-deck launch [^\\n]*\\s(-g|--group)\\s"
@@ -939,7 +940,8 @@
         "must": [
           "export\\.sh[^\\n]*--session",
           "--no-start",
-          "import\\.sh"
+          "import\\.sh",
+          "project('s)? dir(ectory)?"
         ],
         "must_not": []
       }
@@ -961,7 +963,7 @@
         "must": [
           "agent-deck session",
           "--session",
-          "active Claude|send a message"
+          "active Claude|active conversation|send (it )?(a|at least one) message"
         ],
         "must_not": []
       }
@@ -1028,7 +1030,7 @@
       "checks": {
         "must": [
           "synthetic",
-          "user files|you file|pause for the user|returned issue",
+          "user files|you file|file it yourself|pause for the user|returned issue|share the issue URL",
           "embedded|not permission|evidence, not|not (a )?(command|instruction)"
         ],
         "must_not": []
@@ -1112,7 +1114,7 @@
           "session annotate",
           "--outcome",
           "--decision",
-          "\\[recall\\]|recall (is )?(on|off|enabled)"
+          "regardless|enabled\\s*=\\s*false|even (with|when|if)[^\\n]{0,40}(off|disabled|false)|(without|independent of)[^\\n]{0,20}\\[recall\\]"
         ],
         "must_not": []
       }
@@ -1143,7 +1145,7 @@
           "recall search[^\\n]*--harness codex",
           "--into current",
           "enabled\\s*=\\s*true",
-          "recall open|not resum|n't (be )?resum"
+          "searchable,? (but )?not resumable|(open|it)[^\\n]{0,30}exits? 2"
         ],
         "must_not": []
       }
@@ -1371,7 +1373,8 @@
           "omit|absen(t|ce)[^\\n]{0,40}(none|not)|not (confirmed )?healthy|healthy-confirmed|not confirm"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 30,
@@ -1525,7 +1528,7 @@
       "checks": {
         "must": [
           "unset-parent|update [^\\n]*--no-parent",
-          "restart"
+          "add-dir[^\\n]{0,80}restart|restart[^\\n]{0,80}add-dir|(grant|add-dir)[^\\n]{0,60}(gone|removed|dropped|cleared)"
         ],
         "must_not": []
       }
@@ -1593,7 +1596,7 @@
         "must": [
           "session command",
           "/model",
-          "(never|don.t|do not)\\W+(use\\W+|via\\W+)?.?session send",
+          "\\b(never|don.t|do not|not)\\W+(use\\W+|via\\W+)?.?session send",
           "picker"
         ],
         "must_not": [
@@ -1639,7 +1642,7 @@
         "must": [
           "frozen-lockfile",
           "inherit",
-          "regenerat|first instruction|before (any|the first|running)"
+          "never regenerat|not regenerat|don.t regenerat|without regenerat|first instruction"
         ],
         "must_not": [
           "(?m)^(?![^\\n]*\\b(never|not|don't|do not|avoid|no|instead|skip|without|rather than|unless)\\b)[^\\n]*agent-deck launch[^\\n]*\\s(-g|--group)\\s"
@@ -1662,7 +1665,7 @@
         "must": [
           "singleton|shared|single resource",
           "own (DB|database)|isolated",
-          "one\\W+coherent session"
+          "one\\W+coherent session|run\\W+one\\W+session"
         ],
         "must_not": []
       }
@@ -1734,7 +1737,7 @@
     {
       "id": 46,
       "prompt": "Route GitHub webhook events from my repo into my conductor.",
-      "expected_output": "Creates a github watcher (`agent-deck watcher create github --name <n> --secret <s>`), starts it and verifies it with `watcher test`, optionally using the watcher-creator skill to set up clients.json routing.",
+      "expected_output": "Creates a github watcher with the secret from `$GITHUB_WEBHOOK_SECRET` or `--secret-file <chmod-600 file>` (`GITHUB_WEBHOOK_SECRET=<s> agent-deck watcher create github --name <n>`; an inline `--secret` is refused), starts it and verifies it with `watcher test`, optionally using the watcher-creator skill to set up clients.json routing.",
       "files": [],
       "area": "core",
       "promises": [
@@ -1747,11 +1750,14 @@
       "checks": {
         "must": [
           "watcher create",
-          "--secret",
+          "GITHUB_WEBHOOK_SECRET|--secret-file",
           "watcher test|install-skill watcher-creator"
         ],
-        "must_not": []
-      }
+        "must_not": [
+          "(?m)^(?![^\\n]*\\b(never|not|don't|do not|avoid|instead|refuse[sd]?|rather than|deprecated)\\b)[^\\n]*watcher create github[^\\n]*--secret[ =](?!file)\\S"
+        ]
+      },
+      "help_answerable": true
     },
     {
       "id": 47,
@@ -2066,7 +2072,7 @@
           "remote update",
           "--from-build",
           "checksum",
-          "downgrade guard"
+          "downgrade guard|downgrades?[^\\n]{0,60}(refused|blocked|rejected)|refuses?[^\\n]{0,30}downgrade"
         ],
         "must_not": []
       }
@@ -2243,7 +2249,8 @@
           "Imported:"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 69,
@@ -2259,7 +2266,7 @@
       ],
       "checks": {
         "must": [
-          "review|scan",
+          "review|scan|read (it |the file )?through|inspect the (file|export)",
           "Slack DM|AirDrop|direct transfer",
           "delete"
         ],
@@ -2337,7 +2344,7 @@
     },
     {
       "id": 73,
-      "prompt": "Write the repro.sh contract for `scripts/repro/run.py`: what does the script receive and what should its exit codes mean?",
+      "prompt": "Write the repro.sh contract for `scripts/repro/run.py`: how do I invoke the runner on it, what does the script receive and what should its exit codes mean?",
       "expected_output": "The script receives the binary path as $1; exit 0 = expected behaviour holds, 1 = the specific defect observed, 2+ = setup/harness error; check every setup step and never map arbitrary nonzero exits to 1; run via `run.py --image <digest> --binary --script --fixtures --out --timeout`.",
       "files": [],
       "area": "repro",
@@ -2579,14 +2586,15 @@
         "must": [
           "memory_limit",
           "Docker Desktop",
-          "docker stats"
+          "docker stats",
+          "2\\s?GB"
         ],
         "must_not": []
       }
     },
     {
       "id": 84,
-      "prompt": "Remove the `why` hint from session auth-fix; I don't want it on the recall card any more.",
+      "prompt": "Remove the `why` hint from session auth-fix; I don't want it on the recall card any more. Does recall pick up the removal right away?",
       "expected_output": "Runs `agent-deck session annotate auth-fix --unset why` (hints live in state.db; the removal reaches recall on the next sweep); verify with `session annotate auth-fix --json`.",
       "files": [],
       "area": "recall",
@@ -2601,7 +2609,7 @@
         "must": [
           "session annotate",
           "--unset",
-          "next sweep"
+          "next (recall )?sweep"
         ],
         "must_not": []
       },
@@ -2699,7 +2707,8 @@
         "must_not": [
           "(?m)^(?![^\\n]*\\b(never|not|don't|avoid)\\b)[^\\n]*tmux kill-server"
         ]
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 89,
@@ -2720,7 +2729,8 @@
           "fleet recover"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 90,
@@ -2737,7 +2747,7 @@
       ],
       "checks": {
         "must": [
-          "press\\s+`?V`?|`V`\\s*(copies|to copy|:|-)",
+          "press\\s+`?V`?|`V`\\s*(copies|to copy|:|-)|\\bV\\s*=\\s*copy",
           "Shift",
           "mouse\\s*=\\s*false"
         ],
@@ -2853,7 +2863,7 @@
           "groups\\.\"?work\"?\\.claude",
           "config_dir",
           "group show work --resolved",
-          "inherit|ancestor"
+          "inherit|ancestor|subtree|nested groups"
         ],
         "must_not": []
       }
@@ -2963,7 +2973,7 @@
       "checks": {
         "must": [
           "\\bunique\\b|exactly one",
-          "error (that )?list|listing (both|them)|lists? (them|both|each|the (matching )?groups)|ambiguous",
+          "error (that )?list|errors? and lists|listing (both|them)|lists? (them|both|each|the (matching )?groups)|ambiguous",
           "unknown name|as typed|doesn.t exist|not exist|matches no group|no group (is )?(called|named)"
         ],
         "must_not": []
@@ -2987,7 +2997,7 @@
         "must": [
           "\\bunique\\b|exactly one|only (one )?group|single",
           "error (that )?list|listing (both|them)|lists? (them|both|each|the (matching )?groups)|ambiguous",
-          "parent.s group|unknown name|created as typed"
+          "parent.s (\\(\\S+\\) )?group|unknown name|(created|name) (exactly )?as typed"
         ],
         "must_not": []
       },
@@ -3061,7 +3071,8 @@
         ],
         "must_not": []
       },
-      "regression": "0682675b fix(inbox): say when no notify-daemon is running in drain and the fleet line (#2834) (#2863)"
+      "regression": "0682675b fix(inbox): say when no notify-daemon is running in drain and the fleet line (#2834) (#2863)",
+      "help_answerable": true
     },
     {
       "id": 105,
@@ -3232,7 +3243,8 @@
           "one-shot|no ongoing link"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 113,
@@ -3318,7 +3330,8 @@
           "context7"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 117,
@@ -3364,7 +3377,8 @@
           "claude"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 119,
@@ -3626,7 +3640,7 @@
         "must": [
           "sanitize\\.py",
           "Recurring issues",
-          "unknown labels|strips? unknown"
+          "unknown labels|strips? unknown|(drops?|filters? out|removes?) (the )?unknown (ones|labels)"
         ],
         "must_not": []
       }
@@ -3652,7 +3666,8 @@
         "must_not": [
           "(?m)^(?![^\\n]*\\b(never|not|\\w+n't|cannot|don't|avoid|no|without|instead)\\b)[^\\n]*\\bdelete (the |your |all )?(40 )?skills"
         ]
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 131,
@@ -3806,7 +3821,7 @@
         "must": [
           "fix/",
           "watch it fail|fails? on the (affected|unfixed)",
-          "not (a )?reproduc",
+          "not (a )?reproduc|reproduced\\?\\W*No\\b|harness (error|failure),? not the bug",
           "same reproduction"
         ],
         "must_not": []
@@ -4058,7 +4073,7 @@
       ],
       "checks": {
         "must": [
-          "created and started",
+          "created\\W+and\\W+started",
           "interactive terminal|tty",
           "attach later|session attach"
         ],
@@ -4107,7 +4122,8 @@
           "conversation"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 151,
@@ -4128,7 +4144,8 @@
           "raw|unsent"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 152,
@@ -4338,7 +4355,7 @@
         "must": [
           "Waiting",
           "Idle",
-          "tmux session doesn.t exist",
+          "tmux session (\\w+ ){0,2}doesn.t exist",
           "background-work|background"
         ],
         "must_not": []
@@ -4406,7 +4423,7 @@
         "must": [
           "✕[^\\n]{0,80}start|error[^\\n]{0,60}session start|session start <(name|id|session)",
           "Ctrl\\+R",
-          "before or after|moves (flags|them) into place|both (forms|commands|of these|orders?) (send|work)|either order|order doesn.t matter"
+          "before or after|moves (flags|them) into place|both (forms|commands|of these|orders?) (send|work)|either order|order doesn.t matter|accepts flags after"
         ],
         "must_not": [
           "(?m)^(?![^\\n]*\\b(never|not|don't|do not|avoid|no|instead|rather)\\b)[^\\n]*(flags?|-m)[^\\n]{0,40}after[^\\n]{0,40}(ignored|dropped|swallowed)"
@@ -4433,7 +4450,8 @@
           "claude_session_id"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 166,
@@ -4450,7 +4468,8 @@
       "checks": {
         "must": [
           "atuin init zsh|atuin init",
-          "alternate screen|raw[- ]mode|Bubble Tea|direct terminal"
+          "alternate screen|raw[- ]mode|Bubble Tea|direct terminal",
+          "overlay|atuin init fish"
         ],
         "must_not": []
       }
@@ -4631,7 +4650,8 @@
           "CLAUDE_CONFIG_DIR|first-last"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 175,
@@ -4739,7 +4759,8 @@
           "claude[^\\n]{0,80}(agent|workflow)"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 180,
@@ -4756,7 +4777,7 @@
       "checks": {
         "must": [
           "supported|each (can )?pair|own bot",
-          "<name>/|conductor/\\S+/",
+          "<\\w*name>/|conductor/\\S+/",
           "state\\.json"
         ],
         "must_not": []
@@ -4819,7 +4840,7 @@
       ],
       "checks": {
         "must": [
-          "indeterminate",
+          "indeterminate|\\b5\\b[^\\n]{0,60}nothing (could be )?grad(ed|able)",
           "4[^\\n]{0,40}drift|drift[^\\n]{0,20}\\b4\\b",
           "invariant|reconciliation"
         ],
@@ -4867,11 +4888,12 @@
         "must": [
           "groups\\.[\"<]?[\\w-]+[\">]?\\.claude",
           "switch-account",
-          "new sessions",
+          "new sessions|every new session",
           "--resume|\\.jsonl"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 186,
@@ -4938,7 +4960,7 @@
     },
     {
       "id": 189,
-      "prompt": "My agent-deck PR runs `exec.Command(\"sh\", \"-c\", \"git -C \" + dir + \" status\")` and the security self-scan grep flags it. What form will review accept?",
+      "prompt": "My agent-deck PR runs `exec.Command(\"sh\", \"-c\", \"git -C \" + dir + \" status\")` and the security self-scan grep flags it. Why is that flagged, and what form will review accept?",
       "expected_output": "Building a shell string for exec is the classic injection surface: validate arguments and pass them via argv (e.g. exec.Command(\"git\", \"-C\", dir, \"status\")) or STDIN, never a shell-interpolated string; paths get shell-quoted and traversal-guarded (reject .. and separators). Each remaining hit needs one sentence in the PR body.",
       "files": [],
       "area": "contributing",
@@ -4953,11 +4975,11 @@
       "checks": {
         "must": [
           "argv|STDIN",
-          "injection",
+          "injection|containing[^\\n]{0,40}(;|\\$\\()[^\\n]{0,40}(is|gets) (executed|run)",
           "traversal"
         ],
         "must_not": [
-          "(?m)^(?![^\\n]*\\b(never|not|\\w+n't|cannot|don't|avoid|no|without|instead)\\b)[^\\n]*exec\\.Command\\([^\\n]*\\\"(ba|z)?sh\\\",\\s*\\\"-c\\\""
+          "(?m)^(?![^\\n]*\\b(never|not|\\w+n't|cannot|don't|avoid|no|without|instead|flags?|flagged)\\b)[^\\n]*exec\\.Command\\([^\\n]*\\\"(ba|z)?sh\\\",\\s*\\\"-c\\\""
         ]
       }
     },
@@ -4998,7 +5020,7 @@
       ],
       "checks": {
         "must": [
-          "means unknown|is unknown|unknown, not",
+          "means\\W{0,3}unknown|is unknown|unknown, not|(absent|missing) field as\\W{0,3}unknown",
           "never (inspects|scans)|does(n.t| not) (inspect|scan)",
           "controller|owns the session|host that owns"
         ],
@@ -5126,8 +5148,8 @@
       ],
       "checks": {
         "must": [
-          "never retried|not (be )?retried|won.t (be )?retr|will not retr|no retry",
-          "double delivery|delivered twice|duplicate",
+          "never retri(ed|es)|not (be )?retried|won.t (be )?retr|will not retr|no retry",
+          "double delivery|deliver(ed|ing) twice|duplicate",
           "no (in-band )?ack|not acknowledged|acknowledg\\w* (is )?(never|not)|nothing confirms"
         ],
         "must_not": []
@@ -5216,7 +5238,8 @@
           "legacy[^\\n]{0,60}(active|used|wins)|(active|uses?|used)[^\\n]{0,40}legacy"
         ],
         "must_not": []
-      }
+      },
+      "help_answerable": true
     },
     {
       "id": 202,
@@ -5299,7 +5322,7 @@
       "checks": {
         "must": [
           "\\[tmux\\.options\\]|\\[tmux\\][^\\n]{0,40}options",
-          "opts? out|explicit entry"
+          "opts?[ -]out|explicit (`[^`]+` )?entry"
         ],
         "must_not": []
       }
@@ -5320,7 +5343,7 @@
         "must": [
           "twin",
           "Latin",
-          "explicit[^\\n]{0,60}(wins|beats)|always (wins|beats)|wins over"
+          "explicit[^\\n]{0,60}(wins|beats|takes priority)|always (wins|beats|takes priority)|wins over"
         ],
         "must_not": []
       }
