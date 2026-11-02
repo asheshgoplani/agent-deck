@@ -903,8 +903,8 @@ func TestInboxNudge_PiParentRidesTheSocketOnAllThreeDoorbellPaths(t *testing.T) 
 		return TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: "kid", Profile: "default", ToStatus: "waiting",
 			TargetSessionID: f.parent.ID, TargetKind: "parent", Tier: TurnTierUrgent, Text: "inbox result", Timestamp: time.Now()}
 	}
-	paths := map[string]func(f *deliverFixture, e TransitionNotificationEvent) *TransitionNotifier{
-		"the daemon's default wiring": func(f *deliverFixture, e TransitionNotificationEvent) *TransitionNotifier {
+	paths := map[string]func(t *testing.T, f *deliverFixture, e TransitionNotificationEvent) *TransitionNotifier{
+		"the daemon's default wiring": func(_ *testing.T, f *deliverFixture, e TransitionNotificationEvent) *TransitionNotifier {
 			w := defaultWakeNudgeWiring()
 			w.isIdle = func(*Instance, string) bool { return true }
 			w.nudger = NewWakeNudger(0)
@@ -912,7 +912,7 @@ func TestInboxNudge_PiParentRidesTheSocketOnAllThreeDoorbellPaths(t *testing.T) 
 			n.fireWakeNudge(f.parent, e)
 			return n
 		},
-		"the remote talkback scheduler": func(f *deliverFixture, e TransitionNotificationEvent) *TransitionNotifier {
+		"the remote talkback scheduler": func(_ *testing.T, f *deliverFixture, e TransitionNotificationEvent) *TransitionNotifier {
 			w := defaultWakeNudgeWiring()
 			w.isIdle = func(*Instance, string) bool { return true }
 			w.nudger = NewWakeNudger(0)
@@ -920,7 +920,7 @@ func TestInboxNudge_PiParentRidesTheSocketOnAllThreeDoorbellPaths(t *testing.T) 
 			f.d.newRemoteTalkbackScheduler().alert("r1", remoteTalkbackTarget{Parent: f.parent, Profile: "default"}, "remote r1 talkback failing", time.Now())
 			return f.d.notifier
 		},
-		"the CLI drain's remoteWakeWiring": func(f *deliverFixture, e TransitionNotificationEvent) *TransitionNotifier {
+		"the CLI drain's remoteWakeWiring": func(t *testing.T, f *deliverFixture, e TransitionNotificationEvent) *TransitionNotifier {
 			orig := remoteWakeWiring
 			t.Cleanup(func() { remoteWakeWiring = orig })
 			remoteWakeWiring = func() *wakeNudgeWiring {
@@ -936,7 +936,7 @@ func TestInboxNudge_PiParentRidesTheSocketOnAllThreeDoorbellPaths(t *testing.T) 
 	for name, ring := range paths {
 		t.Run("pi via "+name, func(t *testing.T) {
 			w := newPiWakeFixture(t, replyWith("submitted"))
-			n := ring(w.deliverFixture, ev(w.deliverFixture))
+			n := ring(t, w.deliverFixture, ev(w.deliverFixture))
 			if n != nil {
 				defer n.Flush()
 			}
@@ -953,7 +953,7 @@ func TestInboxNudge_PiParentRidesTheSocketOnAllThreeDoorbellPaths(t *testing.T) 
 			origPath := piWakeSocketFor
 			t.Cleanup(func() { piWakeSocketFor = origPath })
 			piWakeSocketFor = func(string, string) string { return ext.path }
-			n := ring(f, ev(f))
+			n := ring(t, f, ev(f))
 			if n != nil {
 				defer n.Flush()
 			}
