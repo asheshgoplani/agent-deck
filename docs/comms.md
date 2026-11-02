@@ -332,7 +332,9 @@ measurement rows and never delivered.
 
 State: `<ledger>/cursors/<consumer>.json` holds the P0 `ConsumerState`
 (watermark plus sparse acknowledgements, store, epoch, generation) and
-the last pass (`through`, `pending`, `gaps`). Every read-modify-write runs
+the last pass (`through`, `pending`, `gaps`, `judged`; only the daemon's
+delivery pass sets `judged`, the last cursor it judged, which the fast path
+compares with the pending flag). Every read-modify-write runs
 under `<consumer>.lock` (flock, 5 s wait), so the prompt hook, the Stop
 hook, `msg read|ack` and the daemon never lose each other's
 acknowledgements. A pass reads the log from the watermark, moves the

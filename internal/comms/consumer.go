@@ -106,6 +106,11 @@ type ConsumerFile struct {
 	// pending flag they let a caller skip a pass that would find nothing.
 	Through events.Cursor `json:"through,omitempty"`
 	Pending int           `json:"pending"`
+	// Judged is the last ledger cursor the daemon's delivery pass judged. Any
+	// other pass (a hook, a receipt, a prompt's ack, `msg read`) also moves
+	// Through, over records it did not judge, so the delivery pass skips a
+	// parent only when nothing is newer than Judged.
+	Judged events.Cursor `json:"judged,omitempty"`
 	// Gaps are the explicit losses this consumer was told about (newest
 	// last, bounded): records compacted before it read them, or a ledger
 	// reset or restore that invalidated its position.
@@ -417,7 +422,7 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 		// reported. A watermark still inside the log is kept.
 		resume := min(f.Watermark, end, events.Cursor(r.Store.HWM))
 		note := GapNote{Gap: Gap{Consumer: consumer, From: resume + 1, To: max(f.Watermark, f.Through)}, Reason: "restored", Resumed: resume, At: now.UnixMilli()}
-		f.Watermark, f.Through = resume, resume
+		f.Watermark, f.Through, f.Judged = resume, resume, min(f.Judged, resume)
 		kept := f.Acked[:0]
 		for _, a := range f.Acked {
 			if a <= resume {
