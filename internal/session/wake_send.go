@@ -461,6 +461,10 @@ func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Ins
 			p.File.AcceptNonce(plan.nonce)
 		case out.Refused:
 			released := p.File.ReleaseNonce(plan.nonce)
+			// Do #1 noted this wake's settle as the deadline, and nothing earlier
+			// when it took the last automatic slot: the retry would wait past the
+			// debounce. The next pass recomputes it.
+			p.File.NextDue = 1
 			switch {
 			case out.Permanent:
 				// Stop socket wakes for these records: they ride the next run start.
