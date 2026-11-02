@@ -5,8 +5,8 @@
 #
 #   skills/agent-deck/evals/model-run.sh [--skill agent-deck|watcher-creator]
 #       [--skill-dir DIR --evals-dir DIR] [--mode with|without] [--runs N] [--batch K]
-#       [--parallel P] [--ids 1,2,af-1] [--claude-config DIR] [--binary PATH]
-#       [--work-dir DIR] [--log-dir DIR] [--deadline MIN] [--keep]
+#       [--parallel P] [--ids 1,2,af-1] [--token-secret SCOPE/NAME | --token-file PATH]
+#       [--binary PATH] [--work-dir DIR] [--log-dir DIR] [--deadline MIN] [--keep] [--preflight]
 #
 #   --skill NAME      a skill of this repo (default agent-deck); --skill-dir and
 #                     --evals-dir name any other skill (check.py's global options).
@@ -16,10 +16,15 @@
 #                     passes 1..N-1 times is flaky.
 #   --batch K         evals per session (default 20); --parallel P sessions at once
 #                     (default 4, max 6).
-#   --claude-config DIR  where the Claude login comes from (default $CLAUDE_CONFIG_DIR,
-#                     else ~/.claude). Only `.credentials.json` is linked into the sandbox
-#                     and the onboarding keys of `.claude.json` are copied; nothing is
-#                     written there except by Claude refreshing its own token.
+#   --token-secret S  the DEDICATED Claude token the sessions run on, read with
+#                     `deck-secret to-file` into the sandbox (default
+#                     conductor/CLAUDE_DEMO_TOKEN; $DECK_SECRET overrides the binary).
+#   --token-file PATH or a dedicated token file (`claude setup-token`, chmod 600).
+#                     Never a live login: a ~/.claude*/.credentials.json shared with the
+#                     sandbox gets refreshed there, which logs out every other session on
+#                     that account. The run refuses to start without a dedicated token,
+#                     and refuses a login file passed as one.
+#   --preflight       only check and fetch the token, then exit (no build, no sessions).
 #   --deadline MIN    per-session deadline (default 20, max 30).
 #
 # Output in --log-dir: answers-<mode>-<run>.json, grade-<mode>-<run>.log, one pane and
@@ -30,8 +35,8 @@ EVALS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$EVALS_DIR/../../.." && pwd)"
 CHECK="$EVALS_DIR/check.py"
 SKILL="agent-deck" SKILL_DIR="" SKILL_EVALS="" MODE="with" RUNS="" BATCH=20 PAR=4 IDS=""
-CC_SRC="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" BINARY="" WORK_DIR="${TMPDIR:-/tmp}" LOG_DIR=""
-DEADLINE=20 KEEP=""
+BINARY="" WORK_DIR="${TMPDIR:-/tmp}" LOG_DIR="" DEADLINE=20 KEEP="" PREFLIGHT=""
+TOKEN_SECRET="conductor/CLAUDE_DEMO_TOKEN" TOKEN_FILE="" DECK_SECRET="${DECK_SECRET:-deck-secret}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --skill) SKILL="$2"; shift 2 ;;
@@ -42,13 +47,15 @@ while [ $# -gt 0 ]; do
         --batch) BATCH="$2"; shift 2 ;;
         --parallel) PAR="$2"; shift 2 ;;
         --ids) IDS="$2"; shift 2 ;;
-        --claude-config) CC_SRC="$2"; shift 2 ;;
+        --token-secret) TOKEN_SECRET="$2"; shift 2 ;;
+        --token-file) TOKEN_FILE="$2"; shift 2 ;;
+        --preflight) PREFLIGHT=1; shift ;;
         --binary) BINARY="$2"; shift 2 ;;
         --work-dir) WORK_DIR="$2"; shift 2 ;;
         --log-dir) LOG_DIR="$2"; shift 2 ;;
         --deadline) DEADLINE="$2"; shift 2 ;;
         --keep) KEEP=1; shift ;;
-        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -62,11 +69,26 @@ case "$MODE" in with) : "${RUNS:=3}" ;; without) : "${RUNS:=1}" ;; *) echo "--mo
 [ "$PAR" -ge 1 ] && [ "$PAR" -le 6 ] || { echo "--parallel must be 1..6" >&2; exit 2; }
 [ "$DEADLINE" -ge 1 ] && [ "$DEADLINE" -le 30 ] || { echo "--deadline must be 1..30 minutes" >&2; exit 2; }
 SKILL_DIR="$(cd "$SKILL_DIR" && pwd)" && SKILL_EVALS="$(cd "$SKILL_EVALS" && pwd)" || exit 2
-[ -f "$CC_SRC/.credentials.json" ] || { echo "no Claude login at $CC_SRC/.credentials.json (pass --claude-config)" >&2; exit 2; }
-CLAUDE_BIN="$(command -v claude || true)"
-REAL_TMUX="$(command -v tmux || true)"
-[ -n "$CLAUDE_BIN" ] && [ -n "$REAL_TMUX" ] || { echo "model runs need claude and tmux on PATH" >&2; exit 2; }
-CLAUDE_BIN="$(readlink -f "$CLAUDE_BIN")"
+
+# A dedicated token or nothing: checked before any sandbox exists.
+is_login_file() {  # a Claude login (has a refresh token), not a token
+    case "$(basename "$1")" in .credentials.json|credentials.json) return 0 ;; esac
+    grep -qE '"(claudeAiOauth|refreshToken|refresh_token)"' "$1" 2>/dev/null
+}
+if [ -n "$TOKEN_FILE" ]; then
+    [ -f "$TOKEN_FILE" ] || { echo "--token-file $TOKEN_FILE: no such file" >&2; exit 2; }
+    if is_login_file "$TOKEN_FILE"; then
+        echo "refusing --token-file $TOKEN_FILE: it is a Claude login, not a dedicated token; sharing it logs out every session on that account (use claude setup-token)" >&2
+        exit 2
+    fi
+    TOKEN_FILE="$(cd "$(dirname "$TOKEN_FILE")" && pwd)/$(basename "$TOKEN_FILE")"
+elif ! command -v "$DECK_SECRET" >/dev/null 2>&1; then
+    echo "model runs need a dedicated Claude token: $TOKEN_SECRET in deck-secret, or --token-file; never a live login (no deck-secret found)" >&2
+    exit 2
+elif ! "$DECK_SECRET" exists "$TOKEN_SECRET" >/dev/null 2>&1; then  # exit 3 when missing
+    echo "model runs need a dedicated Claude token: $TOKEN_SECRET is not in deck-secret; the owner creates it (claude setup-token, then deck-secret set $TOKEN_SECRET), or pass --token-file" >&2
+    exit 2
+fi
 SOCK="skill-model-$$"
 
 mkdir -p "$WORK_DIR" && WORK_DIR="$(cd "$WORK_DIR" && pwd)" || exit 2
@@ -87,6 +109,25 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
+TOKEN_PATH="$ROOT/claude-token"
+if [ -n "$TOKEN_FILE" ]; then
+    TOKEN_PATH="$TOKEN_FILE" TOKEN_FROM="--token-file $TOKEN_FILE"
+else
+    "$DECK_SECRET" to-file "$TOKEN_SECRET" "$TOKEN_PATH" || { echo "deck-secret to-file $TOKEN_SECRET failed" >&2; exit 2; }
+    TOKEN_FROM="deck-secret $TOKEN_SECRET"
+fi
+[ -s "$TOKEN_PATH" ] || { echo "dedicated token is empty: $TOKEN_FROM" >&2; exit 2; }
+if is_login_file "$TOKEN_PATH"; then echo "refusing $TOKEN_FROM: it holds a Claude login, not a dedicated token" >&2; exit 2; fi
+mode="$(stat -c %a "$TOKEN_PATH" 2>/dev/null || stat -f %Lp "$TOKEN_PATH")"
+[ "$mode" = 600 ] || [ "$mode" = 400 ] || { echo "dedicated token $TOKEN_PATH has mode $mode; chmod 600 it" >&2; exit 2; }
+echo "token: $TOKEN_FROM, mode $mode (dedicated; no live login is used)"
+[ -n "$PREFLIGHT" ] && { echo "preflight ok"; exit 0; }
+
+CLAUDE_BIN="$(command -v claude || true)"
+REAL_TMUX="$(command -v tmux || true)"
+[ -n "$CLAUDE_BIN" ] && [ -n "$REAL_TMUX" ] || { echo "model runs need claude and tmux on PATH" >&2; exit 2; }
+CLAUDE_BIN="$(readlink -f "$CLAUDE_BIN")"
+
 if [ -z "$BINARY" ]; then
     command -v go >/dev/null || { echo "go not found; pass --binary" >&2; exit 2; }
     (cd "$REPO_DIR" && go build -o "$ROOT/agent-deck" ./cmd/agent-deck) >"$LOG_DIR/build.log" 2>&1 \
@@ -99,20 +140,18 @@ mkdir -p "$ROOT/bin" "$ROOT/tmux" "$H/.config/agent-deck" "$H/.cache" "$H/.local
 cp "$EVALS_DIR/flows/tmux-guard" "$ROOT/bin/tmux" && chmod 700 "$ROOT/bin/tmux"
 ln -s "$BINARY" "$ROOT/bin/agent-deck"
 ln -s "$CLAUDE_BIN" "$ROOT/bin/claude"
-ln -s "$CC_SRC/.credentials.json" "$CC/.credentials.json"
-python3 -I - "$CC_SRC/.claude.json" "$CC" <<'EOF'
+# A fresh Claude config: no login in it. The sessions authenticate with the dedicated
+# token only, exported from [claude] env_file (the file names the token, never holds it).
+printf 'export CLAUDE_CODE_OAUTH_TOKEN="$(cat %q)"\n' "$TOKEN_PATH" >"$ROOT/claude.env"
+chmod 600 "$ROOT/claude.env"
+python3 -I - "$CC" "$("$CLAUDE_BIN" --version 2>/dev/null | cut -d' ' -f1)" <<'EOF'
 import json, sys
-try:
-    src = json.load(open(sys.argv[1]))
-except (OSError, ValueError):
-    src = {}
-keep = ("hasCompletedOnboarding", "lastOnboardingVersion", "oauthAccount", "userID", "installMethod",
-        "hasResetAutoModeOptInForDefaultOffer")
-json.dump({k: src[k] for k in keep if k in src}, open(sys.argv[2] + "/.claude.json", "w"))
+json.dump({"hasCompletedOnboarding": True, "lastOnboardingVersion": sys.argv[2] or "0",
+           "hasResetAutoModeOptInForDefaultOffer": True}, open(sys.argv[1] + "/.claude.json", "w"))
 # agent-deck passes --dangerously-skip-permissions ([claude] dangerous_mode); a defaultMode
 # here would make Claude offer "make auto mode your default?" over the composer.
 json.dump({"skipDangerousModePermissionPrompt": True},
-          open(sys.argv[2] + "/settings.json", "w"))
+          open(sys.argv[1] + "/settings.json", "w"))
 EOF
 cat >"$H/.config/agent-deck/config.toml" <<EOF
 [tmux]
@@ -128,6 +167,7 @@ inject_identity = false
 [claude]
 dangerous_mode = true
 config_dir = "$CC"
+env_file = "$ROOT/claude.env"
 EOF
 
 ENV=(env -i

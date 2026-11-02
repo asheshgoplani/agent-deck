@@ -70,6 +70,7 @@ step wc-static     python3 -I evals/check.py static "${WC[@]}" "${BIN_ARGS[@]}"
 step wc-mutate     python3 -I evals/check.py mutate "${WC[@]}" "${BIN_ARGS[@]}"
 step session-share bash tests/test_session_share_export_895_regression.sh
 step launch-subagent bash tests/test_launch_subagent.sh
+step model-run-token bash tests/test_model_run_token.sh
 step retro         python3 -I -m unittest discover -s scripts/retro -p 'test_*.py'
 step repro         python3 -I -m unittest discover -s scripts/repro -p 'test_*.py'
 step goal          bash -c 'cd scripts/goal && python3 -m unittest discover -s tests'
