@@ -484,10 +484,8 @@ type Instance struct {
 	IdentityInjectionDisabled bool `json:"identity_injection_disabled,omitempty"`
 
 	// PiSocketExported records that the last launch of this pi exported
-	// AGENTDECK_PI_SOCKET: a v5 extension serves the socket, so the daemon never
-	// types a doorbell into it (a connect failure is a rebind or reload window,
-	// not an absent pi). Persisted in the tool_data extras zone
-	// (pi_socket_persist.go); a pi with no record is treated as launched without it.
+	// a socket path in AGENTDECK_PI_SOCKET, so a v5 extension serves the
+	// socket. Only the launch sets it here; nothing reads or persists it yet.
 	PiSocketExported bool `json:"pi_socket_exported,omitempty"`
 
 	// ContextLevel is the per-session override of the harness context-level
