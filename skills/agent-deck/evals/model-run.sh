@@ -191,7 +191,7 @@ run_batch() {  # run_batch <run> <batch file>: one session; writes answers into 
     task_md "$MODE" >"$dir/TASK.md"
     if [ "$MODE" = with ]; then
         mkdir -p "$dir/skill"
-        (cd "$SKILL_DIR" && tar --exclude=./evals --exclude=./tests -cf - .) | (cd "$dir/skill" && tar -xf -)
+        (cd "$SKILL_DIR" && tar --exclude=./evals --exclude=./tests --exclude=__pycache__ -cf - .) | (cd "$dir/skill" && tar -xf -)
     fi
     python3 -I - "$CC/.claude.json" "$dir" <<'EOF'
 import fcntl, json, sys
@@ -233,6 +233,11 @@ EOF
 }
 
 T0="$(date -Is)"
+# The skill under test, recorded before the run (a commit made during it must not be cited).
+SHA="$(git -C "$SKILL_DIR" rev-parse HEAD 2>/dev/null || echo none)"
+DIRTY="$(git -C "$SKILL_DIR" status --porcelain -- . 2>/dev/null | head -c1)"
+HASH="$( (cd "$SKILL_DIR" && find . \( -path ./evals -o -name __pycache__ \) -prune -o -type f -print | LC_ALL=C sort | xargs sha256sum) | sha256sum | cut -c1-16)"
+EHASH="$( (cd "$SKILL_EVALS" && cat evals.json promises.json) | sha256sum | cut -c1-16)"
 for run in $(seq 1 "$RUNS"); do
     for bf in "$ROOT"/batches/b*.json; do
         SESSIONS+=("eval-$MODE-r$run-$(basename "$bf" .json)")
@@ -281,10 +286,6 @@ for run in $(seq 1 "$RUNS"); do
     check grade "$LOG_DIR/answers-$MODE-$run.json" >"$LOG_DIR/grade-$MODE-$run.log" 2>&1
 done
 
-SHA="$(git -C "$SKILL_DIR" rev-parse HEAD 2>/dev/null || echo none)"
-DIRTY="$(git -C "$SKILL_DIR" status --porcelain -- . 2>/dev/null | head -c1)"
-HASH="$( (cd "$SKILL_DIR" && find . -path ./evals -prune -o -type f -print | LC_ALL=C sort | xargs sha256sum) | sha256sum | cut -c1-16)"
-EHASH="$( (cd "$SKILL_EVALS" && cat evals.json promises.json) | sha256sum | cut -c1-16)"
 python3 -I - "$LOG_DIR" "$MODE" "$RUNS" "$NAME" "$SHA${DIRTY:+ (dirty)}" "$HASH" "$EHASH" "$T0" "$(date -Is)" "$ROOT/prompts.json" "$IDS" <<'EOF'
 import json, os, re, sys
 log, mode, runs, name, sha, h, eh, t0, t1, prompts, ids = sys.argv[1:12]
