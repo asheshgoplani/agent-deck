@@ -375,6 +375,26 @@ func TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn(t *testing.T) {
 	}
 }
 
+// A local pi launch sets AGENTDECK_PI_HOST_PID empty, with the socket on or
+// off, so the pi it starts is never a guest of the pane: a tmux server first
+// started inside a pi pane carries that pi's pid, and a later pane would
+// inherit it. The pi word itself follows the assignment.
+func TestBuildPiCommand_ALocalLaunchClearsThePaneHostMarker(t *testing.T) {
+	piSocketShortData(t)
+	installPiExtension(t)
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	for _, version := range []string{"1.3.0", "1.1.0"} {
+		writeFakePi(t, bin, "echo "+version)
+		inst := &Instance{ID: "inst-host-" + version, Tool: "pi", IdentityInjectionDisabled: true}
+		cmd := inst.buildPiCommand("pi")
+		at := strings.Index(cmd, "AGENTDECK_PI_HOST_PID= ")
+		if at < 0 || !strings.Contains(cmd[at:], " pi --continue") {
+			t.Errorf("pi %s launch = %q, want AGENTDECK_PI_HOST_PID= ahead of the pi it starts", version, cmd)
+		}
+	}
+}
+
 func TestPiSocketPath_NoRuntimeDirIsOffWithItsReason(t *testing.T) {
 	piSocketShortData(t)
 	bin := t.TempDir()
