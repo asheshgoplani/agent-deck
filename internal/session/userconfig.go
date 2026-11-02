@@ -1304,21 +1304,38 @@ type SandboxSettings struct {
 	Owner string `toml:"owner,omitempty"`
 }
 
+// Where SandboxOwnerSource found the owner, named for error messages.
+const (
+	OwnerSourceConfig = "[sandbox] owner"
+	OwnerSourceUser   = "$USER"
+	OwnerSourceLogin  = "the account's login name"
+)
+
 // SandboxOwner returns the owner for a new sandbox: [sandbox] owner, else
 // $USER, else the account's login name; "" when none is known.
 func (c *UserConfig) SandboxOwner() string {
+	owner, _ := c.SandboxOwnerSource()
+	return owner
+}
+
+// SandboxOwnerSource is SandboxOwner plus where the value came from
+// (OwnerSourceConfig, OwnerSourceUser or OwnerSourceLogin; "" with no
+// owner), so a refusal names the setting the user can actually change.
+func (c *UserConfig) SandboxOwnerSource() (owner, source string) {
 	if c != nil {
 		if owner := strings.TrimSpace(c.Sandbox.Owner); owner != "" {
-			return owner
+			return owner, OwnerSourceConfig
 		}
 	}
 	if owner := strings.TrimSpace(os.Getenv("USER")); owner != "" {
-		return owner
+		return owner, OwnerSourceUser
 	}
 	if u, err := user.Current(); err == nil {
-		return strings.TrimSpace(u.Username)
+		if owner := strings.TrimSpace(u.Username); owner != "" {
+			return owner, OwnerSourceLogin
+		}
 	}
-	return ""
+	return "", ""
 }
 
 // PrintableOwner returns owner without its control and other

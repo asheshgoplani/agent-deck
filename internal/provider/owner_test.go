@@ -68,3 +68,30 @@ func TestProvisionRefusesAnInvalidOwner(t *testing.T) {
 		}
 	}
 }
+
+// Review of #3019: an owner with a control character is refused whatever
+// its source, and the refusal names where the value came from ($USER is
+// not a setting the user made) without echoing it.
+func TestProvisionRefusesAControlCharOwner_NamesItsSource(t *testing.T) {
+	for _, tt := range []struct{ name, configured, user, wantSource, notSource string }{
+		{name: "from config", configured: "al\nice", user: "dev", wantSource: "[sandbox] owner", notSource: "$USER"},
+		{name: "from $USER", configured: "", user: "bo\x1b[2Jb", wantSource: "$USER", notSource: "[sandbox] owner"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			freshHome(t)
+			t.Setenv("USER", tt.user)
+			configureFakeOwner(t, tt.configured)
+			state := fakeEnv(t, "ok")
+			_, err := Provision(context.Background(), ProvisionOptions{Provider: "fake", RemoteName: "own3", WaitSSH: okSeam, Install: okSeam})
+			if err == nil || !strings.Contains(err.Error(), tt.wantSource) || strings.Contains(err.Error(), tt.notSource) {
+				t.Fatalf("err = %v, want a refusal naming %s (not %s)", err, tt.wantSource, tt.notSource)
+			}
+			if strings.ContainsAny(err.Error(), "\x1b\n") {
+				t.Fatalf("refusal echoes the control characters: %q", err.Error())
+			}
+			if created := readLines(t, filepath.Join(state, "created.log")); len(created) != 0 {
+				t.Fatalf("a sandbox was created anyway: %v", created)
+			}
+		})
+	}
+}

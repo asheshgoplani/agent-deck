@@ -110,8 +110,8 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	if _, exists := cfg.Remotes[name]; exists {
 		return nil, fmt.Errorf("remote %q already exists (use 'agent-deck remote remove %s' or pick another --name)", name, name)
 	}
-	owner := cfg.SandboxOwner()
-	if err := validateOwner(owner); err != nil {
+	owner, ownerSource := cfg.SandboxOwnerSource()
+	if err := validateOwner(owner, ownerSource); err != nil {
 		return nil, err
 	}
 
@@ -179,17 +179,26 @@ const maxOwner = 64
 
 // validateOwner refuses an owner name that cannot be a label value or a
 // display name: control or non-printable characters, or more than maxOwner
-// runes. Empty is allowed (no owner known; the label is left out).
-func validateOwner(owner string) error {
+// runes. Empty is allowed (no owner known; the label is left out). The
+// refusal names source (where the value came from) and never echoes it.
+func validateOwner(owner, source string) error {
 	if !utf8.ValidString(owner) || utf8.RuneCountInString(owner) > maxOwner {
-		return fmt.Errorf("invalid [sandbox] owner: at most %d characters of UTF-8 text", maxOwner)
+		return fmt.Errorf("invalid sandbox owner from %s: at most %d characters of UTF-8 text%s", source, maxOwner, ownerFixHint(source))
 	}
 	for _, r := range owner {
 		if !unicode.IsPrint(r) {
-			return errors.New("invalid [sandbox] owner: it contains a control or non-printable character")
+			return fmt.Errorf("invalid sandbox owner from %s: it contains a control or non-printable character%s", source, ownerFixHint(source))
 		}
 	}
 	return nil
+}
+
+// ownerFixHint says how to fix an owner that did not come from the config.
+func ownerFixHint(source string) string {
+	if source == session.OwnerSourceConfig {
+		return ""
+	}
+	return " (set owner in the [sandbox] section of config.toml to use another name)"
 }
 
 // rollback undoes a failed provisioning and joins its failures to cause.
