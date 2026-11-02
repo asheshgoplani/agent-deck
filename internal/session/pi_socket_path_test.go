@@ -501,6 +501,28 @@ func TestPiSocketEnvForLaunch_NamesAMissingOrOutdatedExtension(t *testing.T) {
 	})
 }
 
+// `pi-hooks status` resolves pi the way a launch does: the spawn-path prelude's
+// directories come ahead of this process's PATH.
+func TestPiStatusEnv_ResolvesPiOnTheLaunchPath(t *testing.T) {
+	piSocketShortData(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	spawn := filepath.Join(home, ".local", "bin") // a spawn-path dir
+	if err := os.MkdirAll(spawn, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir()+":/usr/bin:/bin")
+	writeFakePi(t, spawn, `echo 1.3.0`)
+
+	if got := PiSocketPath("work", "status", []string{"PATH=" + os.Getenv("PATH")}); got.Version != "" {
+		t.Fatalf("control: this process's PATH alone has no pi, got %+v", got)
+	}
+	got := PiSocketPath("work", "status", PiStatusEnv())
+	if got.Binary != filepath.Join(spawn, "pi") || got.Version != "1.3.0" {
+		t.Errorf("status resolved %q at %q, want %q at 1.3.0", got.Binary, got.Version, filepath.Join(spawn, "pi"))
+	}
+}
+
 // procGone: dead, or a zombie nobody reaped (a container without init keeps orphans as zombies).
 func procGone(pid int) bool {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")

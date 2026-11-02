@@ -381,7 +381,7 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
       // A live socket the probe finds is never replaced. Two starters that both
       // get past the probe resolve as last-starter-wins (see above).
       if (await isLive(sockPath)) {
-        warn("another process is serving " + sockPath + "; wakes for this pi session will be typed");
+        warn("another process is serving " + sockPath + "; this pi session will not receive socket wakes");
         return;
       }
       sweepDead(dir);
