@@ -51,6 +51,17 @@
 // the extension asks hook-handler for context and returns its stdout as the
 // run's injected message; a doorbell's run also carries wake_nonce.
 //
+// Only the pi agent-deck launched in the pane serves the socket and takes the
+// ledger's context. Its extension puts its own pid in AGENTDECK_PI_HOST_PID in
+// process.env, which everything that pi starts inherits (pi's bash tool
+// spawns with process.env), so a pi started inside the pane (a subagent's
+// `pi -p`, a script) finds another pid there: it is a guest of the pane, serves
+// nothing, and marks every payload pane_guest, so hook-handler gives it no
+// context and applies none of its receipts. A local launch sets the variable
+// empty, so a launched or restarted pi is never a guest. It is a pid, not a
+// flag, because /reload re-evaluates this file in the same process, which
+// must still find itself the host.
+//
 // It is a no-op outside agent-deck: without AGENTDECK_INSTANCE_ID in the
 // environment nothing is spawned and no handler is registered. pi awaits
 // extension handlers in order, and each emit is awaited too, so back-to-back
@@ -70,6 +81,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const INSTANCE_ID = (process.env.AGENTDECK_INSTANCE_ID ?? "").trim();
 const SOCKET = (process.env.AGENTDECK_PI_SOCKET ?? "").trim();
+const HOST_PID_ENV = "AGENTDECK_PI_HOST_PID";
 const EMIT_TIMEOUT_MS = 2000;
 // before_agent_start's answer becomes the run's injected context, so it gets
 // longer than a status emit: a slow handler must not silently drop it.
@@ -83,9 +95,6 @@ const MAX_FRAME_BYTES = 4096;
 const QUEUED_AFTER_MS = 1500;
 // The same record ids are not sent twice inside the ledger's own window.
 const DUPLICATE_WINDOW_MS = 90 * 1000;
-// A listener that neither accepts nor refuses in this long is treated as alive,
-// so a wedged owner is never unlinked out from under itself.
-const PROBE_TIMEOUT_MS = 1000;
 const MAX_HOOK_OUTPUT_BYTES = 64 * 1024;
 // The wake line is at most 900 B from the daemon; the extension holds the same
 // limit, since anyone who can open the socket can start a model turn with it.
@@ -185,21 +194,6 @@ function run(event: string, fields: Record<string, unknown> = {}, timeoutMs = EM
 
 function emit(event: string, fields: Record<string, unknown> = {}): Promise<void> {
   return run(event, fields).then(() => {});
-}
-
-// isLive reports whether something is accepting connections at sockPath.
-function isLive(sockPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = net.connect(sockPath);
-    const done = (live: boolean) => {
-      clearTimeout(timer);
-      probe.destroy();
-      resolve(live);
-    };
-    const timer = setTimeout(() => done(true), PROBE_TIMEOUT_MS);
-    probe.on("connect", () => done(true));
-    probe.on("error", () => done(false));
-  });
 }
 
 // reply writes the one reply and then destroys the connection once it is
@@ -349,14 +343,18 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
 
   // A starter binds at a private path in the socket's directory and renames it
   // over the public one, so the public path never holds anything half-made and
-  // a stale file is replaced atomically. Two starters that both found it dead
-  // both rename, and the last wins: the other's listener is unreachable and
-  // inert, and its stop leaves the winner's socket alone because the dev/ino
-  // differ. The private name is never the public one, so the unlink Server.close
-  // does by name can only ever hit a file that is already gone. One window
-  // remains: stop checks dev/ino and then removes the path, and a new socket
-  // renamed in between is removed with it, so a second launch of the same
-  // instance inside that window degrades to typed wakes.
+  // whatever was there is replaced atomically. Only the launched pi starts (a
+  // guest of the pane never serves), so a socket already at the path is a
+  // predecessor's: an earlier pi of this session that died, or one still
+  // shutting down after a restart. The launched pi takes the path over, and
+  // the predecessor's listener is left unreachable and inert. Two starters
+  // both rename, and the last wins; the other's stop leaves the winner's socket
+  // alone because the dev/ino differ. The private name is never the public
+  // one, so the unlink Server.close does by name can only ever hit a file that
+  // is already gone. One window remains: stop checks dev/ino and then removes
+  // the path, and a socket renamed in between is removed with it, so a pi that
+  // takes over inside a predecessor's stop is left without a socket: the daemon
+  // rings it nothing until it restarts, and its records ride its run starts.
   // The name carries the owner's pid and 8 random characters, so starters do
   // not collide on it.
   const privateName = () => "p" + process.pid + "-" + crypto.randomBytes(6).toString("hex").slice(0, 8);
@@ -414,12 +412,6 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
         fs.fchmodSync(dirFd, 0o700);
       } finally {
         fs.closeSync(dirFd);
-      }
-      // A live socket the probe finds is never replaced. Two starters that both
-      // get past the probe resolve as last-starter-wins (see above).
-      if (await isLive(sockPath)) {
-        warn("another process is serving " + sockPath + "; this pi session will not receive socket wakes");
-        return;
       }
       sweepDead(dir);
       priv = path.join(dir, privateName());
@@ -495,7 +487,12 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
 
 export default function (pi: ExtensionAPI) {
   if (!INSTANCE_ID) return;
-  const wake = SOCKET ? serveWakeSocket(pi, SOCKET) : undefined;
+  // A guest of the pane inherited another pi's pid (see the header). The host
+  // writes its own, for everything it starts to inherit.
+  const host = (process.env[HOST_PID_ENV] ?? "").trim();
+  const guest = host !== "" && host !== String(process.pid);
+  if (!guest) process.env[HOST_PID_ENV] = String(process.pid);
+  const wake = SOCKET && !guest ? serveWakeSocket(pi, SOCKET) : undefined;
 
   // The run's state. pi fires input before agent_start, so only the turn is
   // reset on agent_start; the input is consumed when the run settles.
@@ -513,12 +510,14 @@ export default function (pi: ExtensionAPI) {
   // receipt reaches the ledger even if the daemon has not ingested the echo.
   let lastInjected: string | undefined;
   let lastReported: string | undefined;
+  // Every payload of a guest of the pane says so.
+  const mark = (fields: Record<string, unknown> = {}) => (guest ? { ...fields, pane_guest: true } : fields);
 
   // Returning emit's promise (rather than firing and forgetting) is what makes
   // pi await delivery before it runs the next handler.
   pi.on("session_start", async (event?: any, ctx?: any) => {
     await wake?.start(event, ctx);
-    await emit("session_start");
+    await emit("session_start", mark());
   });
   pi.on("agent_start", () => {
     if (!runOpen) runId = crypto.randomUUID();
@@ -531,7 +530,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_start", () => {
     const token = injectedToken;
     injectedToken = undefined;
-    return emit("turn_start", { ...runFields(), injected_token: token });
+    return emit("turn_start", mark({ ...runFields(), injected_token: token }));
   });
   pi.on("turn_end", (event?: any) => {
     lastTurn = {
@@ -540,7 +539,7 @@ export default function (pi: ExtensionAPI) {
       outcome: String(event?.outcome ?? ""),
       stopReason: String(event?.message?.stopReason ?? ""),
     };
-    return emit("turn_end", runFields());
+    return emit("turn_end", mark(runFields()));
   });
   pi.on("agent_settled", (event?: any, ctx?: any) => {
     const turn = lastTurn;
@@ -558,17 +557,17 @@ export default function (pi: ExtensionAPI) {
     // and aborted shows the abort itself.
     const answered = turn?.outcome === "completed" && turn.stopReason !== "toolUse" && event?.aborted !== true;
     const reported = answered ? turn.text.trim() : "";
-    return emit("agent_settled", {
+    return emit("agent_settled", mark({
       ...fields,
       session_id: sessionId,
       turn_id: turn?.entryId || undefined,
       last_assistant_message: reported ? tailBytes(reported, MAX_TEXT_BYTES) : undefined,
       prompt: prompt || undefined,
-    });
+    }));
   });
   pi.on("session_shutdown", async () => {
     await wake?.stop();
-    await emit("session_shutdown");
+    await emit("session_shutdown", mark());
   });
   // A doorbell is answered before hook-handler is awaited. A human prompt
   // carries no nonce. Registered with or without the socket: a listed parent
@@ -587,12 +586,12 @@ export default function (pi: ExtensionAPI) {
     const nonce = isWake ? event.message.details?.nonce : undefined;
     const prior = lastInjected !== lastReported ? lastInjected : undefined;
     lastReported = lastInjected;
-    const context = await run("before_agent_start", {
+    const context = await run("before_agent_start", mark({
       session_id: sessionId,
       prompt,
       wake_nonce: typeof nonce === "string" ? nonce : undefined,
       prior_injected_token: prior,
-    }, INJECT_TIMEOUT_MS);
+    }), INJECT_TIMEOUT_MS);
     if (context === null) {
       console.error("agent-deck: injection dropped: hook-handler failed or timed out; its records stay pending for the next run");
       return;

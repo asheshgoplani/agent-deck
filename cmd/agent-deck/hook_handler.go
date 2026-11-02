@@ -71,6 +71,7 @@ type hookPayload struct {
 	WakeNonce            json.RawMessage `json:"wake_nonce"`             // pi before_agent_start of a doorbell's run
 	InjectedToken        json.RawMessage `json:"injected_token"`         // pi turn_start: receipt of an injected context
 	PriorInjectedToken   json.RawMessage `json:"prior_injected_token"`   // pi before_agent_start: receipt of the run before
+	PaneGuest            json.RawMessage `json:"pane_guest"`             // pi: started inside the launched pi's pane, not launched by agent-deck
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
 	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
@@ -143,12 +144,12 @@ func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 		}
 		return "pi", session.CommsEdgeStatus, "", ""
 	case "beforeagentstart":
-		if p.Source != "pi" {
+		if p.Source != "pi" || piGuestOfThePane(p) {
 			return "", "", "", ""
 		}
 		return "pi", session.CommsEdgePromptStart, "", rawString(p.Prompt)
 	case "turnstart":
-		if p.Source == "pi" && strings.TrimSpace(rawString(p.InjectedToken)) != "" {
+		if p.Source == "pi" && !piGuestOfThePane(p) && strings.TrimSpace(rawString(p.InjectedToken)) != "" {
 			return "pi", session.CommsEdgeInjected, "", ""
 		}
 	}
@@ -194,11 +195,27 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 	}
 }
 
+// piGuestOfThePane reports a pi that is not the one agent-deck launched in
+// this pane: a pi started inside it (a subagent's `pi -p`, a script) inherits
+// AGENTDECK_INSTANCE_ID and AGENTDECK_PI_SOCKET, and also the launched pi's
+// pid in AGENTDECK_PI_HOST_PID, so its extension knows it is a guest, serves
+// nothing, and says so on every payload. The ledger's context and receipts
+// belong to the launched pi alone: a guest's run start is given no context and
+// acknowledges nothing, and its receipts are never applied, so the parent's
+// records stay pending for the parent. (Like Claude's background-worker drop,
+// #2683, but only for the ledger's consumer edges.)
+func piGuestOfThePane(p hookPayload) bool {
+	return p.Source == "pi" && rawBool(p.PaneGuest)
+}
+
 // piBeforeAgentStart prints the context a pi run starts with: what the
 // ledger owes the parent, acknowledging the doorbell whose nonce the run
 // carries. A pi session the ledger does not serve prints nothing and its inbox
-// is left alone (listed parents only).
+// is left alone (listed parents only), and so does a guest of the pane.
 func piBeforeAgentStart(instanceID string, p hookPayload) {
+	if piGuestOfThePane(p) {
+		return
+	}
 	// The previous run's receipt rides this run start, so the attempt is accepted
 	// (and settled below) without waiting for the daemon to ingest the spooled one.
 	session.AcceptPriorInjection(instanceID, strings.TrimSpace(rawString(p.PriorInjectedToken)))
