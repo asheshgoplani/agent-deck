@@ -405,3 +405,62 @@ func TestSandboxDestroy_RefusesWhenTheSandboxIsNotTheConfirmedOne(t *testing.T) 
 	}
 	assertNotice(t, h, "Sandbox Not Destroyed", "abc123def456", "fff999eee888", "Nothing was changed")
 }
+
+// The provider destroyed the sandbox but agent-deck could not finish its
+// local cleanup: the notice says the sandbox is gone, not that it is still
+// there.
+func TestSandboxDestroy_NoticeSaysSandboxGoneWhenOnlyLocalCleanupFailed(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores the read-only dir this test relies on")
+	}
+	fake, err := filepath.Abs(filepath.Join("..", "provider", "testdata", "fake-provider.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sandboxHostHome(t, nil)
+	dir, err := provider.SandboxDir("sb1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sshConfig := filepath.Join(dir, "ssh_config")
+	if err := os.WriteFile(sshConfig, []byte("Host x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Providers: map[string]session.ProviderConfig{"fake": {Command: fake, TimeoutSeconds: 10}},
+		Remotes: map[string]session.RemoteConfig{
+			"sb1": {Host: "agentdeck-sb-sb1", Provider: "fake", SandboxID: "abc123def456", SSHConfig: sshConfig},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PROVIDER_STATE", t.TempDir())
+	t.Setenv("FAKE_PROVIDER_MODE", "ok")
+	t.Setenv("FAKE_PROVIDER_DESTROY", "ok")
+	// The sandbox dir cannot be removed: the local cleanup fails after the
+	// provider destroyed the sandbox.
+	if err := os.Chmod(filepath.Dir(dir), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(dir), 0o700) })
+
+	rec := &destroyRecorder{}
+	deps := rec.deps()
+	deps.destroy = provider.DestroyRemote
+	h.sandboxDestroyDeps = deps
+	h, _ = pressSandboxKey(h, "d")
+	h, cmd := pressSandboxKey(h, "y")
+	result, ok := cmd().(sandboxDestroyedMsg)
+	if !ok {
+		t.Fatal("the destroy command did not report a sandboxDestroyedMsg")
+	}
+	model, _ := h.Update(result)
+	h = model.(*Home)
+	assertNotice(t, h, "Sandbox Not Destroyed", "The sandbox itself was destroyed")
+	if view := stripAnsi(h.confirmDialog.View()); strings.Contains(view, "are still there") {
+		t.Fatalf("the notice says the sandbox is still there although it was destroyed:\n%s", view)
+	}
+}

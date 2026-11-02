@@ -216,9 +216,14 @@ func sweepInterruptedCreate(client *Client, name, createID string, cause error) 
 	return cause
 }
 
+// ErrDestroyedCleanupFailed matches a DestroyRemote error where the provider
+// destroyed the sandbox but removing the remote or its files failed.
+var ErrDestroyedCleanupFailed = errors.New("local cleanup failed")
+
 // DestroyRemote destroys a sandbox remote: provider destroy, then
 // unregister, then remove the sandbox files. When the provider fails the
-// remote stays registered, so the user can retry. Stopping the remote's
+// remote stays registered, so the user can retry. A failure after the
+// provider destroy matches ErrDestroyedCleanupFailed. Stopping the remote's
 // sessions and asking for confirmation are the caller's job, and so is
 // holding LockRemote(remoteName) from before the sessions are listed.
 func DestroyRemote(ctx context.Context, remoteName string) error {
@@ -240,10 +245,15 @@ func DestroyRemote(ctx context.Context, remoteName string) error {
 	if err := client.Destroy(ctx, rc.SandboxID); err != nil {
 		return fmt.Errorf("destroying sandbox %s for remote %q: %w", rc.SandboxID, remoteName, err)
 	}
+	// The sandbox is gone from here on: a failure says so, so the caller
+	// does not tell the user it is still there.
 	if err := unregisterRemote(remoteName); err != nil {
-		return err
+		return fmt.Errorf("sandbox %s was destroyed, but removing remote %q failed (%w): %w", rc.SandboxID, remoteName, ErrDestroyedCleanupFailed, err)
 	}
-	return removeFilesFor(remoteName, rc)
+	if err := removeFilesFor(remoteName, rc); err != nil {
+		return fmt.Errorf("sandbox %s was destroyed and remote %q removed, but removing its files failed (%w): %w", rc.SandboxID, remoteName, ErrDestroyedCleanupFailed, err)
+	}
+	return nil
 }
 
 // removeFilesFor removes the sandbox dir the remote's ssh_config lives in

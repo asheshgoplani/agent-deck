@@ -287,6 +287,8 @@ func (h *Home) handleSandboxDestroyed(msg sandboxDestroyedMsg) tea.Cmd {
 			body += "Nothing was changed. Wait for the other create or destroy\nof this remote to end."
 		} else if msg.refused {
 			body += fmt.Sprintf("Nothing was changed. Press d again to retry, or run\n'agent-deck remote destroy %s --force' to destroy it anyway.", msg.remoteName)
+		} else if errors.Is(msg.err, provider.ErrDestroyedCleanupFailed) {
+			body += fmt.Sprintf("The sandbox itself was destroyed; only agent-deck's own\ncleanup did not finish. If %s is still listed, press d\nagain to finish it, or run 'agent-deck remote destroy %s'.", msg.remoteName, msg.remoteName)
 		} else {
 			body += "Its sessions may have been stopped; the sandbox and its remote\nare still there, so you can retry with d."
 		}
