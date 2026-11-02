@@ -355,3 +355,50 @@ func TestPiHooksStatus_EqualsFormsAreAProfile(t *testing.T) {
 		}
 	}
 }
+
+// `pi-hooks status` probes pi on the launch's PATH, not this process's: a pi
+// that only the spawn-path prelude's directories hold (~/.local/bin, which a
+// non-login shell lacks) is the pi a launch runs, so status must report it
+// instead of "not found". Wired through handlePiHooks so a status that goes
+// back to the bare launch env fails here.
+func TestPiHooksStatus_ProbesPiOnTheSpawnPathPrelude(t *testing.T) {
+	short, err := os.MkdirTemp("/tmp", "ps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(short) })
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	prelude := filepath.Join(home, ".local", "bin") // a spawn-path prelude dir
+	if err := os.MkdirAll(prelude, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prelude, "pi"), []byte("#!/bin/sh\necho 1.3.0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// This process's PATH has no pi, so only the prelude can resolve it.
+	t.Setenv("PATH", t.TempDir()+":/usr/bin:/bin")
+	if _, err := exec.LookPath("pi"); err == nil {
+		t.Fatal("control: pi must not be on this process's PATH")
+	}
+
+	setupPiHooksTest(t)
+	t.Setenv("XDG_DATA_HOME", short)
+	captureStdout(t, func() { handlePiHooks([]string{"install"}) })
+	out := captureStdout(t, func() { handlePiHooks([]string{"status"}) })
+
+	want := "Pi: 1.3.0 (via " + filepath.Join(prelude, "pi") + " --version)"
+	found := false
+	for _, l := range strings.Split(out, "\n") {
+		if l == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("status lacks the line %q (pi is only on the spawn-path prelude):\n%s", want, out)
+	}
+	if strings.Contains(out, "not found") {
+		t.Errorf("status reports pi not found although the launch PATH has it:\n%s", out)
+	}
+}

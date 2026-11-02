@@ -61,9 +61,42 @@ func writeFakePi(t *testing.T, dir, body string) string {
 // explicitly empty assignment, so the pane cannot inherit a value.
 const piSocketOff = "AGENTDECK_PI_SOCKET= "
 
-// exportsPiSocket reports whether a launch command exports a socket path.
+// exportsPiSocket reports whether a launch command exports a socket path: an
+// AGENTDECK_PI_SOCKET assignment with a value, even when the command also
+// carries the empty form.
 func exportsPiSocket(cmd string) bool {
-	return strings.Contains(cmd, "AGENTDECK_PI_SOCKET=") && !strings.Contains(cmd, piSocketOff)
+	const key = "AGENTDECK_PI_SOCKET="
+	for rest := cmd; ; {
+		i := strings.Index(rest, key)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(key):]
+		if rest != "" && rest[0] != ' ' {
+			return true
+		}
+	}
+}
+
+// A command with a socket path counts as exporting even when it also carries
+// the empty form; only the empty form alone does not.
+func TestExportsPiSocket_PathBeatsTheEmptyForm(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		want bool
+	}{
+		{"pi", false},
+		{piSocketOff + "pi", false},
+		{"AGENTDECK_PI_SOCKET=/run/x.sock pi", true},
+		{"AGENTDECK_PI_SOCKET='/run/a b.sock' pi", true},
+		{piSocketOff + "AGENTDECK_PI_SOCKET=/run/x.sock pi", true},
+		{"AGENTDECK_PI_SOCKET=/run/x.sock " + piSocketOff + "pi", true},
+		{"AGENTDECK_PI_SOCKET=", false},
+	} {
+		if got := exportsPiSocket(tc.cmd); got != tc.want {
+			t.Errorf("exportsPiSocket(%q) = %v, want %v", tc.cmd, got, tc.want)
+		}
+	}
 }
 
 func expectedPiSocketPath(t *testing.T, profile, instance string) string {
@@ -311,8 +344,8 @@ func TestPiSocketEnvForLaunch_LogsOnceWhenOffNeverWhenOn(t *testing.T) {
 }
 
 // TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn pins the real launch path:
-// buildPiCommand exports AGENTDECK_PI_SOCKET when pi is at or above 1.2.0, and
-// exports it empty (typed wake only, one off record) otherwise.
+// buildPiCommand exports a socket path in AGENTDECK_PI_SOCKET when pi is at or
+// above 1.2.0, and sets it empty (typed wake only, one off record) otherwise.
 func TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn(t *testing.T) {
 	piSocketShortData(t)
 	installPiExtension(t)
