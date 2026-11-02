@@ -133,10 +133,12 @@ func TestPiRestart_PreTokenSessionStartIsNotTheBoot(t *testing.T) {
 	}
 }
 
-// The sweep past the boot timeout: a resumed pi back at its prompt (its
-// session_start unseen) or already on a new run gets nothing, even while its
-// status reads running (past the 2-minute hook window the status comes from the
-// pane); one still booting (no session_start yet) or dead is reported once.
+// The sweep past the boot timeout: a resumed pi back at its prompt with its
+// session_start unseen gets the info line, never the urgent report; one back at
+// its prompt or already on a new run gets nothing when its status reads running
+// (past the 2-minute hook window the status comes from the pane); one still
+// booting (no session_start yet) or dead is reported once. The cases check the
+// report only.
 func TestPiRestart_SweepWaitsForTheSessionStart(t *testing.T) {
 	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
 	cases := []struct {
