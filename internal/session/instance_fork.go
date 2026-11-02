@@ -35,11 +35,12 @@ func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand str
 	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
 
 	return envPrefix + fmt.Sprintf(
-		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No Pi session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"%s",
+		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No Pi session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s%s --fork \"$source_file\" --session-dir \"$session_dir\"%s",
 		parentSessionDir,
 		sessionDir,
 		quotedInstanceID,
 		quotedProfile,
+		target.piSocketLaunchPrefix(cmd),
 		cmd,
 		target.piIdentityFlag(),
 	), nil
