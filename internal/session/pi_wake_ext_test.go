@@ -859,12 +859,54 @@ type piWakeOpts struct {
 	noHook      bool   // no agent-deck on PATH: spawning it fails at once
 }
 
-func runPiWake(t *testing.T, scenario string, opts piWakeOpts) (map[string]any, *piWake) {
+// nodeForExtensionTests returns node's path for the extension tests. Without
+// node they skip on a developer machine, but under CI (GitHub Actions sets CI)
+// they fail instead, so a runner that lost node cannot turn the extension's
+// contract tests into silent skips.
+func nodeForExtensionTests(t testing.TB) string {
 	t.Helper()
 	nodePath, err := exec.LookPath("node")
-	if err != nil {
+	if err == nil {
+		return nodePath
+	}
+	if os.Getenv("CI") != "" {
+		t.Fatalf("node not available in PATH under CI=%q: the pi extension tests must run in CI", os.Getenv("CI"))
+	} else {
 		t.Skip("node not available in PATH, skipping extension test")
 	}
+	return ""
+}
+
+// skipOrFailTB records whether a helper skipped or failed, without stopping.
+type skipOrFailTB struct {
+	testing.TB
+	skipped, failed bool
+}
+
+func (f *skipOrFailTB) Helper()               {}
+func (f *skipOrFailTB) Skip(...any)           { f.skipped = true }
+func (f *skipOrFailTB) Fatalf(string, ...any) { f.failed = true }
+
+// Without node, the extension tests skip locally and fail under CI.
+func TestNodeForExtensionTests_FailsUnderCIWithoutNode(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("CI", "true")
+	ci := &skipOrFailTB{TB: t}
+	nodeForExtensionTests(ci)
+	if !ci.failed || ci.skipped {
+		t.Errorf("under CI without node: failed=%v skipped=%v, want a failure, not a skip", ci.failed, ci.skipped)
+	}
+	t.Setenv("CI", "")
+	local := &skipOrFailTB{TB: t}
+	nodeForExtensionTests(local)
+	if !local.skipped || local.failed {
+		t.Errorf("locally without node: failed=%v skipped=%v, want a skip", local.failed, local.skipped)
+	}
+}
+
+func runPiWake(t *testing.T, scenario string, opts piWakeOpts) (map[string]any, *piWake) {
+	t.Helper()
+	nodePath := nodeForExtensionTests(t)
 	// A short directory: macOS caps a unix socket path at 103 bytes.
 	dir, err := os.MkdirTemp("/tmp", "pw")
 	if err != nil {
@@ -1587,10 +1629,7 @@ func TestPiWakeExtension_C1ControlsAreStripped(t *testing.T) {
 // the deadline the extension passed: here it is blocked on the status lock,
 // held by this test, and must still exit by its own 2 s.
 func TestPiWakeExtension_AHookHandlerOrphanedBySigkillExitsByItsOwnDeadline(t *testing.T) {
-	nodePath, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not available in PATH, skipping extension test")
-	}
+	nodePath := nodeForExtensionTests(t)
 	real := foreignTUIBinary(t)
 	dir, err := os.MkdirTemp("/tmp", "pk")
 	if err != nil {
