@@ -145,7 +145,9 @@ reject a request whose protocol it does not speak.
 
 `create` gets `create_timeout_seconds` (default 600). The other actions get
 `timeout_seconds` (default 60). If your API returns before the machine boots,
-poll inside `create` until it has an address.
+poll inside `create` until it has an address. The `destroy` that rolls back a
+failed create also gets the full `timeout_seconds` (and at least 2 minutes),
+so set it to cover a destroy that deletes several resources one by one.
 
 If `create` times out or is interrupted (Ctrl-C, quitting the TUI), the
 provider may already have made the sandbox. agent-deck then runs `list` and

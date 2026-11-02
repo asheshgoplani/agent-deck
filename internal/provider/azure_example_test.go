@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -787,5 +788,50 @@ func TestAzureExampleProvider_DestroyForgetsAVMDeletedByHand(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(sb.Auth.KeyPath)); !os.IsNotExist(err) {
 		t.Fatal("key dir not removed")
+	}
+}
+
+// TestAzureExampleProvider_RollbackOutlastsASlowDestroy: a failed
+// provisioning rolls back with the provider's destroy, which deletes up to
+// six resources one after another. The rollback must give that destroy its
+// configured timeout_seconds, not a shorter fixed budget that kills it half
+// way and leaves network resources behind that list never shows.
+func TestAzureExampleProvider_RollbackOutlastsASlowDestroy(t *testing.T) {
+	w := newAzWorld(t, azBaseConf(""))
+	freshHome(t)
+	for _, kv := range w.env() {
+		k, v, _ := strings.Cut(kv, "=")
+		if k != "HOME" {
+			t.Setenv(k, v)
+		}
+	}
+	// Each delete takes 0.5s, so destroy takes well over the 1s budget the
+	// fixed rollback timeout is shortened to here, but far less than the
+	// provider's 30s timeout_seconds.
+	t.Setenv("FAKE_AZ_DELETE_DELAY", "0.5")
+	old := rollbackTimeout
+	rollbackTimeout = time.Second
+	t.Cleanup(func() { rollbackTimeout = old })
+	if err := session.SaveUserConfig(&session.UserConfig{Providers: map[string]session.ProviderConfig{
+		"azure": {Command: azProviderPath(t), TimeoutSeconds: 30, CreateTimeoutSeconds: 60},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, err := Provision(ctx, ProvisionOptions{Provider: "azure", RemoteName: "az-slow", Profile: "_test",
+		WaitSSH: func(context.Context, string, session.RemoteConfig) error {
+			return errors.New("ssh never came up (test)")
+		},
+		Install: func(context.Context, string, session.RemoteConfig) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("Provision succeeded although ssh never came up")
+	}
+	if strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("rollback was cut off: %v", err)
+	}
+	if rs := w.resources(t); len(rs) != 0 {
+		t.Fatalf("resources left after the rollback: %+v", rs)
 	}
 }

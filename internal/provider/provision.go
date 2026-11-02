@@ -25,10 +25,25 @@ const (
 	LabelCreateID = "agent-deck/create-id"
 )
 
+// rollbackTimeout is the least time the cleanup after a failed
+// provisioning gets; it runs on a fresh context so a cancelled caller still
+// cleans up. A var so tests can shorten it.
+var rollbackTimeout = 2 * time.Minute
+
+// cleanupBudget is the time a cleanup of calls provider calls gets: at
+// least rollbackTimeout, and enough for each call to use the provider's
+// own timeout_seconds. A cloud destroy deletes several resources one after
+// another; a shorter budget would kill it half way and leave resources
+// that list never shows.
+func cleanupBudget(client *Client, calls int) time.Duration {
+	d := time.Duration(calls)*client.Config.GetTimeout() + killWait
+	if d < rollbackTimeout {
+		return rollbackTimeout
+	}
+	return d
+}
+
 const (
-	// rollbackTimeout bounds the cleanup after a failed provisioning; it
-	// runs on a fresh context so a cancelled caller still cleans up.
-	rollbackTimeout = 2 * time.Minute
 	// waitSSHBudget bounds the default ssh readiness probe.
 	waitSSHBudget = 3 * time.Minute
 	// waitSSHAttempt bounds one probe attempt.
@@ -162,7 +177,7 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 
 // rollback undoes a failed provisioning and joins its failures to cause.
 func rollback(client *Client, name, id string, registered bool, cause error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), rollbackTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupBudget(client, 1))
 	defer cancel()
 	var errs []error
 	if err := client.Destroy(ctx, id); err != nil {
@@ -188,7 +203,8 @@ func rollback(client *Client, name, id string, registered bool, cause error) err
 // caller still cleans up. Its failures are joined to cause, with the label
 // to look for by hand.
 func sweepInterruptedCreate(client *Client, name, createID string, cause error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), rollbackTimeout)
+	// A list, then normally one destroy.
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupBudget(client, 2))
 	defer cancel()
 	list, err := client.List(ctx)
 	if err != nil {

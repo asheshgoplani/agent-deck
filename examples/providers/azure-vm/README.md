@@ -97,7 +97,8 @@ Each sandbox gets a fresh ed25519 key in its own 0700 dir
 [providers.azure]
 command = "/abs/path/to/agent-deck/examples/providers/azure-vm/provider"
 create_timeout_seconds = 900
-timeout_seconds = 600        # destroy deletes up to six resources one by one (VM ~1-3 min)
+timeout_seconds = 600        # destroy deletes up to six resources one by one (VM ~1-3 min);
+                             # the rollback of a failed create gets this long too
 ```
 
 `~/.config/agent-deck/azure-vm.conf` (parsed, never sourced; see the top of

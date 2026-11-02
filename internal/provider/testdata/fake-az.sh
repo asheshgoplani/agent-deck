@@ -18,6 +18,7 @@
 #                   after `resource list` answers (someone retagged it)
 # Resources live in a subscription (--subscription, default all zeros) and
 # a resource group; show and list see only the ones in the asked scope.
+#   FAKE_AZ_DELETE_DELAY  seconds each `resource delete` takes (slow cloud)
 #   FAKE_AZ_DEFAULT_SUB  az's current subscription (`az account set`), used
 #                   when a call has no --subscription
 s="${FAKE_AZ_STATE:?FAKE_AZ_STATE not set}"
@@ -169,6 +170,8 @@ elif w[:2] == ["resource", "show"]:
         not_found(opt("--ids"))
     print(json.dumps(r))
 elif w[:2] == ["resource", "delete"]:
+    import time
+    time.sleep(float(os.environ.get("FAKE_AZ_DELETE_DELAY", "0") or 0))
     r = find_id(opt("--ids"))
     if r is None:
         not_found(opt("--ids"))
