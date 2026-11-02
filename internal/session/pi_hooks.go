@@ -57,7 +57,12 @@ func PiHookExtensionVersion() int { return piHookExtensionVersion }
 // directory from PI_CODING_AGENT_DIR and defaults to ~/.pi/agent; extensions
 // live in the "extensions" subdirectory of it.
 func PiExtensionsDir() string {
-	if dir := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); dir != "" {
+	return piExtensionsDirOf(os.Getenv("PI_CODING_AGENT_DIR"))
+}
+
+// piExtensionsDirOf is PiExtensionsDir for a given PI_CODING_AGENT_DIR value.
+func piExtensionsDirOf(agentDir string) string {
+	if dir := strings.TrimSpace(agentDir); dir != "" {
 		return sandboxedToolDir("Pi extensions dir (PI_CODING_AGENT_DIR)", filepath.Join(dir, "extensions"))
 	}
 	dir, err := sandboxguard.HomeJoin("Pi extensions dir (~/.pi/agent/extensions)", ".pi", "agent", "extensions")
@@ -298,10 +303,16 @@ func piSocketEnvForLaunch(profile, instanceID string, env []string) (string, PiS
 
 // piSocketLaunch is piSocketEnvForLaunch for a pi the caller already resolved.
 // The extension is what serves the socket, so a missing or outdated one comes
-// first, the same order `pi-hooks status` prints.
+// first, the same order `pi-hooks status` prints. It is looked for where this
+// pi loads extensions from: env's PI_CODING_AGENT_DIR, which carries a
+// command's own leading assignment, else this process's.
 func piSocketLaunch(profile, instanceID string, env []string, bin string, found bool) (string, PiSocketInfo) {
+	extDir := PiExtensionsDir()
+	if agentDir, ok := envValueOf(env, "PI_CODING_AGENT_DIR"); ok {
+		extDir = piExtensionsDirOf(agentDir)
+	}
 	var info PiSocketInfo
-	switch state, version := InspectPiHooks(PiExtensionsDir()); state {
+	switch state, version := InspectPiHooks(extDir); state {
 	case PiHooksNotInstalled, PiHooksForeign:
 		info = PiSocketInfo{Reason: "extension_not_installed", Detail: "extension not installed"}
 	case PiHooksOutdated:
@@ -320,8 +331,9 @@ func piSocketLaunch(profile, instanceID string, env []string, bin string, found 
 }
 
 // piSocketLaunchPrefix is the shell prefix a pi launch of command carries for
-// the wake socket: the quoted assignment and a space, or "" when it is off. The
-// pi probed is the one the pane will run: the command's own word on the pane's
+// the wake socket: the quoted assignment and a space, or an empty assignment
+// when a local launch leaves it off (or "" for SSH and sandboxed ones). The pi
+// probed is the one the pane will run: the command's own word on the pane's
 // PATH and with the command's leading assignments, as openCodeLaunchBinary
 // resolves opencode.
 func (i *Instance) piSocketLaunchPrefix(command string) string {
@@ -340,19 +352,28 @@ func (i *Instance) piSocketLaunchPrefix(command string) string {
 	// What this launch exports is what the daemon must respect.
 	i.PiSocketExported = envVar != ""
 	if envVar == "" {
-		return ""
+		// Explicitly empty, so the pane does not inherit a value from the tmux
+		// server's environment (a server first started inside a socket-exported
+		// pi pane, as with CLAUDE_JOB_DIR in #2683); the extension reads empty as off.
+		return "AGENTDECK_PI_SOCKET= "
 	}
 	return "AGENTDECK_PI_SOCKET=" + shellescape.Quote(info.Path) + " "
 }
 
 // pathOf returns the PATH carried by env.
 func pathOf(env []string) string {
+	v, _ := envValueOf(env, "PATH")
+	return v
+}
+
+// envValueOf returns key's value in env: the last assignment wins, as exec's does.
+func envValueOf(env []string, key string) (string, bool) {
 	for i := len(env) - 1; i >= 0; i-- {
-		if v, ok := strings.CutPrefix(env[i], "PATH="); ok {
-			return v
+		if v, ok := strings.CutPrefix(env[i], key+"="); ok {
+			return v, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // compareVersions compares two x.y.z[-prerelease] strings by semver precedence:

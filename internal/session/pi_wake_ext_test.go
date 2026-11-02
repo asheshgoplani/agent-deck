@@ -894,6 +894,10 @@ exit "${PITEST_HOOK_EXIT:-0}"
 	)
 	if !opts.noSocketEnv {
 		cmd.Env = append(cmd.Env, "AGENTDECK_PI_SOCKET="+w.sock)
+	} else {
+		// Explicitly empty, as a socket-off launch exports it: a value inherited
+		// from the caller (a test run inside a socket-exported pi) must not reach it.
+		cmd.Env = append(cmd.Env, "AGENTDECK_PI_SOCKET=")
 	}
 	if opts.hookDelay != "" {
 		cmd.Env = append(cmd.Env, "PITEST_HOOK_DELAY="+opts.hookDelay)
