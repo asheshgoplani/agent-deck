@@ -194,10 +194,12 @@ type sandboxDestroyedMsg struct {
 }
 
 // destroySandboxCmd destroys sandbox remote remoteName after the user agreed
-// to stop `confirmed` sessions. It follows the CLI's `remote destroy` rule:
-// the sessions are listed again first, and when they cannot be listed, or
-// more run now than the user agreed to stop, nothing is changed.
-func (h *Home) destroySandboxCmd(remoteName string, confirmed int) tea.Cmd {
+// to destroy sandbox confirmedID and stop `confirmed` sessions. It follows
+// the CLI's `remote destroy` rule: the sessions are listed again first, and
+// when they cannot be listed, or more run now than the user agreed to stop,
+// nothing is changed. Nothing is changed either when the remote now points
+// at another sandbox than the one confirmed.
+func (h *Home) destroySandboxCmd(remoteName, confirmedID string, confirmed int) tea.Cmd {
 	deps := h.sandboxDestroyDeps
 	if deps == nil {
 		deps = defaultSandboxDestroyDeps()
@@ -235,6 +237,11 @@ func (h *Home) destroySandboxCmd(remoteName string, confirmed int) tea.Cmd {
 			return msg
 		}
 		msg.sandboxID, msg.provider = rc.SandboxID, rc.Provider
+		if rc.SandboxID != confirmedID {
+			msg.refused = true
+			msg.err = fmt.Errorf("remote %s now points at sandbox %s, not the sandbox %s you agreed to destroy", remoteName, rc.SandboxID, confirmedID)
+			return msg
+		}
 		listCtx, cancelList := context.WithTimeout(baseCtx, rc.GetCommandTimeout())
 		sessions, err := deps.listSessions(listCtx, remoteName, rc)
 		cancelList()

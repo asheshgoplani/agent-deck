@@ -354,7 +354,7 @@ func TestSandboxDestroy_SecondDestroyOfTheSameRemoteIsRefused(t *testing.T) {
 	}
 	assertNotice(t, h, "sb1", "already being destroyed")
 
-	second, ok := h.destroySandboxCmd("sb1", 0)().(sandboxDestroyedMsg)
+	second, ok := h.destroySandboxCmd("sb1", "abc123def456", 0)().(sandboxDestroyedMsg)
 	if !ok || !second.refused || second.err == nil || !strings.Contains(second.err.Error(), "already being destroyed") {
 		t.Fatalf("second destroy = %+v, want a refusal saying it is already being destroyed", second)
 	}
@@ -383,4 +383,25 @@ func TestSandboxDestroy_RefusedWhileAnotherAgentDeckHoldsTheRemote(t *testing.T)
 		t.Fatalf("calls = %v, want none while another agent-deck holds the remote", got)
 	}
 	assertNotice(t, h, "Sandbox Not Destroyed", "busy", "Nothing was changed")
+}
+
+// The user confirmed destroying sandbox abc123def456. If the remote points
+// at another sandbox by the time the destroy runs (destroyed and made again
+// under the same name), nothing is changed.
+func TestSandboxDestroy_RefusesWhenTheSandboxIsNotTheConfirmedOne(t *testing.T) {
+	h := sandboxHostHome(t, nil)
+	rec := &destroyRecorder{}
+	h.sandboxDestroyDeps = rec.deps()
+	h, _ = pressSandboxKey(h, "d")
+	if err := session.SaveUserConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{
+		"sb1": {Host: "agentdeck-sb-sb1", Provider: "docker", SandboxID: "fff999eee888"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	h, cmd := pressSandboxKey(h, "y")
+	h = drainCmd(t, h, cmd)
+	if got := rec.got(); len(got) != 0 {
+		t.Fatalf("calls = %v, want none: the remote is not the sandbox the user confirmed", got)
+	}
+	assertNotice(t, h, "Sandbox Not Destroyed", "abc123def456", "fff999eee888", "Nothing was changed")
 }
