@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -261,5 +262,44 @@ func TestPiLedgerE2E_ABusyPiParentIsRungOnceForItsChildsRunWhenItSettles(t *test
 	}
 	if n := sock.count(); n != 1 {
 		t.Errorf("doorbells after the busy pi parent settled = %d, want exactly 1", n)
+	}
+}
+
+// Review item 1: a pi started inside a listed pi parent's pane (a subagent's
+// `pi -p`, a script) inherits AGENTDECK_INSTANCE_ID and AGENTDECK_PI_SOCKET,
+// and the parent's pid in AGENTDECK_PI_HOST_PID, so its extension marks its
+// payloads pane_guest. Through the real hook handler and daemon
+// passes, that guest's run start is given none of the parent's records, and a
+// receipt it echoes is never applied, so the parent's own next run start
+// still carries them.
+func TestPiLedgerE2E_APiStartedInsideTheParentsPaneNeitherTakesNorAcksItsRecords(t *testing.T) {
+	e := newPiLedgerE2EFor(t, "pi")
+	e.runOnce()
+	e.pass()
+
+	// The guest's run start, as its extension sends it.
+	guest := captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "guest-run", "pi-guest-sess", "before_agent_start",
+			`,"prompt":"summarize the diff","pane_guest":true`)
+	})
+	if strings.Contains(guest, "Built and tested.") {
+		t.Errorf("the guest pi was given the parent's records: %q", guest)
+	}
+	// Whatever token its stdout carried, the guest echoes it on turn_start
+	// (the extension does so for any context it injected), and the daemon ingests it.
+	token := ""
+	if m := regexp.MustCompile(`<!-- agent-deck-delivery:([0-9A-Za-z]+) -->`).FindStringSubmatch(guest); m != nil {
+		token = m[1]
+	}
+	e.hookAs(e.parent.ID, "guest-run", "pi-guest-sess", "turn_start",
+		fmt.Sprintf(`,"injected_token":%q,"pane_guest":true`, token))
+	e.pass()
+
+	// The launched pi's next run start still carries the child's run.
+	parent := captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "parent-run", "pi-parent-sess", "before_agent_start", `,"prompt":"what is next?"`)
+	})
+	if !strings.Contains(parent, "Built and tested.") {
+		t.Fatalf("the launched pi's run start lacks the record a guest pi took and acknowledged: %q", parent)
 	}
 }

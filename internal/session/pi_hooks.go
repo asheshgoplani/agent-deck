@@ -332,7 +332,8 @@ func piSocketLaunch(profile, instanceID string, env []string, bin string, found 
 // when a local launch leaves it off (or "" for SSH and sandboxed ones). The pi
 // probed is the one the pane will run: the command's own word on the pane's
 // PATH and with the command's leading assignments, as openCodeLaunchBinary
-// resolves opencode.
+// resolves opencode. A local launch also sets AGENTDECK_PI_HOST_PID empty
+// (piHostPidReset), so the pi it starts is never a guest of the pane.
 func (i *Instance) piSocketLaunchPrefix(command string) string {
 	// The socket is for local launches: the extension of an SSH or sandboxed pi
 	// runs in another filesystem and process namespace, which the host daemon
@@ -352,10 +353,19 @@ func (i *Instance) piSocketLaunchPrefix(command string) string {
 		// Explicitly empty, so the pane does not inherit a value from the tmux
 		// server's environment (a server first started inside a socket-exported
 		// pi pane, as with CLAUDE_JOB_DIR in #2683); the extension reads empty as off.
-		return "AGENTDECK_PI_SOCKET= "
+		return piHostPidReset + "AGENTDECK_PI_SOCKET= "
 	}
-	return "AGENTDECK_PI_SOCKET=" + shellescape.Quote(info.Path) + " "
+	return piHostPidReset + "AGENTDECK_PI_SOCKET=" + shellescape.Quote(info.Path) + " "
 }
+
+// piHostPidReset empties AGENTDECK_PI_HOST_PID for a local pi launch. The
+// extension of the pi agent-deck launched writes its own pid there, and a pi
+// that inherits another pid is a guest of the pane: it serves no socket and is
+// given none of the ledger's context. A tmux server first started inside a pi
+// pane carries that pid in its environment, so without this a later pane's pi
+// would inherit it and be taken for a guest. SSH and sandboxed launches do not
+// take the local tmux server's environment.
+const piHostPidReset = "AGENTDECK_PI_HOST_PID= "
 
 // pathOf returns the PATH carried by env.
 func pathOf(env []string) string {

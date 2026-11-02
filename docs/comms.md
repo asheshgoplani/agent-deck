@@ -644,6 +644,24 @@ exported a socket path in `AGENTDECK_PI_SOCKET`, on every launch path including
 a restart. The socket is for local launches only: an SSH or sandboxed pi exports nothing and is
 recorded as such, so its doorbell is typed as before. A pi with no record is one an
 older binary launched and is treated as launched without it.
+
+Only the pi agent-deck launched consumes the ledger. Its extension writes its
+own pid into `AGENTDECK_PI_HOST_PID` in its process environment, and a local
+launch sets that variable empty, so a launched or restarted pi is the
+host. A pi started inside its pane (a subagent's `pi -p`, a script) inherits
+`AGENTDECK_INSTANCE_ID`, `AGENTDECK_PI_SOCKET` and that pid; its extension finds
+a pid not its own, serves no socket, and marks its payloads `pane_guest`.
+`hook-handler` gives such a run no ledger context, spools no prompt start for
+it and applies none of its receipts, so the parent's records stay pending for
+the parent's own next run. The launched pi binds its socket even when an
+earlier pi of the session (one still shutting down after a restart) holds the
+path: the new socket replaces it. Not covered: a guest whose environment was
+stripped of `AGENTDECK_PI_HOST_PID` but kept `AGENTDECK_INSTANCE_ID` counts as
+the host; a nested pi or Claude can still run `agent-deck msg read` or
+`inbox drain` as the parent with the inherited `AGENTDECK_INSTANCE_ID`, as on
+main; and a guest's status and `agent_settled` edges are still credited to the
+parent, as on main, so the conductor can be told the parent finished when only
+the guest did.
 Claude is unchanged, since Claude itself consumes its stdout.
 
 **One leg for every doorbell.** The inbox wake, the remote talkback scheduler
