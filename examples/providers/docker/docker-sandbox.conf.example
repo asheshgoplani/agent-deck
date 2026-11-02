@@ -9,7 +9,8 @@
 # project_name = repo
 
 # A Claude Code login for claude sessions on the sandbox: a file holding a
-# token from 'claude setup-token', mode 0600, owned by you.
+# token from 'claude setup-token' on its one and only line (no comment,
+# no blank line), mode 0600, owned by you.
 # claude_token_file = /home/you/.config/agent-deck/claude-token
 
 # Copy this agent-deck binary (linux, the sandbox's CPU) into each new

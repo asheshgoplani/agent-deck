@@ -7,6 +7,7 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 const fakeToken = "fake-oauth-FAKEtokenForTests_0123456789abcdefABCDEF"
@@ -53,7 +57,14 @@ create)
 cp | start | rm) cat >/dev/null 2>&1 || true ;;
 exec)
 	case "$*" in
-	*agent-deck-sandbox-setup*) cat >"$s/setup.stdin" ;;
+	*agent-deck-sandbox-setup*)
+		cat >"$s/setup.stdin"
+		# FAKE_SETUP: also run the real in-container setup script on that
+		# stdin, with a HOME of its own, so its stderr reaches the provider.
+		if [ -n "${FAKE_SETUP:-}" ]; then
+			mkdir -p "$s/home/shop"
+			HOME="$s/home" "$FAKE_SETUP" <"$s/setup.stdin"
+		fi ;;
 	*/home/dev/.local/bin/agent-deck*) cat >"$s/agent-deck.copied" ;;
 	*ssh_host_ed25519_key.pub*) echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGn3PMci37qtGRr0qkRvnuvhHEkIl6OupFa0wrBJQenu root@x" ;;
 	*) cat >/dev/null ;;
@@ -100,7 +111,23 @@ type providerRun struct {
 	state          string
 }
 
-func runExampleCreate(t *testing.T, conf string) providerRun {
+func runExampleCreate(t *testing.T, conf string, extraEnv ...string) providerRun {
+	t.Helper()
+	env, state := exampleCreateEnv(t, conf, extraEnv...)
+	// #nosec G204 -- the example provider script from this repo.
+	cmd := exec.Command(filepath.Join(exampleDockerDir(t), "provider"), "create")
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(`{"protocol":1,"action":"create","name":"t1","labels":{"agent-deck/remote":"t1"}}`)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	return providerRun{stdout: out.String(), stderr: errb.String(), err: err, state: state}
+}
+
+// exampleCreateEnv sets up a fake docker, a provider config file and a
+// banner-only sshd, and returns the provider's env and the fake docker's
+// state dir.
+func exampleCreateEnv(t *testing.T, conf string, extraEnv ...string) (env []string, state string) {
 	t.Helper()
 	needTools(t, "bash", "python3", "ssh-keygen", "timeout", "stat")
 	root := t.TempDir()
@@ -117,9 +144,7 @@ func runExampleCreate(t *testing.T, conf string) providerRun {
 	if err := os.WriteFile(confPath, []byte(conf), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// #nosec G204 -- the example provider script from this repo.
-	cmd := exec.Command(filepath.Join(exampleDockerDir(t), "provider"), "create")
-	cmd.Env = []string{
+	return append([]string{
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
 		"HOME=" + root,
 		"TMPDIR=" + tmp,
@@ -128,12 +153,7 @@ func runExampleCreate(t *testing.T, conf string) providerRun {
 		"AGENTDECK_SANDBOX_CONFIG=" + confPath,
 		"AGENTDECK_SANDBOX_IMAGE=agent-deck-sandbox:test",
 		"AGENTDECK_SANDBOX_WAIT=10",
-	}
-	cmd.Stdin = strings.NewReader(`{"protocol":1,"action":"create","name":"t1","labels":{"agent-deck/remote":"t1"}}`)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
-	return providerRun{stdout: out.String(), stderr: errb.String(), err: err, state: state}
+	}, extraEnv...), state
 }
 
 func writeToken(t *testing.T, mode os.FileMode) string {
@@ -240,8 +260,9 @@ func runSetup(t *testing.T, stdin string) (home, stderr string, err error) {
 	cmd := exec.Command(filepath.Join(exampleDockerDir(t), "sandbox-setup.sh"))
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}
 	cmd.Stdin = strings.NewReader(stdin)
+	// stdout and stderr together: a secret must reach neither.
 	var errb bytes.Buffer
-	cmd.Stderr = &errb
+	cmd.Stdout, cmd.Stderr = &errb, &errb
 	err = cmd.Run()
 	return home, errb.String(), err
 }
@@ -314,5 +335,98 @@ func TestDockerExampleSetup_RejectsAMalformedToken(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".config", "agent-deck-sandbox", "claude.env")); err == nil {
 		t.Fatal("claude.env written for a malformed token")
+	}
+}
+
+// leakToken is an obviously fake token for the token-leak tests; "FAKE-DEMO"
+// is what must never show in any output.
+const leakToken = "FAKE-DEMO-TOKEN-0000-not-a-real-key"
+
+// badTokenFiles are token files that do not hold exactly one token line.
+// Each used to put the token on a setup line of its own, which the setup
+// script then printed as an "unknown setup line".
+var badTokenFiles = map[string]string{
+	"comment line first": "# my claude token\n" + leakToken + "\n",
+	"blank first line":   "\n" + leakToken + "\n",
+	"two lines":          leakToken + "\n" + leakToken + "-second\n",
+}
+
+func TestDockerExampleSetup_TokenOverSeveralLinesIsNeverPrinted(t *testing.T) {
+	for shape, body := range badTokenFiles {
+		t.Run(shape, func(t *testing.T) {
+			home, out, err := runSetup(t, "project_name=shop\nproject_copied=1\nclaude_token="+body)
+			if strings.Contains(out, "FAKE-DEMO") {
+				t.Fatal("setup printed the token (output not shown)")
+			}
+			if err == nil {
+				t.Fatalf("setup accepted a token spread over more than one line; output: %s", out)
+			}
+			if _, err := os.Stat(filepath.Join(home, ".config", "agent-deck-sandbox", "claude.env")); err == nil {
+				t.Fatal("claude.env written for a bad token")
+			}
+		})
+	}
+}
+
+// The provider refuses a token file that is not exactly one line before it
+// creates anything, and the token shows nowhere: not in the provider's
+// stdout or stderr, not in docker's argv, not in the error agent-deck shows
+// (TUI notice, CLI) and not in agent-deck's debug log. The fake docker runs
+// the real setup script, so a token that slipped through would reach the
+// provider's stderr the way it does in a real container.
+func TestDockerExampleProvider_TokenFileMustBeOneLineAndIsNeverShown(t *testing.T) {
+	setup := filepath.Join(exampleDockerDir(t), "sandbox-setup.sh")
+	for shape, body := range badTokenFiles {
+		t.Run(shape, func(t *testing.T) {
+			tok := filepath.Join(t.TempDir(), "claude-token")
+			if err := os.WriteFile(tok, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			conf := "project_name = shop\nclaude_token_file = " + tok + "\n"
+
+			run := runExampleCreate(t, conf, "FAKE_SETUP="+setup)
+			argv, _ := os.ReadFile(filepath.Join(run.state, "argv.log"))
+			for name, text := range map[string]string{"provider stdout": run.stdout, "provider stderr": run.stderr, "docker argv": string(argv)} {
+				if strings.Contains(text, "FAKE-DEMO") {
+					t.Fatalf("the token leaked into the %s (not shown)", name)
+				}
+			}
+			if run.err == nil {
+				t.Fatal("create succeeded with a token file that is not exactly one line")
+			}
+			if !strings.Contains(run.stderr, "exactly one line") {
+				t.Fatalf("stderr does not say why: %s", run.stderr)
+			}
+			if strings.Contains(string(argv), "create") {
+				t.Fatal("a container was created although the token file was refused")
+			}
+
+			// The same through agent-deck's provider client, with its
+			// debug log on.
+			logDir := t.TempDir()
+			logging.Init(logging.Config{Debug: true, LogDir: logDir, Level: "debug", Format: "json"})
+			t.Cleanup(func() { logging.Shutdown(); logging.Init(logging.Config{}) })
+			env, _ := exampleCreateEnv(t, conf, "FAKE_SETUP="+setup)
+			for _, kv := range env {
+				k, v, _ := strings.Cut(kv, "=")
+				t.Setenv(k, v)
+			}
+			c := &Client{Name: "docker", Config: session.ProviderConfig{Command: filepath.Join(exampleDockerDir(t), "provider"), TimeoutSeconds: 30, CreateTimeoutSeconds: 30}}
+			_, err := c.Create(context.Background(), "t1", map[string]string{"agent-deck/remote": "t1"})
+			if err == nil {
+				t.Fatal("client create succeeded with a bad token file")
+			}
+			if strings.Contains(err.Error(), "FAKE-DEMO") {
+				t.Fatal("the token leaked into the error agent-deck shows (not shown)")
+			}
+			logging.Shutdown()
+			entries, _ := os.ReadDir(logDir)
+			for _, e := range entries {
+				data, _ := os.ReadFile(filepath.Join(logDir, e.Name()))
+				if bytes.Contains(data, []byte("FAKE-DEMO")) {
+					t.Fatalf("the token leaked into the debug log %s (not shown)", e.Name())
+				}
+			}
+		})
 	}
 }

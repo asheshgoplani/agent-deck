@@ -14,7 +14,7 @@
 #   project_copied=1      the provider already copied a folder there
 #   claude_token=<token>  a CLAUDE_CODE_OAUTH_TOKEN (claude setup-token)
 # Output: nothing on stdout; one summary line on stderr. The token is never
-# printed.
+# printed, and an error never shows the content of a setup line.
 set -euo pipefail
 umask 077
 
@@ -27,16 +27,29 @@ name=demo
 git_url=""
 copied=0
 token=""
+have_token=0
+n=0
+# Errors name the line by number only, never by content: a token file with
+# more than one line puts part of the token on a line of its own.
 while IFS= read -r line || [ -n "$line" ]; do
+	n=$((n + 1))
 	case "$line" in
 	project_name=*) name="${line#*=}" ;;
 	project_git=*) git_url="${line#*=}" ;;
 	project_copied=1) copied=1 ;;
-	claude_token=*) token="${line#*=}" ;;
+	claude_token=*)
+		[ "$have_token" = 0 ] || die "setup line $n: a second claude_token line (not shown)"
+		have_token=1
+		token="${line#*=}"
+		case "$token" in
+		"" | "#"* | [[:space:]]*) die "setup line $n: the claude token is empty, a comment or starts with a space; the token file must hold exactly one line, the token (not shown)" ;;
+		esac
+		;;
 	"") ;;
-	*) die "unknown setup line: ${line%%=*}" ;;
+	*) die "unknown setup line $n (not shown); a claude token file must hold exactly one line" ;;
 	esac
 done
+line=""
 
 [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid project name"
 project="$HOME/$name"

@@ -24,7 +24,8 @@
 #                                                         URL or folder, else "demo")
 #   claude_token_file = /abs/path                         file holding a CLAUDE_CODE_OAUTH_TOKEN
 #                                                         (claude setup-token); must be a regular
-#                                                         file you own, mode 0600 or 0400
+#                                                         file you own, mode 0600 or 0400, holding
+#                                                         exactly one line: the token
 #   agent_deck_binary = /abs/path/agent-deck              copy this linux binary in at create, so
 #                                                         agent-deck need not download a release
 # Each key can also come from env: AGENTDECK_SANDBOX_PROJECT_GIT, _PROJECT_DIR,
@@ -308,7 +309,8 @@ load_config() {
 }
 
 # check_token_file <path>: a regular file (not a symlink) the current user
-# owns, with no group or other permission bits. Never reads it.
+# owns, with no group or other permission bits, holding exactly one line.
+# Never prints any of it.
 check_token_file() {
 	local f="$1" mode
 	[ -e "$f" ] || die "claude_token_file $f does not exist"
@@ -320,6 +322,11 @@ check_token_file() {
 	*) die "claude_token_file $f has mode $mode; it must be 0600 or 0400" ;;
 	esac
 	[ -s "$f" ] || die "claude_token_file $f is empty"
+	# Exactly one line holding the token: no comment, no blank line, no
+	# second line. grep -c and grep -q print no content, so the token is
+	# never shown, even in the error.
+	[ "$(grep -c '' -- "$f")" = 1 ] && grep -q '[^[:space:]]' -- "$f" && ! grep -q '^[[:space:]]*#' -- "$f" ||
+		die "claude_token_file $f must hold exactly one line, the token, with no comment or blank line (content not shown)"
 }
 
 # setup_input: the setup script's stdin. The token goes from its file into

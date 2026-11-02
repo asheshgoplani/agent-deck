@@ -85,7 +85,9 @@ GitHub API limit (60 requests an hour per IP) is used up.
 
 `claude_token_file` holds a token from `claude setup-token` (a bare token or a
 `CLAUDE_CODE_OAUTH_TOKEN=...` line). The provider refuses the file unless it
-is a regular file you own with mode 0600 or 0400. At create it pipes the
+is a regular file you own with mode 0600 or 0400 that holds exactly one line,
+the token: no comment, no blank line. Its errors never show the file's
+content, and neither do the setup script's. At create it pipes the
 token into the running container (never argv, never the image, never a log),
 where the setup script writes it to `~/.config/agent-deck-sandbox/claude.env`
 (0600) and sets `[claude] env_file` in the sandbox's agent-deck config, so
