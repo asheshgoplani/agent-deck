@@ -213,8 +213,8 @@ func TestDeliveryE2E_PiSocketWakeLeavesTheForeignDraftByteIdentical(t *testing.T
 	}
 }
 
-// With the socket off (pi below 1.2.0: the launch exports no AGENTDECK_PI_SOCKET
-// and the extension binds nothing), the doorbell is typed into the composer as
+// With the socket off (pi below 1.2.0: the launch exports AGENTDECK_PI_SOCKET
+// empty and the extension binds nothing), the doorbell is typed into the composer as
 // before and lands once.
 func TestDeliveryE2E_PiTypedFallbackLandsWhenTheSocketIsOff(t *testing.T) {
 	testutil.RequireTmux(t)

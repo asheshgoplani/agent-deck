@@ -133,7 +133,7 @@ func (f *deliverFixture) launchPi(t *testing.T, version string, exports bool) {
 	writeFakePi(t, bin, "echo "+version)
 	f.parent.IdentityInjectionDisabled = true
 	cmd := f.parent.buildPiCommand("pi")
-	if has := strings.Contains(cmd, "AGENTDECK_PI_SOCKET="); has != exports {
+	if has := exportsPiSocket(cmd); has != exports {
 		t.Fatalf("test setup: pi %s launch exports the socket = %v, want %v (%q)", version, has, exports, cmd)
 	}
 	storage, err := NewStorageWithProfile(f.profileName())
