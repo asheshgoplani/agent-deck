@@ -80,15 +80,19 @@ func commsConsumerList() []string {
 // commsConsumes reports whether the ledger delivers to inst: the ledger is
 // on, inst is listed (id, title or "*") and its harness has the delivery
 // path the canary needs: prompt-time injection, a Stop hook and a typed
-// wake. That is Claude, and pi with extension v5 (its before_agent_start
-// hook injects and its socket rings the doorbell); a Codex parent (no prompt
-// hook is installed for it) stays on the inbox, while Codex children are
-// recorded with their text like any other.
+// wake. That is Claude, and a pi whose last launch exported a socket path
+// (PiSocketExported: pi >= 1.2.0 and a current v5 extension, launched
+// locally), so its before_agent_start hook injects and its socket rings the
+// doorbell. A listed pi launched without it (older pi or extension, SSH or
+// sandbox, socket off) stays on the inbox, as before, and is enrolled once a
+// launch exports the socket. A Codex parent (no prompt hook is installed for
+// it) stays on the inbox, while Codex children are recorded with their text
+// like any other.
 // A title selects a parent only when exactly one session of the profile
 // carries it (titles is the profile's title -> count), so a second
 // session named like the conductor is never enrolled by accident.
 func commsConsumes(inst *Instance, list []string, titles map[string]int) bool {
-	if inst == nil || len(list) == 0 || !(IsClaudeCompatible(inst.Tool) || inst.Tool == "pi") {
+	if inst == nil || len(list) == 0 || !(IsClaudeCompatible(inst.Tool) || (inst.Tool == "pi" && inst.PiSocketExported)) {
 		return false
 	}
 	for _, v := range list {
