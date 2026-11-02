@@ -57,6 +57,15 @@ func writeFakePi(t *testing.T, dir, body string) string {
 	return path
 }
 
+// piSocketOff is what a local pi launch with the socket off carries: an
+// explicitly empty assignment, so the pane cannot inherit a value.
+const piSocketOff = "AGENTDECK_PI_SOCKET= "
+
+// exportsPiSocket reports whether a launch command exports a socket path.
+func exportsPiSocket(cmd string) bool {
+	return strings.Contains(cmd, "AGENTDECK_PI_SOCKET=") && !strings.Contains(cmd, piSocketOff)
+}
+
 func expectedPiSocketPath(t *testing.T, profile, instance string) string {
 	t.Helper()
 	runtimeDir, err := agentpaths.ProfileRuntimeDir(profile)
@@ -303,7 +312,7 @@ func TestPiSocketEnvForLaunch_LogsOnceWhenOffNeverWhenOn(t *testing.T) {
 
 // TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn pins the real launch path:
 // buildPiCommand exports AGENTDECK_PI_SOCKET when pi is at or above 1.2.0, and
-// leaves it out (typed wake only, one off record) otherwise.
+// exports it empty (typed wake only, one off record) otherwise.
 func TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn(t *testing.T) {
 	piSocketShortData(t)
 	installPiExtension(t)
@@ -325,8 +334,8 @@ func TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn(t *testing.T) {
 	buf = captureSessionLogJSON(t)
 	writeFakePi(t, bin, `echo 1.1.0`)
 	off := inst.buildPiCommand("pi")
-	if strings.Contains(off, "AGENTDECK_PI_SOCKET") {
-		t.Errorf("buildPiCommand with pi 1.1.0 = %q, want no AGENTDECK_PI_SOCKET", off)
+	if !strings.Contains(off, piSocketOff) || exportsPiSocket(off) {
+		t.Errorf("buildPiCommand with pi 1.1.0 = %q, want an empty AGENTDECK_PI_SOCKET", off)
 	}
 	if recs := piSocketOffRecords(t, buf); len(recs) != 1 {
 		t.Errorf("an off launch logged %d off records, want exactly 1:\n%s", len(recs), buf.String())
@@ -370,7 +379,7 @@ func TestBuildPiCommand_ProbesPiOnThePanesPath(t *testing.T) {
 		writeFakePi(t, proc, `echo 1.3.0`)
 		buf := captureSessionLogJSON(t)
 		got := inst.buildPiCommand("pi")
-		if strings.Contains(got, "AGENTDECK_PI_SOCKET") {
+		if exportsPiSocket(got) {
 			t.Errorf("buildPiCommand exported the socket for a pane whose pi is 1.1.0: %q", got)
 		}
 		recs := piSocketOffRecords(t, buf)
@@ -403,7 +412,7 @@ func TestBuildPiCommand_ProbesPiOnThePanesPath(t *testing.T) {
 		for _, command := range []string{nightly, nightly + " --model small"} {
 			buf := captureSessionLogJSON(t)
 			got := inst.buildPiCommand(command)
-			if strings.Contains(got, "AGENTDECK_PI_SOCKET") {
+			if exportsPiSocket(got) {
 				t.Errorf("buildPiCommand(%q) exported the socket for a pi-nightly that prints 1.1.0: %q", command, got)
 			}
 			recs := piSocketOffRecords(t, buf)
@@ -425,7 +434,7 @@ func TestBuildPiCommand_ProbesPiOnThePanesPath(t *testing.T) {
 		writeFakePi(t, spawn, `echo 1.1.0`)
 		writeFakePi(t, proc, `echo 1.3.0`)
 		got := inst.buildPiCommand("pi")
-		if strings.Contains(got, "AGENTDECK_PI_SOCKET") {
+		if exportsPiSocket(got) {
 			t.Errorf("a bare pi resolved on the daemon's PATH, not the pane's: %q", got)
 		}
 		_ = os.Remove(filepath.Join(spawn, "pi"))
@@ -438,7 +447,7 @@ func TestBuildPiCommand_ProbesPiOnThePanesPath(t *testing.T) {
 		writeFakePi(t, proc, `echo 1.3.0`)
 		buf := captureSessionLogJSON(t)
 		got := inst.buildPiCommand("PATH=" + old + ":$PATH pi")
-		if strings.Contains(got, "AGENTDECK_PI_SOCKET") {
+		if exportsPiSocket(got) {
 			t.Errorf("buildPiCommand exported the socket for a command whose PATH= puts pi 1.1.0 first: %q", got)
 		}
 		if recs := piSocketOffRecords(t, buf); len(recs) != 1 || recs[0]["reason"] != "pi_too_old" {
@@ -495,8 +504,49 @@ func TestPiSocketEnvForLaunch_NamesAMissingOrOutdatedExtension(t *testing.T) {
 		t.Setenv("PATH", bin+":/usr/bin:/bin")
 		writeFakePi(t, bin, `echo 1.3.0`)
 		inst := &Instance{ID: "inst-ext", Tool: "pi", IdentityInjectionDisabled: true}
-		if got := inst.buildPiCommand("pi"); strings.Contains(got, "AGENTDECK_PI_SOCKET") {
+		if got := inst.buildPiCommand("pi"); exportsPiSocket(got) {
 			t.Errorf("buildPiCommand exported the socket with no extension installed: %q", got)
+		}
+	})
+}
+
+// The extension is looked for where the launched pi loads it from: a leading
+// PI_CODING_AGENT_DIR= in the command wins over this process's, both ways.
+func TestBuildPiCommand_ExtensionCheckHonoursTheCommandsPiCodingAgentDir(t *testing.T) {
+	piSocketShortData(t)
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	writeFakePi(t, bin, `echo 1.3.0`)
+	inst := &Instance{ID: "inst-agentdir", Tool: "pi", IdentityInjectionDisabled: true}
+	want := "AGENTDECK_PI_SOCKET=" + expectedPiSocketPath(t, sessionProfileEnvValue(), inst.ID)
+
+	t.Run("installed in this process's dir, the command points pi at another", func(t *testing.T) {
+		installPiExtension(t)
+		if got := inst.buildPiCommand("pi"); !strings.Contains(got, want) {
+			t.Fatalf("control: a plain pi with the extension installed must export the socket: %q", got)
+		}
+		buf := captureSessionLogJSON(t)
+		got := inst.buildPiCommand("PI_CODING_AGENT_DIR=/alt pi")
+		if exportsPiSocket(got) || inst.PiSocketExported {
+			t.Errorf("exported the socket for a pi that loads its extensions from /alt (flag %v): %q", inst.PiSocketExported, got)
+		}
+		if recs := piSocketOffRecords(t, buf); len(recs) != 1 || recs[0]["reason"] != "extension_not_installed" {
+			t.Errorf("off records = %v, want one extension_not_installed", recs)
+		}
+	})
+
+	t.Run("installed only in the command's dir", func(t *testing.T) {
+		t.Setenv("PI_CODING_AGENT_DIR", t.TempDir()) // nothing installed here
+		alt := t.TempDir()
+		if _, err := InstallPiHooks(filepath.Join(alt, "extensions")); err != nil {
+			t.Fatal(err)
+		}
+		if got := inst.buildPiCommand("pi"); exportsPiSocket(got) {
+			t.Fatalf("control: a plain pi without the extension must not export the socket: %q", got)
+		}
+		command := "PI_CODING_AGENT_DIR=" + alt + " pi"
+		if got := inst.buildPiCommand(command); !strings.Contains(got, want) || !inst.PiSocketExported {
+			t.Errorf("buildPiCommand(%q) = %q (flag %v), want it to contain %q", command, got, inst.PiSocketExported, want)
 		}
 	})
 }
@@ -642,7 +692,7 @@ func TestBuildPiCommand_ProbeCarriesEveryLeadingAssignment(t *testing.T) {
 	inst := &Instance{ID: "inst-assign", Tool: "pi", IdentityInjectionDisabled: true}
 	want := "AGENTDECK_PI_SOCKET=" + expectedPiSocketPath(t, sessionProfileEnvValue(), inst.ID)
 
-	if got := inst.buildPiCommand("pi"); strings.Contains(got, "AGENTDECK_PI_SOCKET") {
+	if got := inst.buildPiCommand("pi"); exportsPiSocket(got) {
 		t.Fatalf("control: with FOO unset the pi is 1.1.0 and the socket must be off: %q", got)
 	}
 	if got := inst.buildPiCommand("FOO=1 pi"); !strings.Contains(got, want) {
