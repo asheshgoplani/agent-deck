@@ -319,6 +319,8 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	}
 	switch {
 	case piRun != "":
+		// The default branch would build this same key (harness pi, identity
+		// piRun); the case names it beside inboxTurnKey's mapping.
 		rec.Key = piRunTurnKey(inst.ID, piRun)
 	case classified:
 		rec.Key = comms.Key(comms.KindTurn, inst.ID, identity)
