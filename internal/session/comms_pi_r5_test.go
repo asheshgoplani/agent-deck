@@ -184,7 +184,7 @@ func TestBuildPiCommand_NeverExportsTheSocketForSSHOrSandboxLaunches(t *testing.
 	fakePiVersion(t, "1.3.0")
 
 	local := &Instance{ID: "inst-local", Tool: "pi", IdentityInjectionDisabled: true}
-	if cmd := local.buildPiCommand("pi"); !strings.Contains(cmd, "AGENTDECK_PI_SOCKET=") || !local.PiSocketExported {
+	if cmd := local.buildPiCommand("pi"); !exportsPiSocket(cmd) || !local.PiSocketExported {
 		t.Fatalf("test setup: a local pi 1.3.0 launch must export the socket (flag %v): %q", local.PiSocketExported, cmd)
 	}
 	for name, mutate := range map[string]func(*Instance){
