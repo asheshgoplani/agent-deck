@@ -441,6 +441,24 @@ func TestCommsDeliver_PiRefusedWakeReturnsToPendingWithoutTyping(t *testing.T) {
 	}
 }
 
+// A transient refusal of the wake that took the last automatic slot gives the
+// slot back, and the retry comes when the debounce ends (60 s), not at the 90 s
+// settle the carry noted for that wake.
+func TestCommsDeliver_PiRefusedLastSlotWakeRetriesAtTheDebounce(t *testing.T) {
+	w := newPiWakeFixture(t, refuseWith("busy"))
+	w.setAutoWakes(t, comms.MaxAutoWakes-1)
+	w.urgent(t, "shipped the build")
+	w.deliver(t, "waiting")
+	if st := w.state(t); w.ext.count() != 1 || len(st.Inflight) != 0 || st.AutoWakes != comms.MaxAutoWakes-1 {
+		t.Fatalf("after the refused last-slot wake: frames %d, %+v", w.ext.count(), st)
+	}
+	w.clock = w.clock.Add(61 * time.Second)
+	w.deliver(t, "waiting")
+	if w.ext.count() != 2 {
+		t.Errorf("the retry after the debounce: %d frames, want 2 (the refused wake's settle deadline held it)", w.ext.count())
+	}
+}
+
 // Max 5: a refusal never consumes the automatic wake cap.
 func TestCommsDeliver_PiRefusedWakeDoesNotConsumeTheAutoWakeCap(t *testing.T) {
 	w := newPiWakeFixture(t, refuseWith("busy"))
