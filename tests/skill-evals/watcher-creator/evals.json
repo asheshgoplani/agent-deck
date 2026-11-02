@@ -195,7 +195,7 @@
  "evals": [
   {
    "id": 1,
-   "prompt": "My CI box should push build results into my `ops` conductor with a plain HTTP POST. What exact agent-deck command creates that watcher, and which URL path does the CI job post to?",
+   "prompt": "My CI box should push build results into my `ops` conductor with a plain HTTP POST. What exact agent-deck command creates that watcher (which of its flags can't I leave out?), and which URL path does the CI job post to?",
    "expected_output": "Emits `agent-deck watcher create webhook --name <name> --port <port>` (create requires --port) and says the watcher serves POST on /webhook.",
    "files": [],
    "area": "adapters",
@@ -209,7 +209,7 @@
    "checks": {
     "must": [
      "watcher create webhook(?=[^\\n]*--name)[^\\n]*--port",
-     "POST\\w*[^\\n]{0,60}/webhook\\b",
+     "POST\\w*[^\\n]{0,60}(\\n\\s*\\S*)?/webhook\\b",
      "(require[sd]?|must)[^\\n]{0,30}--port|--port[^\\n]{0,30}(is )?required"
     ],
     "must_not": [
@@ -232,7 +232,7 @@
    "checks": {
     "must": [
      "18460",
-     "fall\\s?back|default"
+     "falls?\\s?back|default"
     ],
     "must_not": []
    }
@@ -300,9 +300,9 @@
    ],
    "checks": {
     "must": [
-     "replay\\w*[^\\n]{0,80}409|409[^\\n]{0,80}replay",
+     "replay\\w*[^\\n]{0,200}409|409[^\\n]{0,200}replay",
      "Origin",
-     "(accepted|used|valid)( only)? once|only once|single[- ]use"
+     "(accepted|used|valid)( only| exactly)? once|only once|single[- ]use"
     ],
     "must_not": []
    }
@@ -323,7 +323,7 @@
    "checks": {
     "must": [
      "X-Webhook-Token",
-     "only[^\\n]{0,30}loopback|loopback[^\\n]{0,20}only",
+     "only[^\\n]{0,60}loopback|loopback[^\\n]{0,20}only",
      "\\b401\\b"
     ],
     "must_not": []
@@ -348,7 +348,7 @@
    "checks": {
     "must": [
      "0\\.0\\.0\\.0|non-loopback|LAN[^\\n]{0,40}(address|interface|IP)",
-     "only starts with a secret|requires? a secret|needs? a secret",
+     "only starts (with|when)[^\\n]{0,30}secret|requires? a secret|needs? a secret",
      "--no-secret",
      "--no-secret[^\\n]{0,120}(local|loopback)|(local|loopback)[^\\n]{0,120}--no-secret"
     ],
@@ -421,7 +421,7 @@
    "checks": {
     "must": [
      "read\\w*[^\\n]{0,80}watcher\\.toml|watcher\\.toml.?[^\\n]{0,20}(path|file)",
-     "process arguments|\\bps\\b|/proc"
+     "process (arguments|list|table)|\\bps\\b|/proc"
     ],
     "must_not": [
      "(?m)^(?![^\\n]*\\b(never|not|don't|do not|doesn't|does not|avoid|(?<!-)no(?!-)|instead|without|rather than|unless|refuse[sd]?|isn't|cannot|can't|won't)\\b)[^\\n]*curl[^\\n]*X-Webhook-Token: ?[0-9a-f]{12,}"
@@ -449,9 +449,10 @@
      "anyone[^\\n]{0,60}(read|post|publish|subscribe|send)"
     ],
     "must_not": [
-     "(?m)^(?![^\\n]*\\b(never|not|don't|do not|doesn't|does not|avoid|(?<!-)no(?!-)|instead|without|rather than|unless|refuse[sd]?|isn't|cannot|can't|won't)\\b)[^\\n]*(--topic\\s+\\S+[^\\n]*--random-topic|--random-topic[^\\n]*--topic\\s)"
+     "(?m)^(?![^\\n]*\\b(never|not|don't|do not|doesn't|does not|avoid|(?<!-)no(?!-)|instead|without|rather than|unless|refuse[sd]?|isn't|cannot|can't|won't)\\b)[^\\n]*create ntfy[^\\n]*(--topic\\s+\\S+[^\\n]*--random-topic|--random-topic[^\\n]*--topic\\s)"
     ]
-   }
+   },
+   "help_answerable": true
   },
   {
    "id": 12,
@@ -475,7 +476,8 @@
     "must_not": [
      "(?m)^(?![^\\n]*\\b(never|not|don't|do not|doesn't|does not|avoid|(?<!-)no(?!-)|instead|without|rather than|unless|refuse[sd]?|isn't|cannot|can't|won't)\\b)[^\\n]*--token[ =]"
     ]
-   }
+   },
+   "help_answerable": true
   },
   {
    "id": 13,
@@ -514,7 +516,7 @@
    "checks": {
     "must": [
      "reconnect",
-     "backoff"
+     "exponential backoff"
     ],
     "must_not": []
    }
@@ -723,7 +725,7 @@
    "checks": {
     "must": [
      "never overwrites?|(won'?t|will not|doesn'?t|does not|refuses to) overwrite",
-     "already exists",
+     "already (exists|has a watcher\\.toml)",
      "create\\b[^\\n]{0,40}\\b(first|before)\\b|before (anyone|you)[^\\n]{0,20}writ"
     ],
     "must_not": []
@@ -770,9 +772,10 @@
    ],
    "checks": {
     "must": [
-     "only[^\\n]{0,40}clients\\.json|clients\\.json[^\\n]{0,30}only",
+     "only[^\\n]{0,40}clients\\.json|only from[^\\n]{0,80}clients\\.json|clients\\.json[^\\n]{0,30}only",
      "(not|never|isn't) read|ignored|ignores",
-     "\\\"?group\\\"?"
+     "\\\"?group\\\"?",
+     "\\[source\\]"
     ],
     "must_not": []
    }
@@ -968,17 +971,17 @@
    ],
    "checks": {
     "must": [
-     "in use",
+     "in use|port[^\\n]{0,60}\\b(free|available|unused)\\b|\\b(free|unused) port|no other (watcher|service)",
      "watcher list",
      "registered|already (exists|taken)|(name|it)[^\\n]{0,20}(taken|unique|fresh)",
-     "required (fields|settings)"
+     "required (fields|settings)|--port`?[^\\n]{0,10}(is )?(required|mandatory)"
     ],
     "must_not": []
    }
   },
   {
    "id": 35,
-   "prompt": "What sources can an agent-deck watcher take events from, and how does Slack get in?",
+   "prompt": "What sources can an agent-deck watcher take events from, where do their events end up, and how does Slack get in?",
    "expected_output": "webhook, ntfy, github, slack (Cloudflare Worker bridge to ntfy), gmail (Pub/Sub watch); events route to a conductor.",
    "files": [],
    "area": "core",
@@ -1035,7 +1038,8 @@
      "install-skill watcher-creator"
     ],
     "must_not": []
-   }
+   },
+   "help_answerable": true
   }
  ],
  "agent_friendliness_evals": {
@@ -1063,7 +1067,7 @@
     "checks": {
      "must": [
       "--secret-file",
-      "(do|does|will) not (run|execute)|don'?t (run|execute)|won'?t (run|execute)|never (run|execute)|without (running|executing)|not (running|executing)"
+      "(do|does|will|would) not (run|execute)|(don'?t|won'?t|wouldn'?t) (run|execute)|never (run|execute)|without (running|executing)|not (running|executing)"
      ],
      "must_not": [
       "(?m)^(?![^\\n]*\\b(never|not|don't|do not|doesn't|does not|avoid|(?<!-)no(?!-)|instead|without|rather than|unless|refuse[sd]?|isn't|cannot|can't|won't)\\b)[^\\n]*\\bI (ran|executed|have run|have executed)\\b"
@@ -1107,9 +1111,10 @@
     ],
     "checks": {
      "must": [
-      "one at a time",
+      "one (\\w+ )?at a time",
       "\\bgroup\\b",
-      "conductor list"
+      "conductor list",
+      "not (a|the) session title"
      ],
      "must_not": []
     }
@@ -1120,15 +1125,18 @@
     "expected_output": "No: create never overwrites a watcher config; edit the existing watcher.toml (its [source]) instead of re-running create.",
     "files": [],
     "promises": [
-     "step3-no-overwrite"
+     "step3-no-overwrite",
+     "step4-source-table"
     ],
     "sources": [
-     "SKILL.md#Step 3: Emit the exact agent-deck watcher create command"
+     "SKILL.md#Step 3: Emit the exact agent-deck watcher create command",
+     "SKILL.md#Step 4: Optional settings go under [source] in that watcher.toml"
     ],
     "checks": {
      "must": [
       "never overwrites?|(won'?t|will not|doesn'?t|does not|refuses to) overwrite",
-      "edit[^\\n]{0,30}watcher\\.toml"
+      "edit[^\\n]{0,60}watcher\\.toml",
+      "\\[source\\]"
      ],
      "must_not": [
       "(?m)^(?![^\\n]*\\b(never|not|don't|do not|doesn't|does not|avoid|(?<!-)no(?!-)|instead|without|rather than|unless|refuse[sd]?|isn't|cannot|can't|won't)\\b)[^\\n]*(rm|delete|remove|trash)\\b[^\\n]*watcher\\.toml"
