@@ -172,3 +172,14 @@ func TestRemotesAPIShowsSandboxOwner(t *testing.T) {
 		}
 	}
 }
+
+// Review of #3019: the owner comes from config.toml; /api/remotes hands
+// clients only its printable characters.
+func TestRemotesAPIOwnerDropsControlChars(t *testing.T) {
+	labels := remoteLabelsFromConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{
+		"sb1": {Host: "agentdeck-sb-sb1", Provider: "docker", SandboxID: "c0ffee", Owner: "ali\x1b]0;x\x07ce\n"},
+	}})
+	if got := labels["sb1"].Owner; got != "ali]0;xce" {
+		t.Fatalf("sb1 owner = %q, want the printable %q", got, "ali]0;xce")
+	}
+}

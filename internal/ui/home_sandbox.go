@@ -47,8 +47,8 @@ type sandboxProvisionedMsg struct {
 // user), otherwise the configured host.
 func remoteHostLabel(rc session.RemoteConfig) string {
 	if kind := provider.DisplayKind(rc); kind != "" {
-		if rc.Owner != "" {
-			return kind + " · owner: " + rc.Owner
+		if owner := session.PrintableOwner(rc.Owner); owner != "" {
+			return kind + " · owner: " + owner
 		}
 		return kind
 	}

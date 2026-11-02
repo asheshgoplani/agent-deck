@@ -125,3 +125,35 @@ func TestRemoteList_OwnerFilter(t *testing.T) {
 		t.Fatalf("without --owner: %d rows, want all 4", len(all))
 	}
 }
+
+// Review of #3019: an owner read from config.toml (a hand-edited remote,
+// [sandbox] owner behind --owner me, or --owner itself) is printed without
+// its control characters, in text and in --json.
+func TestRemoteList_OwnerControlCharsAreNotPrinted(t *testing.T) {
+	const evil = "bo\x1b]0;pwned\x07b\nx\x1b[2J"
+	newProviderTestEnv(t, map[string]session.RemoteConfig{
+		"bobs": {Host: "agentdeck-sb-bobs", Provider: "fake", SandboxID: "sb-b", Owner: evil},
+	})
+	setSandboxOwner(t, "me\x1b[31mtoo\nz")
+	check := func(what, out string) {
+		t.Helper()
+		for _, bad := range []string{"\x1b", "\x07", "b\nx", "too\nz"} {
+			if strings.Contains(out, bad) {
+				t.Fatalf("%s prints the owner's control character %q:\n%q", what, bad, out)
+			}
+		}
+	}
+	session.ClearUserConfigCache()
+	text := captureStdout(t, func() { handleRemoteList(nil) })
+	check("remote list", text)
+	if !strings.Contains(text, "owner: bo") {
+		t.Fatalf("remote list lost the printable owner:\n%s", text)
+	}
+	session.ClearUserConfigCache()
+	check("remote list --owner me", captureStdout(t, func() { handleRemoteList([]string{"--owner", "me"}) }))
+	session.ClearUserConfigCache()
+	check("remote list --owner <evil>", captureStdout(t, func() { handleRemoteList([]string{"--owner", "x\x1b]0;y\x07"}) }))
+	if got := remoteListJSON(t)["bobs"].Owner; strings.ContainsAny(got, "\x1b\x07\n") {
+		t.Fatalf("remote list --json owner keeps control characters: %q", got)
+	}
+}

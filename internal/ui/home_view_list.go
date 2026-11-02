@@ -705,8 +705,8 @@ func (h *Home) renderRemoteGroupItemSuffix(b *strings.Builder, item session.Item
 		// A sandbox's host is an ssh alias that means nothing to the
 		// user; say whose it is and what it is instead. The owner goes
 		// first so a narrow list, which cuts the row, still shows it.
-		if rc.Owner != "" {
-			kind = "owner: " + rc.Owner + " · " + kind
+		if owner := session.PrintableOwner(rc.Owner); owner != "" {
+			kind = "owner: " + owner + " · " + kind
 		}
 		kindMarker = countStyle.Render(" · " + kind)
 	}

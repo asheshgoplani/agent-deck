@@ -503,7 +503,7 @@ func handleRemoteList(args []string) {
 			return
 		}
 		if owner != "" {
-			fmt.Printf("No sandboxes owned by %s.\n", owner)
+			fmt.Printf("No sandboxes owned by %s.\n", session.PrintableOwner(owner))
 			return
 		}
 		fmt.Println("No remotes configured.")
@@ -579,7 +579,7 @@ func handleRemoteList(args []string) {
 				Kind:          provider.DisplayKind(rc),
 				Provider:      rc.Provider,
 				SandboxID:     rc.SandboxID,
-				Owner:         rc.Owner,
+				Owner:         session.PrintableOwner(rc.Owner),
 			}
 			if provider.IsSandbox(rc) {
 				row.SSHConfig = rc.SSHConfig
@@ -622,8 +622,8 @@ func handleRemoteList(args []string) {
 		host := rc.Host
 		if kind := provider.DisplayKind(rc); kind != "" {
 			host = kind
-			if rc.Owner != "" {
-				host += " · owner: " + rc.Owner
+			if owner := session.PrintableOwner(rc.Owner); owner != "" {
+				host += " · owner: " + owner
 			}
 		}
 		hosts[name] = host

@@ -74,7 +74,7 @@ func remoteLabelsFromConfig(cfg *session.UserConfig) map[string]remoteLabels {
 	}
 	for name, rc := range cfg.Remotes {
 		if kind := provider.DisplayKind(rc); kind != "" {
-			labels[name] = remoteLabels{Kind: kind, Owner: rc.Owner}
+			labels[name] = remoteLabels{Kind: kind, Owner: session.PrintableOwner(rc.Owner)}
 		}
 	}
 	return labels

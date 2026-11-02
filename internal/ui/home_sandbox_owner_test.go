@@ -139,3 +139,33 @@ func TestNewDialogWhereRow_NoStartPromptNoteWithoutPrompt(t *testing.T) {
 		}
 	}
 }
+
+// Review of #3019: an owner is free text from config.toml (a hand-edited
+// remote, or [sandbox] owner). Its control characters (ESC sequences, BEL,
+// newlines) must never reach the terminal from the host row or preview.
+func TestSandboxOwnerControlCharsNeverReachTheTerminal(t *testing.T) {
+	const evil = "ali\x1b]0;pwned\x07ce\nmallory\x1b[2J"
+	remotes := map[string]session.RemoteConfig{
+		"sb1": {Host: "agentdeck-sb-sb1", Provider: "docker", SandboxID: "abc123def456", Owner: evil},
+	}
+	if err := session.SaveUserConfig(&session.UserConfig{Remotes: remotes}); err != nil {
+		t.Fatal(err)
+	}
+	items := []session.Item{{Type: session.ItemTypeRemoteGroup, RemoteName: "sb1", Path: "remotes/sb1", Level: 0}}
+	h := newTestHomeWithItems(120, 40, items)
+	h.remotePollConfig = remotes
+	var b strings.Builder
+	h.renderRemoteGroupItem(&b, h.flatItems[0], false, 140)
+	row := strings.TrimSuffix(b.String(), "\n")
+	preview := h.renderRemotePreview(h.flatItems[0], 100, 30)
+	for where, out := range map[string]string{"host row": row, "preview": preview} {
+		for _, bad := range []string{"\x1b]", "\x07", "\x1b[2J", "ce\nmallory"} {
+			if strings.Contains(out, bad) {
+				t.Fatalf("%s carries the owner's control sequence %q:\n%q", where, bad, out)
+			}
+		}
+		if !strings.Contains(stripAnsi(out), "owner: ali") {
+			t.Fatalf("%s lost the printable part of the owner:\n%q", where, out)
+		}
+	}
+}

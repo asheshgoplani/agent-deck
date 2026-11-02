@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 
@@ -1318,6 +1319,19 @@ func (c *UserConfig) SandboxOwner() string {
 		return strings.TrimSpace(u.Username)
 	}
 	return ""
+}
+
+// PrintableOwner returns owner without its control and other
+// non-printable characters. An owner is free text from config.toml (a
+// hand-edited remote, [sandbox] owner) or the environment, so every view
+// that prints it to a terminal, a JSON client or the web goes through this.
+func PrintableOwner(owner string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, owner)
 }
 
 // ProviderConfig defines one sandbox provider ([providers.<name>]).
