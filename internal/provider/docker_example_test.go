@@ -430,3 +430,39 @@ func TestDockerExampleProvider_TokenFileMustBeOneLineAndIsNeverShown(t *testing.
 		})
 	}
 }
+
+// Destroy removes the container by the full id it just inspected (and
+// checked the label on), not by the id the request named, which docker
+// would resolve again as a prefix.
+func TestDockerExampleProvider_DestroyRemovesByTheInspectedFullID(t *testing.T) {
+	env, state := exampleCreateEnv(t, "")
+	keydir := filepath.Join(t.TempDir(), "agent-deck-docker-test")
+	if err := os.MkdirAll(keydir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	labels := "agent-deck.provider=docker\nagent-deck.keydir=" + keydir + "\n"
+	if err := os.WriteFile(filepath.Join(state, "labels"), []byte(labels), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// #nosec G204 -- the example provider script from this repo.
+	cmd := exec.Command(filepath.Join(exampleDockerDir(t), "provider"), "destroy")
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(`{"protocol":1,"action":"destroy","id":"fakecid0123"}`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("destroy failed: %v\n%s", err, out)
+	}
+	argv, _ := os.ReadFile(filepath.Join(state, "argv.log"))
+	var rm []string
+	for _, l := range strings.Split(strings.TrimSpace(string(argv)), "\n") {
+		if strings.HasPrefix(l, "rm ") {
+			rm = append(rm, l)
+		}
+	}
+	if len(rm) != 1 || rm[0] != "rm -f -- fakecid0123456789abcdef0123" {
+		t.Fatalf("docker rm calls = %q, want one rm of the inspected full id fakecid0123456789abcdef0123", rm)
+	}
+	if _, err := os.Stat(keydir); !os.IsNotExist(err) {
+		t.Fatal("the key dir was not removed")
+	}
+}
