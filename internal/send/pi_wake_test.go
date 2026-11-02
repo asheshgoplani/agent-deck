@@ -326,6 +326,26 @@ func TestPiWakeSocket_WritesOneFramedLineAndNothingElse(t *testing.T) {
 	}
 }
 
+func TestPiWakeSocket_MarkupLineAtTheCapIsWrittenUnescaped(t *testing.T) {
+	// A 900-byte line (the extension's line cap) of <, > and & is a normal
+	// wake. HTML-escaped, each byte is six (\u003c), so the frame would be
+	// about 5.4 KB, refused too_large, and the records would never be rung.
+	line := strings.Repeat("<>&", 300)
+	f := newFakePi(t, replyWith(`{"id":"`+piWakeNonce+`","state":"submitted"}`))
+	res, err := wakePi(t, f.path, line, PiWakeOptions{})
+	if err != nil || res.State != PiWakeSubmitted {
+		t.Fatalf("a 900-byte markup line gave (%q, %v), want submitted", res.State, err)
+	}
+	data := f.connection(t)
+	if len(data) > piWakeFrameCap || !strings.Contains(string(data), line) {
+		t.Fatalf("wire frame is %d bytes and does not carry the line verbatim; want <= %d bytes with <, > and & unescaped", len(data), piWakeFrameCap)
+	}
+	var frame map[string]any
+	if err := json.Unmarshal(data, &frame); err != nil || frame["line"] != line {
+		t.Fatalf("frame does not decode to the line: %v", err)
+	}
+}
+
 func TestPiWakeSocket_MapsEachReplyToItsOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		name, reply string

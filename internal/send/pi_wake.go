@@ -2,6 +2,7 @@ package send
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -159,6 +160,21 @@ type piWakeFrame struct {
 	IDs  []string `json:"ids"`
 }
 
+// encodePiWakeFrame returns f as one newline-terminated JSON line. HTML
+// escaping is off: json.Marshal writes each of <, > and & as a six-byte
+// \u escape, which would carry a 900-byte line of markup past the frame cap,
+// and the extension's JSON.parse needs none of it. The cap is checked on
+// these bytes, the ones written.
+func encodePiWakeFrame(f piWakeFrame) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(f); err != nil { // Encode ends the line with '\n'
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
 // piWakeReply is what the extension writes back. OK is a pointer because it
 // is optional on submitted and queued replies.
 type piWakeReply struct {
@@ -213,12 +229,11 @@ func SendPiWake(ctx context.Context, target PiWakeTarget, nonce, line string, id
 		}
 		return PiWakeResult{}, err
 	}
-	frame, err := json.Marshal(piWakeFrame{V: 1, ID: nonce, Line: line, IDs: ids})
+	frame, err := encodePiWakeFrame(piWakeFrame{V: 1, ID: nonce, Line: line, IDs: ids})
 	if err != nil {
 		// Unreachable (three plain fields), and pre-dial, so Unavailable.
 		return PiWakeResult{}, &Unavailable{Reason: ReasonNoRecord, Err: fmt.Errorf("marshal wake frame: %w", err)}
 	}
-	frame = append(frame, '\n')
 	if len(frame) > piWakeFrameCap {
 		// Refused, not Unavailable: Unavailable would type the oversize line
 		// into the pane, and the extension would have destroyed the frame anyway.
