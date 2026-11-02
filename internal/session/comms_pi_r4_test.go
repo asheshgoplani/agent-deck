@@ -17,7 +17,7 @@ import (
 //
 //  1. Inbox records a pi injection carries are LEASED under its delivery token:
 //     the receipt finalizes them, expiry or replacement requeues them.
-//  2. A pi launched with AGENTDECK_PI_SOCKET exported is never typed into; any
+//  2. A pi launched with a socket path in AGENTDECK_PI_SOCKET is never typed into; any
 //     connect failure leaves the records pending and the settle retries. The
 //     typed doorbell is for a pi launched without the socket.
 //  3. A pane tree read that fails is pushed, not a permanent refusal.

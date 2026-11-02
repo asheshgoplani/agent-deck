@@ -565,10 +565,13 @@ touching the editor.
 An unlisted pi session is not enrolled: its hook prints nothing and its inbox is
 left alone, and its wakes stay typed as before.
 
-**The doorbell.** The launch exports `AGENTDECK_PI_SOCKET` only when `pi
---version` (run on the launch's own PATH, every launch) is at least 1.2.0 and
-the extension is current; otherwise one `pi_wake_socket off` line says why and
-`agent-deck pi-hooks status` prints the same reason. A wake is one NDJSON frame
+**The doorbell.** The launch exports a socket path in `AGENTDECK_PI_SOCKET`
+only when `pi --version` (run on the launch's own PATH, every launch) is at
+least 1.2.0 and the extension is current; otherwise a local launch sets it empty
+(so a pane cannot inherit one), and one `pi_wake_socket off` line says why and
+`agent-deck pi-hooks status` prints the same reason. The extension check reads
+the command's own `PI_CODING_AGENT_DIR` when it sets one, else agent-deck's. A
+wake is one NDJSON frame
 `{"v":1,"id":<nonce>,"line":<wake line>,"ids":[<record ids>]}`. The nonce is a
 ULID. The extension sends it as a custom message, never typed input, so a
 draft in the editor is untouched, and the run it starts carries the nonce into
@@ -637,8 +640,8 @@ as past the receipt window.
 
 Whether a pi may be typed into is decided by what its launch did, not by a
 connect at wake time: the launch records, on the persisted instance, whether it
-exported `AGENTDECK_PI_SOCKET`, on every launch path including a restart. The
-socket is for local launches only: an SSH or sandboxed pi exports nothing and is
+exported a socket path in `AGENTDECK_PI_SOCKET`, on every launch path including
+a restart. The socket is for local launches only: an SSH or sandboxed pi exports nothing and is
 recorded as such, so its doorbell is typed as before. A pi with no record is one an
 older binary launched and is treated as launched without it.
 Claude is unchanged, since Claude itself consumes its stdout.

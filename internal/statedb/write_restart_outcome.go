@@ -93,7 +93,7 @@ func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (Wri
 }
 
 // WriteRestartOutcomeWithPiSocket is WriteRestartOutcome that also records, in
-// the same UPDATE, whether the pi's launch exported AGENTDECK_PI_SOCKET (the key
+// the same UPDATE, whether the pi's launch exported a socket path in AGENTDECK_PI_SOCKET (the key
 // is set when true and removed when false, as the full save writes it), so a
 // stale full save cannot land between the outcome and the decision.
 func (s *StateDB) WriteRestartOutcomeWithPiSocket(id, tmuxSession, status, tool string, exported bool) (WriteStamps, error) {
@@ -137,7 +137,7 @@ func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, toolDataExp
 }
 
 // WritePiSocketExported records, in the instance's tool_data, whether its last
-// launch exported AGENTDECK_PI_SOCKET: the key is set when true and removed when
+// launch exported a socket path in AGENTDECK_PI_SOCKET: the key is set when true and removed when
 // false, as the full save writes it. A start writes it after a successful launch
 // (a restart folds it into its outcome write).
 func (s *StateDB) WritePiSocketExported(id string, exported bool) error {

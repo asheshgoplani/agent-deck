@@ -122,7 +122,7 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 }
 
 // persistPiSocketDecision records, once a pi's pane has spawned, whether its
-// launch exported AGENTDECK_PI_SOCKET. Start and StartWithMessage are the launch
+// launch exported a socket path in AGENTDECK_PI_SOCKET. Start and StartWithMessage are the launch
 // paths the CLI, the web and the TUI share, and none of them saves the instance
 // afterwards, so a start that flipped the decision would otherwise leave the old
 // value in storage. They call it right after the spawn succeeds, so a failure
