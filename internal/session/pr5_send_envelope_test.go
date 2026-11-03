@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -350,6 +352,30 @@ func TestPR5_IdentityPromptExplainsEnvelope(t *testing.T) {
 		!strings.Contains(got, "Questions and progress do not reach your parent either. To ask it something, use `agent-deck session send <parent-id> \"...\"`") {
 		t.Fatalf("no-notify identity prompt must not promise NEED:/progress delivery:\n%s", got)
 	}
+	// The global switch mutes every session the same way.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[notifications]\ntransition_events = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	globalOff := inst.BuildIdentityPrompt()
+	if strings.Contains(globalOff, "the sender is notified") || strings.Contains(globalOff, "Your parent then receives one urgent record") ||
+		strings.Contains(globalOff, "that wakes it") || !strings.Contains(globalOff, "the completion is still recorded") {
+		t.Fatalf("transition_events = false must give the muted wording:\n%s", globalOff)
+	}
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
 	loud := inst.BuildIdentityPrompt()
 	if !strings.Contains(loud, "Your parent then receives one urgent record") || !strings.Contains(loud, "start a line with NEED:") {
 		t.Fatal("notifying session keeps the delivery and NEED: sentences")
