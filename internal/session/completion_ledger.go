@@ -36,7 +36,8 @@ type CompletionLedgerEntry struct {
 	// Suppressed marks a completion recorded while delivery to the parent was
 	// off (NoTransitionNotify or transition_events = false). It was never
 	// delivered, so checkDoneRepeat does not count it as the last delivered
-	// done. A delivered completion overwrites it with Suppressed false.
+	// done and the export does not ship it. A delivered completion overwrites
+	// it with Suppressed false.
 	Suppressed bool `json:"suppressed,omitempty"`
 }
 

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -513,6 +514,12 @@ func assertDoneRecordedNotDelivered(t *testing.T, profile, wantReason string, mu
 	if !ok {
 		t.Fatal("muted child's completion missing from the ledger")
 	}
+	if !ledgerSuppressedFlag(t, childID) {
+		t.Fatalf("muted ledger entry must be marked suppressed")
+	}
+	// Never delivered, so never exported, although the stored child (or,
+	// for the global switch, the export's registry check) does not opt out.
+	assertNotExported(t, profile, childID)
 	if entry.Status != "ok" || entry.Summary != "muted but done" || !entry.FinishedAt.Equal(hs.UpdatedAt) || entry.Profile != profile {
 		t.Fatalf("ledger entry = %+v, want ok / %q at %v", entry, "muted but done", hs.UpdatedAt)
 	}
@@ -578,8 +585,12 @@ func TestDaemon_EmitDoneSignals_UnmutedIdenticalCompletionDelivered(t *testing.T
 	if _, ok := ReadLedgerEntry(childID); !ok {
 		t.Fatal("muted completion not recorded")
 	}
+	if !ledgerSuppressedFlag(t, childID) {
+		t.Fatal("muted ledger entry must be marked suppressed")
+	}
 
 	byID[childID].NoTransitionNotify = false
+	assertNotExported(t, profile, childID)
 	d.emitDoneSignals(profile, byID, muted)
 	d.notifier.Flush()
 	if got := readInboxLines(t, parentID); len(got) != 0 {
@@ -594,7 +605,176 @@ func TestDaemon_EmitDoneSignals_UnmutedIdenticalCompletionDelivered(t *testing.T
 		t.Fatalf("identical completion after unmuting must be delivered once, got %+v", got)
 	}
 	entry, _ := ReadLedgerEntry(childID)
+	if ledgerSuppressedFlag(t, childID) {
+		t.Fatal("a delivered completion must clear the suppressed mark")
+	}
 	if !entry.FinishedAt.Equal(first.Add(time.Minute)) || entry.Repeats != 0 {
 		t.Fatalf("delivered completion must overwrite the muted entry without a repeat count: %+v", entry)
+	}
+}
+
+// ledgerSuppressedFlag reads the child's ledger file as raw JSON and reports
+// its "suppressed" field (raw so the test compiles against older code).
+func ledgerSuppressedFlag(t *testing.T, childID string) bool {
+	t.Helper()
+	path, err := completionLedgerPath(childID)
+	if err != nil {
+		t.Fatalf("ledger path: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("parse ledger: %v", err)
+	}
+	return m["suppressed"] == true
+}
+
+func writeRawLedger(t *testing.T, childID string, fields map[string]any) {
+	t.Helper()
+	path, err := completionLedgerPath(childID)
+	if err != nil {
+		t.Fatalf("ledger path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir ledger: %v", err)
+	}
+	raw, _ := json.Marshal(fields)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write ledger: %v", err)
+	}
+}
+
+func assertNotExported(t *testing.T, profile, childID string) {
+	t.Helper()
+	records, err := ExportPendingRecords(profile)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	for _, r := range records {
+		if r.ChildSessionID == childID {
+			t.Fatalf("a completion recorded while muted must not be exported: %+v", r)
+		}
+	}
+}
+
+func countDoneSuppressed(t *testing.T, logDir string) int {
+	t.Helper()
+	n := 0
+	for _, r := range readLogRecords(t, logDir) {
+		if r["msg"] == "done_suppressed" {
+			n++
+		}
+	}
+	return n
+}
+
+// A child muted while the hook file of an already delivered completion is
+// still fresh: the delivered ledger entry stands (no rewrite as suppressed,
+// no done_suppressed line). Covers the hook-path delivery (entry time is the
+// Stop edge) and an emitTurn delivery (entry time is later than the edge).
+func TestDaemon_EmitDoneSignals_MutedAfterDeliveryLeavesEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		deliver func(t *testing.T, d *TransitionDaemon, profile, childID string, byID map[string]*Instance, hs *HookStatus)
+	}{
+		{"hook path", func(t *testing.T, d *TransitionDaemon, profile, childID string, byID map[string]*Instance, hs *HookStatus) {
+			d.emitDoneSignals(profile, byID, map[string]*HookStatus{childID: hs})
+			d.notifier.Flush()
+		}},
+		{"emitTurn", func(t *testing.T, _ *TransitionDaemon, profile, childID string, _ map[string]*Instance, hs *HookStatus) {
+			writeRawLedger(t, childID, map[string]any{"child_id": childID, "profile": profile, "status": "ok", "summary": "delivered once",
+				"finished_at": hs.UpdatedAt.Add(2 * time.Second), "turn_uuid": "turn-1"})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := "_test-1186-done-mute-after"
+			_, childID := seedDoneParentChild(t, profile)
+			logDir := t.TempDir()
+			logging.Shutdown()
+			logging.Init(logging.Config{Debug: true, LogDir: logDir, Level: "info"})
+			t.Cleanup(logging.Shutdown)
+			byID := loadInstancesByID(t, profile)
+			d := NewTransitionDaemon()
+			t.Cleanup(d.notifier.Close)
+			hs := &HookStatus{Status: "waiting", Event: "Stop", DoneStatus: "ok", DoneSummary: "delivered once", UpdatedAt: time.Now()}
+
+			tc.deliver(t, d, profile, childID, byID, hs)
+			path, _ := completionLedgerPath(childID)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("delivered entry missing: %v", err)
+			}
+
+			byID[childID].NoTransitionNotify = true
+			d.emitDoneSignals(profile, byID, map[string]*HookStatus{childID: hs})
+			d.notifier.Flush()
+			after, _ := os.ReadFile(path)
+			if string(after) != string(before) {
+				t.Fatalf("muting must not rewrite the delivered entry:\nbefore %s\nafter  %s", before, after)
+			}
+			if n := countDoneSuppressed(t, logDir); n != 0 {
+				t.Fatalf("muting after delivery logged %d done_suppressed lines, want 0", n)
+			}
+		})
+	}
+}
+
+// A failed ledger write leaves the muted completion unhandled, so the next
+// poll records it and logs it then.
+func TestDaemon_EmitDoneSignals_MutedLedgerWriteFailureRetried(t *testing.T) {
+	profile := "_test-1186-done-mute-retry"
+	_, childID := seedDoneParentChild(t, profile)
+	logDir := t.TempDir()
+	logging.Shutdown()
+	logging.Init(logging.Config{Debug: true, LogDir: logDir, Level: "info"})
+	t.Cleanup(logging.Shutdown)
+	byID := loadInstancesByID(t, profile)
+	byID[childID].NoTransitionNotify = true
+	d := NewTransitionDaemon()
+	t.Cleanup(d.notifier.Close)
+	hookStatuses := map[string]*HookStatus{childID: {Status: "waiting", Event: "Stop", DoneStatus: "ok", DoneSummary: "retry me", UpdatedAt: time.Now()}}
+
+	dir, err := CompletionLedgerDir()
+	if err != nil {
+		t.Fatalf("ledger dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("block ledger dir: %v", err)
+	}
+	d.emitDoneSignals(profile, byID, hookStatuses)
+	if _, ok := ReadLedgerEntry(childID); ok {
+		t.Fatal("ledger write was expected to fail")
+	}
+	if n := countDoneSuppressed(t, logDir); n != 0 {
+		t.Fatalf("a failed write must not log done_suppressed, got %d", n)
+	}
+
+	if err := os.Remove(dir); err != nil {
+		t.Fatalf("unblock ledger dir: %v", err)
+	}
+	d.emitDoneSignals(profile, byID, hookStatuses)
+	if entry, ok := ReadLedgerEntry(childID); !ok || entry.Summary != "retry me" {
+		t.Fatalf("the next poll must record the completion after a failed write: %+v ok=%v", entry, ok)
+	}
+	if n := countDoneSuppressed(t, logDir); n != 1 {
+		t.Fatalf("want 1 done_suppressed line after the retry, got %d", n)
+	}
+}
+
+// checkDoneRepeat ignores a suppressed entry outright, the same Stop edge
+// included: it was never delivered.
+func TestCheckDoneRepeat_IgnoresSuppressedEntry(t *testing.T) {
+	exportTestHome(t)
+	at := time.Now().Truncate(time.Second)
+	writeRawLedger(t, "child-sup", map[string]any{"child_id": "child-sup", "profile": "p", "status": "ok", "summary": "s",
+		"finished_at": at, "suppressed": true})
+	if repeat, counted := checkDoneRepeat("child-sup", "p", DoneSignal{Status: "ok", Summary: "s"}, "", true, true, at); repeat || counted {
+		t.Fatalf("suppressed entry treated as delivered: repeat=%v counted=%v", repeat, counted)
 	}
 }

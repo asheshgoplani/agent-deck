@@ -1182,9 +1182,12 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			continue // already emitted this exact completion (here or by emitTurn)
 		}
 		if d.suppressedDoneSeen(profile, id, sig, hs.UpdatedAt) {
-			// Recorded while delivery was off; delivery is back on but this
-			// is still that completion. Not remembered in lastDone, so an
-			// identical completion on a later Stop is delivered.
+			// This hook file's completion was recorded while delivery was
+			// off; delivery is back on, but re-reading the same file is not a
+			// new completion. Only this hook-file path holds it: a child with
+			// a transcript gets the parked turn from emitTurn, as on main.
+			// Not remembered in lastDone, so an identical completion on a
+			// later Stop is delivered.
 			continue
 		}
 		// Issue #2481: after a daemon restart (or for a tool without a
@@ -1240,12 +1243,21 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 // completion into the parent's stats, and nothing was delivered. The entry is
 // marked Suppressed so checkDoneRepeat does not treat it as delivered either.
 // One completion is one (signal, Stop edge): re-reads of the same hook file
-// are skipped in-process and, after a daemon restart, against the ledger.
+// are skipped in-process and, after a daemon restart, against the ledger. It
+// is remembered as handled only once the ledger write succeeds, so a failed
+// write is retried on the next poll.
 func (d *TransitionDaemon) recordSuppressedDone(profile string, inst *Instance, sig DoneSignal, at time.Time, notifyEnabled bool) {
 	if d.suppressedDoneSeen(profile, inst.ID, sig, at) {
 		return
 	}
-	d.rememberSuppressedDone(profile, inst.ID, sig, at)
+	// Muted while the hook file of a completion that was already delivered is
+	// still fresh: that delivered entry stands. Its time is the delivery
+	// (emitTurn) or this Stop edge (hook path), never before the edge; a
+	// later identical Stop has a later edge and is recorded.
+	if prev, ok := ReadLedgerEntry(inst.ID); ok && !prev.Suppressed && sameDelivered(prev, profile, sig) && !prev.FinishedAt.Before(at) {
+		d.rememberSuppressedDone(profile, inst.ID, sig, at)
+		return
+	}
 	reason := deadLetterReasonNoNotify
 	if !notifyEnabled {
 		reason = "transition_events_disabled"
@@ -1260,7 +1272,9 @@ func (d *TransitionDaemon) recordSuppressedDone(profile string, inst *Instance, 
 		Suppressed: true,
 	}); err != nil {
 		commsLog.Warn("done_suppressed_ledger_write_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
+		return
 	}
+	d.rememberSuppressedDone(profile, inst.ID, sig, at)
 	commsLog.Info("done_suppressed",
 		slog.String("child", inst.ID),
 		slog.String("profile", profile),

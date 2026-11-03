@@ -35,10 +35,8 @@ func checkDoneRepeat(childID, profile string, sig DoneSignal, turnUUID string, b
 		return false, false
 	}
 	if prev.Suppressed {
-		// Recorded while delivery was off, so never delivered. Only the same
-		// Stop edge, re-read after delivery came back on, is held: it is that
-		// recorded completion, not a new one, so it is not counted.
-		return prev.FinishedAt.Equal(at), false
+		// Recorded while delivery was off, so never delivered: not a repeat.
+		return false, false
 	}
 	if turnUUID != "" && prev.TurnUUID == turnUUID {
 		return true, false
