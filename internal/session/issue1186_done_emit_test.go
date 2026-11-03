@@ -2,9 +2,12 @@ package session
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // Issue #1186 + #1225: the daemon turns a worker-printed completion sentinel
@@ -445,5 +448,111 @@ func TestDaemon_FlushRaceRescan_PathOutsideClaudeRejected(t *testing.T) {
 	}
 	if _, resolved := d.lastDoneScan[profile][childID]; !resolved {
 		t.Fatalf("rejected path should be marked resolved so the daemon does not retry it")
+	}
+}
+
+// --- Notifications off: the completion is still recorded ---
+//
+// A child with NoTransitionNotify (or a host with [notifications]
+// transition_events = false) must not message its parent, but its sentinel
+// is still a completion: it goes to the ledger that `session children` reads,
+// and the suppression is logged once instead of vanishing.
+
+func TestDaemon_EmitDoneSignals_NoNotifyChildStillRecorded(t *testing.T) {
+	assertDoneRecordedNotDelivered(t, "_test-1186-done-no-notify", "no_notify", func(byID map[string]*Instance, childID string) {
+		byID[childID].NoTransitionNotify = true
+	})
+}
+
+func TestDaemon_EmitDoneSignals_TransitionEventsOffStillRecorded(t *testing.T) {
+	assertDoneRecordedNotDelivered(t, "_test-1186-done-events-off", "transition_events_disabled", func(map[string]*Instance, string) {
+		path, err := GetUserConfigPath()
+		if err != nil {
+			t.Fatalf("config path: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir config dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("[notifications]\ntransition_events = false\n"), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		ClearUserConfigCache()
+		if GetNotificationsSettings().GetTransitionEventsEnabled() {
+			t.Fatal("transition_events = false was not picked up")
+		}
+	})
+}
+
+func assertDoneRecordedNotDelivered(t *testing.T, profile, wantReason string, mute func(byID map[string]*Instance, childID string)) {
+	t.Helper()
+	parentID, childID := seedDoneParentChild(t, profile)
+	logDir := t.TempDir()
+	logging.Shutdown()
+	logging.Init(logging.Config{Debug: true, LogDir: logDir, Level: "info"})
+	t.Cleanup(logging.Shutdown)
+
+	byID := loadInstancesByID(t, profile)
+	mute(byID, childID)
+	hs := &HookStatus{Status: "waiting", Event: "Stop", DoneStatus: "ok", DoneSummary: "muted but done", UpdatedAt: time.Now()}
+	hookStatuses := map[string]*HookStatus{childID: hs}
+
+	d := NewTransitionDaemon()
+	t.Cleanup(d.notifier.Close)
+	d.emitDoneSignals(profile, byID, hookStatuses)
+	d.emitDoneSignals(profile, byID, hookStatuses) // re-read on the next poll
+	d.notifier.Flush()
+
+	// A restarted daemon (empty lastDone) re-reading the still-fresh file
+	// recognises the same completion from the ledger.
+	d2 := NewTransitionDaemon()
+	t.Cleanup(d2.notifier.Close)
+	d2.emitDoneSignals(profile, byID, hookStatuses)
+	d2.notifier.Flush()
+
+	entry, ok := ReadLedgerEntry(childID)
+	if !ok {
+		t.Fatal("muted child's completion missing from the ledger")
+	}
+	if entry.Status != "ok" || entry.Summary != "muted but done" || !entry.FinishedAt.Equal(hs.UpdatedAt) || entry.Profile != profile {
+		t.Fatalf("ledger entry = %+v, want ok / %q at %v", entry, "muted but done", hs.UpdatedAt)
+	}
+	if got := readInboxLines(t, parentID); len(got) != 0 {
+		t.Fatalf("muted completion reached the parent inbox: %+v", got)
+	}
+	if dl, err := ListDeadLetters(); err != nil || len(dl) != 0 {
+		t.Fatalf("muted completion must not dead-letter: %+v (err %v)", dl, err)
+	}
+
+	var lines []map[string]any
+	for _, r := range readLogRecords(t, logDir) {
+		if r["msg"] == "done_suppressed" {
+			lines = append(lines, r)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want exactly 1 done_suppressed log line across polls and a restart, got %d: %+v", len(lines), lines)
+	}
+	if lines[0]["child"] != childID || lines[0]["profile"] != profile || lines[0]["reason"] != wantReason || lines[0]["status"] != "ok" {
+		t.Fatalf("done_suppressed fields = %+v, want child=%s profile=%s reason=%s status=ok", lines[0], childID, profile, wantReason)
+	}
+
+	// A new completion from the same child is a new record and a new line.
+	hookStatuses[childID] = &HookStatus{Status: "waiting", Event: "Stop", DoneStatus: "fail", DoneSummary: "second", UpdatedAt: time.Now()}
+	d.emitDoneSignals(profile, byID, hookStatuses)
+	d.notifier.Flush()
+	if entry, _ := ReadLedgerEntry(childID); entry.Status != "fail" || entry.Summary != "second" {
+		t.Fatalf("second completion not recorded: %+v", entry)
+	}
+	n := 0
+	for _, r := range readLogRecords(t, logDir) {
+		if r["msg"] == "done_suppressed" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("want 2 done_suppressed lines after a second completion, got %d", n)
+	}
+	if got := readInboxLines(t, parentID); len(got) != 0 {
+		t.Fatalf("second muted completion reached the parent inbox: %+v", got)
 	}
 }

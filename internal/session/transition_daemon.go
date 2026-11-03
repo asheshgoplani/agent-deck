@@ -1169,7 +1169,11 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 
 		inst := byID[id]
+		if inst == nil {
+			continue
+		}
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
+			d.recordSuppressedDone(profile, inst, sig, hs.UpdatedAt, notifyEnabled)
 			continue
 		}
 		// Issue #2481: after a daemon restart (or for a tool without a
@@ -1214,6 +1218,41 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			FinishedAt: hs.UpdatedAt,
 		})
 	}
+}
+
+// recordSuppressedDone handles a completion whose delivery is switched off
+// (the child's NoTransitionNotify, or [notifications] transition_events =
+// false). Nothing goes to the parent, but the child did finish: the
+// completion goes to the ledger `session children` reads, and the
+// suppression is logged once so it can be told apart from a lost event.
+// checkDoneRepeat is not consulted: it counts repeats of a delivered
+// completion into the parent's stats, and nothing was delivered.
+func (d *TransitionDaemon) recordSuppressedDone(profile string, inst *Instance, sig DoneSignal, at time.Time, notifyEnabled bool) {
+	d.rememberDone(profile, inst.ID, sig)
+	// After a daemon restart lastDone is empty; the ledger still holds this
+	// exact completion, so it is neither rewritten nor logged again.
+	if prev, ok := ReadLedgerEntry(inst.ID); ok && sameDelivered(prev, profile, sig) && prev.FinishedAt.Equal(at) {
+		return
+	}
+	reason := deadLetterReasonNoNotify
+	if !notifyEnabled {
+		reason = "transition_events_disabled"
+	}
+	if err := WriteLedgerEntry(CompletionLedgerEntry{
+		ChildID:    inst.ID,
+		Profile:    profile,
+		Title:      inst.Title,
+		Status:     sig.Status,
+		Summary:    sig.Summary,
+		FinishedAt: at,
+	}); err != nil {
+		commsLog.Warn("done_suppressed_ledger_write_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
+	}
+	commsLog.Info("done_suppressed",
+		slog.String("child", inst.ID),
+		slog.String("profile", profile),
+		slog.String("reason", reason),
+		slog.String("status", sig.Status))
 }
 
 // doneSignalFor resolves a hook status into a completion sentinel, or reports
