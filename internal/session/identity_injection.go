@@ -431,10 +431,11 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
 	if i.NoTransitionNotify {
 		b.WriteString("Notifications are off for this session, so your parent is not sent a record; the completion is still recorded and shows in `agent-deck session children`.\n")
+		b.WriteString("Questions and progress do not reach your parent either. To ask it something, use `agent-deck session send <parent-id> \"...\"` with the parent session id above.\n")
 	} else {
 		b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
+		b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
 	}
-	b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
 	if i.fanoutHintApplies() {
 		b.WriteString("\n## Working style\n")
 		b.WriteString(FanoutHint + "\n")

@@ -345,8 +345,14 @@ func TestPR5_IdentityPromptExplainsEnvelope(t *testing.T) {
 		!strings.Contains(got, "the completion is still recorded and shows in `agent-deck session children`") {
 		t.Fatalf("no-notify identity prompt must say the completion is recorded, not delivered:\n%s", got)
 	}
-	if !strings.Contains(inst.BuildIdentityPrompt(), "Your parent then receives one urgent record") {
-		t.Fatal("notifying session keeps the delivery sentence")
+	// Its questions and progress are not delivered either.
+	if strings.Contains(got, "that wakes it") || strings.Contains(got, "delivered as progress") ||
+		!strings.Contains(got, "Questions and progress do not reach your parent either. To ask it something, use `agent-deck session send <parent-id> \"...\"`") {
+		t.Fatalf("no-notify identity prompt must not promise NEED:/progress delivery:\n%s", got)
+	}
+	loud := inst.BuildIdentityPrompt()
+	if !strings.Contains(loud, "Your parent then receives one urgent record") || !strings.Contains(loud, "start a line with NEED:") {
+		t.Fatal("notifying session keeps the delivery and NEED: sentences")
 	}
 }
 
