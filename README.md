@@ -722,7 +722,7 @@ agent-deck session set-transition-notify worker off
 agent-deck session set-transition-notify worker on
 ```
 
-Suppression only affects dispatch — the parent link itself is unchanged. Deferred/retried events also honour the flag (guard is in `transition_notifier.dispatch` as well as both daemon entry points).
+Suppression only affects dispatch — the parent link itself is unchanged. Deferred/retried events also honour the flag (guard is in `transition_notifier.dispatch` as well as both daemon entry points). A muted child's completion (`===AGENTDECK_DONE===`) is still recorded, so `agent-deck session children` shows it, and logged as `done_suppressed`; it is neither delivered to the parent nor exported.
 
 **Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
 
