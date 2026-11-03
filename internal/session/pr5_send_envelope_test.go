@@ -340,6 +340,14 @@ func TestPR5_IdentityPromptExplainsEnvelope(t *testing.T) {
 		!strings.Contains(got, "this session's turns are not reported, so reply with `agent-deck session send <id> \"answer\"`") {
 		t.Fatalf("no-notify identity prompt must ask for an explicit reply:\n%s", got)
 	}
+	// Its completion sentinel is recorded, not delivered.
+	if strings.Contains(got, "Your parent then receives one urgent record") ||
+		!strings.Contains(got, "the completion is still recorded and shows in `agent-deck session children`") {
+		t.Fatalf("no-notify identity prompt must say the completion is recorded, not delivered:\n%s", got)
+	}
+	if !strings.Contains(inst.BuildIdentityPrompt(), "Your parent then receives one urgent record") {
+		t.Fatal("notifying session keeps the delivery sentence")
+	}
 }
 
 func TestPR5_TagSendsConfigDefaultsOn(t *testing.T) {
