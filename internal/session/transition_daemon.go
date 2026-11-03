@@ -68,6 +68,12 @@ type TransitionDaemon struct {
 	// across polls — or a later identical Stop — does not re-fire.
 	lastDone map[string]map[string]DoneSignal
 
+	// lastSuppressedDone is lastDone for completions recorded while delivery
+	// is off, keyed on the Stop edge as well as the signal: a later identical
+	// sentinel on a new Stop is a new completion. Kept apart from lastDone so
+	// that once delivery is back on, an identical new completion is delivered.
+	lastSuppressedDone map[string]map[string]suppressedDone
+
 	// lastTurn tracks, per (profile, instance), the last COMPLETED TURN recorded
 	// into the drainable ledgers. Keyed by status + the transcript signal, so a
 	// session parked at `waiting` records once and a genuinely new turn records
@@ -1164,16 +1170,21 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		if !ok {
 			continue
 		}
-		if prev, ok := d.lastDone[profile][id]; ok && prev == sig {
-			continue // already emitted this exact completion (here or by emitTurn)
-		}
-
 		inst := byID[id]
 		if inst == nil {
 			continue
 		}
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			d.recordSuppressedDone(profile, inst, sig, hs.UpdatedAt, notifyEnabled)
+			continue
+		}
+		if prev, ok := d.lastDone[profile][id]; ok && prev == sig {
+			continue // already emitted this exact completion (here or by emitTurn)
+		}
+		if d.suppressedDoneSeen(profile, id, sig, hs.UpdatedAt) {
+			// Recorded while delivery was off; delivery is back on but this
+			// is still that completion. Not remembered in lastDone, so an
+			// identical completion on a later Stop is delivered.
 			continue
 		}
 		// Issue #2481: after a daemon restart (or for a tool without a
@@ -1226,14 +1237,15 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 // completion goes to the ledger `session children` reads, and the
 // suppression is logged once so it can be told apart from a lost event.
 // checkDoneRepeat is not consulted: it counts repeats of a delivered
-// completion into the parent's stats, and nothing was delivered.
+// completion into the parent's stats, and nothing was delivered. The entry is
+// marked Suppressed so checkDoneRepeat does not treat it as delivered either.
+// One completion is one (signal, Stop edge): re-reads of the same hook file
+// are skipped in-process and, after a daemon restart, against the ledger.
 func (d *TransitionDaemon) recordSuppressedDone(profile string, inst *Instance, sig DoneSignal, at time.Time, notifyEnabled bool) {
-	d.rememberDone(profile, inst.ID, sig)
-	// After a daemon restart lastDone is empty; the ledger still holds this
-	// exact completion, so it is neither rewritten nor logged again.
-	if prev, ok := ReadLedgerEntry(inst.ID); ok && sameDelivered(prev, profile, sig) && prev.FinishedAt.Equal(at) {
+	if d.suppressedDoneSeen(profile, inst.ID, sig, at) {
 		return
 	}
+	d.rememberSuppressedDone(profile, inst.ID, sig, at)
 	reason := deadLetterReasonNoNotify
 	if !notifyEnabled {
 		reason = "transition_events_disabled"
@@ -1245,6 +1257,7 @@ func (d *TransitionDaemon) recordSuppressedDone(profile string, inst *Instance, 
 		Status:     sig.Status,
 		Summary:    sig.Summary,
 		FinishedAt: at,
+		Suppressed: true,
 	}); err != nil {
 		commsLog.Warn("done_suppressed_ledger_write_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
 	}
@@ -1253,6 +1266,36 @@ func (d *TransitionDaemon) recordSuppressedDone(profile string, inst *Instance, 
 		slog.String("profile", profile),
 		slog.String("reason", reason),
 		slog.String("status", sig.Status))
+}
+
+// suppressedDone identifies one completion recorded while delivery was off.
+type suppressedDone struct {
+	sig DoneSignal
+	at  time.Time
+}
+
+// suppressedDoneSeen reports whether sig at this Stop edge was already
+// recorded while delivery was off: in this process, or, after a daemon
+// restart, in the ledger (which it then remembers in-process).
+func (d *TransitionDaemon) suppressedDoneSeen(profile, childID string, sig DoneSignal, at time.Time) bool {
+	if prev, ok := d.lastSuppressedDone[profile][childID]; ok && prev.sig == sig && prev.at.Equal(at) {
+		return true
+	}
+	if prev, ok := ReadLedgerEntry(childID); ok && prev.Suppressed && sameDelivered(prev, profile, sig) && prev.FinishedAt.Equal(at) {
+		d.rememberSuppressedDone(profile, childID, sig, at)
+		return true
+	}
+	return false
+}
+
+func (d *TransitionDaemon) rememberSuppressedDone(profile, childID string, sig DoneSignal, at time.Time) {
+	if d.lastSuppressedDone == nil {
+		d.lastSuppressedDone = map[string]map[string]suppressedDone{}
+	}
+	if d.lastSuppressedDone[profile] == nil {
+		d.lastSuppressedDone[profile] = map[string]suppressedDone{}
+	}
+	d.lastSuppressedDone[profile][childID] = suppressedDone{sig: sig, at: at}
 }
 
 // doneSignalFor resolves a hook status into a completion sentinel, or reports

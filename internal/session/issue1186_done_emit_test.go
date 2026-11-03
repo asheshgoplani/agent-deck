@@ -536,12 +536,14 @@ func assertDoneRecordedNotDelivered(t *testing.T, profile, wantReason string, mu
 		t.Fatalf("done_suppressed fields = %+v, want child=%s profile=%s reason=%s status=ok", lines[0], childID, profile, wantReason)
 	}
 
-	// A new completion from the same child is a new record and a new line.
-	hookStatuses[childID] = &HookStatus{Status: "waiting", Event: "Stop", DoneStatus: "fail", DoneSummary: "second", UpdatedAt: time.Now()}
+	// The same sentinel on a later Stop is a new completion: a new record
+	// with a fresh done_at and a new line.
+	second := hs.UpdatedAt.Add(time.Second)
+	hookStatuses[childID] = &HookStatus{Status: "waiting", Event: "Stop", DoneStatus: "ok", DoneSummary: "muted but done", UpdatedAt: second}
 	d.emitDoneSignals(profile, byID, hookStatuses)
 	d.notifier.Flush()
-	if entry, _ := ReadLedgerEntry(childID); entry.Status != "fail" || entry.Summary != "second" {
-		t.Fatalf("second completion not recorded: %+v", entry)
+	if entry, _ := ReadLedgerEntry(childID); !entry.FinishedAt.Equal(second) {
+		t.Fatalf("identical completion on a new Stop not recorded with a fresh done_at: %+v", entry)
 	}
 	n := 0
 	for _, r := range readLogRecords(t, logDir) {
@@ -554,5 +556,45 @@ func assertDoneRecordedNotDelivered(t *testing.T, profile, wantReason string, mu
 	}
 	if got := readInboxLines(t, parentID); len(got) != 0 {
 		t.Fatalf("second muted completion reached the parent inbox: %+v", got)
+	}
+}
+
+// A completion recorded while muted was never delivered, so it must not make
+// an identical completion after notifications are turned back on look like a
+// repeat. Re-reading the same Stop edge after unmuting is still that recorded
+// completion and is not delivered.
+func TestDaemon_EmitDoneSignals_UnmutedIdenticalCompletionDelivered(t *testing.T) {
+	profile := "_test-1186-done-unmute"
+	parentID, childID := seedDoneParentChild(t, profile)
+	byID := loadInstancesByID(t, profile)
+	d := NewTransitionDaemon()
+	t.Cleanup(d.notifier.Close)
+
+	first := time.Now()
+	muted := map[string]*HookStatus{childID: {Status: "waiting", Event: "Stop", DoneStatus: "ok", DoneSummary: "same result", UpdatedAt: first}}
+	byID[childID].NoTransitionNotify = true
+	d.emitDoneSignals(profile, byID, muted)
+	d.notifier.Flush()
+	if _, ok := ReadLedgerEntry(childID); !ok {
+		t.Fatal("muted completion not recorded")
+	}
+
+	byID[childID].NoTransitionNotify = false
+	d.emitDoneSignals(profile, byID, muted)
+	d.notifier.Flush()
+	if got := readInboxLines(t, parentID); len(got) != 0 {
+		t.Fatalf("the muted Stop edge re-read after unmuting must not be delivered: %+v", got)
+	}
+
+	again := map[string]*HookStatus{childID: {Status: "waiting", Event: "Stop", DoneStatus: "ok", DoneSummary: "same result", UpdatedAt: first.Add(time.Minute)}}
+	d.emitDoneSignals(profile, byID, again)
+	d.notifier.Flush()
+	got := readInboxLines(t, parentID)
+	if len(got) != 1 || got[0].Kind != transitionKindFinished || got[0].DoneSummary != "same result" {
+		t.Fatalf("identical completion after unmuting must be delivered once, got %+v", got)
+	}
+	entry, _ := ReadLedgerEntry(childID)
+	if !entry.FinishedAt.Equal(first.Add(time.Minute)) || entry.Repeats != 0 {
+		t.Fatalf("delivered completion must overwrite the muted entry without a repeat count: %+v", entry)
 	}
 }
