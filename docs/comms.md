@@ -560,7 +560,10 @@ another agent) keeps the old harness's rules until it restarts, since the pane
 runs the old harness until then, and takes the new harness's rules at the first
 poll after the restart. Until that poll, the receipt rules follow the hook that
 asks, not the marker: a pi run start is bound to a receipt token and a Claude
-prompt counts as shown once printed. A session no launch of this version
+prompt counts as shown once printed. The serving-pi check is the one rule that
+still follows the marker, so until that poll (longer if the marker write fails)
+a pi in another pane of a session restarted from Claude to pi could take and
+acknowledge its context: misdelivered to the wrong pane, not lost. A session no launch of this version
 recorded falls back to its stored tool. A listed pi launched without it is not enrolled and keeps
 the inbox path with typed wakes, as before. `pi-hooks status` shows whether a
 local launch made now would export the socket and, if not, why; it does not
