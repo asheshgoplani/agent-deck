@@ -558,8 +558,10 @@ to what the parent's pane runs: the tool its last launch recorded
 whose tool changes in place (a session edit, a conductor re-registered with
 another agent) keeps the old harness's rules until it restarts, since the pane
 runs the old harness until then, and takes the new harness's rules at the first
-poll after the restart. A session no launch of this version recorded falls back
-to its stored tool. A listed pi launched without it is not enrolled and keeps
+poll after the restart. Until that poll, the receipt rules follow the hook that
+asks, not the marker: a pi run start is bound to a receipt token and a Claude
+prompt counts as shown once printed. A session no launch of this version
+recorded falls back to its stored tool. A listed pi launched without it is not enrolled and keeps
 the inbox path with typed wakes, as before. `pi-hooks status` shows whether a
 local launch made now would export the socket and, if not, why; it does not
 say why a given session's launch did not (an SSH or sandboxed launch, or one
@@ -661,8 +663,9 @@ as past the receipt window.
 Whether a pi may be typed into is decided by what its launch did, not by a
 connect at wake time: the launch records, on the persisted instance, whether it
 exported a socket path in `AGENTDECK_PI_SOCKET`, and which tool it launched, on
-every launch path including a restart; only those launch writes set them, so a
-full save of an edited session leaves them as the launch left them. The socket is for local launches only: an SSH or sandboxed pi exports nothing and is
+every launch path including every kind of restart. A session started before its
+first save (a web or TUI create, a fork) has them written by that save; a later
+full save of an edited session leaves the launched tool as the launch left it. The socket is for local launches only: an SSH or sandboxed pi exports nothing and is
 recorded as such, so its doorbell is typed as before. A pi with no record is one an
 older binary launched and is treated as launched without it.
 
