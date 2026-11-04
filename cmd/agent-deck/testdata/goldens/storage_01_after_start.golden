@@ -211,7 +211,7 @@
       "tmux_session": "ad-golden-sess-shell",
       "tmux_socket_name": "",
       "tool": "shell",
-      "tool_data": "{\"last_started_at\":\"\u003cVOLATILE_LAST_STARTED_AT\u003e\"}",
+      "tool_data": "{\"last_started_at\":\"\u003cVOLATILE_LAST_STARTED_AT\u003e\",\"launched_tool\":\"shell\"}",
       "worktree_branch": "",
       "worktree_path": "",
       "worktree_repo": "",
