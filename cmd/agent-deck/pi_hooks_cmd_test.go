@@ -113,7 +113,7 @@ func TestHandlePiHooks_StatusReportsDrift(t *testing.T) {
 		t.Errorf("status with drift = %q, want OUTDATED", out)
 	}
 	// An outdated extension cannot serve the socket, whatever pi is.
-	if want := "Socket: off (extension is v0, current v5)\n"; !strings.Contains(out, want) {
+	if want := "Socket: off (extension is v0, current v6)\n"; !strings.Contains(out, want) {
 		t.Errorf("status with drift lacks %q:\n%s", want, out)
 	}
 }
