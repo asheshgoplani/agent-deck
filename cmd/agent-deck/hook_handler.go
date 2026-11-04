@@ -236,7 +236,7 @@ func piBeforeAgentStart(instanceID string, p hookPayload) {
 	// The previous run's receipt rides this run start, so the attempt is accepted
 	// (and settled below) without waiting for the daemon to ingest the spooled one.
 	session.AcceptPriorInjection(instanceID, strings.TrimSpace(rawString(p.PriorInjectedToken)))
-	dl, ok := session.LedgerPromptContext(instanceID, rawString(p.Prompt), strings.TrimSpace(rawString(p.WakeNonce)))
+	dl, ok := session.LedgerPromptContext(instanceID, rawString(p.Prompt), strings.TrimSpace(rawString(p.WakeNonce)), true)
 	if !ok {
 		return
 	}
@@ -619,7 +619,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 			// from the ledger (acknowledging what a wake line showed);
 			// every other session keeps the inbox drain.
 			// The ledger's context already ends with what the inbox holds.
-			if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt), ""); ok {
+			if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt), "", false); ok {
 				ledger = dl
 				if dl.Text != "" {
 					parts = append([]string{dl.Text}, parts...)

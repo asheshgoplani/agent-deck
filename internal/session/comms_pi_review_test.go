@@ -62,7 +62,7 @@ func (f *deliverFixture) injectedEdge(t *testing.T, token string) {
 func TestLedgerPromptContext_PiInjectionIsNotAcceptedByPrinting(t *testing.T) {
 	f := newPiParentFixture(t)
 	rec := f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "child result"})
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl.Text, "child result") {
 		t.Fatalf("no injection (ok %v)", ok)
 	}
@@ -85,10 +85,10 @@ func TestLedgerPromptContext_PiInjectionIsNotAcceptedByPrinting(t *testing.T) {
 func TestLedgerPromptContext_PiNoReceiptMeansTheRecordsRideTheNextRunStart(t *testing.T) {
 	f := newPiParentFixture(t)
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "child result"})
-	dl, _ := LedgerPromptContext(f.parent.ID, "carry on", "")
+	dl, _ := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	dl.Done(true)                          // printed, then the extension timed out: no receipt follows
 	f.clock = f.clock.Add(2 * time.Minute) // past the receipt window
-	dl2, ok := LedgerPromptContext(f.parent.ID, "carry on again", "")
+	dl2, ok := LedgerPromptContext(f.parent.ID, "carry on again", "", f.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl2.Text, "child result") {
 		t.Fatalf("without a receipt the record must be injected again (ok %v, text %q)", ok, dl2.Text)
 	}
@@ -108,11 +108,11 @@ func TestLedgerPromptContext_PiNoReceiptMeansTheRecordsRideTheNextRunStart(t *te
 func TestCommsIngest_PiInjectedTokenAcceptsExactlyThatAttempt(t *testing.T) {
 	f := newPiParentFixture(t)
 	rec := f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "child result"})
-	first, _ := LedgerPromptContext(f.parent.ID, "run one", "")
+	first, _ := LedgerPromptContext(f.parent.ID, "run one", "", f.parent.Tool == "pi")
 	stale := tokenOf(t, first)
 	first.Done(true)
 	f.clock = f.clock.Add(2 * time.Minute) // past the receipt window: the record rides again
-	second, _ := LedgerPromptContext(f.parent.ID, "run two", "")
+	second, _ := LedgerPromptContext(f.parent.ID, "run two", "", f.parent.Tool == "pi")
 	current := tokenOf(t, second)
 	second.Done(true)
 
@@ -126,7 +126,7 @@ func TestCommsIngest_PiInjectedTokenAcceptsExactlyThatAttempt(t *testing.T) {
 		t.Fatalf("the current token did not accept its attempt: %v", f.inflight(t))
 	}
 	// Accepted is not acked: the next prompt settles it, and injects nothing more.
-	next, ok := LedgerPromptContext(f.parent.ID, "run three", "")
+	next, ok := LedgerPromptContext(f.parent.ID, "run three", "", f.parent.Tool == "pi")
 	if !ok || strings.Contains(next.Text, "child result") {
 		t.Errorf("an accepted record was injected again (ok %v): %q", ok, next.Text)
 	}
@@ -215,7 +215,7 @@ func TestCommsDeliver_PiBudgetCheckRunsOutsideTheConsumerLock(t *testing.T) {
 		t.Fatal("the pass never reached the budget check")
 	}
 	start := time.Now()
-	dl, ok := LedgerPromptContext(w.parent.ID, "my own prompt", "")
+	dl, ok := LedgerPromptContext(w.parent.ID, "my own prompt", "", w.parent.Tool == "pi")
 	took := time.Since(start)
 	unblock()
 	<-done
@@ -492,7 +492,7 @@ func (f *deliverFixture) piTurnWithInboxTwin(t *testing.T, uuid, text string) {
 func TestLedgerPromptContext_PiShownKeysWaitForTheReceipt(t *testing.T) {
 	f := newPiParentFixture(t)
 	f.piTurnWithInboxTwin(t, "aaaaaaaa-0000-4000-8000-000000000e01", "which way?")
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	if !ok || strings.Count(dl.Text, "which way?") != 1 {
 		t.Fatalf("first injection (ok %v): %q", ok, dl.Text)
 	}
@@ -501,7 +501,7 @@ func TestLedgerPromptContext_PiShownKeysWaitForTheReceipt(t *testing.T) {
 	if !InboxHasPending(f.parent.ID) {
 		t.Fatal("the inbox copy was retired by an injection nobody received")
 	}
-	dl2, ok := LedgerPromptContext(f.parent.ID, "carry on again", "")
+	dl2, ok := LedgerPromptContext(f.parent.ID, "carry on again", "", f.parent.Tool == "pi")
 	if !ok || strings.Count(dl2.Text, "which way?") != 1 {
 		t.Fatalf("a dropped injection must be injected again, once (ok %v): %q", ok, dl2.Text)
 	}
@@ -516,14 +516,14 @@ func TestLedgerPromptContext_PiShownKeysWaitForTheReceipt(t *testing.T) {
 func TestLedgerPromptContext_PiReceiptMovesTheShownKeys(t *testing.T) {
 	f := newPiParentFixture(t)
 	f.piTurnWithInboxTwin(t, "aaaaaaaa-0000-4000-8000-000000000e02", "which way?")
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	if !ok {
 		t.Fatal("no injection")
 	}
 	token := tokenOf(t, dl)
 	dl.Done(true)
 	f.injectedEdge(t, token)
-	next, _ := LedgerPromptContext(f.parent.ID, "carry on again", "")
+	next, _ := LedgerPromptContext(f.parent.ID, "carry on again", "", f.parent.Tool == "pi")
 	if next != nil && strings.Contains(next.Text, "which way?") {
 		t.Errorf("a received turn was injected again: %q", next.Text)
 	}
@@ -579,7 +579,7 @@ func TestCommsDeliver_PiPaneTreeHiccupNeverTypes(t *testing.T) {
 				t.Errorf("the retry typed %q", typed)
 			}
 			// And the record is still owed at the next run start.
-			dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "")
+			dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
 			if !ok || !strings.Contains(dl.Text, "shipped the build") {
 				t.Errorf("the record was lost (ok %v)", ok)
 			}
@@ -620,7 +620,7 @@ func TestCommsDeliver_PiForeignPeerInACompleteTreeIsAPermanentRefusal(t *testing
 	if len(w.typed.all()) != 0 || w.ext.count() != 0 {
 		t.Errorf("a permanent refusal repeated: frames %d typed %q", w.ext.count(), w.typed.all())
 	}
-	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl.Text, "shipped the build") {
 		t.Errorf("the record did not stay deliverable (ok %v)", ok)
 	}
@@ -646,7 +646,7 @@ func TestCommsDeliver_PiUnavailableButNotAbsentNeverTypes(t *testing.T) {
 			if w.ext.count() != 0 {
 				t.Errorf("a frame reached an unvetted socket (%d)", w.ext.count())
 			}
-			dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "")
+			dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
 			if !ok || !strings.Contains(dl.Text, "shipped the build") {
 				t.Errorf("the record did not stay deliverable (ok %v)", ok)
 			}
@@ -672,11 +672,11 @@ func TestCommsDeliver_PiUnavailableButNotAbsentNeverTypes(t *testing.T) {
 func TestLedgerPromptContext_PiAttemptWithinTheReceiptWindowIsNotInjectedAgain(t *testing.T) {
 	f := newPiParentFixture(t)
 	rec := f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "child result"})
-	dl, _ := LedgerPromptContext(f.parent.ID, "run one", "")
+	dl, _ := LedgerPromptContext(f.parent.ID, "run one", "", f.parent.Tool == "pi")
 	token := tokenOf(t, dl)
 	dl.Done(true)
 	f.clock = f.clock.Add(5 * time.Second)
-	next, _ := LedgerPromptContext(f.parent.ID, "run two", "")
+	next, _ := LedgerPromptContext(f.parent.ID, "run two", "", f.parent.Tool == "pi")
 	if next != nil && strings.Contains(next.Text, "child result") {
 		t.Fatalf("injected again 5 s after the first, before its receipt could arrive: %q", next.Text)
 	}
@@ -696,7 +696,7 @@ func TestLedgerPromptContext_PiAttemptWithinTheReceiptWindowIsNotInjectedAgain(t
 	}
 	spoolTurn(t, e)
 	f.clock = f.clock.Add(5 * time.Second)
-	again, _ := LedgerPromptContext(f.parent.ID, "run three", "")
+	again, _ := LedgerPromptContext(f.parent.ID, "run three", "", f.parent.Tool == "pi")
 	if again != nil && strings.Contains(again.Text, "child result") {
 		t.Errorf("a spooled-but-not-ingested receipt did not stop the duplicate: %q", again.Text)
 	}

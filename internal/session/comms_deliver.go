@@ -930,7 +930,13 @@ func drainScope(en CommsEnrollment) (inScope func(comms.Record) bool, draining, 
 // owed it; once that is delivered its marker is removed. ok is false when
 // the inbox path alone applies (no marker, or the ledger cannot be read:
 // nothing is consumed then and the caller drains the inbox as before).
-func LedgerPromptContext(id, prompt, nonce string) (*LedgerDelivery, bool) {
+//
+// fromPi is the harness of the hook calling it, which decides the receipt
+// semantics: a pi injection is bound to a token its receipt must echo, since
+// pi's extension can discard printed output; a Claude one counts as shown once
+// printed. The marker follows the parent's harness only at the poll after a
+// restart that changed it, so the caller, not the marker, decides.
+func LedgerPromptContext(id, prompt, nonce string, fromPi bool) (*LedgerDelivery, bool) {
 	r, en, ok := openLedgerFor(id)
 	if !ok {
 		return nil, false
@@ -941,7 +947,7 @@ func LedgerPromptContext(id, prompt, nonce string) (*LedgerDelivery, bool) {
 	var shownBefore []string
 	now := commsNow().UnixMilli()
 	finished := false
-	isPi := en.Tool == "pi"
+	isPi := fromPi
 	_, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
 		f := p.File
 		acks := settleTurnAttempts(f, now)
@@ -977,7 +983,7 @@ func LedgerPromptContext(id, prompt, nonce string) (*LedgerDelivery, bool) {
 		take := selectContext(rest, names, commsLedgerContextBudget)
 		f.Carry(take, comms.ViaPrompt, now)
 		dl.carried = exportedCursors(take)
-		if en.Tool == "pi" {
+		if isPi {
 			dl.Token = comms.NewID(commsNow())
 			f.BindToken(dl.carried, dl.Token)
 		}

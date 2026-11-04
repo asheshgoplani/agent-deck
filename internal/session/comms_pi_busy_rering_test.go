@@ -109,7 +109,7 @@ func (w *piWakeFx) piWokenRun(t *testing.T, i int, receipt bool) *LedgerDelivery
 	fr := w.ext.frame(t, i)
 	line, _ := fr["line"].(string)
 	nonce, _ := fr["id"].(string)
-	dl, ok := LedgerPromptContext(w.parent.ID, line, nonce)
+	dl, ok := LedgerPromptContext(w.parent.ID, line, nonce, w.parent.Tool == "pi")
 	if !ok {
 		t.Fatalf("the run frame %d started injected nothing", i)
 	}
@@ -326,7 +326,7 @@ func TestCommsDeliver_PiLedgerRingsBeforeTheInboxDoorbell(t *testing.T) {
 			if n := w.ext.count(); n != 2 {
 				t.Errorf("frames = %d, want the ledger's and the inbox doorbell's only", n)
 			}
-			next, _ := LedgerPromptContext(w.parent.ID, "carry on", "")
+			next, _ := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
 			if next != nil {
 				if strings.Contains(next.Text, "which way, A or B?") {
 					t.Errorf("the received turn was injected again: %q", next.Text)
@@ -388,7 +388,7 @@ func TestCommsDeliver_PiChildTwinIngestedAfterTheInboxRunRingsOnceMore(t *testin
 	if n := w.ext.count(); n != 2 {
 		t.Errorf("socket doorbells = %d, want the inbox's and exactly one for the twin", n)
 	}
-	if next, _ := LedgerPromptContext(w.parent.ID, "carry on", ""); next != nil {
+	if next, _ := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi"); next != nil {
 		if strings.Contains(next.Text, text) {
 			t.Errorf("the turn was injected a third time: %q", next.Text)
 		}
