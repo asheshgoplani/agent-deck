@@ -97,6 +97,10 @@ func (e *piLedgerE2E) pass() {
 	e.d.Flush()
 }
 
+// piServes is the field every payload of the pi serving a parent's wake socket
+// carries (the extension's pane_host).
+const piServes = `,"pane_host":true`
+
 func (e *piLedgerE2E) hook(event, extra string) {
 	e.t.Helper()
 	e.hookAs(e.child.ID, e.run, "pi-sess-1", event, extra)
@@ -236,8 +240,8 @@ func TestPiLedgerE2E_ABusyPiParentIsRungOnceForItsChildsRunWhenItSettles(t *test
 		restore()
 	})
 	// The parent's own run starts and runs a long tool call.
-	e.hookAs(e.parent.ID, "parent-run-1", "pi-sess-p", "before_agent_start", `,"prompt":"Run the bash command: sleep 60"`)
-	e.hookAs(e.parent.ID, "parent-run-1", "pi-sess-p", "turn_start", "")
+	e.hookAs(e.parent.ID, "parent-run-1", "pi-sess-p", "before_agent_start", `,"prompt":"Run the bash command: sleep 60"`+piServes)
+	e.hookAs(e.parent.ID, "parent-run-1", "pi-sess-p", "turn_start", piServes)
 	e.status(e.parent.ID, "running")
 	e.pass()
 	// The child's run settles with a question while the parent is busy.
@@ -254,8 +258,8 @@ func TestPiLedgerE2E_ABusyPiParentIsRungOnceForItsChildsRunWhenItSettles(t *test
 		t.Fatalf("a doorbell rang while the parent was busy: %d frames", n)
 	}
 	// The parent's run ends.
-	e.hookAs(e.parent.ID, "parent-run-1", "pi-sess-p", "turn_end", "")
-	e.hookAs(e.parent.ID, "parent-run-1", "pi-sess-p", "agent_settled", `,"turn_id":"p-entry-1","last_assistant_message":"BUSY DONE","prompt":"Run the bash command: sleep 60"`)
+	e.hookAs(e.parent.ID, "parent-run-1", "pi-sess-p", "turn_end", piServes)
+	e.hookAs(e.parent.ID, "parent-run-1", "pi-sess-p", "agent_settled", `,"turn_id":"p-entry-1","last_assistant_message":"BUSY DONE","prompt":"Run the bash command: sleep 60"`+piServes)
 	e.status(e.parent.ID, "waiting")
 	for i := 0; i < 5; i++ {
 		e.pass()
@@ -297,9 +301,48 @@ func TestPiLedgerE2E_APiStartedInsideTheParentsPaneNeitherTakesNorAcksItsRecords
 
 	// The launched pi's next run start still carries the child's run.
 	parent := captureStdout(t, func() {
-		e.hookAs(e.parent.ID, "parent-run", "pi-parent-sess", "before_agent_start", `,"prompt":"what is next?"`)
+		e.hookAs(e.parent.ID, "parent-run", "pi-parent-sess", "before_agent_start", `,"prompt":"what is next?"`+piServes)
 	})
 	if !strings.Contains(parent, "Built and tested.") {
 		t.Fatalf("the launched pi's run start lacks the record a guest pi took and acknowledged: %q", parent)
+	}
+}
+
+// Forge round 2 #1: a pi typed into another tmux pane or window of a listed pi
+// parent's session inherits the session's AGENTDECK_INSTANCE_ID but not the
+// launch's AGENTDECK_PI_SOCKET or AGENTDECK_PI_HOST_PID, so it is no guest of
+// the pane and serves no socket: its payloads carry neither pane_guest nor
+// pane_host. Through the real hook handler and daemon passes, its run start is
+// given none of the parent's records, its receipt and its run start are not
+// applied, and the launched pi's next run start (pane_host) still carries them.
+func TestPiLedgerE2E_APiInAnotherPaneOfTheParentsSessionNeitherTakesNorAcksItsRecords(t *testing.T) {
+	e := newPiLedgerE2EFor(t, "pi")
+	e.runOnce()
+	e.pass()
+
+	other := captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "split-run", "pi-split-sess", "before_agent_start", `,"prompt":"what changed?"`)
+	})
+	if strings.Contains(other, "Built and tested.") {
+		t.Errorf("a pi in another pane of the parent's session was given the parent's records: %q", other)
+	}
+	token := ""
+	if m := regexp.MustCompile(`<!-- agent-deck-delivery:([0-9A-Za-z]+) -->`).FindStringSubmatch(other); m != nil {
+		token = m[1]
+	}
+	e.hookAs(e.parent.ID, "split-run", "pi-split-sess", "turn_start", fmt.Sprintf(`,"injected_token":%q`, token))
+	e.pass()
+	// Its next run start would carry the receipt for the run before it.
+	_ = captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "split-run-2", "pi-split-sess", "before_agent_start",
+			fmt.Sprintf(`,"prompt":"and now?","prior_injected_token":%q`, token))
+	})
+	e.pass()
+
+	parent := captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "parent-run", "pi-parent-sess", "before_agent_start", `,"prompt":"what is next?"`+piServes)
+	})
+	if !strings.Contains(parent, "Built and tested.") {
+		t.Fatalf("the serving pi's run start lacks the record a pi in another pane took and acknowledged: %q", parent)
 	}
 }

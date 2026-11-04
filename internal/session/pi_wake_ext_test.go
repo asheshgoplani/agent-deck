@@ -167,6 +167,16 @@ const IDS_AB = ["01J0RECORD00000000000ABC123", "01J0RECORD00000000000DEF456"];
 const IDS_C = ["01J0RECORD00000000000GHI789"];
 IDS.set(LINE_AB, IDS_AB); IDS.set(LINE_AB2, IDS_AB); IDS.set(LINE_C, IDS_C);
 
+// runChild runs a scenario in a child process with env and returns its JSON.
+async function runChild(scenario, env) {
+  const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", process.argv[1], scenario],
+    { env, stdio: ["ignore", "pipe", "ignore"] });
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  await new Promise((r) => child.once("close", r));
+  return JSON.parse(out.trim());
+}
+
 const scenarios = {
   async private_socket() {
     fs.mkdirSync(path.dirname(SOCK), { recursive: true, mode: 0o755 });
@@ -543,6 +553,49 @@ const scenarios = {
     await rt.fire("turn_start");
     await rt.stop();
     return { pid: String(process.pid), hostPidEnv: process.env.AGENTDECK_PI_HOST_PID, listened: listened.slice(), warns: warns.slice() };
+  },
+
+  // Which payloads say pane_host: only those of the runtime whose socket is at
+  // the public path (Forge round 2 #1).
+  async pane_host() {
+    release();
+    const a = makeRuntime();
+    await a.start();
+    await a.human("launched prompt");
+    await a.fire("turn_start");
+    a.endRun();
+    // A restarted pi takes the path over; the earlier one, still shutting down,
+    // is no longer the host.
+    const b = makeRuntime();
+    await b.start();
+    await a.human("earlier pi prompt");
+    a.endRun();
+    await b.human("restarted prompt");
+    b.endRun();
+    await b.stop();
+    // A pi in another tmux pane or window of the session: it has the session's
+    // AGENTDECK_INSTANCE_ID, but neither the launch's socket nor a host pid.
+    const split = { ...process.env };
+    delete split.AGENTDECK_PI_SOCKET;
+    delete split.AGENTDECK_PI_HOST_PID;
+    const other = await runChild("plain_child", split);
+    // A launched pi whose bind fails: the socket's directory cannot be made.
+    const blocker = path.join(DIR, "not-a-dir");
+    fs.writeFileSync(blocker, "");
+    const failed = await runChild("plain_child", { ...process.env, AGENTDECK_PI_HOST_PID: "", AGENTDECK_PI_SOCKET: path.join(blocker, "w.sock") });
+    await a.stop();
+    return { other, failed,
+      hooks: hooks().map((h) => [h.hook_event_name, h.prompt ?? "", h.pane_host === true, h.pane_guest === true]) };
+  },
+
+  // One run start and turn, then shutdown, in a process of its own.
+  async plain_child() {
+    const rt = makeRuntime();
+    await rt.start();
+    await rt.human("child prompt");
+    await rt.fire("turn_start");
+    await rt.stop();
+    return { listened: listened.slice(), warns: warns.slice() };
   },
 
   async concurrent_start() {
@@ -1558,6 +1611,41 @@ func TestPiWakeExtension_AGuestOfThePaneMarksItsPayloads(t *testing.T) {
 	wantAt(t, res, "hostStillServes.state", "busy") // the host's run is still active
 	if n := lenAt(t, res, "guest.warns"); n != 0 {
 		t.Errorf("the guest warned %v", get(t, res, "guest.warns"))
+	}
+}
+
+// Forge round 2 #1: only the pi serving the socket marks its payloads
+// pane_host, and hook-handler takes a socket-exported parent's ledger edges
+// only from such a payload. The launched pi's are marked while its socket is
+// the one at the path; once a restarted pi renames its own over it, the
+// earlier pi's are not, and the restarted pi's are. A pi in another tmux pane
+// or window of the session (no socket, no host pid) and a launched pi whose
+// bind failed mark nothing: they are not guests, and not the host either.
+func TestPiWakeExtension_OnlyThePiServingTheSocketMarksItsPayloadsTheHost(t *testing.T) {
+	res, _ := runPiWake(t, "pane_host", piWakeOpts{})
+	plain := func(prompt string) [][]any {
+		return [][]any{{"session_start", "", false, false}, {"before_agent_start", prompt, false, false},
+			{"turn_start", "", false, false}, {"session_shutdown", "", false, false}}
+	}
+	want := [][]any{
+		{"session_start", "", true, false},
+		{"before_agent_start", "launched prompt", true, false},
+		{"turn_start", "", true, false},
+		{"session_start", "", true, false}, // the restarted pi
+		{"before_agent_start", "earlier pi prompt", false, false},
+		{"before_agent_start", "restarted prompt", true, false},
+		{"session_shutdown", "", false, false}, // stop unbinds before it reports
+	}
+	want = append(want, plain("child prompt")...)                    // the other pane
+	want = append(want, plain("child prompt")...)                    // the failed bind
+	want = append(want, []any{"session_shutdown", "", false, false}) // the earlier pi's own
+	wantAt(t, res, "hooks", want)
+	if n := lenAt(t, res, "other.listened"); n != 0 {
+		t.Errorf("a pi without the launch's socket bound %v", get(t, res, "other.listened"))
+	}
+	warned := fmt.Sprint(get(t, res, "failed.warns"))
+	if !strings.Contains(warned, "could not serve") || !strings.Contains(warned, "none of the ledger's records") {
+		t.Errorf("a pi whose bind failed warned %s, want what it will not get", warned)
 	}
 }
 

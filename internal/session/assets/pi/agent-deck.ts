@@ -47,16 +47,25 @@
 // the extension asks hook-handler for context and returns its stdout as the
 // run's injected message; a doorbell's run also carries wake_nonce.
 //
-// Only the pi agent-deck launched in the pane serves the socket and takes the
-// ledger's context. Its extension puts its own pid in AGENTDECK_PI_HOST_PID in
-// process.env, which everything that pi starts inherits (pi's bash tool
-// spawns with process.env), so a pi started inside the pane (a subagent's
-// `pi -p`, a script) finds another pid there: it is a guest of the pane, serves
-// nothing, and marks every payload pane_guest, so hook-handler gives it no
-// context and applies none of its receipts. A local launch sets the variable
-// empty, so a launched or restarted pi is never a guest. It is a pid, not a
-// flag, because /reload re-evaluates this file in the same process, which
-// must still find itself the host.
+// Only the pi agent-deck launched in the pane serves the socket, and only the
+// pi that serves it takes the ledger's context. Its extension puts its own pid
+// in AGENTDECK_PI_HOST_PID in process.env, which everything that pi starts
+// inherits (pi's bash tool spawns with process.env), so a pi started inside
+// the pane (a subagent's `pi -p`, a script) finds another pid there: it is a
+// guest of the pane, serves nothing, and marks every payload pane_guest. A
+// local launch sets the variable empty, so a launched or restarted pi is never
+// a guest. It is a pid, not a flag, because /reload re-evaluates this file in
+// the same process, which must still find itself the host.
+//
+// While the socket at AGENTDECK_PI_SOCKET is the one this runtime bound, every
+// payload also carries pane_host. For a parent whose launch exported the
+// socket, hook-handler gives context, applies receipts and spools run starts
+// only for a payload so marked. A pi that is not a guest but serves nothing is
+// not the host either: one in another tmux pane or window of the session (it
+// has the session's AGENTDECK_INSTANCE_ID but not the launch's socket), an
+// older pi whose path a restarted one took over, or a launched pi whose bind
+// failed. Its run starts are given none of the parent's records; they wait for
+// the pi that serves.
 //
 // It is a no-op outside agent-deck: without AGENTDECK_INSTANCE_ID in the
 // environment nothing is spawned and no handler is registered. pi awaits
@@ -406,7 +415,21 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
       server = srv;
     } catch (e) {
       if (priv) fs.rmSync(priv, { force: true });
-      warn("could not serve " + sockPath + ": " + String(e));
+      warn("could not serve " + sockPath + ": " + String(e) +
+        "; until this pi restarts it gets no socket wakes and none of the ledger's records (agent-deck msg read shows them)");
+    }
+  };
+
+  // serving reports whether the socket at the public path is the one this
+  // runtime bound: not before start, not after stop, and not once a later
+  // starter has renamed its own over it.
+  const serving = (): boolean => {
+    if (!server || !owned) return false;
+    try {
+      const st = fs.statSync(sockPath, { bigint: true });
+      return st.dev === owned.dev && st.ino === owned.ino;
+    } catch {
+      return false;
     }
   };
 
@@ -439,7 +462,7 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
     if (pending && pending.nonce === nonce) settle(pending, "submitted");
   };
 
-  return { start, stop, rang };
+  return { start, stop, rang, serving };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -465,8 +488,10 @@ export default function (pi: ExtensionAPI) {
   // receipt reaches the ledger even if the daemon has not ingested the echo.
   let lastInjected: string | undefined;
   let lastReported: string | undefined;
-  // Every payload of a guest of the pane says so.
-  const mark = (fields: Record<string, unknown> = {}) => (guest ? { ...fields, pane_guest: true } : fields);
+  // Every payload of a guest of the pane says so, and so does every payload of
+  // the pi serving the socket (see the header).
+  const mark = (fields: Record<string, unknown> = {}) =>
+    guest ? { ...fields, pane_guest: true } : wake?.serving() ? { ...fields, pane_host: true } : fields;
 
   // Returning emit's promise (rather than firing and forgetting) is what makes
   // pi await delivery before it runs the next handler.
