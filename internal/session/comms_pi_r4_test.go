@@ -148,6 +148,11 @@ func (f *deliverFixture) launchPi(t *testing.T, version string, exports bool) {
 	if err := storage.Save(all); err != nil {
 		t.Fatal(err)
 	}
+	// The launch's own targeted write (persistPiSocketDecision): a save carries
+	// an extras key it omits forward, so only this clears an earlier true.
+	if err := storage.GetDB().WritePiSocketExported(f.parent.ID, f.parent.PiSocketExported); err != nil {
+		t.Fatal(err)
+	}
 	loaded, _, err := storage.LoadWithGroups()
 	if err != nil {
 		t.Fatal(err)
@@ -269,6 +274,46 @@ func TestCommsConsumes_AListedPiEnrolsOnlyOnceALaunchExportedTheSocket(t *testin
 	f.deliver(t, "waiting")
 	if en, ok := LoadCommsEnrollment(f.parent.ID); !ok || en.Tool != "pi" || en.Draining {
 		t.Fatalf("after a socket-exported launch the listed pi is not enrolled: %+v (found %v)", en, ok)
+	}
+}
+
+// Forge round 2 #1: the marker of a pi parent says its launch exported the
+// wake socket, so its hooks take the ledger's edges only from the pi that
+// serves it (PiLedgerServedOnly). A relaunch without the socket drains the
+// parent and the marker stops asking for a serving pi.
+func TestCommsEnrollment_APiParentAsksForTheServingPiWhileItsLaunchExportsTheSocket(t *testing.T) {
+	piSocketShortData(t)
+	f := &deliverFixture{commsFixture: newCommsFixture(t), clock: time.Now()}
+	f.parent.Tool = "pi"
+	t.Cleanup(SetCommsConsumersForTest([]string{f.parent.Title}))
+	f.l = f.d.commsLedgerFor(f.profileName())
+	if f.l == nil {
+		t.Fatal("ledger did not open")
+	}
+
+	f.launchPi(t, "1.3.0", true)
+	f.deliver(t, "waiting")
+	if en, ok := LoadCommsEnrollment(f.parent.ID); !ok || !en.PiSocket || en.Draining {
+		t.Fatalf("a socket-exported pi's marker = %+v (found %v), want enrolled with pi_socket", en, ok)
+	}
+	if !PiLedgerServedOnly(f.parent.ID) {
+		t.Fatal("a socket-exported pi parent takes ledger edges from a pi that does not serve its socket")
+	}
+
+	f.launchPi(t, "1.1.0", false)
+	f.deliver(t, "waiting")
+	if en, ok := LoadCommsEnrollment(f.parent.ID); !ok || en.PiSocket || !en.Draining {
+		t.Fatalf("after a relaunch without the socket the marker = %+v (found %v), want draining without pi_socket", en, ok)
+	}
+	if PiLedgerServedOnly(f.parent.ID) {
+		t.Error("a pi relaunched without the socket still waits for a pi that serves one")
+	}
+
+	// A Claude parent never asks for one.
+	f.parent.Tool, f.parent.PiSocketExported = "claude", false
+	f.deliver(t, "waiting")
+	if en, ok := LoadCommsEnrollment(f.parent.ID); ok && en.PiSocket {
+		t.Errorf("a Claude parent's marker asks for a serving pi: %+v", en)
 	}
 }
 

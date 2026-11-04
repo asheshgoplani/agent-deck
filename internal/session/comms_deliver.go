@@ -120,6 +120,12 @@ type CommsEnrollment struct {
 	EnrollCursor uint64 `json:"enroll_cursor,omitempty"` // the ledger end at enrollment (a lost state is rebuilt here)
 	Draining     bool   `json:"draining,omitempty"`
 	DrainedAt    int64  `json:"drained_at,omitempty"` // Unix ms the parent left the canary
+	// PiSocket says the parent is a pi whose last launch exported the wake
+	// socket (PiSocketExported). Its hooks then take the ledger's consumer edges
+	// (context, receipts, run starts) only from the pi that serves that socket
+	// (PiLedgerServedOnly). A relaunch without the socket clears it as the
+	// marker turns Draining.
+	PiSocket bool `json:"pi_socket,omitempty"`
 }
 
 // commsTransitionGrace covers the lag between a turn reaching the inbox
@@ -204,6 +210,21 @@ func commsDeliversTo(id string) bool {
 	return ok && !en.Draining && CommsLedgerEnabled()
 }
 
+// PiLedgerServedOnly reports a pi parent whose ledger edges belong only to the
+// pi serving its wake socket: its marker says its launch exported one. A pi
+// that serves it marks its payloads pane_host; any other pi of the session (a
+// pi in another tmux pane or window, which inherits the session's
+// AGENTDECK_INSTANCE_ID but not the launch's socket; an older pi whose socket a
+// restart took over; a launched pi whose bind failed) is given no context, and
+// its receipts and run starts are not applied, so the parent's records wait for
+// the pi that serves. Without the marker (not enrolled, or a pi that drains
+// after a relaunch without the socket) a pi's edges are taken unless it is a
+// guest of the pane.
+func PiLedgerServedOnly(id string) bool {
+	en, ok := LoadCommsEnrollment(id)
+	return ok && en.Tool == "pi" && en.PiSocket
+}
+
 // commsAnyEnrollment reports whether any marker exists (the daemon's cheap
 // exit when the ledger is off).
 func commsAnyEnrollment() bool {
@@ -283,12 +304,15 @@ func (d *TransitionDaemon) deliverCommsLedger(profile string, byID map[string]*I
 				})
 			}
 			if err := writeCommsEnrollment(id, CommsEnrollment{Profile: profile, Dir: r.Dir, Tool: commsToolName(inst),
-				At: commsNow().UnixMilli(), EnrollCursor: uint64(end)}); err != nil {
+				At: commsNow().UnixMilli(), EnrollCursor: uint64(end), PiSocket: inst.Tool == "pi" && inst.PiSocketExported}); err != nil {
 				commsLog.Warn("comms_enroll_failed", slog.String("parent", id), slog.String("error", err.Error()))
 				continue
 			}
 			commsLog.Info("comms_consumer_enrolled", slog.String("parent", id))
 		case !want && has && !en.Draining:
+			// A pi relaunched without the socket has no pi that serves one: its
+			// marker stops asking for it.
+			en.PiSocket = en.PiSocket && inst != nil && inst.PiSocketExported
 			d.startCommsDrain(id, en)
 			continue
 		case !want:
