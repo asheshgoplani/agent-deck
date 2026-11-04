@@ -354,7 +354,7 @@ func piWakeLeg(o wakeOpts, origin string, parent *Instance, profile, line, nonce
 	case errors.As(err, &unavailable):
 		switch {
 		case unavailable.Absent && parent.PiSocketExported:
-			// Launched with the socket: a v5 extension exists, and a missing file
+			// Launched with the socket: a v5 or later extension exists, and a missing file
 			// or a refused connection is a rebind or reload window, not an absent
 			// pi. Nothing is typed; the records stay pending and the next pass
 			// rings again.

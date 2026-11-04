@@ -108,7 +108,7 @@ P1 enabled two producers; the pi producer followed (#2482 Pi row). Each is pinne
 |---|---|---|---|---|
 | Claude Code | `hook-handler` | `UserPromptSubmit.prompt` | `Stop.last_assistant_message` + `transcript_path` | `claude_*_v1.json` |
 | Codex CLI | `codex-notify` (the existing `notify` line) | `input-messages` (last) on the same payload | `agent-turn-complete.last-assistant-message`, keyed by `turn-id` | `codex_notify_v1.json` |
-| pi | the pi extension (v5) through `hook-handler` | last `input` text, carried as `prompt` on the settle payload | last `turn_end` text of the run, sent on `agent_settled` when the run completed; keyed by the run (`run_id`), the key its inbox record carries, so a ledger parent is shown the run once when the ledger reaches it first, and twice with its text kept when the inbox does; without a `run_id` (an entry spooled before the upgrade, or a v3 extension) by session id and `messageEntryId`; tail-capped at 16 KiB | `pi_agentsettled_v4.json`, `pi_agentsettled_v3.json` |
+| pi | the pi extension (v6) through `hook-handler` | last `input` text, carried as `prompt` on the settle payload | last `turn_end` text of the run, sent on `agent_settled` when the run completed; keyed by the run (`run_id`), the key its inbox record carries, so a ledger parent is shown the run once when the ledger reaches it first, and twice with its text kept when the inbox does; without a `run_id` (an entry spooled before the upgrade, or a v3 extension) by session id and `messageEntryId`; tail-capped at 16 KiB | `pi_agentsettled_v4.json`, `pi_agentsettled_v3.json` |
 
 A Codex `Stop` hook pointed at `hook-handler` is recognised by its
 `turn_id` and never spooled, so notify and Stop cannot produce one turn
@@ -548,7 +548,7 @@ line only, through the same `session send --no-wait` the inbox wake uses).
 
 A pi parent listed in `consumers` is enrolled like a Claude one (marker
 `tool: pi`) once its launch exported a socket path in `AGENTDECK_PI_SOCKET`
-(below: pi >= 1.2.0, `agent-deck pi-hooks install` at extension v5, a local
+(below: pi >= 1.2.0, `agent-deck pi-hooks install` at extension v6, a local
 launch); the daemon reads that from the persisted launch decision
 (`PiSocketExported`). A listed pi launched without it is not enrolled and keeps
 the inbox path with typed wakes, as before. `pi-hooks status` shows whether a
