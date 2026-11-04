@@ -50,6 +50,9 @@ func (i *Instance) recordRestartOutcome() {
 	i.restartTmuxRecordErr = err
 	i.restartTmuxRecordStamps = stamps
 	i.restartTmuxRecordMu.Unlock()
+	if err == nil {
+		i.launchUnrecorded.Store(false) // the outcome carried the launch decision
+	}
 
 	if err != nil {
 		sessionLog.Warn("restart_outcome_persist_failed",
@@ -126,14 +129,17 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 // afterwards, so a start that changed the decision would otherwise leave the
 // old value in storage. They call it right after the spawn succeeds, so a
 // failure before it, or a spawn another process won, leaves storage as it was.
-// It is a targeted write of two keys (a not-yet-saved instance matches no row
-// and its launched tool is recorded by its next launch); a failure is logged
-// and never fails the start.
+// It is a targeted write of two keys. A new session the web, the TUI or a fork
+// starts before its first save matches no row: it is marked launchUnrecorded,
+// and that first save writes the launched tool (the socket decision rides
+// every save). A failure is logged and never fails the launch.
 func (i *Instance) persistLaunchDecision() {
 	i.noteLaunch()
-	if err := i.withOwningStateDB(func(db *statedb.StateDB) error {
+	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
 		return db.WriteLaunchDecision(i.ID, i.Tool, i.PiSocketExported)
-	}); err != nil && !errors.Is(err, errNoStateDB) {
+	})
+	i.launchUnrecorded.Store(err != nil)
+	if err != nil && !errors.Is(err, errNoStateDB) && !errors.Is(err, statedb.ErrInstanceNotStored) {
 		sessionLog.Warn("launch_decision_persist_failed",
 			slog.String("instance_id", i.ID),
 			slog.String("error", err.Error()))

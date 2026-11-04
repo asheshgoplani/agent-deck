@@ -493,9 +493,10 @@ type Instance struct {
 	// LaunchedTool is the tool the last launch of this session ran: what its
 	// pane runs now. A tool edit changes Tool at once but takes effect only at
 	// the next restart, so the comms ledger reads the parent's harness from
-	// here (commsParentTool). Written only by the launch's targeted write (start
-	// and restart outcome), never by a full save, so a stale save cannot revert
-	// it; empty for a session no launch of this version recorded.
+	// here (commsParentTool). Written by the launch's targeted write (start and
+	// every restart), and by a full save only for a launch that found no row to
+	// write to (launchUnrecorded), so a stale save cannot revert it; empty for a
+	// session no launch of this version recorded.
 	LaunchedTool string `json:"launched_tool,omitempty"`
 
 	// ContextLevel is the per-session override of the harness context-level
@@ -671,6 +672,7 @@ type Instance struct {
 	skipRecoveryTurn            bool        // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
 	restartReason               string      // SetRestartReason: why the next restart happens, for its resume note
 	launchesFresh               atomic.Bool // the Claude command last built starts a new conversation (#2954, fresh_start.go)
+	launchUnrecorded            atomic.Bool // the last launch found no row for its launched tool: the first save writes it
 	configDirLeftToCommand      bool        // the export prefix last built left CLAUDE_CONFIG_DIR to the command (#1822 F3; noteFreshStart)
 	codexStartedGeneration      string
 	codexCompletedGeneration    string
