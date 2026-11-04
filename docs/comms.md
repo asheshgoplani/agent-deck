@@ -512,7 +512,9 @@ Acknowledgement follows the P0 receipt contract: a wake line's records
 remain in flight until the prompt it starts names their ids. Only records
 the wake carried whole are acknowledged that way; a child quoting
 another id acknowledges nothing, and a previewed record is injected
-whole. Injected and Stop-block records remain in flight until the turn
+whole. For a pi doorbell, a finished turn whose line showed its Done summary
+in place of a different body is not acknowledged by the nonce either: the run
+start's context carries the body. Injected and Stop-block records remain in flight until the turn
 that carried them ends at Stop or the next prompt starts. A ledger
 injection the hook could not print returns to pending. A wake that did
 not start a turn within 90 seconds while the parent is idle again is
@@ -550,7 +552,10 @@ A pi parent listed in `consumers` is enrolled like a Claude one (marker
 `tool: pi`) once its launch exported a socket path in `AGENTDECK_PI_SOCKET`
 (below: pi >= 1.2.0, `agent-deck pi-hooks install` at extension v6, a local
 launch); the daemon reads that from the persisted launch decision
-(`PiSocketExported`). A listed pi launched without it is not enrolled and keeps
+(`PiSocketExported`). Every pass keeps the marker's `tool` and `pi_socket` true
+to the instance, so a session whose tool changes in place (a session edit, a
+conductor re-registered with another agent) takes the new harness's rules at
+the next poll. A listed pi launched without it is not enrolled and keeps
 the inbox path with typed wakes, as before. `pi-hooks status` shows whether a
 local launch made now would export the socket and, if not, why; it does not
 say why a given session's launch did not (an SSH or sandboxed launch, or one
@@ -670,10 +675,13 @@ receipt only for a payload so marked. A pi with neither mark therefore gets
 none of the parent's records either: one typed into another tmux pane or
 window of the parent's session (it has the session's `AGENTDECK_INSTANCE_ID`,
 not the launch's socket or host pid), an earlier pi whose path a restarted one
-took over, and a launched pi whose bind failed. Nothing the daemon can check
-tells the last from the first, so its records stay pending (nothing is typed
-into it; its pane shows the warning) until a pi that serves starts, and
-`agent-deck msg read` shows them meanwhile. The launched pi binds its socket
+took over, and a launched pi whose bind failed or whose new socket a
+predecessor's stop removed (the one window of the takeover: that stop checks
+dev/ino, then removes the path). Nothing the daemon can check tells the last
+two from the first, so such a pi gets nothing at all until it restarts: no
+wakes, no context, nothing typed into it. Its records stay pending, and
+`agent-deck msg read` shows them meanwhile; a failed bind also warns in the
+pane, a lost socket does not. The launched pi binds its socket
 even when an earlier pi of the session (one still shutting down after a
 restart) holds the path: the new socket replaces it. A parent that drains after
 a relaunch without the socket has no `pi_socket`, so during its drain only

@@ -359,8 +359,10 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   // one, so the unlink Server.close does by name can only ever hit a file that
   // is already gone. One window remains: stop checks dev/ino and then removes
   // the path, and a socket renamed in between is removed with it, so a pi that
-  // takes over inside a predecessor's stop is left without a socket: the daemon
-  // rings it nothing until it restarts, and its records ride its run starts.
+  // takes over inside a predecessor's stop is left without a socket. It then
+  // serves nothing, so it is not the host either (see the header): the daemon
+  // rings it nothing and its run starts get none of the ledger's records until
+  // it restarts; they stay pending meanwhile.
   // The name carries the owner's pid and 8 random characters, so starters do
   // not collide on it.
   const privateName = () => "p" + process.pid + "-" + crypto.randomBytes(6).toString("hex").slice(0, 8);
