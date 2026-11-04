@@ -179,7 +179,7 @@ type wakeOutcome struct {
 // ridesPiSocket reports whether parent's doorbells go over a socket: a pi
 // session the ledger serves, whose hook injects what the doorbell announces.
 func ridesPiSocket(parent *Instance) bool {
-	return parent != nil && parent.Tool == "pi" && commsDeliversTo(parent.ID)
+	return parent != nil && commsParentHarness(parent) == "pi" && commsDeliversTo(parent.ID)
 }
 
 // wakeBudgetFor is WakeBudget with the profile's sessions loaded from storage,

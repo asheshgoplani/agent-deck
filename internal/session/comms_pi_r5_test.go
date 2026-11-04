@@ -155,8 +155,27 @@ func TestPiRestart_PersistsTheSocketDecisionBothWays(t *testing.T) {
 			if got := storedPiSocketExported(t, storage, inst.ID); got != tc.wantNow {
 				t.Errorf("after the restart, storage holds PiSocketExported = %v, want %v: the restart's targeted UPDATE did not write the decision", got, tc.wantNow)
 			}
+			if got := storedLaunchedTool(t, storage, inst.ID); got != "pi" {
+				t.Errorf("after the restart, storage holds LaunchedTool = %q, want \"pi\": the restart's targeted UPDATE did not record what it launched", got)
+			}
 		})
 	}
+}
+
+// storedLaunchedTool reloads the instance from storage, as the daemon does.
+func storedLaunchedTool(t *testing.T, storage *Storage, id string) string {
+	t.Helper()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range instances {
+		if in.ID == id {
+			return in.LaunchedTool
+		}
+	}
+	t.Fatalf("instance %q missing from storage", id)
+	return ""
 }
 
 // storedPiSocketExported reloads the instance from storage, as the daemon does.
@@ -268,6 +287,9 @@ func TestPiStart_PersistsTheSocketDecisionBothWays(t *testing.T) {
 			}
 			if got := storedPiSocketExported(t, storage, inst.ID); got != tc.wantNow {
 				t.Errorf("after Start, storage holds PiSocketExported = %v, want %v: nothing wrote the decision", got, tc.wantNow)
+			}
+			if got := storedLaunchedTool(t, storage, inst.ID); got != "pi" {
+				t.Errorf("after Start, storage holds LaunchedTool = %q, want \"pi\": nothing recorded what the start launched", got)
 			}
 		})
 	}

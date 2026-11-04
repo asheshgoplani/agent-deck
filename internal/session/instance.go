@@ -490,6 +490,14 @@ type Instance struct {
 	// (pi_socket_persist.go); a pi with no record is treated as launched without it.
 	PiSocketExported bool `json:"pi_socket_exported,omitempty"`
 
+	// LaunchedTool is the tool the last launch of this session ran: what its
+	// pane runs now. A tool edit changes Tool at once but takes effect only at
+	// the next restart, so the comms ledger reads the parent's harness from
+	// here (commsParentTool). Written only by the launch's targeted write (start
+	// and restart outcome), never by a full save, so a stale save cannot revert
+	// it; empty for a session no launch of this version recorded.
+	LaunchedTool string `json:"launched_tool,omitempty"`
+
 	// ContextLevel is the per-session override of the harness context-level
 	// (issue #2260): "none", "primer", or "full". Empty means unset — falls
 	// through to the group then global config (global < group < session
@@ -1780,7 +1788,7 @@ func (i *Instance) Start() (startErr error) {
 		i.recordTmuxStartFailure(command, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
-	i.persistPiSocketDecision() // the pane spawned: the launch decision is now a fact
+	i.persistLaunchDecision() // the pane spawned: the launch decision is now a fact
 
 	// gen AND the wake channel are both produced here, in the caller, so no
 	// bump can slip into the gap before the watcher subscribes (see
@@ -2184,7 +2192,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		i.recordTmuxStartFailure(diagnosticCommand, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
-	i.persistPiSocketDecision() // before any message wait (sister path to Start())
+	i.persistLaunchDecision() // before any message wait (sister path to Start())
 
 	// One generation for this spawn, shared by the ownership claim and the
 	// fast-death watcher (sister path to Start()).

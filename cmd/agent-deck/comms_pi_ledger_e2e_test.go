@@ -66,6 +66,10 @@ func newPiLedgerE2EFor(t *testing.T, parentTool string) *piLedgerE2E {
 		t.Fatal(err)
 	}
 	db := storage.GetDB()
+	// The parent's launch, as Start records it.
+	if err := db.WriteLaunchDecision(parent.ID, parentTool, parent.PiSocketExported); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.RegisterInstance(false); err != nil { // a live TUI heartbeat: the daemon reads DB rows
 		t.Fatal(err)
 	}
@@ -347,75 +351,110 @@ func TestPiLedgerE2E_APiInAnotherPaneOfTheParentsSessionNeitherTakesNorAcksItsRe
 	}
 }
 
-// retool changes the parent's tool in place, under the same id, the way a
-// session edit or a conductor re-registered with another agent does, with the
-// launch decision the new launch persisted.
-func (e *piLedgerE2E) retool(tool string, exported bool) {
+// edit changes the parent's tool in place, under the same id, as a session
+// edit or a conductor re-registered with another agent does: the stored Tool
+// changes at once, and the pane keeps running what it launched until a restart.
+func (e *piLedgerE2E) edit(tool string) {
 	e.t.Helper()
 	storage, err := session.NewStorageWithProfile("pi_ledger_e2e")
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	defer func() { _ = storage.Close() }()
-	e.parent.Tool, e.parent.PiSocketExported = tool, exported
+	e.parent.Tool = tool
 	if err := storage.SaveWithGroups([]*session.Instance{e.parent, e.child}, nil); err != nil {
 		e.t.Fatal(err)
 	}
-	if err := storage.GetDB().WritePiSocketExported(e.parent.ID, exported); err != nil {
+}
+
+// relaunch restarts the parent with its current tool, recording the launch
+// decision as the restart's outcome write does.
+func (e *piLedgerE2E) relaunch(exported bool) {
+	e.t.Helper()
+	storage, err := session.NewStorageWithProfile("pi_ledger_e2e")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer func() { _ = storage.Close() }()
+	e.parent.PiSocketExported = exported
+	if err := storage.SaveWithGroups([]*session.Instance{e.parent, e.child}, nil); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := storage.GetDB().WriteLaunchDecision(e.parent.ID, e.parent.Tool, exported); err != nil {
 		e.t.Fatal(err)
 	}
 	e.status(e.parent.ID, "waiting")
 }
 
-// Forge round 3 #1: a listed Claude parent turned pi in place (same id) and
-// launched with the socket. After the daemon's next poll its hooks follow the
-// pi rules: a pi without pane_host (another pane of its session) takes none of
-// its records, and the serving pi's injection is bound to a receipt token.
-func TestPiLedgerE2E_AClaudeParentTurnedPiInPlaceTakesThePiRulesAtTheNextPoll(t *testing.T) {
-	e := newPiLedgerE2E(t) // a Claude parent, enrolled
-	e.retool("pi", true)
-	e.pass()
-	e.runOnce()
-	e.pass()
-
-	other := captureStdout(t, func() {
+// piRulesHold checks, through the real hook handler, that the parent's ledger
+// follows pi's rules: a pi without pane_host takes none of its records, and the
+// serving pi's injection is bound to a receipt token.
+func (e *piLedgerE2E) piRulesHold(what string) {
+	e.t.Helper()
+	other := captureStdout(e.t, func() {
 		e.hookAs(e.parent.ID, "split-run", "pi-split-sess", "before_agent_start", `,"prompt":"what changed?"`)
 	})
 	if strings.Contains(other, "Built and tested.") {
-		t.Errorf("a pi in another pane of a parent turned pi was given its records: %q", other)
+		e.t.Errorf("%s: a pi in another pane was given the parent's records: %q", what, other)
 	}
-	host := captureStdout(t, func() {
+	host := captureStdout(e.t, func() {
 		e.hookAs(e.parent.ID, "parent-run", "pi-parent-sess", "before_agent_start", `,"prompt":"what is next?"`+piServes)
 	})
 	if !strings.Contains(host, "Built and tested.") || !regexp.MustCompile(`<!-- agent-deck-delivery:[0-9A-Za-z]+ -->`).MatchString(host) {
-		t.Errorf("the serving pi's run start lacks the record or its receipt token: %q", host)
+		e.t.Errorf("%s: the serving pi's run start lacks the record or its receipt token: %q", what, host)
 	}
 }
 
-// The other direction: a listed pi parent turned Claude in place. After the next
-// poll its marker says claude and its prompt context is a Claude one: no
-// receipt token, so printing it is its delivery and the next prompt does not
-// show the record again. (Under pi's rules the record would wait for a receipt
-// a Claude never sends, and ride the next prompt once the window passed.)
-func TestPiLedgerE2E_APiParentTurnedClaudeInPlaceTakesTheClaudeRulesAtTheNextPoll(t *testing.T) {
-	e := newPiLedgerE2EFor(t, "pi")
-	e.retool("claude", false)
+// Forge round 3 #1: a listed Claude parent turned pi in place and restarted as
+// a pi with the socket. After the daemon's next poll its hooks follow pi's rules.
+func TestPiLedgerE2E_AClaudeParentRestartedAsPiTakesThePiRulesAtTheNextPoll(t *testing.T) {
+	e := newPiLedgerE2E(t) // a Claude parent, enrolled
+	e.edit("pi")
+	e.relaunch(true)
 	e.pass()
-	if en, ok := session.LoadCommsEnrollment(e.parent.ID); !ok || en.Tool != "claude" || en.PiSocket || en.Draining {
-		t.Fatalf("marker after the parent turned Claude = %+v (found %v), want an enrolled claude marker", en, ok)
+	e.runOnce()
+	e.pass()
+	e.piRulesHold("after the restart as pi")
+}
+
+// Forge round 4: a tool edit takes effect at the next restart, and the pane runs
+// pi until then. A listed pi parent edited to Claude keeps pi's rules through
+// the daemon's polls (the marker stays pi, pane_host is still required, the
+// injection still waits for its receipt); once it restarts as Claude, the
+// marker says claude and a printed context is its delivery.
+func TestPiLedgerE2E_APiParentEditedToClaudeKeepsThePiRulesUntilItRestarts(t *testing.T) {
+	e := newPiLedgerE2EFor(t, "pi")
+	e.edit("claude")
+	e.pass()
+	if en, ok := session.LoadCommsEnrollment(e.parent.ID); !ok || en.Tool != "pi" || !en.PiSocket || en.Draining {
+		t.Fatalf("marker after an edit without a restart = %+v (found %v), want the pi's, enrolled with pi_socket", en, ok)
 	}
 	e.runOnce()
 	e.pass()
+	e.piRulesHold("edited to Claude, not restarted")
 
+	e.relaunch(false)
+	e.pass()
+	if en, ok := session.LoadCommsEnrollment(e.parent.ID); !ok || en.Tool != "claude" || en.PiSocket || en.Draining {
+		t.Fatalf("marker after the restart as Claude = %+v (found %v), want an enrolled claude marker", en, ok)
+	}
+	// A second run of the child, after the restart.
+	e.hookAs(e.child.ID, "run-2", "pi-sess-1", "turn_start", "")
+	e.status(e.child.ID, "running")
+	e.pass()
+	e.hookAs(e.child.ID, "run-2", "pi-sess-1", "turn_end", "")
+	e.hookAs(e.child.ID, "run-2", "pi-sess-1", "agent_settled", `,"turn_id":"entry-2","last_assistant_message":"Second run done.","prompt":"again"`)
+	e.status(e.child.ID, "waiting")
+	e.pass()
 	dl, ok := session.LedgerPromptContext(e.parent.ID, "hi", "")
 	if !ok {
 		t.Fatal("enrolled parent fell back to the inbox path")
 	}
-	if strings.Count(dl.Text, "Built and tested.") != 1 || dl.Token != "" {
-		t.Errorf("the Claude parent's prompt = %q with token %q, want the run once and no receipt token", dl.Text, dl.Token)
+	if !strings.Contains(dl.Text, "Second run done.") || dl.Token != "" {
+		t.Errorf("the Claude parent's prompt = %q with token %q, want the new run and no receipt token", dl.Text, dl.Token)
 	}
 	dl.Done(true)
-	if again := e.prompt("and now?"); strings.Contains(again, "Built and tested.") {
+	if again := e.prompt("and now?"); strings.Contains(again, "Second run done.") {
 		t.Errorf("the record was shown again: %q", again)
 	}
 }

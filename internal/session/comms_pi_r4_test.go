@@ -148,9 +148,9 @@ func (f *deliverFixture) launchPi(t *testing.T, version string, exports bool) {
 	if err := storage.Save(all); err != nil {
 		t.Fatal(err)
 	}
-	// The launch's own targeted write (persistPiSocketDecision): a save carries
+	// The launch's own targeted write (persistLaunchDecision): a save carries
 	// an extras key it omits forward, so only this clears an earlier true.
-	if err := storage.GetDB().WritePiSocketExported(f.parent.ID, f.parent.PiSocketExported); err != nil {
+	if err := storage.GetDB().WriteLaunchDecision(f.parent.ID, f.parent.Tool, f.parent.PiSocketExported); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()
