@@ -246,6 +246,12 @@ When token auth is enabled, open the web UI with:
 http://127.0.0.1:8420/?token=my-secret
 ```
 
+That visit sets an HttpOnly, SameSite=Strict cookie that authenticates the API,
+event streams and terminal WebSocket for 30 days (renewed on each app launch),
+so reloads and a home-screen install keep working. Use a hex token (`openssl
+rand -hex 32`): a token with `"`, `,`, `;`, a backslash or non-ASCII gets no
+cookie.
+
 ## Session Commands
 
 ### session start

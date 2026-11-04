@@ -1221,8 +1221,14 @@ agent-deck web --token my-secret
 # then open: http://127.0.0.1:8420/?token=my-secret
 ```
 
-A valid tokened visit stores an HttpOnly, SameSite=Strict cookie, so refreshes
-continue to work with `--token-file`. The server accepts requests addressed to
+A valid tokened visit stores an HttpOnly, SameSite=Strict cookie (Secure when
+reached over HTTPS, including through a proxy that sends
+`X-Forwarded-Proto: https` such as Tailscale Serve) that authenticates the API, the event streams and
+the terminal WebSocket, so refreshes and an app installed to the home screen
+keep working. The cookie lasts 30 days and each app launch renews it; changing
+the token signs every device out. A token containing `"`, `,`, `;`, a
+backslash or non-ASCII characters gets no cookie, so use a hex token like the
+one below. The server accepts requests addressed to
 localhost, loopback IPs, its listen address, and its machine name when bound
 to a network interface. A wildcard bind also accepts the machine's current
 interface IPs. For a reverse proxy or Tailscale Serve hostname, add
