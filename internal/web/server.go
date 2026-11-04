@@ -187,7 +187,7 @@ func NewServer(cfg Config) *Server {
 	// themselves from their handlers_<feature>.go files; see routes.go.
 	s.mountFeatureRoutes(mux)
 
-	handler := s.allowHosts(s.tokenCookie(s.trackInFlight(withRecover(s.csrfProtect(mux)))))
+	handler := frameProtect(s.allowHosts(s.tokenCookie(s.trackInFlight(withRecover(s.csrfProtect(mux))))))
 
 	s.httpServer = &http.Server{
 		Addr:              cfg.ListenAddr,
