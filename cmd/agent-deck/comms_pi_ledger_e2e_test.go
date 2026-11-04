@@ -130,7 +130,7 @@ func (e *piLedgerE2E) runOnce() {
 
 func (e *piLedgerE2E) prompt(text string) string {
 	e.t.Helper()
-	dl, ok := session.LedgerPromptContext(e.parent.ID, text, "")
+	dl, ok := session.LedgerPromptContext(e.parent.ID, text, "", e.parent.Tool == "pi")
 	if !ok {
 		e.t.Fatal("enrolled parent fell back to the inbox path")
 	}
@@ -446,7 +446,7 @@ func TestPiLedgerE2E_APiParentEditedToClaudeKeepsThePiRulesUntilItRestarts(t *te
 	e.hookAs(e.child.ID, "run-2", "pi-sess-1", "agent_settled", `,"turn_id":"entry-2","last_assistant_message":"Second run done.","prompt":"again"`)
 	e.status(e.child.ID, "waiting")
 	e.pass()
-	dl, ok := session.LedgerPromptContext(e.parent.ID, "hi", "")
+	dl, ok := session.LedgerPromptContext(e.parent.ID, "hi", "", e.parent.Tool == "pi")
 	if !ok {
 		t.Fatal("enrolled parent fell back to the inbox path")
 	}

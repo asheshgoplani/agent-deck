@@ -37,7 +37,7 @@ func TestPiInboxPeek_NothingIsStrandedWhenTheLedgerOrTheEnrolmentGoes(t *testing
 		t.Run(name, func(t *testing.T) {
 			f := newPiParentFixture(t)
 			f.inboxOnly(t, "inbox-only status text")
-			dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+			dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 			if !ok || !strings.Contains(dl.Text, "inbox-only status text") {
 				t.Fatalf("no injection (ok %v)", ok)
 			}
@@ -75,7 +75,7 @@ func TestPiInboxPeek_AnInboxReceiptPromotesItsKeysBeforeTheLedgerTwinArrives(t *
 		t.Fatal("commit of the inbox twin")
 	}
 	// 1. The inbox record is injected first (the ledger has nothing yet).
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	if !ok || strings.Count(dl.Text, text) != 1 {
 		t.Fatalf("first injection (ok %v): %v", ok, dl)
 	}
@@ -88,7 +88,7 @@ func TestPiInboxPeek_AnInboxReceiptPromotesItsKeysBeforeTheLedgerTwinArrives(t *
 	f.injectedEdge(t, token)
 	// 3. The ledger twin of the same turn lands last.
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: text, Key: comms.Key(comms.KindTurn, f.child.ID, uuid)})
-	next, _ := LedgerPromptContext(f.parent.ID, "carry on again", "")
+	next, _ := LedgerPromptContext(f.parent.ID, "carry on again", "", f.parent.Tool == "pi")
 	if next != nil && strings.Contains(next.Text, text) {
 		t.Errorf("the ledger twin of a received turn was injected again: %q", next.Text)
 	}
@@ -501,7 +501,7 @@ func TestPiInboxPeek_AnEvictedTokensReceiptAcceptsTheAttemptAndReShowsTheInboxRe
 	f := newPiParentFixture(t)
 	rec := f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "ledger result"})
 	f.inboxOnly(t, "inbox record R")
-	first, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+	first, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	if !ok || !strings.Contains(first.Text, "ledger result") || !strings.Contains(first.Text, "inbox record R") {
 		t.Fatalf("first injection (ok %v): %v", ok, first)
 	}
@@ -513,7 +513,7 @@ func TestPiInboxPeek_AnEvictedTokensReceiptAcceptsTheAttemptAndReShowsTheInboxRe
 	for i := 0; i < 9; i++ {
 		f.clock = f.clock.Add(time.Second) // eviction drops the oldest by time
 		f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "later ledger record " + strings.Repeat("x", i+1)})
-		dl, _ := LedgerPromptContext(f.parent.ID, "carry on", "")
+		dl, _ := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 		if dl == nil {
 			t.Fatal("no injection")
 		}
@@ -523,7 +523,7 @@ func TestPiInboxPeek_AnEvictedTokensReceiptAcceptsTheAttemptAndReShowsTheInboxRe
 	if in := inflightFor(f.inflight(t), rec.ID); in == nil || in["state"] != comms.ReceiptTransportAccepted {
 		t.Errorf("the evicted token's receipt did not accept the ledger attempt: %v", f.inflight(t))
 	}
-	next, _ := LedgerPromptContext(f.parent.ID, "carry on again", "")
+	next, _ := LedgerPromptContext(f.parent.ID, "carry on again", "", f.parent.Tool == "pi")
 	if next == nil || strings.Count(next.Text, "inbox record R") != 1 {
 		t.Fatalf("the inbox record must be shown once more after an evicted receipt: %+v", next)
 	}

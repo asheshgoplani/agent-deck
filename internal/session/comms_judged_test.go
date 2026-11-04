@@ -51,7 +51,7 @@ func (w *piWakeFx) settleAndCount(t *testing.T, text string) int {
 func TestCommsDeliverPin_PiReceiptWhileBusyLeavesTheUrgentTurnToTheDeliveryPass(t *testing.T) {
 	w := newPiWakeFixture(t, replyWith("submitted"))
 	w.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "earlier result"})
-	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "") // the parent's own run starts
+	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi") // the parent's own run starts
 	if !ok {
 		t.Fatal("no injection at the run start")
 	}
@@ -97,7 +97,7 @@ func TestCommsDeliverPin_PiUnreceiptedInjectionLeavesTheUrgentTurnToTheDeliveryP
 	w.poll(t, "running")
 	w.piChildUrgentTurn(t, "run-0000000e0003", "Should we ship on Friday or Monday?", false)
 	w.poll(t, "running")
-	dl, ok := LedgerPromptContext(w.parent.ID, "next task", "") // a human prompt starts a run
+	dl, ok := LedgerPromptContext(w.parent.ID, "next task", "", w.parent.Tool == "pi") // a human prompt starts a run
 	if !ok || !strings.Contains(dl.Text, "Should we ship on Friday or Monday?") {
 		t.Fatalf("the run start did not carry the turn (ok %v)", ok)
 	}
@@ -277,7 +277,7 @@ func TestCommsDeliver_AConsumerNeverAddressedHoldsTheFastPath(t *testing.T) {
 func TestCommsDeliver_TheJudgedCursorIsWrittenOnceThenHoldsTheFastPath(t *testing.T) {
 	f := newDeliverFixture(t)
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "child result"})
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "") // a hook-side pass
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi") // a hook-side pass
 	if !ok {
 		t.Fatal("no injection")
 	}
