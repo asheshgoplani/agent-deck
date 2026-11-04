@@ -309,11 +309,17 @@ func QuotedLine(r Record, names Names) string {
 	return head + ": «" + body + "»"
 }
 
+// LineDropsBody reports a record whose Line shows its Done summary in place
+// of a different body, so a line that carried it did not carry its body.
+func LineDropsBody(r Record) bool {
+	return r.Done != "" && r.Summary != "" && strings.TrimSpace(r.Text) != "" && strings.TrimSpace(r.Text) != strings.TrimSpace(r.Summary)
+}
+
 // QuotedContextLine keeps both a Done summary and its body in hook context.
 // Use the same quoting and plain identifiers as wake lines, without dropping
 // the body when the matching inbox turn is retired.
 func QuotedContextLine(r Record, names Names) string {
-	if r.Done != "" && r.Summary != "" && strings.TrimSpace(r.Text) != "" && strings.TrimSpace(r.Text) != strings.TrimSpace(r.Summary) {
+	if LineDropsBody(r) {
 		r.Summary += "\n" + r.Text
 	}
 	return QuotedLine(r, names)

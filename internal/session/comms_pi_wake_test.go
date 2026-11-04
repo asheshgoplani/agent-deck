@@ -1155,3 +1155,57 @@ func TestInboxNudge_PiDoorbellIDsFallBackToALineHash(t *testing.T) {
 		t.Errorf("the line hash is not stable per line: %v %v %v", a, again, other)
 	}
 }
+
+// Forge round 3 #2: a finished turn whose Done summary differs from its body.
+// The wake line shows only the summary, so the doorbell's run start must not
+// count the turn as carried whole: its body still reaches the parent, whether
+// the turn's inbox twin carries the text (a Claude child) or there is none
+// (a pi child's twin is textless).
+func TestCommsDeliver_PiADoneTurnsBodyReachesTheParentAfterItsDoorbellRun(t *testing.T) {
+	for _, twin := range []bool{true, false} {
+		name := "ledger only"
+		if twin {
+			name = "with an inbox twin"
+		}
+		t.Run(name, func(t *testing.T) {
+			w := newPiWakeFixture(t, replyWith("submitted"))
+			uuid := fmt.Sprint("done-turn-", twin)
+			key := comms.Key(comms.KindTurn, w.child.ID, uuid)
+			w.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierUrgent, Done: "ok", Summary: "shipped",
+				Text: "XYZBODY details", Key: key})
+			if twin {
+				ev := TransitionNotificationEvent{ChildSessionID: w.child.ID, ToStatus: "waiting", Tier: TurnTierUrgent,
+					Kind: transitionKindFinished, DoneStatus: "ok", DoneSummary: "shipped", Text: "XYZBODY details",
+					TurnUUID: uuid, LastOutputHash: (TurnFacts{UUID: uuid}).Signal()}
+				if err := WriteInboxEvent(w.parent.ID, ev); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w.deliver(t, "waiting")
+			fr := w.ext.frame(t, 0)
+			nonce, _ := fr["id"].(string)
+			line, _ := fr["line"].(string)
+			if strings.Contains(line, "XYZBODY") {
+				t.Fatalf("test setup: the wake line carried the body: %q", line)
+			}
+			// The doorbell's run start, then the parent's next one.
+			seen := ""
+			for _, start := range []struct{ prompt, nonce string }{{line, nonce}, {"next", ""}} {
+				dl, ok := LedgerPromptContext(w.parent.ID, start.prompt, start.nonce)
+				if !ok {
+					t.Fatal("enrolled parent fell back to the inbox path")
+				}
+				seen += dl.Text
+				if dl.Token != "" {
+					dl.Done(true)
+					w.injectedEdge(t, dl.Token)
+				} else {
+					dl.Done(true)
+				}
+			}
+			if !strings.Contains(seen, "XYZBODY details") {
+				t.Errorf("the turn's body never reached the parent (wake line %q, run starts %q)", line, seen)
+			}
+		})
+	}
+}
