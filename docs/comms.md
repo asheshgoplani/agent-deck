@@ -567,7 +567,7 @@ touching the editor.
 |---|---|---|
 | Prompt-time context | `UserPromptSubmit` JSON envelope | `before_agent_start`: `hook-handler` prints plain text, the extension returns it as the run's message |
 | Wake | typed line (`session send --no-wait`) | a doorbell frame on the extension's unix socket; typed only while a marker drains after a launch without the socket, below |
-| Acknowledged by | the prompt names the record ids | the run that carries the doorbell's nonce (the hook), never the socket reply |
+| Acknowledged by | the prompt names the record ids | the run that carries the doorbell's nonce (the hook), never the socket reply; the turns it carried count as shown, so that run start retires their inbox records |
 | Injection accepted | when the hook printed it | when the extension echoes the delivery token (below), never on print |
 | Preview acks | no (injected whole) | no (injected whole) |
 | A child's urgent turn while the parent is busy | the inbox Stop drain hands it over when the turn ends | the ledger rings a listed pi parent one doorbell at the first idle pass, unless the turn was shown; unlike the inbox doorbell, which rings only an idle conductor, this ring needs no conductor title (the listing is the opt-in); the two share the 1 min debounce |
@@ -656,23 +656,38 @@ a restart. The socket is for local launches only: an SSH or sandboxed pi exports
 recorded as such, so its doorbell is typed as before. A pi with no record is one an
 older binary launched and is treated as launched without it.
 
-Only the pi agent-deck launched consumes the ledger. Its extension writes its
-own pid into `AGENTDECK_PI_HOST_PID` in its process environment, and a local
-launch sets that variable empty, so a launched or restarted pi is the
-host. A pi started inside its pane (a subagent's `pi -p`, a script) inherits
-`AGENTDECK_INSTANCE_ID`, `AGENTDECK_PI_SOCKET` and that pid; its extension finds
-a pid not its own, serves no socket, and marks its payloads `pane_guest`.
-`hook-handler` gives such a run no ledger context, spools no prompt start for
-it and applies none of its receipts, so the parent's records stay pending for
-the parent's own next run. The launched pi binds its socket even when an
-earlier pi of the session (one still shutting down after a restart) holds the
-path: the new socket replaces it. Not covered: a guest whose environment was
-stripped of `AGENTDECK_PI_HOST_PID` but kept `AGENTDECK_INSTANCE_ID` counts as
-the host; a nested pi or Claude can still run `agent-deck msg read` or
-`inbox drain` as the parent with the inherited `AGENTDECK_INSTANCE_ID`, as on
-main; and a guest's status and `agent_settled` edges are still credited to the
-parent, as on main, so the conductor can be told the parent finished when only
-the guest did.
+Only the pi that serves the parent's socket consumes the ledger. The extension
+of the pi agent-deck launched writes its own pid into `AGENTDECK_PI_HOST_PID`
+in its process environment, and a local launch sets that variable empty, so a
+launched or restarted pi is never a guest. A pi started inside its pane (a
+subagent's `pi -p`, a script) inherits `AGENTDECK_INSTANCE_ID`,
+`AGENTDECK_PI_SOCKET` and that pid; its extension finds a pid not its own,
+serves no socket, and marks its payloads `pane_guest`. While the socket at the
+path is the one its runtime bound, the extension marks every payload
+`pane_host`, and for a parent whose launch exported the socket (its marker's
+`pi_socket`) `hook-handler` gives context, spools a prompt start and applies a
+receipt only for a payload so marked. A pi with neither mark therefore gets
+none of the parent's records either: one typed into another tmux pane or
+window of the parent's session (it has the session's `AGENTDECK_INSTANCE_ID`,
+not the launch's socket or host pid), an earlier pi whose path a restarted one
+took over, and a launched pi whose bind failed. Nothing the daemon can check
+tells the last from the first, so its records stay pending (nothing is typed
+into it; its pane shows the warning) until a pi that serves starts, and
+`agent-deck msg read` shows them meanwhile. The launched pi binds its socket
+even when an earlier pi of the session (one still shutting down after a
+restart) holds the path: the new socket replaces it. A parent that drains after
+a relaunch without the socket has no `pi_socket`, so during its drain only
+`pane_guest` is checked. A session launched before this version is not
+enrolled until a relaunch (no launch decision was persisted for it), and a
+launch with a v5 extension exports no socket, so an enrolled pi runs v6 unless
+its extension file changed after the launch. Not covered: a nested pi whose environment
+lost `AGENTDECK_PI_HOST_PID` but kept `AGENTDECK_PI_SOCKET` takes the socket
+over and is the host from then on; a nested pi or Claude can still run
+`agent-deck msg read` or `inbox drain` as the parent with the inherited
+`AGENTDECK_INSTANCE_ID`, as on main; and the status and `agent_settled` edges
+of any pi with the parent's instance id are still credited to the parent, as
+on main, so the conductor can be told the parent finished when only another pi
+did.
 Claude is unchanged, since Claude itself consumes its stdout.
 
 **One leg for every doorbell.** The inbox wake, the remote talkback scheduler
