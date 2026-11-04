@@ -663,7 +663,10 @@ func (d *TransitionDaemon) commsAckPrompt(l *comms.Ledger, inst *Instance, promp
 // shows exactly the attempts bound to that nonce, whatever the line names, and
 // is never the parent's own. A turn such an attempt carried whole (not a
 // preview) is noted shown, as an injection's receipt notes it, so the same run
-// start does not show it again as its inbox record (#3026 item 3).
+// start does not show it again as its inbox record (#3026 item 3). A finished
+// turn whose line showed only its Done summary is not acknowledged by the
+// nonce: the run start's context carries its body. (A typed wake's prompt,
+// which names ids, still takes the summary as the delivery, as before.)
 func ackShownInPrompt(p comms.Pass, prompt, nonce string, acceptPreview bool) []events.Cursor {
 	f := p.File
 	if nonce == "" && !comms.IsWakePrompt(prompt) {
@@ -679,6 +682,11 @@ func ackShownInPrompt(p comms.Pass, prompt, nonce string, acceptPreview bool) []
 	for _, e := range p.Pending {
 		in, inflight := f.InflightFor(e.Cursor)
 		if !inflight || in.Via != comms.ViaWake || in.ID != e.Record.ID || (in.Preview && !acceptPreview) {
+			continue
+		}
+		if nonce != "" && in.Nonce == nonce && comms.LineDropsBody(e.Record) {
+			// The line showed a finished turn's summary, not its body: the run
+			// it started still owes the body, which its context carries.
 			continue
 		}
 		if (nonce != "" && in.Nonce == nonce) || (nonce == "" && ids[comms.ShortID(e.Record.ID)]) {
