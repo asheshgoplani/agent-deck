@@ -62,7 +62,10 @@ type InstanceData struct {
 	SubcommandPassthrough bool `json:"subcommand_passthrough,omitempty"`
 	TrackCommandExit      bool `json:"track_command_exit,omitempty"`
 	// PiSocketExported mirrors Instance.PiSocketExported (tool_data extras zone).
-	PiSocketExported    bool      `json:"pi_socket_exported,omitempty"`
+	PiSocketExported bool `json:"pi_socket_exported,omitempty"`
+	// LaunchedTool mirrors Instance.LaunchedTool (tool_data extras zone, written
+	// only by the launch's targeted write).
+	LaunchedTool        string    `json:"launched_tool,omitempty"`
 	AutoName            bool      `json:"auto_name,omitempty"`             // marks Title as a machine-generated quick-session handle
 	AutoNameDescription string    `json:"auto_name_description,omitempty"` // last captured Claude task description for an AutoName session
 	Command             string    `json:"command"`
@@ -1397,6 +1400,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
 			PiSocketExported:          ReadPiSocketExportedFromToolData(r.ToolData),
+			LaunchedTool:              ReadLaunchedToolFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
@@ -1546,6 +1550,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
 			PiSocketExported:          ReadPiSocketExportedFromToolData(r.ToolData),
+			LaunchedTool:              ReadLaunchedToolFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
@@ -1895,6 +1900,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			TrackCommandExit:             instData.TrackCommandExit,
 			PiSocketExported:             instData.PiSocketExported,
+			LaunchedTool:                 instData.LaunchedTool,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
 			ConductorName:                instData.ConductorName,
 			ContextLevel:                 instData.ContextLevel,

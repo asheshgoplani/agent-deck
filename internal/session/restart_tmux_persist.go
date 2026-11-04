@@ -71,12 +71,10 @@ func (i *Instance) writeRestartOutcome() (statedb.WriteStamps, error) {
 	var stamps statedb.WriteStamps
 	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
 		var werr error
-		if i.Tool == "pi" {
-			// The launch decision rides the same UPDATE as the outcome.
-			stamps, werr = db.WriteRestartOutcomeWithPiSocket(i.ID, name, string(i.Status), i.Tool, i.PiSocketExported)
-		} else {
-			stamps, werr = db.WriteRestartOutcome(i.ID, name, string(i.Status), i.Tool)
-		}
+		// The launch decision (the tool launched, and a pi's socket) rides the
+		// same UPDATE as the outcome.
+		i.noteLaunch()
+		stamps, werr = db.WriteRestartOutcomeWithLaunch(i.ID, name, string(i.Status), i.Tool, i.PiSocketExported)
 		return werr
 	})
 	if errors.Is(err, errNoStateDB) {
@@ -121,23 +119,33 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 	return i.restartTmuxRecordStamps
 }
 
-// persistPiSocketDecision records, once a pi's pane has spawned, whether its
-// launch exported a socket path in AGENTDECK_PI_SOCKET. Start and StartWithMessage are the launch
+// persistLaunchDecision records, once the pane has spawned, what its launch
+// was: the tool it launched (launched_tool) and whether a pi's launch exported a
+// socket path in AGENTDECK_PI_SOCKET. Start and StartWithMessage are the launch
 // paths the CLI, the web and the TUI share, and none of them saves the instance
-// afterwards, so a start that flipped the decision would otherwise leave the old
-// value in storage. They call it right after the spawn succeeds, so a failure
-// before it, or a spawn another process won, leaves storage as it was. It is a targeted write of one key (a not-yet-saved instance
-// matches no row and is written by its first save); a failure is logged and never
-// fails the start.
-func (i *Instance) persistPiSocketDecision() {
-	if i.Tool != "pi" {
-		return
-	}
+// afterwards, so a start that changed the decision would otherwise leave the
+// old value in storage. They call it right after the spawn succeeds, so a
+// failure before it, or a spawn another process won, leaves storage as it was.
+// It is a targeted write of two keys (a not-yet-saved instance matches no row
+// and its launched tool is recorded by its next launch); a failure is logged
+// and never fails the start.
+func (i *Instance) persistLaunchDecision() {
+	i.noteLaunch()
 	if err := i.withOwningStateDB(func(db *statedb.StateDB) error {
-		return db.WritePiSocketExported(i.ID, i.PiSocketExported)
+		return db.WriteLaunchDecision(i.ID, i.Tool, i.PiSocketExported)
 	}); err != nil && !errors.Is(err, errNoStateDB) {
-		sessionLog.Warn("pi_socket_decision_persist_failed",
+		sessionLog.Warn("launch_decision_persist_failed",
 			slog.String("instance_id", i.ID),
 			slog.String("error", err.Error()))
+	}
+}
+
+// noteLaunch records on the instance what the launch now spawning ran: its
+// tool, and no wake socket unless it is a pi whose launch exported one (the
+// flag is left from an earlier pi launch otherwise).
+func (i *Instance) noteLaunch() {
+	i.LaunchedTool = i.Tool
+	if i.Tool != "pi" {
+		i.PiSocketExported = false
 	}
 }

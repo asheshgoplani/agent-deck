@@ -553,9 +553,13 @@ A pi parent listed in `consumers` is enrolled like a Claude one (marker
 (below: pi >= 1.2.0, `agent-deck pi-hooks install` at extension v6, a local
 launch); the daemon reads that from the persisted launch decision
 (`PiSocketExported`). Every pass keeps the marker's `tool` and `pi_socket` true
-to the instance, so a session whose tool changes in place (a session edit, a
-conductor re-registered with another agent) takes the new harness's rules at
-the next poll. A listed pi launched without it is not enrolled and keeps
+to what the parent's pane runs: the tool its last launch recorded
+(`launched_tool`, beside the socket decision), not the stored tool. A session
+whose tool changes in place (a session edit, a conductor re-registered with
+another agent) keeps the old harness's rules until it restarts, since the pane
+runs the old harness until then, and takes the new harness's rules at the first
+poll after the restart. A session no launch of this version recorded falls back
+to its stored tool. A listed pi launched without it is not enrolled and keeps
 the inbox path with typed wakes, as before. `pi-hooks status` shows whether a
 local launch made now would export the socket and, if not, why; it does not
 say why a given session's launch did not (an SSH or sandboxed launch, or one
@@ -656,8 +660,9 @@ as past the receipt window.
 
 Whether a pi may be typed into is decided by what its launch did, not by a
 connect at wake time: the launch records, on the persisted instance, whether it
-exported a socket path in `AGENTDECK_PI_SOCKET`, on every launch path including
-a restart. The socket is for local launches only: an SSH or sandboxed pi exports nothing and is
+exported a socket path in `AGENTDECK_PI_SOCKET`, and which tool it launched, on
+every launch path including a restart; only those launch writes set them, so a
+full save of an edited session leaves them as the launch left them. The socket is for local launches only: an SSH or sandboxed pi exports nothing and is
 recorded as such, so its doorbell is typed as before. A pi with no record is one an
 older binary launched and is treated as launched without it.
 

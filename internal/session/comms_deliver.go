@@ -77,6 +77,23 @@ func commsConsumerList() []string {
 	return cfg.Comms.Consumers
 }
 
+// commsParentTool is the harness a parent's pane runs, which decides how the
+// ledger delivers to it: the tool its last launch recorded (LaunchedTool), not
+// the stored Tool, which a tool edit changes at once but which takes effect
+// only at the next restart. A session no launch of this version recorded falls
+// back to Tool.
+func commsParentTool(inst *Instance) string {
+	if t := strings.TrimSpace(inst.LaunchedTool); t != "" {
+		return t
+	}
+	return inst.Tool
+}
+
+// commsParentHarness is commsParentTool as the marker names it.
+func commsParentHarness(inst *Instance) string {
+	return strings.ToLower(strings.TrimSpace(commsParentTool(inst)))
+}
+
 // commsConsumes reports whether the ledger delivers to inst: the ledger is
 // on, inst is listed (id, title or "*") and its harness has the delivery
 // path the canary needs: prompt-time injection, a Stop hook and a typed
@@ -92,7 +109,10 @@ func commsConsumerList() []string {
 // carries it (titles is the profile's title -> count), so a second
 // session named like the conductor is never enrolled by accident.
 func commsConsumes(inst *Instance, list []string, titles map[string]int) bool {
-	if inst == nil || len(list) == 0 || !(IsClaudeCompatible(inst.Tool) || (inst.Tool == "pi" && inst.PiSocketExported)) {
+	if inst == nil || len(list) == 0 {
+		return false
+	}
+	if tool := commsParentTool(inst); !(IsClaudeCompatible(tool) || (tool == "pi" && inst.PiSocketExported)) {
 		return false
 	}
 	for _, v := range list {
@@ -307,8 +327,8 @@ func (d *TransitionDaemon) deliverCommsLedger(profile string, byID map[string]*I
 					return acks, nil
 				})
 			}
-			if err := writeCommsEnrollment(id, CommsEnrollment{Profile: profile, Dir: r.Dir, Tool: commsToolName(inst),
-				At: commsNow().UnixMilli(), EnrollCursor: uint64(end), PiSocket: commsToolName(inst) == "pi" && inst.PiSocketExported}); err != nil {
+			if err := writeCommsEnrollment(id, CommsEnrollment{Profile: profile, Dir: r.Dir, Tool: commsParentHarness(inst),
+				At: commsNow().UnixMilli(), EnrollCursor: uint64(end), PiSocket: commsParentHarness(inst) == "pi" && inst.PiSocketExported}); err != nil {
 				commsLog.Warn("comms_enroll_failed", slog.String("parent", id), slog.String("error", err.Error()))
 				continue
 			}
@@ -331,17 +351,18 @@ func (d *TransitionDaemon) deliverCommsLedger(profile string, byID map[string]*I
 	}
 }
 
-// refreshCommsMarker keeps the marker's harness fields true to inst, whether it
-// stays enrolled, drains or is about to: the hooks read them from the marker
-// alone. The tool changes in place under the same id (a session edit, a
-// conductor re-registered with another agent), and a pi's launch decides
-// whether only the pi serving its socket takes its edges (pi_socket; a
-// relaunch without the socket clears it). Without this, a Claude turned pi kept
-// Claude's delivery (no receipt token, no host check) and a pi turned Claude
-// kept pi's. Everything else (the ledger, the enrolment point, the drain) is
+// refreshCommsMarker keeps the marker's harness fields true to what inst's
+// pane runs (commsParentHarness), whether it stays enrolled, drains or is about
+// to: the hooks read them from the marker alone. The tool changes in place
+// under the same id (a session edit, a conductor re-registered with another
+// agent); that takes effect at the launch that follows, and so does the
+// marker. A pi's launch also decides whether only the pi serving its socket
+// takes its edges (pi_socket; a relaunch without the socket clears it).
+// Without this, a Claude relaunched as pi kept Claude's delivery (no receipt
+// token, no host check) and a pi relaunched as Claude kept pi's. Everything else (the ledger, the enrolment point, the drain) is
 // left as it was; attempts made under the old harness settle by its rules.
 func refreshCommsMarker(id string, en CommsEnrollment, inst *Instance) CommsEnrollment {
-	tool := commsToolName(inst)
+	tool := commsParentHarness(inst)
 	sock := tool == "pi" && inst.PiSocketExported
 	if en.Tool == tool && en.PiSocket == sock {
 		return en
@@ -471,7 +492,7 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		// has no Stop hook to hand a busy one the turn when its run ends.
 		var pending []comms.Exported
 		for _, e := range news {
-			wakes := ledgerOnlyUrgent(e.Record) || (inst.Tool == "pi" && piUnshownUrgentTurn(f, e.Record))
+			wakes := ledgerOnlyUrgent(e.Record) || (commsParentHarness(inst) == "pi" && piUnshownUrgentTurn(f, e.Record))
 			if _, inflight := f.InflightFor(e.Cursor); !inflight && wakes && f.WakeTriesFor(e.Cursor) < commsMaxWakeTries {
 				pending = append(pending, e)
 			}
@@ -504,7 +525,7 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 			line = "" // a wake that carries no record is never typed
 			return acks, nil
 		}
-		if inst.Tool == "pi" {
+		if commsParentHarness(inst) == "pi" {
 			// Do #1: the budget gate, then the attempt, its nonce and the
 			// debounce, all durable before any socket I/O.
 			if budget == nil {
@@ -640,7 +661,8 @@ func (d *TransitionDaemon) commsAckPrompt(l *comms.Ledger, inst *Instance, promp
 	}
 	// A parent with no prompt-time injection (Codex) only ever gets the
 	// wake line, so a preview it was shown is its delivery.
-	acceptPreview := !IsClaudeCompatible(inst.Tool) && inst.Tool != "pi"
+	tool := commsParentTool(inst)
+	acceptPreview := !IsClaudeCompatible(tool) && commsParentHarness(inst) != "pi"
 	if _, err := l.Reader().Do(inst.ID, func(p comms.Pass) ([]events.Cursor, error) {
 		return ackShownInPrompt(p, prompt, nonce, acceptPreview), nil
 	}); err != nil {

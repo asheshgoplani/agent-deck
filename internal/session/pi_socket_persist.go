@@ -41,3 +41,16 @@ func ReadPiSocketExportedFromToolData(td json.RawMessage) bool {
 	_ = json.Unmarshal(td, &blob)
 	return blob.Exported
 }
+
+// ReadLaunchedToolFromToolData extracts the tool the last launch recorded
+// (launched_tool); "" for a row no launch of this version wrote.
+func ReadLaunchedToolFromToolData(td json.RawMessage) string {
+	if len(td) == 0 {
+		return ""
+	}
+	var blob struct {
+		Tool string `json:"launched_tool"`
+	}
+	_ = json.Unmarshal(td, &blob)
+	return blob.Tool
+}
