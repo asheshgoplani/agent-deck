@@ -51,7 +51,7 @@ func (f *deliverFixture) inboxOnly(t *testing.T, text string) {
 func TestPiInboxPeek_NoReceiptLeavesTheRecordInTheInbox(t *testing.T) {
 	f := newPiParentFixture(t)
 	f.inboxOnly(t, "inbox-only status text")
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	if !ok || strings.Count(dl.Text, "inbox-only status text") != 1 {
 		t.Fatalf("first injection (ok %v): %v", ok, dl)
 	}
@@ -63,7 +63,7 @@ func TestPiInboxPeek_NoReceiptLeavesTheRecordInTheInbox(t *testing.T) {
 		t.Fatal("the inbox record was consumed by an injection nobody received")
 	}
 	// The next run start shows it again (at-least-once), with no clock to wait for.
-	next, ok := LedgerPromptContext(f.parent.ID, "carry on again", "")
+	next, ok := LedgerPromptContext(f.parent.ID, "carry on again", "", f.parent.Tool == "pi")
 	if !ok || next == nil || strings.Count(next.Text, "inbox-only status text") != 1 {
 		t.Fatalf("an unreceipted inbox record did not ride the next run start (ok %v, %v)", ok, next)
 	}
@@ -80,7 +80,7 @@ func TestPiInboxPeek_NoReceiptLeavesTheRecordInTheInbox(t *testing.T) {
 func TestPiInboxPeek_ReceiptConsumesOnce(t *testing.T) {
 	f := newPiParentFixture(t)
 	f.inboxOnly(t, "inbox-only status text")
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl.Text, "inbox-only status text") {
 		t.Fatalf("no injection (ok %v)", ok)
 	}
@@ -94,7 +94,7 @@ func TestPiInboxPeek_ReceiptConsumesOnce(t *testing.T) {
 	if InboxHasPending(f.parent.ID) {
 		t.Error("the inbox record of a received injection is still pending")
 	}
-	if next, _ := LedgerPromptContext(f.parent.ID, "carry on again", ""); next != nil && strings.Contains(next.Text, "inbox-only status text") {
+	if next, _ := LedgerPromptContext(f.parent.ID, "carry on again", "", f.parent.Tool == "pi"); next != nil && strings.Contains(next.Text, "inbox-only status text") {
 		t.Errorf("a received record was injected again: %q", next.Text)
 	}
 	if st, err := ReadInboxStats(f.parent.ID); err != nil || st.RecordsDelivered > 1 {
@@ -265,7 +265,7 @@ func TestCommsConsumes_AListedPiEnrolsOnlyOnceALaunchExportedTheSocket(t *testin
 	if _, ok := LoadCommsEnrollment(f.parent.ID); ok {
 		t.Fatal("a listed pi launched without the socket was enrolled")
 	}
-	if dl, ok := LedgerPromptContext(f.parent.ID, "hello", ""); ok {
+	if dl, ok := LedgerPromptContext(f.parent.ID, "hello", "", f.parent.Tool == "pi"); ok {
 		dl.Done(false)
 		t.Fatal("a listed pi launched without the socket got ledger context; it must keep the inbox path")
 	}
@@ -388,13 +388,13 @@ func TestCommsDeliver_PiPartialPaneTreeIsPushedNotPermanent(t *testing.T) {
 func TestLedgerPromptContext_BackwardClockStepDoesNotHoldAnInjection(t *testing.T) {
 	f := newPiParentFixture(t)
 	f.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "child result"})
-	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, "carry on", "", f.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl.Text, "child result") {
 		t.Fatalf("no injection (ok %v)", ok)
 	}
 	dl.Done(true) // no receipt
 	f.clock = f.clock.Add(-10 * time.Minute)
-	again, ok := LedgerPromptContext(f.parent.ID, "carry on again", "")
+	again, ok := LedgerPromptContext(f.parent.ID, "carry on again", "", f.parent.Tool == "pi")
 	if !ok || again == nil || !strings.Contains(again.Text, "child result") {
 		t.Fatalf("a backward clock step held the record: an attempt with a negative age is outside the receipt window (ok %v, %v)", ok, again)
 	}
@@ -421,7 +421,7 @@ func TestCommsDeliver_BackwardClockStepSettlesAWakeAttempt(t *testing.T) {
 			t.Fatalf("a wake attempt from the future was never settled: %+v", st)
 		}
 	}
-	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl.Text, "shipped the build") {
 		t.Errorf("the record was held by the backward step (ok %v)", ok)
 	}

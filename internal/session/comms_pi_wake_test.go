@@ -332,7 +332,7 @@ func TestCommsDeliver_PiQueuedStaysAttemptedThenHookAcks(t *testing.T) {
 		t.Errorf("wake record for queued: %+v", recs)
 	}
 	// The run does start later; its hook names the doorbell, and acks it.
-	dl, ok := LedgerPromptContext(w.parent.ID, fr["line"].(string), nonce)
+	dl, ok := LedgerPromptContext(w.parent.ID, fr["line"].(string), nonce, w.parent.Tool == "pi")
 	if !ok {
 		t.Fatal("enrolled pi parent fell back to the inbox")
 	}
@@ -538,7 +538,7 @@ func TestCommsDeliver_PiPostWriteRefusalNeverTypes(t *testing.T) {
 				t.Errorf("a permanent refusal repeated: frames %d typed %q", w.ext.count(), w.typed.all())
 			}
 			// The records are still owed and arrive with the next run start.
-			dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "")
+			dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
 			if !ok || !strings.Contains(dl.Text, "shipped the build") {
 				t.Errorf("the refused records did not stay deliverable (ok %v, record %s)", ok, rec.ID)
 			}
@@ -667,7 +667,7 @@ func TestCommsDeliver_PiBusyPendingLandsAtNextRunStartExactlyOnce(t *testing.T) 
 		t.Fatalf("a refusal moved the watermark or lost the record: %+v", st)
 	}
 	// The next run start (a human prompt) carries the record once.
-	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl.Text, "shipped the build") {
 		t.Fatalf("the next run start did not carry the pending record (ok %v)", ok)
 	}
@@ -675,7 +675,7 @@ func TestCommsDeliver_PiBusyPendingLandsAtNextRunStartExactlyOnce(t *testing.T) 
 	// The extension returned the context to pi and echoed the receipt.
 	w.injectedEdge(t, tokenOf(t, dl))
 	// A second run start injects nothing, and the first injection is acked.
-	dl2, ok := LedgerPromptContext(w.parent.ID, "and again", "")
+	dl2, ok := LedgerPromptContext(w.parent.ID, "and again", "", w.parent.Tool == "pi")
 	if !ok || strings.Contains(dl2.Text, "shipped the build") {
 		t.Fatalf("the record was injected twice: %q", dl2.Text)
 	}
@@ -692,13 +692,13 @@ func TestCommsDeliver_PiBusyPendingWithoutAReceiptIsInjectedAgain(t *testing.T) 
 	w := newPiWakeFixture(t, refuseWith("busy"))
 	w.urgent(t, "shipped the build")
 	w.deliver(t, "waiting")
-	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "")
+	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl.Text, "shipped the build") {
 		t.Fatalf("the next run start did not carry the pending record (ok %v)", ok)
 	}
 	dl.Done(true)                          // printed; the extension timed out or the hook failed: no receipt
 	w.clock = w.clock.Add(2 * time.Minute) // past the receipt window
-	dl2, ok := LedgerPromptContext(w.parent.ID, "and again", "")
+	dl2, ok := LedgerPromptContext(w.parent.ID, "and again", "", w.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl2.Text, "shipped the build") {
 		t.Fatalf("without a receipt the record must be injected again (ok %v): %q", ok, dl2.Text)
 	}
@@ -736,7 +736,7 @@ func TestInboxNudge_PiInboxAndLedgerDoorbellsInOnePassRingOnce(t *testing.T) {
 	if len(w.typed.all()) != 0 {
 		t.Errorf("typed %q", w.typed.all())
 	}
-	dl, ok := LedgerPromptContext(w.parent.ID, "[agent-deck msg] 1 pending", first["id"].(string))
+	dl, ok := LedgerPromptContext(w.parent.ID, "[agent-deck msg] 1 pending", first["id"].(string), w.parent.Tool == "pi")
 	if !ok {
 		t.Fatal("fell back to the inbox")
 	}
@@ -761,7 +761,7 @@ func TestCommsDeliver_PiIOHappensOutsideTheConsumerLock(t *testing.T) {
 	go func() { w.deliver(t, "waiting"); close(done) }()
 	w.ext.waitFrame(t)
 	start := time.Now()
-	dl, ok := LedgerPromptContext(w.parent.ID, "my own prompt", "")
+	dl, ok := LedgerPromptContext(w.parent.ID, "my own prompt", "", w.parent.Tool == "pi")
 	took := time.Since(start)
 	close(release)
 	<-done
@@ -789,7 +789,7 @@ func TestCommsDeliver_PiSecondDoIgnoresAttemptsTheHookReplaced(t *testing.T) {
 		done := make(chan struct{})
 		go func() { w.deliver(t, "waiting"); close(done) }()
 		fr := w.ext.waitFrame(t)
-		dl, ok := LedgerPromptContext(w.parent.ID, fr["line"].(string), fr["id"].(string))
+		dl, ok := LedgerPromptContext(w.parent.ID, fr["line"].(string), fr["id"].(string), w.parent.Tool == "pi")
 		if !ok || !strings.Contains(dl.Text, "TAILMARKER") {
 			t.Fatalf("the hook must inject the previewed record whole (ok %v)", ok)
 		}
@@ -818,7 +818,7 @@ func TestCommsDeliver_PiSecondDoIgnoresAttemptsTheHookReplaced(t *testing.T) {
 		if st := w.state(t); len(st.Inflight) != 1 || st.Inflight[0].State != comms.ReceiptTransportAccepted {
 			t.Fatalf("after the reply: %+v", st.Inflight)
 		}
-		dl, ok := LedgerPromptContext(w.parent.ID, fr["line"].(string), fr["id"].(string))
+		dl, ok := LedgerPromptContext(w.parent.ID, fr["line"].(string), fr["id"].(string), w.parent.Tool == "pi")
 		if !ok {
 			t.Fatal("fell back to the inbox")
 		}
@@ -1191,7 +1191,7 @@ func TestCommsDeliver_PiADoneTurnsBodyReachesTheParentAfterItsDoorbellRun(t *tes
 			// The doorbell's run start, then the parent's next one.
 			seen := ""
 			for _, start := range []struct{ prompt, nonce string }{{line, nonce}, {"next", ""}} {
-				dl, ok := LedgerPromptContext(w.parent.ID, start.prompt, start.nonce)
+				dl, ok := LedgerPromptContext(w.parent.ID, start.prompt, start.nonce, w.parent.Tool == "pi")
 				if !ok {
 					t.Fatal("enrolled parent fell back to the inbox path")
 				}

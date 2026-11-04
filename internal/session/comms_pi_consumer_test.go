@@ -180,7 +180,7 @@ func TestCommsConsumes_UnlistedPiParentDoesNot(t *testing.T) {
 	if _, ok := LoadCommsEnrollment(f.parent.ID); ok {
 		t.Fatal("an unlisted pi parent was enrolled")
 	}
-	if dl, ok := LedgerPromptContext(f.parent.ID, "hello", ""); ok {
+	if dl, ok := LedgerPromptContext(f.parent.ID, "hello", "", f.parent.Tool == "pi"); ok {
 		dl.Done(false)
 		t.Fatal("an unlisted pi parent got ledger context: it must keep the inbox path")
 	}
@@ -253,14 +253,14 @@ func TestAckShownInPrompt_PiPreviewIsNotAnAck(t *testing.T) {
 		t.Fatal("the previewed record is no longer owed")
 	}
 	// The run's own context carries it whole.
-	dl, ok := LedgerPromptContext(f.parent.ID, comms.WakePrefix+" 1 pending", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, comms.WakePrefix+" 1 pending", "", f.parent.Tool == "pi")
 	if !ok || !strings.Contains(dl.Text, "TAILMARKER") {
 		t.Fatalf("the previewed record must arrive whole in the injection (ok %v)", ok)
 	}
 	dl.Done(true)
 }
 
-// Max 2 (hook side): LedgerPromptContext(id, prompt, nonce) acks the attempt
+// Max 2 (hook side): LedgerPromptContext(id, prompt, nonce, fromPi) acks the attempt
 // its nonce names and injects what else is owed, without touching the wake count.
 func TestLedgerPromptContext_NonceAcksItsAttemptAndInjectsTheRest(t *testing.T) {
 	f := newPiParentFixture(t)
@@ -270,7 +270,7 @@ func TestLedgerPromptContext_NonceAcksItsAttemptAndInjectsTheRest(t *testing.T) 
 	f.carryAttempt(t, "NONCETWO", false, r2.ID)
 	f.setAutoWakes(t, 3)
 
-	dl, ok := LedgerPromptContext(f.parent.ID, comms.WakePrefix+" 1 pending", "NONCEONE")
+	dl, ok := LedgerPromptContext(f.parent.ID, comms.WakePrefix+" 1 pending", "NONCEONE", f.parent.Tool == "pi")
 	if !ok {
 		t.Fatal("enrolled pi parent fell back to the inbox")
 	}
@@ -296,7 +296,7 @@ func TestLedgerPromptContext_PiInjectsPendingAndInboxWithinBudget(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	dl, ok := LedgerPromptContext(f.parent.ID, "hi", "")
+	dl, ok := LedgerPromptContext(f.parent.ID, "hi", "", f.parent.Tool == "pi")
 	if !ok {
 		t.Fatal("enrolled pi parent fell back to the inbox")
 	}
