@@ -123,8 +123,9 @@ type CommsEnrollment struct {
 	// PiSocket says the parent is a pi whose last launch exported the wake
 	// socket (PiSocketExported). Its hooks then take the ledger's consumer edges
 	// (context, receipts, run starts) only from the pi that serves that socket
-	// (PiLedgerServedOnly). A relaunch without the socket clears it as the
-	// marker turns Draining.
+	// (PiLedgerServedOnly). Every pass keeps it and Tool true to the instance
+	// (refreshCommsMarker): a relaunch without the socket clears it, and a
+	// tool changed in place rewrites both.
 	PiSocket bool `json:"pi_socket,omitempty"`
 }
 
@@ -265,6 +266,9 @@ func (d *TransitionDaemon) deliverCommsLedger(profile string, byID map[string]*I
 		if has && en.Profile != profile {
 			continue
 		}
+		if has && inst != nil {
+			en = refreshCommsMarker(id, en, inst)
+		}
 		if has && (!want || en.Draining) {
 			commsRebuildIfBroken(id, en)
 		}
@@ -304,15 +308,12 @@ func (d *TransitionDaemon) deliverCommsLedger(profile string, byID map[string]*I
 				})
 			}
 			if err := writeCommsEnrollment(id, CommsEnrollment{Profile: profile, Dir: r.Dir, Tool: commsToolName(inst),
-				At: commsNow().UnixMilli(), EnrollCursor: uint64(end), PiSocket: inst.Tool == "pi" && inst.PiSocketExported}); err != nil {
+				At: commsNow().UnixMilli(), EnrollCursor: uint64(end), PiSocket: commsToolName(inst) == "pi" && inst.PiSocketExported}); err != nil {
 				commsLog.Warn("comms_enroll_failed", slog.String("parent", id), slog.String("error", err.Error()))
 				continue
 			}
 			commsLog.Info("comms_consumer_enrolled", slog.String("parent", id))
 		case !want && has && !en.Draining:
-			// A pi relaunched without the socket has no pi that serves one: its
-			// marker stops asking for it.
-			en.PiSocket = en.PiSocket && inst != nil && inst.PiSocketExported
 			d.startCommsDrain(id, en)
 			continue
 		case !want:
@@ -328,6 +329,32 @@ func (d *TransitionDaemon) deliverCommsLedger(profile string, byID map[string]*I
 		}
 		d.deliverToConsumer(l, l.Reader(), profile, inst, statuses[id], names)
 	}
+}
+
+// refreshCommsMarker keeps the marker's harness fields true to inst, whether it
+// stays enrolled, drains or is about to: the hooks read them from the marker
+// alone. The tool changes in place under the same id (a session edit, a
+// conductor re-registered with another agent), and a pi's launch decides
+// whether only the pi serving its socket takes its edges (pi_socket; a
+// relaunch without the socket clears it). Without this, a Claude turned pi kept
+// Claude's delivery (no receipt token, no host check) and a pi turned Claude
+// kept pi's. Everything else (the ledger, the enrolment point, the drain) is
+// left as it was; attempts made under the old harness settle by its rules.
+func refreshCommsMarker(id string, en CommsEnrollment, inst *Instance) CommsEnrollment {
+	tool := commsToolName(inst)
+	sock := tool == "pi" && inst.PiSocketExported
+	if en.Tool == tool && en.PiSocket == sock {
+		return en
+	}
+	prevTool, prevSock := en.Tool, en.PiSocket
+	en.Tool, en.PiSocket = tool, sock
+	if err := writeCommsEnrollment(id, en); err != nil {
+		commsLog.Warn("comms_marker_refresh_failed", slog.String("parent", id), slog.String("error", err.Error()))
+		return en
+	}
+	commsLog.Info("comms_marker_refreshed", slog.String("parent", id), slog.String("tool", tool), slog.Bool("pi_socket", sock),
+		slog.String("was_tool", prevTool), slog.Bool("was_pi_socket", prevSock))
+	return en
 }
 
 // commsRebuildIfBroken rebuilds an enrolled or draining parent's state at
