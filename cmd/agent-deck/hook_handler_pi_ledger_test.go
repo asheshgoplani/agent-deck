@@ -55,7 +55,7 @@ func enrolPiParent(t *testing.T, text string) (*comms.Reader, comms.Record) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	marker, _ := json.Marshal(map[string]any{"profile": "default", "dir": r.Dir, "tool": "pi", "at": time.Now().UnixMilli()})
+	marker, _ := json.Marshal(map[string]any{"profile": "default", "dir": r.Dir, "tool": "pi", "at": time.Now().UnixMilli(), "pi_socket": true})
 	if err := os.WriteFile(filepath.Join(dir, piParentID+".json"), marker, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func spoolJSON(t *testing.T, id string) []string {
 
 func TestHookHandler_PiBeforeAgentStartSpoolsPromptStartAndPrintsContext(t *testing.T) {
 	r, rec := enrolPiParent(t, "child result text for the model")
-	payload := `{"hook_event_name":"before_agent_start","source":"pi","cwd":"/tmp","session_id":"pi-sess","prompt":"what is the status?"}`
+	payload := `{"hook_event_name":"before_agent_start","source":"pi","pane_host":true,"cwd":"/tmp","session_id":"pi-sess","prompt":"what is the status?"}`
 	out := captureStdout(t, func() { runHookHandlerWith(t, payload) })
 
 	// Plain text: pi returns stdout as the injected message.
@@ -127,7 +127,7 @@ func TestHookHandler_PiBeforeAgentStartSpoolsPromptStartAndPrintsContext(t *test
 
 func TestHookHandler_PiDoorbellRunSpoolsTheNonce(t *testing.T) {
 	_, _ = enrolPiParent(t, "second result")
-	payload := `{"hook_event_name":"before_agent_start","source":"pi","cwd":"/tmp","session_id":"pi-sess","prompt":"[agent-deck msg] 1 pending (0 urgent): x","wake_nonce":"01J0ABCDEF0123456789ABCDEF"}`
+	payload := `{"hook_event_name":"before_agent_start","source":"pi","pane_host":true,"cwd":"/tmp","session_id":"pi-sess","prompt":"[agent-deck msg] 1 pending (0 urgent): x","wake_nonce":"01J0ABCDEF0123456789ABCDEF"}`
 	_ = captureStdout(t, func() { runHookHandlerWith(t, payload) })
 	found := false
 	for _, s := range spoolJSON(t, piParentID) {
@@ -154,7 +154,7 @@ func TestHookHandler_PiUnenrolledSessionPrintsNothingAndLeavesTheInbox(t *testin
 		Tier: session.TurnTierInfo, Text: "inbox result", TargetKind: "parent", Profile: "default"}); err != nil {
 		t.Fatal(err)
 	}
-	payload := `{"hook_event_name":"before_agent_start","source":"pi","cwd":"/tmp","prompt":"hello"}`
+	payload := `{"hook_event_name":"before_agent_start","source":"pi","pane_host":true,"cwd":"/tmp","prompt":"hello"}`
 	out := captureStdout(t, func() { runHookHandlerWith(t, payload) })
 	if strings.TrimSpace(out) != "" {
 		t.Errorf("an unenrolled pi session got output: %q", out)
@@ -264,13 +264,13 @@ func TestHookHandler_PiTurnStartCarriesTheRunFieldsAndTheReceiptTogether(t *test
 // record is not injected twice.
 func TestHookHandler_PiPriorInjectedTokenAcceptsWithoutTheDaemon(t *testing.T) {
 	r, rec := enrolPiParent(t, "child result text for the model")
-	first := `{"hook_event_name":"before_agent_start","source":"pi","cwd":"/tmp","session_id":"pi-sess","prompt":"run one"}`
+	first := `{"hook_event_name":"before_agent_start","source":"pi","pane_host":true,"cwd":"/tmp","session_id":"pi-sess","prompt":"run one"}`
 	out := captureStdout(t, func() { runHookHandlerWith(t, first) })
 	m := regexp.MustCompile(`(?m)^<!-- agent-deck-delivery:([0-9A-Z]{26}) -->$`).FindStringSubmatch(out)
 	if m == nil || !strings.Contains(out, "child result text for the model") {
 		t.Fatalf("first run start printed no context and token: %q", out)
 	}
-	second := `{"hook_event_name":"before_agent_start","source":"pi","cwd":"/tmp","session_id":"pi-sess","prompt":"run two","prior_injected_token":"` + m[1] + `"}`
+	second := `{"hook_event_name":"before_agent_start","source":"pi","pane_host":true,"cwd":"/tmp","session_id":"pi-sess","prompt":"run two","prior_injected_token":"` + m[1] + `"}`
 	out2 := captureStdout(t, func() { runHookHandlerWith(t, second) })
 	if strings.Contains(out2, "child result text for the model") {
 		t.Errorf("the record was injected again although the receipt arrived: %q", out2)
@@ -288,9 +288,9 @@ func TestHookHandler_PiPriorInjectedTokenAcceptsWithoutTheDaemon(t *testing.T) {
 // still waiting for its own receipt (or the end of the receipt window).
 func TestHookHandler_PiForeignPriorTokenChangesNothing(t *testing.T) {
 	r, rec := enrolPiParent(t, "child result text for the model")
-	first := `{"hook_event_name":"before_agent_start","source":"pi","cwd":"/tmp","session_id":"pi-sess","prompt":"run one"}`
+	first := `{"hook_event_name":"before_agent_start","source":"pi","pane_host":true,"cwd":"/tmp","session_id":"pi-sess","prompt":"run one"}`
 	_ = captureStdout(t, func() { runHookHandlerWith(t, first) })
-	second := `{"hook_event_name":"before_agent_start","source":"pi","cwd":"/tmp","session_id":"pi-sess","prompt":"run two","prior_injected_token":"01J0FOREIGNTOKEN00000000AB"}`
+	second := `{"hook_event_name":"before_agent_start","source":"pi","pane_host":true,"cwd":"/tmp","session_id":"pi-sess","prompt":"run two","prior_injected_token":"01J0FOREIGNTOKEN00000000AB"}`
 	_ = captureStdout(t, func() { runHookHandlerWith(t, second) })
 	st, ok, err := comms.ReadConsumer(r.Dir, piParentID)
 	if err != nil || !ok {

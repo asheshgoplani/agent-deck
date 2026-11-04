@@ -72,6 +72,7 @@ type hookPayload struct {
 	InjectedToken        json.RawMessage `json:"injected_token"`         // pi turn_start: receipt of an injected context
 	PriorInjectedToken   json.RawMessage `json:"prior_injected_token"`   // pi before_agent_start: receipt of the run before
 	PaneGuest            json.RawMessage `json:"pane_guest"`             // pi: started inside the launched pi's pane, not launched by agent-deck
+	PaneHost             json.RawMessage `json:"pane_host"`              // pi: the pi serving the wake socket at AGENTDECK_PI_SOCKET
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
 	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
@@ -164,6 +165,9 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 	if edge == "" || !session.CommsLedgerEnabled() {
 		return
 	}
+	if harness == "pi" && (edge == session.CommsEdgePromptStart || edge == session.CommsEdgeInjected) && !piLedgerConsumer(instanceID, p) {
+		return
+	}
 	sessionID := strings.TrimSpace(p.SessionID)
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(p.ConversationID)
@@ -208,12 +212,27 @@ func piGuestOfThePane(p hookPayload) bool {
 	return p.Source == "pi" && rawBool(p.PaneGuest)
 }
 
+// piLedgerConsumer reports a pi payload that may take the ledger's consumer
+// edges for instanceID: its context, its receipts and its run starts. Never a
+// guest of the pane; and for a parent whose launch exported the wake socket,
+// only the pi that serves it (pane_host). A pi in another tmux pane or window
+// of the parent's session inherits the session's AGENTDECK_INSTANCE_ID but not
+// the launch's socket or host pid, so it is no guest, yet serves nothing: it is
+// given none of the parent's records, which wait for the pi that serves.
+func piLedgerConsumer(instanceID string, p hookPayload) bool {
+	if piGuestOfThePane(p) {
+		return false
+	}
+	return rawBool(p.PaneHost) || !session.PiLedgerServedOnly(instanceID)
+}
+
 // piBeforeAgentStart prints the context a pi run starts with: what the
 // ledger owes the parent, acknowledging the doorbell whose nonce the run
 // carries. A pi session the ledger does not serve prints nothing and its inbox
-// is left alone (listed parents only), and so does a guest of the pane.
+// is left alone (listed parents only), and so does a pi that is not the
+// parent's consumer (piLedgerConsumer).
 func piBeforeAgentStart(instanceID string, p hookPayload) {
-	if piGuestOfThePane(p) {
+	if !piLedgerConsumer(instanceID, p) {
 		return
 	}
 	// The previous run's receipt rides this run start, so the attempt is accepted
