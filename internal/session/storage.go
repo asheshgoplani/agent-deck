@@ -483,10 +483,12 @@ func (s *Storage) saveWithGroups(instances []*Instance, groupTree *GroupTree) ([
 	UpdateClaudeSessionsWithDedup(instances)
 	updates := make([]statedb.InstanceSnapshot, len(instances))
 	clearIntents := make([]bool, len(instances))
+	launchesWritten := make([]bool, len(instances))
 	for i, inst := range instances {
 		if inst == nil {
 			return nil, fmt.Errorf("nil instance")
 		}
+		launchesWritten[i] = inst.launchUnrecorded.Load()
 		row, err := instanceToRow(inst)
 		if err != nil {
 			return nil, err
@@ -510,6 +512,9 @@ func (s *Storage) saveWithGroups(instances []*Instance, groupTree *GroupTree) ([
 		// Only the submitted representation was saved. Reading the live model
 		// again here could acknowledge edits made while this save was in flight.
 		original := statedb.CloneInstanceRow(updates[i].Desired)
+		if launchesWritten[i] {
+			inst.launchUnrecorded.CompareAndSwap(true, false) // the save recorded the launch
+		}
 		if clearIntents[i] {
 			inst.genericSessionIDCleared = false
 			original.ToolData = WriteGenericSessionIDToToolData(original.ToolData, "", time.Time{}, false)
@@ -1177,6 +1182,11 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	toolData = WriteSubcommandPassthroughToToolData(toolData, inst.SubcommandPassthrough)
 	toolData = writeTrackCommandExitToToolData(toolData, inst.TrackCommandExit)
 	toolData = WritePiSocketExportedToToolData(toolData, inst.PiSocketExported)
+	// launched_tool is the launch's to write; a save writes it only for a launch
+	// that found no row (a session started before its first save).
+	if inst.launchUnrecorded.Load() {
+		toolData = writeLaunchedToolToToolData(toolData, inst.LaunchedTool)
+	}
 	// Identity-injection opt-out lives in the same extras zone so a restart
 	// from any process honours `--no-identity`.
 	toolData = WriteIdentityInjectionDisabledToToolData(toolData, inst.IdentityInjectionDisabled)

@@ -29,6 +29,28 @@ func WritePiSocketExportedToToolData(td json.RawMessage, exported bool) json.Raw
 	return out
 }
 
+// writeLaunchedToolToToolData sets launched_tool in td (an empty tool leaves td
+// as it is). Sibling keys are preserved.
+func writeLaunchedToolToToolData(td json.RawMessage, tool string) json.RawMessage {
+	if tool == "" {
+		return td
+	}
+	m := map[string]json.RawMessage{}
+	if len(td) > 0 {
+		_ = json.Unmarshal(td, &m)
+	}
+	v, err := json.Marshal(tool)
+	if err != nil {
+		return td
+	}
+	m["launched_tool"] = v
+	out, err := json.Marshal(m)
+	if err != nil {
+		return td
+	}
+	return out
+}
+
 // ReadPiSocketExportedFromToolData extracts the launch decision; false for a
 // missing, malformed or legacy row.
 func ReadPiSocketExportedFromToolData(td json.RawMessage) bool {

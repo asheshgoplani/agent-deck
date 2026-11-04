@@ -157,10 +157,23 @@ func (s *StateDB) WritePiSocketExported(id string, exported bool) error {
 // WriteLaunchDecision records, in the instance's tool_data, the decision of
 // the launch that just spawned its pane: the tool it launched (launched_tool)
 // and whether a pi's launch exported the wake socket. A start writes it after a
-// successful spawn; a restart folds it into its outcome write.
+// successful spawn; a restart folds it into its outcome write. An instance
+// with no row yet (started before its first save) returns ErrInstanceNotStored,
+// and its first save records the decision instead.
 func (s *StateDB) WriteLaunchDecision(id, tool string, exported bool) error {
-	return withBusyRetry(func() error {
-		_, err := s.db.Exec(`UPDATE instances SET tool_data = `+launchToolDataExpr(exported)+` WHERE id = ?`, tool, id)
+	var affected int64
+	if err := withBusyRetry(func() error {
+		res, err := s.db.Exec(`UPDATE instances SET tool_data = `+launchToolDataExpr(exported)+` WHERE id = ?`, tool, id)
+		if err != nil {
+			return err
+		}
+		affected, err = res.RowsAffected()
 		return err
-	})
+	}); err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("record launch decision for %q: %w", id, ErrInstanceNotStored)
+	}
+	return nil
 }
