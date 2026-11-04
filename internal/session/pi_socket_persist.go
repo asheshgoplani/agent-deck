@@ -4,7 +4,7 @@ import "encoding/json"
 
 // Whether a pi was launched with a socket path in AGENTDECK_PI_SOCKET lives in the
 // tool_data extras zone, like identity_injection_persist.go: a pi launched with
-// it has a v5 extension serving the socket, and the daemon must never type into
+// it has a v5 or later extension serving the socket, and the daemon must never type into
 // it, whichever process loads the session. A row without the key is a pi
 // launched by a binary that predates the socket, or without it: the key is
 // deleted at the zero value.

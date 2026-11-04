@@ -1251,21 +1251,27 @@ func assertRefusal(t *testing.T, res any, path, id, state string) {
 	mustBoolAt(t, res, path+".notSent", true)
 }
 
-func TestPiHookExtension_IsV5(t *testing.T) {
-	if got := PiHookExtensionVersion(); got != 5 {
-		t.Errorf("PiHookExtensionVersion() = %d, want 5", got)
+// v6 marks its payloads pane_guest or pane_host, which a socket-exported
+// parent's ledger edges now depend on.
+func TestPiHookExtension_IsV6(t *testing.T) {
+	if got := PiHookExtensionVersion(); got != 6 {
+		t.Errorf("PiHookExtensionVersion() = %d, want 6", got)
 	}
-	if !strings.Contains(PiHookExtensionSource(), "AGENTDECK PI HOOK EXTENSION v5") {
-		t.Error("the extension source does not carry the v5 marker")
+	if !strings.Contains(PiHookExtensionSource(), "AGENTDECK PI HOOK EXTENSION v6") {
+		t.Error("the extension source does not carry the v6 marker")
 	}
-	// A v4 file (run_id, no socket) is outdated: it cannot serve the socket.
-	dir := t.TempDir()
-	v4 := strings.Replace(PiHookExtensionSource(), "v5", "v4", 1)
-	if err := os.WriteFile(PiHookExtensionPath(dir), []byte(v4), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if state, ver := InspectPiHooks(dir); state != PiHooksOutdated || ver != 4 {
-		t.Errorf("a v4 file inspects as (%v, %d), want (PiHooksOutdated, 4): install must upgrade it in place", state, ver)
+	// A v5 file (the socket, no host marker) and a v4 file (run_id, no socket)
+	// are outdated: a launch with either exports no socket, and install must
+	// upgrade them in place.
+	for _, old := range []int{5, 4} {
+		dir := t.TempDir()
+		src := strings.Replace(PiHookExtensionSource(), "v6", "v"+strconv.Itoa(old), 1)
+		if err := os.WriteFile(PiHookExtensionPath(dir), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if state, ver := InspectPiHooks(dir); state != PiHooksOutdated || ver != old {
+			t.Errorf("a v%d file inspects as (%v, %d), want (PiHooksOutdated, %d)", old, state, ver, old)
+		}
 	}
 }
 

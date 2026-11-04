@@ -42,8 +42,9 @@ const (
 	piHookExtensionMarker = "AGENTDECK PI HOOK EXTENSION"
 	// piHookExtensionVersion is bumped whenever the emitted event set or the
 	// payload shape changes, so `pi-hooks status` can report drift and
-	// `pi-hooks install` can upgrade in place.
-	piHookExtensionVersion = 5
+	// `pi-hooks install` can upgrade in place. v5 serves the wake socket; v6
+	// marks its payloads pane_guest or pane_host.
+	piHookExtensionVersion = 6
 )
 
 var piHookExtensionVersionRe = regexp.MustCompile(piHookExtensionMarker + ` v(\d+)`)

@@ -484,7 +484,7 @@ type Instance struct {
 	IdentityInjectionDisabled bool `json:"identity_injection_disabled,omitempty"`
 
 	// PiSocketExported records that the last launch of this pi exported
-	// a socket path in AGENTDECK_PI_SOCKET: a v5 extension serves the socket, so the daemon never
+	// a socket path in AGENTDECK_PI_SOCKET: a v5 or later extension serves the socket, so the daemon never
 	// types a doorbell into it (a connect failure is a rebind or reload window,
 	// not an absent pi). Persisted in the tool_data extras zone
 	// (pi_socket_persist.go); a pi with no record is treated as launched without it.

@@ -81,7 +81,7 @@ func commsConsumerList() []string {
 // on, inst is listed (id, title or "*") and its harness has the delivery
 // path the canary needs: prompt-time injection, a Stop hook and a typed
 // wake. That is Claude, and a pi whose last launch exported a socket path
-// (PiSocketExported: pi >= 1.2.0 and a current v5 extension, launched
+// (PiSocketExported: pi >= 1.2.0 and a current v6 extension, launched
 // locally), so its before_agent_start hook injects and its socket rings the
 // doorbell. A listed pi launched without it (older pi or extension, SSH or
 // sandbox, socket off) stays on the inbox, as before, and is enrolled once a
