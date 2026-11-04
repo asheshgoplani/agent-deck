@@ -310,9 +310,17 @@ func QuotedLine(r Record, names Names) string {
 }
 
 // LineDropsBody reports a record whose Line shows its Done summary in place
-// of a different body, so a line that carried it did not carry its body.
+// of a different body, so a line that carried it did not carry its body. The
+// two are compared as Line renders them (control characters stripped,
+// whitespace folded), so a body that renders as its summary is not dropped.
 func LineDropsBody(r Record) bool {
-	return r.Done != "" && r.Summary != "" && strings.TrimSpace(r.Text) != "" && strings.TrimSpace(r.Text) != strings.TrimSpace(r.Summary)
+	text := renderedBody(r.Text)
+	return r.Done != "" && r.Summary != "" && text != "" && text != renderedBody(r.Summary)
+}
+
+// renderedBody is a body as Line renders it.
+func renderedBody(s string) string {
+	return strings.Join(strings.Fields(stripControl(s)), " ")
 }
 
 // QuotedContextLine keeps both a Done summary and its body in hook context.
