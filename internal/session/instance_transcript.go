@@ -792,18 +792,40 @@ func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
 // and analytics / last-response silently break. The session ID is a UUID, so
 // matching on the filename is unambiguous.
 func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, additionalPaths ...string) string {
-	if sessionID == "" {
+	if exact := exactClaudeTranscriptPath(configDir, projectPath, sessionID, additionalPaths...); exact != "" {
+		return exact
+	}
+	if !claudeTranscriptIDIsSafe(sessionID) {
 		return ""
+	}
+	// Fallback: the transcript may live under a differently-encoded directory name
+	// (notably WSL Linux path vs. Windows/UNC cwd). Locate it by its unique
+	// session-id filename. A UUID contains no glob metacharacters.
+	return globClaudeTranscript(filepath.Join(configDir, "projects"), sessionID)
+}
+
+// claudeTranscriptIDIsSafe reports whether sessionID may become a transcript
+// file name and glob pattern.
+func claudeTranscriptIDIsSafe(sessionID string) bool {
+	if sessionID == "" {
+		return false
 	}
 	// The ID becomes a file name and a glob pattern: a separator or ".." could
 	// name a file outside the projects tree and a glob metacharacter could
 	// match another session's transcript, so such an ID resolves to nothing.
-	fileName, err := conversationPathComponent(sessionID + ".jsonl")
-	if err != nil || strings.ContainsAny(sessionID, "*?[") {
+	_, err := conversationPathComponent(sessionID + ".jsonl")
+	return err == nil && !strings.ContainsAny(sessionID, "*?[")
+}
+
+// exactClaudeTranscriptPath is resolveClaudeTranscriptPath without the
+// projects/* glob fallback: only the projects/ subdirectories Claude derives
+// from projectPath and additionalPaths are stat'ed. Cheap enough for render
+// paths (#3032: CanFork).
+func exactClaudeTranscriptPath(configDir, projectPath, sessionID string, additionalPaths ...string) string {
+	if !claudeTranscriptIDIsSafe(sessionID) {
 		return ""
 	}
-
-	projectsDir := filepath.Join(configDir, "projects")
+	fileName := sessionID + ".jsonl"
 
 	// Try ProjectPath first, then other known working directories (multi-repo
 	// sessions launch in EffectiveWorkingDir). All exact candidates precede the
@@ -831,14 +853,7 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 		}
 		candidates = append(candidates, filepath.Join(projectDir, fileName))
 	}
-	if candidate := newestTranscriptCopy(candidates); candidate != "" {
-		return candidate
-	}
-
-	// Fallback: the transcript may live under a differently-encoded directory name
-	// (notably WSL Linux path vs. Windows/UNC cwd). Locate it by its unique
-	// session-id filename. A UUID contains no glob metacharacters.
-	return globClaudeTranscript(projectsDir, sessionID)
+	return newestTranscriptCopy(candidates)
 }
 
 // newestTranscriptCopy returns the most recently written regular file among
