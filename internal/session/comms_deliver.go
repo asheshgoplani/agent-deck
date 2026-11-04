@@ -625,7 +625,9 @@ func (d *TransitionDaemon) commsAckPrompt(l *comms.Ledger, inst *Instance, promp
 // settles their wake attempts; a prompt of the parent's own resets the
 // automatic wake count. A prompt that carries a doorbell's nonce (a pi run)
 // shows exactly the attempts bound to that nonce, whatever the line names, and
-// is never the parent's own.
+// is never the parent's own. A turn such an attempt carried whole (not a
+// preview) is noted shown, as an injection's receipt notes it, so the same run
+// start does not show it again as its inbox record (#3026 item 3).
 func ackShownInPrompt(p comms.Pass, prompt, nonce string, acceptPreview bool) []events.Cursor {
 	f := p.File
 	if nonce == "" && !comms.IsWakePrompt(prompt) {
@@ -645,6 +647,9 @@ func ackShownInPrompt(p comms.Pass, prompt, nonce string, acceptPreview bool) []
 		}
 		if (nonce != "" && in.Nonce == nonce) || (nonce == "" && ids[comms.ShortID(e.Record.ID)]) {
 			acks = append(acks, e.Cursor)
+			if nonce != "" && !in.Preview && e.Record.Kind == comms.KindTurn {
+				f.NoteShown(e.Record.Key)
+			}
 		}
 	}
 	shown := map[events.Cursor]bool{}
