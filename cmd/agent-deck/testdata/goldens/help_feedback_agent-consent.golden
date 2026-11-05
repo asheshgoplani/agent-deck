@@ -1,0 +1,11 @@
+Usage: agent-deck feedback agent-consent [--off]
+
+Let agent sessions on this machine file issues and answers on GitHub with
+--from-agent. It shows what is posted, where and as which GitHub account, then
+asks y/N (default N); y sets [feedback] agent_reports = true in config.toml.
+Until then --from-agent refuses with consent_required (--yes does not stand in).
+Turning it on needs a terminal on stdin: a piped answer is refused with
+confirm_required and nothing changes.
+
+Flags:
+  --off   turn agent reports off again

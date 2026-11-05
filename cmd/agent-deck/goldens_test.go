@@ -263,7 +263,7 @@ func helpSpecs() []goldenSpec {
 		"hermes-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "group",
 		"worktree", "usage", "recall", "web", "remote", "conductor", "agents", "agent",
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
-		"uninstall", "completion", "costs", "config", "inbox", "feedback",
+		"uninstall", "completion", "costs", "config", "inbox", "feedback", "whats-new",
 		"watcher", "openclaw", "system", "mcp-proxy", "hooks", "hook-handler", "codex-notify",
 		"notify-daemon", "run-task", "open", "file", "browser", "triggers",
 	}
@@ -288,6 +288,7 @@ func helpSpecs() []goldenSpec {
 		"remote rename", "remote update",
 		"worktree list", "worktree info", "worktree cleanup",
 		"config show",
+		"feedback mine", "feedback fixed", "feedback agent-consent",
 		"profile list", "profile create", "profile delete", "profile default",
 		"inbox drain", "inbox export", "inbox writer-status", "inbox dead-letter",
 		"inbox dead-letter list", "inbox dead-letter show", "inbox dead-letter retry", "inbox dead-letter purge",

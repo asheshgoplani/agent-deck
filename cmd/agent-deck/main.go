@@ -749,6 +749,9 @@ func main() {
 		case "feedback":
 			handleFeedback(args[1:])
 			return
+		case "whats-new":
+			handleWhatsNew(args[1:])
+			return
 		case "debug-dump":
 			if helpRequested(args[1:]) {
 				fmt.Println("Usage: agent-deck debug-dump")
@@ -1640,7 +1643,7 @@ var commandRegistry = map[string]bool{
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
-	"run-task": true, "inbox": true, "msg": true, "feedback": true, "telemetry": true,
+	"run-task": true, "inbox": true, "msg": true, "feedback": true, "whats-new": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true, "completion": true,
 	"__complete": true,
@@ -4466,6 +4469,7 @@ func handleUpdate(args []string) {
 	fmt.Printf("\n✓ Updated to v%s\n", info.LatestVersion)
 	fmt.Println("  Restart agent-deck to use the new version.")
 	printPathShadowing(os.Stdout, update.FindShadowingCopies(info.LatestVersion), updateCLILog)
+	printWhatsNewAfterUpdate(context.Background(), os.Stdout, info.CurrentVersion, info.LatestVersion, true)
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
@@ -4563,6 +4567,9 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	fmt.Printf("\n✓ Installed v%s\n", targetVersion)
 	fmt.Println("  Restart agent-deck to use this version.")
 	printPathShadowing(os.Stdout, update.FindShadowingCopies(targetVersion), updateCLILog)
+	if update.CompareVersions(Version, targetVersion) < 0 {
+		printWhatsNewAfterUpdate(context.Background(), os.Stdout, Version, targetVersion, true)
+	}
 }
 
 // brewRunner abstracts `brew <args...>` so tests can inject canned output
@@ -4744,6 +4751,7 @@ func printHelp() {
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
+	fmt.Println("  whats-new        What changed since the version you last saw, your fixed reports first")
 	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
 	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths and pin the XDG data root")

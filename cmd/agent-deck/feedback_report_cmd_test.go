@@ -13,16 +13,24 @@ import (
 
 // Fake gh for `agent-deck feedback bug|idea` tests: shell builtins only,
 // records every call in $FAKE_GH_DIR/calls and the issue-create stdin in
-// $FAKE_GH_DIR/body. FAKE_GH_AUTH=ok|fail, FAKE_GH_CREATE=ok|fail.
+// $FAKE_GH_DIR/body. FAKE_GH_AUTH=ok|fail, FAKE_GH_CREATE=ok|fail|labelfail
+// (labelfail: a create with --label fails the way gh does for a missing label).
+// `gh api user` prints envlogin-$GH_PROMPT_DISABLED (proves the gh env is used).
 const reportFakeGh = `#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GH_DIR/calls"
 case "$1 $2" in
 "auth status")
   [ "$FAKE_GH_AUTH" = ok ] && exit 0
   exit 1 ;;
+"api user")
+  echo "envlogin-$GH_PROMPT_DISABLED"
+  exit 0 ;;
 "issue create")
   while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done > "$FAKE_GH_DIR/body"
   if [ "$FAKE_GH_CREATE" = fail ]; then echo "HTTP 403: forbidden" >&2; exit 1; fi
+  if [ "$FAKE_GH_CREATE" = labelfail ]; then
+    case "$*" in *--label*) echo "could not add label: 'found-by-agent' not found" >&2; exit 1 ;; esac
+  fi
   echo "https://github.com/asheshgoplani/agent-deck/issues/4242"
   exit 0 ;;
 esac
@@ -53,6 +61,8 @@ func setupReportTest(t *testing.T, ghPresent bool, auth, create string) *reportE
 	t.Setenv("FAKE_GH_DIR", env.dir)
 	t.Setenv("FAKE_GH_AUTH", auth)
 	t.Setenv("FAKE_GH_CREATE", create)
+	// Not inside an agent session unless a test says so.
+	t.Setenv("AGENTDECK_INSTANCE_ID", "")
 
 	prevDiag, prevFile, prevBrowser := feedbackCollectDiagnostics, feedbackFileIssue, feedbackBrowserAvailable
 	feedbackBrowserAvailable = func() bool { return true }

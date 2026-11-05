@@ -362,7 +362,7 @@ Prepare clear answers to:
 
 ### Step 3: Create GitHub Issue
 
-Fastest route: `agent-deck feedback bug` asks for what happened, what you expected and the steps, fills the bug form below with version, OS, terminal and a scrubbed log tail, shows you the full text and files it after you answer `y` (`--dry-run` only prints it). Ideas go through `agent-deck feedback idea`.
+Fastest route: `agent-deck feedback bug` asks for what happened, what you expected and the steps, fills the bug form below with version, OS, terminal and a scrubbed log tail, shows you the full text and files it after you answer `y` (`--dry-run` only prints it). Ideas go through `agent-deck feedback idea`. From an agent session use `agent-deck feedback bug --from-agent --title T --what W --json` once a person has run `agent-deck feedback agent-consent`: no prompt, scrubbed text without log lines, `found-by-agent` label, and an open agent issue with the same title gets a "seen again" comment instead of a duplicate.
 
 By hand:
 
@@ -383,6 +383,7 @@ Questions and setup help go to [Discussions](https://github.com/asheshgoplani/ag
 ### Step 4: Follow Up
 
 - Check for responses on your issue
+- `agent-deck feedback mine` lists your reports; after the release that fixes one, `agent-deck whats-new` (and `agent-deck update`) shows `Your report #N: fixed in vX`, and `agent-deck feedback fixed N --fixed|--not-fixed` tells the maintainers whether it works for you
 - Test any suggested fixes
 - Update issue with results
 - Join [Discord](https://discord.gg/e4xSs6NBN8) for quick help and community support

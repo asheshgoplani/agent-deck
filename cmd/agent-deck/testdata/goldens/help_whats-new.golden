@@ -1,0 +1,11 @@
+Usage: agent-deck whats-new [--json] [--since V] [--mark-seen]
+
+Show what changed since the last version you saw: your own reports fixed in
+this range first ("Your report #N: fixed in vX"), then each version's highlights.
+The notes come from the release CHANGELOG (AGENTDECK_CHANGELOG_URL overrides it).
+On the first run it remembers the current version and shows nothing.
+
+Flags:
+  --json        JSON: from, to, fixed, versions, text, empty
+  --since V     show changes after V instead of the last version seen
+  --mark-seen   remember the current version as seen (what the TUI does on close)
