@@ -133,6 +133,17 @@ func (o sendRetryOptions) hookBusyNow() bool {
 	return known && busy
 }
 
+// hookIdleNow reports whether the hook signal is fresh AND not busy: the
+// positive "this target's turn has ended" reading. Unknown and "no probe
+// wired" read false, like hookBusyNow.
+func (o sendRetryOptions) hookIdleNow() bool {
+	if o.targetBusyByHook == nil {
+		return false
+	}
+	busy, known := o.targetBusyByHook()
+	return known && !busy
+}
+
 // sendInitialKeysChecked is the initial submit of `session send`:
 // send.TypeAndSubmit, shared with the launch path (#2148 item 4b).
 func sendInitialKeysChecked(target sendRetryTarget, message string, expectedBreaks int, suggestionShown bool) error {
@@ -266,6 +277,10 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// the positive submission signals; obs decides what an exhausted budget
 	// means.
 	obs := newSendObserver(opts.tool, message, arrivalBaseline, true, hookBusyBeforeSend)
+	// stall is ASK-200: an idle Claude holding this send in a queue that
+	// no turn will drain. It may press the one Enter the attribution gate
+	// withholds at the queued hint (see stalledQueueFlush).
+	var stall stalledQueueFlush
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		if opts.promptGuard != nil && opts.promptGuard.refused {
 			return opts.promptGuard.refusal()
@@ -297,6 +312,10 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 					sawTokenMovement = true
 				}
 			}
+		}
+		if stall.observe(target, paneNow, opts, time.Now()) {
+			// Give Claude a frame to take the flushed queue up.
+			continue
 		}
 
 		// Issue #1978 / #2033: the hook-driven busy signal (the one
@@ -411,6 +430,14 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			// observer's delta is the truth: a copy that predates the send
 			// is not this send arriving (#1978).
 			obs.NoteBodyArrived()
+		}
+		if stall.heldIdle {
+			// ASK-200: still parked in Claude's queue on an idle session
+			// (after the flush Enter, or before it could be pressed). Never
+			// exit 0 for a message no turn will take up.
+			return deliveryTypedNotSubmitted, fmt.Errorf("message not submitted: Claude holds it in its queued messages "+
+				"(\"%s\") while the session is idle, and the flush Enter did not take it up within %d checks (ASK-200)",
+				send.ClaudeQueuedHint, opts.maxRetries)
 		}
 		final, finalErr := target.CapturePaneFresh()
 		obs.Observe(send.CaptureOutcome(final, finalErr))
