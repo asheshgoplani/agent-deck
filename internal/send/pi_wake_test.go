@@ -785,6 +785,9 @@ func TestPiWakeSocket_ShortAndPartialWritesAreCommitted(t *testing.T) {
 				t.Fatalf("error = %v (%T), want *CommittedError (result %+v)", err, err, res)
 			}
 			assertNeitherUnavailable(t, err)
+			if msg := err.Error(); !strings.Contains(msg, "pi wake socket") || strings.Contains(msg, "claude") {
+				t.Errorf("error = %q: a failed pi wake must name the pi wake socket, not Claude's", msg)
+			}
 			if res != (PiWakeResult{}) {
 				t.Errorf("result = %+v, want the zero value", res)
 			}
@@ -1093,5 +1096,26 @@ func TestPiWakeSocket_ReplyStreamIsCappedNotWaitedOut(t *testing.T) {
 	}
 	if elapsed > 2500*time.Millisecond {
 		t.Errorf("took %v: the reply cap should end the read long before the 5s window", elapsed)
+	}
+}
+
+// A pi wake that fails before the write names the pi wake socket too, from
+// SendPiWake and from VetPiSocket, so a log never reads as a Claude failure.
+func TestPiWakeSocket_UnavailableNamesThePiSocket(t *testing.T) {
+	missing := filepath.Join(piWakeShortDir(t), "none.sock")
+	for name, err := range map[string]error{
+		"VetPiSocket": VetPiSocket(missing, os.Getuid()),
+		"SendPiWake": func() error {
+			_, err := SendPiWake(piWakeContext(t), PiWakeTarget{Path: missing}, piWakeNonce, "wake", piWakeIDs, PiWakeOptions{})
+			return err
+		}(),
+	} {
+		var u *Unavailable
+		if !errors.As(err, &u) {
+			t.Fatalf("%s: error = %v (%T), want *Unavailable", name, err, err)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "pi wake socket unavailable") || strings.Contains(msg, "claude") {
+			t.Errorf("%s: error = %q, want it to name the pi wake socket", name, msg)
+		}
 	}
 }

@@ -35,7 +35,7 @@ const (
 const (
 	// MaxSockPath is the longest unix socket path macOS accepts (sun_path is
 	// 104 bytes including the NUL); Linux allows 107, so one limit is used.
-	// The launch side (session.PiSocketPath) refuses longer paths up front.
+	// The pi launch side refuses longer paths before it exports one.
 	MaxSockPath = 103
 	// piWakeFrameCap is the extension's input cap: an unended or larger
 	// frame is destroyed unsent, so the client refuses to write one.
@@ -102,6 +102,10 @@ func (r *PiWakeRefused) Error() string { return "pi wake refused: " + r.Reason }
 // by callerUID that neither the group nor others can reach, in a directory
 // that is likewise private. Failures are *Unavailable.
 func VetPiSocket(path string, callerUID int) error {
+	return namePiSocket(vetPiSocket(path, callerUID))
+}
+
+func vetPiSocket(path string, callerUID int) error {
 	if len(path) > MaxSockPath {
 		// The launch never exports a path this long, so no extension listens on it.
 		return &Unavailable{Reason: ReasonSocketPathTooLong, Absent: true,
@@ -198,6 +202,27 @@ type piWakeReply struct {
 // and is a *CommittedError; a cancel during the write is a *CommittedError. The
 // caller never types after either, so neither can double-deliver.
 func SendPiWake(ctx context.Context, target PiWakeTarget, nonce, line string, ids []string, opts PiWakeOptions) (PiWakeResult, error) {
+	res, err := sendPiWake(ctx, target, nonce, line, ids, opts)
+	return res, namePiSocket(err)
+}
+
+// piSocketName is what a pi wake's errors call the socket they failed on.
+const piSocketName = "pi wake socket"
+
+// namePiSocket makes err name the pi wake socket rather than Claude's.
+func namePiSocket(err error) error {
+	var u *Unavailable
+	if errors.As(err, &u) {
+		u.Socket = piSocketName
+	}
+	var c *CommittedError
+	if errors.As(err, &c) {
+		c.Socket = piSocketName
+	}
+	return err
+}
+
+func sendPiWake(ctx context.Context, target PiWakeTarget, nonce, line string, ids []string, opts PiWakeOptions) (PiWakeResult, error) {
 	if err := ctx.Err(); err != nil {
 		return PiWakeResult{}, &Unavailable{Reason: ReasonContextDone, Err: err}
 	}
