@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -968,7 +969,7 @@ func TestProviderConnectAzure_JSONEventShapes(t *testing.T) {
 		t.Fatalf("stderr with --json: %s", e.stderr)
 	}
 	evs := e.jsonEvents()
-	steps := map[string]bool{"az": true, "login": true, "subscription": true, "providers": true, "group": true, "quota": true, "sp": true, "store": true, "check": true}
+	steps := map[string]bool{"az": true, "login": true, "subscription": true, "providers": true, "group": true, "region": true, "quota": true, "sp": true, "store": true, "check": true}
 	statuses := map[string]bool{"start": true, "ok": true, "skip": true, "warn": true}
 	seen := map[string]bool{}
 	for _, ev := range evs {
@@ -1708,5 +1709,357 @@ func TestProviderConnectAzure_DisconnectRefusalBeforeAnyCall(t *testing.T) {
 	}
 	if n := len(e.calls()) - before; n != 0 {
 		t.Fatalf("%d az calls before the confirm answer", n)
+	}
+}
+
+// ---- region and size (smoke test on a new subscription, 2026-11-05) ----
+
+// azTestMissingRegNetwork is az's real stderr when Microsoft.Network is not
+// registered (smoke/attempt2/create.err).
+const azTestMissingRegNetwork = "ERROR: (MissingSubscriptionRegistration) The subscription is not registered to use namespace 'Microsoft.Network'. See https://aka.ms/rps-not-found for how to register subscriptions.\n" +
+	"Code: MissingSubscriptionRegistration\n" +
+	"Message: The subscription is not registered to use namespace 'Microsoft.Network'. See https://aka.ms/rps-not-found for how to register subscriptions.\n" +
+	"Exception Details:\t(MissingSubscriptionRegistration) The subscription is not registered to use namespace 'Microsoft.Network'. See https://aka.ms/rps-not-found for how to register subscriptions.\n" +
+	"\tCode: MissingSubscriptionRegistration\n" +
+	"\tMessage: The subscription is not registered to use namespace 'Microsoft.Network'. See https://aka.ms/rps-not-found for how to register subscriptions.\n" +
+	"\tTarget: Microsoft.Network\n"
+
+// probeLocations returns the --location of every probe NSG create.
+func (e *azTestEnv) probeLocations() []string {
+	e.t.Helper()
+	var locs []string
+	for _, c := range e.callsWith("network", "nsg", "create") {
+		if azArg(c, "--name") != azProbeNSG || azArg(c, "--resource-group") != azTestRG ||
+			azArg(c, "--tags") != "agent-deck=probe" || azArg(c, "--subscription") != azTestSub1 {
+			e.t.Fatalf("probe call args: %q", c)
+		}
+		locs = append(locs, azArg(c, "--location"))
+	}
+	return locs
+}
+
+// leftProbes lists the probe NSGs still in the fake's group.
+func (e *azTestEnv) leftProbes() []string {
+	left, _ := filepath.Glob(filepath.Join(e.state, "groups", azTestSub1, azTestRG, "nsgs", "*"))
+	return left
+}
+
+func TestProviderConnectAzure_RegionClosedFallsBack(t *testing.T) {
+	e := newAzConnectEnv(t, "region_closed=westeurope")
+	e.mustConnect()
+	note := fmt.Sprintf(azTextRegionUsingFmt, "westeurope", "swedencentral")
+	if !strings.Contains(e.stderr.String(), note+"\n") {
+		t.Fatalf("stderr lacks %q\nstderr:\n%s", note, e.stderr)
+	}
+	if got := e.probeLocations(); strings.Join(got, ",") != "westeurope,swedencentral" {
+		t.Fatalf("probe locations = %q", got)
+	}
+	if n := len(e.callsWith("network", "nsg", "delete")); n != 1 {
+		t.Fatalf("probe deletes = %d, want 1 (the refused create made nothing)", n)
+	}
+	if left := e.leftProbes(); len(left) != 0 {
+		t.Fatalf("probe NSGs left behind: %v", left)
+	}
+	// the group was made first, in the asked region; it stays there
+	calls := e.calls()
+	firstProbe, groupCreate := -1, -1
+	for i, c := range calls {
+		j := strings.Join(c, " ")
+		if groupCreate < 0 && strings.HasPrefix(j, "group create") {
+			groupCreate = i
+		}
+		if firstProbe < 0 && strings.HasPrefix(j, "network nsg create") {
+			firstProbe = i
+		}
+	}
+	if groupCreate < 0 || firstProbe < groupCreate {
+		t.Fatalf("probe ran before the group existed (group create #%d, probe #%d)", groupCreate, firstProbe)
+	}
+	if loc := e.stateFile(filepath.Join("groups", azTestSub1, azTestRG, "location")); loc != "westeurope" {
+		t.Fatalf("group location = %q", loc)
+	}
+	conf := e.confValues()
+	if conf["location"] != "swedencentral" || conf["vm_size"] != "Standard_B2s" {
+		t.Fatalf("azure-vm.conf location = %q, vm_size = %q", conf["location"], conf["vm_size"])
+	}
+	// the quota is read for the region the VMs go to
+	us := e.callsWith("vm", "list-usage")
+	if len(us) == 0 || azArg(us[len(us)-1], "--location") != "swedencentral" {
+		t.Fatalf("list-usage calls: %q", us)
+	}
+
+	// a re-run keeps the stored setup and does not probe again
+	before := len(e.calls())
+	e.mustConnect()
+	for _, c := range e.calls()[before:] {
+		j := strings.Join(c, " ")
+		if strings.HasPrefix(j, "network nsg") || strings.HasPrefix(j, "vm list-skus") {
+			t.Fatalf("re-run probed again: %q", c)
+		}
+	}
+	if !strings.Contains(e.stdout.String(), azTextAlreadyConnectedFirst) {
+		t.Fatalf("re-run output:\n%s", e.stdout)
+	}
+	if got := e.confValues()["location"]; got != "swedencentral" {
+		t.Fatalf("re-run changed location to %q", got)
+	}
+
+	// --json: the note is a region warn event
+	j := newAzConnectEnv(t, "region_closed=westeurope")
+	j.mustConnect("--json")
+	var warned, ok bool
+	for _, ev := range azEventsOf(j.jsonEvents(), "step") {
+		if ev["step"] == "region" && ev["status"] == "warn" && ev["message"] == note {
+			warned = true
+		}
+		if ev["step"] == "region" && ev["status"] == "ok" {
+			ok = true
+		}
+	}
+	if !warned || !ok {
+		t.Fatalf("region events (warn %v, ok %v):\n%s", warned, ok, j.stdout)
+	}
+}
+
+func TestProviderConnectAzure_RegionClosedGivenLocation(t *testing.T) {
+	e := newAzConnectEnv(t, "region_closed=westeurope+swedencentral")
+	if code := e.run("azure", "--location", "westeurope"); code != 1 {
+		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, e.stdout, e.stderr)
+	}
+	want := azTextRegionClosed("westeurope", []string{"northeurope", "germanywestcentral"}, []string{"swedencentral", "northeurope", "germanywestcentral"})
+	if got := e.stderr.String(); got != want+"\n" {
+		t.Fatalf("stderr:\n%s\nwant:\n%s", got, want)
+	}
+	if !strings.Contains(want, "agent-deck provider connect azure --location northeurope") {
+		t.Fatalf("REGION_CLOSED lacks the re-run command:\n%s", want)
+	}
+	if got := e.probeLocations(); strings.Join(got, ",") != "westeurope,swedencentral,northeurope,germanywestcentral" {
+		t.Fatalf("probe locations = %q (at most 3 more after the asked one)", got)
+	}
+	if left := e.leftProbes(); len(left) != 0 {
+		t.Fatalf("probe NSGs left behind: %v", left)
+	}
+	if len(e.callsWith("ad")) != 0 {
+		t.Fatal("service principal work after a closed region")
+	}
+	e.run("azure", "--location", "westeurope", "--json")
+	azWantKind(t, e, azKindRegionClosed)
+
+	// nothing works: the text says so and lists what was tried
+	f := newAzConnectEnv(t, "region_closed=westeurope+swedencentral+northeurope+germanywestcentral")
+	if code := f.run("azure", "--location", "westeurope"); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	want = azTextRegionClosed("westeurope", nil, []string{"swedencentral", "northeurope", "germanywestcentral"})
+	if got := f.stderr.String(); got != want+"\n" {
+		t.Fatalf("stderr:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestProviderConnectAzure_SizeMissingPicksNext(t *testing.T) {
+	for _, scen := range []string{"sku_missing=Standard_B2s", "sku_restricted=Standard_B2s"} {
+		t.Run(scen, func(t *testing.T) {
+			e := newAzConnectEnv(t, scen)
+			e.mustConnect()
+			note := fmt.Sprintf(azTextSizeUsingFmt, "Standard_B2s", "westeurope", "Standard_B2als_v2", 2)
+			if !strings.Contains(e.stderr.String(), note+"\n") {
+				t.Fatalf("stderr lacks %q\nstderr:\n%s", note, e.stderr)
+			}
+			if got := e.confValues()["vm_size"]; got != "Standard_B2als_v2" {
+				t.Fatalf("vm_size = %q", got)
+			}
+			skus := e.callsWith("vm", "list-skus")
+			if len(skus) == 0 {
+				t.Fatal("no vm list-skus call")
+			}
+			for _, c := range skus {
+				if azArg(c, "--location") != "westeurope" || azArg(c, "--resource-type") != "virtualMachines" ||
+					!strings.HasPrefix(azArg(c, "--size"), "Standard_") || azArg(c, "--subscription") != azTestSub1 {
+					t.Fatalf("list-skus args: %q", c)
+				}
+			}
+			us := e.callsWith("vm", "list-usage")
+			if len(us) != 1 {
+				t.Fatalf("list-usage calls: %q", us)
+			}
+			if !strings.Contains(e.stdout.String(), fmt.Sprintf(azTextQuotaOKFmt, "westeurope", 10, "Standard_B2als_v2", 2)) {
+				t.Fatalf("quota not checked for the picked size:\n%s", e.stdout)
+			}
+		})
+	}
+}
+
+func TestProviderConnectAzure_SizeGivenUnavailable(t *testing.T) {
+	offered := []string{"Standard_B2als_v2", "Standard_B2as_v2", "Standard_B2s_v2", "Standard_D2as_v5", "Standard_D2s_v5"}
+	e := newAzConnectEnv(t, "sku_missing=Standard_B2s")
+	if code := e.run("azure", "--vm-size", "Standard_B2s"); code != 1 {
+		t.Fatalf("exit %d\nstderr:\n%s", code, e.stderr)
+	}
+	want := azTextSizeUnavailable("Standard_B2s", "westeurope", offered, e.confPath())
+	if got := e.stderr.String(); got != want+"\n" {
+		t.Fatalf("stderr:\n%s\nwant:\n%s", got, want)
+	}
+	if n := len(e.callsWith("group", "create")); n != 0 {
+		t.Fatalf("group create ran %d times before a size failure", n)
+	}
+	e.run("azure", "--vm-size", "Standard_B2s", "--json")
+	azWantKind(t, e, azKindSizeUnavailable)
+
+	// vm_size in azure-vm.conf counts as asked for
+	f := newAzConnectEnv(t, "sku_missing=Standard_B2s")
+	if err := os.MkdirAll(f.cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.confPath(), []byte("vm_size = Standard_B2s\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run("azure"); code != 1 {
+		t.Fatalf("conf vm_size: exit %d\nstderr:\n%s", code, f.stderr)
+	}
+	if got, want := f.stderr.String(), azTextSizeUnavailable("Standard_B2s", "westeurope", offered, f.confPath()); got != want+"\n" {
+		t.Fatalf("conf vm_size: stderr:\n%s", got)
+	}
+	// --vm-size with an offered size replaces the conf's vm_size
+	f.mustConnect("--vm-size", "Standard_D2s_v5")
+	if got := f.confValues()["vm_size"]; got != "Standard_D2s_v5" {
+		t.Fatalf("vm_size after --vm-size = %q", got)
+	}
+}
+
+func TestProviderConnectAzure_SkusUnreadableContinues(t *testing.T) {
+	e := newAzConnectEnv(t, "skus_error")
+	e.mustConnect()
+	prefix := strings.SplitN(azTextSkusUnreadableFmt, "%", 2)[0]
+	if !strings.Contains(e.stderr.String(), prefix+"westeurope (") ||
+		!strings.Contains(e.stderr.String(), "; continuing with Standard_B2s.") {
+		t.Fatalf("stderr:\n%s", e.stderr)
+	}
+	if got := e.confValues()["vm_size"]; got != "Standard_B2s" {
+		t.Fatalf("vm_size = %q", got)
+	}
+
+	// a listing that takes too long is cut off, then the same warning
+	old := azConnectSkuTimeout
+	azConnectSkuTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { azConnectSkuTimeout = old })
+	f := newAzConnectEnv(t, "skus_wait=60")
+	start := time.Now()
+	f.mustConnect()
+	if d := time.Since(start); d > 20*time.Second {
+		t.Fatalf("connect took %v with a hanging list-skus", d)
+	}
+	if !strings.Contains(f.stderr.String(), prefix+"westeurope (") {
+		t.Fatalf("stderr:\n%s", f.stderr)
+	}
+}
+
+func TestProviderConnectAzure_RerunSkipsRegionChecks(t *testing.T) {
+	e := newAzConnectEnv(t, "")
+	e.mustConnect()
+	if got := e.probeLocations(); strings.Join(got, ",") != "westeurope" {
+		t.Fatalf("first run probes = %q", got)
+	}
+	before := len(e.calls())
+	e.mustConnect()
+	for _, c := range e.calls()[before:] {
+		j := strings.Join(c, " ")
+		if strings.HasPrefix(j, "network nsg") || strings.HasPrefix(j, "vm list-skus") {
+			t.Fatalf("re-run probed again: %q", c)
+		}
+	}
+	// not the stored setup (new secret): checked again
+	before = len(e.calls())
+	e.mustConnect("--reset-secret")
+	n := 0
+	for _, c := range e.calls()[before:] {
+		if strings.HasPrefix(strings.Join(c, " "), "network nsg create") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("--reset-secret run probed %d times, want 1", n)
+	}
+}
+
+// Smoke attempt 2: a new subscription has Microsoft.Network unregistered.
+// The fake answers with az's real text, and connect registers both
+// namespaces before any call that needs them.
+func TestProviderConnectAzure_UnregisteredNetworkRealTextAndOrder(t *testing.T) {
+	e := newAzConnectEnv(t, "unregistered")
+	// #nosec G204 -- the repo's fake az
+	cmd := exec.Command(e.fakeAz, "network", "nsg", "create", "--name", "x-nsg", "--resource-group", azTestRG,
+		"--location", "swedencentral", "--subscription", azTestSub1, "--only-show-errors", "-o", "none")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatal("nsg create succeeded with Microsoft.Network unregistered")
+	}
+	if got := stderr.String(); got != azTestMissingRegNetwork {
+		t.Fatalf("fake stderr:\n%q\nwant:\n%q", got, azTestMissingRegNetwork)
+	}
+
+	before := len(e.calls())
+	e.mustConnect()
+	registered := map[string]int{}
+	firstUse := -1
+	for i, c := range e.calls()[before:] {
+		if len(c) >= 2 && c[0] == "provider" && c[1] == "register" {
+			registered[azArg(c, "--namespace")] = i
+		}
+		if firstUse < 0 && len(c) > 0 && (c[0] == "group" || c[0] == "network" || c[0] == "vm") {
+			firstUse = i
+		}
+	}
+	for _, ns := range []string{"Microsoft.Compute", "Microsoft.Network"} {
+		i, ok := registered[ns]
+		if !ok || firstUse < 0 || i > firstUse {
+			t.Fatalf("%s registered at call #%d (ok=%v), first group/network/vm call #%d", ns, i, ok, firstUse)
+		}
+	}
+	probes := 0
+	for _, c := range e.calls()[before:] {
+		if strings.HasPrefix(strings.Join(c, " "), "network nsg create --name "+azProbeNSG) {
+			probes++
+		}
+	}
+	if probes != 1 {
+		t.Fatalf("%d region probes after registering, want 1", probes)
+	}
+}
+
+func TestAzureConnect_SkuOffered(t *testing.T) {
+	const listing = `[
+  {"name": "Standard_B2s", "resourceType": "virtualMachines", "locations": ["westeurope"], "restrictions": []},
+  {"name": "Standard_B2ms", "resourceType": "virtualMachines", "locations": ["swedencentral"], "restrictions": [
+    {"type": "Location", "reasonCode": "NotAvailableForSubscription", "values": ["swedencentral"],
+     "restrictionInfo": {"locations": ["swedencentral"], "zones": null}}]},
+  {"name": "Standard_B2als_v2", "resourceType": "virtualMachines", "locations": ["SwedenCentral"], "restrictions": [
+    {"type": "Zone", "reasonCode": "NotAvailableForSubscription", "values": ["swedencentral"],
+     "restrictionInfo": {"locations": ["swedencentral"], "zones": ["1"]}}]},
+  {"name": "Standard_D2s_v5", "resourceType": "virtualMachines", "locations": ["swedencentral"], "restrictions": [
+    {"type": "Location", "reasonCode": "NotAvailableForSubscription", "values": ["northeurope"],
+     "restrictionInfo": {"locations": ["northeurope"], "zones": null}}]},
+  {"name": "Standard_D2as_v5", "resourceType": "disks", "locations": ["swedencentral"], "restrictions": []}
+]`
+	var skus []azSku
+	if err := json.Unmarshal([]byte(listing), &skus); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		size, loc string
+		want      bool
+	}{
+		{"Standard_B2s", "westeurope", true},
+		{"standard_b2s", "WestEurope", true},
+		{"Standard_B2s", "swedencentral", false}, // listed for another region only
+		{"Standard_B2ms", "swedencentral", false},
+		{"Standard_B2als_v2", "swedencentral", true}, // one zone restricted: the region still works
+		{"Standard_D2s_v5", "swedencentral", true},   // restriction for another region
+		{"Standard_D2as_v5", "swedencentral", false}, // not a VM size
+		{"Standard_B2s_v2", "swedencentral", false},  // missing
+	} {
+		if got := azSkuOffered(skus, tc.size, tc.loc); got != tc.want {
+			t.Errorf("azSkuOffered(%s, %s) = %v, want %v", tc.size, tc.loc, got, tc.want)
+		}
 	}
 }

@@ -41,6 +41,7 @@ var (
 	azConnectStderrMax    = 2000                 // runes of az stderr shown on failure
 	azConnectSecretMax    = int64(1 << 16)       // bytes read for --sp-secret-stdin
 	azConnectProviderDir  = "providers/azure-vm" // under agentpaths.DataDir()
+	azConnectSkuTimeout   = 4 * time.Minute      // az vm list-skus can take minutes
 )
 
 const (
@@ -61,6 +62,79 @@ const (
 	azKeySecretPending = "sp_secret_pending"
 )
 
+// azProbeNSG is the free network security group connect creates and deletes
+// to learn whether a region takes new resources for the subscription.
+const azProbeNSG = "agent-deck-region-probe"
+
+// azPreferredSizes are the small sizes connect may pick, in order, when
+// neither --vm-size nor vm_size names one.
+var azPreferredSizes = []string{"Standard_B2s", "Standard_B2als_v2", "Standard_B2as_v2", "Standard_B2s_v2", "Standard_D2as_v5", "Standard_D2s_v5"}
+
+// azFallbackRegions are tried in order when the default region refuses new
+// resources or offers none of azPreferredSizes.
+var azFallbackRegions = []string{"swedencentral", "northeurope", "germanywestcentral", "francecentral", "uksouth", "eastus2"}
+
+// azSku is one entry of `az vm list-skus`.
+type azSku struct {
+	Name         string   `json:"name"`
+	ResourceType string   `json:"resourceType"`
+	Locations    []string `json:"locations"`
+	Restrictions []struct {
+		Type            string   `json:"type"`
+		ReasonCode      string   `json:"reasonCode"`
+		Values          []string `json:"values"`
+		RestrictionInfo struct {
+			Locations []string `json:"locations"`
+			Zones     []string `json:"zones"`
+		} `json:"restrictionInfo"`
+	} `json:"restrictions"`
+}
+
+// azSkuOffered reports whether skus offer VM size in loc to this
+// subscription.
+// A size is offered when the listing has it as a VM size for loc and no
+// Location restriction covers loc. Zone restrictions are ignored: sandboxes
+// do not pin a zone. Without --all az already leaves out restricted sizes.
+func azSkuOffered(skus []azSku, size, loc string) bool {
+	for _, s := range skus {
+		if !strings.EqualFold(s.Name, size) || !strings.EqualFold(s.ResourceType, "virtualMachines") {
+			continue
+		}
+		if !azContainsFold(s.Locations, loc) {
+			continue
+		}
+		restricted := false
+		for _, r := range s.Restrictions {
+			if strings.EqualFold(r.Type, "Location") &&
+				(azContainsFold(r.Values, loc) || azContainsFold(r.RestrictionInfo.Locations, loc)) {
+				restricted = true
+			}
+		}
+		if !restricted {
+			return true
+		}
+	}
+	return false
+}
+
+func azContainsFold(list []string, v string) bool {
+	for _, x := range list {
+		if strings.EqualFold(x, v) {
+			return true
+		}
+	}
+	return false
+}
+
+// azSizePrefix is the --size filter for size's family: Standard_B2s and
+// Standard_B2als_v2 -> Standard_B2 (az matches a substring of the name).
+func azSizePrefix(size string) string {
+	if m := azSizePrefixRe.FindString(size); m != "" {
+		return m
+	}
+	return size
+}
+
 // azRequiredProviders are the resource providers a VM needs; a fresh
 // subscription has them unregistered and a service principal cannot
 // register them.
@@ -77,6 +151,7 @@ var (
 	azSizeRe        = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 	azANSIRe        = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 	azVMSizeRe      = regexp.MustCompile(`^(?i)standard_([a-z]+)(\d+)([a-z]*)(?:_(v\d+))?$`)
+	azSizePrefixRe  = regexp.MustCompile(`^(?i)standard_[a-z]+\d+`)
 )
 
 // azVMSizeVCPUs is the vCPU count of the sizes people pick for a sandbox;
@@ -242,7 +317,11 @@ type azConnect struct {
 	confPath   string
 	secretPath string
 	bundleDir  string
-	changed    bool // something in Azure or on disk changed
+	changed    bool               // something in Azure or on disk changed
+	vmSize     string             // the size azure-vm.conf gets
+	vmSizeSet  bool               // write vmSize even when vm_size is there (asked for or picked)
+	skus       map[string][]azSku // list-skus answers by location|prefix
+	skusFailed map[string]bool    // locations whose listing failed (warned once)
 }
 
 // azSubscription is one entry of `az account list --all`.
@@ -440,9 +519,13 @@ func (c *azConnect) bundledCommand() string { return filepath.Join(c.bundleDir, 
 // az runs one az call with --only-show-errors and -o format, never through
 // a shell, with the inherited env and no stdin.
 func (c *azConnect) az(format string, args ...string) ([]byte, string, error) {
+	return c.azCtx(c.ctx, format, args...)
+}
+
+func (c *azConnect) azCtx(ctx context.Context, format string, args ...string) ([]byte, string, error) {
 	full := append(append([]string{}, args...), "--only-show-errors", "-o", format)
 	// #nosec G204 -- az comes from LookPath; every argument is fixed or a validated flag value, never a secret
-	cmd := exec.CommandContext(c.ctx, c.azPath, full...)
+	cmd := exec.CommandContext(ctx, c.azPath, full...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -871,6 +954,218 @@ func (c *azConnect) checkQuota(sub azSubscription, loc, size string) error {
 	return nil
 }
 
+// ---- region and size ----
+
+// azFirstLine is the first non-empty line of s.
+func azFirstLine(s string) string {
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			return l
+		}
+	}
+	return s
+}
+
+// regionCandidate is the region to try first for the VMs, and whether it
+// was asked for (--location for a new group, or the group's own region).
+// A stored location (maybe a fallback of an earlier run) wins over the
+// group's region.
+func (c *azConnect) regionCandidate(conf *azConfFile, sub azSubscription, groupLoc string, groupExists bool) (string, bool) {
+	if c.opts.locationSet && (!groupExists || strings.EqualFold(c.opts.location, groupLoc)) {
+		return c.opts.location, true
+	}
+	if v := conf.get("location"); v != "" && groupExists && conf.get("resource_group") == c.opts.resourceGroup &&
+		strings.EqualFold(conf.get("subscription"), sub.ID) {
+		return v, false
+	}
+	if groupExists {
+		return groupLoc, false
+	}
+	return c.opts.location, false
+}
+
+// keepStoredSetup reports whether this run keeps a working stored setup
+// unchanged; then the region and size are not tested again.
+func (c *azConnect) keepStoredSetup(conf *azConfFile, sub azSubscription, groupExists bool, loc string) bool {
+	confLoc, confSize := conf.get("location"), conf.get("vm_size")
+	return groupExists && c.spKeepable(conf, sub) && confLoc != "" && confSize != "" &&
+		strings.EqualFold(loc, confLoc) && (!c.opts.vmSizeSet || strings.EqualFold(c.opts.vmSize, confSize))
+}
+
+// probeRegion creates and deletes a free network security group in loc, as
+// the signed-in user; closed=true when Azure refuses new resources there
+// (RequestDisallowedByAzure). Any other failure warns and counts as open.
+func (c *azConnect) probeRegion(sub azSubscription, loc string) (closed bool) {
+	rg := c.opts.resourceGroup
+	_, stderr, err := c.az("none", "network", "nsg", "create", "--name", azProbeNSG, "--resource-group", rg,
+		"--location", loc, "--tags", "agent-deck=probe", "--subscription", sub.ID)
+	if err != nil {
+		if azContainsAny(stderr, "RequestDisallowedByAzure", "not accepting new customers") {
+			return true
+		}
+		c.step("region", "warn", fmt.Sprintf(azTextRegionProbeFailedFmt, loc, azFirstLine(azSaid(stderr, err))))
+		return false
+	}
+	if _, _, err := c.az("none", "network", "nsg", "delete", "--name", azProbeNSG, "--resource-group", rg, "--subscription", sub.ID); err != nil {
+		c.step("region", "warn", fmt.Sprintf(azTextProbeDeleteFailedFmt, azProbeNSG, rg, azProbeNSG, rg, sub.ID))
+	}
+	return false
+}
+
+// sizeOffered reports whether loc offers size to this subscription.
+// known=false when the listing failed (warned once per region) or is empty;
+// then the size is taken on trust.
+func (c *azConnect) sizeOffered(sub azSubscription, loc, size string) (offered, known bool) {
+	if c.skus == nil {
+		c.skus, c.skusFailed = map[string][]azSku{}, map[string]bool{}
+	}
+	lloc := strings.ToLower(loc)
+	if c.skusFailed[lloc] {
+		return false, false
+	}
+	prefix := azSizePrefix(size)
+	key := lloc + "|" + strings.ToLower(prefix)
+	skus, ok := c.skus[key]
+	if !ok {
+		ctx, cancel := context.WithTimeout(c.ctx, azConnectSkuTimeout)
+		out, stderr, err := c.azCtx(ctx, "json", "vm", "list-skus", "--location", loc, "--size", prefix,
+			"--resource-type", "virtualMachines", "--all", "--subscription", sub.ID)
+		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+		cancel()
+		if err == nil {
+			err = json.Unmarshal(out, &skus)
+		}
+		if err != nil {
+			c.skusFailed[lloc] = true
+			said := azFirstLine(azSaid(stderr, err))
+			if timedOut {
+				said = fmt.Sprintf(azTextSkusTimedOutFmt, azConnectSkuTimeout)
+			}
+			c.step("region", "warn", fmt.Sprintf(azTextSkusUnreadableFmt, loc, said, size))
+			return false, false
+		}
+		c.skus[key] = skus
+	}
+	if len(skus) == 0 {
+		return false, false
+	}
+	return azSkuOffered(skus, size, loc), true
+}
+
+// pickSize returns the size to use in loc: size itself when it was asked
+// for, else the first offered of size and azPreferredSizes. ok=false when
+// none is offered.
+func (c *azConnect) pickSize(sub azSubscription, loc, size string, pinned bool) (string, bool) {
+	cands := []string{size}
+	if !pinned {
+		for _, p := range azPreferredSizes {
+			if !strings.EqualFold(p, size) {
+				cands = append(cands, p)
+			}
+		}
+	}
+	for _, s := range cands {
+		if offered, known := c.sizeOffered(sub, loc, s); offered || !known {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// offeredSizes lists the azPreferredSizes loc is known to offer.
+func (c *azConnect) offeredSizes(sub azSubscription, loc string) []string {
+	var out []string
+	for _, p := range azPreferredSizes {
+		if offered, known := c.sizeOffered(sub, loc, p); offered && known {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// chooseRegion settles where the VMs go and their size. Order: size check
+// (no group needed), quota, the group (made in loc when missing), then the
+// probe. A region that refuses new resources, or offers none of the small
+// sizes, falls back to azFallbackRegions unless it was asked for. The quota
+// is read again when the region or size changed. Returns the VM region,
+// the size and the group's region.
+func (c *azConnect) chooseRegion(sub azSubscription, loc string, locPinned bool, size string, sizePinned, groupExists bool, groupLoc string) (string, string, string, error) {
+	c.step("region", "start", "")
+	picked, sizeOK := c.pickSize(sub, loc, size, sizePinned)
+	if !sizeOK && (sizePinned || locPinned) {
+		return "", "", "", azFail(azKindSizeUnavailable, azTextSizeUnavailable(size, loc, c.offeredSizes(sub, loc), c.confPath))
+	}
+	quotaDone := ""
+	if sizeOK {
+		// Quota before creating the group, so a full region leaves nothing behind.
+		if err := c.checkQuota(sub, loc, picked); err != nil {
+			return "", "", "", err
+		}
+		quotaDone = loc + "|" + picked
+	}
+	if !groupExists {
+		gl, err := c.createGroup(sub, loc)
+		if err != nil {
+			return "", "", "", err
+		}
+		groupLoc = gl
+	}
+	final, finalSize, note := loc, picked, ""
+	switch {
+	case c.probeRegion(sub, loc):
+		if locPinned {
+			var working, tried []string
+			for _, r := range azFallbackRegions {
+				if len(tried) == 3 {
+					break
+				}
+				if strings.EqualFold(r, loc) {
+					continue
+				}
+				tried = append(tried, r)
+				if !c.probeRegion(sub, r) {
+					working = append(working, r)
+				}
+			}
+			return "", "", "", azFail(azKindRegionClosed, azTextRegionClosed(loc, working, tried))
+		}
+		final, note = "", azTextRegionUsingFmt
+	case !sizeOK:
+		final, note = "", azTextRegionNoSizeUsingFmt
+	}
+	if final == "" {
+		var tried []string
+		for _, r := range azFallbackRegions {
+			if strings.EqualFold(r, loc) {
+				continue
+			}
+			tried = append(tried, r)
+			if c.probeRegion(sub, r) {
+				continue
+			}
+			if s, ok := c.pickSize(sub, r, size, sizePinned); ok {
+				final, finalSize = r, s
+				break
+			}
+		}
+		if final == "" {
+			return "", "", "", azFail(azKindRegionClosed, azTextRegionClosed(loc, nil, tried))
+		}
+		c.step("region", "warn", fmt.Sprintf(note, loc, final))
+	}
+	if !strings.EqualFold(finalSize, size) {
+		c.step("region", "warn", fmt.Sprintf(azTextSizeUsingFmt, size, final, finalSize, vmSizeVCPUs(finalSize)))
+		c.vmSize, c.vmSizeSet = finalSize, true
+	}
+	if final+"|"+finalSize != quotaDone {
+		if err := c.checkQuota(sub, final, finalSize); err != nil {
+			return "", "", "", err
+		}
+	}
+	c.step("region", "ok", fmt.Sprintf(azTextRegionOKFmt, final, finalSize))
+	return final, finalSize, groupLoc, nil
+}
+
 // ---- service principal ----
 
 func (c *azConnect) scope(sub azSubscription) string {
@@ -888,9 +1183,7 @@ func (c *azConnect) ensureSP(sub azSubscription, conf *azConfFile) (azSP, error)
 		}
 		c.step("sp", "ok", fmt.Sprintf(azTextSPGivenFmt, c.opts.spAppID))
 		return azSP{appID: c.opts.spAppID, tenant: sub.TenantID, secret: secret}, nil
-	case !c.opts.resetSecret && confApp != "" && azRegularFile(c.secretPath) &&
-		conf.get(azKeySecretPending) != "true" &&
-		strings.EqualFold(conf.get("subscription"), sub.ID) && conf.get("resource_group") == c.opts.resourceGroup:
+	case c.spKeepable(conf, sub):
 		c.step("sp", "ok", fmt.Sprintf(azTextSPKeptFmt, confApp))
 		return azSP{appID: confApp, tenant: firstNonEmpty(conf.get("sp_tenant"), sub.TenantID),
 			owned: conf.get(azKeySPCreated) == "true", kept: true}, nil
@@ -937,6 +1230,14 @@ func (c *azConnect) ensureSP(sub azSubscription, conf *azConfFile) (azSP, error)
 	c.step("sp", "ok", fmt.Sprintf(azTextSPCreatedFmt, created.AppID))
 	return azSP{appID: created.AppID, tenant: firstNonEmpty(created.Tenant, sub.TenantID), secret: created.Password,
 		created: true, owned: owned}, nil
+}
+
+// spKeepable reports whether the stored service principal and secret are
+// reused as they are.
+func (c *azConnect) spKeepable(conf *azConfFile, sub azSubscription) bool {
+	return c.opts.spAppID == "" && !c.opts.resetSecret && conf.get("sp_app_id") != "" && azRegularFile(c.secretPath) &&
+		conf.get(azKeySecretPending) != "true" &&
+		strings.EqualFold(conf.get("subscription"), sub.ID) && conf.get("resource_group") == c.opts.resourceGroup
 }
 
 // findSPByName returns the appId of the service principal whose display
@@ -1231,8 +1532,10 @@ func (c *azConnect) writeConf(conf *azConfFile, sub azSubscription, loc string, 
 	} else {
 		conf.remove(azKeySecretPending)
 	}
-	if !conf.has("vm_size") {
-		conf.set("vm_size", c.opts.vmSize)
+	// vm_size is the user's unless they asked for one (--vm-size) or the
+	// default was not offered and connect picked another.
+	if c.vmSizeSet || !conf.has("vm_size") {
+		conf.set("vm_size", firstNonEmpty(c.vmSize, c.opts.vmSize))
 	}
 	if !conf.exists {
 		conf.lines = append(conf.lines, "", azTextConfFileMarker)
@@ -1444,6 +1747,8 @@ func (c *azConnect) validateConf(conf *azConfFile) error {
 		{"subscription", azGUIDRe},
 		{"sp_tenant", azTenantRe},
 		{"resource_group", azGroupRe},
+		{"location", azLocationRe},
+		{"vm_size", azSizeRe},
 	} {
 		if v := conf.get(k.key); v != "" && (!k.re.MatchString(v) || strings.HasPrefix(v, "-")) {
 			return azFail(azKindBadConfig, azTextBadConfig(c.confPath, k.key, v))
@@ -1479,25 +1784,24 @@ func (c *azConnect) connect() error {
 	if err := c.registerProviders(sub); err != nil {
 		return err
 	}
-	loc, groupExists, err := c.showGroup(sub)
+	groupLoc, groupExists, err := c.showGroup(sub)
 	if err != nil {
 		return err
 	}
-	if !groupExists {
-		loc = c.opts.location
-	}
-	size := c.opts.vmSize
+	loc, locPinned := c.regionCandidate(conf, sub, groupLoc, groupExists)
+	size, sizePinned := c.opts.vmSize, c.opts.vmSizeSet
 	if v := conf.get("vm_size"); v != "" && !c.opts.vmSizeSet {
-		size = v
+		size, sizePinned = v, true
 	}
-	// Quota before creating the group, so a full region leaves nothing behind.
-	if err := c.checkQuota(sub, loc, size); err != nil {
-		return err
-	}
-	if !groupExists {
-		if loc, err = c.createGroup(sub, loc); err != nil {
+	c.vmSize, c.vmSizeSet = size, c.opts.vmSizeSet
+	if c.keepStoredSetup(conf, sub, groupExists, loc) {
+		// A working stored setup: no probe resources on every run.
+		c.step("region", "ok", fmt.Sprintf(azTextRegionKeptFmt, loc, size))
+		if err := c.checkQuota(sub, loc, size); err != nil {
 			return err
 		}
+	} else if loc, _, groupLoc, err = c.chooseRegion(sub, loc, locPinned, size, sizePinned, groupExists, groupLoc); err != nil {
+		return err
 	}
 	sp, err := c.ensureSP(sub, conf)
 	if err != nil {
@@ -1516,7 +1820,7 @@ func (c *azConnect) connect() error {
 		c.emit(map[string]any{"event": "done", "action": "connect", "resource_group": c.opts.resourceGroup,
 			"subscription": sub.ID, "sp_app_id": sp.appID, "config": c.confPath, "provider": c.opts.name, "changed": c.changed})
 	} else {
-		fmt.Fprintln(c.out, azTextConnected(!c.changed, sub.Name, sub.ID, c.opts.resourceGroup, loc, sp.appID, c.secretPath, c.confPath, n))
+		fmt.Fprintln(c.out, azTextConnected(!c.changed, sub.Name, sub.ID, c.opts.resourceGroup, groupLoc, sp.appID, c.secretPath, c.confPath, n))
 	}
 	return nil
 }

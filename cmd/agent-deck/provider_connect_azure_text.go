@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Every user-facing text of `agent-deck provider connect azure`. Tests and
 // docs quote these, so change them here only.
@@ -32,6 +35,8 @@ const (
 	azKindSPNameTaken           = "sp_name_taken"
 	azKindBadConfig             = "bad_config"
 	azKindUnsupportedOS         = "unsupported_os"
+	azKindRegionClosed          = "region_closed"
+	azKindSizeUnavailable       = "size_unavailable"
 )
 
 const azTextAzMissingDarwin = `The Azure CLI (az) is not installed. Install it, then run this again:
@@ -277,6 +282,66 @@ func azTextConnected(unchanged bool, subName, subID, rg, loc, appID, secretPath,
 	}
 	return fmt.Sprintf(azTextConnectedFmt, first, subName, subID, rg, loc, appID, secretPath, confPath, azTextCheckPassed(rg, sandboxes))
 }
+
+// REGION_CLOSED: the --location region refuses new resources for this
+// subscription (RequestDisallowedByAzure).
+const azTextRegionClosedFmt = `Region %s is not accepting new customers for this subscription right now.
+Azure refused a test resource there: RequestDisallowedByAzure (https://aka.ms/locationineligible).
+The resource group can stay where it is; the VMs can live in another region.
+%s`
+
+// The last part of REGION_CLOSED: regions that passed the same test, or none.
+const (
+	azTextRegionClosedAltsFmt = `These regions take new resources for this subscription: %s
+Run again with one of them:
+  agent-deck provider connect azure --location %s`
+	azTextRegionClosedNoAltsFmt = `None of these regions took a test resource either: %s
+Pick another region (see: az account list-locations -o table) and run again:
+  agent-deck provider connect azure --location <region>`
+)
+
+func azTextRegionClosed(loc string, working, tried []string) string {
+	tail := fmt.Sprintf(azTextRegionClosedNoAltsFmt, azJoinOrNone(tried))
+	if len(working) > 0 {
+		tail = fmt.Sprintf(azTextRegionClosedAltsFmt, strings.Join(working, ", "), working[0])
+	}
+	return fmt.Sprintf(azTextRegionClosedFmt, loc, tail)
+}
+
+// SIZE_UNAVAILABLE: the VM size asked for (--vm-size or vm_size in
+// azure-vm.conf) is not offered in the region for this subscription.
+const azTextSizeUnavailableFmt = `VM size %s is not offered in %s for this subscription right now.
+Small sizes that are offered there: %s
+Run again with one of them:
+  agent-deck provider connect azure --vm-size <size>
+(--vm-size also updates vm_size in %s.)`
+
+func azTextSizeUnavailable(size, loc string, offered []string, confPath string) string {
+	return fmt.Sprintf(azTextSizeUnavailableFmt, size, loc, azJoinOrNone(offered), confPath)
+}
+
+func azJoinOrNone(list []string) string {
+	if len(list) == 0 {
+		return "(none)"
+	}
+	return strings.Join(list, ", ")
+}
+
+// Region and size notes (step "region").
+const (
+	// The default size is not offered; connect picked the next small one.
+	azTextSizeUsingFmt = "%s is not offered in %s for this subscription; using %s (%d vCPUs, about the same price)."
+	// The default region refuses new resources; connect picked another.
+	azTextRegionUsingFmt = "%s is not accepting new customers for this subscription right now; using %s instead."
+	// The default region offers none of the small sizes; connect picked another.
+	azTextRegionNoSizeUsingFmt = "None of the small VM sizes agent-deck uses is offered in %s for this subscription; using %s instead."
+	azTextRegionOKFmt          = "Region %s takes new resources and offers %s."
+	azTextRegionKeptFmt        = "Region %s and size %s are already set up; not testing them again."
+	azTextRegionProbeFailedFmt = "Could not test whether region %s takes new resources (%s); continuing."
+	azTextProbeDeleteFailedFmt = "Could not delete the test network security group %s in %s; delete it with: az network nsg delete --name %s --resource-group %s --subscription %s"
+	azTextSkusUnreadableFmt    = "Could not read the VM sizes offered in %s (%s); continuing with %s."
+	azTextSkusTimedOutFmt      = "no answer within %s"
+)
 
 // Progress and notes.
 const (

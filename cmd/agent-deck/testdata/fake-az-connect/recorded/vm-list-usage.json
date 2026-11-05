@@ -38,6 +38,33 @@
   {
     "currentValue": "0",
     "limit": "10",
+    "localName": "Standard Basv2 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard Basv2 Family vCPUs",
+      "value": "standardBasv2Family"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Standard Bsv2 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard Bsv2 Family vCPUs",
+      "value": "standardBsv2Family"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Standard DASv5 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard DASv5 Family vCPUs",
+      "value": "standardDASv5Family"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
     "localName": "Standard DSv5 Family vCPUs",
     "name": {
       "localizedValue": "Standard DSv5 Family vCPUs",

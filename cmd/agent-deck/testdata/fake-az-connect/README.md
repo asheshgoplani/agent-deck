@@ -36,11 +36,17 @@ Put the directory first in `PATH` (or point `azConnectLookPath` at it).
 | `no_group_permission` | `group create` of a new group fails AuthorizationFailed for `Microsoft.Resources/subscriptions/resourcegroups/write` |
 | `quota_full` | `vm list-usage`: `cores` 3 of 4 and `standardBSFamily` 3 of 4 used (numbers as JSON numbers; the normal answer has strings) |
 | `usage_error` | `vm list-usage` fails (InternalServerError) |
-| `unregistered` | `Microsoft.Compute` and `Microsoft.Network` are `NotRegistered` until `provider register`; `vm list-usage`/`vm list` fail `MissingSubscriptionRegistration` while Compute is not registered |
+| `unregistered` | `Microsoft.Compute` and `Microsoft.Network` are `NotRegistered` until `provider register`; `vm list-usage`/`vm list` fail `MissingSubscriptionRegistration` while Compute is not registered; `network nsg create/delete` fail with az's real text for Microsoft.Network (smoke test, with `Exception Details`; `recorded/missing-registration.stderr.txt`) |
 | `register_denied` | `provider register` fails AuthorizationFailed for `<ns>/register/action` |
 | `sp_propagation_delay=N` | the first N service-principal logins fail `AADSTS700016: Application with identifier '<appId>' was not found in the directory ...` |
 | `wide_scope` | `role assignment list` also returns a `User Access Administrator` assignment at `/subscriptions/<sub>` |
 | `sp_name_taken` | an app named `agent-deck-sandboxes-sp` (appId `f0f0f0f0-0000-4000-8000-000000000900`, password `Taken8Q~secret-used-on-another-machine`, a role on `someone-elses-group`) exists from the first call on, made by someone else |
+| `region_closed=<loc>[+<loc>...]` | `network nsg create` in those regions fails with az's real text (smoke test, `recorded/nsg-create-region-closed.stderr.txt`): `ERROR: (RequestDisallowedByAzure) Resource '<name>' was disallowed by Azure: The selected region is currently not accepting new customers: https://aka.ms/locationineligible.` + `Code:`/`Message:`/`Target:` lines, exit 1. `group create` there still works, like Azure. |
+| `sku_missing=<size>[+<size>...]` | `vm list-skus` leaves those sizes out entirely (as the real swedencentral listing left out `Standard_B2s`) |
+| `sku_restricted=<size>[+<size>...]` | `vm list-skus` gives those sizes a `Location` restriction (`NotAvailableForSubscription`, `values`/`restrictionInfo.locations` = the asked region); without `--all` they are left out, like az |
+| `skus_error` | `vm list-skus` fails (InternalServerError) |
+| `skus_wait=N` | `vm list-skus` hangs N seconds (the real call took ~80 s), then exits without output |
+| `nsg_delete_error` | `network nsg delete` fails (InternalServerError) |
 | `login_other_tenant` | the user's `account show` reports tenantId `b2c3d4e5-...-00000000000b` while the subscriptions stay in the home tenant (logged in to another directory) |
 
 Other behaviour (no switch):
@@ -63,6 +69,18 @@ Other behaviour (no switch):
   (case-insensitive, like az's Graph `startswith` filter), deleted ones left out.
 - `role assignment delete` with nothing matching: `No matched assignments were found to delete`;
   `ad app delete` of an unknown app: `Resource '<id>' does not exist ...` (both exit 1).
+- `vm list-skus --location L [--size S] [--resource-type virtualMachines] [--all]`
+  answers from `recorded/vm-list-skus.json` (az's shape: a list of
+  `{name, resourceType, family, locations, locationInfo, restrictions:[{type,
+  reasonCode, values, restrictionInfo}], ...}`; every size there is offered
+  unless a switch says otherwise). `--size` is a case-insensitive substring
+  of the name, like az (`Standard_B2` also matches `Standard_B20ms`). A
+  region not in `LOCATIONS` gives `[]`.
+- `network nsg create --name N --resource-group RG --location L` needs
+  Microsoft.Network registered and the group (else `ResourceGroupNotFound`,
+  exit 3), records `groups/<sub>/<rg>/nsgs/<N>` (its location) and a line
+  `<N> <L> <--tags>` in `nsg-created.log`; `network nsg delete` moves it to
+  `nsgs-deleted/` and exits 0 when there is nothing to delete, like az.
 - An unmodelled command fails `fake az: unexpected command: ...`, exit 2.
 
 Fixed identities (also in `recorded/`): user `dev.tester@outlook.com`, home
@@ -87,6 +105,8 @@ Device code: `https://microsoft.com/devicelogin`, code `FAKE1234X`.
 | `issued_secret` | the last password create-for-rbac issued |
 | `sp_login_secret` | the secret the last SP login read from stdin (trailing newline stripped, as az does) |
 | `sp_login.count`, `app.count`, `secret.count` | counters |
+| `groups/<sub>/<rg>/nsgs/<name>`, `nsgs-deleted/` | network security groups (the region probe); a left-over probe shows up in `nsgs/` |
+| `nsg-created.log` | one line per `network nsg create` that succeeded: name, location, tags |
 | `vms.json` | optional, tests write it: the `vm list` answer (default `[]`). `recorded/vm-list-one-sandbox.json` is one tagged sandbox; `__SUB_ID__`, `__RG_UPPER__`, `__LOCATION__` are filled in |
 
 An SP login marks `$AZURE_CONFIG_DIR/fake-az-sp-login` (or

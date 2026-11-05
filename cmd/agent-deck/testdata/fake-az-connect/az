@@ -252,6 +252,20 @@ need_compute() {
 	ns_registered Microsoft.Compute ||
 		arm_err 1 MissingSubscriptionRegistration "The subscription is not registered to use namespace 'Microsoft.Compute'. See https://aka.ms/rps-not-found for how to register subscriptions."
 }
+need_network() { # az's real text (smoke test, azure-cli 2.7x), with Exception Details
+	ns_registered Microsoft.Network && return 0
+	render missing-registration.stderr.txt "NAMESPACE=Microsoft.Network" >&2
+	exit 1
+}
+# in_plus_list value list : value is one of the +-separated list (case-insensitive)
+in_plus_list() {
+	local v x IFS=+
+	v="$(lower "$1")"
+	for x in $2; do
+		[ "$(lower "$x")" = "$v" ] && return 0
+	done
+	return 1
+}
 
 group_dir() { printf '%s/groups/%s/%s' "$S" "$SUB" "$(lower "$1")"; }
 group_missing() {
@@ -548,6 +562,100 @@ logout)
 		sed -e "s|__SUB_ID__|$SUB|g" -e "s|__RG_UPPER__|$(esc "$(upper "$rg")")|g" -e "s|__LOCATION__|$loc|g" "$S/vms.json" | emit
 	else
 		printf '[]\n' | emit
+	fi
+	;;
+
+"vm list-skus")
+	need_login
+	resolve_sub
+	loc="$(lower "$(opt --location || true)")"
+	[ -n "$loc" ] || err 2 "fake az: vm list-skus needs --location (a full listing takes minutes)"
+	sw skus_error && arm_err 1 InternalServerError "Encountered internal server error. Diagnostic information: timestamp '20261105T091501Z', subscription id '$SUB', tracking id '6f0c2a51-0000-4000-8000-00000000f009', request correlation id '6f0c2a51-0000-4000-8000-00000000f00a'."
+	w="$(swval skus_wait || true)"
+	[ -n "$w" ] && exec sleep "$w" # like the real call, which can take minutes
+	case "$LOCATIONS" in
+	*" $loc "*) ;;
+	*) printf '[]\n' | emit; exit 0 ;; # az filters an unknown region to nothing
+	esac
+	rt="$(opt --resource-type || true)"
+	if [ -n "$rt" ] && [ "$(lower "$rt")" != virtualmachines ]; then printf '[]\n' | emit; exit 0; fi
+	all=0
+	has --all && all=1
+	# Like az: --size is a case-insensitive substring of the name; without
+	# --all a size restricted for this subscription in this region is left out.
+	render vm-list-skus.json "LOCATION=$loc" | awk -v size="$(lower "$(opt --size || true)")" \
+		-v missing="+$(lower "$(swval sku_missing || true)")+" -v restricted="+$(lower "$(swval sku_restricted || true)")+" \
+		-v all="$all" -v loc="$loc" '
+		/^  \{$/ { inb = 1; n = 0; name = ""; next }
+		inb && /^  \},?$/ {
+			inb = 0
+			lname = tolower(name)
+			if (size != "" && index(lname, size) == 0) next
+			if (index(missing, "+" lname "+") > 0) next
+			isr = index(restricted, "+" lname "+") > 0
+			if (isr && !all) next
+			out = out (cnt++ ? ",\n" : "") "  {"
+			for (k = 1; k <= n; k++) {
+				l = buf[k]
+				if (isr && l ~ /^    "restrictions": \[\],$/) {
+					l = "    \"restrictions\": [\n      {\n        \"reasonCode\": \"NotAvailableForSubscription\",\n        \"restrictionInfo\": {\n          \"locations\": [\n            \"" loc "\"\n          ],\n          \"zones\": null\n        },\n        \"type\": \"Location\",\n        \"values\": [\n          \"" loc "\"\n        ]\n      }\n    ],"
+				}
+				out = out "\n" l
+			}
+			out = out "\n  }"
+			next
+		}
+		inb {
+			buf[++n] = $0
+			if ($0 ~ /^    "name": "/) { name = $0; sub(/^    "name": "/, "", name); sub(/",?$/, "", name) }
+		}
+		END { if (cnt) printf "[\n%s\n]\n", out; else print "[]" }' | emit
+	;;
+
+# ------------------------------------------------------------- network
+"network nsg create")
+	need_login
+	resolve_sub
+	rg="$(opt --resource-group || true)"
+	name="$(opt --name || true)"
+	loc="$(lower "$(opt --location || true)")"
+	[ -n "$rg" ] || err 2 "the following arguments are required: --resource-group/-g"
+	[ -n "$name" ] || err 2 "the following arguments are required: --name/-n"
+	need_network
+	gd="$(group_dir "$rg")"
+	[ -d "$gd" ] || group_missing "$rg"
+	[ -n "$loc" ] || loc="$(cat "$gd/location")"
+	case "$LOCATIONS" in
+	*" $loc "*) ;;
+	*) arm_err 1 LocationNotAvailableForResourceType "The provided location '$loc' is not available for resource type 'Microsoft.Network/networkSecurityGroups'." ;;
+	esac
+	if in_plus_list "$loc" "$(swval region_closed || true)"; then
+		render nsg-create-region-closed.stderr.txt "NAME=$name" >&2
+		exit 1
+	fi
+	nd="$gd/nsgs"
+	if [ -f "$nd/$name" ] && [ "$(cat "$nd/$name")" != "$loc" ]; then
+		arm_err 1 InvalidResourceLocation "The resource '$name' already exists in location '$(cat "$nd/$name")' in resource group '$rg'. A resource with the same name cannot be created in location '$loc'. Please select a new resource name."
+	fi
+	mkdir -p "$nd"
+	printf '%s' "$loc" >"$nd/$name"
+	printf '%s %s %s\n' "$name" "$loc" "$(opt --tags || true)" >>"$S/nsg-created.log"
+	printf '{\n  "NewNSG": {\n    "location": "%s",\n    "name": "%s",\n    "provisioningState": "Succeeded",\n    "resourceGroup": "%s"\n  }\n}\n' "$loc" "$name" "$rg" | emit
+	;;
+
+"network nsg delete")
+	need_login
+	resolve_sub
+	rg="$(opt --resource-group || true)"
+	name="$(opt --name || true)"
+	need_network
+	gd="$(group_dir "$rg")"
+	[ -d "$gd" ] || group_missing "$rg"
+	sw nsg_delete_error && arm_err 1 InternalServerError "An error occurred."
+	# az exits 0 when there is nothing to delete
+	if [ -f "$gd/nsgs/$name" ]; then
+		mkdir -p "$gd/nsgs-deleted"
+		mv "$gd/nsgs/$name" "$gd/nsgs-deleted/$name.$(now_counter nsg_delete.count)"
 	fi
 	;;
 
