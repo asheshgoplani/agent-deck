@@ -1,0 +1,34 @@
+[
+  {
+    "cloudName": "AzureCloud",
+    "homeTenantId": "a1b2c3d4-0000-4000-8000-00000000000a",
+    "id": "33333333-3333-4333-8333-333333333333",
+    "isDefault": true,
+    "managedByTenants": [],
+    "name": "Free Trial",
+    "state": "Disabled",
+    "tenantDefaultDomain": "devtesteroutlook.onmicrosoft.com",
+    "tenantDisplayName": "Default Directory",
+    "tenantId": "a1b2c3d4-0000-4000-8000-00000000000a",
+    "user": {
+      "name": "dev.tester@outlook.com",
+      "type": "user"
+    }
+  },
+  {
+    "cloudName": "AzureCloud",
+    "homeTenantId": "a1b2c3d4-0000-4000-8000-00000000000a",
+    "id": "44444444-4444-4444-8444-444444444444",
+    "isDefault": false,
+    "managedByTenants": [],
+    "name": "Azure for Students",
+    "state": "Warned",
+    "tenantDefaultDomain": "devtesteroutlook.onmicrosoft.com",
+    "tenantDisplayName": "Default Directory",
+    "tenantId": "a1b2c3d4-0000-4000-8000-00000000000a",
+    "user": {
+      "name": "dev.tester@outlook.com",
+      "type": "user"
+    }
+  }
+]

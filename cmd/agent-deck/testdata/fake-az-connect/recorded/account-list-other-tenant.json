@@ -1,0 +1,30 @@
+[
+  {
+    "cloudName": "AzureCloud",
+    "id": "a1b2c3d4-0000-4000-8000-00000000000a",
+    "isDefault": true,
+    "name": "N/A(tenant level account)",
+    "state": "Enabled",
+    "tenantId": "a1b2c3d4-0000-4000-8000-00000000000a",
+    "user": {
+      "name": "dev.tester@outlook.com",
+      "type": "user"
+    }
+  },
+  {
+    "cloudName": "AzureCloud",
+    "homeTenantId": "b2c3d4e5-0000-4000-8000-00000000000b",
+    "id": "55555555-5555-4555-8555-555555555555",
+    "isDefault": false,
+    "managedByTenants": [],
+    "name": "Contoso Engineering",
+    "state": "Enabled",
+    "tenantDefaultDomain": "contoso.onmicrosoft.com",
+    "tenantDisplayName": "Contoso",
+    "tenantId": "b2c3d4e5-0000-4000-8000-00000000000b",
+    "user": {
+      "name": "dev.tester@outlook.com",
+      "type": "user"
+    }
+  }
+]

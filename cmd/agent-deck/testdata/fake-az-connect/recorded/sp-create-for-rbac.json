@@ -1,0 +1,6 @@
+{
+  "appId": "__APP_ID__",
+  "displayName": "__SP_NAME__",
+  "password": "__PASSWORD__",
+  "tenant": "__TENANT_ID__"
+}

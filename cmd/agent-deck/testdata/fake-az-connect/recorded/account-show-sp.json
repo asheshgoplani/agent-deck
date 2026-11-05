@@ -1,0 +1,14 @@
+{
+  "environmentName": "AzureCloud",
+  "homeTenantId": "__TENANT_ID__",
+  "id": "__SUB_ID__",
+  "isDefault": true,
+  "managedByTenants": [],
+  "name": "__SUB_NAME__",
+  "state": "Enabled",
+  "tenantId": "__TENANT_ID__",
+  "user": {
+    "name": "__APP_ID__",
+    "type": "servicePrincipal"
+  }
+}
