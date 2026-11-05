@@ -823,6 +823,25 @@ const scenarios = {
     return { opened, before, openClosed, afterStop, connectAfter: connectAfter.error || connectAfter.reply, rebound: rebound.reply, finalSock: stat(SOCK), leftovers: fs.readdirSync(path.dirname(SOCK)) };
   },
 
+  // pi can shut a runtime down while its session_start is still binding.
+  async shutdown_during_start() {
+    const rt = makeRuntime();
+    const starting = rt.start(); // not awaited: the stop arrives mid-bind
+    await rt.stop("quit");
+    await starting;
+    await sleep(50);
+    const afterStop = stat(SOCK);
+    const connectAfter = await ask(frame("N13c", LINE_C), { timeoutMs: 1000 });
+    const listeners = process.getActiveResourcesInfo().filter((r) => r === "PipeServerWrap").length;
+    const leftovers = fs.existsSync(path.dirname(SOCK)) ? fs.readdirSync(path.dirname(SOCK)) : [];
+    const rt2 = makeRuntime();
+    await rt2.start();
+    release();
+    const rebound = await ask(frame("N13d", LINE_C));
+    await rt2.stop();
+    return { afterStop, connectAfter: connectAfter.error || connectAfter.reply, listeners, leftovers, rebound: rebound.reply };
+  },
+
   async live_socket() {
     fs.mkdirSync(path.dirname(SOCK), { recursive: true, mode: 0o700 });
     let served = 0;
@@ -1338,6 +1357,22 @@ func TestPiWakeExtension_ShutdownUnlinksAndReloadRebinds(t *testing.T) {
 	if n := lenAt(t, res, "leftovers"); n != 0 {
 		t.Errorf("the socket directory still holds %v after shutdown", get(t, res, "leftovers"))
 	}
+}
+
+// A shutdown that arrives while session_start is still binding waits for the
+// bind and tears it down: nothing is left serving the path after shutdown, so
+// the next runtime binds it.
+func TestPiWakeExtension_ShutdownDuringStartLeavesNoListener(t *testing.T) {
+	res, _ := runPiWake(t, "shutdown_during_start", piWakeOpts{})
+	if get(t, res, "afterStop") != nil {
+		t.Errorf("a socket is at the path after a shutdown that arrived mid-start: %v", get(t, res, "afterStop"))
+	}
+	wantAt(t, res, "connectAfter", "ENOENT")
+	wantAt(t, res, "listeners", 0)
+	if n := lenAt(t, res, "leftovers"); n != 0 {
+		t.Errorf("the socket directory still holds %v after shutdown", get(t, res, "leftovers"))
+	}
+	wantAt(t, res, "rebound.state", "submitted")
 }
 
 func TestPiWakeExtension_DoesNotStealALiveSocket(t *testing.T) {

@@ -377,9 +377,19 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
     }
   };
 
-  const start = async (_event?: any, context?: any) => {
+  // The bind in progress, so a stop that arrives while it is awaited waits for
+  // it and then tears it down, instead of returning early and leaving a
+  // listener published after shutdown.
+  let starting: Promise<void> | null = null;
+
+  const start = (_event?: any, context?: any): Promise<void> => {
     ctx = context;
-    if (server) return;
+    if (server) return Promise.resolve();
+    if (!starting) starting = bind().finally(() => (starting = null));
+    return starting;
+  };
+
+  const bind = async () => {
     let priv = "";
     try {
       const dir = path.dirname(sockPath);
@@ -426,6 +436,7 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   };
 
   const stop = async () => {
+    if (starting) await starting;
     const srv = server;
     if (!srv) return;
     server = null;
