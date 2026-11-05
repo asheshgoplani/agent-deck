@@ -264,7 +264,7 @@ const azTextConnectedFmt = `%s
 %s
 Next: agent-deck launch --provider azure -c claude <project path>`
 
-const azTextCheckPassedFmt = "Check passed: the robot login sees resource group %s (%d sandbox(es) now)."
+const azTextCheckPassedFmt = "Check passed: the robot login sees resource group %s (%d sandbox(es) now)." //nolint:gosec // G101: user-facing text, not a credential
 
 func azTextCheckPassed(rg string, sandboxes int) string {
 	return fmt.Sprintf(azTextCheckPassedFmt, rg, sandboxes)
@@ -361,7 +361,7 @@ const (
 	azTextKeepingCommandFmt    = "Keeping your [providers.%s] command: %s"
 	azTextStoredFmt            = "Saved the settings in %s."
 	azTextWaitingForSP         = "Waiting for Azure to see the new service principal..."
-	azTextSecretPrompt         = "Paste the service principal secret (it is not shown): "
+	azTextSecretPrompt         = "Paste the service principal secret (it is not shown): " //nolint:gosec // G101: user-facing prompt, not a credential
 	azTextSecretEmpty          = "The secret on stdin is empty."
 	azTextSecretMultiLine      = "The secret on stdin must be one line."
 	azTextSecretTooLong        = "The secret on stdin is too long."
