@@ -53,16 +53,10 @@ func SetSocketBinaries(m map[string]string) {
 // BinaryFor returns the tmux binary for the -L socket socketName: the
 // configured path, or "tmux" (resolved through PATH).
 func BinaryFor(socketName string) string {
-	name := strings.TrimSpace(socketName)
-	if name == "" {
-		return defaultTmuxBinary
-	}
-	socketBinariesMu.RLock()
-	defer socketBinariesMu.RUnlock()
-	if bin, ok := socketBinaries[name]; ok {
+	if bin, ok := ConfiguredBinary(socketName); ok {
 		return bin
 	}
-	return defaultTmuxBinary
+	return defaultBinary()
 }
 
 // ConfiguredBinary returns the [tmux.binaries] entry for the -L socket
@@ -87,7 +81,7 @@ func ConfiguredBinary(socketName string) (string, bool) {
 func BinaryForSocketPath(socketPath string) string {
 	socketPath = strings.TrimSpace(socketPath)
 	if socketPath == "" {
-		return defaultTmuxBinary
+		return defaultBinary()
 	}
 	return BinaryFor(filepath.Base(socketPath))
 }
@@ -103,8 +97,8 @@ var (
 // probe gives "" (unknown), as the host probe does, and is retried next
 // time.
 func socketTmuxVersionString(socketName string) string {
-	bin := BinaryFor(socketName)
-	if bin == defaultTmuxBinary {
+	bin, ok := ConfiguredBinary(socketName)
+	if !ok {
 		return hostTmuxVersionString()
 	}
 	binaryVersionMu.Lock()
@@ -134,8 +128,8 @@ func socketTmuxVersionString(socketName string) string {
 // panes. env is returned unchanged for a socket without an absolute
 // binary.
 func withSocketBinaryPATH(socketName string, env []string) []string {
-	bin := BinaryFor(socketName)
-	if bin == defaultTmuxBinary || !filepath.IsAbs(bin) {
+	bin, ok := ConfiguredBinary(socketName)
+	if !ok || !filepath.IsAbs(bin) {
 		return env
 	}
 	if env == nil {
@@ -178,7 +172,7 @@ func newSessionSpawnCommand(socketName, launcher string, args ...string) *exec.C
 // [tmux.binaries] path. Start keys its stale-socket recovery on it, so a
 // socket with its own binary keeps that recovery.
 func isDirectTmuxLauncher(socketName, launcher string) bool {
-	return launcher == defaultTmuxBinary || launcher == BinaryFor(socketName)
+	return launcher == defaultTmuxBinary || launcher == defaultBinary() || launcher == BinaryFor(socketName)
 }
 
 // tmuxEnvNamesConfiguredSocket reports whether $TMUX names a server on a
@@ -197,4 +191,49 @@ func tmuxEnvNamesConfiguredSocket(lookupEnv func(string) string) bool {
 	}
 	_, ok := ConfiguredBinary(name)
 	return ok
+}
+
+// defaultBinary is the tmux binary for the default server and every socket
+// without a [tmux.binaries] entry: "tmux" from PATH, skipping the directories
+// of the configured binaries. A pane on a configured socket gets its binary's
+// directory first on PATH (withSocketBinaryPATH), so inside such a pane the
+// bare "tmux" is the newer client. Run against the default server it would
+// fail on an older server, or, when no default server runs yet, start the
+// default server as the newer version and lock out every older client.
+func defaultBinary() string {
+	skip := configuredBinaryDirs()
+	if len(skip) == 0 {
+		return defaultTmuxBinary
+	}
+	first, err := exec.LookPath(defaultTmuxBinary)
+	if err != nil || !skip[filepath.Clean(filepath.Dir(first))] {
+		return defaultTmuxBinary
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" || !filepath.IsAbs(dir) || skip[filepath.Clean(dir)] {
+			continue
+		}
+		candidate := filepath.Join(dir, defaultTmuxBinary)
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return defaultTmuxBinary
+}
+
+// configuredBinaryDirs is the set of directories holding an absolute
+// [tmux.binaries] path.
+func configuredBinaryDirs() map[string]bool {
+	socketBinariesMu.RLock()
+	defer socketBinariesMu.RUnlock()
+	if len(socketBinaries) == 0 {
+		return nil
+	}
+	dirs := make(map[string]bool, len(socketBinaries))
+	for _, bin := range socketBinaries {
+		if filepath.IsAbs(bin) {
+			dirs[filepath.Clean(filepath.Dir(bin))] = true
+		}
+	}
+	return dirs
 }
