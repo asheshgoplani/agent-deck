@@ -65,6 +65,22 @@ func BinaryFor(socketName string) string {
 	return defaultTmuxBinary
 }
 
+// ConfiguredBinary returns the [tmux.binaries] entry for the -L socket
+// socketName and true, or "" and false when the socket has none (the
+// default server, or a socket served by the bare "tmux" on PATH). Clients
+// that run tmux themselves (the Mac app's Terminal pane over ssh) read it
+// from `list --json` / `session show --json` as tmux_binary.
+func ConfiguredBinary(socketName string) (string, bool) {
+	name := strings.TrimSpace(socketName)
+	if name == "" {
+		return "", false
+	}
+	socketBinariesMu.RLock()
+	defer socketBinariesMu.RUnlock()
+	bin, ok := socketBinaries[name]
+	return bin, ok
+}
+
 // BinaryForSocketPath maps a socket path (the first field of $TMUX, or a
 // -S value) to its binary. A -L <name> socket lives at
 // $TMUX_TMPDIR/tmux-<uid>/<name>, so the path's base name is the socket name.

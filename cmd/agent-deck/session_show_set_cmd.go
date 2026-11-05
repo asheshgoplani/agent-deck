@@ -257,6 +257,7 @@ func handleSessionShow(profile string, args []string) {
 	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
 		jsonData["tmux_session"] = tmuxSession.Name
 	}
+	addTmuxRouteJSON(jsonData, inst)
 	// Who else has this session open (shared attach). Present only when tmux
 	// answered: [] is "nobody", an absent key is "unknown".
 	viewers, viewersKnown := inst.Viewers(context.Background())

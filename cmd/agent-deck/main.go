@@ -3201,24 +3201,27 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		cached = cachedStatus[0]
 	}
 	type sessionJSON struct {
-		ID                string    `json:"id"`
-		ParentSessionID   string    `json:"parent_session_id,omitempty"`
-		ParentProjectPath string    `json:"parent_project_path,omitempty"`
-		Title             string    `json:"title"`
-		Path              string    `json:"path"`
-		Group             string    `json:"group"`
-		Tool              string    `json:"tool"`
-		Account           string    `json:"account"`
-		Command           string    `json:"command,omitempty"`
-		ModelID           string    `json:"model_id,omitempty"`
-		Model             string    `json:"model,omitempty"`
-		ModelVersion      string    `json:"model_version,omitempty"`
-		Status            string    `json:"status"`
-		StatusSource      string    `json:"status_source,omitempty"`
-		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
-		ExitCode          *int      `json:"exit_code,omitempty"`
-		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time; usage-limit window, model-limit model, account-blocked reason)
-		TmuxSession       string    `json:"tmux_session,omitempty"`
+		ID                string `json:"id"`
+		ParentSessionID   string `json:"parent_session_id,omitempty"`
+		ParentProjectPath string `json:"parent_project_path,omitempty"`
+		Title             string `json:"title"`
+		Path              string `json:"path"`
+		Group             string `json:"group"`
+		Tool              string `json:"tool"`
+		Account           string `json:"account"`
+		Command           string `json:"command,omitempty"`
+		ModelID           string `json:"model_id,omitempty"`
+		Model             string `json:"model,omitempty"`
+		ModelVersion      string `json:"model_version,omitempty"`
+		Status            string `json:"status"`
+		StatusSource      string `json:"status_source,omitempty"`
+		Substate          string `json:"substate,omitempty"` // Honest Status v2: additive refinement
+		ExitCode          *int   `json:"exit_code,omitempty"`
+		SubstateDetail    string `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time; usage-limit window, model-limit model, account-blocked reason)
+		TmuxSession       string `json:"tmux_session,omitempty"`
+		// TmuxSocketName and TmuxBinary: see addTmuxRouteJSON.
+		TmuxSocketName    string    `json:"tmux_socket_name,omitempty"`
+		TmuxBinary        string    `json:"tmux_binary,omitempty"`
 		Profile           string    `json:"profile"`
 		CreatedAt         time.Time `json:"created_at"`
 		SSHHost           string    `json:"ssh_host,omitempty"`
@@ -3315,6 +3318,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		if cached[inst] {
 			sj.StatusSource = "cached"
 		}
+		sj.TmuxSocketName, sj.TmuxBinary = tmuxRouteFields(inst)
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			sj.TmuxSession = tmuxSess.Name
 			if v, known := viewers[tmuxSess.Name]; known {
