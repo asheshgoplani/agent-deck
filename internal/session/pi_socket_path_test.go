@@ -583,6 +583,21 @@ func TestBuildPiCommand_ExtensionCheckHonoursTheCommandsPiCodingAgentDir(t *test
 			t.Errorf("buildPiCommand(%q) = %q (flag %v), want it to contain %q", command, got, inst.PiSocketExported, want)
 		}
 	})
+
+	// The shell expands a leading ~ in an assignment's value, so the pi of
+	// PI_CODING_AGENT_DIR=~/alt loads its extensions from $HOME/alt.
+	t.Run("the command's dir starts with ~/", func(t *testing.T) {
+		t.Setenv("PI_CODING_AGENT_DIR", t.TempDir()) // nothing installed here
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if _, err := InstallPiHooks(filepath.Join(home, "alt", "extensions")); err != nil {
+			t.Fatal(err)
+		}
+		command := "PI_CODING_AGENT_DIR=~/alt pi"
+		if got := inst.buildPiCommand(command); !strings.Contains(got, want) || !inst.PiSocketExported {
+			t.Errorf("buildPiCommand(%q) = %q (flag %v), want it to contain %q", command, got, inst.PiSocketExported, want)
+		}
+	})
 }
 
 // `pi-hooks status` resolves pi the way a launch does: the spawn-path prelude's
