@@ -5165,6 +5165,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.whatsNewDialog.IsVisible() {
 			d, cmd := h.whatsNewDialog.Update(msg)
 			h.whatsNewDialog = d
+			if !d.IsVisible() {
+				// Closed: startup notes still waiting are dropped too.
+				h.whatsNewPending = nil
+			}
 			return h, cmd
 		}
 		if h.feedbackDialog.IsVisible() {
@@ -6901,6 +6905,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// "What's new" on demand: this release's notes and any of your
 		// reports it fixed, with "Is it fixed for you?" (whats_new_dialog.go).
 		if h.whatsNewDialog != nil {
+			// The on-demand dialog replaces startup notes still waiting.
+			h.whatsNewPending = nil
 			cmd := h.whatsNewDialog.Open()
 			h.whatsNewDialog.SetSize(h.width, h.height)
 			return h, cmd

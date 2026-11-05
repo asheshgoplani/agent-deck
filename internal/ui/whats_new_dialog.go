@@ -32,14 +32,17 @@ import (
 //
 // An answer is never posted from here directly: y/n -> optional comment ->
 // preview of the exact public comment (from `agent-deck feedback fixed
-// --dry-run --json`) -> explicit y/Enter -> the same command without
-// --dry-run, run as a subprocess. The CLI owns scrubbing, gh and recording
+// --dry-run --json`, naming the gh account that will post) -> explicit y
+// (Enter never posts) -> the same command without --dry-run, run as a
+// subprocess. Nothing can be posted while gh is not logged in. The CLI owns scrubbing, gh and recording
 // the answer, so there is one posting path.
 //
 // Steps: loading -> list -> comment -> preparing -> preview -> sending ->
 // result -> list. Esc on the list closes the dialog and marks the version
 // seen; Esc on the later steps goes back to the list without posting.
-// While sending Esc does nothing (gh may already have posted).
+// While sending Esc does nothing (gh may already have posted). After the
+// automatic open every key is ignored for whatsNewKeyGuard, so typing meant
+// for the session list cannot answer or post.
 type WhatsNewDialog struct {
 	visible bool
 	step    whatsNewStep
@@ -59,19 +62,27 @@ type WhatsNewDialog struct {
 	answer    string // "yes" or "no"
 	comment   textinput.Model
 	body      string // exact text from the dry run
+	account   string // gh login that will post (dry run "account")
+	ghReady   bool   // dry run "gh_ready" and a non-empty account
+	note      string // the CLI's "note" (dry run or post)
 	errLine   string // preparing/sending failure
 	resultOK  bool
 	result    string
 	resultURL string // the posted comment's URL, shown on its own line
 	offset    int    // first visible body line
+	// ignoreUntil drops keys until then (set by the automatic open).
+	ignoreUntil time.Time
 
 	// Seams (tests replace them): the version shown, the reports store,
-	// the changelog fetch, the agent-deck executable and the subprocess.
+	// the changelog fetch, the agent-deck executable, the subprocess, the
+	// clock (key guard) and the subprocess timeout.
 	version   string // "" means the package Version
 	openStore func() (*reportloop.Store, error)
 	fetch     func(ctx context.Context) (string, error)
 	exe       func() (string, error)
 	run       func(ctx context.Context, argv []string) ([]byte, error)
+	now       func() time.Time
+	timeout   time.Duration
 }
 
 type whatsNewStep int
@@ -95,18 +106,26 @@ type whatsNewLoadedMsg struct {
 	err  error
 }
 
-// whatsNewPreparedMsg carries the dry run's exact comment body.
+// whatsNewPreparedMsg carries the dry run: the exact comment body and the
+// account that would post it.
 type whatsNewPreparedMsg struct {
-	seq  int
-	body string
-	err  error
+	seq     int
+	body    string
+	account string
+	ghReady bool
+	note    string
+	err     error
 }
 
-// whatsNewPostedMsg carries the result of posting the answer.
+// whatsNewPostedMsg carries the result of posting the answer. uncertain
+// means the subprocess was stopped (timeout or signal): gh may already
+// have posted.
 type whatsNewPostedMsg struct {
-	seq int
-	url string
-	err error
+	seq       int
+	url       string
+	note      string
+	err       error
+	uncertain bool
 }
 
 // whatsNewSeenMsg reports that MarkSeen ran (logged on failure only).
@@ -114,6 +133,9 @@ type whatsNewSeenMsg struct{ err error }
 
 // whatsNewTimeout bounds the changelog fetch and each subprocess.
 const whatsNewTimeout = 60 * time.Second
+
+// whatsNewKeyGuard is how long keys are ignored after the automatic open.
+const whatsNewKeyGuard = 700 * time.Millisecond
 
 // NewWhatsNewDialog returns a hidden dialog wired to internal/reportloop and
 // the running agent-deck binary.
@@ -128,6 +150,8 @@ func NewWhatsNewDialog() *WhatsNewDialog {
 		fetch:     reportloop.FetchChangelog,
 		exe:       os.Executable,
 		run:       runWhatsNewCLI,
+		now:       time.Now,
+		timeout:   whatsNewTimeout,
 	}
 }
 
@@ -135,7 +159,7 @@ func NewWhatsNewDialog() *WhatsNewDialog {
 // its stdout; on failure stderr is folded into the error.
 func runWhatsNewCLI(ctx context.Context, argv []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- our own executable, fixed subcommand
-	cmd.Env = append(childenv.ForLaunch(""), "NO_COLOR=1")
+	cmd.Env = whatsNewCLIEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -146,6 +170,20 @@ func runWhatsNewCLI(ctx context.Context, argv []string) ([]byte, error) {
 		return out, fmt.Errorf("running agent-deck feedback fixed: %w", err)
 	}
 	return out, nil
+}
+
+// whatsNewCLIEnv is the subprocess environment: agent-deck re-running
+// itself, so it keeps what the parent sees (CLAUDE_CONFIG_DIR, TELEGRAM_*)
+// minus CLAUDE_JOB_DIR.
+func whatsNewCLIEnv() []string {
+	return append(childenv.ForSelfReexec(), "NO_COLOR=1")
+}
+
+// subprocessKilled reports a subprocess that ended on a signal (killed),
+// not by exiting: like a timeout, it may already have posted.
+func subprocessKilled(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && !ee.Exited()
 }
 
 func (d *WhatsNewDialog) currentVersion() string {
@@ -221,6 +259,7 @@ func (d *WhatsNewDialog) StartupCmd() tea.Cmd {
 func (d *WhatsNewDialog) Open() tea.Cmd {
 	d.stopInFlight()
 	d.visible = true
+	d.ignoreUntil = time.Time{}
 	d.step = whatsNewStepLoading
 	d.wn = nil
 	d.loadNote = ""
@@ -275,9 +314,11 @@ func previousRelease(changelog, v string) string {
 }
 
 // ShowNotes opens the list for already computed notes (the startup path).
+// It opened by itself, so keys are ignored for whatsNewKeyGuard.
 func (d *WhatsNewDialog) ShowNotes(wn *reportloop.WhatsNew) {
 	d.stopInFlight()
 	d.visible = true
+	d.ignoreUntil = d.now().Add(whatsNewKeyGuard)
 	d.wn = wn
 	d.loadNote = ""
 	d.toList()
@@ -339,7 +380,7 @@ func (d *WhatsNewDialog) Hide() tea.Cmd {
 
 // Update handles a key while the dialog is visible.
 func (d *WhatsNewDialog) Update(msg tea.KeyMsg) (*WhatsNewDialog, tea.Cmd) {
-	if !d.visible {
+	if !d.visible || d.now().Before(d.ignoreUntil) {
 		return d, nil
 	}
 	key := msg.String()
@@ -375,7 +416,7 @@ func (d *WhatsNewDialog) Update(msg tea.KeyMsg) (*WhatsNewDialog, tea.Cmd) {
 			d.step = whatsNewStepComment
 			d.errLine = ""
 			d.comment.Focus()
-		case "y", "Y", "enter":
+		case "y", "Y":
 			return d, d.send()
 		default:
 			d.scroll(key)
@@ -459,11 +500,11 @@ func (d *WhatsNewDialog) prepare() tea.Cmd {
 	d.stopInFlight()
 	d.step = whatsNewStepPreparing
 	d.comment.Blur()
-	d.body, d.errLine = "", ""
+	d.body, d.errLine, d.note, d.account, d.ghReady = "", "", "", "", false
 	d.offset = 0
 	seq, exe, run := d.seq, d.exe, d.run
 	argv := d.feedbackArgv("", "--dry-run", "--json", "--yes")
-	ctx, cancel := context.WithTimeout(context.Background(), whatsNewTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
 	d.cancel = cancel
 	return func() tea.Msg {
 		defer cancel()
@@ -479,7 +520,9 @@ func (d *WhatsNewDialog) prepare() tea.Cmd {
 		if strings.TrimSpace(res.Body) == "" {
 			return whatsNewPreparedMsg{seq: seq, err: errors.New("the dry run returned no comment text")}
 		}
-		return whatsNewPreparedMsg{seq: seq, body: res.Body}
+		account := strings.TrimPrefix(strings.TrimSpace(res.Account), "@")
+		return whatsNewPreparedMsg{seq: seq, body: res.Body, account: account,
+			ghReady: res.GHReady && account != "", note: res.Note}
 	}
 }
 
@@ -492,6 +535,7 @@ func (d *WhatsNewDialog) OnPrepared(msg whatsNewPreparedMsg) {
 	d.step = whatsNewStepPreview
 	d.offset = 0
 	d.body = msg.body
+	d.account, d.ghReady, d.note = msg.account, msg.ghReady, msg.note
 	if msg.err != nil {
 		d.errLine = "Could not prepare the comment: " + msg.err.Error()
 	}
@@ -499,13 +543,14 @@ func (d *WhatsNewDialog) OnPrepared(msg whatsNewPreparedMsg) {
 
 // send posts the previewed answer, exactly once.
 func (d *WhatsNewDialog) send() tea.Cmd {
-	if d.step != whatsNewStepPreview || d.errLine != "" || d.body == "" {
+	if d.step != whatsNewStepPreview || d.errLine != "" || d.body == "" || !d.ghReady {
 		return nil
 	}
 	d.stopInFlight()
 	d.step = whatsNewStepSending
+	d.note = ""
 	seq, exe, run := d.seq, d.exe, d.run
-	ctx, cancel := context.WithTimeout(context.Background(), whatsNewTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
 	d.cancel = cancel
 	argv := d.feedbackArgv("", "--json", "--yes")
 	return func() tea.Msg {
@@ -517,9 +562,10 @@ func (d *WhatsNewDialog) send() tea.Cmd {
 		argv[0] = path
 		res, err := runFeedbackCLI(ctx, run, argv)
 		if err != nil {
-			return whatsNewPostedMsg{seq: seq, err: err}
+			uncertain := ctx.Err() != nil || subprocessKilled(err)
+			return whatsNewPostedMsg{seq: seq, err: err, uncertain: uncertain}
 		}
-		return whatsNewPostedMsg{seq: seq, url: res.URL}
+		return whatsNewPostedMsg{seq: seq, url: res.URL, note: res.Note}
 	}
 }
 
@@ -532,8 +578,16 @@ func (d *WhatsNewDialog) OnPosted(msg whatsNewPostedMsg) {
 	d.step = whatsNewStepResult
 	d.offset = 0
 	d.resultURL = ""
+	d.note = msg.note
 	if msg.err != nil {
 		d.resultOK = false
+		if msg.uncertain {
+			// Stopped mid-run: gh may already have posted, so never say
+			// "Not posted"; point at the issue instead.
+			d.result = "May have been posted (stopped: " + msg.err.Error() + "), check:"
+			d.resultURL = d.issueURL()
+			return
+		}
 		d.result = "Not posted: " + msg.err.Error()
 		return
 	}
@@ -546,38 +600,29 @@ func (d *WhatsNewDialog) OnPosted(msg whatsNewPostedMsg) {
 	}
 }
 
-// feedbackCLIResult is the --json output of `agent-deck feedback fixed`.
+// feedbackCLIResult is the --json output of `agent-deck feedback fixed`:
+// success fields, account/gh_ready from the dry run, an optional note, and
+// on failure error_code + message.
 type feedbackCLIResult struct {
-	OK      bool            `json:"ok"`
-	DryRun  bool            `json:"dry_run"`
-	Number  int             `json:"number"`
-	Body    string          `json:"body"`
-	Answer  string          `json:"answer"`
-	URL     string          `json:"url"`
-	Error   json.RawMessage `json:"error"`
-	Message string          `json:"message"`
+	OK        bool   `json:"ok"`
+	DryRun    bool   `json:"dry_run"`
+	Number    int    `json:"number"`
+	Body      string `json:"body"`
+	Answer    string `json:"answer"`
+	URL       string `json:"url"`
+	Account   string `json:"account"`
+	GHReady   bool   `json:"gh_ready"`
+	Note      string `json:"note"`
+	ErrorCode string `json:"error_code"`
+	Message   string `json:"message"`
 }
 
+// errorText is the failure's message, else its code.
 func (r feedbackCLIResult) errorText() string {
-	if len(r.Error) > 0 {
-		var s string
-		if json.Unmarshal(r.Error, &s) == nil && s != "" {
-			return s
-		}
-		var o struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(r.Error, &o) == nil {
-			if o.Message != "" {
-				return o.Message
-			}
-			if o.Code != "" {
-				return o.Code
-			}
-		}
+	if m := strings.TrimSpace(r.Message); m != "" {
+		return m
 	}
-	return r.Message
+	return strings.TrimSpace(r.ErrorCode)
 }
 
 // runFeedbackCLI runs the command and decodes its JSON. The JSON's own
@@ -631,6 +676,9 @@ func (d *WhatsNewDialog) bodyRows() int {
 		if d.resultURL != "" {
 			rows -= len(hardwrapTo(d.resultURL, d.innerWidth()))
 		}
+		if d.note != "" {
+			rows -= len(wrapTo(d.note, d.innerWidth(), ""))
+		}
 	}
 	return max(3, rows)
 }
@@ -655,6 +703,15 @@ func wrapTo(s string, w int, indent string) []string {
 // hyphen in the URL is never treated as a break point).
 func hardwrapTo(s string, w int) []string {
 	return strings.Split(ansi.Hardwrap(s, max(1, w), false), "\n")
+}
+
+// issueURL is the issue the answer is about.
+func (d *WhatsNewDialog) issueURL() string {
+	n := 0
+	if d.wn != nil && d.answering >= 0 && d.answering < len(d.wn.Fixed) {
+		n = d.wn.Fixed[d.answering].Number
+	}
+	return fmt.Sprintf("https://github.com/%s/issues/%d", issuereport.Repo, n)
 }
 
 // title is the dialog heading for the current step.
@@ -737,19 +794,22 @@ func (d *WhatsNewDialog) bodyLines() []styledLine {
 			add(dim, "Nothing new since v"+from+".", "")
 		}
 	case whatsNewStepPreview, whatsNewStepSending, whatsNewStepResult:
-		n := 0
-		if d.wn != nil && d.answering >= 0 && d.answering < len(d.wn.Fixed) {
-			n = d.wn.Fixed[d.answering].Number
-		}
 		add(accent, "This answer will be posted PUBLICLY on GitHub.", "")
-		for _, l := range hardwrapTo(fmt.Sprintf("Where: https://github.com/%s/issues/%d", issuereport.Repo, n), w) {
+		for _, l := range hardwrapTo("Where: "+d.issueURL(), w) {
 			out = append(out, styledLine{l, text})
 		}
-		add(text, "How:   with gh, as your GitHub account (logged in on this machine)", "")
 		if d.errLine != "" {
 			out = append(out, styledLine{"", text})
 			add(red, d.errLine, "")
 			break
+		}
+		if d.ghReady {
+			add(text, "How:   with gh, as @"+d.account, "")
+		} else {
+			add(red, "gh is not logged in: nothing can be posted. Run `gh auth login`, then try again.", "")
+		}
+		if d.note != "" && d.step == whatsNewStepPreview {
+			add(dim, d.note, "")
 		}
 		add(text, "Exact text that will be posted (no more, no less):", "")
 		rule := strings.Repeat("┄", w)
@@ -826,10 +886,10 @@ func (d *WhatsNewDialog) View() string {
 			}
 			footer(append(items, "Esc: close")...)
 		case whatsNewStepPreview:
-			if d.errLine != "" {
+			if d.errLine != "" || !d.ghReady {
 				footer("e: edit comment", "Esc: back (nothing is posted)")
 			} else {
-				footer("y/Enter: post", "e: edit comment", "Esc: back (nothing is posted)")
+				footer("y: post", "e: edit comment", "Esc: back (nothing is posted)")
 			}
 		case whatsNewStepSending:
 			rows = append(rows, "", dimStyle.Render("Posting… (can't be cancelled once started)"))
@@ -845,6 +905,11 @@ func (d *WhatsNewDialog) View() string {
 			if d.resultURL != "" {
 				for _, l := range hardwrapTo(d.resultURL, w) {
 					rows = append(rows, textStyle.Render(l))
+				}
+			}
+			if d.note != "" {
+				for _, l := range wrapTo(d.note, w, "") {
+					rows = append(rows, dimStyle.Render(l))
 				}
 			}
 			footer("Enter/Esc: back to the list")
@@ -888,8 +953,10 @@ func whatsNewStartupSkipped() bool {
 }
 
 // whatsNewStartupCmd is the check Init runs (see WhatsNewDialog.StartupCmd).
+// [updates] check_enabled = false skips it (and so the changelog fetch);
+// the hotkey still opens the dialog on demand.
 func (h *Home) whatsNewStartupCmd() tea.Cmd {
-	if h.whatsNewDialog == nil {
+	if h.whatsNewDialog == nil || !loadUpdateSettings().GetCheckEnabled() {
 		return nil
 	}
 	return h.whatsNewDialog.StartupCmd()
@@ -909,7 +976,9 @@ func (h *Home) onWhatsNewLoaded(msg whatsNewLoadedMsg) {
 		uiLog.Warn("whats_new_startup_failed", slog.String("error", msg.err.Error()))
 		return
 	}
-	if msg.wn == nil || msg.wn.Empty() {
+	if msg.wn == nil || msg.wn.Empty() || h.whatsNewDialog.IsVisible() {
+		// Already open on demand: the startup notes would only pop up
+		// again once it is closed.
 		return
 	}
 	h.whatsNewPending = msg.wn

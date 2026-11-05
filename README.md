@@ -157,6 +157,7 @@ The main-menu composer currently supports local sessions only, not remote-sessio
 | `V` / `Y` | Copy visible terminal text / a fenced code block |
 | `Shift+drag` | Select text natively (`Option+drag` in iTerm2) — see below |
 | `Alt+W` | Show me around: what you can do, your agents and sign-in |
+| `Alt+N` | What's new: this version's highlights and your reports it fixed ("Is it fixed for you?"); opens by itself after an update |
 | `?` | Full help |
 
 > **Why can't I drag-select text?** The TUI holds the terminal in mouse

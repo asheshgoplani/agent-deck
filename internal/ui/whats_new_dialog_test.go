@@ -3,16 +3,20 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/asheshgoplani/agent-deck/internal/reportloop"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 const whatsNewTestChangelog = `# Changelog
@@ -52,10 +56,15 @@ type whatsNewFakes struct {
 	// the end gets the last entry.
 	out    []string
 	runErr error
+	// clock is the dialog's injected clock; startUp moves it past the
+	// key guard that follows an automatic open.
+	clock time.Time
 }
 
 func (f *whatsNewFakes) install(d *WhatsNewDialog, version string) {
 	d.version = version
+	f.clock = time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return f.clock }
 	d.openStore = func() (*reportloop.Store, error) { return f.store, nil }
 	d.fetch = func(context.Context) (string, error) {
 		f.fetchCalls++
@@ -138,10 +147,12 @@ func fixedReport() reportloop.Report {
 	return reportloop.Report{Number: 4242, Title: "letters doubled when typing", Kind: "bug", FiledVersion: "1.16.36"}
 }
 
-// startUp runs the TUI's startup check as Init does.
-func startUp(t *testing.T, h *Home) {
+// startUp runs the TUI's startup check as Init does, then lets the
+// injected clock pass the key guard after the automatic open.
+func startUp(t *testing.T, h *Home, f *whatsNewFakes) {
 	t.Helper()
 	runWhatsNewCmd(h, h.whatsNewStartupCmd())
+	f.clock = f.clock.Add(time.Second)
 }
 
 func viewLines(s string) []string {
@@ -167,7 +178,7 @@ func indexOfLine(lines []string, sub string) int {
 func TestWhatsNewDialogShowsFixedReportOnTop(t *testing.T) {
 	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
 	h := newWhatsNewTestHome(t, f, "1.16.37")
-	startUp(t, h)
+	startUp(t, h, f)
 	if !h.whatsNewDialog.IsVisible() {
 		t.Fatal("first start on a newer version did not open What's new")
 	}
@@ -199,11 +210,11 @@ func TestWhatsNewDialogFeedbackSendsExpectedArgv(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newWhatsNewFakes(t, "1.16.36", fixedReport())
 			f.out = []string{
-				`{"ok":true,"dry_run":true,"number":4242,"body":` + jsonQuote(tc.wantBody) + `}`,
+				`{"ok":true,"dry_run":true,"number":4242,"account":"octocat","gh_ready":true,"body":` + jsonQuote(tc.wantBody) + `}`,
 				`{"ok":true,"number":4242,"answer":"yes","url":"https://github.com/asheshgoplani/agent-deck/issues/4242#issuecomment-1"}`,
 			}
 			h := newWhatsNewTestHome(t, f, "1.16.37")
-			startUp(t, h)
+			startUp(t, h, f)
 
 			pressWN(h, reportTestKey(tc.key))
 			if h.whatsNewDialog.step != whatsNewStepComment {
@@ -274,19 +285,19 @@ func jsonQuote(s string) string {
 func TestWhatsNewDialogSendFailureIsShown(t *testing.T) {
 	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
 	f.out = []string{
-		`{"ok":true,"dry_run":true,"number":4242,"body":"Fixed for me in v1.16.37."}`,
-		`{"ok":false,"error":{"code":"gh_failed","message":"gh is not logged in"}}`,
+		`{"ok":true,"dry_run":true,"number":4242,"account":"octocat","gh_ready":true,"body":"Fixed for me in v1.16.37."}`,
+		`{"ok":false,"error_code":"gh_failed","message":"gh exited 1: HTTP 502"}`,
 	}
 	h := newWhatsNewTestHome(t, f, "1.16.37")
-	startUp(t, h)
+	startUp(t, h, f)
 	pressWN(h, reportTestKey("y"))
 	pressWN(h, reportTestKey("enter"))
 	f.runErr = errors.New("exit status 1")
-	pressWN(h, reportTestKey("enter")) // Enter posts too
+	pressWN(h, reportTestKey("y"))
 	if len(f.runs) != 2 {
 		t.Fatalf("runs = %q, want dry run + post", f.runs)
 	}
-	if v := ansi.Strip(h.whatsNewDialog.View()); !strings.Contains(v, "Not posted: gh is not logged in") {
+	if v := ansi.Strip(h.whatsNewDialog.View()); !strings.Contains(v, "Not posted: gh exited 1: HTTP 502") {
 		t.Fatalf("failure not shown:\n%s", v)
 	}
 }
@@ -294,7 +305,7 @@ func TestWhatsNewDialogSendFailureIsShown(t *testing.T) {
 func TestWhatsNewDialogEscMarksSeen(t *testing.T) {
 	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
 	h := newWhatsNewTestHome(t, f, "1.16.37")
-	startUp(t, h)
+	startUp(t, h, f)
 	if !h.whatsNewDialog.IsVisible() {
 		t.Fatal("dialog not shown")
 	}
@@ -318,7 +329,7 @@ func TestWhatsNewDialogEscMarksSeen(t *testing.T) {
 	}
 	// The next start shows nothing.
 	h2 := newWhatsNewTestHome(t, f, "1.16.37")
-	startUp(t, h2)
+	startUp(t, h2, f)
 	if h2.whatsNewDialog.IsVisible() {
 		t.Fatal("What's new shown again for a version already seen")
 	}
@@ -327,7 +338,7 @@ func TestWhatsNewDialogEscMarksSeen(t *testing.T) {
 func TestWhatsNewDialogFreshInstallMarksSeenSilently(t *testing.T) {
 	f := newWhatsNewFakes(t, "")
 	h := newWhatsNewTestHome(t, f, "1.16.37")
-	startUp(t, h)
+	startUp(t, h, f)
 	if h.whatsNewDialog.IsVisible() {
 		t.Fatal("fresh install opened What's new")
 	}
@@ -349,7 +360,7 @@ func TestWhatsNewDialogWaitsForOtherDialogs(t *testing.T) {
 	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
 	h := newWhatsNewTestHome(t, f, "1.16.37")
 	h.reportDialog.Show("")
-	startUp(t, h)
+	startUp(t, h, f)
 	if h.whatsNewDialog.IsVisible() {
 		t.Fatal("What's new opened on top of another dialog")
 	}
@@ -434,12 +445,12 @@ func TestWhatsNewDialogFitsIn80Columns(t *testing.T) {
 	long := reportloop.Report{Number: 4250, Title: "a very long report title that goes on and on about letters being doubled in the embedded terminal pane", FiledVersion: "1.16.36"}
 	f := newWhatsNewFakes(t, "1.16.36", fixedReport(), long)
 	f.out = []string{
-		`{"ok":true,"dry_run":true,"number":4242,"body":"Fixed for me in v1.16.37.\n\nworks now, thanks; this comment is long enough to need wrapping at eighty columns for sure\n\n(linux/amd64, via agent-deck feedback fixed)"}`,
+		`{"ok":true,"dry_run":true,"number":4242,"account":"octocat","gh_ready":true,"body":"Fixed for me in v1.16.37.\n\nworks now, thanks; this comment is long enough to need wrapping at eighty columns for sure\n\n(linux/amd64, via agent-deck feedback fixed)"}`,
 		`{"ok":true,"number":4242,"answer":"yes","url":"https://github.com/asheshgoplani/agent-deck/issues/4242#issuecomment-123456789"}`,
 	}
 	h := newWhatsNewTestHome(t, f, "1.16.37")
 	h.width, h.height = 80, 24
-	startUp(t, h)
+	startUp(t, h, f)
 	h.whatsNewDialog.SetSize(80, 24)
 
 	check := func(name string) {
@@ -465,4 +476,249 @@ func TestWhatsNewDialogFitsIn80Columns(t *testing.T) {
 	check("preview")
 	pressWN(h, reportTestKey("y"))
 	check("result")
+}
+
+// flatView is the dialog's text with borders and line breaks collapsed, so
+// wrapped sentences can be matched whole.
+func flatView(h *Home) string {
+	v := ansi.Strip(h.whatsNewDialog.View())
+	return strings.Join(strings.Fields(strings.NewReplacer("│", " ", "╭", " ", "╮", " ", "╰", " ", "╯", " ", "─", " ").Replace(v)), " ")
+}
+
+const (
+	whatsNewDryRunOK = `{"ok":true,"dry_run":true,"number":4242,"account":"octocat","gh_ready":true,"body":"Fixed for me in v1.16.37."}`
+	whatsNewPostedOK = `{"ok":true,"number":4242,"answer":"yes","url":"https://github.com/asheshgoplani/agent-deck/issues/4242#issuecomment-1"}`
+)
+
+// toPreview answers y with no comment and stops on the preview.
+func toPreview(t *testing.T, h *Home) {
+	t.Helper()
+	pressWN(h, reportTestKey("y"))
+	pressWN(h, reportTestKey("enter"))
+	if h.whatsNewDialog.step != whatsNewStepPreview {
+		t.Fatalf("not on the preview (step %v, err %q)", h.whatsNewDialog.step, h.whatsNewDialog.errLine)
+	}
+}
+
+// Fix 1a: Enter on the preview never posts; only y/Y does.
+func TestWhatsNewDialogPreviewPostsOnlyOnY(t *testing.T) {
+	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+	f.out = []string{whatsNewDryRunOK, whatsNewPostedOK}
+	h := newWhatsNewTestHome(t, f, "1.16.37")
+	startUp(t, h, f)
+	toPreview(t, h)
+	pressWN(h, reportTestKey("enter"))
+	if len(f.runs) != 1 || h.whatsNewDialog.step != whatsNewStepPreview {
+		t.Fatalf("Enter on the preview posted (runs %q, step %v)", f.runs, h.whatsNewDialog.step)
+	}
+	if v := flatView(h); strings.Contains(v, "y/Enter") || !strings.Contains(v, "y: post") {
+		t.Fatalf("preview footer should offer y only:\n%s", v)
+	}
+	pressWN(h, reportTestKey("Y"))
+	if len(f.runs) != 2 || h.whatsNewDialog.step != whatsNewStepResult {
+		t.Fatalf("Y did not post (runs %q, step %v)", f.runs, h.whatsNewDialog.step)
+	}
+}
+
+// Fix 1b: right after the automatic open every key is ignored for 700 ms,
+// so typing meant for the session list cannot answer or post.
+func TestWhatsNewDialogIgnoresKeysRightAfterAutoOpen(t *testing.T) {
+	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+	f.out = []string{whatsNewDryRunOK, whatsNewPostedOK}
+	h := newWhatsNewTestHome(t, f, "1.16.37")
+	runWhatsNewCmd(h, h.whatsNewStartupCmd()) // the automatic open, clock not moved
+	if !h.whatsNewDialog.IsVisible() {
+		t.Fatal("dialog not shown")
+	}
+	typeWN(h, "napi")
+	f.clock = f.clock.Add(699 * time.Millisecond)
+	pressWN(h, reportTestKey("enter"))
+	pressWN(h, reportTestKey("enter"))
+	if len(f.runs) != 0 {
+		t.Fatalf("keys right after the automatic open ran %q", f.runs)
+	}
+	if h.whatsNewDialog.step != whatsNewStepList || !h.whatsNewDialog.IsVisible() {
+		t.Fatalf("keys right after the automatic open moved the dialog to step %v", h.whatsNewDialog.step)
+	}
+	// After the guard, keys work again.
+	f.clock = f.clock.Add(2 * time.Millisecond)
+	pressWN(h, reportTestKey("n"))
+	if h.whatsNewDialog.step != whatsNewStepComment {
+		t.Fatalf("n after the guard: step %v, want the comment", h.whatsNewDialog.step)
+	}
+}
+
+// Fix 2a: the preview names the GitHub account that will post.
+func TestWhatsNewDialogPreviewShowsAccount(t *testing.T) {
+	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+	f.out = []string{whatsNewDryRunOK, whatsNewPostedOK}
+	h := newWhatsNewTestHome(t, f, "1.16.37")
+	startUp(t, h, f)
+	toPreview(t, h)
+	if v := flatView(h); !strings.Contains(v, "as @octocat") {
+		t.Fatalf("preview does not name the account:\n%s", v)
+	}
+}
+
+// Fix 2b: gh not logged in (gh_ready false or no account) disables posting.
+func TestWhatsNewDialogGhNotLoggedInDisablesPosting(t *testing.T) {
+	for name, dry := range map[string]string{
+		"gh_ready false": `{"ok":true,"dry_run":true,"number":4242,"account":"","gh_ready":false,"body":"Fixed for me in v1.16.37."}`,
+		"no account":     `{"ok":true,"dry_run":true,"number":4242,"gh_ready":true,"body":"Fixed for me in v1.16.37."}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+			f.out = []string{dry, whatsNewPostedOK}
+			h := newWhatsNewTestHome(t, f, "1.16.37")
+			startUp(t, h, f)
+			toPreview(t, h)
+			v := flatView(h)
+			if !strings.Contains(v, "gh is not logged in: nothing can be posted") {
+				t.Fatalf("preview does not say gh is not logged in:\n%s", v)
+			}
+			if strings.Contains(v, "y: post") {
+				t.Fatalf("preview still offers posting:\n%s", v)
+			}
+			pressWN(h, reportTestKey("y"))
+			if len(f.runs) != 1 {
+				t.Fatalf("posted without gh: %q", f.runs)
+			}
+		})
+	}
+}
+
+// Fix 3: [updates] check_enabled = false skips the startup changelog fetch;
+// the hotkey still opens What's new on demand.
+func TestWhatsNewDialogStartupRespectsCheckDisabled(t *testing.T) {
+	off := false
+	stubUpdateSettings(t, session.UpdateSettings{CheckEnabled: &off})
+	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+	h := newWhatsNewTestHome(t, f, "1.16.37")
+	startUp(t, h, f)
+	if f.fetchCalls != 0 || h.whatsNewDialog.IsVisible() {
+		t.Fatalf("check_enabled=false: fetched %d times, visible %v", f.fetchCalls, h.whatsNewDialog.IsVisible())
+	}
+	pressWN(h, whatsNewKey)
+	if f.fetchCalls != 1 || !h.whatsNewDialog.IsVisible() {
+		t.Fatalf("on demand with check_enabled=false: fetched %d times, visible %v", f.fetchCalls, h.whatsNewDialog.IsVisible())
+	}
+}
+
+// Fix 4: a post subprocess that times out (or is killed) may already have
+// posted, so the dialog says so and points at the issue.
+func TestWhatsNewDialogTimeoutMayHaveBeenPosted(t *testing.T) {
+	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+	f.out = []string{whatsNewDryRunOK}
+	h := newWhatsNewTestHome(t, f, "1.16.37")
+	startUp(t, h, f)
+	toPreview(t, h)
+	d := h.whatsNewDialog
+	d.timeout = 20 * time.Millisecond
+	d.run = func(ctx context.Context, argv []string) ([]byte, error) {
+		f.runs = append(f.runs, argv)
+		<-ctx.Done()
+		return nil, fmt.Errorf("running agent-deck feedback fixed: %w", ctx.Err())
+	}
+	pressWN(h, reportTestKey("y"))
+	v := flatView(h)
+	if strings.Contains(v, "Not posted") || !strings.Contains(v, "May have been posted") ||
+		!strings.Contains(v, "https://github.com/asheshgoplani/agent-deck/issues/4242") {
+		t.Fatalf("timeout result should say it may have been posted and link the issue:\n%s", v)
+	}
+}
+
+// Fix 5: the CLI's error shape is error_code + message, and a note is shown.
+func TestWhatsNewDialogDecodesCLIErrorAndNote(t *testing.T) {
+	t.Run("error_code only", func(t *testing.T) {
+		f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+		f.out = []string{whatsNewDryRunOK, `{"ok":false,"error_code":"gh_failed"}`}
+		h := newWhatsNewTestHome(t, f, "1.16.37")
+		startUp(t, h, f)
+		toPreview(t, h)
+		f.runErr = errors.New("exit status 1")
+		pressWN(h, reportTestKey("y"))
+		if v := flatView(h); !strings.Contains(v, "Not posted: gh_failed") {
+			t.Fatalf("error_code not shown:\n%s", v)
+		}
+	})
+	t.Run("note", func(t *testing.T) {
+		f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+		f.out = []string{whatsNewDryRunOK, `{"ok":true,"number":4242,"answer":"yes","url":"https://github.com/asheshgoplani/agent-deck/issues/4242#issuecomment-1","note":"Note: posted, but could not record the answer locally: disk full"}`}
+		h := newWhatsNewTestHome(t, f, "1.16.37")
+		startUp(t, h, f)
+		toPreview(t, h)
+		pressWN(h, reportTestKey("y"))
+		if v := flatView(h); !strings.Contains(v, "Posted, thank you.") || !strings.Contains(v, "could not record the answer locally: disk full") {
+			t.Fatalf("note not shown:\n%s", v)
+		}
+	})
+}
+
+// Fix 6: opening What's new on demand (and closing it) drops the startup
+// notes still waiting, so they do not pop up again right after.
+func TestWhatsNewDialogOnDemandClearsPending(t *testing.T) {
+	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+	h := newWhatsNewTestHome(t, f, "1.16.37")
+	h.reportDialog.Show("")
+	startUp(t, h, f)
+	if h.whatsNewPending == nil {
+		t.Fatal("startup notes not pending behind the other dialog")
+	}
+	h.reportDialog.Hide()
+	pressWN(h, whatsNewKey)
+	if !h.whatsNewDialog.IsVisible() {
+		t.Fatal("hotkey did not open What's new")
+	}
+	pressWN(h, reportTestKey("esc"))
+	if h.whatsNewDialog.IsVisible() {
+		t.Fatal("Esc did not close")
+	}
+	h.maybeShowWhatsNew()
+	if h.whatsNewDialog.IsVisible() || h.whatsNewPending != nil {
+		t.Fatal("the startup notes popped up again after the on-demand dialog was closed")
+	}
+}
+
+// Fix 7: the README hotkey table and the "What you can do" page name the key.
+var whatsNewReadme, _ = filepath.Abs("../../README.md")
+
+func TestWhatsNewDialogDocumented(t *testing.T) {
+	raw, err := os.ReadFile(whatsNewReadme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, "| `Alt+N` |") && strings.Contains(line, "What's new") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("README hotkey table has no `Alt+N` What's new row")
+	}
+	o := NewOnboardingOverlay()
+	o.show(onboardingPageTour, false, "/work", NewHome().onboardingKeys())
+	o.SetSize(120, 40)
+	flat := strings.Join(strings.Fields(ansi.Strip(o.View())), " ")
+	if !strings.Contains(flat, defaultHotkeyBindings[hotkeyWhatsNew]+" what's new") {
+		t.Errorf("What you can do does not mention %s for What's new:\n%s", defaultHotkeyBindings[hotkeyWhatsNew], flat)
+	}
+}
+
+// Fix 8: the subprocess is agent-deck re-running itself, so it keeps the
+// parent's CLAUDE_CONFIG_DIR and TELEGRAM_* (childenv.ForSelfReexec) and
+// drops only CLAUDE_JOB_DIR.
+func TestWhatsNewDialogCLIEnvIsSelfReexec(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/work/claude-profile")
+	t.Setenv("TELEGRAM_STATE_DIR", "/work/tg")
+	t.Setenv("CLAUDE_JOB_DIR", "/work/job")
+	env := strings.Join(whatsNewCLIEnv(), "\n") + "\n"
+	for _, want := range []string{"CLAUDE_CONFIG_DIR=/work/claude-profile\n", "TELEGRAM_STATE_DIR=/work/tg\n", "NO_COLOR=1\n"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("subprocess env lacks %q", strings.TrimSpace(want))
+		}
+	}
+	if strings.Contains(env, "CLAUDE_JOB_DIR=") {
+		t.Error("subprocess env keeps CLAUDE_JOB_DIR")
+	}
 }
