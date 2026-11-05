@@ -103,6 +103,10 @@ func ghEnv() []string {
 	return append(childenv.ForLaunch(""), "GH_PROMPT_DISABLED=1", "NO_COLOR=1", "GH_NO_UPDATE_NOTIFIER=1")
 }
 
+// GhEnv is the environment File runs gh with (childenv plus no prompts,
+// no color, no update notice), for other callers that run gh.
+func GhEnv() []string { return ghEnv() }
+
 // GhReady reports whether a gh binary is on PATH and `gh auth status`
 // succeeds, i.e. whether File would use gh.
 func GhReady(ctx context.Context) bool {

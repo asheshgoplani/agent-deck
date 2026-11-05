@@ -1153,6 +1153,13 @@ type FeedbackSettings struct {
 	// Disabled suppresses all passive feedback prompts when true.
 	// Defaults to false. Set by RecordOptOut paths; cleared on re-enable.
 	Disabled bool `toml:"disabled,omitempty"`
+
+	// AgentReports lets agent sessions file public GitHub issues and
+	// comments as this machine's gh account (`agent-deck feedback bug
+	// --from-agent`, `feedback fixed --from-agent`). Defaults to false:
+	// a person turns it on with `agent-deck feedback agent-consent`,
+	// which shows what is posted, where and as whom, and asks y/N.
+	AgentReports bool `toml:"agent_reports,omitempty"`
 }
 
 // TelemetrySettings configures opt-in usage telemetry (TELEMETRY.md).
