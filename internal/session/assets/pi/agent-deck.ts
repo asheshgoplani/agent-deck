@@ -393,8 +393,28 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
     let priv = "";
     try {
       const dir = path.dirname(sockPath);
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      fs.chmodSync(dir, 0o700);
+      // Only the launch's own layout, <runtime dir>/pi/<name>.sock, is served:
+      // any other value is a mistake whose directory must not be created or
+      // tightened (a stray ~/w.sock would chmod the home directory).
+      if (!path.isAbsolute(sockPath) || path.basename(dir) !== "pi") {
+        throw new Error("not an agent-deck socket path (want <runtime dir>/pi/<name>.sock)");
+      }
+      fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+      try {
+        fs.mkdirSync(dir, { mode: 0o700 });
+      } catch (e: any) {
+        if (e.code !== "EEXIST") throw e;
+      }
+      // chmod follows a symlink, so the directory is opened without following
+      // one, checked to be this user's, and tightened through that descriptor.
+      const dirFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+      try {
+        const st = fs.fstatSync(dirFd);
+        if (!st.isDirectory() || st.uid !== process.getuid?.()) throw new Error(dir + " is not a directory of this user");
+        fs.fchmodSync(dirFd, 0o700);
+      } finally {
+        fs.closeSync(dirFd);
+      }
       // A live socket the probe finds is never replaced. Two starters that both
       // get past the probe resolve as last-starter-wins (see above).
       if (await isLive(sockPath)) {
