@@ -28,18 +28,33 @@ need only the `az` CLI and an Azure subscription. It works over ssh.
    if they are not on yet (new subscriptions often miss them).
 5. Looks for the resource group (default `agent-deck-sandboxes`). An
    existing group is used as is, in its own region.
-6. Checks the vCPU quota in that region for one VM of `--vm-size`. This
+6. Checks that the region offers the VM size to your subscription
+   (`az vm list-skus`; this call can take a minute or two). Without
+   `--vm-size` (and no `vm_size` in `azure-vm.conf`) it picks the first
+   offered of `Standard_B2s`, `Standard_B2als_v2`, `Standard_B2as_v2`,
+   `Standard_B2s_v2`, `Standard_D2as_v5`, `Standard_D2s_v5` (all 2 vCPUs)
+   and says so.
+7. Checks the vCPU quota in that region for one VM of that size. This
    comes before the group is created, so a full region leaves nothing behind.
-7. Creates the resource group if it is missing (tagged `agent-deck=sandboxes`).
-8. Creates a service principal (a robot login for agent-deck) with
+8. Creates the resource group if it is missing (tagged `agent-deck=sandboxes`).
+9. Tests that the region takes new resources: it creates a free network
+   security group `agent-deck-region-probe` (tagged `agent-deck=probe`) in
+   the group and deletes it again. Some regions refuse new customers on some
+   subscriptions. Without `--location` it then tries `swedencentral`,
+   `northeurope`, `germanywestcentral`, `francecentral`, `uksouth`, `eastus2`
+   in that order, writes the first that works as `location` in
+   `azure-vm.conf` and says so. The group stays where it is: the VMs can
+   live in another region than their group. A re-run that keeps a working
+   stored setup skips steps 6 and 9.
+10. Creates a service principal (a robot login for agent-deck) with
    Contributor on that one resource group and nothing else. It warns if the
    robot login has roles anywhere else. If a service principal with that
    name already exists and this machine did not set it up, it stops: reusing
    it would give it a new secret and revoke the one other machines use. Pick
    another `--sp-name`, or pass `--reset-secret` to take it over on purpose.
-9. Stores the secret, `azure-vm.conf`, a copy of this provider, and the
+11. Stores the secret, `azure-vm.conf`, a copy of this provider, and the
    `[providers.azure]` entry in `config.toml` (see [Where files go](#where-files-go)).
-10. Checks the result: it lists the VMs in the group, logged in as the robot
+12. Checks the result: it lists the VMs in the group, logged in as the robot
    login. A new service principal can take a few minutes to show up in
    Azure, so it retries for up to 3 minutes.
 
@@ -63,8 +78,8 @@ Next: agent-deck launch --provider azure -c claude <project path>
 | `--subscription` | pick | Subscription id or exact name |
 | `--tenant` | your account's own | Directory (tenant) id or domain to log in to |
 | `--resource-group` | `agent-deck-sandboxes` | The one group sandboxes live in |
-| `--location` | `westeurope` | Region for a new group (an existing group keeps its own) |
-| `--vm-size` | `Standard_B2s` | Used for the quota check; written to `azure-vm.conf` only if `vm_size` is not set |
+| `--location` | `westeurope` | Region for a new group and its VMs (an existing group keeps its own); when given, a region that refuses new resources is an error instead of a fallback |
+| `--vm-size` | `Standard_B2s` | VM size: checked in the region, used for the quota check and written to `azure-vm.conf`. Without it a `vm_size` already there is kept, and a missing one is set to the first offered small size |
 | `--sp-name` | `agent-deck-sandboxes-sp` | Service principal display name |
 | `--reset-secret` | off | Issue a new secret even when a working one is stored |
 | `--sp-app-id` | | Use a service principal someone else made (with `--sp-secret-stdin`) |
@@ -229,6 +244,68 @@ Fix one of these:
 Free trial subscriptions allow only a few vCPUs per region.
 ```
 
+**The region is not accepting new customers.** Azure refuses new resources
+in some regions for some subscriptions (often new or free ones) with
+`RequestDisallowedByAzure ... The selected region is currently not accepting
+new customers`. A resource group can still be created there; the first
+real resource fails. connect tests this with a free network security group.
+Without `--location` it moves on by itself:
+
+```
+westeurope is not accepting new customers for this subscription right now; using swedencentral instead.
+```
+
+With `--location` it stops and lists regions that passed the same test:
+
+```
+Region westeurope is not accepting new customers for this subscription right now.
+Azure refused a test resource there: RequestDisallowedByAzure (https://aka.ms/locationineligible).
+The resource group can stay where it is; the VMs can live in another region.
+These regions take new resources for this subscription: swedencentral, northeurope, germanywestcentral
+Run again with one of them:
+  agent-deck provider connect azure --location swedencentral
+```
+
+If `agent-deck provider test azure --create` fails this way, the provider
+prints `hint: region <region> is not taking new customers; set location =
+swedencentral ...`: set `location` in `azure-vm.conf`, or run
+`agent-deck provider connect azure` again.
+
+**The VM size is not offered.** `SkuNotAvailable ... Standard_B2s is
+currently not available in location ...`. A region can stop offering a size
+to a subscription. connect checks with `az vm list-skus` and, when you did
+not ask for a size, picks another small one:
+
+```
+Standard_B2s is not offered in swedencentral for this subscription; using Standard_B2als_v2 (2 vCPUs, about the same price).
+```
+
+When you asked for the size (`--vm-size`, or `vm_size` in `azure-vm.conf`)
+it stops and lists the small sizes that are offered:
+
+```
+VM size Standard_B2s is not offered in swedencentral for this subscription right now.
+Small sizes that are offered there: Standard_B2als_v2, Standard_B2as_v2, Standard_B2s_v2, Standard_D2as_v5, Standard_D2s_v5
+Run again with one of them:
+  agent-deck provider connect azure --vm-size <size>
+```
+
+To look yourself: `az vm list-skus -l <region> --size Standard_B2
+--resource-type virtualMachines -o table` (it can take a minute or two; a
+size that is missing or shows `NotAvailableForSubscription` cannot be used).
+The provider's hint on a failed create says the same: `hint: Standard_B2s
+is not offered in <region>; set vm_size = Standard_B2als_v2 or see az vm
+list-skus -l <region> --size Standard_B2`.
+
+**`MissingSubscriptionRegistration`.** `The subscription is not registered
+to use namespace 'Microsoft.Network'`. A new subscription starts with
+`Microsoft.Compute` and `Microsoft.Network` off, and the robot login may not
+turn them on. connect turns both on first, as you
+(`Enabling Microsoft.Network in this subscription (one time, takes a
+minute)...`). If you set things up by hand, the subscription owner runs
+`az provider register --namespace Microsoft.Network` (and
+`Microsoft.Compute`) once; the provider's hint on a failed create says so.
+
 **The check failed.** `Setup is saved, but the check failed`. Azure can be
 slow to see a new service principal. Try again later with
 `agent-deck provider test azure`. When the stored robot login was reused,
@@ -372,8 +449,11 @@ sp_secret_file = /home/you/.config/agent-deck/azure-sp-secret
 ```
 
 If your region or subscription does not offer `Standard_B2s`, pick another
-small size from `az vm list-sizes -l <location> -o table` (for example
-`Standard_B2als_v2`).
+small size that `az vm list-skus -l <location> --size Standard_B2
+--resource-type virtualMachines -o table` lists without restrictions (for
+example `Standard_B2als_v2`). If the region is not accepting new customers
+(`RequestDisallowedByAzure`), set `location` to another region; the group
+can stay where it is.
 
 Needs on the machine that runs agent-deck: `az`, `ssh`, `ssh-keygen`,
 `python3`, and `curl` for `ssh_source = auto`. On macOS, `brew install
@@ -390,8 +470,12 @@ agent-deck remote destroy azure-<id>
 Check that nothing is left:
 
 ```bash
-az resource list -g agent-deck-sandboxes --tag agent-deck-provider=azure-vm -o table
+az resource list --tag agent-deck-provider=azure-vm --query "[?resourceGroup=='agent-deck-sandboxes']" -o table
 ```
+
+(`az resource list` does not take `--tag` together with `--resource-group`,
+hence the query.) Deletes take a little while to show in that list: a
+resource just destroyed can still be listed for a minute or so.
 
 ## Cost
 
