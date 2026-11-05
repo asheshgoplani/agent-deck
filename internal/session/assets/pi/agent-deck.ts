@@ -241,20 +241,23 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
 
   // settle answers the pending doorbell; it clears the timer, so the timer and
   // the run start cannot both answer.
+  // recordSubmitted notes ids whose run has started, for the duplicate window.
+  const recordSubmitted = (ids: string[]) => {
+    const now = performance.now();
+    for (const id of ids) {
+      submitted.delete(id);
+      submitted.set(id, now);
+    }
+    for (const id of submitted.keys()) {
+      if (submitted.size <= MAX_SEEN_IDS) break;
+      submitted.delete(id);
+    }
+  };
+
   const settle = (wake: Wake, state: "submitted" | "queued") => {
     pending = null;
     clearTimeout(wake.timer);
-    if (state === "submitted") {
-      const now = performance.now();
-      for (const id of wake.ids) {
-        submitted.delete(id);
-        submitted.set(id, now);
-      }
-      for (const id of submitted.keys()) {
-        if (submitted.size <= MAX_SEEN_IDS) break;
-        submitted.delete(id);
-      }
-    }
+    if (state === "submitted") recordSubmitted(wake.ids);
     reply(wake.conn, { id: wake.nonce, state });
   };
 
@@ -445,10 +448,15 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   };
 
   // The run a doorbell asked for has started: answer it now, before the caller
-  // awaits hook-handler.
+  // awaits hook-handler. Its ids count for the duplicate window from here, read
+  // from the run's own message: a wake answered queued, or whose client went
+  // away, is no longer pending when its run starts.
   const rang = (event?: any) => {
-    const nonce = event?.messageType === "custom" ? event.message?.details?.nonce : undefined;
-    if (pending && pending.nonce === nonce) settle(pending, "submitted");
+    const isWake = event?.messageType === "custom" && event.message?.customType === WAKE_TYPE;
+    const details = isWake ? event.message?.details : undefined;
+    if (pending && pending.nonce === details?.nonce) settle(pending, "submitted");
+    const ids = details?.ids;
+    if (Array.isArray(ids) && ids.every((x: unknown) => typeof x === "string" && x !== "")) recordSubmitted(ids);
   };
 
   return { start, stop, rang };

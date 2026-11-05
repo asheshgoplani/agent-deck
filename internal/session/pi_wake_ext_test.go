@@ -234,6 +234,28 @@ const scenarios = {
     return out;
   },
 
+  // A wake answered queued, and one whose client left before any reply, still
+  // count for the duplicate window once their run starts.
+  async queued_then_duplicate() {
+    const rt = makeRuntime({ noRunStart: true });
+    await rt.start();
+    release();
+    const queued = await ask(frame("N9a", LINE_AB));
+    rt.idle = true;
+    await rt.startRun({ messageType: "custom", message: { role: "custom", customType: "agent-deck-wake", content: LINE_AB, display: true, details: { nonce: "N9a", ids: IDS_AB } } });
+    rt.endRun();
+    const afterQueued = await ask(frame("N9b", LINE_AB));
+    const gone = await ask(frame("N9c", LINE_C), { timeoutMs: 100 });
+    await sleep(100);
+    rt.idle = true;
+    await rt.startRun({ messageType: "custom", message: { role: "custom", customType: "agent-deck-wake", content: LINE_C, display: true, details: { nonce: "N9c", ids: IDS_C } } });
+    rt.endRun();
+    const afterGone = await ask(frame("N9d", LINE_C));
+    const out = { queued: queued.reply, afterQueued: afterQueued.reply, gone: gone.reply, goneTimedOut: !!gone.timedOut, afterGone: afterGone.reply, sent: rt.sent.length };
+    await rt.stop();
+    return out;
+  },
+
   async duplicate_window() {
     const rt = makeRuntime();
     await rt.start();
@@ -1193,6 +1215,19 @@ func TestPiWakeExtension_SameIdsWithin90sIsDuplicate(t *testing.T) {
 	if n := lenAt(t, res, "sent"); n != 4 {
 		t.Errorf("pi.sendMessage called %d times, want 4 (the duplicate is never sent)", n)
 	}
+}
+
+// The duplicate window starts at the run start, whether or not the doorbell
+// was still pending then: a wake answered queued, or whose client left before
+// any reply, has its ids counted when its run starts, so the same ids again
+// inside the window are a duplicate rather than a second run.
+func TestPiWakeExtension_QueuedOrAbandonedWakeStillOpensTheDuplicateWindow(t *testing.T) {
+	res, _ := runPiWake(t, "queued_then_duplicate", piWakeOpts{})
+	wantAt(t, res, "queued.state", "queued")
+	assertRefusal(t, res, "afterQueued", "N9b", "duplicate")
+	wantAt(t, res, "goneTimedOut", true)
+	assertRefusal(t, res, "afterGone", "N9d", "duplicate")
+	wantAt(t, res, "sent", 2) // neither duplicate was handed to pi
 }
 
 func TestPiWakeExtension_SameIdsAfter90sIsSent(t *testing.T) {
