@@ -1116,8 +1116,16 @@ type Home struct {
 	// dispatch calls the tmux session directly. See issue #1369.
 	quickApproveSink func(inst *session.Instance, windowIndex int) error
 
-	// onboarding is the Welcome / "What you can do" overlay (onboarding.go).
+	// onboarding is the quick check / "What you can do" overlay (onboarding.go).
 	onboarding *OnboardingOverlay
+	// welcomeSel is the highlighted action of the welcome empty screen
+	// (welcome.go); welcomeAgents caches its agent detection and
+	// welcomeAgentsKnown says whether it ran; welcomeNotice is its one-line
+	// result (e.g. nothing to import).
+	welcomeSel         int
+	welcomeAgents      []onboardingAgent
+	welcomeAgentsKnown bool
+	welcomeNotice      string
 	// onboardingCmds are queued by the overlay and handed out by Update.
 	onboardingCmds []tea.Cmd
 	// onboardingTourAfterCreate opens "What you can do" once the session
@@ -2483,7 +2491,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (onboarding.go); it then holds off the prompts below like the
 		// wizard did.
 		if firstLoad {
-			h.maybeStartOnboarding(msg.err == nil && len(msg.instances) == 0)
+			noSessions := msg.err == nil && len(msg.instances) == 0
+			h.maybeStartOnboarding(noSessions)
+			// The Alt+j/k tip is for moving between sessions: held back
+			// on the welcome (ASK-211), where there are none.
+			if noSessions && h.navHintActive {
+				h.navHintActive = false
+				if h.maintenanceMsg == navHintText {
+					h.maintenanceMsg = ""
+				}
+			}
 		}
 
 		// Show hooks installation prompt (after splash screen is gone)
@@ -4029,6 +4046,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshMsg:
 		return h, h.sessionLoadCmd(nil, true)
+	case welcomeNoticeMsg:
+		h.welcomeNotice = msg.text
+		return h, nil
 	case importReloadMsg:
 		state := h.preserveState()
 		return h, h.sessionLoadCmd(&state, false)
@@ -5379,6 +5399,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.navHintActive = false
 		if h.maintenanceMsg == navHintText {
 			h.maintenanceMsg = ""
+		}
+	}
+
+	// The welcome empty screen (welcome.go) owns its three actions and ↑↓.
+	if h.welcomeActive() {
+		if handled, cmd := h.handleWelcomeKey(key); handled {
+			return h, cmd
 		}
 	}
 

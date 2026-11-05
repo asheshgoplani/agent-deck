@@ -463,6 +463,9 @@ func (h *Home) updateSizes() {
 const resetScrollRegion = "\x1b[r"
 
 // View renders the UI
+// headerSysStatsSnapshot reads the header's host stats (a seam for tests).
+var headerSysStatsSnapshot = func(c *sysinfo.Collector) sysinfo.Stats { return c.Get() }
+
 func (h *Home) View() string {
 	// CRITICAL: Do not render fresh output during attach (Bubble Tea Issue #431
 	// - View gets printed to stdout during tea.Exec). Historically this
@@ -787,8 +790,11 @@ func (h *Home) renderFrame() string {
 	// still governs which of those sysinfo.Format actually renders.
 	var sysStatsSegment string
 	headerWantsHostStats := headerFieldSet[session.PreviewFieldLoad] || headerFieldSet[session.PreviewFieldMemory] || headerFieldSet[session.PreviewFieldDisk]
-	if headerWantsHostStats && h.sysStatsCollector != nil {
-		sysStats := h.sysStatsCollector.Get()
+	// Hidden until a session exists (ASK-211): on the welcome they are
+	// numbers a new user has no use for yet.
+	welcome := h.welcomeActive()
+	if headerWantsHostStats && h.sysStatsCollector != nil && !welcome {
+		sysStats := headerSysStatsSnapshot(h.sysStatsCollector)
 		if formatted := sysinfo.Format(sysStats, h.sysStatsConfig.GetFormat(), h.sysStatsConfig.GetShow()); formatted != "" {
 			sysStatsSegment = lipgloss.NewStyle().Foreground(ColorComment).Render(formatted)
 		}
@@ -926,7 +932,9 @@ func (h *Home) renderFrame() string {
 	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
 
 	var mainContent string
-	if h.embeddedMode && h.embeddedSidebarHidden {
+	if welcome {
+		mainContent = h.renderWelcome(h.width, contentHeight)
+	} else if h.embeddedMode && h.embeddedSidebarHidden {
 		mainContent = h.renderEmbeddedOnlyLayout(contentHeight)
 	} else {
 		// Route to appropriate layout based on terminal width.

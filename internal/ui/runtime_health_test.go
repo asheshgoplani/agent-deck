@@ -15,6 +15,7 @@ func TestRuntimeHealthWarningGolden(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENTDECK_HOME", t.TempDir())
 	health.ResetStatusPassBreachState()
+	pinWelcomeForGolden(t)
 	h := NewHome()
 	h.width, h.height = 100, 30
 	h.initialLoading = false
