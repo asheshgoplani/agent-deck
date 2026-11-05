@@ -772,3 +772,58 @@ func TestBuildPiCommand_SSHAndSandboxedLaunchesNeverExportTheSocket(t *testing.T
 		}
 	}
 }
+
+// A command whose program is not named as pi resolves to that program, whose
+// --version is its own (node prints v24.x, which reads as above the floor). The
+// socket stays off with pi_command_not_pi in the off record, rather than being
+// exported on another program's version. Every fake here prints 9.9.9. A pi
+// under another name is probed as pi (also TestBuildPiCommand_ProbesPiOnThePanesPath).
+func TestBuildPiCommand_ACommandThatRunsPiThroughAnotherProgramIsNotProbed(t *testing.T) {
+	piSocketShortData(t)
+	installPiExtension(t)
+	proc := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", proc+":/usr/bin:/bin")
+	for _, name := range []string{"node", "node22", "npm", "npx", "bun", "bash", "mypi", "pipx", "pi-nightly", "pi2", "pi_dev"} {
+		if err := os.WriteFile(filepath.Join(proc, name), []byte("#!/bin/sh\necho 9.9.9\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	absNode := filepath.Join(proc, "node")
+	for _, tc := range []struct {
+		command string
+		probed  bool
+	}{
+		{"node /opt/pi/cli.js", false},
+		{absNode + " /opt/pi/cli.js", false},
+		{"env node /opt/pi/cli.js", false},
+		{"node22 cli.js", false},
+		{"npm exec pi", false},
+		{"npx pi", false},
+		{"bun x pi", false},
+		{"bash -c 'exec pi'", false},
+		{"mypi", false},
+		{"pipx run pi", false},
+		{"pi-nightly", true},
+		{"pi2 --model small", true},
+		{"env pi_dev", true},
+	} {
+		inst := &Instance{ID: "inst-wrapped", Tool: "pi", IdentityInjectionDisabled: true}
+		buf := captureSessionLogJSON(t)
+		got := inst.buildPiCommand(tc.command)
+		recs := piSocketOffRecords(t, buf)
+		if !tc.probed {
+			if exportsPiSocket(got) || inst.PiSocketExported {
+				t.Errorf("buildPiCommand(%q) = %q, PiSocketExported %v: the socket was exported on another program's version", tc.command, got, inst.PiSocketExported)
+			}
+			if len(recs) != 1 || recs[0]["reason"] != "pi_command_not_pi" || recs[0]["detail"] == "" {
+				t.Errorf("buildPiCommand(%q) off records = %v, want one pi_command_not_pi with a detail", tc.command, recs)
+			}
+			continue
+		}
+		want := "AGENTDECK_PI_SOCKET=" + expectedPiSocketPath(t, sessionProfileEnvValue(), inst.ID)
+		if !strings.Contains(got, want) || len(recs) != 0 {
+			t.Errorf("buildPiCommand(%q) = %q (off records %v), want it probed as pi and exporting %q", tc.command, got, recs, want)
+		}
+	}
+}
