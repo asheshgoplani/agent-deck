@@ -721,6 +721,38 @@ on_exit() {
 	exit "$rc"
 }
 
+# create_hint <az stderr file>: one plain hint line for the create failures
+# a new subscription hits. Only config values and a namespace name are
+# printed, never anything secret.
+create_hint() {
+	local f="$1" alt ns
+	if grep -q -e RequestDisallowedByAzure -e 'not accepting new customers' "$f"; then
+		alt=swedencentral
+		[ "$C_LOCATION" = swedencentral ] && alt=northeurope
+		say "hint: region $C_LOCATION is not taking new customers; set location = $alt (or run agent-deck provider connect azure)"
+	elif grep -q SkuNotAvailable "$f"; then
+		say "hint: $C_SIZE is not offered in $C_LOCATION; set vm_size = Standard_B2als_v2 or see az vm list-skus -l $C_LOCATION --size $(printf '%s' "$C_SIZE" | sed -E 's/^([Ss]tandard_[A-Za-z]+[0-9]+).*/\1/')"
+	elif grep -q MissingSubscriptionRegistration "$f"; then
+		ns="$(sed -n "s/.*namespace '\([A-Za-z.]*\)'.*/\1/p" "$f" | head -n 1)"
+		say "hint: the subscription owner must run az provider register --namespace ${ns:-<namespace>} (agent-deck provider connect azure does this)"
+	fi
+	return 0
+}
+
+# az_create <what failed> <az args...>: one create call of do_create. az's
+# stderr is shown as it is; on failure a hint may follow, then the exit
+# rolls back.
+az_create() {
+	local what="$1" rc=0
+	shift
+	azc "$@" 2>"$WORK/az.err" || rc=$?
+	cat "$WORK/az.err" >&2
+	[ "$rc" -eq 0 ] && return 0
+	say "$what"
+	create_hint "$WORK/az.err"
+	exit 1
+}
+
 ssh_vm() {
 	local strict=yes
 	[ -s "$CREATE_KEYDIR/known_hosts" ] || strict=accept-new
@@ -813,30 +845,33 @@ do_create() {
 	# exactly what this run made.
 	CREATE_ID="$id"
 	say "creating $id in $C_RG ($C_LOCATION, $C_SIZE), ssh from $SOURCE"
-	azc network nsg create --resource-group "$C_RG" --name "$id-nsg" --location "$C_LOCATION" \
-		--tags "${TAGS[@]}" --output none || die "creating the network security group failed"
-	azc network nsg rule create --resource-group "$C_RG" --nsg-name "$id-nsg" --name allow-ssh-agent-deck \
+	az_create "creating the network security group failed" \
+		network nsg create --resource-group "$C_RG" --name "$id-nsg" --location "$C_LOCATION" \
+		--tags "${TAGS[@]}" --output none
+	az_create "creating the ssh rule failed" \
+		network nsg rule create --resource-group "$C_RG" --nsg-name "$id-nsg" --name allow-ssh-agent-deck \
 		--priority 100 --direction Inbound --access Allow --protocol Tcp \
 		--source-address-prefixes "$SOURCE" --source-port-ranges '*' --destination-port-ranges 22 \
-		--output none || die "creating the ssh rule failed"
-	azc network vnet create --resource-group "$C_RG" --name "$id-vnet" --location "$C_LOCATION" \
+		--output none
+	az_create "creating the virtual network failed" \
+		network vnet create --resource-group "$C_RG" --name "$id-vnet" --location "$C_LOCATION" \
 		--address-prefixes 10.77.0.0/24 --subnet-name default --subnet-prefixes 10.77.0.0/24 \
-		--tags "${TAGS[@]}" --output none || die "creating the virtual network failed"
-	azc network public-ip create --resource-group "$C_RG" --name "$id-ip" --location "$C_LOCATION" \
-		--sku Standard --allocation-method Static --tags "${TAGS[@]}" --output none ||
-		die "creating the public IP failed"
-	azc network nic create --resource-group "$C_RG" --name "$id-nic" --location "$C_LOCATION" \
+		--tags "${TAGS[@]}" --output none
+	az_create "creating the public IP failed" \
+		network public-ip create --resource-group "$C_RG" --name "$id-ip" --location "$C_LOCATION" \
+		--sku Standard --allocation-method Static --tags "${TAGS[@]}" --output none
+	az_create "creating the network interface failed" \
+		network nic create --resource-group "$C_RG" --name "$id-nic" --location "$C_LOCATION" \
 		--vnet-name "$id-vnet" --subnet default --public-ip-address "$id-ip" \
-		--network-security-group "$id-nsg" --tags "${TAGS[@]}" --output none ||
-		die "creating the network interface failed"
-	azc vm create --resource-group "$C_RG" --name "$id" --location "$C_LOCATION" \
+		--network-security-group "$id-nsg" --tags "${TAGS[@]}" --output none
+	az_create "creating the VM failed" \
+		vm create --resource-group "$C_RG" --name "$id" --location "$C_LOCATION" \
 		--nics "$id-nic" --image "$C_IMAGE" --size "$C_SIZE" \
 		--admin-username "$C_USER" --authentication-type ssh \
 		--ssh-key-values "$CREATE_KEYDIR/id_ed25519.pub" \
 		--os-disk-name "$id-osdisk" --os-disk-size-gb "$C_DISK_GB" --storage-sku StandardSSD_LRS \
 		--os-disk-delete-option Delete \
-		--custom-data "$WORK/custom-data.yaml" --tags "${TAGS[@]}" --output none ||
-		die "creating the VM failed"
+		--custom-data "$WORK/custom-data.yaml" --tags "${TAGS[@]}" --output none
 
 	azc vm show --show-details --resource-group "$C_RG" --name "$id" --output json >"$WORK/vm.json" ||
 		die "az vm show failed"

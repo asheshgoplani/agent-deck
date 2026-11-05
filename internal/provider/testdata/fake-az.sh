@@ -12,6 +12,15 @@
 # Env:
 #   FAKE_AZ_FAIL    "<words>": fail the call whose leading words match, for
 #                   example "vm create" or "vm run-command"
+#   FAKE_AZ_FAIL_WITH  the error FAKE_AZ_FAIL gives, in az's real words
+#                   (smoke test on a new subscription, 2026-11-05):
+#                   region_closed      RequestDisallowedByAzure, region not
+#                                      accepting new customers
+#                   sku_not_available  vm create: SkuNotAvailable (az's
+#                                      traceback, tracking id faked)
+#                   not_registered     MissingSubscriptionRegistration for
+#                                      Microsoft.Network
+#                   default: "(FakeFailure) <words> failed on purpose"
 #   FAKE_AZ_READY   "no": run-command reports cloud-init did not finish
 #   FAKE_VM_IP      the VMs' public IP (default 192.0.2.10)
 #   FAKE_AZ_UNTAG_AFTER_LIST  a resource name whose tags are dropped right
@@ -49,7 +58,33 @@ def fail(msg, code=1):
 
 cmdline = " ".join(words)
 f = os.environ.get("FAKE_AZ_FAIL", "")
+Q = chr(39)
+REAL_ERRORS = {
+    "region_closed": (
+        "({c}) Resource {q}{n}{q} was disallowed by Azure: The selected region is currently not accepting new customers: https://aka.ms/locationineligible.\n"
+        "Code: {c}\n"
+        "Message: Resource {q}{n}{q} was disallowed by Azure: The selected region is currently not accepting new customers: https://aka.ms/locationineligible.\n"
+        "Target: {n}"),
+    "sku_not_available": (
+        "The command failed with an unexpected error. Here is the traceback:\n"
+        "ERROR: The content for this response was already consumed\n"
+        "azure.core.exceptions.HttpResponseError: (InvalidTemplateDeployment) The template deployment {q}vm_deploy_FakeDeployment0000000000000000000{q} is not valid according to the validation procedure. The following resource provider(s) - {q}Microsoft.Compute/virtualMachines (2026-04-01){q} reported preflight validation errors. Tracking id is {q}6f0c2a51-0000-4000-8000-00000000f101{q}. See inner errors for details.\n"
+        "Code: InvalidTemplateDeployment\n"
+        "Exception Details:\t(SkuNotAvailable) The requested VM size for resource {q}Following SKUs have failed for Capacity Restrictions: {s}{q} is currently not available in location {q}{l}{q}. Please try another size or deploy to a different location or different zone. See https://aka.ms/azureskunotavailable for details.\n"
+        "\tCode: SkuNotAvailable\n"
+        "RuntimeError: The content for this response was already consumed"),
+    "not_registered": (
+        "(MissingSubscriptionRegistration) The subscription is not registered to use namespace {q}Microsoft.Network{q}. See https://aka.ms/rps-not-found for how to register subscriptions.\n"
+        "Code: MissingSubscriptionRegistration\n"
+        "Message: The subscription is not registered to use namespace {q}Microsoft.Network{q}. See https://aka.ms/rps-not-found for how to register subscriptions.\n"
+        "Exception Details:\t(MissingSubscriptionRegistration) The subscription is not registered to use namespace {q}Microsoft.Network{q}. See https://aka.ms/rps-not-found for how to register subscriptions.\n"
+        "\tCode: MissingSubscriptionRegistration\n"
+        "\tTarget: Microsoft.Network"),
+}
 if f and cmdline.startswith(f):
+    kind = os.environ.get("FAKE_AZ_FAIL_WITH", "")
+    if kind in REAL_ERRORS:
+        fail(REAL_ERRORS[kind].format(q=Q, c="RequestDisallowedByAzure", n=opt("--name"), s=opt("--size"), l=opt("--location")))
     fail("(FakeFailure) %s failed on purpose" % f)
 
 path = os.path.join(s, "resources.json")

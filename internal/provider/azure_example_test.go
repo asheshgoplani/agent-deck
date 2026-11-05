@@ -893,3 +893,46 @@ func TestAzureExampleProvider_DestroyTakesEachIDWhole(t *testing.T) {
 		t.Fatalf("resources left: %+v", rs)
 	}
 }
+
+// A new subscription's create failures (smoke test, 2026-11-05) get one
+// plain hint line after az's own error, which stays as it is.
+func TestAzureExampleProvider_CreateFailureHints(t *testing.T) {
+	cases := []struct{ name, fail, with, want string }{
+		{"region closed", "network nsg create", "region_closed",
+			"azure-vm provider: hint: region westeurope is not taking new customers; set location = swedencentral (or run agent-deck provider connect azure)"},
+		{"size not offered", "vm create", "sku_not_available",
+			"azure-vm provider: hint: Standard_B2s is not offered in westeurope; set vm_size = Standard_B2als_v2 or see az vm list-skus -l westeurope --size Standard_B2"},
+		{"namespace not registered", "network nsg create", "not_registered",
+			"azure-vm provider: hint: the subscription owner must run az provider register --namespace Microsoft.Network (agent-deck provider connect azure does this)"},
+		{"other failure: no hint", "vm create", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newAzWorld(t, azBaseConf(""))
+			w.extraEnv = []string{"FAKE_AZ_FAIL=" + tc.fail, "FAKE_AZ_FAIL_WITH=" + tc.with}
+			_, stderr, err := w.run(t, "create", azCreateReq)
+			if err == nil {
+				t.Fatal("create succeeded")
+			}
+			hints := 0
+			for _, l := range strings.Split(stderr, "\n") {
+				if strings.HasPrefix(l, "azure-vm provider: hint: ") {
+					hints++
+					if l != tc.want {
+						t.Errorf("hint line:\n%s\nwant:\n%s", l, tc.want)
+					}
+				}
+			}
+			if want := map[bool]int{true: 1, false: 0}[tc.want != ""]; hints != want {
+				t.Fatalf("%d hint lines, want %d\nstderr:\n%s", hints, want, stderr)
+			}
+			// az's own error is still shown, and the rollback still runs
+			if !strings.Contains(stderr, "ERROR: ") || !strings.Contains(stderr, "rollback done") {
+				t.Fatalf("stderr:\n%s", stderr)
+			}
+			if strings.Contains(stderr, azFakeSecret) {
+				t.Fatal("the secret is in stderr")
+			}
+		})
+	}
+}
