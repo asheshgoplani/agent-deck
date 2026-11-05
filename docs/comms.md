@@ -594,7 +594,12 @@ only when `pi --version` (run on the launch's own PATH, every launch) is at
 least 1.2.0 and the extension is current; otherwise a local launch sets it empty
 (so a pane cannot inherit one), and one `pi_wake_socket off` line says why;
 `agent-deck pi-hooks status` runs the same checks for a launch made now, on the
-profile's path and the spawn PATH. The extension check reads
+profile's path and the spawn PATH. Only a command whose program is named as
+pi (`pi`, `pi-nightly`, `pi2`, or a path ending in one) is probed: one that runs
+pi through another program (`node cli.js`, `npx pi`, `bash -c 'exec pi'`, a
+wrapper script) is not, since that program's own `--version` says nothing
+about pi's, so its socket stays off (`pi_command_not_pi`) and its wakes stay
+typed. The extension check reads
 the command's own `PI_CODING_AGENT_DIR` when it sets one, else agent-deck's. A
 wake is one NDJSON frame
 `{"v":1,"id":<nonce>,"line":<wake line>,"ids":[<record ids>]}`. The nonce is a
