@@ -1,9 +1,11 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
@@ -317,6 +320,55 @@ func inboxDoorbellIDs(parentID, message string) []string {
 	return ids
 }
 
+// piWakeFrameCap is the extension's frame limit, newline included; it refuses
+// a larger frame for good.
+const piWakeFrameCap = 4096
+
+// fitPiWakeFrame makes a doorbell frame the extension takes: the line without
+// the control characters it strips (Go's encoder would spend six bytes on
+// each) and held to comms.WakeLineBytes on a rune boundary, as the extension
+// holds it, and ids dropped from the front until the frame fits
+// piWakeFrameCap (the inbox doorbell's are oldest first; a ledger wake's line
+// of at most 900 bytes names few enough records that its ids always fit).
+// The ids feed only the extension's duplicate window; the records the wake
+// announces ride the run start whatever the frame names. The last id is
+// always kept, since a frame needs one.
+func fitPiWakeFrame(nonce, line string, ids []string) (string, []string) {
+	line = strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\t') || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, line)
+	if len(line) > comms.WakeLineBytes {
+		cut := comms.WakeLineBytes
+		for cut > 0 && !utf8.RuneStart(line[cut]) {
+			cut--
+		}
+		line = line[:cut]
+	}
+	for len(ids) > 1 && piWakeFrameSize(nonce, line, ids) > piWakeFrameCap {
+		ids = ids[1:]
+	}
+	return line, ids
+}
+
+// piWakeFrameSize is the encoded size of the frame send.SendPiWake writes for
+// these fields: the same shape, encoded the same way (no HTML escaping), with
+// its newline.
+func piWakeFrameSize(nonce, line string, ids []string) int {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(struct {
+		V    int      `json:"v"`
+		ID   string   `json:"id"`
+		Line string   `json:"line"`
+		IDs  []string `json:"ids"`
+	}{1, nonce, line, ids})
+	return b.Len()
+}
+
 // piWakeLeg rings the doorbell over the socket and decides, from what came
 // back, what the records and the line become (design B, J). Nothing here holds
 // the consumer lock. The wake record is spooled from here with the real
@@ -336,7 +388,8 @@ func piWakeLeg(o wakeOpts, origin string, parent *Instance, profile, line, nonce
 	ctx, cancel := context.WithTimeout(context.Background(), piWakeLegTimeout)
 	defer cancel()
 	panes, treeErr := piWakePanePIDs(parent)
-	res, err := send.SendPiWake(ctx, send.PiWakeTarget{Path: piWakeSocketFor(profile, parent.ID)}, nonce, line, ids,
+	frameLine, frameIDs := fitPiWakeFrame(nonce, line, ids)
+	res, err := send.SendPiWake(ctx, send.PiWakeTarget{Path: piWakeSocketFor(profile, parent.ID)}, nonce, frameLine, frameIDs,
 		send.PiWakeOptions{PanePIDs: panes})
 	out := wakeOutcome{Via: "socket"}
 	var unavailable *send.Unavailable
