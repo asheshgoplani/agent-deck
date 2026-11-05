@@ -881,6 +881,11 @@ func TestPiWakeSocket_PathOver103BytesIsDisabledWithReason(t *testing.T) {
 	if got := piReasonOf(t, err); got != "socket_path_too_long" {
 		t.Errorf("VetPiSocket reason = %q, want socket_path_too_long", got)
 	}
+	// No listener can hold a path this long, so nobody is behind it.
+	var unavail *Unavailable
+	if !errors.As(err, &unavail) || !unavail.Absent {
+		t.Errorf("VetPiSocket Absent = false for an overlong path, want true: no listener can hold it")
+	}
 	if err != nil && !strings.Contains(err.Error(), "103") {
 		t.Errorf("VetPiSocket says %q; a status line needs the limit in the reason", err)
 	}
