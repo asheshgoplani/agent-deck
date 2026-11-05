@@ -547,18 +547,15 @@ func TestCommsDeliver_PiPostWriteRefusalNeverTypes(t *testing.T) {
 	}
 }
 
-// A client-local refusal (an empty nonce or id, an over-cap line) is a refusal
-// like any other: nothing is typed, and a wake record names the reason.
+// A client-local refusal (an empty nonce or id) is a refusal like any other:
+// nothing is typed, and a wake record names the reason. An over-cap line is not
+// refused: the leg fits it to the frame first (TestPiWakeLeg_FitsTheFrameTheExtensionTakes).
 func TestCommsDeliver_PiClientLocalRefusalTypesNothing(t *testing.T) {
 	line := comms.WakePrefix + " 1 pending (1 urgent; data): [urgent] kid (pi) #ABC123: «done»"
 	nonce := "01J0ABCDEF0123456789ABCDEF"
 	for name, call := range map[string]func(w *piWakeFx) error{
 		"an empty nonce": func(w *piWakeFx) error { _, e := wakeSend(w.parent, "default", line, "", []string{"r1"}); return e },
 		"an empty id":    func(w *piWakeFx) error { _, e := wakeSend(w.parent, "default", line, nonce, []string{""}); return e },
-		"an over-cap line": func(w *piWakeFx) error {
-			_, e := wakeSend(w.parent, "default", strings.Repeat("x", 5000), nonce, []string{"r1"})
-			return e
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newPiWakeFixture(t, replyWith("submitted"))
