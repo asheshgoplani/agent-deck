@@ -502,3 +502,41 @@ func TestAttachOutputNoticeCannotEndTheTitleEarly(t *testing.T) {
 		t.Fatalf("the title carries a terminator or an escape: %q", got)
 	}
 }
+
+// ASK-201: with tmux 3.5 or newer on the host (and a local tmux in between),
+// the terminal is asked for modifyOtherKeys mode 2 and sends Ctrl+V as
+// ESC[27;5;118~, or as CSI u (ESC[118;5u). Terminals that paste an
+// image-only clipboard as an empty bracketed paste (Cmd+V) send
+// ESC[200~ESC[201~. Each is the owner's image paste.
+func TestRemoteImagePaste_CtrlVInEveryEncodingAndAnEmptyPaste(t *testing.T) {
+	for _, key := range []string{"\x1b[27;5;118~", "\x1b[118;5u", "\x1b[118;5:1u", "\x1b[200~\x1b[201~"} {
+		rec := &pasteRecorder{}
+		input := sshAttachInput{writer: rec, paste: newTestPaste(rec, pngBytes, nil, "claude", false)}
+		if _, err := input.forward([]byte(key)); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, func() bool { typed, _, _ := rec.snapshot(); return typed != "" })
+		typed, _, uploads := rec.snapshot()
+		if want := "@/home/u/.agent-deck/profiles/default/macapp-uploads/s1/A.png "; typed != want || uploads != 1 {
+			t.Errorf("%q: typed %q, %d uploads; want the host path and one upload", key, typed, uploads)
+		}
+	}
+}
+
+// Without an image, each of those keys reaches the host exactly as typed.
+func TestRemoteImagePaste_OtherEncodingsWithoutAnImagePassUnchanged(t *testing.T) {
+	for _, key := range []string{"\x1b[27;5;118~", "\x1b[118;5u", "\x1b[200~\x1b[201~", "\x1b[118;6u", "\x1b[27;5;117~"} {
+		rec := &pasteRecorder{}
+		image := pngBytes
+		if strings.HasPrefix(key, "\x1b[200~") || key == "\x1b[27;5;118~" || key == "\x1b[118;5u" {
+			image = nil
+		}
+		input := sshAttachInput{writer: rec, paste: newTestPaste(rec, image, nil, "claude", false)}
+		if _, err := input.forward([]byte(key)); err != nil {
+			t.Fatal(err)
+		}
+		if typed, _, uploads := rec.snapshot(); typed != key || uploads != 0 {
+			t.Errorf("%q: typed %q, %d uploads; want it forwarded unchanged", key, typed, uploads)
+		}
+	}
+}

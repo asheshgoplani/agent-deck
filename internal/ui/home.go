@@ -5604,6 +5604,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			case item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil:
 				if req, ok := buildRemoteAttachRequest(item.RemoteName, item.RemoteSession.ID, openAs); ok {
+					// The window runs this machine's `agent-deck remote
+					// attach`, not a raw ssh line, so Ctrl+V image paste
+					// works there as after Enter (ASK-201).
+					if exe, err := os.Executable(); err == nil {
+						req.Remote.LocalCLI = exe
+						req.Remote.LocalProfile = h.profile
+						req.Remote.RemoteName = item.RemoteName
+					}
 					if err := h.openInNewWindow(req, true); err != nil {
 						h.setError(fmt.Errorf("open remote in new window: %w", err))
 					}

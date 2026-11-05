@@ -227,10 +227,37 @@ func pastedPaths(paths []string, tool string) string {
 	return strings.Join(parts, " ") + " "
 }
 
+// imagePasteKeys are the ways one read of the owner's keys can be an image
+// paste (ASK-201): Ctrl+V as a control byte; as xterm modifyOtherKeys mode 2
+// (tmux 3.5 and newer ask the terminal for it, and a local tmux in between
+// re-encodes the key the same way); as CSI u, with or without the press
+// event type; and an empty bracketed paste, which a terminal sends for Cmd+V
+// over a clipboard that holds only a picture when it pastes the clipboard's
+// (empty) text (Claude Code's own macOS image paste reacts to the same).
+var imagePasteKeys = []string{
+	"\x16",
+	"\x1b[27;5;118~",
+	"\x1b[118;5u",
+	"\x1b[118;5:1u",
+	"\x1b[200~\x1b[201~",
+}
+
+// isImagePasteKey reports whether data, one whole read, is one of
+// imagePasteKeys. A key inside a longer read (typed text, a paste with
+// content) is never one.
+func isImagePasteKey(data []byte) bool {
+	for _, key := range imagePasteKeys {
+		if string(data) == key {
+			return true
+		}
+	}
+	return false
+}
+
 // take reports whether data (one read of the owner's keys) is a Ctrl+V this
 // paste handles; false leaves it to be forwarded as it is.
 func (p *remoteImagePaste) take(data []byte) bool {
-	if p == nil || len(data) != 1 || data[0] != 0x16 {
+	if p == nil || !isImagePasteKey(data) {
 		return false
 	}
 	p.mu.Lock()
