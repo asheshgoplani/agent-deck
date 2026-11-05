@@ -941,6 +941,8 @@ func FetchChangelog() (string, error) {
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	// #nosec G704 -- url is the fixed GitHub CHANGELOG URL, or the
+	// AGENTDECK_CHANGELOG_URL the operator set (tests, the sandbox simulation).
 	resp, err := client.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch changelog: %w", err)

@@ -566,11 +566,14 @@ func FetchChangelog(ctx context.Context) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// #nosec G704 -- src is the fixed GitHub CHANGELOG URL, or the
+	// AGENTDECK_CHANGELOG_URL the operator set (tests, the sandbox
+	// simulation); nothing request- or user-supplied reaches it.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 	if err != nil {
 		return "", fmt.Errorf("building changelog request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- same constrained destination as the request above
 	if err != nil {
 		return "", fmt.Errorf("fetching changelog: %w", err)
 	}
