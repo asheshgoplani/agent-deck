@@ -80,7 +80,7 @@ func (s *Session) NewShellWindow(workdir string) error {
 	// after-new-window hook explicitly installed (-o). Option configuration
 	// is best effort: an invalid override applies nothing (value logs it)
 	// and must not report failure and invite a duplicate tab.
-	args = windowPolicyArgs([]string{windowID}, s.OptionOverrides, hostTmuxVersionString(), "set-window-option", "-oq")
+	args = windowPolicyArgs([]string{windowID}, s.OptionOverrides, socketTmuxVersionString(s.SocketName), "set-window-option", "-oq")
 	if len(args) == 0 {
 		return nil
 	}

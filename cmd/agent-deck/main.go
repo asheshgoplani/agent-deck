@@ -472,6 +472,8 @@ func main() {
 	// calls use Instance.TmuxSocketName directly — this default is only
 	// the installation-wide fallback for callers without a session handle.
 	tmux.SetDefaultSocketName(session.GetTmuxSettings().GetSocketName())
+	// [tmux.binaries]: the tmux binary per socket, for every tmux call.
+	tmux.SetSocketBinaries(session.GetTmuxSettings().Binaries)
 	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
 		session.ConfigureTmuxDisplay(cfg.Display)
 	}

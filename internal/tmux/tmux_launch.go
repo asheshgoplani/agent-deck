@@ -206,6 +206,8 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	}
 
 	unitBase := serviceUnitBase(s.Name)
+	// The socket's own binary ([tmux.binaries]); "tmux" when it has none.
+	bin := BinaryFor(s.SocketName)
 
 	switch s.resolveLaunchMode() {
 	case launchModeService:
@@ -230,7 +232,7 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 			// sibling panes) when the unit is stopped.
 			"--property=KillMode=none",
 			"--property=TimeoutStopSec=15s",
-			"tmux",
+			bin,
 		}
 		svcArgs = append(svcArgs, tmuxArgs...)
 		return "systemd-run", svcArgs
@@ -242,13 +244,13 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 		// sibling sessions) with it.
 		scopeArgs := []string{
 			"--user", "--scope", "--quiet", "--collect", "--unit", unitBase,
-			"--property=KillMode=none", "tmux",
+			"--property=KillMode=none", bin,
 		}
 		scopeArgs = append(scopeArgs, tmuxArgs...)
 		return "systemd-run", scopeArgs
 
 	default:
-		return "tmux", tmuxArgs
+		return bin, tmuxArgs
 	}
 }
 
@@ -256,13 +258,15 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 // from the bare tmux args. Used by the three-tier fallback in Start()
 // when service-mode spawn fails and we retry with scope mode before
 // falling all the way back to direct tmux.
-func buildScopeArgsFromTmuxArgs(sessionName string, tmuxArgs []string) []string {
+//
+// bin is the tmux binary systemd-run execs (BinaryFor the session's socket).
+func buildScopeArgsFromTmuxArgs(sessionName, bin string, tmuxArgs []string) []string {
 	unitBase := serviceUnitBase(sessionName)
 	// Keep the service → scope fallback just as safe as an explicitly
 	// selected scope. Otherwise a transient service failure would silently
 	// reintroduce a per-session cgroup that can kill a shared server.
 	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitBase,
-		"--property=KillMode=none", "tmux"}
+		"--property=KillMode=none", bin}
 	return append(scopeArgs, tmuxArgs...)
 }
 
@@ -329,9 +333,16 @@ func wasScopeModeArgs(args []string) bool {
 //
 // A "--property=..." value never equals "tmux" as a whole arg (they are
 // single KEY=VALUE tokens), so the scan is unambiguous.
-func stripSystemdRunPrefix(args []string) []string {
+//
+// bin is the binary startCommandSpec put there (BinaryFor the session's
+// socket: "tmux", or a configured path); "" means "tmux".
+func stripSystemdRunPrefix(args []string, bin ...string) []string {
+	want := defaultTmuxBinary
+	if len(bin) > 0 && bin[0] != "" {
+		want = bin[0]
+	}
 	for i, a := range args {
-		if a == "tmux" {
+		if a == want {
 			return args[i+1:]
 		}
 	}

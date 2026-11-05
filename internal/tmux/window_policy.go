@@ -156,7 +156,7 @@ func windowPolicyArgs(targets []string, overrides map[string]string, tmuxVersion
 // invalid is neither applied nor published, so the hook (which tests the
 // option with `if-shell -F`) leaves that option alone.
 func (s *Session) windowPolicyStartArgs() []string {
-	tmuxVersion := hostTmuxVersionString()
+	tmuxVersion := socketTmuxVersionString(s.SocketName)
 	args := make([]string, 0, len(windowPolicyOptions)*14)
 	for _, option := range windowPolicyOptions {
 		value, ok := option.value(s.OptionOverrides, tmuxVersion)
@@ -279,19 +279,14 @@ func hostTmuxVersionString() string {
 	return hostTmuxVersion
 }
 
-// hostTmuxSupportsHookArrays reports whether the host tmux has array hooks.
-func hostTmuxSupportsHookArrays() bool {
-	return tmuxSupportsHookArrays(hostTmuxVersionString())
-}
-
 // installWindowPolicyHook is Start()'s best-effort install of the hook on
 // the session's server. On a tmux without array hooks it does nothing: the
 // initial window already has the policy from Start() and NewShellWindow
 // covers Deck-opened windows; only hand-opened windows miss it there.
 func (s *Session) installWindowPolicyHook() {
-	if !hostTmuxSupportsHookArrays() {
+	if ver := socketTmuxVersionString(s.SocketName); !tmuxSupportsHookArrays(ver) {
 		statusLog.Info("window_policy_hook_skipped",
-			slog.String("tmux_version", hostTmuxVersion), slog.String("requires", hookArrayMinTmuxVersion))
+			slog.String("tmux_version", ver), slog.String("requires", hookArrayMinTmuxVersion))
 		return
 	}
 	state, err := InstallWindowPolicyHook(s.SocketName)

@@ -779,7 +779,7 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		startTime: startTime,
 		ioErrors:  ioErrors,
 
-		tmuxIgnoresColorReplies: !tmuxParsesColorReplies(hostTmuxVersionString()),
+		tmuxIgnoresColorReplies: !tmuxParsesColorReplies(socketTmuxVersionString(s.SocketName)),
 	}
 	wg.Add(1)
 	go func() {

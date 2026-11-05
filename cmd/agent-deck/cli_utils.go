@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
@@ -80,11 +81,20 @@ const tmuxProbeTimeout = 3 * time.Second
 func tmuxProbeBounded(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxProbeTimeout)
 	defer cancel()
-	// #nosec G204 -- "tmux" is a fixed binary and args are passed as an argv
-	// slice, never through a shell; callers supply only internal tmux probes.
-	cmd := exec.CommandContext(ctx, "tmux", tmuxutf8.Prepend(args)...)
+	// These probes reach the server named by $TMUX, so they run that socket's
+	// binary ([tmux.binaries]); a tmux client only talks to a server of its
+	// own version.
+	// #nosec G204 -- "tmux" or the user's configured path, and args are passed
+	// as an argv slice, never through a shell; callers supply only internal tmux probes.
+	cmd := exec.CommandContext(ctx, tmuxBinaryForEnv(), tmuxutf8.Prepend(args)...)
 	cmd.WaitDelay = 2 * time.Second
 	return cmd.Output()
+}
+
+// tmuxBinaryForEnv returns the tmux binary for the server $TMUX names.
+func tmuxBinaryForEnv() string {
+	socketPath, _, _ := strings.Cut(os.Getenv("TMUX"), ",")
+	return tmux.BinaryForSocketPath(socketPath)
 }
 
 // guardedValueFlags are the flags checkFlagValueNotFlag will police: those whose

@@ -60,7 +60,7 @@ func sharedViewWindowTargets(socketName, sessionName string) []string {
 // attach.
 func ApplySharedViewSize(socketName, sessionName string, overrides map[string]string) {
 	targets := sharedViewWindowTargets(socketName, sessionName)
-	args := windowPolicyArgs(targets, overrides, hostTmuxVersionString(), "set-option", "-w", "-q")
+	args := windowPolicyArgs(targets, overrides, socketTmuxVersionString(socketName), "set-option", "-w", "-q")
 	if len(args) == 0 {
 		return
 	}

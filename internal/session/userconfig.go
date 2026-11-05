@@ -3948,6 +3948,22 @@ type TmuxSettings struct {
 	// Precedence at Instance creation: CLI flag `--tmux-socket <name>`
 	// wins, else this config value, else empty.
 	SocketName string `toml:"socket_name,omitempty"`
+
+	// Binaries maps a tmux -L socket name to the tmux binary agent-deck runs
+	// for every call on that socket: commands, new-session, attach, control
+	// pipes and the version probe. Sockets not listed, and the default
+	// server, run the "tmux" on PATH. A tmux client only talks to a server
+	// of its own version, so this lets a newer tmux (e.g. 3.6 for
+	// indic_zero_width_marks) serve one socket while older servers keep
+	// running, without changing PATH. Move a session onto that socket with
+	// `agent-deck session set <id> tmux-socket <name>` while it is stopped.
+	// Example:
+	//   [tmux]
+	//   socket_name = "deck36"
+	//   [tmux.binaries]
+	//   deck36 = "/usr/local/opt/tmux-3.6/bin/tmux"
+	// Default: empty (every socket runs "tmux" from PATH).
+	Binaries map[string]string `toml:"binaries,omitempty"`
 }
 
 // GetInjectStatusLine returns whether to inject status line, defaulting to true.
