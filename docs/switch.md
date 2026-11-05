@@ -1,7 +1,7 @@
 # Switch to a session
 
 `agent-deck switch <query>` shows a session in the AgentDeck Mac app, from any
-terminal, host or tool (voice skill: `skills/agent-deck-switch/SKILL.md`).
+terminal, host or tool (voice skill: `skills/agent-deck/references/switch.md`).
 
 ```bash
 agent-deck switch "api server"            # title, part of one, or group words

@@ -1,11 +1,6 @@
----
-name: agent-deck-switch
-description: Switch the AgentDeck app (or this terminal) to one agent-deck session by name. Use when the user says "go to X", "switch to X", "open X session", "take me to X", or in Hindi/Urdu "X par jao", "X pe chalo", "X par switch karo", "X pe switch karo", "X पर जाओ", "X पे चलो", where X names a session. Not for switching a session's account or harness (that is `agent-deck session switch`).
-metadata:
-  compatibility: "claude, codex, opencode"
----
+# Switch to a session by name (voice and chat)
 
-# Switch to a session
+Use when the user says "go to X", "switch to X", "open X session", "take me to X", or in Hindi/Urdu "X par jao", "X pe chalo", "X par switch karo", "X पर जाओ", "X पे चलो", where X names a session. Not for switching a session's account or harness (that is `agent-deck session switch`).
 
 1. Take the session name X from what the user said. Drop filler: "the", "session", "please", "wala", "wali", "वाला", "वाली", "par", "pe", "पर", "पे", "jao", "chalo", "switch karo", "go to", "switch to". Keep every number exactly as said.
 2. Run:
