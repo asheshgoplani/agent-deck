@@ -1025,7 +1025,7 @@ func (s *Session) Start(command string) error {
 	cmd.Env = withSocketBinaryPATH(s.SocketName, cmd.Env)
 	output, err := commandCombinedOutput(cmd)
 	if err != nil {
-		if launcher == "tmux" {
+		if isDirectTmuxLauncher(s.SocketName, launcher) {
 			if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
 				statusLog.Warn("tmux_stale_socket_recovery_failed",
 					slog.String("session", logging.SanitizeValue(s.Name)),

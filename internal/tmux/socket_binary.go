@@ -156,3 +156,11 @@ func newSessionSpawnCommand(socketName, launcher string, args ...string) *exec.C
 	cmd.Env = withSocketBinaryPATH(socketName, cmd.Env)
 	return cmd
 }
+
+// isDirectTmuxLauncher reports whether launcher (from startCommandSpec) is a
+// direct tmux spawn rather than systemd-run: "tmux", or the socket's
+// [tmux.binaries] path. Start keys its stale-socket recovery on it, so a
+// socket with its own binary keeps that recovery.
+func isDirectTmuxLauncher(socketName, launcher string) bool {
+	return launcher == defaultTmuxBinary || launcher == BinaryFor(socketName)
+}

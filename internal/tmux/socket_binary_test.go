@@ -147,3 +147,20 @@ func TestSocketBinaryClient_PutsItsDirFirstOnPATH(t *testing.T) {
 	assert.Contains(t, inherited, want)
 	assert.Contains(t, newSessionSpawnCommand("deck36", bin, "new-session").Env, "TMUX_TMPDIR=/nonexistent/tmuxdir")
 }
+
+// Start's stale-socket recovery runs for a direct spawn only. With a binary
+// configured for the socket, the direct launcher is that path, not "tmux",
+// and the recovery must still run.
+func TestIsDirectTmuxLauncher_SocketBinary(t *testing.T) {
+	const bin = "/opt/tmux-3.6/bin/tmux"
+	setSocketBinariesForTest(t, map[string]string{"deck36": bin})
+
+	assert.True(t, isDirectTmuxLauncher("", "tmux"))
+	assert.True(t, isDirectTmuxLauncher("deck36", bin))
+	assert.False(t, isDirectTmuxLauncher("deck36", "systemd-run"))
+	assert.False(t, isDirectTmuxLauncher("", "systemd-run"))
+
+	s := &Session{Name: "agentdeck_bin_1234abcd", WorkDir: "/tmp/project", LaunchAs: "direct", SocketName: "deck36"}
+	launcher, _ := s.startCommandSpec("/tmp/project", "")
+	assert.True(t, isDirectTmuxLauncher(s.SocketName, launcher), "direct launcher %q", launcher)
+}
