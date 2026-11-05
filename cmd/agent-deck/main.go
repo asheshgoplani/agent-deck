@@ -925,19 +925,8 @@ func main() {
 	// this guard only fires on the interactive TUI path. Headless web mode
 	// (--no-tui) skips it for the same reason: no TUI, no detach surprise.
 	if !webHeadless && isOuterTmuxWithoutOptIn() {
-		fmt.Fprintln(os.Stderr, "Error: The agent-deck TUI is designed to run OUTSIDE of tmux.")
-		fmt.Fprintln(os.Stderr, "You are inside a tmux session, so Ctrl+Q detach and nested")
-		fmt.Fprintln(os.Stderr, "tmux behavior will be surprising. agent-deck manages its own")
-		fmt.Fprintln(os.Stderr, "tmux sessions internally.")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Options:")
-		fmt.Fprintln(os.Stderr, "  • Detach from tmux (Ctrl+B d) and run agent-deck from a clean shell.")
-		fmt.Fprintln(os.Stderr, "  • Run CLI subcommands — they work fine inside tmux:")
-		fmt.Fprintln(os.Stderr, "      agent-deck list                    # List sessions")
-		fmt.Fprintln(os.Stderr, "      agent-deck add /path -t \"Title\"  # Add a new session")
-		fmt.Fprintln(os.Stderr, "      agent-deck session start <id>      # Start a session")
-		fmt.Fprintln(os.Stderr, "  • If you really want to run the TUI anyway, set:")
-		fmt.Fprintln(os.Stderr, "      AGENT_DECK_ALLOW_OUTER_TMUX=1 agent-deck")
+		// Same rows and words as the TUI quick check page (check_text.go).
+		fmt.Fprint(os.Stderr, outerTmuxRefusalText(tmuxVersionLine(), Version))
 		exitCLI(1)
 	}
 
@@ -983,7 +972,7 @@ func main() {
 	// Web parses its own flags and preflights during subcommand dispatch so
 	// help remains tmux-free and startup probes see the repaired PATH.
 	if !webEnabled {
-		ensureTmuxInPathOrExit()
+		ensureTmuxInPathOrExitTUI()
 	}
 
 	healthRole := "tui"
@@ -5396,6 +5385,17 @@ func isOuterTmuxWithoutOptIn() bool {
 		return false
 	}
 	return true
+}
+
+// ensureTmuxInPathOrExitTUI is ensureTmuxInPathOrExit for the TUI: the same
+// exit, printed as the quick check page (check_text.go) a new user would
+// otherwise see inside the TUI. CLI subcommands keep the short error.
+func ensureTmuxInPathOrExitTUI() {
+	if err := ensureTmuxInPath(); err != nil {
+		telemetry.ErrorOccurred(telemetry.AreaTmux, telemetry.KindTmuxMissing, "")
+		fmt.Fprint(os.Stderr, tmuxMissingCheckText(runtime.GOOS, Version, os.Getenv("PATH")))
+		exitCLI(1)
+	}
 }
 
 func ensureTmuxInPathOrExit() {
