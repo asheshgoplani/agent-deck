@@ -122,4 +122,9 @@ func copyExecutable(t *testing.T, from, to string) {
 	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// The create mode passes through the umask; the helper's user must be
+	// able to execute the copy whatever the umask is.
+	if err := os.Chmod(to, 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
