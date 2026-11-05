@@ -969,8 +969,12 @@ func DeduplicateDirnames(paths []string) []string {
 	result := make([]string, len(paths))
 	for i, p := range paths {
 		dirname := filepath.Base(p)
-		if renamed, ok := reservedMultiRepoNames[dirname]; ok {
-			dirname = renamed
+		// Case-insensitive: on macOS ".Claude" is the same entry as ".claude".
+		for reserved, renamed := range reservedMultiRepoNames {
+			if strings.EqualFold(dirname, reserved) {
+				dirname = renamed
+				break
+			}
 		}
 		n := seen[dirname]
 		candidate := dirname

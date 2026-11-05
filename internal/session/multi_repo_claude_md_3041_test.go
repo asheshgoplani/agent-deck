@@ -103,11 +103,39 @@ func TestWriteMultiRepoParentClaudeMDKeepsForeignFile_3041(t *testing.T) {
 }
 
 func TestDeduplicateDirnamesReservedNames_3041(t *testing.T) {
-	got := DeduplicateDirnames([]string{"/a/proj", "/home/u/.claude", "/b/dot-claude", "/c/x", "/d/x-1", "/e/x"})
-	assert.Equal(t, []string{"proj", "dot-claude", "dot-claude-1", "x", "x-1", "x-2"}, got)
+	got := DeduplicateDirnames([]string{"/a/proj", "/home/u/.claude", "/b/dot-claude", "/c/x", "/d/x-1", "/e/x", "/f/.Claude"})
+	assert.Equal(t, []string{"proj", "dot-claude", "dot-claude-1", "x", "x-1", "x-2", "dot-claude-2"}, got)
 	seen := map[string]bool{}
 	for _, n := range got {
 		assert.False(t, seen[n], "duplicate name %q", n)
 		seen[n] = true
 	}
+}
+
+// The real-directory guard on <parent>/.claude is what protects settings.json
+// and stops a new CLAUDE.md appearing in a linked user dir that has none
+// (sessions created before the fix keep their .claude link).
+func TestMultiRepoWritersRefuseSymlinkedClaudeDirWithoutClaudeMD_3041(t *testing.T) {
+	root := t.TempDir()
+	userClaude := filepath.Join(root, "user", ".claude")
+	require.NoError(t, os.MkdirAll(userClaude, 0o755))
+	const settingsSentinel = `{"permissions":{"allow":["Bash(sentinel)"]}}`
+	userSettings := filepath.Join(userClaude, "settings.json")
+	require.NoError(t, os.WriteFile(userSettings, []byte(settingsSentinel), 0o644))
+
+	parent := filepath.Join(root, "parent")
+	proj := filepath.Join(parent, "proj")
+	require.NoError(t, os.MkdirAll(filepath.Join(proj, ".claude"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(proj, ".claude", "settings.json"),
+		[]byte(`{"permissions":{"deny":["Bash(rm -rf *)"]}}`), 0o644))
+	require.NoError(t, os.Symlink(userClaude, filepath.Join(parent, ".claude")))
+
+	assert.Error(t, WriteMultiRepoParentClaudeMD(parent, []string{"proj"}))
+	assert.Error(t, WriteMultiRepoParentSettings(parent, []string{"proj"}))
+
+	_, err := os.Lstat(filepath.Join(userClaude, "CLAUDE.md"))
+	assert.True(t, os.IsNotExist(err), "CLAUDE.md was created in the user dir")
+	got, err := os.ReadFile(userSettings)
+	require.NoError(t, err)
+	assert.Equal(t, settingsSentinel, string(got), "user settings.json was overwritten")
 }
