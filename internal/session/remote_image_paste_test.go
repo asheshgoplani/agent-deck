@@ -229,14 +229,35 @@ func TestRemoteImagePaste_EditorsShellsAndDialogsKeepCtrlV(t *testing.T) {
 	}
 }
 
-func TestRemoteImagePaste_NoImageAsksTheRemoteNothing(t *testing.T) {
-	rec := &pasteRecorder{}
-	input := sshAttachInput{writer: rec, paste: newTestPaste(rec, nil, nil, "claude", false)}
-	_, _ = input.forward([]byte{0x16})
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	if rec.targets != 0 {
-		t.Fatalf("no image on the clipboard: no remote call (%d)", rec.targets)
+// On macOS a clipboard read that is not the user's own paste can raise the
+// pasteboard privacy prompt, so Ctrl+V reads the clipboard only over an
+// agent's composer, never in an editor, a shell, a dialog or an unreadable pane.
+func TestRemoteImagePaste_NoClipboardReadOutsideAnAgentComposer(t *testing.T) {
+	cases := []struct {
+		name, tool, pane string
+		err              error
+	}{
+		{"vim in a Claude session's pane", "claude", vimPane, nil},
+		{"a shell session", "shell", shellPane, nil},
+		{"Codex (no @path)", "codex", claudeComposerPane, nil},
+		{"Claude's permission dialog", "claude", claudeDialogPane, nil},
+		{"the pane cannot be read", "claude", "", errors.New("ssh: timeout")},
+	}
+	for _, tc := range cases {
+		rec := &pasteRecorder{}
+		p := newTestPasteOn(rec, pngBytes, nil, tc.tool, tc.pane, tc.err, false)
+		reads := 0
+		p.readImage = func() clipboardRead { reads++; return clipboardRead{data: pngBytes, ext: "png"} }
+		input := sshAttachInput{writer: rec, paste: p}
+		if _, err := input.forward([]byte{0x16}); err != nil {
+			t.Fatal(err)
+		}
+		if reads != 0 {
+			t.Fatalf("%s: the clipboard was read %d times; it must be read only over an agent's composer", tc.name, reads)
+		}
+		if typed, _, _ := rec.snapshot(); typed != "\x16" {
+			t.Fatalf("%s: Ctrl+V must reach the program as typed, got %q", tc.name, typed)
+		}
 	}
 }
 

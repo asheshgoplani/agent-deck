@@ -266,16 +266,20 @@ func (p *remoteImagePaste) take(data []byte) bool {
 	if busy {
 		return false // one upload at a time; a Ctrl+V meanwhile reaches the program as typed
 	}
-	clip := p.readImage()
-	if len(clip.data) == 0 && !clip.tooLarge && !clip.timedOut {
-		return false
-	}
+	// The composer check comes before the clipboard read. On macOS a read
+	// that is not the user's own paste can raise the pasteboard privacy
+	// prompt, so the clipboard is read only when the key will be taken as an
+	// image paste: never for Ctrl+V in an editor, a shell or a pager.
 	ctx, cancel := context.WithTimeout(context.Background(), pasteTargetTimeout)
 	tool, pane, err := p.target(ctx)
 	cancel()
 	agent := pasteAgent(tool)
 	if err != nil || agent == "" || !tmux.AgentComposerVisible(agent, pane) {
 		return false // not an agent's composer, or it cannot be told: the key goes on as typed
+	}
+	clip := p.readImage()
+	if len(clip.data) == 0 && !clip.tooLarge && !clip.timedOut {
+		return false
 	}
 	if clip.timedOut {
 		p.alertf(pasteClipboardSlowNotice())
