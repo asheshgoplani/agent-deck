@@ -618,6 +618,29 @@ const scenarios = {
     return out;
   },
 
+  // Three human runs, each injection with its own token: every run start
+  // carries the token of the injection just before it.
+  async two_runs_distinct() {
+    const rt = makeRuntime();
+    await rt.start();
+    release();
+    const out1 = path.join(DIR, "hook.out");
+    const tokenOut = (tok) => "context for the model\n<!-- agent-deck-delivery:" + tok + " -->\n";
+    fs.writeFileSync(out1, tokenOut("01J0DELIVERYTOKEN0000000T1"));
+    await rt.human("first prompt");
+    await rt.fire("agent_start");
+    rt.endRun();
+    fs.writeFileSync(out1, tokenOut("01J0DELIVERYTOKEN0000000T2"));
+    await rt.human("second prompt");
+    await rt.fire("agent_start");
+    rt.endRun();
+    fs.writeFileSync(out1, "plain context\n");
+    await rt.human("third prompt");
+    const out = { starts: hooksOf("before_agent_start") };
+    await rt.stop();
+    return out;
+  },
+
   // The run whose injection was dropped has no token to carry forward.
   async two_runs_dropped() {
     const rt = makeRuntime();
@@ -1941,6 +1964,23 @@ func TestPiWakeExtension_NextRunStartCarriesThePriorInjectedToken(t *testing.T) 
 			t.Errorf("the receipt was sent on a third run start as well: %v", h)
 		}
 	}
+}
+
+// With a distinct token per injection, each run start carries the one just
+// before it, so a lastInjected that stopped updating after its first value
+// (sending the first token again, or none) fails here.
+func TestPiWakeExtension_EachRunStartCarriesTheTokenOfTheInjectionBeforeIt(t *testing.T) {
+	res, _ := runPiWake(t, "two_runs_distinct", piWakeOpts{})
+	if n := lenAt(t, res, "starts"); n != 3 {
+		t.Fatalf("%d before_agent_start hooks, want 3", n)
+	}
+	if h, ok := get(t, res, "starts.0").(map[string]any); ok {
+		if _, has := h["prior_injected_token"]; has {
+			t.Errorf("the first run start has nothing to acknowledge: %v", h)
+		}
+	}
+	wantAt(t, res, "starts.1.prior_injected_token", "01J0DELIVERYTOKEN0000000T1")
+	wantAt(t, res, "starts.2.prior_injected_token", "01J0DELIVERYTOKEN0000000T2")
 }
 
 // An injection that was dropped (the hook failed) leaves no token to carry.
