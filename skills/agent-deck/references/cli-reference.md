@@ -786,6 +786,16 @@ agent-deck session switch-account "My Project" work
 
 Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`).
 
+### switch - Show any session in the Mac app
+
+```bash
+agent-deck switch "api server"          # id, id prefix, title, part of a title, group words
+agent-deck switch "voice 0956" --json   # {status, query, session, via, candidates, elapsed_ms}
+agent-deck switch docs --no-attach --wait 5s
+```
+
+Resolves exact id, unique id prefix, exact title (any case), then a fuzzy title and group match; numbers must match exactly and archived sessions are left out. On the Mac it opens `agentdeck://focus?session=<id>`; elsewhere it publishes `macapp.switch` and waits `--wait` (default 2s) for `macapp.switch.ack`. With no app it attaches in the terminal, or with `--json`/`--no-attach` reports `queued`. Exit 2 = no match, exit 3 = ambiguous (up to five `candidates`). Not `session switch`, which changes a session's harness or account. Details: `docs/switch.md`.
+
 ### open - Show a page in the macOS app Browser panel
 
 ```bash
@@ -1255,7 +1265,7 @@ In the TUI, remote sessions use the same status indicators and nested group tree
 agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
 agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
 agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--profile <name>]
-agent-deck remote <name> events publish --kind macapp.open.ack|macapp.browser.response|macapp.app.focus|macapp.ask.seen --session <id> --data-file - < reply.json
+agent-deck remote <name> events publish --kind macapp.open.ack|macapp.switch.ack|macapp.browser.response|macapp.app.focus|macapp.ask.seen --session <id> --data-file - < reply.json
 agent-deck remote <name> session send-status <send-id> --json
 ```
 
