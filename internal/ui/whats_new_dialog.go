@@ -66,6 +66,9 @@ type WhatsNewDialog struct {
 	ghReady   bool   // dry run "gh_ready" and a non-empty account
 	note      string // the CLI's "note" (dry run or post)
 	errLine   string // preparing/sending failure
+	// refusal is the CLI's error_code when its dry run refused the answer
+	// (ok:false: answered already, consent_required, ...): posting is off.
+	refusal   string
 	resultOK  bool
 	result    string
 	resultURL string // the posted comment's URL, shown on its own line
@@ -115,6 +118,8 @@ type whatsNewPreparedMsg struct {
 	ghReady bool
 	note    string
 	err     error
+	// refusal is the dry run's error_code when the CLI refused the answer.
+	refusal string
 }
 
 // whatsNewPostedMsg carries the result of posting the answer. uncertain
@@ -174,9 +179,28 @@ func runWhatsNewCLI(ctx context.Context, argv []string) ([]byte, error) {
 
 // whatsNewCLIEnv is the subprocess environment: agent-deck re-running
 // itself, so it keeps what the parent sees (CLAUDE_CONFIG_DIR, TELEGRAM_*)
-// minus CLAUDE_JOB_DIR.
+// minus CLAUDE_JOB_DIR, and minus the agent-session ids: a person pressed y
+// here, so the CLI must not take the post for an agent's (it treats a post
+// from inside a session with no terminal as one).
 func whatsNewCLIEnv() []string {
-	return append(childenv.ForSelfReexec(), "NO_COLOR=1")
+	var env []string
+	for _, kv := range childenv.ForSelfReexec() {
+		k, _, _ := strings.Cut(kv, "=")
+		if whatsNewDroppedEnv[k] {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "NO_COLOR=1")
+}
+
+// whatsNewDroppedEnv names the session ids (the agent-deck instance and the
+// tmux client it may be derived from) the subprocess does not inherit.
+var whatsNewDroppedEnv = map[string]bool{
+	"AGENTDECK_INSTANCE_ID": true,
+	"AGENT_DECK_SESSION_ID": true,
+	"TMUX":                  true,
+	"TMUX_PANE":             true,
 }
 
 // subprocessKilled reports a subprocess that ended on a signal (killed),
@@ -414,7 +438,7 @@ func (d *WhatsNewDialog) Update(msg tea.KeyMsg) (*WhatsNewDialog, tea.Cmd) {
 			d.toList()
 		case "e", "backspace":
 			d.step = whatsNewStepComment
-			d.errLine = ""
+			d.errLine, d.refusal = "", ""
 			d.comment.Focus()
 		case "y", "Y":
 			return d, d.send()
@@ -500,7 +524,7 @@ func (d *WhatsNewDialog) prepare() tea.Cmd {
 	d.stopInFlight()
 	d.step = whatsNewStepPreparing
 	d.comment.Blur()
-	d.body, d.errLine, d.note, d.account, d.ghReady = "", "", "", "", false
+	d.body, d.errLine, d.note, d.account, d.ghReady, d.refusal = "", "", "", "", false, ""
 	d.offset = 0
 	seq, exe, run := d.seq, d.exe, d.run
 	argv := d.feedbackArgv("", "--dry-run", "--json", "--yes")
@@ -515,7 +539,9 @@ func (d *WhatsNewDialog) prepare() tea.Cmd {
 		argv[0] = path
 		res, err := runFeedbackCLI(ctx, run, argv)
 		if err != nil {
-			return whatsNewPreparedMsg{seq: seq, err: err}
+			// ok:false with an error_code: the CLI refuses this answer
+			// (the same checks a post makes), so posting is off.
+			return whatsNewPreparedMsg{seq: seq, err: err, refusal: strings.TrimSpace(res.ErrorCode)}
 		}
 		if strings.TrimSpace(res.Body) == "" {
 			return whatsNewPreparedMsg{seq: seq, err: errors.New("the dry run returned no comment text")}
@@ -536,14 +562,18 @@ func (d *WhatsNewDialog) OnPrepared(msg whatsNewPreparedMsg) {
 	d.offset = 0
 	d.body = msg.body
 	d.account, d.ghReady, d.note = msg.account, msg.ghReady, msg.note
-	if msg.err != nil {
+	d.refusal = msg.refusal
+	switch {
+	case msg.err != nil && msg.refusal != "":
+		d.errLine = "agent-deck refuses it (" + msg.refusal + "): " + msg.err.Error()
+	case msg.err != nil:
 		d.errLine = "Could not prepare the comment: " + msg.err.Error()
 	}
 }
 
 // send posts the previewed answer, exactly once.
 func (d *WhatsNewDialog) send() tea.Cmd {
-	if d.step != whatsNewStepPreview || d.errLine != "" || d.body == "" || !d.ghReady {
+	if d.step != whatsNewStepPreview || d.errLine != "" || d.refusal != "" || d.body == "" || !d.ghReady {
 		return nil
 	}
 	d.stopInFlight()
@@ -794,6 +824,15 @@ func (d *WhatsNewDialog) bodyLines() []styledLine {
 			add(dim, "Nothing new since v"+from+".", "")
 		}
 	case whatsNewStepPreview, whatsNewStepSending, whatsNewStepResult:
+		if d.refusal != "" {
+			add(red, "This answer cannot be posted from here; nothing was sent.", "")
+			for _, l := range hardwrapTo("Issue: "+d.issueURL(), w) {
+				out = append(out, styledLine{l, text})
+			}
+			out = append(out, styledLine{"", text})
+			add(red, d.errLine, "")
+			break
+		}
 		add(accent, "This answer will be posted PUBLICLY on GitHub.", "")
 		for _, l := range hardwrapTo("Where: "+d.issueURL(), w) {
 			out = append(out, styledLine{l, text})
@@ -886,7 +925,7 @@ func (d *WhatsNewDialog) View() string {
 			}
 			footer(append(items, "Esc: close")...)
 		case whatsNewStepPreview:
-			if d.errLine != "" || !d.ghReady {
+			if d.errLine != "" || d.refusal != "" || !d.ghReady {
 				footer("e: edit comment", "Esc: back (nothing is posted)")
 			} else {
 				footer("y: post", "e: edit comment", "Esc: back (nothing is posted)")

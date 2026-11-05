@@ -708,7 +708,7 @@ func TestWhatsNewDialogDocumented(t *testing.T) {
 
 // Fix 8: the subprocess is agent-deck re-running itself, so it keeps the
 // parent's CLAUDE_CONFIG_DIR and TELEGRAM_* (childenv.ForSelfReexec) and
-// drops only CLAUDE_JOB_DIR.
+// drops CLAUDE_JOB_DIR (and the session ids: TestWhatsNewDialogCLIEnvDropsSessionIDs).
 func TestWhatsNewDialogCLIEnvIsSelfReexec(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/work/claude-profile")
 	t.Setenv("TELEGRAM_STATE_DIR", "/work/tg")
@@ -726,8 +726,9 @@ func TestWhatsNewDialogCLIEnvIsSelfReexec(t *testing.T) {
 
 // whatsNewCapturedDryRun is real `agent-deck feedback fixed` output, not a
 // hand-written fake. It was captured from the feature/feedback-loop-cli
-// binary (3a5361a1) with HOME under the sandbox scratch dir and the sim's
-// recorded gh stub first on PATH (account "sim-user"):
+// binary (3a5361a1; re-captured unchanged from 23b596c4) with HOME under the
+// sandbox scratch dir and the sim's recorded gh stub first on PATH (account
+// "sim-user"):
 //
 //	agent-deck feedback fixed 4242 --fixed --comment "works now" --dry-run --json --yes
 const whatsNewCapturedDryRun = "testdata/whats_new/feedback_fixed_dry_run.json"
