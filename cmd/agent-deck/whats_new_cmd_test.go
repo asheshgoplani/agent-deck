@@ -193,3 +193,24 @@ func TestUpdatePrintsWhatsNew_UnattendedAfterSuccessOnly(t *testing.T) {
 		t.Fatalf("failed install: exit %d, whatsNew calls %v", code, got)
 	}
 }
+
+// An unattended install runs from the update timer: it must not reach the
+// network for the changelog (release gate TestReleaseReadiness_UpdatePath).
+// It keeps (from, to] pending for the next start and says so in one line.
+func TestUpdatePrintsWhatsNew_UnattendedNeverFetches(t *testing.T) {
+	le := setupWhatsNewTest(t)
+	prev := whatsNewFetchChangelog
+	whatsNewFetchChangelog = func(context.Context) (string, error) {
+		t.Fatalf("an unattended install must not fetch the changelog")
+		return "", nil
+	}
+	t.Cleanup(func() { whatsNewFetchChangelog = prev })
+	var buf bytes.Buffer
+	printWhatsNewAfterUpdate(context.Background(), &buf, "1.16.36", "1.16.38", false)
+	if got := le.state(t).LastSeenVersion; got != "1.16.36" {
+		t.Fatalf("the range must stay pending, last seen %q", got)
+	}
+	if !strings.Contains(buf.String(), "What's new in v1.16.38") || !strings.Contains(buf.String(), "agent-deck whats-new") {
+		t.Fatalf("want a one-line pointer to What's new:\n%s", buf.String())
+	}
+}

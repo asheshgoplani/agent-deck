@@ -158,6 +158,13 @@ func printWhatsNewAfterUpdate(ctx context.Context, w io.Writer, from, to string,
 			}
 		}
 	}
+	if !markSeen {
+		// Unattended (the update timer): no network beyond the release
+		// itself. (from, to] stays pending; the TUI shows it on its next
+		// start, and `agent-deck whats-new` any time.
+		fmt.Fprintf(w, "What's new in v%s shows on the next agent-deck start (or run `agent-deck whats-new`).\n", strings.TrimPrefix(to, "v"))
+		return
+	}
 	changelog, err := whatsNewFetchChangelog(ctx)
 	if err != nil {
 		reportLoopLog.Warn("whats_new_after_update_failed", slog.String("error", err.Error()))
