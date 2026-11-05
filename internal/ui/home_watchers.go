@@ -70,6 +70,11 @@ func (h *Home) Init() tea.Cmd {
 		cmds = append(cmds, listenForThemeChange(h.themeWatcher))
 	}
 
+	// "What's new" on the first start after an update (whats_new_dialog.go).
+	if !whatsNewStartupSkipped() && Version != "0.0.0" {
+		cmds = append(cmds, h.whatsNewStartupCmd())
+	}
+
 	// Join the profile's watcher engine election (#2530): this TUI runs the
 	// engine if it wins the owner lock, or takes it over when the owner exits.
 	cmds = append(cmds, h.startWatcherEngine())

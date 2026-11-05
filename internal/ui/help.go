@@ -276,6 +276,7 @@ func (h *HelpOverlay) View() string {
 	agentsPanelKey := h.key(hotkeyAgentsPanel, "alt+a")
 	reportKey := h.key(hotkeyReportProblem, "Z")
 	showAroundKey := h.key(hotkeyShowAround, "alt+w")
+	whatsNewKey := h.key(hotkeyWhatsNew, "alt+n")
 	groupKey := h.key(hotkeyCreateGroup, "g")
 	undoKey := h.key(hotkeyUndoDelete, "Ctrl+Z")
 	archiveKey := h.key(hotkeyArchiveSession, "A")
@@ -451,6 +452,7 @@ func (h *HelpOverlay) View() string {
 				{switchKey, "Switch session (here or attached)"},
 				{scrollbackKey, "Scrollback pager (while attached)"},
 				{reportKey, "Report a problem or idea (GitHub issue; you see it in full and confirm first)"},
+				{whatsNewKey, "What's new in this version (and whether your reports are fixed)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},
