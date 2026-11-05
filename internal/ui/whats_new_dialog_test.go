@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -720,5 +721,60 @@ func TestWhatsNewDialogCLIEnvIsSelfReexec(t *testing.T) {
 	}
 	if strings.Contains(env, "CLAUDE_JOB_DIR=") {
 		t.Error("subprocess env keeps CLAUDE_JOB_DIR")
+	}
+}
+
+// whatsNewCapturedDryRun is real `agent-deck feedback fixed` output, not a
+// hand-written fake. It was captured from the feature/feedback-loop-cli
+// binary (3a5361a1) with HOME under the sandbox scratch dir and the sim's
+// recorded gh stub first on PATH (account "sim-user"):
+//
+//	agent-deck feedback fixed 4242 --fixed --comment "works now" --dry-run --json --yes
+const whatsNewCapturedDryRun = "testdata/whats_new/feedback_fixed_dry_run.json"
+
+// The dialog reads the real CLI contract: every key the CLI prints is a
+// field the dialog knows, and the preview shows the exact body and the
+// account, with posting offered.
+func TestWhatsNewDialogDecodesCapturedCLIDryRun(t *testing.T) {
+	raw, err := os.ReadFile(whatsNewCapturedDryRun)
+	if err != nil {
+		t.Fatalf("reading the captured CLI dry run: %v", err)
+	}
+	var strict feedbackCLIResult
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&strict); err != nil {
+		t.Fatalf("the CLI's dry run has a key the dialog does not decode: %v", err)
+	}
+	if !strict.OK || !strict.DryRun || strict.Number != 4242 || strict.Account != "sim-user" || !strict.GHReady {
+		t.Fatalf("decoded dry run = %+v", strict)
+	}
+	if !strings.Contains(strict.Body, "works now") {
+		t.Fatalf("captured body lacks the comment: %q", strict.Body)
+	}
+
+	f := newWhatsNewFakes(t, "1.16.36", fixedReport())
+	f.out = []string{string(raw), whatsNewPostedOK}
+	h := newWhatsNewTestHome(t, f, "1.16.37")
+	startUp(t, h, f)
+	pressWN(h, reportTestKey("y"))
+	typeWN(h, "works now")
+	pressWN(h, reportTestKey("enter"))
+	d := h.whatsNewDialog
+	if d.step != whatsNewStepPreview || d.errLine != "" {
+		t.Fatalf("not on a clean preview (step %v, err %q)", d.step, d.errLine)
+	}
+	if d.body != strict.Body || d.account != "sim-user" || !d.ghReady {
+		t.Fatalf("preview state body=%q account=%q ghReady=%v", d.body, d.account, d.ghReady)
+	}
+	v := flatView(h)
+	for _, want := range []string{"Fixed for me in v1.16.36.", "works now", "as @sim-user", "y: post"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("preview lacks %q:\n%s", want, v)
+		}
+	}
+	pressWN(h, reportTestKey("y"))
+	if len(f.runs) != 2 || d.step != whatsNewStepResult || !d.resultOK {
+		t.Fatalf("y did not post after the captured dry run (runs %q, step %v, result %q)", f.runs, d.step, d.result)
 	}
 }
