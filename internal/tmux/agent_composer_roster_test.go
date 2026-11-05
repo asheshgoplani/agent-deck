@@ -14,10 +14,10 @@ import (
 // not seen and Ctrl+V reached the host's Claude, which has no image.
 func TestAgentComposerVisible_AgentRosterUnderTheComposer(t *testing.T) {
 	roster := "⏺ Done.\n\n" +
-		"────────────────────────────────────────────── deck-ashesh ─\n" +
+		"────────────────────────────────────────────── work ─\n" +
 		"❯ \n" +
 		"──────────────────────────────────────────────────────────────\n" +
-		"  [ashesh · personal] ashesh@deckbox:/x | [Opus 5.5] ctx:19%\n" +
+		"  [user · work] user@host:/x | [model] ctx:19%\n" +
 		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n" +
 		"  ⏺ main\n"
 	for i := 1; i <= 16; i++ {
