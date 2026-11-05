@@ -604,7 +604,7 @@ const scenarios = {
     // A launched pi whose bind fails: the socket's directory cannot be made.
     const blocker = path.join(DIR, "not-a-dir");
     fs.writeFileSync(blocker, "");
-    const failed = await runChild("plain_child", { ...process.env, AGENTDECK_PI_HOST_PID: "", AGENTDECK_PI_SOCKET: path.join(blocker, "w.sock") });
+    const failed = await runChild("plain_child", { ...process.env, AGENTDECK_PI_HOST_PID: "", AGENTDECK_PI_SOCKET: path.join(blocker, "pi", "w.sock") });
     await a.stop();
     return { other, failed,
       hooks: hooks().map((h) => [h.hook_event_name, h.prompt ?? "", h.pane_host === true, h.pane_guest === true]) };
