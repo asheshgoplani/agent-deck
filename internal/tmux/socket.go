@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -168,6 +169,14 @@ func tmuxArgs(socketName string, args ...string) []string {
 		args = args[1:]
 	}
 	name := strings.TrimSpace(socketName)
+	if name == "" && tmuxEnvNamesConfiguredSocket(os.Getenv) {
+		// A session with no socket name lives on the default server. Without
+		// -L, tmux would follow the inherited $TMUX instead, and inside a pane
+		// on a [tmux.binaries] socket (deck36, say) every call for a
+		// default-server session would go to the wrong server ("session is
+		// not running"). Name the default server explicitly there.
+		name = defaultTmuxSocketName
+	}
 	var out []string
 	if name == "" {
 		out = make([]string, len(args))

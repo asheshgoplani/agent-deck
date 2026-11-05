@@ -180,3 +180,21 @@ func newSessionSpawnCommand(socketName, launcher string, args ...string) *exec.C
 func isDirectTmuxLauncher(socketName, launcher string) bool {
 	return launcher == defaultTmuxBinary || launcher == BinaryFor(socketName)
 }
+
+// tmuxEnvNamesConfiguredSocket reports whether $TMUX names a server on a
+// socket that has its own [tmux.binaries] entry: this process runs inside a
+// pane of a server agent-deck moved sessions to. Only then is a socket-less
+// tmux call pinned to the default server; a user who runs agent-deck inside
+// their own private server keeps tmux's usual $TMUX routing.
+func tmuxEnvNamesConfiguredSocket(lookupEnv func(string) string) bool {
+	path := socketPathFromTmuxEnv(lookupEnv("TMUX"))
+	if path == "" {
+		return false
+	}
+	name := filepath.Base(path)
+	if name == defaultTmuxSocketName {
+		return false
+	}
+	_, ok := ConfiguredBinary(name)
+	return ok
+}
