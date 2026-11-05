@@ -27,6 +27,10 @@ agent_deck_path = ""           # agent-deck path on the sandbox, default "agent-
 `command` is an absolute path or a name on `PATH`. It is run directly, never
 through a shell.
 
+For Azure you can skip this: `agent-deck provider connect azure` logs in,
+makes the resource group and service principal, and writes the config for
+you. See [azure-vm/README.md](azure-vm/README.md#connect-in-one-step).
+
 ## Try
 
 ```bash

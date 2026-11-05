@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### New features
+
+- `agent-deck provider connect azure` connects your own Azure to sandboxes in one step. It checks for `az` (and prints the install line for your OS if it is missing), logs in with a one-time code that works over ssh, lets you pick a subscription, creates one resource group and a service principal with Contributor on that group only, stores the secret in a 0600 file in the agent-deck config dir, writes `azure-vm.conf` and `[providers.azure]`, and checks the result by listing the group's VMs as the service principal. Running it again keeps what works. `--disconnect` (or `agent-deck provider disconnect azure`) removes the service principal it created (one given with `--sp-app-id` stays with its owner) and the local files after asking, and keeps the resource group. It refuses to reuse a service principal name another machine set up, since that would revoke their secret (`--sp-name` or `--reset-secret`). Clear messages cover a browser login that is not a CLI login, an account with no subscription (with what to click), the wrong directory, no permission to create a service principal (with what to ask the subscription owner, including `--sp-app-id` with `--sp-secret-stdin`), and a full region quota. `--json` prints one event per line for the Mac app. The secret is never printed, logged or put in argv.
+
 ## [1.16.36] - 2026-11-02
 
 ### Highlights
