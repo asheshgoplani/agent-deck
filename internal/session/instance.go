@@ -483,6 +483,22 @@ type Instance struct {
 	// `--no-identity` on `agent-deck add` / `agent-deck launch`.
 	IdentityInjectionDisabled bool `json:"identity_injection_disabled,omitempty"`
 
+	// PiSocketExported records that the last launch of this pi exported
+	// a socket path in AGENTDECK_PI_SOCKET: a v5 or later extension serves the socket, so the daemon never
+	// types a doorbell into it (a connect failure is a rebind or reload window,
+	// not an absent pi). Persisted in the tool_data extras zone
+	// (pi_socket_persist.go); a pi with no record is treated as launched without it.
+	PiSocketExported bool `json:"pi_socket_exported,omitempty"`
+
+	// LaunchedTool is the tool the last launch of this session ran: what its
+	// pane runs now. A tool edit changes Tool at once but takes effect only at
+	// the next restart, so the comms ledger reads the parent's harness from
+	// here (commsParentTool). Written by the launch's targeted write (start and
+	// every restart), and by a full save only for a launch that found no row to
+	// write to (launchUnrecorded), so a stale save cannot revert it; empty for a
+	// session no launch of this version recorded.
+	LaunchedTool string `json:"launched_tool,omitempty"`
+
 	// ContextLevel is the per-session override of the harness context-level
 	// (issue #2260): "none", "primer", or "full". Empty means unset — falls
 	// through to the group then global config (global < group < session
@@ -656,6 +672,7 @@ type Instance struct {
 	skipRecoveryTurn            bool        // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
 	restartReason               string      // SetRestartReason: why the next restart happens, for its resume note
 	launchesFresh               atomic.Bool // the Claude command last built starts a new conversation (#2954, fresh_start.go)
+	launchUnrecorded            atomic.Bool // the last launch found no row for its launched tool: the first save writes it
 	configDirLeftToCommand      bool        // the export prefix last built left CLAUDE_CONFIG_DIR to the command (#1822 F3; noteFreshStart)
 	codexStartedGeneration      string
 	codexCompletedGeneration    string
@@ -1733,6 +1750,7 @@ func (i *Instance) Start() (startErr error) {
 		i.recordTmuxStartFailure(command, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
+	i.persistLaunchDecision() // the pane spawned: the launch decision is now a fact
 
 	// gen AND the wake channel are both produced here, in the caller, so no
 	// bump can slip into the gap before the watcher subscribes (see
@@ -2136,6 +2154,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		i.recordTmuxStartFailure(diagnosticCommand, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
+	i.persistLaunchDecision() // before any message wait (sister path to Start())
 
 	// One generation for this spawn, shared by the ownership claim and the
 	// fast-death watcher (sister path to Start()).

@@ -14,7 +14,7 @@ import (
 const budgetEventKind = "session.budget_exceeded"
 
 // WakeBudget evaluates the [costs.budgets] limits that apply to target
-// with BudgetChecker.CheckTx. Unless cost tracking is on and the budgets
+// with BudgetChecker.CheckSend. Unless cost tracking is on and the budgets
 // have enforce = true with a limit set, it returns BudgetActionNone without
 // opening the cost store, so budgets stay display-only. A failed budget
 // query never blocks a send: it warns and lets the send through. instances

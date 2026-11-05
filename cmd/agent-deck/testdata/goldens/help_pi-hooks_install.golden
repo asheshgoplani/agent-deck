@@ -9,4 +9,8 @@ comes from real events instead of reading the pane.
 Commands:
   install      Install or upgrade the agent-deck pi extension
   uninstall    Remove the agent-deck pi extension
-  status       Show current pi extension install status
+  status       Show the extension install status, the pi version, whether
+               the wake socket is on (or why not) and any stopped socket wakes
+
+Status options:
+  -p, --profile <name>  Profile to check the socket path for (default: current)

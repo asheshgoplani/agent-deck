@@ -474,7 +474,30 @@ func goldensSandbox(t *testing.T) (home string, env []string) {
 
 	env = os.Environ()
 	env = hermeticGoldensTmux(t, env)
+	env = hermeticGoldensPi(t, env, home)
 	return home, env
+}
+
+// hermeticGoldensPi puts a fake `pi` that prints 1.3.0 first on the binary's
+// PATH. `pi-hooks status` runs `pi --version`, so without it the golden carries
+// whatever pi the host has (a different version, or none), and a machine with
+// pi installed fails a golden that CI, without it, passes.
+func hermeticGoldensPi(t *testing.T, env []string, home string) []string {
+	t.Helper()
+	bin := filepath.Join(home, "goldens-bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("creating the goldens bin directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "pi"), []byte("#!/bin/sh\necho 1.3.0\n"), 0o755); err != nil {
+		t.Fatalf("writing the fake pi: %v", err)
+	}
+	path := ""
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			path = v
+		}
+	}
+	return append(filterEnv(env, "PATH"), "PATH="+bin+string(os.PathListSeparator)+path)
 }
 
 // hermeticGoldensTmux points the subprocess at a private TMUX_TMPDIR whose

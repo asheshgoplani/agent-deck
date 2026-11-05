@@ -89,15 +89,43 @@ func (s *StateDB) touchStamp() (WriteStamps, error) {
 // can tell "recorded" from "silently dropped" (the instance was never saved, or
 // another process deleted it mid-restart).
 func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (WriteStamps, error) {
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, "tool_data")
+}
+
+// WriteRestartOutcomeWithLaunch is WriteRestartOutcome that also records, in
+// the same UPDATE, the launch decision: the tool the restart launched
+// (launched_tool) and whether a pi's launch exported the wake socket. The
+// launched tool is what the pane runs, which a tool edit does not change until
+// the next restart.
+func (s *StateDB) WriteRestartOutcomeWithLaunch(id, tmuxSession, status, tool string, exported bool) (WriteStamps, error) {
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, launchToolDataExpr(exported), tool)
+}
+
+// launchToolDataExpr records the launch decision; its one parameter is the
+// launched tool.
+func launchToolDataExpr(exported bool) string {
+	return `json_set(` + piSocketToolDataExpr(exported) + `, '$.launched_tool', ?)`
+}
+
+// piSocketToolDataExpr is the tool_data expression that records the decision.
+func piSocketToolDataExpr(exported bool) string {
+	if exported {
+		return `json_set(COALESCE(tool_data, '{}'), '$.pi_socket_exported', json('true'))`
+	}
+	return `json_remove(COALESCE(tool_data, '{}'), '$.pi_socket_exported')`
+}
+
+func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, toolDataExpr string, exprArgs ...any) (WriteStamps, error) {
 	var affected int64
 	if err := withBusyRetry(func() error {
 		res, err := s.db.Exec(
 			`UPDATE instances
 			   SET tmux_session = ?, status = ?, tool = ?,
 			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
-			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END
+			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END,
+			       tool_data = `+toolDataExpr+`
 			 WHERE id = ?`,
-			tmuxSession, status, tool, status, status, id,
+			append(append([]any{tmuxSession, status, tool, status, status}, exprArgs...), id)...,
 		)
 		if err != nil {
 			return err
@@ -113,4 +141,39 @@ func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (Wri
 	// Peers poll last_modified; without the bump a running TUI keeps serving
 	// the dead name from its own snapshot.
 	return s.touchStamp()
+}
+
+// WritePiSocketExported records, in the instance's tool_data, whether its last
+// launch exported a socket path in AGENTDECK_PI_SOCKET: the key is set when true and removed when
+// false, as the full save writes it. A start writes it after a successful launch
+// (a restart folds it into its outcome write).
+func (s *StateDB) WritePiSocketExported(id string, exported bool) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(`UPDATE instances SET tool_data = `+piSocketToolDataExpr(exported)+` WHERE id = ?`, id)
+		return err
+	})
+}
+
+// WriteLaunchDecision records, in the instance's tool_data, the decision of
+// the launch that just spawned its pane: the tool it launched (launched_tool)
+// and whether a pi's launch exported the wake socket. A start writes it after a
+// successful spawn; a restart folds it into its outcome write. An instance
+// with no row yet (started before its first save) returns ErrInstanceNotStored,
+// and its first save records the decision instead.
+func (s *StateDB) WriteLaunchDecision(id, tool string, exported bool) error {
+	var affected int64
+	if err := withBusyRetry(func() error {
+		res, err := s.db.Exec(`UPDATE instances SET tool_data = `+launchToolDataExpr(exported)+` WHERE id = ?`, tool, id)
+		if err != nil {
+			return err
+		}
+		affected, err = res.RowsAffected()
+		return err
+	}); err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("record launch decision for %q: %w", id, ErrInstanceNotStored)
+	}
+	return nil
 }

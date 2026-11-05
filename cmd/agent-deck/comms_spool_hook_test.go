@@ -28,6 +28,15 @@ func runHookHandlerWith(t *testing.T, payload string) {
 	handleHookHandler()
 }
 
+// notABackgroundWorker keeps an inherited CLAUDE_JOB_DIR from making
+// hookFromClaudeBackgroundWorker drop the hooks under test (it credits the
+// variable when no ancestor record names a kind). Tests that set it on
+// purpose do not call this.
+func notABackgroundWorker(t *testing.T) {
+	t.Helper()
+	t.Setenv("CLAUDE_JOB_DIR", "")
+}
+
 func fixture(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", "comms", name))
@@ -68,6 +77,7 @@ func TestHookHandler_ClaudeFixturesSpoolBothEdges(t *testing.T) {
 func TestHookHandler_OnlyClaudeSpoolsInP1(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	notABackgroundWorker(t)
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-others")
 	t.Cleanup(session.SetCommsLedgerForTest(true))
 	for name, payload := range map[string]string{
@@ -91,6 +101,7 @@ func TestHookHandler_OnlyClaudeSpoolsInP1(t *testing.T) {
 func TestHookHandler_SpoolsNothingWithLedgerOff(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	notABackgroundWorker(t)
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-off")
 	t.Cleanup(session.SetCommsLedgerForTest(false))
 	runHookHandlerWith(t, fixture(t, "claude_stop_v1.json"))
@@ -105,6 +116,7 @@ func TestHookHandler_SpoolsNothingWithLedgerOff(t *testing.T) {
 func TestHookHandler_RejectsATraversalInstanceID(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	notABackgroundWorker(t)
 	t.Setenv("AGENTDECK_INSTANCE_ID", "../../etc")
 	t.Cleanup(session.SetCommsLedgerForTest(true))
 	runHookHandlerWith(t, fixture(t, "claude_stop_v1.json"))
@@ -138,6 +150,7 @@ func TestCodexNotify_FixtureSpoolsLastAssistantMessageOnce(t *testing.T) {
 
 	// The matching Codex Stop hook for the same turn adds nothing.
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	notABackgroundWorker(t)
 	runHookHandlerWith(t, fixture(t, "codex_stop_v1.json"))
 	// A turn start carries no text: nothing spooled.
 	os.Args = []string{"agent-deck", "codex-notify", `{"type":"turn/started","thread-id":"019a0000-0000-7000-8000-000000000002","turn-id":"turn-78"}`}
@@ -193,5 +206,24 @@ func TestHookHandler_PiNoTextSettleSpoolsOneStatusEdge(t *testing.T) {
 	e := entries[0]
 	if e.Harness != "pi" || e.Edge != session.CommsEdgeStatus || e.From != "running" || e.State != "waiting" || e.Text != "" || e.TSignal == 0 {
 		t.Fatalf("spooled %+v", e)
+	}
+}
+
+// A v4 extension's settle carries the run token; the spool entry carries it on,
+// so the ledger keys the run as the inbox does.
+func TestHookHandler_PiSettleSpoolsTheRunToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_JOB_DIR", "")
+	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-pi-run")
+	t.Cleanup(session.SetCommsLedgerForTest(true))
+
+	runHookHandlerWith(t, fixture(t, "pi_agentsettled_v4.json"))
+	entries, err := session.ReadCommsSpool("inst-pi-run")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries %+v err %v", entries, err)
+	}
+	if entries[0].RunID != "run-77" {
+		t.Fatalf("the spool entry must carry the run token: %+v", entries[0])
 	}
 }

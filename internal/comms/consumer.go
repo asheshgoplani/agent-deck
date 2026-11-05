@@ -106,6 +106,11 @@ type ConsumerFile struct {
 	// pending flag they let a caller skip a pass that would find nothing.
 	Through events.Cursor `json:"through,omitempty"`
 	Pending int           `json:"pending"`
+	// Judged is the last ledger cursor the daemon's delivery pass judged. Any
+	// other pass (a hook, a receipt, a prompt's ack, `msg read`) also moves
+	// Through, over records it did not judge, so the delivery pass skips a
+	// parent only when nothing is newer than Judged.
+	Judged events.Cursor `json:"judged,omitempty"`
 	// Gaps are the explicit losses this consumer was told about (newest
 	// last, bounded): records compacted before it read them, or a ledger
 	// reset or restore that invalidated its position.
@@ -124,6 +129,20 @@ type ConsumerFile struct {
 	WakeTries  map[string]int `json:"wake_tries,omitempty"`  // cursor -> wakes that did not take
 	NextDue    int64          `json:"next_due,omitempty"`    // Unix ms the delivery pass next has something to do without a new record
 	Shown      []string       `json:"shown,omitempty"`       // keys of turns recently shown to the parent by either path (newest last, bounded)
+	// Injections are what a pi prompt injection showed, by delivery token: the
+	// turn keys of its ledger records and the inbox records it peeked (they were
+	// printed but not drained). The extension's receipt for the token promotes the
+	// keys to Shown and consumes the inbox records by id; without a receipt
+	// nothing is consumed and the records ride the next run start. Bounded: the
+	// oldest go first.
+	Injections map[string]Injection `json:"injections,omitempty"`
+}
+
+// Injection is one pi injection's record of what it showed.
+type Injection struct {
+	At    int64    `json:"at"`              // Unix ms the injection was made
+	Keys  []string `json:"keys,omitempty"`  // turn keys it showed (either path)
+	Inbox []string `json:"inbox,omitempty"` // fingerprints of the inbox records it peeked
 }
 
 // GapNote is one recorded loss: records From..To (cursors of the epoch the
@@ -417,7 +436,7 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 		// reported. A watermark still inside the log is kept.
 		resume := min(f.Watermark, end, events.Cursor(r.Store.HWM))
 		note := GapNote{Gap: Gap{Consumer: consumer, From: resume + 1, To: max(f.Watermark, f.Through)}, Reason: "restored", Resumed: resume, At: now.UnixMilli()}
-		f.Watermark, f.Through = resume, resume
+		f.Watermark, f.Through, f.Judged = resume, resume, min(f.Judged, resume)
 		kept := f.Acked[:0]
 		for _, a := range f.Acked {
 			if a <= resume {

@@ -50,6 +50,9 @@ func (i *Instance) recordRestartOutcome() {
 	i.restartTmuxRecordErr = err
 	i.restartTmuxRecordStamps = stamps
 	i.restartTmuxRecordMu.Unlock()
+	if err == nil {
+		i.launchUnrecorded.Store(false) // the outcome carried the launch decision
+	}
 
 	if err != nil {
 		sessionLog.Warn("restart_outcome_persist_failed",
@@ -71,7 +74,10 @@ func (i *Instance) writeRestartOutcome() (statedb.WriteStamps, error) {
 	var stamps statedb.WriteStamps
 	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
 		var werr error
-		stamps, werr = db.WriteRestartOutcome(i.ID, name, string(i.Status), i.Tool)
+		// The launch decision (the tool launched, and a pi's socket) rides the
+		// same UPDATE as the outcome.
+		i.noteLaunch()
+		stamps, werr = db.WriteRestartOutcomeWithLaunch(i.ID, name, string(i.Status), i.Tool, i.PiSocketExported)
 		return werr
 	})
 	if errors.Is(err, errNoStateDB) {
@@ -114,4 +120,38 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 		return statedb.WriteStamps{}
 	}
 	return i.restartTmuxRecordStamps
+}
+
+// persistLaunchDecision records, once the pane has spawned, what its launch
+// was: the tool it launched (launched_tool) and whether a pi's launch exported a
+// socket path in AGENTDECK_PI_SOCKET. Start and StartWithMessage are the launch
+// paths the CLI, the web and the TUI share, and none of them saves the instance
+// afterwards, so a start that changed the decision would otherwise leave the
+// old value in storage. They call it right after the spawn succeeds, so a
+// failure before it, or a spawn another process won, leaves storage as it was.
+// It is a targeted write of two keys. A new session the web, the TUI or a fork
+// starts before its first save matches no row: it is marked launchUnrecorded,
+// and that first save writes the launched tool (the socket decision rides
+// every save). A failure is logged and never fails the launch.
+func (i *Instance) persistLaunchDecision() {
+	i.noteLaunch()
+	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
+		return db.WriteLaunchDecision(i.ID, i.Tool, i.PiSocketExported)
+	})
+	i.launchUnrecorded.Store(err != nil)
+	if err != nil && !errors.Is(err, errNoStateDB) && !errors.Is(err, statedb.ErrInstanceNotStored) {
+		sessionLog.Warn("launch_decision_persist_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("error", err.Error()))
+	}
+}
+
+// noteLaunch records on the instance what the launch now spawning ran: its
+// tool, and no wake socket unless it is a pi whose launch exported one (the
+// flag is left from an earlier pi launch otherwise).
+func (i *Instance) noteLaunch() {
+	i.LaunchedTool = i.Tool
+	if i.Tool != "pi" {
+		i.PiSocketExported = false
+	}
 }
