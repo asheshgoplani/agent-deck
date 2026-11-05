@@ -6661,7 +6661,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "y":
-		// Toggle YOLO mode for Gemini or Codex sessions (requires restart)
+		// Toggle YOLO mode for supported sessions (requires restart)
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -6719,6 +6719,25 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					opts.YoloMode = &newYolo
 					_ = inst.SetHermesOptions(opts)
+					toggled = true
+
+				case "kimi":
+					permissionMode := session.KimiPermissionDefault
+					opts := inst.GetKimiOptions()
+					if opts != nil {
+						permissionMode = opts.PermissionMode
+					} else if userConfig, _ := session.LoadUserConfig(); userConfig != nil {
+						permissionMode = userConfig.Kimi.PermissionMode
+					}
+					if opts == nil {
+						opts = &session.KimiOptions{}
+					}
+					if permissionMode == session.KimiPermissionYolo {
+						opts.PermissionMode = session.KimiPermissionDefault
+					} else {
+						opts.PermissionMode = session.KimiPermissionYolo
+					}
+					_ = inst.SetKimiOptions(opts)
 					toggled = true
 				}
 

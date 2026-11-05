@@ -26,6 +26,8 @@ const (
 	SettingGeminiYoloMode
 	SettingCodexYoloMode
 	SettingHermesYoloMode
+	SettingKimiDefaultModel
+	SettingKimiPermissionMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
 	SettingAutoInstall
@@ -61,7 +63,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 40
+const settingsCount = 42
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -85,6 +87,8 @@ type SettingsPanel struct {
 	geminiYoloMode      bool
 	codexYoloMode       bool
 	hermesYoloMode      bool
+	kimiDefaultModel    string
+	kimiPermissionMode  int
 	checkForUpdates     bool
 	autoUpdate          bool
 	autoInstall         bool
@@ -141,8 +145,8 @@ type SettingsPanel struct {
 // builtinToolNames and builtinToolValues are the built-in tools. Custom tools
 // from config are appended dynamically in LoadConfig.
 var (
-	builtinToolNames  = []string{"Claude", "Gemini", "OpenCode", "OpenCode 2", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "Kimi", "DeepSeek", "Oh My Pi"}
-	builtinToolValues = []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "kimi", "deepseek", "omp"}
+	builtinToolNames  = []string{"Claude", "Gemini", "OpenCode", "OpenCode 2", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "DeepSeek", "Oh My Pi", "Kimi"}
+	builtinToolValues = []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "kimi"}
 )
 
 // Search tier names for radio selection
@@ -318,6 +322,10 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	// Hermes settings
 	s.hermesYoloMode = config.Hermes.YoloMode
 
+	// Kimi settings
+	s.kimiDefaultModel = config.Kimi.DefaultModel
+	s.kimiPermissionMode = kimiPermissionIndex(config.Kimi.PermissionMode)
+
 	// Update settings
 	s.checkForUpdates = config.Updates.GetCheckEnabled()
 	s.autoUpdate = config.Updates.AutoUpdate
@@ -470,6 +478,13 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 
 	// Hermes settings
 	config.Hermes.YoloMode = s.hermesYoloMode
+
+	// Kimi settings
+	if s.originalConfig != nil {
+		config.Kimi = s.originalConfig.Kimi
+	}
+	config.Kimi.DefaultModel = s.kimiDefaultModel
+	config.Kimi.PermissionMode = kimiPermissionModes[s.kimiPermissionMode]
 
 	// Update settings
 	checkForUpdates := s.checkForUpdates
@@ -703,6 +718,13 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 			changed = true
 		}
 
+	case SettingKimiPermissionMode:
+		newVal := s.kimiPermissionMode + delta
+		if newVal >= 0 && newVal < len(kimiPermissionModes) {
+			s.kimiPermissionMode = newVal
+			changed = true
+		}
+
 	case SettingSearchTier:
 		newVal := s.searchTier + delta
 		if newVal >= 0 && newVal < len(tierNames) {
@@ -799,6 +821,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingHermesYoloMode:
 		s.hermesYoloMode = !s.hermesYoloMode
+		return true
+
+	case SettingKimiPermissionMode:
+		s.kimiPermissionMode = (s.kimiPermissionMode + 1) % len(kimiPermissionModes)
 		return true
 
 	case SettingCheckForUpdates:
@@ -902,14 +928,18 @@ func (s *SettingsPanel) toggleValue() bool {
 
 // isTextSetting returns true if current setting uses text input
 func (s *SettingsPanel) isTextSetting() bool {
-	return SettingType(s.cursor) == SettingClaudeConfigDir
+	setting := SettingType(s.cursor)
+	return setting == SettingClaudeConfigDir || setting == SettingKimiDefaultModel
 }
 
 // startTextEdit begins text editing for current setting
 func (s *SettingsPanel) startTextEdit() {
-	setting := SettingType(s.cursor)
-	if setting == SettingClaudeConfigDir {
+	switch SettingType(s.cursor) {
+	case SettingClaudeConfigDir:
 		s.textBuffer = s.claudeConfigDir
+		s.editingText = true
+	case SettingKimiDefaultModel:
+		s.textBuffer = s.kimiDefaultModel
 		s.editingText = true
 	}
 }
@@ -921,8 +951,11 @@ func (s *SettingsPanel) handleTextEdit(msg tea.KeyMsg) (*SettingsPanel, tea.Cmd,
 	switch key {
 	case "enter":
 		// Save the text
-		if SettingType(s.cursor) == SettingClaudeConfigDir {
+		switch SettingType(s.cursor) {
+		case SettingClaudeConfigDir:
 			s.claudeConfigDir = s.textBuffer
+		case SettingKimiDefaultModel:
+			s.kimiDefaultModel = s.textBuffer
 		}
 		s.editingText = false
 		return s, nil, true
@@ -1104,6 +1137,29 @@ func (s *SettingsPanel) View() string {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString(gutter(SettingHermesYoloMode) + labelStyle.Render(line) + "\n\n")
+
+	// KIMI
+	content.WriteString(sectionStyle.Render("KIMI"))
+	content.WriteString("\n")
+
+	line = "Default model: "
+	if s.editingText && s.cursor == int(SettingKimiDefaultModel) {
+		line += "[" + s.textBuffer + "|]"
+	} else if s.kimiDefaultModel == "" {
+		line += dimStyle.Render("Kimi default")
+	} else {
+		line += s.kimiDefaultModel
+	}
+	if s.cursor == int(SettingKimiDefaultModel) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = "Permissions: " + s.renderRadioGroup(kimiPermissionLabels, s.kimiPermissionMode, s.cursor == int(SettingKimiPermissionMode))
+	if s.cursor == int(SettingKimiPermissionMode) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
 	// UPDATES
 	content.WriteString(sectionStyle.Render("UPDATES"))
@@ -1424,38 +1480,40 @@ func (s *SettingsPanel) View() string {
 			16, // SettingGeminiYoloMode
 			19, // SettingCodexYoloMode
 			22, // SettingHermesYoloMode
-			25, // SettingCheckForUpdates
-			26, // SettingAutoUpdate
-			27, // SettingAutoInstall
-			28, // SettingAutoRestart
-			31, // SettingLogMaxSize
-			31, // SettingLogMaxLines (shares line with LogMaxSize)
-			32, // SettingRemoveOrphans
-			35, // SettingGlobalSearchEnabled
-			36, // SettingSearchTier
-			37, // SettingRecentDays
-			40, // SettingShowOutput
-			41, // SettingShowAnalytics
-			42, // SettingShowNotes
-			43, // SettingNotesOutputSplit
-			46, // SettingMaintenanceEnabled
-			49, // SettingStatsEnabled
-			50, // SettingStatsRefresh
-			51, // SettingStatsFormat
-			53, // SettingStatsShowCPU (row with RAM, Disk)
-			53, // SettingStatsShowRAM
-			53, // SettingStatsShowDisk
-			54, // SettingStatsShowNetwork (row with GPU, Load)
-			54, // SettingStatsShowGPU
-			54, // SettingStatsShowLoad
-			57, // SettingSyncTitle (SESSIONS section, after stats)
-			60, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
-			61, // SettingShowPaneTitles (DISPLAY section, after timestamps)
-			64, // SettingShowOnlyInstalledTools (TOOL PICKER section)
-			65, // SettingVisibleTools
-			68, // SettingEmbeddedTerminal (INTERFACE section)
-			69, // SettingSidebarDensity
-			74, // SettingPrivacy (PRIVACY section)
+			26, // SettingKimiDefaultModel
+			27, // SettingKimiPermissionMode
+			29, // SettingCheckForUpdates
+			30, // SettingAutoUpdate
+			31, // SettingAutoInstall
+			32, // SettingAutoRestart
+			35, // SettingLogMaxSize
+			35, // SettingLogMaxLines (shares line with LogMaxSize)
+			36, // SettingRemoveOrphans
+			39, // SettingGlobalSearchEnabled
+			40, // SettingSearchTier
+			41, // SettingRecentDays
+			44, // SettingShowOutput
+			45, // SettingShowAnalytics
+			46, // SettingShowNotes
+			47, // SettingNotesOutputSplit
+			50, // SettingMaintenanceEnabled
+			53, // SettingStatsEnabled
+			54, // SettingStatsRefresh
+			55, // SettingStatsFormat
+			57, // SettingStatsShowCPU (row with RAM, Disk)
+			57, // SettingStatsShowRAM
+			57, // SettingStatsShowDisk
+			58, // SettingStatsShowNetwork (row with GPU, Load)
+			58, // SettingStatsShowGPU
+			58, // SettingStatsShowLoad
+			61, // SettingSyncTitle (SESSIONS section, after stats)
+			64, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			65, // SettingShowPaneTitles (DISPLAY section, after timestamps)
+			68, // SettingShowOnlyInstalledTools (TOOL PICKER section)
+			69, // SettingVisibleTools
+			72, // SettingEmbeddedTerminal (INTERFACE section)
+			73, // SettingSidebarDensity
+			78, // SettingPrivacy (PRIVACY section)
 		}
 		cursorLine := rowOf[cursorToLine[s.cursor]]
 

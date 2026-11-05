@@ -92,7 +92,6 @@ func builtinTools() []builtinTool {
 		// Token match only: substring "agent" would false-match "agent-deck".
 		{Name: "cursor", Icon: "📝", Color: "accent", detectSubstrings: []string{"cursor"}, detectTokens: []string{"agent"}},
 		{Name: "hermes", Icon: "☤", Color: "yellow", detectSubstrings: []string{"hermes"}},
-		{Name: "kimi", Icon: "🌙", Color: "purple", detectTokens: []string{"kimi"}, executableOnly: true},
 		// DeepSeek Harness. The tool is named for the vendor; the binary is
 		// `dsh`, so the substring alone would never match a real command line.
 		// "dsh" is a token match, not a substring: as a substring it would
@@ -101,5 +100,6 @@ func builtinTools() []builtinTool {
 		{Name: "deepseek", Icon: "🐋", Color: "cyan", detectSubstrings: []string{"deepseek"}, detectTokens: []string{"dsh"}},
 		{Name: "aider", Icon: "🐚", Color: "red"},
 		{Name: "shell", Icon: "🐚"},
+		{Name: "kimi", Icon: "🌙", Color: "purple", detectTokens: []string{"kimi"}, executableOnly: true},
 	}
 }

@@ -2943,8 +2943,9 @@ type OpenCodeSettings struct {
 // `launch -capabilities` and reasoning-effort validation.
 type ModelsSettings struct {
 	// Probe asks installed CLIs that can list their own models (today:
-	// `codex debug models` and `opencode models`) for their model and effort
-	// lists, cached per CLI binary, merged in front of the built-in catalog.
+	// `codex debug models`, `opencode models` and `kimi provider list --json`)
+	// for their model and effort lists, cached per CLI binary, merged in front
+	// of the built-in catalog.
 	// Set false to use only the built-in catalog.
 	// Default: true
 	Probe *bool `toml:"probe,omitempty"`
@@ -2955,6 +2956,7 @@ type ModelsSettings struct {
 	Codex    ModelListSettings `toml:"codex,omitempty"`
 	Gemini   ModelListSettings `toml:"gemini,omitempty"`
 	OpenCode ModelListSettings `toml:"opencode,omitempty"`
+	Kimi     ModelListSettings `toml:"kimi,omitempty"`
 }
 
 // ModelListSettings pins or extends one tool's model suggestions.
@@ -2967,7 +2969,7 @@ type ModelListSettings struct {
 }
 
 // ForTool returns the override table for a tool kind ("claude", "codex",
-// "gemini", "opencode"); other kinds have none.
+// "gemini", "opencode", "kimi"); other kinds have none.
 func (m ModelsSettings) ForTool(kind string) ModelListSettings {
 	switch kind {
 	case "claude":
@@ -2978,6 +2980,8 @@ func (m ModelsSettings) ForTool(kind string) ModelListSettings {
 		return m.Gemini
 	case "opencode":
 		return m.OpenCode
+	case "kimi":
+		return m.Kimi
 	}
 	return ModelListSettings{}
 }
@@ -3322,8 +3326,10 @@ type KimiSettings struct {
 	EnvFile string `toml:"env_file,omitempty"`
 	// DefaultModel is passed with --model for fresh sessions only. Optional.
 	DefaultModel string `toml:"default_model,omitempty"`
-	// YoloMode enables --yolo for fresh and resumed sessions. Default: false.
-	YoloMode bool `toml:"yolo_mode,omitempty"`
+	// PermissionMode overrides Kimi's permission mode for fresh and resumed sessions.
+	// Valid values: "" (use Kimi's configured or saved mode), "yolo" (--yolo),
+	// or "auto" (--auto). Default: "".
+	PermissionMode string `toml:"permission_mode,omitempty"`
 	// HooksEnabled controls automatic consent prompting for hook installation.
 	// Installed hooks continue to update status when this is false. Default: true.
 	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`

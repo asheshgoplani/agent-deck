@@ -30,8 +30,12 @@ func TestKimiRegistryIdentity(t *testing.T) {
 	if got := GetToolIcon("kimi"); got != "🌙" {
 		t.Errorf("GetToolIcon(kimi) = %q, want 🌙", got)
 	}
-	if !containsString(PickerToolNames(), "kimi") {
-		t.Fatalf("PickerToolNames() = %v, want kimi", PickerToolNames())
+	pickerNames := PickerToolNames()
+	if !containsString(pickerNames, "kimi") {
+		t.Fatalf("PickerToolNames() = %v, want kimi", pickerNames)
+	}
+	if pickerNames[len(pickerNames)-1] != "kimi" {
+		t.Fatalf("PickerToolNames() = %v, want kimi last", pickerNames)
 	}
 }
 
@@ -42,14 +46,14 @@ command = "/opt/kimi --custom"
 config_dir = "/tmp/kimi home"
 env_file = "/tmp/kimi.env"
 default_model = "k2.5"
-yolo_mode = true
+permission_mode = "auto"
 hooks_enabled = false
 `
 	if _, err := toml.Decode(doc, &cfg); err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
 	if cfg.Kimi.Command != "/opt/kimi --custom" || cfg.Kimi.ConfigDir != "/tmp/kimi home" ||
-		cfg.Kimi.EnvFile != "/tmp/kimi.env" || cfg.Kimi.DefaultModel != "k2.5" || !cfg.Kimi.YoloMode {
+		cfg.Kimi.EnvFile != "/tmp/kimi.env" || cfg.Kimi.DefaultModel != "k2.5" || cfg.Kimi.PermissionMode != "auto" {
 		t.Fatalf("Kimi settings did not decode: %+v", cfg.Kimi)
 	}
 	if cfg.Kimi.GetHooksEnabled() {
@@ -63,14 +67,14 @@ hooks_enabled = false
 
 func TestBuildKimiCommandFresh(t *testing.T) {
 	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{
-		DefaultModel: "model with spaces",
-		YoloMode:     true,
+		DefaultModel:   "model with spaces",
+		PermissionMode: "auto",
 	}})
 	defer restore()
 
 	inst := &Instance{ID: "kimi-123", Title: "dev `id`", Tool: "kimi", HermesHookGeneration: "generation-1"}
 	got := inst.buildKimiCommand("kimi")
-	wantSuffix := "kimi --model " + shellescape.Quote("model with spaces") + " --yolo"
+	wantSuffix := "kimi --model " + shellescape.Quote("model with spaces") + " --auto"
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Fatalf("buildKimiCommand() = %q, want suffix %q", got, wantSuffix)
 	}
@@ -90,8 +94,34 @@ func TestBuildKimiCommandFresh(t *testing.T) {
 	}
 }
 
+func TestKimiLaunchModelOverride(t *testing.T) {
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "configured-model"}})
+	defer restore()
+
+	inst := &Instance{Tool: "kimi"}
+	if !SupportsLaunchModel("kimi") {
+		t.Fatal("Kimi should support per-session model selection")
+	}
+	if err := inst.ApplyLaunchModel("session-model"); err != nil {
+		t.Fatalf("ApplyLaunchModel() error = %v", err)
+	}
+	if got := inst.LaunchModelID(); got != "session-model" {
+		t.Fatalf("LaunchModelID() = %q, want session-model", got)
+	}
+	if command := inst.buildKimiCommand("kimi"); !strings.HasSuffix(command, "kimi --model session-model") {
+		t.Fatalf("buildKimiCommand() = %q, want per-session model", command)
+	}
+
+	if err := inst.ClearLaunchModel(); err != nil {
+		t.Fatalf("ClearLaunchModel() error = %v", err)
+	}
+	if command := inst.buildKimiCommand("kimi"); !strings.HasSuffix(command, "kimi --model configured-model") {
+		t.Fatalf("buildKimiCommand() after clear = %q, want configured default", command)
+	}
+}
+
 func TestBuildKimiCommandResume(t *testing.T) {
-	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "fresh-only", YoloMode: true}})
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "fresh-only", PermissionMode: "yolo"}})
 	defer restore()
 
 	sessionID := "id with spaces;$(touch /tmp/kimi-pwned)"
@@ -107,7 +137,7 @@ func TestBuildKimiCommandResume(t *testing.T) {
 }
 
 func TestBuildKimiCommandPassthrough(t *testing.T) {
-	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "unused", YoloMode: true}})
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "unused", PermissionMode: "auto"}})
 	defer restore()
 
 	inst := &Instance{ID: "abc", Title: "dev", Tool: "kimi", KimiSessionID: "native-id"}
@@ -115,7 +145,7 @@ func TestBuildKimiCommandPassthrough(t *testing.T) {
 	if !strings.HasSuffix(got, "kimi --operator-flag") {
 		t.Fatalf("passthrough command = %q", got)
 	}
-	for _, forbidden := range []string{"--session", "--model", "--yolo"} {
+	for _, forbidden := range []string{"--session", "--model", "--yolo", "--auto"} {
 		if strings.Contains(got, forbidden) {
 			t.Errorf("passthrough command %q contains derived flag %q", got, forbidden)
 		}
@@ -145,7 +175,7 @@ func TestBuildKimiCommandConfigDirAndEnvFile(t *testing.T) {
 }
 
 func TestBuildKimiCommandConfiguredCommand(t *testing.T) {
-	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{Command: "/opt/kimi --custom", DefaultModel: "k2.5", YoloMode: true}})
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{Command: "/opt/kimi --custom", DefaultModel: "k2.5", PermissionMode: "auto"}})
 	defer restore()
 
 	inst := &Instance{Tool: "kimi", KimiSessionID: "native-id"}
@@ -153,7 +183,7 @@ func TestBuildKimiCommandConfiguredCommand(t *testing.T) {
 	if !strings.HasSuffix(got, "/opt/kimi --custom") {
 		t.Fatalf("configured command = %q", got)
 	}
-	for _, forbidden := range []string{"--session", "--model", "--yolo"} {
+	for _, forbidden := range []string{"--session", "--model", "--yolo", "--auto"} {
 		if strings.Contains(got, forbidden) {
 			t.Errorf("configured command %q contains derived flag %q", got, forbidden)
 		}

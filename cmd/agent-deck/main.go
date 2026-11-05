@@ -2119,6 +2119,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
+	permissionMode := fs.String("permission-mode", "", "Kimi permission mode: yolo or auto (empty = Kimi default)")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
 	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
@@ -2269,7 +2270,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		exitCLI(1)
 	}
 
-	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, *permissionMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
 		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
@@ -2832,6 +2833,10 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	}
 
 	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode, cliFlagWasSet(fs, "yolo", "gemini-yolo")); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		exitCLI(1)
+	}
+	if err := applyCLIKimiPermissionMode(newInstance, *permissionMode, cliFlagWasSet(fs, "permission-mode")); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		exitCLI(1)
 	}
@@ -4803,11 +4808,11 @@ func printHelp() {
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
 	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
-	fmt.Println("  kimi-hooks       Manage Kimi Code hook integration")
 	fmt.Println("  cursor-hooks     Manage Cursor Agent CLI hook integration")
 	fmt.Println("  tmux-hooks       Manage the window policy hook on the tmux server")
 	fmt.Println("  pi-hooks         Manage pi (pi-coding-agent) hook integration")
 	fmt.Println("  deepseek         Inspect the DeepSeek Harness (dsh) integration")
+	fmt.Println("  kimi-hooks       Manage Kimi Code hook integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
 	fmt.Println("  usage            Show remaining provider subscription quota")
@@ -4870,9 +4875,6 @@ func printHelp() {
 	fmt.Println("  hermes-hooks install      Install Hermes Agent hooks")
 	fmt.Println("  hermes-hooks uninstall    Remove Hermes Agent hooks")
 	fmt.Println("  hermes-hooks status       Show Hermes hooks install status")
-	fmt.Println("  kimi-hooks install        Install Kimi Code hooks")
-	fmt.Println("  kimi-hooks uninstall      Remove Kimi Code hooks")
-	fmt.Println("  kimi-hooks status         Show Kimi Code hooks install status")
 	fmt.Println("  cursor-hooks install      Install Cursor hooks")
 	fmt.Println("  cursor-hooks uninstall    Remove Cursor hooks")
 	fmt.Println("  cursor-hooks status       Show Cursor hooks install status")
@@ -4885,6 +4887,9 @@ func printHelp() {
 	fmt.Println("  deepseek status           Show resolved dsh binary, DSH_HOME, profile")
 	fmt.Println("  deepseek profiles         List profiles under $DSH_HOME/profiles")
 	fmt.Println("  deepseek sessions [path]  List dsh sessions recorded for a workspace")
+	fmt.Println("  kimi-hooks install        Install Kimi Code hooks")
+	fmt.Println("  kimi-hooks uninstall      Remove Kimi Code hooks")
+	fmt.Println("  kimi-hooks status         Show Kimi Code hooks install status")
 	fmt.Println()
 	fmt.Println("Group Commands:")
 	fmt.Println("  group list                List all groups")

@@ -374,7 +374,7 @@ account slot (`usage statusline-wrap`, opt out with `[claude] statusline_feed
 `config schema --json` lists every settable key: `key`, `section`, `label`,
 `help`, `type` (bool, int, float, string, enum, list), `values`, `default`,
 `restart_required`, `aliases`. The keys are one per TUI Settings row that
-edits config.toml (theme, default tool, Claude/Gemini/Codex/Hermes options,
+edits config.toml (theme, default tool, Claude/Gemini/Codex/Hermes/Kimi options,
 updates, logs, global search, preview, sync title, maintenance, system
 stats, display, tool picker, interface) plus `recall.enabled`,
 `macapp.plugins`, `macapp.transcript_events`, `macapp.status_events` and

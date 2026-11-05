@@ -2731,16 +2731,18 @@ func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
 // this machine's config or credentials is copied. Zero values mean "remote
 // default" so an untouched dialog behaves exactly as before.
 type RemoteAddOptions struct {
-	ClaudeOptions   *ClaudeOptions
-	YoloOverride    *bool
-	StartQuery      string
-	AdditionalPaths []string
-	ReasoningEffort string
-	ParentID        string
-	Tool            string // -c; empty means shell
-	Title           string // -t; empty means --quick (auto-generated name)
-	Path            string // positional; empty or "." means remote CWD
-	Group           string // -g
+	ClaudeOptions     *ClaudeOptions
+	YoloOverride      *bool
+	PermissionMode    string
+	PermissionModeSet bool
+	StartQuery        string
+	AdditionalPaths   []string
+	ReasoningEffort   string
+	ParentID          string
+	Tool              string // -c; empty means shell
+	Title             string // -t; empty means --quick (auto-generated name)
+	Path              string // positional; empty or "." means remote CWD
+	Group             string // -g
 
 	// Sandbox forwards the "Run in Docker sandbox" checkbox as -sandbox; the
 	// image and other Docker settings come from the remote's own config.
@@ -2855,6 +2857,13 @@ func remoteAddArgs(o RemoteAddOptions) ([]string, error) {
 		args = append(args, fmt.Sprintf("--yolo=%t", *o.YoloOverride))
 	} else if o.Yolo {
 		args = append(args, "--yolo")
+	}
+	if o.PermissionModeSet || strings.TrimSpace(o.PermissionMode) != "" {
+		mode := strings.TrimSpace(o.PermissionMode)
+		if err := ValidateKimiPermissionMode(mode); err != nil {
+			return nil, err
+		}
+		args = append(args, "--permission-mode="+mode)
 	}
 	if flags := o.ClaudeOptions; flags != nil {
 		args = append(args, fmt.Sprintf("--skip-permissions=%t", flags.SkipPermissions), fmt.Sprintf("--auto-mode=%t", flags.AutoMode), fmt.Sprintf("--chrome=%t", flags.UseChrome), fmt.Sprintf("--teammate-mode=%t", flags.UseTeammateMode))

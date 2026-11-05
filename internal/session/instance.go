@@ -3250,6 +3250,35 @@ func (i *Instance) SetHermesOptions(opts *HermesOptions) error {
 	return nil
 }
 
+// GetKimiOptions returns Kimi-specific options from ToolOptionsJSON, or nil if not set.
+func (i *Instance) GetKimiOptions() *KimiOptions {
+	if len(i.ToolOptionsJSON) == 0 {
+		return nil
+	}
+	opts, err := UnmarshalKimiOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+// SetKimiOptions stores Kimi-specific options into ToolOptionsJSON.
+func (i *Instance) SetKimiOptions(opts *KimiOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	if err := ValidateKimiPermissionMode(opts.PermissionMode); err != nil {
+		return err
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
 // GetOpenCodeOptions returns OpenCode-specific options, or nil if not set
 func (i *Instance) GetOpenCodeOptions() *OpenCodeOptions {
 	if len(i.ToolOptionsJSON) == 0 {

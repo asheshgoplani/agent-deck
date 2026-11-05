@@ -247,11 +247,12 @@ completion content are never rendered.
 **Fields (order: Name → Tool → Model → Reasoning effort → Path):**
 - Session name (optional: left empty, it is the folder name, made unique and cut to 50 characters; the empty field previews that exact name). With a worktree on, an empty name's branch is taken from that name
 - Command (claude/gemini/opencode/codex/kimi/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
-- Model ID (claude/codex/gemini/opencode): empty means the tool default; `↓` or `Space` opens the list of known IDs, or type any ID (CLI: `--model`)
+- Model ID (claude/codex/gemini/opencode/kimi): empty means the tool default; `↓` or `Space` opens the list of known IDs, or type any ID (CLI: `--model`)
 - Reasoning effort (claude/codex): `←`/`→` or `Space` cycles the levels (CLI: `--effort`)
 - Project path (required, supports `~/`)
 - Parent group (auto-selected)
 - Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, start query, and the account row (CLI: `--account`; hidden when no named accounts are configured; starts on `[claude].default_account`, labelled `(default)`, when one is set)
+- Kimi options (when Kimi is selected): a Permissions radio row — **Kimi default** (no flag; use Kimi's configured or saved mode), **Ask When Needed** (`--yolo`), or **Never Ask** (`--auto`) — defaulting from `[kimi].permission_mode`; the choice is per-session and does not rewrite the global default. The model field defaults from `[kimi].default_model`. Managed models show friendly names such as `K3.1 Pro`, `K3`, and `K2.8`; launching still passes the corresponding `kimi-code/...` alias to Kimi
 - `[ Create session ]` button (last row)
 
 **Controls:** `Enter` creates from any row with what is filled in | `Tab`/`Shift+Tab` and `↓`/`↑` move between rows (inside the Claude options row by row) | `↓`/`Space` open the model list, `Space`/`→` browse paths; while a list is open `Enter` picks | `Ctrl+S` creates too | `Esc` back out of a list, then cancel
@@ -390,8 +391,8 @@ Before the restart is armed (by the key or on its own) the TUI checks the file i
 | OpenCode | 🌐 | Cyan |
 | Codex | 💻 | Cyan |
 | Cursor | 📝 | Blue |
-| Kimi Code | 🌙 | Purple |
 | Shell | 🐚 | Default |
+| Kimi Code | 🌙 | Purple |
 
 ## Color Scheme (Tokyo Night)
 

@@ -18,10 +18,10 @@ Agent Deck works with any terminal-based AI tool:
 | **Muse Code** (`muse`) | Status detection, organization, launch, resume |
 | **Cursor** (terminal) | Status detection (hook-driven), MCP, organization |
 | **Hermes Agent** | Status detection (hook-driven, `agent-deck hermes-hooks install`), organization, launch |
-| **Kimi Code** (`kimi`) | Status detection (hook-driven with pane fallback), organization, launch, native session-ID persistence, restart/resume |
 | **pi** (`pi-coding-agent`) | Status detection (hook-driven), organization, launch, resume, fork |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
+| **Kimi Code** (`kimi`) | Status detection (hook-driven with pane fallback), organization, launch, native session-ID persistence, restart/resume |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 Select `opencode2` in the new/edit session picker, web picker, or default-tool settings,

@@ -208,8 +208,8 @@ func TestSettingsPanel_LoadConfig_CustomTools(t *testing.T) {
 
 	panel.LoadConfig(config)
 
-	wantNames := []string{"Claude", "Gemini", "OpenCode", "OpenCode 2", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "Kimi", "DeepSeek", "Oh My Pi", "Openclaw", "Zeta", "None"}
-	wantValues := []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "kimi", "deepseek", "omp", "openclaw", "zeta", ""}
+	wantNames := []string{"Claude", "Gemini", "OpenCode", "OpenCode 2", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "DeepSeek", "Oh My Pi", "Kimi", "Openclaw", "Zeta", "None"}
+	wantValues := []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "kimi", "openclaw", "zeta", ""}
 
 	if !reflect.DeepEqual(panel.toolNames, wantNames) {
 		t.Fatalf("toolNames = %#v, want %#v", panel.toolNames, wantNames)
@@ -310,6 +310,63 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	}
 	if config.GlobalSearch.RecentDays != 45 {
 		t.Errorf("RecentDays: got %d, want 45", config.GlobalSearch.RecentDays)
+	}
+}
+
+func TestSettingsPanel_KimiOptions(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{Kimi: session.KimiSettings{
+		DefaultModel:   "configured-model",
+		PermissionMode: session.KimiPermissionAuto,
+	}})
+	panel.visible = true
+	panel.SetSize(100, 60)
+
+	view := panel.View()
+	for _, want := range []string{"KIMI", "Default model", "Permissions", "Kimi default", "Ask When Needed", "Never Ask"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Settings view missing %q: %q", want, view)
+		}
+	}
+
+	panel.cursor = int(SettingKimiPermissionMode)
+	panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	panel.cursor = int(SettingKimiDefaultModel)
+	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	for range len("configured-model") {
+		panel.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("session-model")})
+	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	config := panel.GetConfig()
+	if config.Kimi.DefaultModel != "session-model" {
+		t.Fatalf("Kimi.DefaultModel = %q, want session-model", config.Kimi.DefaultModel)
+	}
+	if config.Kimi.PermissionMode != session.KimiPermissionYolo {
+		t.Fatalf("Kimi.PermissionMode = %q, want yolo", config.Kimi.PermissionMode)
+	}
+}
+
+func TestSettingsPanel_KimiOptionsPreserveUnexposedConfig(t *testing.T) {
+	hooksEnabled := false
+	original := &session.UserConfig{Kimi: session.KimiSettings{
+		Command:        "/opt/kimi --custom",
+		ConfigDir:      "/tmp/kimi-home",
+		EnvFile:        "/tmp/kimi.env",
+		DefaultModel:   "configured-model",
+		PermissionMode: session.KimiPermissionAuto,
+		HooksEnabled:   &hooksEnabled,
+	}}
+	panel := NewSettingsPanel()
+	panel.originalConfig = original
+	panel.LoadConfig(original)
+
+	config := panel.GetConfig()
+	if config.Kimi.Command != original.Kimi.Command || config.Kimi.ConfigDir != original.Kimi.ConfigDir ||
+		config.Kimi.EnvFile != original.Kimi.EnvFile || config.Kimi.HooksEnabled == nil || *config.Kimi.HooksEnabled {
+		t.Fatalf("unexposed Kimi settings were not preserved: %+v", config.Kimi)
 	}
 }
 
@@ -1134,9 +1191,8 @@ func TestSettingsPanel_ViewShowsUnboundMCPHotkeyHint(t *testing.T) {
 	setSettingsPanelHotkeyConfigForTest(t, "[hotkeys]\nmcp_manager = \"\"\n")
 
 	panel := NewSettingsPanel()
-	// Tall enough for the whole panel: its wrapped rows no longer overflow
-	// an 80-row screen, they scroll inside it.
-	panel.SetSize(100, 100)
+	// Tall enough for the whole panel, including the Kimi section.
+	panel.SetSize(100, 110)
 	panel.Show()
 	panel.cursor = int(SettingMaintenanceEnabled)
 

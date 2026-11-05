@@ -21,7 +21,7 @@
                              │        shell     claude     gemini     opencode            │                             
                              │        opencode2     codex     pi     copilot              │                             
                              │        crush     muse     cursor agent     hermes          │                             
-                             │        kimi     deepseek     omp                           │                             
+                             │        deepseek     omp     kimi                           │                             
                              │      Account for selected harness (configured; auth u…:    │                             
                              │        inherit     personal (not configured)               │                             
                              │                                                            │                             

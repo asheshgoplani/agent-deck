@@ -16,7 +16,7 @@ func TestToolVisibilityPanelIncludesKimiOnce(t *testing.T) {
 
 	want := []string{
 		"claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes",
-		"kimi", "deepseek", "omp", "custom",
+		"deepseek", "omp", "kimi", "custom",
 	}
 	if !reflect.DeepEqual(panel.toolNames, want) {
 		t.Fatalf("toolNames = %#v, want %#v", panel.toolNames, want)
