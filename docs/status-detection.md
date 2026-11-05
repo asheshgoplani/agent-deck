@@ -43,7 +43,8 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 4. Model-unavailable no-op → `error`; tool error banner → `error`.
 5. Open Claude menu at the tail with no live busy cue near it → not busy.
 6. Busy indicator (tool patterns over the last 25 lines, spinner scan, 6 s
-   spinner grace) → `active`.
+   spinner grace) → `active`. A spinner frame followed by more braille is a
+   cell of a drawing (the Codex home-screen logo, #3037), not a spinner.
 7. Claude background work in flight → `active` (issue #2473): a workflow row
    short of its last step (`○ name ▰▰▱ 3/5 · 18m32s`; a finished row stays at
    n/n), `Waiting for N background agents / dynamic workflows to finish` as
