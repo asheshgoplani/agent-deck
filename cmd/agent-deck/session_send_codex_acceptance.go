@@ -11,6 +11,8 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+var errCodexTurnBeganBeforeLock = errors.New("another turn started before this send took the acceptance lock")
+
 func shouldAcquireCodexAcceptanceGuard(inst *session.Instance, jsonOutput, wait, draft bool) bool {
 	if inst == nil || !session.IsCodexCompatible(inst.Tool) || draft {
 		return false
@@ -261,6 +263,56 @@ func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) 
 		return nil, err
 	}
 	return &codexAcceptanceGuard{lock: lock, fence: fence}, nil
+}
+
+// acquireCodexAcceptanceWhenReady takes the acceptance guard only once the
+// target is ready for input, never across the wait for it. The lock covers the
+// short fence-to-generation window; holding it while a Codex turn runs (up to
+// the whole --timeout) turned every concurrent send to the same session into a
+// 5s "acceptance lock timed out" refusal until that turn ended.
+//
+// waitReady is nil when the send does not wait for readiness (--no-wait); the
+// guard is then acquired once, with the ordinary bounded lock wait. Otherwise
+// two outcomes send the caller back to waiting instead of refusing, both
+// meaning another send just submitted and the target is busy again: the lock
+// stayed held by that send, or a new turn began between readiness and the
+// lock. A readiness failure is returned as readyErr. Contention that outlasts
+// the deadline, and any other guard error, is returned as guardErr: nothing
+// was typed, so the caller's ordinary acceptance refusal stays accurate.
+func acquireCodexAcceptanceWhenReady(
+	deadline time.Time,
+	lockWait time.Duration,
+	waitReady func(time.Duration) error,
+	generation func() (string, error),
+	acquire func(time.Duration) (*codexAcceptanceGuard, error),
+) (guard *codexAcceptanceGuard, readyErr, guardErr error) {
+	if waitReady == nil {
+		guard, guardErr = acquire(lockWait)
+		return guard, nil, guardErr
+	}
+	contention := session.ErrCodexAcceptanceLockTimeout
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, nil, contention
+		}
+		if err := waitReady(remaining); err != nil {
+			return nil, err, nil
+		}
+		readyGeneration, _ := generation()
+		guard, err := acquire(lockWait)
+		switch {
+		case err == nil && guard.fence.priorTurnGeneration == readyGeneration:
+			return guard, nil, nil
+		case err == nil:
+			guard.Release() // a turn began while this send queued for the lock
+			contention = errCodexTurnBeganBeforeLock
+		case errors.Is(err, session.ErrCodexAcceptanceLockTimeout):
+			contention = err // another send is submitting; its turn has to end first
+		default:
+			return nil, nil, err
+		}
+	}
 }
 
 func validateCodexAcceptanceFence(inst *session.Instance, fence codexAcceptanceFence) error {
