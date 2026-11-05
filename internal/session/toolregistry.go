@@ -553,3 +553,25 @@ func PickerToolNames() []string {
 	}
 	return out
 }
+
+// ToolInstalled reports whether a new-session tool can start on this machine:
+// its command resolves on PATH (or, for an absolute path, exists). It uses the
+// same rules as the show_only_installed_tools probe, but runs on every call
+// whatever that flag says, so the new-session dialog can mark missing tools
+// and pick the first installed agent as the default (onboarding, ASK-211).
+// "" and "shell" are always installed.
+func ToolInstalled(name string) bool {
+	switch name {
+	case "", "shell":
+		return true
+	case "cursor":
+		return cursorCommandInstalled()
+	case "deepseek":
+		return DeepSeekInstalled(GetToolCommand("deepseek"))
+	}
+	r := currentRegistry()
+	if def, ok := r.custom[name]; ok {
+		return probeInstalled(def.Command)
+	}
+	return probeInstalled(name)
+}

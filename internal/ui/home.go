@@ -8905,9 +8905,12 @@ func (h *Home) openLocalNewSessionDialog() tea.Cmd {
 
 	// Apply the preselected tool: explicit [default_tool] config wins,
 	// otherwise fall back to the last successfully-submitted tool remembered
-	// in the profile StateDB (UX top-3 #2). First run (neither set) leaves
-	// shell selected, unchanged.
-	h.newDialog.SetDefaultTool(resolveInitialTool(session.GetDefaultTool(), rememberedTool(h.stateDB())))
+	// in the profile StateDB (UX top-3 #2). First run (neither set) starts on
+	// the first installed agent, or the shell when none is installed
+	// (onboarding, ASK-211). The tool row lists installed tools first.
+	h.newDialog.restoreLocalPresets()
+	h.newDialog.RefreshInstalledTools()
+	h.newDialog.SetDefaultTool(initialNewSessionTool(session.GetDefaultTool(), rememberedTool(h.stateDB()), h.newDialog.FirstInstalledAgent()))
 
 	// Auto-select parent group from current cursor position
 	groupPath := session.DefaultGroupPath
@@ -8938,5 +8941,8 @@ func (h *Home) openLocalNewSessionDialog() tea.Cmd {
 	suggestedParentID := h.suggestConductorParent()
 	h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, conductors, suggestedParentID)
 	h.newDialog.SetWhereChoices(newDialogWhereChoicesFromConfig())
+	// The Claude hooks question rides in the form while it is undecided
+	// (ASK-211); the old startup box no longer appears.
+	h.newDialog.SetClaudeHooksUndecided(h.pendingHooksPrompt)
 	return nil
 }
