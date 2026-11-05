@@ -44,6 +44,8 @@
 #   claude_token_file = /abs/path               CLAUDE_CODE_OAUTH_TOKEN file
 #                                               (claude setup-token), 0600
 #   agent_deck_binary = /abs/path/agent-deck    linux amd64 binary copied in
+#   sp_created, sp_secret_pending = true        written by `agent-deck provider
+#                                               connect azure`; ignored here
 # Each key can also come from env AGENTDECK_AZURE_<KEY IN CAPITALS> (env
 # wins). The SP secret can come from env AGENTDECK_AZURE_SP_SECRET instead of
 # sp_secret_file.
@@ -172,6 +174,9 @@ CONF = {
     "sp_app_id": r"^[0-9a-fA-F-]{36}$",
     "sp_tenant": r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$",
     "sp_secret_file": None,
+    # bookkeeping of `agent-deck provider connect azure`; the provider ignores them
+    "sp_created": r"^(true|false)$",
+    "sp_secret_pending": r"^(true|false)$",
     "project_git": r"^(https://|http://|ssh://|git@)[^\s]+$",
     "project_dir": None,
     "project_name": r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",

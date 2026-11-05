@@ -150,6 +150,10 @@ func handleProvider(profile string, args []string) {
 		code = runProviderList(args[1:])
 	case "test":
 		code = runProviderTest(profile, args[1:])
+	case "connect":
+		code = runProviderConnect(profile, args[1:])
+	case "disconnect":
+		code = runProviderConnect(profile, append(append([]string{}, args[1:]...), "--disconnect"))
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown provider command %q\n\n", args[0])
 		printProviderUsage(os.Stderr)
@@ -170,6 +174,11 @@ func printProviderUsage(w io.Writer) {
 	fmt.Fprintln(w, "  list [--json]             List configured providers and whether they answer")
 	fmt.Fprintln(w, "  test <name> [--create]    Run the provider's list (and with --create a")
 	fmt.Fprintln(w, "                            create -> status -> destroy round trip)")
+	fmt.Fprintln(w, "  connect azure [flags]     Log in to Azure, set up a resource group and a")
+	fmt.Fprintln(w, "                            service principal, install the azure-vm provider")
+	fmt.Fprintln(w, "                            ([--subscription id] [--tenant t] [--json] ...)")
+	fmt.Fprintln(w, "  disconnect azure [--yes]  Remove that service principal and the local")
+	fmt.Fprintln(w, "                            Azure settings (= connect azure --disconnect)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Related:")
 	fmt.Fprintln(w, "  agent-deck remote add --provider <name> [--name x]   Create a sandbox and register it")
