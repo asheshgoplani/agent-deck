@@ -18,8 +18,25 @@ type CopyResult struct {
 	LineCount int    // Number of lines in the content
 }
 
+// Seams for tests: the native tool, the OSC 52 write and the environment.
+var (
+	nativeCopyFn = copyNative
+	osc52WriteFn = copyOSC52
+	getenv       = os.Getenv
+)
+
+// overSSH reports whether this process runs in an SSH login. The terminal the
+// user looks at is then on the other machine, so a native clipboard tool here
+// (xclip, xsel, wl-copy, pbcopy) writes the host's clipboard, which the user
+// never sees.
+func overSSH() bool {
+	return getenv("SSH_CONNECTION") != "" || getenv("SSH_CLIENT") != "" || getenv("SSH_TTY") != ""
+}
+
 // Copy copies text to the system clipboard using platform-appropriate methods.
 // The fallback chain is: native clipboard tool → OSC 52 escape sequence.
+// Over SSH the order is reversed: OSC 52 first (it reaches the user's own
+// terminal), then the native tool.
 // supportsOSC52 should come from tmux.GetTerminalInfo().SupportsOSC52.
 func Copy(text string, supportsOSC52 bool) (*CopyResult, error) {
 	return CopyContext(context.Background(), text, supportsOSC52)
@@ -35,8 +52,19 @@ func CopyContext(ctx context.Context, text string, supportsOSC52 bool) (*CopyRes
 	lineCount := countLines(text)
 	byteSize := len(text)
 
+	// Over SSH, OSC 52 is the only route to the user's clipboard.
+	if supportsOSC52 && overSSH() {
+		if err := osc52WriteFn(text); err == nil {
+			return &CopyResult{
+				Method:    "osc52",
+				ByteSize:  byteSize,
+				LineCount: lineCount,
+			}, nil
+		}
+	}
+
 	// Try native clipboard command first
-	method, err := copyNative(ctx, text)
+	method, err := nativeCopyFn(ctx, text)
 	if err == nil {
 		return &CopyResult{
 			Method:    method,
@@ -47,7 +75,7 @@ func CopyContext(ctx context.Context, text string, supportsOSC52 bool) (*CopyRes
 
 	// Fall back to OSC 52 if terminal supports it
 	if supportsOSC52 {
-		if err := copyOSC52(text); err != nil {
+		if err := osc52WriteFn(text); err != nil {
 			return nil, fmt.Errorf("OSC 52 clipboard failed: %w", err)
 		}
 		return &CopyResult{
@@ -67,7 +95,7 @@ func CopyOSC52(text string) error {
 	if text == "" {
 		return fmt.Errorf("no content to copy")
 	}
-	return copyOSC52(text)
+	return osc52WriteFn(text)
 }
 
 // copyNative attempts to copy using a platform-native clipboard command.
@@ -132,12 +160,23 @@ func copyOSC52(text string) (err error) {
 }
 
 // generateOSC52 builds the OSC 52 escape sequence.
-// If inTmux is true, wraps it in a DCS passthrough for tmux compatibility.
+//
+// Inside tmux it sends the sequence twice, plain and wrapped in a DCS
+// passthrough, because each form needs a different tmux option and either
+// may be off:
+//   - plain OSC 52 reaches the attached terminals only with set-clipboard on
+//     (tmux's default "external" drops it);
+//   - the DCS form reaches them only with allow-passthrough on for the pane
+//     the TUI runs in (default off; agent-deck turns it on only in the panes
+//     it creates).
+//
+// Both carry the same text, so a terminal that gets both just sets its
+// clipboard twice. Claude Code does the same inside tmux.
 func generateOSC52(base64Content string, inTmux bool) string {
 	osc := "\x1b]52;c;" + base64Content + "\x07"
 	if inTmux {
 		// tmux DCS passthrough: \ePtmux;\e{OSC}\e\\
-		return "\x1bPtmux;\x1b" + osc + "\x1b\\"
+		return osc + "\x1bPtmux;\x1b" + osc + "\x1b\\"
 	}
 	return osc
 }
