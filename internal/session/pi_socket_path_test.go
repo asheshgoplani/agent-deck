@@ -357,8 +357,9 @@ func TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn(t *testing.T) {
 	writeFakePi(t, bin, `echo 1.3.0`)
 	on := inst.buildPiCommand("pi")
 	want := "AGENTDECK_PI_SOCKET=" + expectedPiSocketPath(t, sessionProfileEnvValue(), inst.ID)
-	if !strings.Contains(on, want) {
-		t.Errorf("buildPiCommand with pi 1.3.0 = %q, want it to contain %q", on, want)
+	// Exactly one assignment: in sh a later AGENTDECK_PI_SOCKET= would win.
+	if !strings.Contains(on, want) || strings.Count(on, "AGENTDECK_PI_SOCKET=") != 1 {
+		t.Errorf("buildPiCommand with pi 1.3.0 = %q, want exactly one AGENTDECK_PI_SOCKET assignment, containing %q", on, want)
 	}
 	if recs := piSocketOffRecords(t, buf); len(recs) != 0 {
 		t.Errorf("an on launch logged %d off records", len(recs))
