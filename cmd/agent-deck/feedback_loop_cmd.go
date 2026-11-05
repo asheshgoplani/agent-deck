@@ -73,13 +73,6 @@ var readerIsTerminal = func(in io.Reader) bool {
 	return ok && term.IsTerminal(int(f.Fd())) // #nosec G115 -- a file descriptor fits in int
 }
 
-// noPromptInSession is true when a prompt would wait on nobody: inside an
-// agent session (AGENTDECK_INSTANCE_ID set) with stdin not a terminal.
-// Posting no longer depends on it (see agentPostInSession); prompts do.
-func noPromptInSession(in io.Reader) bool {
-	return inAgentSession() && !readerIsTerminal(in)
-}
-
 // inAgentSession reports that this process runs inside an agent-deck
 // session (AGENTDECK_INSTANCE_ID set to a non-blank value).
 func inAgentSession() bool {
