@@ -15,8 +15,10 @@ const lockTimeout = 10 * time.Second
 
 // lockFile takes an exclusive flock on path (created 0600 if missing),
 // waiting at most lockTimeout. flock is per open file description, so
-// two Store values in one process exclude each other as well.
-func lockFile(path string) (func(), error) {
+// two Store values in one process exclude each other as well. The
+// returned release unlocks and closes the file and returns both errors
+// (the file is open for writing, so a Close error is never dropped).
+func lockFile(path string) (func() error, error) {
 	// Read-write although nothing is written: flock on some file systems
 	// (NFS among them) needs a descriptor open for writing.
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600) // #nosec G304 -- the store's own lock file
@@ -30,13 +32,22 @@ func lockFile(path string) (func(), error) {
 			break
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
-			f.Close()
-			return nil, fmt.Errorf("flock: %w", err)
+			return nil, errors.Join(fmt.Errorf("flock: %w", err), closeLock(f))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+	return func() error {
+		var unlockErr error
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+			unlockErr = fmt.Errorf("unlocking %s: %w", path, err)
+		}
+		return errors.Join(unlockErr, closeLock(f))
 	}, nil
+}
+
+func closeLock(f *os.File) error {
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing lock file %s: %w", f.Name(), err)
+	}
+	return nil
 }

@@ -109,22 +109,27 @@ func Default() (*Store, error) {
 // never blocks reporting. Taking the lock is best effort for a read: if it
 // fails, the failure is logged and the file is read without it (the write
 // is atomic, so a reader never sees half a file).
-func (s *Store) Load() (*State, error) {
-	unlock, err := s.lock()
-	if err != nil {
+func (s *Store) Load() (st *State, err error) {
+	unlock, lerr := s.lock()
+	if lerr != nil {
 		storeLog.Warn("reports_store_lock_failed_reading_unlocked",
-			slog.String("path", s.Path), slog.String("error", err.Error()))
+			slog.String("path", s.Path), slog.String("error", lerr.Error()))
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.loadLocked()
 	}
-	defer unlock()
+	defer func() {
+		// A read changed nothing: a release error is logged, not returned.
+		if uerr := unlock(); uerr != nil {
+			storeLog.Warn("reports_store_unlock_failed", slog.String("path", s.Path), slog.String("error", uerr.Error()))
+		}
+	}()
 	return s.loadLocked()
 }
 
 // lock takes the in-process mutex and the cross-process file lock on
 // <Path>.lock (flock where the OS has it). The returned func releases both.
-func (s *Store) lock() (func(), error) {
+func (s *Store) lock() (func() error, error) {
 	s.mu.Lock()
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		s.mu.Unlock()
@@ -135,9 +140,9 @@ func (s *Store) lock() (func(), error) {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("locking %s: %w", s.Path, err)
 	}
-	return func() {
-		release()
-		s.mu.Unlock()
+	return func() error {
+		defer s.mu.Unlock()
+		return release()
 	}, nil
 }
 
@@ -182,12 +187,16 @@ func (s *Store) mutate(fn func(*State) error) error {
 }
 
 // mutateIf is mutate that saves only when fn reports a change.
-func (s *Store) mutateIf(fn func(*State) (bool, error)) error {
+func (s *Store) mutateIf(fn func(*State) (bool, error)) (err error) {
 	unlock, err := s.lock()
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer func() {
+		if uerr := unlock(); uerr != nil {
+			err = errors.Join(err, uerr)
+		}
+	}()
 	st, err := s.loadLocked()
 	if err != nil {
 		return err

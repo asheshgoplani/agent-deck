@@ -22,7 +22,7 @@ func TestReportLoopLockOpensReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
+	defer func() { _ = release() }()
 	fi, err := os.Stat(p)
 	if err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("lock file mode: %v %v", fi, err)
@@ -73,5 +73,21 @@ func TestReportLoopLoadWithoutLockIsBestEffort(t *testing.T) {
 	}
 	if err := s.Record(Report{Number: 91, Title: "[bug] y", FiledVersion: "1.0.0"}); err == nil {
 		t.Fatal("a change must still refuse without the lock")
+	}
+}
+
+// CodeQL go/unhandled-writable-file-close: the lock file is opened
+// writable, so its Close error is returned, never dropped.
+func TestReportLoopLockReleaseReturnsCloseError(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "reports.json.lock")
+	release, err := lockFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(); err != nil {
+		t.Fatalf("first release: %v", err)
+	}
+	if err := release(); err == nil {
+		t.Fatalf("a second release closes a closed file: its error must be returned")
 	}
 }
