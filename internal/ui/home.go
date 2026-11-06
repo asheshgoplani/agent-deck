@@ -2518,7 +2518,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (The Hermes box follows once it is answered.)
 			// (h.instances is filled further down, so msg says it.)
 			hasSessions := msg.err == nil && len(msg.instances) > 0
-			if !(firstLoad && hasSessions && h.showClaudeHooksBox()) {
+			if !(firstLoad && hasSessions && claudeHooksRelevant(msg.instances) && h.showClaudeHooksBox(false)) {
 				h.showPendingHooksPrompt()
 			}
 		}
@@ -2884,7 +2884,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (quick create, a pick made elsewhere) still gets the hooks
 			// question once, as the old box (ASK-211 review).
 			if session.IsClaudeCompatible(msg.instance.Tool) {
-				h.showClaudeHooksBox()
+				h.showClaudeHooksBox(true)
 			}
 
 			// Auto-attach to the new session when [ui].attach_on_create is set,
@@ -4097,6 +4097,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Back from an attached session: hint step 2 (Ctrl+Q) is done.
 		if msg.attachedSessionID != "" {
 			h.advanceOnboardingHint(hintStepBack)
+			h.clearBackHintInStatus()
 		}
 		if !msg.detachedAt.IsZero() {
 			h.pendingFrameOp, h.pendingFrameStart = "tui.detach", msg.detachedAt
@@ -7524,6 +7525,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	}
 	// Opening a session is hint step 1 (ASK-211).
 	h.advanceOnboardingHint(hintStepOpen)
+	h.showBackHintInStatus(tmuxSess)
 	var attachStart, detachedAt time.Time // tui.attach / tui.detach stamps, only while timings are on
 	if optiming.Enabled() {
 		attachStart = time.Now()
@@ -8989,7 +8991,9 @@ func (h *Home) openLocalNewSessionDialog() tea.Cmd {
 	// (ASK-211); the old startup box no longer appears.
 	h.newDialog.SetClaudeHooksUndecided(h.pendingHooksPrompt)
 	// The profile's first session gets the short form (ASK-211): the model
-	// rows and the tool's options wait under "More options".
-	h.newDialog.SetFirstSession(!h.hasAnySession())
+	// rows and the tool's options wait under "More options". So does every
+	// form while the hint bar runs: its step 3 ("Press n to start another
+	// session") opens the same short form the user just learned (round 2).
+	h.newDialog.SetFirstSession(!h.hasAnySession() || h.hints.step != hintStepOff)
 	return nil
 }

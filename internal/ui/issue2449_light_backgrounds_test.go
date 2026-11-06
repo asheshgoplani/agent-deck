@@ -12,7 +12,9 @@ package ui
 //
 // and review the diff like any other test change. The #2449 fix was light-theme
 // only; the later inter-option gap fix intentionally adds surface backgrounds
-// to dark-theme pill separators without changing visible content.
+// to dark-theme pill separators without changing visible content, and ASK-211
+// round 2 fills the dark-theme surface after every reset too and draws Name
+// and Path as field bars (same visible text).
 
 import (
 	"os"

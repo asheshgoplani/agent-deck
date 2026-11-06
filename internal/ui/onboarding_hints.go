@@ -10,8 +10,8 @@ package ui
 // machine: a seen-file next to the Welcome's (.onboarding-hints-seen).
 //
 // While a session is attached, tmux owns the screen and this bar is not
-// drawn; the attached session's status line already carries the
-// "ctrl+q detach" hint, so step 1 names Ctrl+Q too.
+// drawn: step 1 names Ctrl+Q too, and step 2 goes into the attached
+// session's own status-left ("Step 2 of 4 · Ctrl+Q comes back here").
 
 import (
 	"os"
@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // onboardingHintsSeenName is the marker file (under the effective data dir)
@@ -53,6 +54,45 @@ type onboardingHints struct {
 	step    int    // hintStep*
 	session string // the session name the bar talks about
 	doneGen int
+	// statusTmux is the attached session whose own tmux status-left
+	// carries step 2 while the bar cannot be drawn; cleared on return.
+	statusTmux *tmux.Session
+}
+
+// Seams so tests can watch the attached session's status-left hint without
+// a tmux server.
+var (
+	onboardingSetStatusHint   = func(s *tmux.Session, text string) { _ = s.SetSessionStatusLeft(text) }
+	onboardingClearStatusHint = func(s *tmux.Session) { _ = s.ClearSessionStatusLeft() }
+)
+
+// statusBackHintText is step 2 as the attached session's status-left: the
+// bar is not drawn while tmux owns the screen, and the global status line
+// (the quick-switch list) can crowd out "ctrl+q detach" (ASK-211 round 2).
+func (h *Home) statusBackHintText() string {
+	detach := DetachByteLabel(DetachByteFromBinding(h.actionKey(hotkeyDetach)))
+	return "#[bold] Step 2 of 4 · " + tmux.FormatLiteral(detach) + " comes back here #[default]│ "
+}
+
+// showBackHintInStatus puts step 2 in the attached session's status line
+// while the bar is at step 2 (called on attach).
+func (h *Home) showBackHintInStatus(s *tmux.Session) {
+	if s == nil || h.hints.step != hintStepBack || onboardingSetStatusHint == nil {
+		return
+	}
+	onboardingSetStatusHint(s, h.statusBackHintText())
+	h.hints.statusTmux = s
+}
+
+// clearBackHintInStatus removes the step 2 status-left again (on return).
+func (h *Home) clearBackHintInStatus() {
+	if h.hints.statusTmux == nil {
+		return
+	}
+	if onboardingClearStatusHint != nil {
+		onboardingClearStatusHint(h.hints.statusTmux)
+	}
+	h.hints.statusTmux = nil
 }
 
 func onboardingHintsSeenPath() string {
@@ -208,7 +248,7 @@ func (h *Home) hintBarText() (step, long, short string) {
 	detach := DetachByteLabel(DetachByteFromBinding(h.actionKey(hotkeyDetach)))
 	switch h.hints.step {
 	case hintStepOpen:
-		return "Step 1 of 4", "Press Enter to open " + name + ". " + detach + " brings you back here.", "Press Enter to open " + name + "."
+		return "Step 1 of 4", "Press Enter to open " + name + ". " + detach + " brings you back here.", "Enter opens it · " + detach + " comes back"
 	case hintStepBack:
 		return "Step 2 of 4", "Press " + detach + " to come back to the list. " + name + " keeps running.", detach + " comes back here. " + name + " keeps running."
 	case hintStepNew:

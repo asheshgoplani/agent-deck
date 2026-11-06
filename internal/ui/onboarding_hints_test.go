@@ -191,7 +191,7 @@ func TestOnboardingHints_NarrowTerminalUsesShortText(t *testing.T) {
 	h := hintsHome(t, 60, 24)
 	h.startOnboardingHints("my-app")
 	line := hintBarLine(h)
-	if !strings.Contains(line, "Press Enter to open my-app.") || strings.Contains(line, "Esc hide tips") {
+	if !strings.Contains(line, "Enter opens it · Ctrl+Q comes back") || strings.Contains(line, "Esc hide tips") {
 		t.Fatalf("narrow bar: %q", line)
 	}
 	if w := len([]rune(line)); w > 60 {

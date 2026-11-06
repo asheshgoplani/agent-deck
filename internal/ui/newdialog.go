@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -774,8 +775,10 @@ func (d *NewDialog) syncInputWidths() {
 	if iw > newDialogInputMaxWidth {
 		iw = newDialogInputMaxWidth
 	}
-	// Name and Path carry their label on the same line (ASK-211).
-	inline := max(newDialogInputMinWidth/2, iw-(newDialogInlineIndent-2))
+	// Name and Path carry their label on the same line (ASK-211); one cell
+	// less so the field bar (prompt, text, cursor cell; renderFieldBar)
+	// ends inside the box instead of wrapping.
+	inline := max(newDialogInputMinWidth/2, iw-(newDialogInlineIndent-2)-1)
 	d.nameInput.Width = inline
 	d.pathInput.Width = inline
 	d.commandInput.Width = iw
@@ -2439,7 +2442,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			isPathEditing := cur == focusPath || d.multiRepoEditing
 			if isPathEditing && !d.remoteTarget {
 				path := d.pathInput.Value()
-				info, err := os.Stat(path)
+				// The form shows the start folder as ~/... (ASK-211): stat the
+				// expanded path, or a complete folder reads as partial and Tab
+				// re-completes it instead of moving on.
+				info, err := os.Stat(session.ExpandPath(path))
 				isDir := err == nil && info.IsDir()
 				isPartial := !isDir || strings.HasSuffix(path, string(os.PathSeparator))
 
@@ -3231,10 +3237,10 @@ func (d *NewDialog) renderSinglePathSection(content *strings.Builder, cur focusT
 		d.pathInput.TextStyle = lipgloss.NewStyle().
 			Background(ColorAccent).
 			Foreground(ColorBg)
-		content.WriteString(d.pathInput.View())
+		content.WriteString(renderFieldBar(d.pathInput.View(), d.pathInput.Width))
 		d.pathInput.TextStyle = savedTextStyle
 	} else {
-		content.WriteString(d.pathInput.View())
+		content.WriteString(renderFieldBar(d.pathInput.View(), d.pathInput.Width))
 	}
 	content.WriteString("\n")
 
@@ -3378,7 +3384,10 @@ func (d *NewDialog) View() string {
 
 	if d.remoteCatalog != nil && d.remoteCatalog.Legacy {
 		content.WriteString("\n")
-		content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("  " + legacyRemoteCreationNotice))
+		// Wrapped here at the box's inner width: left to the box, the wrap
+		// would see the surface fill's codes (ASK-211 round 2) and break the
+		// sentence at "agent-".
+		content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Width(max(1, dialogWidth-8)).Render("  " + legacyRemoteCreationNotice))
 		content.WriteString("\n")
 	}
 
@@ -3458,7 +3467,7 @@ func (d *NewDialog) View() string {
 			d.nameInput.Placeholder = derived
 		}
 	}
-	content.WriteString(d.nameInput.View())
+	content.WriteString(renderFieldBar(d.nameInput.View(), d.nameInput.Width))
 	content.WriteString("\n\n")
 
 	// Hot path: Agent -> Path right after Name (one line each, so Path shows
@@ -3763,12 +3772,11 @@ func (d *NewDialog) View() string {
 		}
 	}
 
-	// Wrap in dialog box. In light theme, keep the surface fill uniform:
-	// every inline segment and textinput part resets SGR state, which would
-	// otherwise let the terminal background show through the box (#2449).
-	if currentTheme == ThemeLight {
-		viewported = fillSurfaceAfterResets(viewported, surfaceBackgroundSGR())
-	}
+	// Wrap in dialog box. Keep the surface fill uniform: every inline
+	// segment and textinput part resets SGR state, which would otherwise let
+	// the terminal background show through the box (#2449; dark theme too
+	// since ASK-211 round 2, where it left strips through the first form).
+	viewported = fillSurfaceAfterResets(trimPaddingOverflow(viewported, innerWidth), surfaceBackgroundSGR())
 	dialog := dialogStyle.Render(viewported)
 
 	// Center the dialog
@@ -3794,6 +3802,11 @@ func (d *NewDialog) View() string {
 		// Align with the path input: border (1) + padding (4) + the inline
 		// "Path:" label column (ASK-211).
 		overlayCol := leftCol + 1 + 4 + newDialogInlineIndent
+		// The hooks line right under Path is the consent Enter gives: open
+		// the menu above the Path row instead of over it (ASK-211 round 2).
+		if d.showHooksLine() && !d.multiRepoEnabled {
+			overlayRow = max(0, overlayRow-1-lipgloss.Height(suggestionsOverlay))
+		}
 
 		placed = overlayDropdown(placed, suggestionsOverlay, overlayRow, overlayCol)
 	}
@@ -3808,6 +3821,42 @@ func (d *NewDialog) View() string {
 	}
 
 	return placed
+}
+
+// trimPaddingOverflow cuts the trailing blank cells of a line wider than
+// width. A text input's padding can run a cell past the box; lipgloss used
+// to drop those spaces when it wrapped, but once the surface fill puts SGR
+// codes between them the wrap breaks the line inside the typed text instead
+// (a model ID "qwen3-custom-" + "zzz" on the next row).
+func trimPaddingOverflow(s string, width int) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		w := ansi.StringWidth(l)
+		if w <= width {
+			continue
+		}
+		if strings.TrimSpace(ansi.Strip(ansi.Cut(l, width, w))) == "" {
+			lines[i] = ansi.Truncate(l, width, "")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderFieldBar draws a one-line text input on a field background of one
+// width, so Name and Path are two equal bars (Sharjeel's prototype) instead
+// of a bar that ends where the text or the placeholder ends (ASK-211 round 2).
+// inputWidth is the textinput's Width; the bar is the prompt, that width and
+// the cursor cell.
+func renderFieldBar(view string, inputWidth int) string {
+	bg := dropdownMenuBg()
+	sgr := ""
+	if c := lipgloss.ColorProfile().Color(string(bg)); c != nil {
+		if seq := c.Sequence(true); seq != "" {
+			sgr = "\x1b[" + seq + "m"
+		}
+	}
+	width := max(lipgloss.Width(view), lipgloss.Width("> ")+inputWidth+1)
+	return lipgloss.NewStyle().Background(bg).Width(width).Render(fillSurfaceAfterResets(view, sgr))
 }
 
 // sgrResetRE matches an SGR sequence that resets every attribute, the form

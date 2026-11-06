@@ -62,16 +62,17 @@ func TestNewDialog_SetSize_syncsPathInputWidth(t *testing.T) {
 
 	d.SetSize(120, 40)
 	// Preferred outer width 84 → text fields 84 − 12 = 72; Path carries its
-	// label on the same line (ASK-211), 7 columns more than the old indent.
-	if got := d.pathInput.Width; got != 65 {
-		t.Fatalf("wide terminal: pathInput.Width = %d, want 65", got)
+	// label on the same line (ASK-211), 7 columns more than the old indent,
+	// and one cell for the field bar's cursor cell (round 2).
+	if got := d.pathInput.Width; got != 64 {
+		t.Fatalf("wide terminal: pathInput.Width = %d, want 64", got)
 	}
 
 	d.SetSize(55, 40)
 	// Outer shrinks to terminal−10 (45), above min 44 → inputs 45 − 12 = 33,
-	// less the inline label: 26.
-	if got := d.pathInput.Width; got != 26 {
-		t.Fatalf("narrow terminal: pathInput.Width = %d, want 26", got)
+	// less the inline label and the cursor cell: 25.
+	if got := d.pathInput.Width; got != 25 {
+		t.Fatalf("narrow terminal: pathInput.Width = %d, want 25", got)
 	}
 }
 

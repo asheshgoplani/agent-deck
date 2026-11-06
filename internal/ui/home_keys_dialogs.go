@@ -518,6 +518,9 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
 				return h, h.declineInstallHermesHooks()
 			}
+			if msg.String() == "esc" {
+				return h, h.laterInstallHooks()
+			}
 			return h, h.declineInstallHooks()
 		}
 		return h, nil
@@ -909,14 +912,37 @@ func (h *Home) declineInstallHooks() tea.Cmd {
 // with quick create, the CLI or a remote), or a local Claude-compatible
 // session created by another path than the form. The old box, at most once
 // per run and never over another dialog; its answer is recorded the same way.
-func (h *Home) showClaudeHooksBox() (shown bool) {
+// install preselects Install, as the form's hooks line is ticked by default
+// (owner default 5); the startup box for existing users keeps Skip.
+func (h *Home) showClaudeHooksBox(install bool) (shown bool) {
 	if !h.pendingHooksPrompt || h.claudeHooksBoxShown || h.hasModalVisible() {
 		return false
 	}
 	h.claudeHooksBoxShown = true
-	h.confirmDialog.ShowInstallHooks()
+	h.confirmDialog.ShowInstallHooks(install)
 	h.confirmDialog.SetSize(h.width, h.height)
 	return true
+}
+
+// claudeHooksRelevant says whether the Claude hooks question means anything
+// here: the claude CLI is installed, or the profile has a Claude-compatible
+// session. A user with only a shell or Codex is not asked about Claude's
+// settings (ASK-211 round 2); the question stays open for later.
+func claudeHooksRelevant(instances []*session.Instance) bool {
+	for _, inst := range instances {
+		if inst != nil && session.IsClaudeCompatible(inst.Tool) {
+			return true
+		}
+	}
+	return newDialogToolInstalled != nil && newDialogToolInstalled("claude")
+}
+
+// laterInstallHooks closes the Claude hooks box without an answer (Esc): the
+// question stays open and is asked again by the form's line or a later start.
+func (h *Home) laterInstallHooks() tea.Cmd {
+	h.confirmDialog.Hide()
+	h.showPendingHooksPrompt()
+	return nil
 }
 
 // showPendingHooksPrompt shows the next hooks consent box. The Claude hooks
