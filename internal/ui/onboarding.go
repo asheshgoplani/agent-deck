@@ -63,13 +63,8 @@ var (
 	onboardingStatusRunner = runOnboardingStatus
 	// onboardingStatusTimeout bounds one status command.
 	onboardingStatusTimeout = 5 * time.Second
-	// onboardingRecheckEvery is how often sign-in is re-checked after a
-	// login session was started, while the Welcome is open.
-	onboardingRecheckEvery = 3 * time.Second
-	// onboardingRecheckFor bounds that re-checking.
-	onboardingRecheckFor = 10 * time.Minute
-	// onboardingStartLogin creates the login session.
-	onboardingStartLogin = func(h *Home, req onboardingLoginRequest) tea.Cmd { return h.createOnboardingLoginSession(req) }
+	// onboardingStartLogin runs the tool's own login in this terminal.
+	onboardingStartLogin = runOnboardingLogin
 	// onboardingCmdObserver, when set (tests), receives the commands the
 	// overlay queues instead of the Bubble Tea runtime.
 	onboardingCmdObserver func(tea.Cmd)
@@ -127,12 +122,10 @@ func (a onboardingAgent) canLogIn() bool {
 	return a.Found && len(a.StatusArgs) > 0 && strings.TrimSpace(a.Login) != "" && a.Auth != authSignedIn && a.Auth != authChecking
 }
 
-// onboardingLoginRequest is the session the Log in action starts.
+// onboardingLoginRequest is the login the sign-in action runs.
 type onboardingLoginRequest struct {
 	Agent   string
-	Title   string
-	Path    string
-	Tool    string // always "shell": the tool's own login command runs in it
+	Path    string // the folder it runs in
 	Command string // the login command, pinned to the account a new session would use
 }
 
@@ -141,7 +134,8 @@ type onboardingStatusMsg struct {
 	auth  onboardingAuth
 }
 
-type onboardingRecheckMsg struct{}
+// onboardingLoginDoneMsg says the login command of agent has exited.
+type onboardingLoginDoneMsg struct{ agent string }
 
 // onboardingKeys are the real, resolved keys the pages name.
 type onboardingKeys struct {
@@ -162,9 +156,8 @@ type OnboardingOverlay struct {
 	width, height int
 	keys          onboardingKeys
 
-	loginAgent    string    // agent whose login session was started
-	loginDeadline time.Time // stop re-checking after this
-	notice        string    // confirmation line ("Claude Code is signed in.")
+	loginAgent string // agent whose login just ran, until its re-check answers
+	notice     string // the sign-in result ("Claude Code is signed in.")
 }
 
 // NewOnboardingOverlay returns a hidden overlay.
@@ -338,11 +331,15 @@ func (o *OnboardingOverlay) applyStatus(msg onboardingStatusMsg) bool {
 		return false
 	}
 	a.Auth = msg.auth
-	if msg.agent == o.loginAgent && msg.auth == authSignedIn {
-		o.loginAgent = ""
+	if msg.agent != o.loginAgent {
+		return false
+	}
+	o.loginAgent = ""
+	if msg.auth == authSignedIn {
 		o.notice = a.Display + " is signed in. You can start it now."
 		return true
 	}
+	o.notice = a.Display + " is not signed in yet. Press l to try again."
 	return false
 }
 
@@ -429,22 +426,17 @@ func onboardingStatusEnv(agent string) []string {
 	return env
 }
 
-// loginRequest builds the session the Log in action starts for agent: a
-// shell session that runs the tool's own login command (`claude auth login`,
-// `codex login`), on the config dir a new session would use. A shell, not a
-// Claude session, so a Claude that was never set up does not show its own
-// first-run screens before the login.
-func (o *OnboardingOverlay) loginRequest(agent string, instances []*session.Instance) (onboardingLoginRequest, bool) {
+// loginRequest builds the login the sign-in action runs for agent: the
+// tool's own login command (`claude auth login`, `codex login`), on the
+// config dir a new session would use. It runs in this terminal while the
+// TUI waits, not in a session: nothing is added to the session list, and
+// the check page re-checks the sign-in as soon as the login exits.
+func (o *OnboardingOverlay) loginRequest(agent string) (onboardingLoginRequest, bool) {
 	a := o.agent(agent)
 	if a == nil || !a.canLogIn() {
 		return onboardingLoginRequest{}, false
 	}
-	req := onboardingLoginRequest{
-		Agent: agent,
-		Title: ensureUniqueSessionTitle(agent+"-login", instances),
-		Path:  o.folder,
-	}
-	req.Tool, req.Command = "shell", a.Login
+	req := onboardingLoginRequest{Agent: agent, Path: o.folder, Command: a.Login}
 	switch agent {
 	case "claude":
 		if dir, source, _ := onboardingClaudeDir(); source != "default" && dir != "" {
@@ -525,6 +517,10 @@ func onboardingConfigMissing() bool {
 // default_tool. Probes follow configured commands (session.ToolInstalled).
 func onboardingAnyAgentInstalled() bool {
 	if len(onboardingChoices(detectOnboardingAgents())) > 1 {
+		return true
+	}
+	if newDialogToolInstalled == nil {
+		// The probe is off (tests): every tool counts as installed.
 		return true
 	}
 	for _, name := range session.PickerToolNames() {
@@ -703,7 +699,6 @@ func (h *Home) handleOnboardingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h.tryQuit()
 	case "tab":
 		o.page = onboardingPageTour
-		o.loginAgent = ""
 	case "r":
 		h.recheckOnboarding()
 	case "l":
@@ -745,43 +740,33 @@ func (h *Home) recheckOnboarding() {
 	}
 }
 
-// startOnboardingLogin starts agent's own login flow in a new session and
-// re-checks its sign-in until it reports signed in.
+// startOnboardingLogin runs agent's own login flow in this terminal; the
+// check page re-checks its sign-in when the login exits.
 func (h *Home) startOnboardingLogin(agent string) {
-	h.instancesMu.RLock()
-	req, ok := h.onboarding.loginRequest(agent, h.instances)
-	h.instancesMu.RUnlock()
+	req, ok := h.onboarding.loginRequest(agent)
 	if !ok {
 		return
 	}
-	h.onboarding.loginAgent = agent
-	h.onboarding.loginDeadline = time.Now().Add(onboardingRecheckFor)
-	h.onboarding.notice = "Signing in to " + h.onboarding.agent(agent).Display + " in session " + req.Title + ". Come back with " + h.onboarding.keys.detach + "."
-	h.onboardingLoginTempID = "onboarding-login-" + agent
-	h.queueOnboarding(onboardingStartLogin(h, req), onboardingRecheckTick())
+	h.onboarding.loginAgent = ""
+	h.onboarding.notice = ""
+	h.queueOnboarding(onboardingStartLogin(req))
 }
 
-func onboardingRecheckTick() tea.Cmd {
-	return tea.Tick(onboardingRecheckEvery, func(time.Time) tea.Msg { return onboardingRecheckMsg{} })
+// runOnboardingLogin hands the terminal to the login command (the TUI
+// waits, as for an editor) and reports when it exits. It runs through sh
+// so a config-dir prefix (CLAUDE_CONFIG_DIR=... claude auth login) works;
+// the environment is the launch environment (internal/childenv).
+func runOnboardingLogin(req onboardingLoginRequest) tea.Cmd {
+	agent := req.Agent
+	return execProcessHoldingInput(onboardingLoginCommand(req), func(error) tea.Msg { return onboardingLoginDoneMsg{agent: agent} })
 }
 
-// createOnboardingLoginSession creates the login session through the normal
-// create path; sessionCreatedMsg attaches to it (onboardingLoginTempID).
-func (h *Home) createOnboardingLoginSession(req onboardingLoginRequest) tea.Cmd {
-	return h.createSessionInGroupWithWorktreeAndOptions(
-		req.Title, req.Path, req.Tool, req.Command,
-		session.DefaultGroupPath,
-		"", "", "", // no worktree
-		false, false, nil,
-		nil, // no extra claude args
-		"",  // no startup query
-		"",  // no Claude account: the command pins the config dir
-		"",
-		false, nil,
-		"", "",
-		h.onboardingLoginTempID,
-		false,
-	)
+// onboardingLoginCommand is the process runOnboardingLogin runs.
+func onboardingLoginCommand(req onboardingLoginRequest) *exec.Cmd {
+	cmd := exec.Command("/bin/sh", "-c", req.Command) // #nosec G204 -- the harness table's login command, quoted config dir
+	cmd.Dir = req.Path
+	cmd.Env = childenv.ForLaunch("")
+	return cmd
 }
 
 // handleOnboardingMsg handles the overlay's own messages. ok is false for any
@@ -791,16 +776,17 @@ func (h *Home) handleOnboardingMsg(msg tea.Msg) (handled bool) {
 	case onboardingStatusMsg:
 		h.onboarding.applyStatus(m)
 		return true
-	case onboardingRecheckMsg:
+	case onboardingLoginDoneMsg:
+		// Back from the login: re-check that agent's sign-in right away.
 		o := h.onboarding
-		if !o.IsVisible() || o.page != onboardingPageCheck || o.loginAgent == "" || time.Now().After(o.loginDeadline) {
+		if !o.IsVisible() {
 			return true
 		}
-		if a := o.agent(o.loginAgent); a != nil && a.Auth == authSignedIn {
-			o.applyStatus(onboardingStatusMsg{agent: o.loginAgent, auth: authSignedIn})
-			return true
+		if c := o.statusCheck(m.agent); c != nil {
+			o.loginAgent = m.agent
+			o.notice = "Checking the sign-in..."
+			h.queueOnboarding(c)
 		}
-		h.queueOnboarding(o.statusCheck(o.loginAgent), onboardingRecheckTick())
 		return true
 	}
 	return false
@@ -832,6 +818,13 @@ func (o *OnboardingOverlay) View() string {
 		s = o.tourSections(inner)
 	} else {
 		s = o.checkSections(inner)
+	}
+	// Keep the box colour behind every styled name, detail and footer.
+	surface := surfaceBackgroundSGR()
+	for _, part := range []*[]string{&s.head, &s.body, &s.foot} {
+		for i, l := range *part {
+			(*part)[i] = fillSurfaceAfterResets(l, surface)
+		}
 	}
 	return lipgloss.Place(o.width, o.height, lipgloss.Center, lipgloss.Center, renderFittedDialog(style, o.height, s))
 }

@@ -203,6 +203,28 @@ func (d *NewDialog) advancedShown() bool {
 	return d.moreOptions || d.worktreeEnabled || d.sandboxEnabled || d.multiRepoEnabled
 }
 
+// SetFirstSession marks the form as the profile's first session
+// (onboarding): the model rows and the tool's options fold under "More
+// options" too, so the form is Name, Agent, Path, the hooks line and
+// "More options" (Sharjeel's prototype).
+func (d *NewDialog) SetFirstSession(first bool) {
+	d.firstSession = first
+	d.rebuildFocusTargets()
+}
+
+// modelRowsFolded reports whether a first session's model and reasoning
+// rows are folded away: "More options" is closed and neither has a value.
+func (d *NewDialog) modelRowsFolded() bool {
+	return d.firstSession && !d.advancedShown() &&
+		strings.TrimSpace(d.modelInput.Value()) == "" && d.reasoningEffort == ""
+}
+
+// toolOptionsShown reports whether the tool's options panel is in the form:
+// always, except folded for a first session while "More options" is closed.
+func (d *NewDialog) toolOptionsShown() bool {
+	return !d.firstSession || d.advancedShown()
+}
+
 // toggleMoreOptions opens or closes "More options". A folded setting that is
 // on keeps its rows visible either way (advancedShown).
 func (d *NewDialog) toggleMoreOptions() {
@@ -246,6 +268,9 @@ func (d *NewDialog) renderMoreOptionsLine(focused bool) string {
 		arrow = "▾"
 	}
 	text := arrow + " More options: worktree, Docker sandbox, multi-repo"
+	if d.firstSession {
+		text = arrow + " More options: model, worktree, Docker, multi-repo"
+	}
 	if focused {
 		return lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render("▶ "+text) + "\n"
 	}

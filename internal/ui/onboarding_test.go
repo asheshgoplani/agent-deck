@@ -69,10 +69,10 @@ func newOnboardingEnv(t *testing.T, found ...string) *onboardingEnv {
 		e.found[f] = true
 	}
 
-	prevLook, prevRun, prevStart, prevObs, prevEvery := onboardingLookPath, onboardingStatusRunner, onboardingStartLogin, onboardingCmdObserver, onboardingRecheckEvery
+	prevLook, prevRun, prevStart, prevObs := onboardingLookPath, onboardingStatusRunner, onboardingStartLogin, onboardingCmdObserver
 	prevTmux, prevGOOS, prevVersion := onboardingTmuxCheck, onboardingGOOS, Version
 	t.Cleanup(func() {
-		onboardingLookPath, onboardingStatusRunner, onboardingStartLogin, onboardingCmdObserver, onboardingRecheckEvery = prevLook, prevRun, prevStart, prevObs, prevEvery
+		onboardingLookPath, onboardingStatusRunner, onboardingStartLogin, onboardingCmdObserver = prevLook, prevRun, prevStart, prevObs
 		onboardingTmuxCheck, onboardingGOOS, Version = prevTmux, prevGOOS, prevVersion
 	})
 	e.tmuxFound, e.tmuxVersion = true, "tmux 3.5a"
@@ -109,13 +109,12 @@ func newOnboardingEnv(t *testing.T, found ...string) *onboardingEnv {
 		}
 		return code, nil
 	}
-	onboardingStartLogin = func(h *Home, req onboardingLoginRequest) tea.Cmd {
+	onboardingStartLogin = func(req onboardingLoginRequest) tea.Cmd {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		e.logins = append(e.logins, req)
 		return nil
 	}
-	onboardingRecheckEvery = time.Millisecond
 	// The New Session form and the "any agent" check see the same fake PATH.
 	prevInstalled := newDialogToolInstalled
 	t.Cleanup(func() { newDialogToolInstalled = prevInstalled })
@@ -172,7 +171,7 @@ func runOnboardingCmd(c tea.Cmd) []tea.Msg {
 			out = append(out, runOnboardingCmd(sub)...)
 		}
 		return out
-	case onboardingStatusMsg, onboardingRecheckMsg:
+	case onboardingStatusMsg, onboardingLoginDoneMsg:
 		return []tea.Msg{m}
 	}
 	return nil
@@ -697,10 +696,10 @@ func TestOnboarding_RealRunnerTimesOut(t *testing.T) {
 
 func TestOnboarding_LogInStartsToolsOwnLoginAndRecheckConfirms(t *testing.T) {
 	for _, tc := range []struct {
-		agent, tool, command, signedIn string
+		agent, command, signedIn string
 	}{
-		{"claude", "shell", "claude auth login", ""},
-		{"codex", "shell", "codex login", "claude"}, // l signs in to the first agent not signed in
+		{"claude", "claude auth login", ""},
+		{"codex", "codex login", "claude"}, // l signs in to the first agent not signed in
 	} {
 		t.Run(tc.agent, func(t *testing.T) {
 			e := newOnboardingEnv(t, "claude", "codex")
@@ -720,17 +719,15 @@ func TestOnboarding_LogInStartsToolsOwnLoginAndRecheckConfirms(t *testing.T) {
 			logins := append([]onboardingLoginRequest(nil), e.logins...)
 			e.mu.Unlock()
 			if len(logins) != 1 {
-				t.Fatalf("Log in started %d sessions, want 1", len(logins))
+				t.Fatalf("Log in ran %d logins, want 1", len(logins))
 			}
 			req := logins[0]
-			if req.Tool != tc.tool || req.Command != tc.command {
-				t.Fatalf("login session = %+v, want tool %q command %q", req, tc.tool, tc.command)
+			if req.Agent != tc.agent || req.Command != tc.command || req.Path != h.onboarding.folder {
+				t.Fatalf("login = %+v, want agent %q command %q in %q", req, tc.agent, tc.command, h.onboarding.folder)
 			}
-			if req.Title != tc.agent+"-login" || req.Path != h.onboarding.folder {
-				t.Fatalf("login session title/path = %q/%q", req.Title, req.Path)
-			}
-			// The tool's login finished: the next re-check flips the row.
+			// The tool's login finished: the re-check on return flips the row.
 			e.setStatus(tc.agent, 0)
+			h.Update(onboardingLoginDoneMsg{agent: tc.agent})
 			e.settle(h, 4)
 			if got := h.onboarding.agent(tc.agent).Auth; got != authSignedIn {
 				t.Fatalf("after login the re-check says %v, want signed in", got)

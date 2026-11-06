@@ -263,6 +263,9 @@ type NewDialog struct {
 	hooksUndecided bool
 	hooksTicked    bool
 	moreOptions    bool
+	// firstSession folds the model rows and the tool's options under
+	// "More options" too, for the profile's first session (onboarding).
+	firstSession bool
 }
 
 // viewportDialogContent keeps the dialog's identity and primary action pinned
@@ -565,6 +568,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.restoreLocalPresets()
 	d.remoteTarget = false
 	d.moreOptions = false
+	d.firstSession = false
 	d.remoteName = ""
 	d.remoteCatalog = nil
 	d.clearWhere()
@@ -2031,19 +2035,28 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.showHooksLine() {
 		targets = append(targets, focusHooks)
 	}
-	if d.selectedToolSupportsModel() {
-		targets = append(targets, focusModel)
+	modelTargets := func() {
+		if d.selectedToolSupportsModel() {
+			targets = append(targets, focusModel)
+		}
+		if d.selectedToolSupportsReasoningEffort() {
+			targets = append(targets, focusReasoningEffort)
+		}
 	}
-	if d.selectedToolSupportsReasoningEffort() {
-		targets = append(targets, focusReasoningEffort)
+	if !d.firstSession {
+		modelTargets()
 	}
 	if d.hasWhereRow() {
 		targets = append(targets, focusWhere)
 	}
 	// Onboarding (ASK-211): worktree, Docker sandbox and multi-repo sit
 	// behind "More options", closed by default; a setting already on keeps
-	// its rows open (advancedShown).
+	// its rows open (advancedShown). For a first session the model rows
+	// fold there too (modelRowsFolded).
 	targets = append(targets, focusMore)
+	if d.firstSession && !d.modelRowsFolded() {
+		modelTargets()
+	}
 	if d.advancedShown() {
 		targets = append(targets, focusWorktree, focusSandbox)
 		if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
@@ -2063,7 +2076,7 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.hasRemoteMCPRow() {
 		targets = append(targets, focusRemoteMCPs)
 	}
-	if d.toolOptions != nil {
+	if d.toolOptions != nil && d.toolOptionsShown() {
 		targets = append(targets, focusOptions)
 	}
 	// The Create button is always last: Enter walks the form top to bottom and
@@ -3321,11 +3334,17 @@ func (d *NewDialog) View() string {
 
 	dialogWidth := d.effectiveDialogWidth()
 
+	// The first session's short form (ASK-211) uses one row of vertical
+	// padding so it fits 80x24 whole, More options included.
+	padY := 2
+	if d.firstSession {
+		padY = 1
+	}
 	dialogStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorCyan).
 		Background(ColorSurface).
-		Padding(2, 4).
+		Padding(padY, 4).
 		Width(dialogWidth)
 
 	// Active field indicator style
@@ -3459,17 +3478,27 @@ func (d *NewDialog) View() string {
 		content.WriteString(d.renderHooksLine(cur == focusHooks, max(1, dialogWidth-8)))
 		content.WriteString("\n")
 	}
-	markFocusedRow(focusModel)
-	d.renderModelSection(&content, cur, dialogWidth)
-	markFocusedRow(focusReasoningEffort)
-	d.renderReasoningEffortSection(&content, cur)
+	modelRows := func() {
+		markFocusedRow(focusModel)
+		d.renderModelSection(&content, cur, dialogWidth)
+		markFocusedRow(focusReasoningEffort)
+		d.renderReasoningEffortSection(&content, cur)
+	}
+	if !d.firstSession {
+		modelRows()
+	}
 
 	markFocusedRow(focusWhere)
 	d.renderWhereSection(&content, cur)
 
-	// "More options": worktree, Docker sandbox and multi-repo.
+	// "More options": worktree, Docker sandbox and multi-repo (and, for a
+	// first session, the model rows and the tool's options).
 	markFocusedRow(focusMore)
 	content.WriteString(d.renderMoreOptionsLine(cur == focusMore))
+	if d.firstSession && !d.modelRowsFolded() {
+		content.WriteString("\n")
+		modelRows()
+	}
 	if d.advancedShown() {
 		// Worktree checkbox — individually focusable.
 		worktreeLabel := "Create in worktree"
@@ -3600,7 +3629,7 @@ func (d *NewDialog) View() string {
 	}
 
 	// Tool options panel
-	if d.toolOptions != nil {
+	if d.toolOptions != nil && d.toolOptionsShown() {
 		content.WriteString("\n")
 		panelStart := strings.Count(content.String(), "\n")
 		if cur == focusOptions {
@@ -3645,6 +3674,10 @@ func (d *NewDialog) View() string {
 		rowHint = "Enter create"
 	}
 	helpText := recentPrefix + "Tab next │ ↑↓ navigate │ " + rowHint + " │ Esc cancel"
+	if d.firstSession && !d.enterAdvances {
+		// The first session's form, as in Sharjeel's prototype.
+		helpText = "Tab next │ ←→ agent │ Space tick │ Enter create │ Esc cancel"
+	}
 	if cur == focusPath {
 		if d.suggestionsActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Tab next │ Esc back"
@@ -3708,11 +3741,11 @@ func (d *NewDialog) View() string {
 	}
 	content.WriteString(helpStyle.Render(helpText))
 
-	// Border plus Padding(2, 4) consume six terminal rows. At constrained
+	// Border plus Padding(padY, 4) consume 2+2*padY terminal rows. At constrained
 	// heights, viewport only the form body; wide/tall dialogs remain byte-for-
 	// byte on the original rendering path.
 	innerWidth := max(1, dialogWidth-8)
-	maxContentHeight := d.height - 6
+	maxContentHeight := d.height - 2 - 2*padY
 	fullContent := content.String()
 	viewported := viewportDialogContent(fullContent, innerWidth, maxContentHeight, focusLogicalLine)
 
@@ -3757,7 +3790,7 @@ func (d *NewDialog) View() string {
 
 		// suggestionsLineOffset is the content line where the dropdown should appear.
 		// Add border (1) + top padding (2) to get the actual row within the dialog box.
-		overlayRow := topRow + 1 + 2 + d.suggestionsLineOffset
+		overlayRow := topRow + 1 + padY + d.suggestionsLineOffset
 		// Align with the path input: border (1) + padding (4) + the inline
 		// "Path:" label column (ASK-211).
 		overlayCol := leftCol + 1 + 4 + newDialogInlineIndent
@@ -3768,7 +3801,7 @@ func (d *NewDialog) View() string {
 	if modelOverlay := d.renderModelSuggestionsDropdown(); modelOverlay != "" {
 		topRow, leftCol := dialogOrigin(d.width, d.height, lipgloss.Width(dialog), lipgloss.Height(dialog))
 
-		overlayRow := topRow + 1 + 2 + d.modelLineOffset
+		overlayRow := topRow + 1 + padY + d.modelLineOffset
 		overlayCol := leftCol + 1 + 4
 
 		placed = overlayDropdown(placed, modelOverlay, overlayRow, overlayCol)
@@ -3778,8 +3811,9 @@ func (d *NewDialog) View() string {
 }
 
 // sgrResetRE matches an SGR sequence that resets every attribute, the form
-// lipgloss and the bubbles textinput end each styled segment with.
-var sgrResetRE = regexp.MustCompile(`\x1b\[0*m`)
+// lipgloss and the bubbles textinput end each styled segment with, or only
+// the background (49, the end of an inner Background style).
+var sgrResetRE = regexp.MustCompile(`\x1b\[(0*|49)m`)
 
 // surfaceBackgroundSGR returns the SGR sequence that sets ColorSurface as the
 // background in the active colour profile, or "" when colours are disabled.
@@ -3807,6 +3841,14 @@ func fillSurfaceAfterResets(s, surface string) string {
 	return sgrResetRE.ReplaceAllStringFunc(s, func(reset string) string {
 		return reset + surface
 	})
+}
+
+// renderSurfaceBox renders content in a box style whose Background is
+// ColorSurface, with the surface fill re-established after every inner
+// reset, so names, details and footers sit on the box colour instead of
+// punching through to the terminal background (ASK-211 review).
+func renderSurfaceBox(style lipgloss.Style, content string) string {
+	return style.Render(fillSurfaceAfterResets(content, surfaceBackgroundSGR()))
 }
 
 // renderSuggestionsDropdown renders the path suggestions as a standalone block

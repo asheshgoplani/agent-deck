@@ -19,7 +19,7 @@ func hintsHome(t *testing.T, width, height int) *Home {
 	h := NewHome()
 	h.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	h.initialLoading = false // past the splash
-	h.armOnboardingHints(true)
+	h.armOnboardingHints(true, true)
 	return h
 }
 
@@ -33,11 +33,11 @@ func hintBarLine(h *Home) string {
 func TestOnboardingHints_ArmedOnlyOnEmptyFreshInstall(t *testing.T) {
 	setXDGTestHome(t)
 	h := NewHome()
-	h.armOnboardingHints(false)
+	h.armOnboardingHints(false, false)
 	if h.hints.armed {
 		t.Fatal("a profile with sessions armed the hint bar")
 	}
-	h.armOnboardingHints(true)
+	h.armOnboardingHints(true, true)
 	if !h.hints.armed {
 		t.Fatal("an empty fresh install did not arm the hint bar")
 	}
@@ -160,7 +160,7 @@ func TestOnboardingHints_EscHidesForGood(t *testing.T) {
 	}
 	// A later fresh start on this machine never shows it again.
 	h2 := NewHome()
-	h2.armOnboardingHints(true)
+	h2.armOnboardingHints(true, true)
 	h2.startOnboardingHints("other")
 	if h2.hintBarVisible() {
 		t.Fatal("the bar came back after Esc")
@@ -181,7 +181,7 @@ func TestOnboardingHints_SeenFileOncePerMachine(t *testing.T) {
 		t.Fatalf("starting the bar did not write the seen-file: %v", err)
 	}
 	h2 := NewHome()
-	h2.armOnboardingHints(true)
+	h2.armOnboardingHints(true, true)
 	if h2.hints.armed {
 		t.Fatal("a second start on the same machine armed the bar again")
 	}

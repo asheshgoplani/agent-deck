@@ -1129,12 +1129,14 @@ type Home struct {
 	welcomeSel         int
 	welcomeAgents      []onboardingAgent
 	welcomeAgentsKnown bool
+	welcomeAnyAgent    bool // any agent at all, picker and custom tools too
 	welcomeNotice      string
+	// welcomeImportable is how many tmux sessions the welcome's Import
+	// would bring in; welcomeImportKnown says whether it was counted.
+	welcomeImportable  int
+	welcomeImportKnown bool
 	// onboardingCmds are queued by the overlay and handed out by Update.
 	onboardingCmds []tea.Cmd
-	// onboardingLoginTempID marks the create of a Welcome login session, so
-	// sessionCreatedMsg attaches to it.
-	onboardingLoginTempID string
 }
 
 // reloadState preserves UI state during storage reload
@@ -2193,7 +2195,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.handleOnboardingHintsDone(msg)
 		return h, nil
 
-	case onboardingStatusMsg, onboardingRecheckMsg:
+	case onboardingStatusMsg, onboardingLoginDoneMsg:
 		h.handleOnboardingMsg(msg)
 		return h, nil
 
@@ -2498,7 +2500,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if firstLoad {
 			noSessions := msg.err == nil && len(msg.instances) == 0
 			freshInstall := h.maybeStartOnboarding(noSessions)
-			h.armOnboardingHints(freshInstall)
+			h.armOnboardingHints(freshInstall, noSessions)
 			// The Alt+j/k tip is for moving between sessions: held back
 			// on the welcome (ASK-211), where there are none.
 			if noSessions && h.navHintActive {
@@ -2794,8 +2796,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			slog.String("temp_id", msg.tempID),
 			slog.Bool("has_instance", msg.instance != nil))
 		// The first session of a fresh install starts the hint bar (ASK-211).
-		// A Welcome login session is not that session.
-		if msg.err == nil && msg.instance != nil && (h.onboardingLoginTempID == "" || msg.tempID != h.onboardingLoginTempID) {
+		if msg.err == nil && msg.instance != nil {
 			h.startOnboardingHints(msg.instance.Title)
 		}
 		h.releaseTitle(msg.reservedTitle)
@@ -2882,18 +2883,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// A local Claude session made without the form's hooks line
 			// (quick create, a pick made elsewhere) still gets the hooks
 			// question once, as the old box (ASK-211 review).
-			isLoginSession := h.onboardingLoginTempID != "" && msg.tempID == h.onboardingLoginTempID
-			if !isLoginSession && session.IsClaudeCompatible(msg.instance.Tool) {
+			if session.IsClaudeCompatible(msg.instance.Tool) {
 				h.showClaudeHooksBox()
-			}
-
-			// A Welcome login session is attached right away: the tool's
-			// own sign-in flow runs in it, and the Welcome re-checks on return.
-			if h.onboardingLoginTempID != "" && msg.tempID == h.onboardingLoginTempID {
-				h.onboardingLoginTempID = ""
-				if attachTo := h.attachSession(msg.instance); attachTo != nil {
-					return h, tea.Batch(h.fetchPreview(msg.instance, msg.instance.ID, -1), attachTo)
-				}
 			}
 
 			// Auto-attach to the new session when [ui].attach_on_create is set,
@@ -8997,5 +8988,8 @@ func (h *Home) openLocalNewSessionDialog() tea.Cmd {
 	// The Claude hooks question rides in the form while it is undecided
 	// (ASK-211); the old startup box no longer appears.
 	h.newDialog.SetClaudeHooksUndecided(h.pendingHooksPrompt)
+	// The profile's first session gets the short form (ASK-211): the model
+	// rows and the tool's options wait under "More options".
+	h.newDialog.SetFirstSession(!h.hasAnySession())
 	return nil
 }

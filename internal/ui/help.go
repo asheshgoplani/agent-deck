@@ -658,9 +658,7 @@ func (h *HelpOverlay) View() string {
 	}
 
 	// Wrap in dialog box
-	box := DialogBoxStyle.
-		Width(dialogWidth).
-		Render(content.String())
+	box := renderSurfaceBox(DialogBoxStyle.Width(dialogWidth), content.String())
 
 	return centerInScreen(box, h.width, h.height)
 }
@@ -707,8 +705,6 @@ func (h *HelpOverlay) viewShort() string {
 	lines = append(lines, "", noteStyle.Render("That is all you need today."), "",
 		tabStyle.Render("Tab all keys")+dimStyle.Render(" │ Esc close"))
 
-	box := DialogBoxStyle.
-		Width(fitDialogWidth(56, 35, h.width)).
-		Render(strings.Join(lines, "\n"))
+	box := renderSurfaceBox(DialogBoxStyle.Width(fitDialogWidth(56, 35, h.width)), strings.Join(lines, "\n"))
 	return centerInScreen(box, h.width, h.height)
 }

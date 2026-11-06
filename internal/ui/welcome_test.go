@@ -245,8 +245,9 @@ func TestWelcome_NothingToImportNotice(t *testing.T) {
 // empty install is the same in the container, on CI and on a laptop.
 func pinWelcomeForGolden(t *testing.T) {
 	t.Helper()
-	prevFolder, prevLook := welcomeFolder, onboardingLookPath
-	t.Cleanup(func() { welcomeFolder, onboardingLookPath = prevFolder, prevLook })
+	prevFolder, prevLook, prevNames := welcomeFolder, onboardingLookPath, welcomeTmuxSessionNames
+	t.Cleanup(func() { welcomeFolder, onboardingLookPath, welcomeTmuxSessionNames = prevFolder, prevLook, prevNames })
 	welcomeFolder = func() string { return "/work/my-app" }
 	onboardingLookPath = func(string) (string, error) { return "", errors.New("not found") }
+	welcomeTmuxSessionNames = func() ([]string, error) { return nil, nil }
 }

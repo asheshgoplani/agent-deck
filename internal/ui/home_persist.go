@@ -558,7 +558,11 @@ func (h *Home) importSessionsCounted() (tea.Msg, int) {
 	if err != nil {
 		return loadSessionsMsg{err: err}, 0
 	}
+	return h.addImportedSessions(discovered)
+}
 
+// addImportedSessions adds discovered sessions to this profile and saves.
+func (h *Home) addImportedSessions(discovered []*session.Instance) (tea.Msg, int) {
 	h.instancesMu.Lock()
 	h.instances = append(h.instances, discovered...)
 	h.instancesMu.Unlock()

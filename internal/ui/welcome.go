@@ -14,12 +14,15 @@ package ui
 // the Alt+j/k tip is held back: a new user can't use either yet.
 
 import (
+	"log/slog"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // welcomeAction is one of the welcome's three actions, in screen order.
@@ -35,6 +38,20 @@ const (
 // welcomeFolder is the folder the welcome's new session starts in: the
 // folder agent-deck was started from (a seam for frame goldens).
 var welcomeFolder = onboardingFolder
+
+// Seams for tests: the tmux sessions on this machine (names only), and
+// the import's discovery of them as sessions.
+var (
+	welcomeTmuxSessionNames = func() ([]string, error) {
+		list, err := tmux.DiscoverAllTmuxSessions()
+		names := make([]string, 0, len(list))
+		for _, s := range list {
+			names = append(names, s.Name)
+		}
+		return names, err
+	}
+	welcomeDiscoverSessions = session.DiscoverExistingTmuxSessions
+)
 
 // welcomeNoticeMsg is a one-line result shown in the welcome box.
 type welcomeNoticeMsg struct{ text string }
@@ -66,26 +83,106 @@ func (h *Home) hasAnySession() bool {
 // next frame (after the check page, which may have found new ones).
 func (h *Home) refreshWelcomeAgents() {
 	h.welcomeAgentsKnown = false
+	h.welcomeImportKnown = false
 }
 
 // welcomeAgentList is the agents the welcome knows about, detected once.
 func (h *Home) welcomeAgentList() []onboardingAgent {
 	if !h.welcomeAgentsKnown {
 		h.welcomeAgents = detectOnboardingAgents()
+		// With the install probe off (tests) only the check page's
+		// agents are known.
+		h.welcomeAnyAgent = onboardingChoices(h.welcomeAgents)[0] != "shell"
+		if newDialogToolInstalled != nil {
+			h.welcomeAnyAgent = onboardingAnyAgentInstalled()
+		}
 		h.welcomeAgentsKnown = true
 	}
 	return h.welcomeAgents
+}
+
+// welcomeFirstAgent is the first installed agent the way
+// onboardingAnyAgentInstalled finds one: the check page's agents, then any
+// installed picker or custom tool. "shell" when there is none.
+func (h *Home) welcomeFirstAgent() string {
+	if first := onboardingChoices(h.welcomeAgentList())[0]; first != "shell" {
+		return first
+	}
+	if !h.welcomeAnyAgent {
+		return "shell"
+	}
+	for _, name := range session.PickerToolNames() {
+		if name != "" && name != "shell" && newDialogToolInstalled(name) {
+			return name
+		}
+	}
+	return "shell"
 }
 
 // welcomeTool is the agent the welcome's new session starts, chosen like
 // the New Session form does: the configured default_tool, else the
 // remembered last tool, else the first installed agent, or "shell".
 func (h *Home) welcomeTool() string {
-	first := onboardingChoices(h.welcomeAgentList())[0]
-	if tool := initialNewSessionTool(session.GetDefaultTool(), rememberedTool(h.stateDB()), first); tool != "" {
+	if tool := initialNewSessionTool(session.GetDefaultTool(), rememberedTool(h.stateDB()), h.welcomeFirstAgent()); tool != "" {
 		return tool
 	}
 	return "shell"
+}
+
+// welcomeImportCount is how many tmux sessions Import would bring in,
+// counted once: sessions no profile owns yet. No tmux server (the usual
+// case on a new machine) counts as none.
+func (h *Home) welcomeImportCount() int {
+	if h.welcomeImportKnown {
+		return h.welcomeImportable
+	}
+	h.welcomeImportKnown = true
+	h.welcomeImportable = 0
+	names, err := welcomeTmuxSessionNames()
+	if err != nil || len(names) == 0 {
+		return 0
+	}
+	owned := tmuxSessionsOwnedByProfiles()
+	h.instancesMu.RLock()
+	for _, inst := range h.instances {
+		if ts := inst.GetTmuxSession(); ts != nil {
+			owned[ts.Name] = true
+		}
+	}
+	h.instancesMu.RUnlock()
+	for _, n := range names {
+		if !owned[n] {
+			h.welcomeImportable++
+		}
+	}
+	return h.welcomeImportable
+}
+
+// importWelcomeSessions is the welcome's Import: the usual import, minus
+// the sessions another profile already owns (a tmux session owned by two
+// profiles is killed in both by a delete in one). A missing tmux server
+// means nothing to import.
+func (h *Home) importWelcomeSessions() (tea.Msg, int) {
+	h.instancesMu.RLock()
+	existing := append([]*session.Instance(nil), h.instances...)
+	h.instancesMu.RUnlock()
+	discovered, err := welcomeDiscoverSessions(existing)
+	if err != nil {
+		uiLog.Info("welcome_import_no_tmux_sessions", slog.String("error", err.Error()))
+		return nil, 0
+	}
+	owned := tmuxSessionsOwnedByProfiles()
+	kept := discovered[:0]
+	for _, inst := range discovered {
+		if ts := inst.GetTmuxSession(); ts != nil && owned[ts.Name] {
+			continue
+		}
+		kept = append(kept, inst)
+	}
+	if len(kept) == 0 {
+		return nil, 0
+	}
+	return h.addImportedSessions(kept)
 }
 
 // handleWelcomeKey runs a welcome key. handled is false for any key the
@@ -119,9 +216,10 @@ func (h *Home) runWelcomeAction(a welcomeAction) tea.Cmd {
 	case welcomeNew:
 		return h.openPrefilledNewSession(h.welcomeTool(), welcomeFolder())
 	case welcomeImport:
+		h.welcomeImportKnown = false
 		return func() tea.Msg {
-			msg, n := h.importSessionsCounted()
-			if _, ok := msg.(importReloadMsg); ok && n == 0 {
+			msg, n := h.importWelcomeSessions()
+			if n == 0 {
 				return welcomeNoticeMsg{text: "No tmux sessions to import. Start one with " + h.actionKey(hotkeyNewSession) + "."}
 			}
 			return msg
@@ -148,6 +246,14 @@ func (h *Home) openPrefilledNewSession(tool, folder string) tea.Cmd {
 		}
 	}
 	return cmd
+}
+
+// welcomeFoundLabel is the count after "Import your tmux sessions".
+func welcomeFoundLabel(n int) string {
+	if n == 0 {
+		return " (none found)"
+	}
+	return " (" + strconv.Itoa(n) + " found)"
 }
 
 // renderWelcome draws the welcome box centred in width x height.
@@ -180,7 +286,7 @@ func (h *Home) renderWelcome(width, height int) string {
 	}
 	acts := []struct{ key, what string }{
 		{label(h.actionKey(hotkeyNewSession)), "New session with " + agent + " in "},
-		{label(h.actionKey(hotkeyImport)), "Import your tmux sessions"},
+		{label(h.actionKey(hotkeyImport)), "Import your tmux sessions" + welcomeFoundLabel(h.welcomeImportCount())},
 		{label(h.actionKey(hotkeyHelp)), "Read the 5 keys"},
 	}
 	const keyW = 7
@@ -194,6 +300,9 @@ func (h *Home) renderWelcome(width, height int) string {
 	for i, a := range acts {
 		sel := i == h.welcomeSel
 		marker, ks, ts := "  ", keyStyle, text
+		if welcomeAction(i) == welcomeImport && h.welcomeImportCount() == 0 {
+			ts = dim // nothing to import: greyed, still answers with a notice
+		}
 		if sel {
 			marker = lipgloss.NewStyle().Foreground(ColorAccent).Render("▶ ")
 			ks, ts = keyStyle.Bold(true), text.Bold(true)
@@ -208,7 +317,7 @@ func (h *Home) renderWelcome(width, height int) string {
 	about := text.Render(onboardingWrap(inner, "Run many AI coding agents at once, each in its own session. Switch between them with one key."))
 
 	var tail []string
-	if tool == "shell" {
+	if tool == "shell" && !h.welcomeAnyAgent {
 		hint := "No agent found yet."
 		for _, a := range agents {
 			if a.Name == "claude" && a.Install != "" {
@@ -230,12 +339,12 @@ func (h *Home) renderWelcome(width, height int) string {
 		lines = append(lines, title.Render("Start here"))
 		lines = append(lines, rows...)
 		lines = append(lines, tail...)
-		return lipgloss.NewStyle().
+		return renderSurfaceBox(lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorder).
+			Background(ColorSurface).
 			Padding(padY, 2).
-			Width(boxW - 2).
-			Render(strings.Join(lines, "\n"))
+			Width(boxW-2), strings.Join(lines, "\n"))
 	}
 	box := build(true, 1)
 	if lipgloss.Height(box) > height {

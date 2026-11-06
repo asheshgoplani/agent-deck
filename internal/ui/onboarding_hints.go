@@ -83,12 +83,17 @@ func markOnboardingHintsSeen() {
 	_ = os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
 }
 
-// armOnboardingHints is called on the first load: a fresh install's first
-// run (maybeStartOnboarding: no config.toml, no sessions) on a machine that
-// has not seen the bar gets it once its first session exists. An existing
-// user who opens an empty profile does not.
-func (h *Home) armOnboardingHints(freshInstall bool) {
-	if freshInstall && !onboardingHintsSeen() {
+// armOnboardingHints is called on the first load: a machine that has not
+// seen the bar gets it once its first session exists, on a fresh install's
+// first run (maybeStartOnboarding: no config.toml, no sessions) and on any
+// later start with no sessions yet after onboarding finished first run here
+// (the user quit on the welcome before making one). An existing user, whose
+// install predates onboarding, does not get it in an empty profile.
+func (h *Home) armOnboardingHints(freshInstall, noSessions bool) {
+	if onboardingHintsSeen() {
+		return
+	}
+	if freshInstall || (noSessions && onboardingFirstRunFinished()) {
 		h.hints.armed = true
 	}
 }

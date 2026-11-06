@@ -10,7 +10,7 @@
                                                               │                                                                          │                                                              
                                                               │  Start here                                                              │                                                              
                                                               │  ▶ n      New session with a Plain shell in /work/my-app                 │                                                              
-                                                              │    i      Import your tmux sessions                                      │                                                              
+                                                              │    i      Import your tmux sessions (none found)                         │                                                              
                                                               │    ?      Read the 5 keys                                                │                                                              
                                                               │                                                                          │                                                              
                                                               │  No agent found yet. Install Claude Code: curl -fsSL                     │                                                              
