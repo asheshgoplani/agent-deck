@@ -191,6 +191,31 @@ func TestNewDialogOnboarding_PathVisibleAt80x24(t *testing.T) {
 	}
 }
 
+// The hooks line is what the first Enter agrees to, so it must be on screen
+// at 80x24 with nothing scrolled: right under Path, as in the prototype, and
+// the next row Tab reaches after Path.
+func TestNewDialogOnboarding_HooksLineVisibleAt80x24(t *testing.T) {
+	stubToolInstalled(t, "claude")
+	d := onboardingDialog(t, "", 80, 24)
+	d.SetClaudeHooksUndecided(true)
+	if got := d.GetSelectedCommand(); got != "claude" {
+		t.Fatalf("precondition: tool = %q, want claude", got)
+	}
+	view := stripAnsi(d.View())
+	if !strings.Contains(view, "Show me when Claude is busy") {
+		t.Fatalf("80x24 form hides the hooks line:\n%s", view)
+	}
+	if strings.Index(view, "Show me when Claude") < strings.Index(view, "Path:  >") {
+		t.Fatalf("hooks line is above Path:\n%s", view)
+	}
+	if model := strings.Index(view, "Model ID:"); model >= 0 && model < strings.Index(view, "Show me when Claude") {
+		t.Fatalf("hooks line sits under the model rows:\n%s", view)
+	}
+	if p, hk := d.indexOf(focusPath), d.indexOf(focusHooks); hk != p+1 {
+		t.Fatalf("focus order: Path at %d, hooks at %d; want hooks right after Path", p, hk)
+	}
+}
+
 func TestNewDialogOnboarding_MoreOptionsToggle(t *testing.T) {
 	d := onboardingDialog(t, "", 120, 50)
 	for _, target := range []focusTarget{focusWorktree, focusSandbox, focusMultiRepo} {

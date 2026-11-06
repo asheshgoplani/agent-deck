@@ -2026,6 +2026,11 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if !d.multiRepoEnabled {
 		targets = append(targets, focusPath)
 	}
+	// The hooks line sits right under Path (prototype): it is what the first
+	// Enter agrees to, so it stays on screen at 80x24.
+	if d.showHooksLine() {
+		targets = append(targets, focusHooks)
+	}
 	if d.selectedToolSupportsModel() {
 		targets = append(targets, focusModel)
 	}
@@ -2034,9 +2039,6 @@ func (d *NewDialog) rebuildFocusTargets() {
 	}
 	if d.hasWhereRow() {
 		targets = append(targets, focusWhere)
-	}
-	if d.showHooksLine() {
-		targets = append(targets, focusHooks)
 	}
 	// Onboarding (ASK-211): worktree, Docker sandbox and multi-repo sit
 	// behind "More options", closed by default; a setting already on keeps
@@ -3450,6 +3452,13 @@ func (d *NewDialog) View() string {
 		markFocusedRow(focusPath)
 		d.renderSinglePathSection(&content, cur, dialogWidth)
 	}
+	// The Claude hooks line (replaces the Claude Code Hooks box), right under
+	// Path so the consent the first Enter gives is on screen at 80x24.
+	if d.showHooksLine() {
+		markFocusedRow(focusHooks)
+		content.WriteString(d.renderHooksLine(cur == focusHooks, max(1, dialogWidth-8)))
+		content.WriteString("\n")
+	}
 	markFocusedRow(focusModel)
 	d.renderModelSection(&content, cur, dialogWidth)
 	markFocusedRow(focusReasoningEffort)
@@ -3457,12 +3466,6 @@ func (d *NewDialog) View() string {
 
 	markFocusedRow(focusWhere)
 	d.renderWhereSection(&content, cur)
-
-	// The Claude hooks line (replaces the Claude Code Hooks box).
-	if d.showHooksLine() {
-		markFocusedRow(focusHooks)
-		content.WriteString(d.renderHooksLine(cur == focusHooks, max(1, dialogWidth-8)))
-	}
 
 	// "More options": worktree, Docker sandbox and multi-repo.
 	markFocusedRow(focusMore)
