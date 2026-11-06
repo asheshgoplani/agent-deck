@@ -513,6 +513,9 @@ type Home struct {
 	pendingHooksPrompt       bool // True if user should be prompted to install Claude hooks
 	pendingHermesHooksPrompt bool // True if user should be prompted to install Hermes hooks
 
+	// hints is the one-key onboarding hint bar (onboarding_hints.go, ASK-211).
+	hints onboardingHints
+
 	// SSE-based status detection for OpenCode sessions (issue #1614)
 	sseWatcher *session.OpenCodeSSEWatcher
 
@@ -1128,9 +1131,6 @@ type Home struct {
 	welcomeNotice      string
 	// onboardingCmds are queued by the overlay and handed out by Update.
 	onboardingCmds []tea.Cmd
-	// onboardingTourAfterCreate opens "What you can do" once the session
-	// started from the first-run Welcome is created.
-	onboardingTourAfterCreate bool
 	// onboardingLoginTempID marks the create of a Welcome login session, so
 	// sessionCreatedMsg attaches to it.
 	onboardingLoginTempID string
@@ -2188,6 +2188,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Execute final shutdown logic after splash delay
 		return h, h.performFinalShutdown(bool(msg))
 
+	case onboardingHintsDoneMsg:
+		h.handleOnboardingHintsDone(msg)
+		return h, nil
+
 	case onboardingStatusMsg, onboardingRecheckMsg:
 		h.handleOnboardingMsg(msg)
 		return h, nil
@@ -2493,6 +2497,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if firstLoad {
 			noSessions := msg.err == nil && len(msg.instances) == 0
 			h.maybeStartOnboarding(noSessions)
+			h.armOnboardingHints(noSessions)
 			// The Alt+j/k tip is for moving between sessions: held back
 			// on the welcome (ASK-211), where there are none.
 			if noSessions && h.navHintActive {
@@ -2780,19 +2785,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			slog.Bool("has_err", msg.err != nil),
 			slog.String("temp_id", msg.tempID),
 			slog.Bool("has_instance", msg.instance != nil))
+		// The first session of a fresh install starts the hint bar (ASK-211).
+		// A Welcome login session is not that session.
+		if msg.err == nil && msg.instance != nil && (h.onboardingLoginTempID == "" || msg.tempID != h.onboardingLoginTempID) {
+			h.startOnboardingHints(msg.instance.Title)
+		}
 		h.releaseTitle(msg.reservedTitle)
 		// Remove the creating placeholder (if any) — always, on success or error
 		if msg.tempID != "" {
 			delete(h.creatingSessions, msg.tempID)
-		}
-		// The first create after the Welcome's dialog consumes the "What you
-		// can do" request whatever its outcome (success, error, or landing
-		// during a reload), so it never pops on a later, unrelated create. A
-		// Welcome login session's create is not that create.
-		showTour := false
-		if h.onboardingTourAfterCreate && (h.onboardingLoginTempID == "" || msg.tempID != h.onboardingLoginTempID) {
-			h.onboardingTourAfterCreate = false
-			showTour = msg.err == nil && msg.instance != nil
 		}
 
 		// Handle reload scenario: session was already started in tmux, we MUST save it to JSON
@@ -2819,9 +2820,6 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Trigger another reload to pick up the new session in the UI
 			if h.storageWatcher != nil {
 				h.storageWatcher.TriggerReload()
-			}
-			if showTour {
-				h.openOnboarding(onboardingPageTour, false)
 			}
 			return h, nil
 		}
@@ -2873,11 +2871,6 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(noticeError(h.err, msg.setupWarning))
 			}
 
-			// The first session made from the Welcome opens "What you can
-			// do" once; it is on screen when the user comes back from it.
-			if showTour {
-				h.openOnboarding(onboardingPageTour, false)
-			}
 			// A Welcome login session is attached right away: the tool's
 			// own sign-in flow runs in it, and the Welcome re-checks on return.
 			if h.onboardingLoginTempID != "" && msg.tempID == h.onboardingLoginTempID {
@@ -4094,6 +4087,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusUpdateMsg:
 		// Clear attach flag - we've returned from the attached session
 		h.isAttaching.Store(false) // Atomic store for thread safety
+		// Back from an attached session: hint step 2 (Ctrl+Q) is done.
+		if msg.attachedSessionID != "" {
+			h.advanceOnboardingHint(hintStepBack)
+		}
 		if !msg.detachedAt.IsZero() {
 			h.pendingFrameOp, h.pendingFrameStart = "tui.detach", msg.detachedAt
 		}
@@ -5076,6 +5073,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Help overlay takes priority (any key closes it)
 		if h.helpOverlay.IsVisible() {
 			h.helpOverlay, _ = h.helpOverlay.Update(msg)
+			// Help closed after hint step 4: "You know the basics" shows for
+			// a moment, then the bar is gone (ASK-211).
+			if !h.helpOverlay.IsVisible() && h.hints.step == hintStepDone {
+				return h, h.onboardingHintsDoneCmd()
+			}
 			return h, nil
 		}
 		if h.search.IsVisible() {
@@ -5389,6 +5391,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := h.normalizeMainKey(raw)
 	uiLog.Info("keypress", "raw", raw, "normalized", key, "type", msg.Type, "runes", string(msg.Runes))
 	if key == "" {
+		return h, nil
+	}
+
+	// The onboarding hint bar (ASK-211): Esc hides it for good; n and ?
+	// advance it and still do their usual thing.
+	if h.onboardingHintKey(key) {
 		return h, nil
 	}
 
@@ -7507,6 +7515,8 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	if tmuxSess == nil {
 		return nil
 	}
+	// Opening a session is hint step 1 (ASK-211).
+	h.advanceOnboardingHint(hintStepOpen)
 	var attachStart, detachedAt time.Time // tui.attach / tui.detach stamps, only while timings are on
 	if optiming.Enabled() {
 		attachStart = time.Now()
@@ -8932,9 +8942,12 @@ func (h *Home) openLocalNewSessionDialog() tea.Cmd {
 
 	// Apply the preselected tool: explicit [default_tool] config wins,
 	// otherwise fall back to the last successfully-submitted tool remembered
-	// in the profile StateDB (UX top-3 #2). First run (neither set) leaves
-	// shell selected, unchanged.
-	h.newDialog.SetDefaultTool(resolveInitialTool(session.GetDefaultTool(), rememberedTool(h.stateDB())))
+	// in the profile StateDB (UX top-3 #2). First run (neither set) starts on
+	// the first installed agent, or the shell when none is installed
+	// (onboarding, ASK-211). The tool row lists installed tools first.
+	h.newDialog.restoreLocalPresets()
+	h.newDialog.RefreshInstalledTools()
+	h.newDialog.SetDefaultTool(initialNewSessionTool(session.GetDefaultTool(), rememberedTool(h.stateDB()), h.newDialog.FirstInstalledAgent()))
 
 	// Auto-select parent group from current cursor position
 	groupPath := session.DefaultGroupPath
@@ -8965,5 +8978,8 @@ func (h *Home) openLocalNewSessionDialog() tea.Cmd {
 	suggestedParentID := h.suggestConductorParent()
 	h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, conductors, suggestedParentID)
 	h.newDialog.SetWhereChoices(newDialogWhereChoicesFromConfig())
+	// The Claude hooks question rides in the form while it is undecided
+	// (ASK-211); the old startup box no longer appears.
+	h.newDialog.SetClaudeHooksUndecided(h.pendingHooksPrompt)
 	return nil
 }

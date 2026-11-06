@@ -15,7 +15,7 @@ import (
 // could never reach, paired with 'G' even though 'G' only opens global search.
 func TestHelpOverlayDoesNotAdvertiseUnreachableGGChord(t *testing.T) {
 	h := NewHelpOverlay()
-	h.Show()
+	h.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 	h.SetSize(200, 60)
 	view := h.View()
 

@@ -142,6 +142,8 @@ const (
 	focusRemoteMCPs                  // MCPs defined on the target remote (conditional, remote targets only).
 	focusWhere                       // where the session runs: this machine, a remote, a new sandbox (conditional, local openings only).
 	focusCreate                      // explicit "[ Create session ]" button; the one row where Enter submits in walk mode.
+	focusHooks                       // the Claude hooks line (conditional: Claude picked, hooks undecided).
+	focusMore                        // the "More options" toggle (worktree, Docker sandbox, multi-repo).
 )
 
 // New session dialog: outer box and textinput widths stay in sync so long
@@ -252,6 +254,15 @@ type NewDialog struct {
 	// pick. Cleared on every opening; see newdialog_where.go.
 	whereChoices []whereChoice
 	whereCursor  int
+
+	// Onboarding (ASK-211, newdialog_onboarding.go). toolInstalled maps each
+	// local tool to whether it is installed (nil: unknown, all allowed).
+	// hooksUndecided/hooksTicked drive the Claude hooks line; moreOptions
+	// opens the folded worktree/Docker/multi-repo rows.
+	toolInstalled  map[string]bool
+	hooksUndecided bool
+	hooksTicked    bool
+	moreOptions    bool
 }
 
 // viewportDialogContent keeps the dialog's identity and primary action pinned
@@ -551,12 +562,9 @@ func NewNewDialog() *NewDialog {
 // ShowInGroup shows the dialog with a pre-selected parent group and optional default path.
 // conductors is the list of active conductor sessions available as parent options.
 func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conductors []*session.Instance, suggestedParentID string) {
-	if d.localPresetCommands != nil {
-		d.presetCommands = d.localPresetCommands
-		d.localPresetCommands = nil
-		d.commandCursor = 0
-	}
+	d.restoreLocalPresets()
 	d.remoteTarget = false
+	d.moreOptions = false
 	d.remoteName = ""
 	d.remoteCatalog = nil
 	d.clearWhere()
@@ -624,12 +632,13 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	// sets them, so the row disappears until SetRemoteMCPs runs again.
 	d.SetRemoteMCPs(nil)
 	// Set path input to group's default path if provided, otherwise use current working directory.
+	// Shown with ~ for the home folder (onboarding); GetValues expands it.
 	if defaultPath != "" {
-		d.pathInput.SetValue(defaultPath)
+		d.pathInput.SetValue(tildePath(defaultPath))
 	} else {
 		cwd, err := os.Getwd()
 		if err == nil {
-			d.pathInput.SetValue(cwd)
+			d.pathInput.SetValue(tildePath(cwd))
 		}
 	}
 	// #1702: the dialog is a reused singleton, so pathInput still carries the
@@ -680,11 +689,22 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.rebuildFocusTargets()
 }
 
+// restoreLocalPresets puts the local tool row back after a remote opening
+// replaced it, so a local opening never starts on a remote's tool list.
+func (d *NewDialog) restoreLocalPresets() {
+	if d.localPresetCommands != nil {
+		d.presetCommands = d.localPresetCommands
+		d.localPresetCommands = nil
+		d.commandCursor = 0
+	}
+	d.remoteTarget = false
+}
+
 // SetDefaultTool sets the pre-selected command based on tool name
 // Call this before Show/ShowInGroup to apply user's preferred default
 func (d *NewDialog) SetDefaultTool(tool string) {
-	if tool == "" {
-		d.commandCursor = 0 // Default to shell
+	if tool == "" || tool == "shell" {
+		d.commandCursor = d.shellIndex() // Default to shell
 		return
 	}
 
@@ -698,8 +718,19 @@ func (d *NewDialog) SetDefaultTool(tool string) {
 	}
 
 	// Tool not found in presets, default to shell
-	d.commandCursor = 0
+	d.commandCursor = d.shellIndex()
 	d.updateToolOptions()
+}
+
+// shellIndex is the plain shell's slot in the tool row (0 when absent); the
+// row is reordered by RefreshInstalledTools, so it is not always first.
+func (d *NewDialog) shellIndex() int {
+	for i, cmd := range d.presetCommands {
+		if cmd == "" {
+			return i
+		}
+	}
+	return 0
 }
 
 // GetSelectedGroup returns the parent group path
@@ -739,8 +770,10 @@ func (d *NewDialog) syncInputWidths() {
 	if iw > newDialogInputMaxWidth {
 		iw = newDialogInputMaxWidth
 	}
-	d.nameInput.Width = iw
-	d.pathInput.Width = iw
+	// Name and Path carry their label on the same line (ASK-211).
+	inline := max(newDialogInputMinWidth/2, iw-(newDialogInlineIndent-2))
+	d.nameInput.Width = inline
+	d.pathInput.Width = inline
 	d.commandInput.Width = iw
 	d.modelInput.Width = iw
 	d.branchInput.Width = iw
@@ -761,6 +794,9 @@ func (d *NewDialog) SetSize(width, height int) {
 func (d *NewDialog) SetPath(path string) {
 	if path == "" {
 		return
+	}
+	if !d.remoteTarget {
+		path = tildePath(path) // shown with ~ (ASK-211); GetValues expands it
 	}
 	d.pathInput.SetValue(path)
 	d.pathInput.CursorEnd()
@@ -1827,6 +1863,12 @@ func (d *NewDialog) validate() (string, focusTarget) {
 		return "Session name cannot be empty", focusName
 	}
 
+	// Onboarding (ASK-211): a missing tool cannot be created here; its
+	// install line shows under the tool row.
+	if d.selectedToolMissing() {
+		return d.missingToolError(), focusCommand
+	}
+
 	// Check name length
 	if len(name) > MaxNameLength {
 		return fmt.Sprintf("Session name too long (max %d characters)", MaxNameLength), focusName
@@ -1978,35 +2020,46 @@ func (d *NewDialog) rebuildFocusTargets() {
 	// (type name, tool already right, submit) is never interrupted by an advanced
 	// option. In multi-repo mode the single Path field is hidden — its path list
 	// lives under focusMultiRepo below the fold instead.
+	// Onboarding (ASK-211): Name, Agent and Path come first, one line each,
+	// so Path is on screen at 80x24; the model rows follow.
 	targets := []focusTarget{focusName, focusCommand}
+	if !d.multiRepoEnabled {
+		targets = append(targets, focusPath)
+	}
 	if d.selectedToolSupportsModel() {
 		targets = append(targets, focusModel)
 	}
 	if d.selectedToolSupportsReasoningEffort() {
 		targets = append(targets, focusReasoningEffort)
 	}
-	if !d.multiRepoEnabled {
-		targets = append(targets, focusPath)
-	}
 	if d.hasWhereRow() {
 		targets = append(targets, focusWhere)
 	}
-	targets = append(targets, focusWorktree, focusSandbox)
+	if d.showHooksLine() {
+		targets = append(targets, focusHooks)
+	}
+	// Onboarding (ASK-211): worktree, Docker sandbox and multi-repo sit
+	// behind "More options", closed by default; a setting already on keeps
+	// its rows open (advancedShown).
+	targets = append(targets, focusMore)
+	if d.advancedShown() {
+		targets = append(targets, focusWorktree, focusSandbox)
+		if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
+			targets = append(targets, focusInherited)
+		}
+		if d.worktreeEnabled {
+			targets = append(targets, focusBranch)
+		}
+		// Multi-repo requires a catalog-aware remote parser.
+		if d.remoteCatalog == nil || !d.remoteCatalog.Legacy {
+			targets = append(targets, focusMultiRepo)
+		}
+	}
 	if len(d.conductorSessions) > 0 {
 		targets = append(targets, focusConductor)
 	}
-	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
-		targets = append(targets, focusInherited)
-	}
 	if d.hasRemoteMCPRow() {
 		targets = append(targets, focusRemoteMCPs)
-	}
-	if d.worktreeEnabled {
-		targets = append(targets, focusBranch)
-	}
-	// Multi-repo requires a catalog-aware remote parser.
-	if d.remoteCatalog == nil || !d.remoteCatalog.Legacy {
-		targets = append(targets, focusMultiRepo)
 	}
 	if d.toolOptions != nil {
 		targets = append(targets, focusOptions)
@@ -2088,7 +2141,7 @@ func (d *NewDialog) updateFocus() {
 		}
 	case focusModel:
 		d.modelInput.Focus()
-	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs, focusWhere, focusCreate:
+	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs, focusWhere, focusCreate, focusHooks, focusMore:
 		// Checkbox/toggle rows, conductor dropdown and Create button — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
@@ -2865,6 +2918,14 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.cycleWhere(1)
 				return d, nil
 			}
+			if cur == focusHooks {
+				d.hooksTicked = !d.hooksTicked
+				return d, nil
+			}
+			if cur == focusMore {
+				d.toggleMoreOptions()
+				return d, nil
+			}
 			if cur == focusWorktree {
 				d.ToggleWorktree()
 				d.rebuildFocusTargets()
@@ -2953,7 +3014,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.filterPathSuggestions()
 			}
 		}
-	case focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs, focusWhere:
+	case focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs, focusWhere, focusHooks, focusMore:
 		// Checkbox/toggle rows and conductor dropdown — no text input to update.
 	case focusBranch:
 		oldBranch := d.branchInput.Value()
@@ -3015,18 +3076,41 @@ func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarg
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
 	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 
+	label := "  " + newDialogInlineLabel("Agent:")
 	if cur == focusCommand {
-		content.WriteString(activeLabelStyle.Render("▶ Command:"))
+		label = activeLabelStyle.Render("▶ " + newDialogInlineLabel("Agent:"))
 	} else {
-		content.WriteString(labelStyle.Render("  Command:"))
+		label = labelStyle.Render(label)
 	}
-	content.WriteString("\n")
 
 	// The shared pill renderer owns spacing and wraps whole tool names with
-	// the same indent on continuation lines.
+	// the same indent on continuation lines. The label sits in front of the
+	// first row (onboarding, ASK-211: one line per field); missing tools are
+	// grey.
 	innerWidth := dialogWidth - 8 // Padding(2,4) → 4 columns each side.
-	content.WriteString(renderPills(toolPillLabels(d.presetCommands), d.commandCursor, "  ", innerWidth))
+	indent := strings.Repeat(" ", newDialogInlineIndent)
+	var missing []bool
+	if d.toolInstalled != nil {
+		missing = make([]bool, len(d.presetCommands))
+		for i, cmd := range d.presetCommands {
+			missing[i] = !d.toolIsInstalled(cmd)
+		}
+	}
+	pills := renderToolPillsMarked(toolPillLabels(d.presetCommands), d.commandCursor, missing, indent, innerWidth)
+	content.WriteString(label + strings.TrimPrefix(pills, indent))
 	content.WriteString("\n")
+	if d.anyToolMissing() {
+		dim := lipgloss.NewStyle().Foreground(ColorComment)
+		content.WriteString(indent + "  " + dim.Render("←→ change   grey = not installed"))
+		content.WriteString("\n")
+	}
+	if lines := d.missingToolLines(); len(lines) > 0 {
+		warn := lipgloss.NewStyle().Foreground(ColorYellow)
+		for _, l := range lines {
+			content.WriteString(indent + "  " + warn.Render(l))
+			content.WriteString("\n")
+		}
+	}
 
 	// show_only_installed_tools empty-fallback hint (issue #1259).
 	if !d.remoteTarget && session.ToolFilterFallbackActive() {
@@ -3121,12 +3205,10 @@ func (d *NewDialog) renderSinglePathSection(content *strings.Builder, cur focusT
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
 	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 	if cur == focusPath {
-		content.WriteString(activeLabelStyle.Render("▶ Path:"))
+		content.WriteString(activeLabelStyle.Render("▶ " + newDialogInlineLabel("Path:")))
 	} else {
-		content.WriteString(labelStyle.Render("  Path:"))
+		content.WriteString(labelStyle.Render("  " + newDialogInlineLabel("Path:")))
 	}
-	content.WriteString("\n")
-	content.WriteString("  ")
 	if cur == focusPath && d.pathSoftSelected && d.pathInput.Value() != "" {
 		// Soft-select highlight: render the textinput's own View() with reverse
 		// colors so the blinking cursor is preserved (#765).
@@ -3341,13 +3423,12 @@ func (d *NewDialog) View() string {
 	content.WriteString("\n")
 
 	// Name input
+	// Onboarding (ASK-211): Name, Agent and Path are one line each.
 	if cur == focusName {
-		writeActiveLabel("▶ Name:")
+		writeActiveLabel("▶ " + newDialogInlineLabel("Name:"))
 	} else {
-		content.WriteString(labelStyle.Render("  Name:"))
+		content.WriteString(labelStyle.Render("  " + newDialogInlineLabel("Name:")))
 	}
-	content.WriteString("\n")
-	content.WriteString("  ")
 	// ASK-110: an empty local name is taken from the folder on submit; show
 	// that name so Enter is not a guess.
 	d.nameInput.Placeholder = "session-name"
@@ -3359,81 +3440,117 @@ func (d *NewDialog) View() string {
 	content.WriteString(d.nameInput.View())
 	content.WriteString("\n\n")
 
-	// Hot path (UX top-3 #3): Tool -> (Model) -> Path render right after Name.
-	// The Multi-repo toggle and its path list move below the common fields
-	// (see renderMultiRepoSection, called after the Branch input). In multi-repo
-	// mode the single Path field is hidden — its list renders below the fold.
+	// Hot path: Agent -> Path right after Name (one line each, so Path shows
+	// at 80x24 without scrolling), then the optional model rows. The
+	// Multi-repo toggle and its path list sit under "More options"; in
+	// multi-repo mode the single Path field is hidden.
 	markFocusedRow(focusCommand)
 	d.renderCommandSection(&content, cur, dialogWidth)
-	markFocusedRow(focusModel)
-	d.renderModelSection(&content, cur, dialogWidth)
-	markFocusedRow(focusReasoningEffort)
-	d.renderReasoningEffortSection(&content, cur)
 	if !d.multiRepoEnabled {
 		markFocusedRow(focusPath)
 		d.renderSinglePathSection(&content, cur, dialogWidth)
 	}
+	markFocusedRow(focusModel)
+	d.renderModelSection(&content, cur, dialogWidth)
+	markFocusedRow(focusReasoningEffort)
+	d.renderReasoningEffortSection(&content, cur)
 
 	markFocusedRow(focusWhere)
 	d.renderWhereSection(&content, cur)
 
-	// (Tool, Model, and the single Path field render above, right after Name —
-	// see renderCommandSection / renderModelSection / renderSinglePathSection.)
-
-	// Worktree checkbox — individually focusable.
-	worktreeLabel := "Create in worktree"
-	if cur == focusCommand {
-		worktreeLabel = "Create in worktree (w)"
+	// The Claude hooks line (replaces the Claude Code Hooks box).
+	if d.showHooksLine() {
+		markFocusedRow(focusHooks)
+		content.WriteString(d.renderHooksLine(cur == focusHooks, max(1, dialogWidth-8)))
 	}
-	markFocusedRow(focusWorktree)
-	content.WriteString(renderCheckboxLine(worktreeLabel, d.worktreeEnabled, cur == focusWorktree))
 
-	// Docker sandbox checkbox — individually focusable.
-	sandboxLabel := "Run in Docker sandbox"
-	if cur == focusCommand {
-		sandboxLabel = "Run in Docker sandbox (s)"
+	// "More options": worktree, Docker sandbox and multi-repo.
+	markFocusedRow(focusMore)
+	content.WriteString(d.renderMoreOptionsLine(cur == focusMore))
+	if d.advancedShown() {
+		// Worktree checkbox — individually focusable.
+		worktreeLabel := "Create in worktree"
+		if cur == focusCommand {
+			worktreeLabel = "Create in worktree (w)"
+		}
+		markFocusedRow(focusWorktree)
+		content.WriteString(renderCheckboxLine(worktreeLabel, d.worktreeEnabled, cur == focusWorktree))
+
+		// Docker sandbox checkbox — individually focusable.
+		sandboxLabel := "Run in Docker sandbox"
+		if cur == focusCommand {
+			sandboxLabel = "Run in Docker sandbox (s)"
+		}
+		markFocusedRow(focusSandbox)
+		content.WriteString(renderCheckboxLine(sandboxLabel, d.sandboxEnabled, cur == focusSandbox))
+
+		// Inherited Docker settings (only visible when sandbox is enabled).
+		if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
+			focused := cur == focusInherited
+			dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			settingStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+
+			// Render toggle line.
+			arrow := "▸"
+			if d.inheritedExpanded {
+				arrow = "▾"
+			}
+			summary := fmt.Sprintf("%d active", len(d.inheritedSettings))
+			toggleLine := fmt.Sprintf("%s Docker Settings (%s)", arrow, summary)
+			if focused {
+				writeActiveLabel("▶ " + toggleLine)
+			} else {
+				content.WriteString("  " + dimStyle.Render(toggleLine))
+			}
+			content.WriteString("\n")
+
+			// Render expanded settings.
+			if d.inheritedExpanded {
+				for _, s := range d.inheritedSettings {
+					content.WriteString(settingStyle.Render(fmt.Sprintf("    %s: %s", s.label, s.value)))
+					content.WriteString("\n")
+				}
+			}
+		} else if d.sandboxEnabled {
+			// Sandbox enabled but all defaults — show informational line.
+			dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			content.WriteString("  " + dimStyle.Render("Docker Settings (all defaults)"))
+			content.WriteString("\n")
+		}
+
+		// Branch input (only visible when worktree is enabled).
+		if d.worktreeEnabled {
+			content.WriteString("\n")
+			if cur == focusBranch {
+				writeActiveLabel("▶ Branch:")
+			} else {
+				content.WriteString(labelStyle.Render("  Branch:"))
+			}
+			content.WriteString("\n")
+			content.WriteString("  ")
+			content.WriteString(d.branchInput.View())
+			content.WriteString("\n")
+			if d.branchPicker != nil && d.branchPicker.IsVisible() {
+				content.WriteString("  ")
+				content.WriteString(strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  "))
+				content.WriteString("\n")
+			}
+		}
+
+		// Multi-repo toggle (below the fold, UX top-3 #3). Its path list renders
+		// here when enabled; in the common single-repo case it's just a checkbox.
+		if d.remoteCatalog == nil || !d.remoteCatalog.Legacy {
+			content.WriteString("\n")
+			markFocusedRow(focusMultiRepo)
+			d.renderMultiRepoSection(&content, cur)
+		}
+
 	}
-	markFocusedRow(focusSandbox)
-	content.WriteString(renderCheckboxLine(sandboxLabel, d.sandboxEnabled, cur == focusSandbox))
 
 	// Remote MCP picks (only for a remote target that reported MCPs).
 	if d.hasRemoteMCPRow() {
 		markFocusedRow(focusRemoteMCPs)
 		content.WriteString(d.renderRemoteMCPRow(cur == focusRemoteMCPs))
-	}
-
-	// Inherited Docker settings (only visible when sandbox is enabled).
-	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
-		focused := cur == focusInherited
-		dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
-		settingStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
-
-		// Render toggle line.
-		arrow := "▸"
-		if d.inheritedExpanded {
-			arrow = "▾"
-		}
-		summary := fmt.Sprintf("%d active", len(d.inheritedSettings))
-		toggleLine := fmt.Sprintf("%s Docker Settings (%s)", arrow, summary)
-		if focused {
-			writeActiveLabel("▶ " + toggleLine)
-		} else {
-			content.WriteString("  " + dimStyle.Render(toggleLine))
-		}
-		content.WriteString("\n")
-
-		// Render expanded settings.
-		if d.inheritedExpanded {
-			for _, s := range d.inheritedSettings {
-				content.WriteString(settingStyle.Render(fmt.Sprintf("    %s: %s", s.label, s.value)))
-				content.WriteString("\n")
-			}
-		}
-	} else if d.sandboxEnabled {
-		// Sandbox enabled but all defaults — show informational line.
-		dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
-		content.WriteString("  " + dimStyle.Render("Docker Settings (all defaults)"))
-		content.WriteString("\n")
 	}
 
 	// Conducting parent selector (only visible when conductor sessions exist).
@@ -3477,33 +3594,6 @@ func (d *NewDialog) View() string {
 			}
 			content.WriteString("\n")
 		}
-	}
-
-	// Branch input (only visible when worktree is enabled).
-	if d.worktreeEnabled {
-		content.WriteString("\n")
-		if cur == focusBranch {
-			writeActiveLabel("▶ Branch:")
-		} else {
-			content.WriteString(labelStyle.Render("  Branch:"))
-		}
-		content.WriteString("\n")
-		content.WriteString("  ")
-		content.WriteString(d.branchInput.View())
-		content.WriteString("\n")
-		if d.branchPicker != nil && d.branchPicker.IsVisible() {
-			content.WriteString("  ")
-			content.WriteString(strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  "))
-			content.WriteString("\n")
-		}
-	}
-
-	// Multi-repo toggle (below the fold, UX top-3 #3). Its path list renders
-	// here when enabled; in the common single-repo case it's just a checkbox.
-	if d.remoteCatalog == nil || !d.remoteCatalog.Legacy {
-		content.WriteString("\n")
-		markFocusedRow(focusMultiRepo)
-		d.renderMultiRepoSection(&content, cur)
 	}
 
 	// Tool options panel
@@ -3598,6 +3688,10 @@ func (d *NewDialog) View() string {
 		helpText = "←→/Space choose where │ Tab next │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusConductor {
 		helpText = "↑↓ select parent │ Tab next │ " + rowHint + " │ Esc cancel"
+	} else if cur == focusHooks {
+		helpText = "Space tick │ Tab next │ " + rowHint + " │ Esc cancel"
+	} else if cur == focusMore {
+		helpText = "Space open/close │ Tab next │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {
 		helpText = "Space toggle │ ↑↓ navigate │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusInherited {
@@ -3628,7 +3722,7 @@ func (d *NewDialog) View() string {
 				d.modelLineOffset = i + 3 // title margin + label + input
 			}
 			if strings.Contains(plain, "▶ Path:") {
-				d.suggestionsLineOffset = i + 3 // title margin + label + input
+				d.suggestionsLineOffset = i + 2 // title margin + the one-line label/input row
 			}
 		}
 	}
@@ -3661,8 +3755,9 @@ func (d *NewDialog) View() string {
 		// suggestionsLineOffset is the content line where the dropdown should appear.
 		// Add border (1) + top padding (2) to get the actual row within the dialog box.
 		overlayRow := topRow + 1 + 2 + d.suggestionsLineOffset
-		// Align with the path input: border (1) + padding (4)
-		overlayCol := leftCol + 1 + 4
+		// Align with the path input: border (1) + padding (4) + the inline
+		// "Path:" label column (ASK-211).
+		overlayCol := leftCol + 1 + 4 + newDialogInlineIndent
 
 		placed = overlayDropdown(placed, suggestionsOverlay, overlayRow, overlayCol)
 	}

@@ -187,8 +187,9 @@ func TestWelcome_ArrowsAndEnter(t *testing.T) {
 
 	h.welcomeSel = 0
 	h.Update(keyEnter)
-	if !h.newDialog.IsVisible() || h.newDialog.GetSelectedCommand() != "claude" || h.newDialog.pathInput.Value() != onboardingFolder() {
-		t.Fatalf("Enter on New session: dialog=%v tool=%q path=%q", h.newDialog.IsVisible(), h.newDialog.GetSelectedCommand(), h.newDialog.pathInput.Value())
+	// The form shows the folder with ~; GetValues gives the path it creates in.
+	if _, path, _ := h.newDialog.GetValues(); !h.newDialog.IsVisible() || h.newDialog.GetSelectedCommand() != "claude" || path != onboardingFolder() {
+		t.Fatalf("Enter on New session: dialog=%v tool=%q path=%q", h.newDialog.IsVisible(), h.newDialog.GetSelectedCommand(), path)
 	}
 }
 
@@ -202,7 +203,7 @@ func TestWelcome_ActionKeys(t *testing.T) {
 		if got := h.newDialog.GetSelectedCommand(); got != "codex" {
 			t.Fatalf("n: tool = %q, want the first installed codex", got)
 		}
-		if got := h.newDialog.pathInput.Value(); got != onboardingFolder() {
+		if _, got, _ := h.newDialog.GetValues(); got != onboardingFolder() {
 			t.Fatalf("n: path = %q, want %q", got, onboardingFolder())
 		}
 	})

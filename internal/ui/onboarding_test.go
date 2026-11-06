@@ -374,7 +374,8 @@ func TestOnboarding_CheckEnterWelcomeEnterEnterCreates(t *testing.T) {
 	if got := h.newDialog.GetSelectedCommand(); got != "claude" {
 		t.Fatalf("dialog tool = %q, want the first installed claude", got)
 	}
-	if got := h.newDialog.pathInput.Value(); got != onboardingFolder() {
+	// The form shows the folder with ~; compare the path it creates in.
+	if _, got, _ := h.newDialog.GetValues(); got != onboardingFolder() {
 		t.Fatalf("dialog path = %q, want this folder %q", got, onboardingFolder())
 	}
 	_, cmd := h.Update(keyEnter)
@@ -753,7 +754,7 @@ func TestShowAroundKeyHasNoMainScreenConflict(t *testing.T) {
 func TestShowAroundInHelp(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(200, 400)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; the row is in the full list
 	view := stripAnsi(overlay.View())
 	key := defaultHotkeyBindings[hotkeyShowAround]
 	for _, line := range strings.Split(view, "\n") {

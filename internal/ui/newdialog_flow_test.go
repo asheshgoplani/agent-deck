@@ -39,6 +39,11 @@ func flowDialog(t *testing.T, tool string) *NewDialog {
 func flowFocus(t *testing.T, d *NewDialog, target focusTarget) {
 	t.Helper()
 	idx := d.indexOf(target)
+	if idx < 0 && !d.moreOptions {
+		// ASK-211: worktree, Docker and multi-repo sit behind "More options".
+		d.toggleMoreOptions()
+		idx = d.indexOf(target)
+	}
 	if idx < 0 {
 		t.Fatalf("focus target %v is not in the form", target)
 	}
@@ -162,8 +167,10 @@ func TestNewSessionFlow_HomeEnterOnEffortDoesNotCreate(t *testing.T) {
 	if !h.newDialog.IsVisible() {
 		t.Fatal("Enter on Reasoning effort created the session (dialog closed)")
 	}
-	if h.newDialog.currentTarget() != focusPath {
-		t.Fatalf("focus after Enter on Reasoning effort = %v, want focusPath", h.newDialog.currentTarget())
+	// ASK-211: Path moved up next to Agent; after the model rows comes the
+	// "More options" toggle.
+	if h.newDialog.currentTarget() != focusMore {
+		t.Fatalf("focus after Enter on Reasoning effort = %v, want focusMore", h.newDialog.currentTarget())
 	}
 }
 
@@ -179,8 +186,9 @@ func TestNewSessionFlow_EnterOnPrefilledPathAdvances(t *testing.T) {
 	if d.IsSuggestionsActive() {
 		t.Fatal("Enter on the pre-filled path opened browse instead of advancing")
 	}
-	if d.currentTarget() != focusWorktree {
-		t.Fatalf("focus after Enter on Path = %v, want focusWorktree", d.currentTarget())
+	// ASK-211: the model row follows Path now.
+	if d.currentTarget() != focusModel {
+		t.Fatalf("focus after Enter on Path = %v, want focusModel", d.currentTarget())
 	}
 }
 

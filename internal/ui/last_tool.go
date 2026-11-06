@@ -23,6 +23,16 @@ func resolveInitialTool(configDefault, remembered string) string {
 	return remembered
 }
 
+// initialNewSessionTool is the tool the New Session form starts on: the
+// configured default_tool, else the remembered last tool, else the first
+// installed agent (onboarding, ASK-211). "" means the plain shell.
+func initialNewSessionTool(configDefault, remembered, firstInstalled string) string {
+	if tool := resolveInitialTool(configDefault, remembered); tool != "" {
+		return tool
+	}
+	return firstInstalled
+}
+
 // rememberedTool returns the last successfully-submitted tool persisted in the
 // profile StateDB, or "" when nothing is remembered or the store is
 // unavailable.
