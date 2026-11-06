@@ -131,10 +131,11 @@ func (w *widthRun) probeRedraw() error {
 	if err := w.send("?"); err != nil {
 		return err
 	}
-	if err := waitScreen(w, 5*time.Second, "KEYBOARD SHORTCUTS"); err != nil {
+	// '?' opens the "5 keys to start" view of help.
+	if err := waitScreen(w, 5*time.Second, "5 KEYS TO START"); err != nil {
 		return err
 	}
-	if err := closeScreen(w, "KEYBOARD SHORTCUTS"); err != nil {
+	if err := closeScreen(w, "5 KEYS TO START"); err != nil {
 		return err
 	}
 	repainted, err := w.pane()

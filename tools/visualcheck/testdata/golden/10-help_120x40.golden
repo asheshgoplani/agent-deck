@@ -8,6 +8,7 @@
                    │    Enter          Attach to selected session                                   │
                    │    R              Restart selected session                                     │
                    │    Ctrl+Q         Detach from session                                          │
+                   │    n              New session                                                  │
                    │    ?              Open this help                                               │
                    │    alt+w          Show me around: what you can do                              │
                    │                                                                                │
@@ -29,11 +30,10 @@
                    │    Enter          Attach to session / toggle group                             │
                    │    Shift+Enter    Open session in new iTerm window (macOS)                     │
                    │                                                                                │
-                   │  GROUP NAVIGATION (<version>)                                                    │
+                   │  GROUP NAVIGATION                                                              │
                    │    Alt+j / Alt+k  Next / prev session in group                                 │
-                   │    Alt+1 - Alt+9  Jump to Nth session in group                                 │
                    │  ▼ more below                                                                  │
                    │                                                                                │
-                   │  j/k scroll • any other key to close                                           │
+                   │  j/k scroll • Tab 5 keys • any other key to close                              │
                    │                                                                                │
                    ╰────────────────────────────────────────────────────────────────────────────────╯
