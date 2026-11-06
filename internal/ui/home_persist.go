@@ -547,9 +547,16 @@ func (h *Home) applyUIState(state uiState) {
 
 // importSessions imports existing tmux sessions
 func (h *Home) importSessions() tea.Msg {
+	msg, _ := h.importSessionsCounted()
+	return msg
+}
+
+// importSessionsCounted is importSessions that also says how many sessions
+// it imported (the welcome screen says so when there were none).
+func (h *Home) importSessionsCounted() (tea.Msg, int) {
 	discovered, err := session.DiscoverExistingTmuxSessions(h.instances)
 	if err != nil {
-		return loadSessionsMsg{err: err}
+		return loadSessionsMsg{err: err}, 0
 	}
 
 	h.instancesMu.Lock()
@@ -562,5 +569,5 @@ func (h *Home) importSessions() tea.Msg {
 	}
 	// Save both instances AND groups (critical fix: was losing groups!)
 	h.saveInstances()
-	return importReloadMsg{}
+	return importReloadMsg{}, len(discovered)
 }

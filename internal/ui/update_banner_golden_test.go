@@ -79,6 +79,7 @@ func progressFrom(out string) *update.UnattendedProgress {
 // frame depends only on the banner state.
 func newUpdateBannerTestHome(t *testing.T, width int) *Home {
 	t.Helper()
+	pinWelcomeForGolden(t)
 	h := newAutoRestartTestHome(t)
 	h.width, h.height = width, 24
 	h.groupViewMode = session.GroupViewNormal
