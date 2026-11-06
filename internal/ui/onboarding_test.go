@@ -116,6 +116,17 @@ func newOnboardingEnv(t *testing.T, found ...string) *onboardingEnv {
 		return nil
 	}
 	onboardingRecheckEvery = time.Millisecond
+	// The New Session form and the "any agent" check see the same fake PATH.
+	prevInstalled := newDialogToolInstalled
+	t.Cleanup(func() { newDialogToolInstalled = prevInstalled })
+	newDialogToolInstalled = func(name string) bool {
+		if name == "" || name == "shell" {
+			return true
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.found[name]
+	}
 	onboardingCmdObserver = func(c tea.Cmd) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -230,10 +241,16 @@ func TestOnboarding_FreshInstallShowsCheckPageExactlyOnce(t *testing.T) {
 		}
 	}
 
-	// Second start on the same install, without touching anything.
+	// Second start on the same install, first run not finished (the
+	// process ended on the check page): the check page again, not the wizard.
 	h2 := startDeck(t)
-	if h2.onboarding.IsVisible() || h2.setupWizard.IsVisible() {
-		t.Fatalf("second start: welcome=%v wizard=%v, want neither", h2.onboarding.IsVisible(), h2.setupWizard.IsVisible())
+	if !checkVisible(h2) || !h2.onboarding.firstRun || h2.setupWizard.IsVisible() {
+		t.Fatalf("second start before finishing: check=%v firstRun=%v wizard=%v, want the first-run check page", checkVisible(h2), h2.onboarding.firstRun, h2.setupWizard.IsVisible())
+	}
+	h2.Update(keyEnter) // finish first run
+	h3 := startDeck(t)
+	if h3.onboarding.IsVisible() || h3.setupWizard.IsVisible() {
+		t.Fatalf("start after first run: check=%v wizard=%v, want neither", h3.onboarding.IsVisible(), h3.setupWizard.IsVisible())
 	}
 }
 
@@ -423,7 +440,7 @@ func TestOnboarding_TmuxMissingBlocksUntilRecheck(t *testing.T) {
 		t.Fatal("precondition: check page")
 	}
 	screen := onboardingScreen(h)
-	for _, want := range []string{"✗ tmux", "not found. Every session runs inside tmux.", "Linux:  sudo apt install tmux",
+	for _, want := range []string{"✗ tmux", "not found. Every session runs inside tmux.", "Debian/Ubuntu:  sudo apt install tmux", "Fedora/RHEL:    sudo dnf install tmux", "Arch:           sudo pacman -S tmux",
 		"r re-check after you install", "q quit"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("tmux-missing check page lacks %q:\n%s", want, screen)
@@ -507,6 +524,55 @@ func TestOnboarding_ShownAgainOnlyWhenSomethingIsWrong(t *testing.T) {
 	}
 }
 
+// An install whose config.toml predates onboarding (an existing user) never
+// gets the check page, even with no sessions and no agent the check page
+// knows (ASK-211 review): it is not the install onboarding finished.
+func TestOnboarding_ExistingConfigNoSessionsNoKnownAgentNeverSeesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		marker string // "" none, else marker content (older versions: a timestamp)
+	}{
+		{"no marker", ""},
+		{"marker from an older version", "2026-01-02T03:04:05Z\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newOnboardingEnv(t) // nothing on PATH
+			if err := session.SaveUserConfig(&session.UserConfig{DefaultTool: "opencode"}); err != nil {
+				t.Fatal(err)
+			}
+			session.ClearUserConfigCache()
+			if tc.marker != "" {
+				p := onboardingSeenPath()
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(tc.marker), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := 0; i < 2; i++ {
+				h := startDeck(t)
+				if h.onboarding.IsVisible() || h.setupWizard.IsVisible() {
+					t.Fatalf("start %d: check=%v wizard=%v, want neither for an existing config", i+1, h.onboarding.IsVisible(), h.setupWizard.IsVisible())
+				}
+			}
+		})
+	}
+}
+
+// On the install onboarding finished, any installed picker tool counts as an
+// agent, not only the four the check page lists.
+func TestOnboarding_AnyInstalledToolCountsAsAgent(t *testing.T) {
+	e := newOnboardingEnv(t)
+	h := startDeck(t)
+	h.Update(keyEnter) // finish first run with a plain shell
+	e.setFound("opencode")
+	h2 := startDeck(t)
+	if h2.onboarding.IsVisible() {
+		t.Fatal("opencode is installed, yet the check page says no agent")
+	}
+}
+
 // q on the check page at start quits agent-deck; on a page reopened from
 // "Show me around" it only closes it.
 func TestOnboarding_QuitKey(t *testing.T) {
@@ -518,6 +584,15 @@ func TestOnboarding_QuitKey(t *testing.T) {
 	}
 	if cmd == nil && !h.isQuitting {
 		t.Fatal("q on the start check page did not quit")
+	}
+	// q did not finish first run: the next start is the check page again,
+	// not the legacy setup wizard and not a config-less main screen.
+	if _, err := os.Stat(configFile(t)); err == nil {
+		t.Fatal("q on the first-run check page wrote config.toml")
+	}
+	again := startDeck(t)
+	if !checkVisible(again) || !again.onboarding.firstRun || again.setupWizard.IsVisible() {
+		t.Fatalf("start after q: check=%v firstRun=%v wizard=%v, want the first-run check page", checkVisible(again), again.onboarding.firstRun, again.setupWizard.IsVisible())
 	}
 
 	newOnboardingEnv(t, "claude")

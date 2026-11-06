@@ -7,11 +7,10 @@ package main
 // short words as the in-TUI page, so a new user sees one style either way.
 
 import (
-	"context"
 	"fmt"
-	"os/exec"
 	"strings"
-	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/ui"
 )
 
 const checkTitle = "Agent Deck · quick check"
@@ -25,19 +24,10 @@ func checkRow(mark, name, detail string) string {
 // detail column.
 const checkIndent = "               "
 
-// tmuxInstallLines are the install commands for goos, as the TUI page shows them.
+// tmuxInstallLines are the install commands for goos, the same lines the
+// TUI page shows (one shared list in internal/ui).
 func tmuxInstallLines(goos string) []string {
-	switch goos {
-	case "darwin":
-		return []string{"Mac:    brew install tmux"}
-	case "linux":
-		return []string{
-			"Debian/Ubuntu:  sudo apt install tmux",
-			"Fedora/RHEL:    sudo dnf install tmux",
-			"Arch:           sudo pacman -S tmux",
-		}
-	}
-	return []string{"See https://github.com/tmux/tmux/wiki/Installing"}
+	return ui.TmuxInstallLines(goos)
 }
 
 // tmuxMissingCheckText is what `agent-deck` (the TUI) prints when tmux is
@@ -79,13 +69,8 @@ func outerTmuxRefusalText(tmuxVersion, version string) string {
 }
 
 // tmuxVersionLine is `tmux -V` ("tmux 3.5a"), or "" when it cannot be read
-// within a second.
+// within a second (the TUI page's probe, with the filtered child env).
 func tmuxVersionLine() string {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "-V").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	v, _ := ui.TmuxVersion()
+	return v
 }

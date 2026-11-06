@@ -511,6 +511,7 @@ type Home struct {
 	// Hook-based status detection (Claude Code lifecycle hooks)
 	hookWatcher              *session.StatusFileWatcher
 	pendingHooksPrompt       bool // True if user should be prompted to install Claude hooks
+	claudeHooksBoxShown      bool // The fallback Claude hooks box was shown this run (showClaudeHooksBox)
 	pendingHermesHooksPrompt bool // True if user should be prompted to install Hermes hooks
 
 	// hints is the one-key onboarding hint bar (onboarding_hints.go, ASK-211).
@@ -2496,8 +2497,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// wizard did.
 		if firstLoad {
 			noSessions := msg.err == nil && len(msg.instances) == 0
-			h.maybeStartOnboarding(noSessions)
-			h.armOnboardingHints(noSessions)
+			freshInstall := h.maybeStartOnboarding(noSessions)
+			h.armOnboardingHints(freshInstall)
 			// The Alt+j/k tip is for moving between sessions: held back
 			// on the welcome (ASK-211), where there are none.
 			if noSessions && h.navHintActive {
@@ -2510,7 +2511,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Show hooks installation prompt (after splash screen is gone)
 		if !h.setupWizard.IsVisible() && !h.onboarding.IsVisible() {
-			h.showPendingHooksPrompt()
+			// A profile with sessions keeps the Claude hooks box it always
+			// had; an empty one is asked by the New Session form's line.
+			// (The Hermes box follows once it is answered.)
+			// (h.instances is filled further down, so msg says it.)
+			hasSessions := msg.err == nil && len(msg.instances) > 0
+			if !(firstLoad && hasSessions && h.showClaudeHooksBox()) {
+				h.showPendingHooksPrompt()
+			}
 		}
 
 		// One-time telemetry consent prompt (TELEMETRY.md). Shown only on the
@@ -2869,6 +2877,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// persistence error so an unsaved session never looks merely degraded.
 			if msg.setupWarning != "" {
 				h.setError(noticeError(h.err, msg.setupWarning))
+			}
+
+			// A local Claude session made without the form's hooks line
+			// (quick create, a pick made elsewhere) still gets the hooks
+			// question once, as the old box (ASK-211 review).
+			isLoginSession := h.onboardingLoginTempID != "" && msg.tempID == h.onboardingLoginTempID
+			if !isLoginSession && session.IsClaudeCompatible(msg.instance.Tool) {
+				h.showClaudeHooksBox()
 			}
 
 			// A Welcome login session is attached right away: the tool's

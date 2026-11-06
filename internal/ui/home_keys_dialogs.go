@@ -903,9 +903,26 @@ func (h *Home) declineInstallHooks() tea.Cmd {
 	return nil
 }
 
+// showClaudeHooksBox is the fallback for the Claude hooks question when the
+// New Session form's hooks line (ASK-211) cannot ask it: a profile that
+// already has sessions at start (as before onboarding, for users who create
+// with quick create, the CLI or a remote), or a local Claude-compatible
+// session created by another path than the form. The old box, at most once
+// per run and never over another dialog; its answer is recorded the same way.
+func (h *Home) showClaudeHooksBox() (shown bool) {
+	if !h.pendingHooksPrompt || h.claudeHooksBoxShown || h.hasModalVisible() {
+		return false
+	}
+	h.claudeHooksBoxShown = true
+	h.confirmDialog.ShowInstallHooks()
+	h.confirmDialog.SetSize(h.width, h.height)
+	return true
+}
+
 // showPendingHooksPrompt shows the next hooks consent box. The Claude hooks
-// question is no longer a box (ASK-211): it is the hooks line in the New
-// Session form while pendingHooksPrompt is set. Hermes keeps its box.
+// question is mostly no longer a box (ASK-211): it is the hooks line in the
+// New Session form while pendingHooksPrompt is set, with showClaudeHooksBox
+// as the fallback. Hermes keeps its box.
 func (h *Home) showPendingHooksPrompt() {
 	if h.pendingHermesHooksPrompt {
 		h.confirmDialog.ShowInstallHermesHooks(filepath.Join(session.GetHermesConfigDir(), "config.yaml"), session.HermesHookEventsForInstall())

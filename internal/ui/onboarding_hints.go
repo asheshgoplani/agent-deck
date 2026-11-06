@@ -83,11 +83,12 @@ func markOnboardingHintsSeen() {
 	_ = os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
 }
 
-// armOnboardingHints is called on the first load: a profile that starts
-// empty on a machine that has not seen the bar gets it once its first
-// session exists.
-func (h *Home) armOnboardingHints(emptyFirstLoad bool) {
-	if emptyFirstLoad && !onboardingHintsSeen() {
+// armOnboardingHints is called on the first load: a fresh install's first
+// run (maybeStartOnboarding: no config.toml, no sessions) on a machine that
+// has not seen the bar gets it once its first session exists. An existing
+// user who opens an empty profile does not.
+func (h *Home) armOnboardingHints(freshInstall bool) {
+	if freshInstall && !onboardingHintsSeen() {
 		h.hints.armed = true
 	}
 }
@@ -179,6 +180,14 @@ func (h *Home) hintBarHeight() int {
 	return 0
 }
 
+// hintHelpKey is the help key as bound ("?" by default).
+func (h *Home) hintHelpKey() string {
+	if k := h.actionKey(hotkeyHelp); k != "" {
+		return k
+	}
+	return "?"
+}
+
 // hintBarText returns the step label and the long and short sentences.
 func (h *Home) hintBarText() (step, long, short string) {
 	name := h.hints.session
@@ -189,15 +198,14 @@ func (h *Home) hintBarText() (step, long, short string) {
 	if newKey == "" {
 		newKey = "n"
 	}
-	helpKey := h.actionKey(hotkeyHelp)
-	if helpKey == "" {
-		helpKey = "?"
-	}
+	helpKey := h.hintHelpKey()
+	// The detach key as the user has it bound, as the short help shows it.
+	detach := DetachByteLabel(DetachByteFromBinding(h.actionKey(hotkeyDetach)))
 	switch h.hints.step {
 	case hintStepOpen:
-		return "Step 1 of 4", "Press Enter to open " + name + ". Ctrl+Q brings you back here.", "Press Enter to open " + name + "."
+		return "Step 1 of 4", "Press Enter to open " + name + ". " + detach + " brings you back here.", "Press Enter to open " + name + "."
 	case hintStepBack:
-		return "Step 2 of 4", "Press Ctrl+Q to come back to the list. " + name + " keeps running.", "Ctrl+Q comes back here. " + name + " keeps running."
+		return "Step 2 of 4", "Press " + detach + " to come back to the list. " + name + " keeps running.", detach + " comes back here. " + name + " keeps running."
 	case hintStepNew:
 		return "Step 3 of 4", "Press " + newKey + " to start another session.", "Press " + newKey + " for another session."
 	case hintStepHelp:
@@ -211,7 +219,7 @@ func (h *Home) renderHintBar() string {
 	width := max(1, h.width)
 	if h.hints.step == hintStepDone {
 		style := lipgloss.NewStyle().Foreground(ColorBg).Background(ColorGreen).Bold(true).Width(width).MaxWidth(width)
-		return style.Render(truncateDisplay(" ✓ You know the basics. Press ? any time for the keys.", width, "…"))
+		return style.Render(truncateDisplay(" ✓ You know the basics. Press "+h.hintHelpKey()+" any time for the keys.", width, "…"))
 	}
 	stepLabel, long, short := h.hintBarText()
 	bar := lipgloss.NewStyle().Foreground(ColorBg).Background(ColorCyan)

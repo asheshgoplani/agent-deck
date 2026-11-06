@@ -227,13 +227,23 @@ func (o *OnboardingOverlay) loginTarget() *onboardingAgent {
 // checkTmuxForOnboarding finds tmux and reads `tmux -V` (no server is
 // contacted), bounded to a second.
 func checkTmuxForOnboarding() (version string, found bool) {
+	return TmuxVersion()
+}
+
+// TmuxVersion finds tmux and reads `tmux -V` ("tmux 3.5a"; no server is
+// contacted), bounded to a second, with the filtered child environment
+// (internal/childenv). It is shared with the printed check page in
+// cmd/agent-deck. version is "" when it cannot be read.
+func TmuxVersion() (version string, found bool) {
 	bin, err := exec.LookPath("tmux")
 	if err != nil {
 		return "", false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "-V").Output()
+	cmd := exec.CommandContext(ctx, bin, "-V")
+	cmd.Env = childenv.ForLaunch("")
+	out, err := cmd.Output()
 	if err != nil {
 		return "", true
 	}
@@ -461,19 +471,13 @@ func onboardingSeenPath() string {
 	return path
 }
 
-// onboardingSeen reports whether the Welcome was already shown. An
-// unresolvable path counts as seen (never nag).
-func onboardingSeen() bool {
-	path := onboardingSeenPath()
-	if path == "" {
-		return true
-	}
-	_, err := os.Stat(path)
-	return err == nil
-}
+// onboardingFirstRunDoneTag starts the marker when onboarding itself
+// finished first run on this install (wrote config.toml). Markers from older
+// versions hold only a timestamp: those installs predate this onboarding.
+const onboardingFirstRunDoneTag = "first-run-done"
 
 // onboardingMarkerExists reports whether the marker is positively there
-// (an unresolvable path is false here, unlike onboardingSeen).
+// (an unresolvable path is false).
 func onboardingMarkerExists() bool {
 	path := onboardingSeenPath()
 	if path == "" {
@@ -483,13 +487,55 @@ func onboardingMarkerExists() bool {
 	return err == nil
 }
 
-func markOnboardingSeen() {
+// onboardingFirstRunFinished reports whether onboarding finished first run
+// on this install. Only then may the check page come back later.
+func onboardingFirstRunFinished() bool {
+	path := onboardingSeenPath()
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	return err == nil && strings.HasPrefix(string(data), onboardingFirstRunDoneTag)
+}
+
+// markOnboardingFirstRunDone writes the marker as first run finishes (not as
+// the page opens, so quitting the check page brings it back next start).
+func markOnboardingFirstRunDone() {
 	path := onboardingSeenPath()
 	if path == "" {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	_ = os.WriteFile(path, []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644)
+	_ = os.WriteFile(path, []byte(onboardingFirstRunDoneTag+" "+time.Now().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+// onboardingConfigMissing reports whether there is no config.toml yet.
+func onboardingConfigMissing() bool {
+	configPath, err := session.GetUserConfigPath()
+	if err != nil || configPath == "" {
+		return false
+	}
+	_, err = os.Stat(configPath)
+	return os.IsNotExist(err)
+}
+
+// onboardingAnyAgentInstalled reports whether any agent can start here: one
+// of the check page's agents, any installed tool in the New Session picker
+// (opencode, copilot, cursor, custom tools...), or the configured
+// default_tool. Probes follow configured commands (session.ToolInstalled).
+func onboardingAnyAgentInstalled() bool {
+	if len(onboardingChoices(detectOnboardingAgents())) > 1 {
+		return true
+	}
+	for _, name := range session.PickerToolNames() {
+		if name != "" && name != "shell" && newDialogToolInstalled(name) {
+			return true
+		}
+	}
+	if def := session.GetDefaultTool(); def != "" && def != "shell" && newDialogToolInstalled(def) {
+		return true
+	}
+	return false
 }
 
 // ---- Home wiring ----
@@ -553,31 +599,34 @@ func (h *Home) openOnboarding(page onboardingPage, firstRun bool) {
 	}
 }
 
-// maybeStartOnboarding runs on the first session load. On a fresh install
-// (the setup wizard is up on its first step because there is no config.toml,
-// there are no sessions, and the check page was never shown) the check page
-// takes the wizard's place. The marker is written as it opens, so it opens
-// by itself on first run at most once. Later it opens only when something
-// is wrong and there are no sessions yet: tmux missing or no agent CLI.
-func (h *Home) maybeStartOnboarding(noSessions bool) {
+// maybeStartOnboarding runs on the first session load and reports whether
+// this run is a fresh install's first run. On a fresh install (no
+// config.toml, no sessions, and onboarding never finished first run here)
+// the check page takes the setup wizard's place; it keeps coming back at
+// start until first run is finished (Enter, Esc or a pick writes
+// config.toml and the marker). Later it opens only on an install whose first
+// run onboarding finished, with no sessions, when something is wrong: tmux
+// missing or no agent at all. An install whose config predates onboarding
+// never sees it.
+func (h *Home) maybeStartOnboarding(noSessions bool) (freshInstall bool) {
 	if !noSessions {
-		return
+		return false
 	}
-	if h.setupWizard.IsVisible() && h.setupWizard.currentStep == stepWelcome && !onboardingSeen() {
+	if onboardingConfigMissing() && !onboardingFirstRunFinished() {
 		h.setupWizard.Hide()
-		markOnboardingSeen()
 		h.openOnboarding(onboardingPageCheck, true)
 		h.onboarding.atStart = true
-		return
+		return true
 	}
-	if h.setupWizard.IsVisible() {
-		return
+	if h.setupWizard.IsVisible() || !onboardingFirstRunFinished() {
+		return false
 	}
-	if _, found := onboardingTmuxCheck(); found && len(onboardingChoices(detectOnboardingAgents())) > 1 {
-		return
+	if _, found := onboardingTmuxCheck(); found && onboardingAnyAgentInstalled() {
+		return false
 	}
 	h.openOnboarding(onboardingPageCheck, false)
 	h.onboarding.atStart = true
+	return false
 }
 
 // finishFirstRun writes config.toml the way the setup wizard does when it is
@@ -590,6 +639,7 @@ func (h *Home) finishFirstRun(tool string) {
 		}
 	}
 	h.saveFirstRunConfig(w.GetConfig())
+	markOnboardingFirstRunDone()
 }
 
 // saveFirstRunConfig saves a first-run config merged onto disk, so fields the
@@ -802,14 +852,18 @@ func displayFolder(folder string) string {
 	return folder
 }
 
-// tmuxInstallLines are the tmux install commands for goos, as the printed
-// check page (cmd/agent-deck check_text.go) shows them.
-func tmuxInstallLines(goos string) []string {
+// TmuxInstallLines are the tmux install commands for goos. The in-TUI check
+// page and the printed one (cmd/agent-deck check_text.go) both use them.
+func TmuxInstallLines(goos string) []string {
 	switch goos {
 	case "darwin":
 		return []string{"Mac:    brew install tmux"}
 	case "linux":
-		return []string{"Linux:  sudo apt install tmux"}
+		return []string{
+			"Debian/Ubuntu:  sudo apt install tmux",
+			"Fedora/RHEL:    sudo dnf install tmux",
+			"Arch:           sudo pacman -S tmux",
+		}
 	}
 	return []string{"See https://github.com/tmux/tmux/wiki/Installing"}
 }
@@ -845,7 +899,7 @@ func (o *OnboardingOverlay) checkSections(width int) dialogSections {
 		s.body = append(s.body, row(ok.Render("✓"), name, "tmux", v, dim))
 	} else {
 		s.body = append(s.body, row(bad.Render("✗"), bad.Bold(true), "tmux", "not found. Every session runs inside tmux.", bad))
-		for _, l := range tmuxInstallLines(onboardingGOOS) {
+		for _, l := range TmuxInstallLines(onboardingGOOS) {
 			s.body = append(s.body, indent+dim.Render(truncateDisplay(l, width-len(indent), "…")))
 		}
 	}

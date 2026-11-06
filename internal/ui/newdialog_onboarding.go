@@ -113,9 +113,10 @@ func (d *NewDialog) anyToolMissing() bool {
 }
 
 // selectedToolMissing reports whether the picked tool is not installed and
-// the session would run on this machine.
+// the session would run on this machine. A Docker sandbox runs the tool in
+// its image, so the host's PATH does not decide it.
 func (d *NewDialog) selectedToolMissing() bool {
-	return !d.createsOffMachine() && !d.toolIsInstalled(d.GetSelectedCommand())
+	return !d.createsOffMachine() && !d.sandboxEnabled && !d.toolIsInstalled(d.GetSelectedCommand())
 }
 
 // toolInstallInfo returns the display name and the official install command

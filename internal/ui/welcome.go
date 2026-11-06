@@ -18,6 +18,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // welcomeAction is one of the welcome's three actions, in screen order.
@@ -75,10 +77,15 @@ func (h *Home) welcomeAgentList() []onboardingAgent {
 	return h.welcomeAgents
 }
 
-// welcomeTool is the agent the welcome's new session starts: the first
-// installed agent, or "shell".
+// welcomeTool is the agent the welcome's new session starts, chosen like
+// the New Session form does: the configured default_tool, else the
+// remembered last tool, else the first installed agent, or "shell".
 func (h *Home) welcomeTool() string {
-	return onboardingChoices(h.welcomeAgentList())[0]
+	first := onboardingChoices(h.welcomeAgentList())[0]
+	if tool := initialNewSessionTool(session.GetDefaultTool(), rememberedTool(h.stateDB()), first); tool != "" {
+		return tool
+	}
+	return "shell"
 }
 
 // handleWelcomeKey runs a welcome key. handled is false for any key the
@@ -93,6 +100,8 @@ func (h *Home) handleWelcomeKey(key string) (handled bool, cmd tea.Cmd) {
 		return true, nil
 	case "enter":
 		return true, h.runWelcomeAction(welcomeAction(h.welcomeSel))
+	// key is already normalized (normalizeMainKey): a rebound key arrives as
+	// its action's default key, and an unbound default arrives as "".
 	case defaultHotkeyBindings[hotkeyNewSession]:
 		return true, h.runWelcomeAction(welcomeNew)
 	case defaultHotkeyBindings[hotkeyImport]:

@@ -559,6 +559,10 @@ func PickerToolNames() []string {
 // same rules as the show_only_installed_tools probe, but runs on every call
 // whatever that flag says, so the new-session dialog can mark missing tools
 // and pick the first installed agent as the default (onboarding, ASK-211).
+// A built-in is probed by its configured command ([claude].command and the
+// like; a command with arguments counts as installed), then by its bare
+// name. Claude also counts when its own local install exists
+// (~/.claude/local/claude, often reached only through a shell alias).
 // "" and "shell" are always installed.
 func ToolInstalled(name string) bool {
 	switch name {
@@ -573,5 +577,31 @@ func ToolInstalled(name string) bool {
 	if def, ok := r.custom[name]; ok {
 		return probeInstalled(def.Command)
 	}
-	return probeInstalled(name)
+	if cmd := strings.TrimSpace(GetToolCommand(name)); cmd != "" && cmd != name && probeInstalled(expandHomeCommand(cmd)) {
+		return true
+	}
+	if probeInstalled(name) {
+		return true
+	}
+	if name == "claude" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if _, err := statFn(filepath.Join(home, ".claude", "local", "claude")); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// expandHomeCommand turns a leading "~/" into the home folder, so a
+// configured "~/bin/claude" is probed as the absolute path it is.
+func expandHomeCommand(cmd string) string {
+	if !strings.HasPrefix(cmd, "~/") {
+		return cmd
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return cmd
+	}
+	return filepath.Join(home, cmd[2:])
 }
