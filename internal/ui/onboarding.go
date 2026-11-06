@@ -911,7 +911,7 @@ func (o *OnboardingOverlay) checkSections(width int) dialogSections {
 			s.body = append(s.body, row(warn.Render("x"), name, a.Display, "install: "+a.Install, dim))
 			continue
 		}
-		detail := "installed"
+		var detail string
 		detailStyle := dim
 		switch a.Auth {
 		case authSignedIn:
