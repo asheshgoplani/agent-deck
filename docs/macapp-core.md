@@ -10,6 +10,7 @@ read-only transcript and pane reads named below.
 | Need | Command | Gate | Reference |
 | --- | --- | --- | --- |
 | Conversation rows for live and busy sessions | `recall timeline <session> --json [--since c] [--limit N] [--tail N]`; older pages with `--before <before_cursor> --limit N` | `[recall] enabled` | docs/recall-timeline.md, "Rows" |
+| First screens of many sessions in one call | `recall timeline --json --tail N --sessions <id1>,<id2>,...` (at most 50); probe `version --json` for `recall_timeline_batch` in `features` | `[recall] enabled` | docs/recall-timeline.md, "First screens in one call" |
 | Live rows, status strip, send states | `recall follow <session> --after <cursor\|end> --jsonl [--status]` | `[recall] enabled` | same |
 | Status transitions without polling | `events follow --json --kind session.status,session.turn` | `[macapp] status_events` (status owners: TUI, notify daemon) | docs/events.md |
 | Transcript growth frames | `session.transcript` on the bus | `[macapp] transcript_events` (notify daemon) | docs/events.md |

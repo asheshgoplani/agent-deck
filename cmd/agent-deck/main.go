@@ -156,6 +156,22 @@ func writeVersionOutput(w io.Writer, currentVersion string) {
 	fmt.Fprintln(w)
 }
 
+// coreFeatures are the capabilities `agent-deck version --json` advertises,
+// so a client (the Mac app) can pick a call shape without trial and error.
+// A core that predates this list prints the plain version line instead of
+// JSON for `version --json`; clients treat that as "no features".
+//   - recall_timeline_batch: `recall timeline --json [--tail N] --sessions a,b,...`
+var coreFeatures = []string{"recall_timeline_batch"}
+
+// writeVersionJSON prints {"version": "...", "features": [...]}.
+func writeVersionJSON(w io.Writer, currentVersion string) {
+	out, _ := json.MarshalIndent(struct {
+		Version  string   `json:"version"`
+		Features []string `json:"features"`
+	}{currentVersion, coreFeatures}, "", "  ")
+	fmt.Fprintln(w, string(out))
+}
+
 // printUpdateNotice checks for updates and prints a one-liner if available
 // Uses cache to avoid API calls - only prints if update was already detected
 func printUpdateNotice() {
@@ -524,6 +540,10 @@ func main() {
 			handleTelemetry(args[1:])
 			return
 		case "version", "--version", "-v":
+			if len(args) > 1 && args[1] == "--json" {
+				writeVersionJSON(os.Stdout, Version)
+				return
+			}
 			writeVersionOutput(os.Stdout, Version)
 			return
 		case "help", "--help", "-h":
