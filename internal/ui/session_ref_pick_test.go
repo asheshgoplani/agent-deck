@@ -523,7 +523,7 @@ func TestSessionRefOtherActionKeysIgnoredWhilePicking(t *testing.T) {
 func TestSessionRefHelpScreenListsKey(t *testing.T) {
 	f := newRefFixture(t)
 	f.h.helpOverlay.SetSize(160, 200)
-	f.h.helpOverlay.Show()
+	f.h.helpOverlay.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 	view := ansi.Strip(f.h.helpOverlay.View())
 	if !strings.Contains(view, "Hand a reference to another session") {
 		t.Errorf("help screen lacks the session_ref row:\n%s", view)

@@ -280,7 +280,7 @@ func TestReportKeyInHelpAndOnboarding(t *testing.T) {
 
 	overlay := NewHelpOverlay()
 	overlay.SetSize(200, 400)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 	helpView := ansi.Strip(overlay.View())
 	found := false
 	for _, line := range strings.Split(helpView, "\n") {
