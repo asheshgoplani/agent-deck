@@ -513,6 +513,9 @@ type Home struct {
 	pendingHooksPrompt       bool // True if user should be prompted to install Claude hooks
 	pendingHermesHooksPrompt bool // True if user should be prompted to install Hermes hooks
 
+	// hints is the one-key onboarding hint bar (onboarding_hints.go, ASK-211).
+	hints onboardingHints
+
 	// SSE-based status detection for OpenCode sessions (issue #1614)
 	sseWatcher *session.OpenCodeSSEWatcher
 
@@ -2180,6 +2183,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Execute final shutdown logic after splash delay
 		return h, h.performFinalShutdown(bool(msg))
 
+	case onboardingHintsDoneMsg:
+		h.handleOnboardingHintsDone(msg)
+		return h, nil
+
 	case onboardingStatusMsg, onboardingRecheckMsg:
 		h.handleOnboardingMsg(msg)
 		return h, nil
@@ -2484,6 +2491,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// wizard did.
 		if firstLoad {
 			h.maybeStartOnboarding(msg.err == nil && len(msg.instances) == 0)
+			h.armOnboardingHints(msg.err == nil && len(msg.instances) == 0)
 		}
 
 		// Show hooks installation prompt (after splash screen is gone)
@@ -2763,6 +2771,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			slog.Bool("has_err", msg.err != nil),
 			slog.String("temp_id", msg.tempID),
 			slog.Bool("has_instance", msg.instance != nil))
+		// The first session of a fresh install starts the hint bar (ASK-211).
+		// A Welcome login session is not that session.
+		if msg.err == nil && msg.instance != nil && (h.onboardingLoginTempID == "" || msg.tempID != h.onboardingLoginTempID) {
+			h.startOnboardingHints(msg.instance.Title)
+		}
 		h.releaseTitle(msg.reservedTitle)
 		// Remove the creating placeholder (if any) — always, on success or error
 		if msg.tempID != "" {
@@ -4074,6 +4087,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusUpdateMsg:
 		// Clear attach flag - we've returned from the attached session
 		h.isAttaching.Store(false) // Atomic store for thread safety
+		// Back from an attached session: hint step 2 (Ctrl+Q) is done.
+		if msg.attachedSessionID != "" {
+			h.advanceOnboardingHint(hintStepBack)
+		}
 		if !msg.detachedAt.IsZero() {
 			h.pendingFrameOp, h.pendingFrameStart = "tui.detach", msg.detachedAt
 		}
@@ -5056,6 +5073,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Help overlay takes priority (any key closes it)
 		if h.helpOverlay.IsVisible() {
 			h.helpOverlay, _ = h.helpOverlay.Update(msg)
+			// Help closed after hint step 4: "You know the basics" shows for
+			// a moment, then the bar is gone (ASK-211).
+			if !h.helpOverlay.IsVisible() && h.hints.step == hintStepDone {
+				return h, h.onboardingHintsDoneCmd()
+			}
 			return h, nil
 		}
 		if h.search.IsVisible() {
@@ -5369,6 +5391,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := h.normalizeMainKey(raw)
 	uiLog.Info("keypress", "raw", raw, "normalized", key, "type", msg.Type, "runes", string(msg.Runes))
 	if key == "" {
+		return h, nil
+	}
+
+	// The onboarding hint bar (ASK-211): Esc hides it for good; n and ?
+	// advance it and still do their usual thing.
+	if h.onboardingHintKey(key) {
 		return h, nil
 	}
 
@@ -7480,6 +7508,8 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	if tmuxSess == nil {
 		return nil
 	}
+	// Opening a session is hint step 1 (ASK-211).
+	h.advanceOnboardingHint(hintStepOpen)
 	var attachStart, detachedAt time.Time // tui.attach / tui.detach stamps, only while timings are on
 	if optiming.Enabled() {
 		attachStart = time.Now()

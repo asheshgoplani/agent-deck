@@ -86,7 +86,7 @@ func (h *Home) stackedPreviewTopY() int {
 	if h.debugMode {
 		debugBarHeight = 1
 	}
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight() - h.hintBarHeight()
 	listHeight := h.stackedListHeight(contentHeight)
 	// content top + full list block (title + body) + the 1-row separator.
 	return h.contentChromeTop() + listHeight + 1
@@ -923,7 +923,7 @@ func (h *Home) renderFrame() string {
 		debugBarHeight = 1
 	}
 	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight() - h.hintBarHeight()
 
 	var mainContent string
 	if h.embeddedMode && h.embeddedSidebarHidden {
@@ -946,6 +946,11 @@ func (h *Home) renderFrame() string {
 	b.WriteString("\n")
 	if h.promptInputDialog.IsVisible() {
 		b.WriteString(h.promptInputDialog.Bar())
+		b.WriteString("\n")
+	}
+	// The onboarding hint bar sits right above the footer (ASK-211).
+	if h.hintBarVisible() {
+		b.WriteString(h.renderHintBar())
 		b.WriteString("\n")
 	}
 
