@@ -100,7 +100,16 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 	if in.AllProfiles {
 		return listAllProfiles(in)
 	}
-	storage, err := session.NewStorageWithProfile(in.Profile)
+	// A listing only reads: an unknown profile has no sessions, and opening
+	// its storage would create a store for whatever name was passed (ASK-233).
+	resolved, exists, err := session.ResolveProfileForRead(in.Profile)
+	if err != nil {
+		return SessionListOut{}, &Error{Code: CodeStorage, Message: fmt.Sprintf("failed to resolve profile: %v", err), Cause: err}
+	}
+	if !exists {
+		return SessionListOut{Profile: resolved, Sessions: []SessionRow{}}, nil
+	}
+	storage, err := session.NewStorageWithProfile(resolved)
 	if err != nil {
 		return SessionListOut{}, &Error{Code: CodeStorage, Message: fmt.Sprintf("failed to initialize storage: %v", err), Cause: err}
 	}

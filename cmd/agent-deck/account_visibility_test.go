@@ -43,7 +43,7 @@ func TestCLIStoredAccountVisibility(t *testing.T) {
 	type fixture struct{ id, profile, account string }
 	var fixtures []fixture
 	for p, profile := range profiles {
-		run(t, "-p", profile, "list", "--json")
+		run(t, "profile", "create", profile) // list no longer creates a profile (ASK-233)
 		db, err := statedb.Open(filepath.Join(home, ".local", "share", "agent-deck", "profiles", profile, "state.db"))
 		require.NoError(t, err)
 		for i, account := range slots {

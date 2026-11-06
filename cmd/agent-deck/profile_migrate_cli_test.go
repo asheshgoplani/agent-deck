@@ -14,13 +14,14 @@ import (
 // These complement the unit tests in internal/session/profile_migrate_test.go
 // by exercising the actual binary, argv parsing, and JSON output shape.
 
-// bootstrapProfile runs a harmless `list` command in the named profile so
-// `~/.agent-deck/profiles/<name>/state.db` is created on disk. The cross-
+// bootstrapProfile creates the named profile so
+// `~/.agent-deck/profiles/<name>/state.db` exists on disk. The cross-
 // profile migration deliberately refuses missing target profiles, so every
-// test that migrates into "<dst>" must call this first.
+// test that migrates into "<dst>" must call this first. (`list` no longer
+// creates a profile it is asked to read, ASK-233.)
 func bootstrapProfile(t *testing.T, home, profile string) {
 	t.Helper()
-	stdout, stderr, code := runAgentDeck(t, home, "-p", profile, "list", "--json")
+	stdout, stderr, code := runAgentDeck(t, home, "profile", "create", profile)
 	if code != 0 {
 		t.Fatalf("bootstrap profile %q failed: code=%d\nstdout: %s\nstderr: %s",
 			profile, code, stdout, stderr)

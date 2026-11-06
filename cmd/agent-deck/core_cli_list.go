@@ -152,6 +152,11 @@ type allProfilesSessionJSON struct {
 
 func renderListAllProfiles(listed core.SessionListOut, jsonOutput bool) {
 	if listed.ProfileCount == 0 {
+		if jsonOutput {
+			// Still a list: --json consumers decode stdout as an array.
+			fmt.Println("[]")
+			return
+		}
 		fmt.Println("No profiles found.")
 		return
 	}

@@ -25,7 +25,8 @@ func TestStorageTwoCLIProcesses(t *testing.T) {
 			configDir := filepath.Join(home, ".config", "agent-deck")
 			require.NoError(t, os.MkdirAll(configDir, 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[profiles.seminno]\n"), 0600))
-			out, stderr, code := runAgentDeck(t, home, "list", "--json")
+			// list no longer creates a profile (ASK-233); create it explicitly.
+			out, stderr, code := runAgentDeck(t, home, "profile", "create", "ch_support_test")
 			require.Zero(t, code, "%s %s", out, stderr)
 			db, err := statedb.Open(filepath.Join(home, ".local", "share", "agent-deck", "profiles", "ch_support_test", "state.db"))
 			require.NoError(t, err)

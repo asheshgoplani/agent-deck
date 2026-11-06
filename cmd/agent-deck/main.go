@@ -3094,7 +3094,23 @@ func handleList(profile string, args []string) {
 	}
 	ensureTmuxInPathOrExit()
 
-	storage, err := session.NewStorageWithProfile(profile)
+	// list only reads: an unknown profile has no sessions, and opening its
+	// storage would create a store for whatever name was passed (ASK-233).
+	resolved, exists, err := session.ResolveProfileForRead(profile)
+	if err != nil {
+		fmt.Printf("Error: failed to resolve profile: %v\n", err)
+		exitCLI(1)
+	}
+	if !exists {
+		if *jsonOutput {
+			fmt.Println("[]")
+			return
+		}
+		fmt.Printf("No sessions found in profile '%s'.\n", resolved)
+		return
+	}
+
+	storage, err := session.NewStorageWithProfile(resolved)
 	if err != nil {
 		fmt.Printf("Error: failed to initialize storage: %v\n", err)
 		exitCLI(1)
@@ -3342,6 +3358,11 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 	}
 
 	if len(profiles) == 0 {
+		if jsonOutput {
+			// Still a list: --json consumers decode stdout as an array.
+			fmt.Println("[]")
+			return
+		}
 		fmt.Println("No profiles found.")
 		return
 	}

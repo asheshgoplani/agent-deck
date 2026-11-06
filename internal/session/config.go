@@ -215,6 +215,28 @@ func ProfileExists(profile string) (bool, error) {
 	return false, err
 }
 
+// ResolveProfileForRead resolves profile the way ResolveProfileForStorage
+// does and reports whether it has a store a read-only command may open.
+// A read must never create a profile: opening storage for an unknown name
+// writes a new state.db, and a shell loop over glob-expanded names once
+// turned every entry of /tmp into a profile (ASK-233). A legacy layout that
+// still needs the pre-profile migration counts as present, so opening it
+// runs that migration as before.
+func ResolveProfileForRead(profile string) (resolved string, exists bool, err error) {
+	resolved, err = ResolveProfileForStorage(profile)
+	if err != nil {
+		return "", false, err
+	}
+	if needs, migErr := NeedsMigration(); migErr == nil && needs {
+		return resolved, true, nil
+	}
+	exists, err = ProfileExists(resolved)
+	if err != nil {
+		return "", false, fmt.Errorf("checking whether profile %q exists: %w", resolved, err)
+	}
+	return resolved, exists, nil
+}
+
 // CreateProfile creates a new empty profile
 func CreateProfile(profile string) error {
 	// Validate profile name
