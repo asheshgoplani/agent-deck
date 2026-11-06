@@ -315,3 +315,17 @@ func TestNewDialogOnboarding_HooksLineInstallsOrSkipsOnCreate(t *testing.T) {
 		})
 	}
 }
+
+// The Welcome fills the folder through SetPath; it is shown with ~ too.
+func TestNewDialogOnboarding_SetPathUsesTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	d := NewNewDialog()
+	d.Show()
+	d.SetPath(filepath.Join(home, "code", "x"))
+	if got := d.pathInput.Value(); got != "~/code/x" {
+		t.Fatalf("SetPath shows %q, want ~/code/x", got)
+	}
+}

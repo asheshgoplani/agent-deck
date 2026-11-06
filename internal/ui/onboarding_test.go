@@ -336,7 +336,8 @@ func TestOnboarding_EnterOpensPrefilledDialogAndSecondEnterCreates(t *testing.T)
 	if got := h.newDialog.GetSelectedCommand(); got != "codex" {
 		t.Fatalf("dialog tool = %q, want the highlighted codex", got)
 	}
-	if got := h.newDialog.pathInput.Value(); got != h.onboarding.folder {
+	// The form shows the folder with ~ (ASK-211); compare the created path.
+	if _, got, _ := h.newDialog.GetValues(); got != h.onboarding.folder {
 		t.Fatalf("dialog path = %q, want this folder %q", got, h.onboarding.folder)
 	}
 	_, cmd := h.Update(keyEnter)
@@ -415,7 +416,8 @@ func TestOnboarding_WelcomeEnterOnRemoteCursorStaysLocal(t *testing.T) {
 	if got := h.newDialog.GetSelectedCommand(); got != "claude" {
 		t.Fatalf("dialog tool = %q, want the highlighted claude", got)
 	}
-	if got := h.newDialog.pathInput.Value(); got != h.onboarding.folder {
+	// The form shows the folder with ~ (ASK-211); compare the created path.
+	if _, got, _ := h.newDialog.GetValues(); got != h.onboarding.folder {
 		t.Fatalf("dialog path = %q, want the Welcome's folder %q", got, h.onboarding.folder)
 	}
 }
@@ -448,7 +450,8 @@ func TestOnboarding_ReopenedEnterUsesWelcomeFolder(t *testing.T) {
 	if !h.newDialog.IsVisible() {
 		t.Fatal("Enter on the reopened Welcome did not open the dialog")
 	}
-	if got := h.newDialog.pathInput.Value(); got != h.onboarding.folder {
+	// The form shows the folder with ~ (ASK-211); compare the created path.
+	if _, got, _ := h.newDialog.GetValues(); got != h.onboarding.folder {
 		t.Fatalf("dialog path = %q, want the Welcome's folder %q", got, h.onboarding.folder)
 	}
 }

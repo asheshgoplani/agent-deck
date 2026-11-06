@@ -795,6 +795,9 @@ func (d *NewDialog) SetPath(path string) {
 	if path == "" {
 		return
 	}
+	if !d.remoteTarget {
+		path = tildePath(path) // shown with ~ (ASK-211); GetValues expands it
+	}
 	d.pathInput.SetValue(path)
 	d.pathInput.CursorEnd()
 	d.pathSoftSelected = true
@@ -3098,13 +3101,13 @@ func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarg
 	content.WriteString("\n")
 	if d.anyToolMissing() {
 		dim := lipgloss.NewStyle().Foreground(ColorComment)
-		content.WriteString(indent + dim.Render("←→ change   grey = not installed"))
+		content.WriteString(indent + "  " + dim.Render("←→ change   grey = not installed"))
 		content.WriteString("\n")
 	}
 	if lines := d.missingToolLines(); len(lines) > 0 {
 		warn := lipgloss.NewStyle().Foreground(ColorYellow)
 		for _, l := range lines {
-			content.WriteString(indent + warn.Render(l))
+			content.WriteString(indent + "  " + warn.Render(l))
 			content.WriteString("\n")
 		}
 	}
