@@ -299,7 +299,7 @@ func handleRemoteAgent(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, "remote-agent: a global state DB is registered; the probe would write last-activity rows")
 		exitCLI(1)
 	}
-	probe, fingerprint, closeProbe, err := newRemoteAgentProbeWithFingerprint(profile)
+	probe, fingerprint, closeProbe, err := newRemoteAgentProbe(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
 		exitCLI(1)
@@ -363,27 +363,23 @@ func newRemoteAgentBinaryWatch(self string) *update.Watcher {
 
 // newRemoteAgentProbe opens the profile's storage once and returns a probe
 // that loads it, refreshes statuses, and formats both listings exactly as
-// the CLI would, plus the close for the storage handle. Like `list --json`
-// it warms the tmux and hook-status caches once per probe, then formats
-// both listings from that one load. The handle stays open for the life of
-// the agent, so unlike a `list` subprocess no probe checkpoints the WAL.
+// the CLI would, the change feed's fingerprint, and the close for the
+// storage handle. Like `list --json` the probe warms the tmux and
+// hook-status caches once per probe, then formats both listings from that
+// one load. The handle stays open for the life of the agent, so unlike a
+// `list` subprocess no probe checkpoints the WAL.
 //
-// The probe is read-only. UpdateStatus flushes last-activity evidence
+// The fingerprint is a hash of the instances and groups rows, the only
+// tables the listings load. It reads the rows without decoding them into
+// sessions, refreshing a status or touching tmux, so it costs a small
+// fraction of a probe.
+//
+// Both are read-only. UpdateStatus flushes last-activity evidence
 // through statedb.GetGlobal(), which a `list` subprocess registers at
 // startup and this process never does (handleRemoteAgent checks), so the
 // flush is a no-op here and a probe never moves the stamp the watcher
 // compares. TestRemoteAgent_InProcessProbeMatchesCLI pins this.
-func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func(), error) {
-	probe, _, closeProbe, err := newRemoteAgentProbeWithFingerprint(profile)
-	return probe, closeProbe, err
-}
-
-// newRemoteAgentProbeWithFingerprint is newRemoteAgentProbe plus the change
-// feed's fingerprint on the same storage handle: a hash of the instances and
-// groups rows, the only tables the listings load. It reads the rows without
-// decoding them into sessions, refreshing a status or touching tmux, so it
-// costs a small fraction of a probe, and like the probe it never writes.
-func newRemoteAgentProbeWithFingerprint(profile string) (remoteAgentProbeFunc, func() (string, error), func(), error) {
+func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func() (string, error), func(), error) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		return nil, nil, nil, err

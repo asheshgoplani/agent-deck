@@ -49,9 +49,9 @@ func TestRemoteAgent_InProcessProbeMatchesCLI(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	probe, fingerprint, closeProbe, err := newRemoteAgentProbeWithFingerprint("ch_support_test")
+	probe, fingerprint, closeProbe, err := newRemoteAgentProbe("ch_support_test")
 	if err != nil {
-		t.Fatalf("newRemoteAgentProbeWithFingerprint: %v", err)
+		t.Fatalf("newRemoteAgentProbe: %v", err)
 	}
 	defer closeProbe()
 	// The probe is read-only: it relies on no global state DB being
