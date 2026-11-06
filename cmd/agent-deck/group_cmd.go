@@ -120,6 +120,35 @@ func printGroupHelp() {
 	fmt.Println("  agent-deck group reorder mobile --position 0")
 }
 
+// groupListRefreshStatus refreshes one session's status for the group
+// listings; a variable so tests can count the refreshes.
+var groupListRefreshStatus = func(inst *session.Instance) { _ = inst.UpdateStatus() }
+
+// refreshGroupTreeStatuses refreshes every session in the tree once. The
+// group listings count each group's whole subtree, so a session is counted
+// once per ancestor; refreshing it at each count cost one full status pass
+// per level (three for deck/ashesh/archive) on every `group list` and on
+// every remote-agent change probe.
+// GroupList is walked first for a stable order; Groups (what the counts
+// read) catches any group GroupList lacks.
+func refreshGroupTreeStatuses(groupTree *session.GroupTree) {
+	seen := make(map[*session.Instance]struct{})
+	refresh := func(g *session.Group) {
+		for _, sess := range g.Sessions {
+			if _, ok := seen[sess]; !ok {
+				seen[sess] = struct{}{}
+				groupListRefreshStatus(sess)
+			}
+		}
+	}
+	for _, g := range groupTree.GroupList {
+		refresh(g)
+	}
+	for _, g := range groupTree.Groups {
+		refresh(g)
+	}
+}
+
 // buildGroupListJSON is the body of `group list --json`: the group tree with
 // recursive session and status counts, as the indented object the CLI
 // prints, trailing newline included. handleGroupList prints it and the
@@ -144,6 +173,8 @@ func buildGroupListJSON(groupTree *session.GroupTree) ([]byte, error) {
 		Children     []groupJSON      `json:"children,omitempty"`
 	}
 
+	refreshGroupTreeStatuses(groupTree)
+
 	// Build hierarchical structure (with recursive session counts - Issue #48)
 	buildGroupJSON := func(g *session.Group) groupJSON {
 		// Count status recursively for this group and all subgroups
@@ -151,7 +182,6 @@ func buildGroupListJSON(groupTree *session.GroupTree) ([]byte, error) {
 		for path, subGroup := range groupTree.Groups {
 			if path == g.Path || strings.HasPrefix(path, g.Path+"/") {
 				for _, sess := range subGroup.Sessions {
-					_ = sess.UpdateStatus() // Refresh status
 					switch sess.Status {
 					case session.StatusRunning:
 						status.Running++
@@ -287,6 +317,8 @@ func handleGroupList(profile string, args []string) {
 	sb.WriteString(fmt.Sprintf("%-20s %-10s %s\n", "NAME", "SESSIONS", "STATUS"))
 	sb.WriteString(strings.Repeat("-", 50) + "\n")
 
+	refreshGroupTreeStatuses(groupTree)
+
 	// Track which groups we've printed to handle hierarchy
 	printedPaths := make(map[string]bool)
 
@@ -333,7 +365,6 @@ func handleGroupList(profile string, args []string) {
 			for path, subGroup := range groupTree.Groups {
 				if path == g.Path || strings.HasPrefix(path, g.Path+"/") {
 					for _, sess := range subGroup.Sessions {
-						_ = sess.UpdateStatus()
 						switch sess.Status {
 						case session.StatusRunning:
 							running++
