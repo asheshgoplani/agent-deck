@@ -23,7 +23,7 @@ func TestEval_EmbeddedPTY(t *testing.T) {
 	}
 	// The explicit [hermes] command points at nothing on PATH so the Hermes
 	// hooks consent prompt never appears on hosts that have Hermes installed;
-	// the Claude hooks prompt is dismissed below like a user would.
+	// the telemetry question is answered below like a user would.
 	config := "theme = \"dark\"\n\n[tmux]\nsocket_name = \"" + socketName + "\"\n\n[hermes]\ncommand = \"hermes-absent-for-eval\"\n\n[ui]\nembedded_terminal = true\n"
 	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write embedded terminal config: %v", err)
@@ -42,9 +42,13 @@ func TestEval_EmbeddedPTY(t *testing.T) {
 	p := sb.Spawn("--select", "evtui")
 	defer p.Close()
 	p.Resize(120, 30)
-	// The explicit config skips the first-run wizard; dismiss the normal hooks
-	// prompt before exercising the deck.
-	p.ExpectOutput("Claude Code Hooks", 8*time.Second)
+	// The explicit config skips the first-run wizard. Claude is neither
+	// installed nor used here, so the startup Claude hooks box no longer shows
+	// (ASK-211: it is asked when the first Claude session is made); the
+	// telemetry question does. Esc answers it like a user would.
+	p.ExpectOutput("Help improve agent-deck?", 8*time.Second)
+	// The box ignores keys for its first 750 ms (telemetryKeyGrace).
+	time.Sleep(time.Second)
 	p.Send("\x1b")
 	p.ExpectOutput("evtui", 8*time.Second)
 	assertStartupProtocol(t, p.Output(), true)
@@ -149,7 +153,11 @@ func TestEval_ClassicTUI(t *testing.T) {
 	p := sb.SpawnWithEnv([]string{"TERM=xterm-256color"}, "--select", "classic-eval")
 	defer p.Close()
 	p.Resize(120, 30)
-	p.ExpectOutput("Claude Code Hooks", 8*time.Second)
+	// No Claude here, so no startup hooks box (ASK-211); the telemetry
+	// question shows instead and Esc answers it.
+	p.ExpectOutput("Help improve agent-deck?", 8*time.Second)
+	// The box ignores keys for its first 750 ms (telemetryKeyGrace).
+	time.Sleep(time.Second)
 	p.Send("\x1b")
 	p.ExpectOutput("SESSIONS", 8*time.Second)
 	p.ExpectOutput("classic-eval", 8*time.Second)
