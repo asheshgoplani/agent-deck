@@ -929,7 +929,11 @@ func (o *OnboardingOverlay) checkSections(width int) dialogSections {
 		s.foot = append(s.foot, style.Render(onboardingWrap(width, o.flash)), "")
 	}
 	if o.notice != "" {
-		s.foot = append(s.foot, ok.Render(onboardingWrap(width, o.notice)), "")
+		style := ok
+		if strings.Contains(o.notice, "not signed in") {
+			style = warn
+		}
+		s.foot = append(s.foot, style.Render(onboardingWrap(width, o.notice)), "")
 	}
 	var items []string
 	switch {
