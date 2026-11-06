@@ -869,7 +869,7 @@ func TestCommsIngest_WakesAndReadCallsAreMeasurementRecords(t *testing.T) {
 	if !f.d.notifier.fireDigestNudge(f.parent, "default", DigestNudgeMessage(2, 1)) {
 		t.Fatal("digest nudge not sent")
 	}
-	SpoolCommsWake(f.parent.ID, "inbox", "stop", "Child session(s) completed while you were busy", "")
+	SpoolCommsWake(f.parent.ID, "inbox", "stop", "New session messages (normal inbox delivery; continue this turn to handle each):", "")
 	SpoolCommsCall(f.parent.ID, comms.CallSessionOutput, f.child.ID)
 	SpoolCommsCall("", comms.CallInboxDrain, f.parent.ID) // a shell, not a session: not counted
 	f.d.ingestCommsSpool("default", f.byID)

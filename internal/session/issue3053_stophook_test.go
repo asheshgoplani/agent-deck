@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// TestIssue3053_StopHookMessageHeading checks that the Stop-hook reason labels
+// queued replies, progress updates and finished records as normal inbox
+// delivery and keeps each record's own text.
 func TestIssue3053_StopHookMessageHeading(t *testing.T) {
 	reply := TransitionNotificationEvent{
 		ChildSessionID: "sender", ChildTitle: "reviewer", TargetKind: InboxTargetKindReply,
@@ -48,6 +51,10 @@ func TestIssue3053_StopHookMessageHeading(t *testing.T) {
 	}
 }
 
+// TestIssue3053_StopHookReplyDeliveredOnce checks that an urgent reply blocks
+// Stop once under the normal-delivery heading and is not redelivered. The
+// exactly-once drain already holds on main; this guards it alongside the new
+// heading.
 func TestIssue3053_StopHookReplyDeliveredOnce(t *testing.T) {
 	inboxTestHome(t)
 	parent := "parent-stop-reply"
