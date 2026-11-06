@@ -142,6 +142,78 @@ func TestCodexAcceptanceWhenReadyEndsAtReadinessDeadline(t *testing.T) {
 	}
 }
 
+// Readiness comes from a pane sample taken before waitReady returns. A turn
+// that starts in that gap must not become this send's baseline, or the fence
+// matches it and the send types into a running turn.
+func TestCodexAcceptanceWhenReadyBaselinePrecedesTheWait(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	gen, readyCalls := "g1", 0
+	guard, readyErr, guardErr := acquireCodexAcceptanceWhenReady(time.Now().Add(time.Minute), time.Second,
+		func(time.Duration) error {
+			readyCalls++
+			if readyCalls == 1 {
+				gen = "g2" // another sender's turn starts as readiness returns
+			}
+			return nil
+		},
+		func() (string, error) { return gen, nil },
+		func(d time.Duration) (*codexAcceptanceGuard, error) {
+			lock, err := session.AcquireCodexAcceptanceLock("thread-baseline", d)
+			if err != nil {
+				return nil, err
+			}
+			return &codexAcceptanceGuard{lock: lock, fence: codexAcceptanceFence{priorTurnGeneration: gen, available: true}}, nil
+		})
+	if readyErr != nil || guardErr != nil || guard == nil {
+		t.Fatalf("guard=%v readyErr=%v guardErr=%v", guard, readyErr, guardErr)
+	}
+	guard.Release()
+	if readyCalls != 2 {
+		t.Fatalf("readiness waits = %d, want 2: the send accepted a turn that began during its wait", readyCalls)
+	}
+}
+
+// The real waiter needs a few seconds on an idle pane, so with contention the
+// budget usually runs out inside waitReady. That is still contention: nothing
+// was typed, and the queue retries an acceptance refusal but not a readiness
+// timeout.
+func TestCodexAcceptanceWhenReadyContentionThenReadinessTimeoutRefuses(t *testing.T) {
+	readyCalls := 0
+	_, readyErr, guardErr := acquireCodexAcceptanceWhenReady(time.Now().Add(time.Minute), time.Second,
+		func(time.Duration) error {
+			readyCalls++
+			if readyCalls > 1 {
+				return errors.New("agent not ready after 1s")
+			}
+			return nil
+		},
+		func() (string, error) { return "g1", nil },
+		func(time.Duration) (*codexAcceptanceGuard, error) {
+			return nil, session.ErrCodexAcceptanceLockTimeout
+		})
+	if readyErr != nil || !errors.Is(guardErr, session.ErrCodexAcceptanceLockTimeout) {
+		t.Fatalf("readyErr=%v guardErr=%v", readyErr, guardErr)
+	}
+}
+
+// A generation that cannot be read refuses before the wait, as it did when the
+// fence was captured first, instead of surfacing as a readiness timeout.
+func TestCodexAcceptanceWhenReadyUnavailableGenerationRefusesBeforeWaiting(t *testing.T) {
+	_, readyErr, guardErr := acquireCodexAcceptanceWhenReady(time.Now().Add(time.Minute), time.Second,
+		func(time.Duration) error {
+			t.Fatal("waited for a target whose rollout generation is unavailable")
+			return nil
+		},
+		func() (string, error) { return "", errors.New("no rollout") },
+		func(time.Duration) (*codexAcceptanceGuard, error) {
+			t.Fatal("took the lock without a generation")
+			return nil, nil
+		})
+	if readyErr != nil || !errors.Is(guardErr, errCodexGenerationUnavailable) {
+		t.Fatalf("readyErr=%v guardErr=%v", readyErr, guardErr)
+	}
+}
+
 func TestCodexAcceptanceWhenReadyNoWaitAcquiresOnce(t *testing.T) {
 	calls := 0
 	_, readyErr, guardErr := acquireCodexAcceptanceWhenReady(time.Now().Add(time.Minute), time.Second, nil,

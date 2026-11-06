@@ -395,7 +395,11 @@ func handleSessionSend(profile string, args []string) {
 			CodexPrompt:    session.IsCodexCompatible(inst.Tool),
 		})
 	}
+	var acceptanceGuard *codexAcceptanceGuard
 	failReady := func(err error) {
+		if acceptanceGuard != nil {
+			acceptanceGuard.Release()
+		}
 		telemetry.ErrorOccurred(telemetry.AreaSend, telemetry.KindTimeout, inst.Tool)
 		out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
@@ -408,7 +412,6 @@ func handleSessionSend(profile string, args []string) {
 	// sends keep their legacy transport and never read host-local marker state.
 	structuredCodexWait := *jsonOutput && *wait && session.IsCodexCompatible(inst.Tool)
 	acceptanceFence := codexAcceptanceFence{}
-	var acceptanceGuard *codexAcceptanceGuard
 	if shouldAcquireCodexAcceptanceGuard(inst, *jsonOutput, *wait, *draft) {
 		// Every send keeps the double-send refusal: an unresolved earlier
 		// submission, an identity owned by another session, a remote rollout
@@ -421,11 +424,17 @@ func handleSessionSend(profile string, args []string) {
 		if guardErr == nil {
 			// The lock is taken after the readiness wait, never across it:
 			// a busy Codex turn would otherwise hold every other sender off.
-			// A guard that can only refuse (no identity, remote rollout)
-			// refuses before the wait, as it always did.
+			// No identity or a remote rollout refuses before the wait, as does
+			// an unavailable rollout generation (inside the helper). An
+			// unresolved earlier submission refuses only after it, because
+			// the end of the running turn is what lets it reconcile.
 			var waitReady func(time.Duration) error
 			if needsReady && inst.CodexRolloutIsResolvableLocally() && strings.TrimSpace(inst.CodexSessionID) != "" {
-				waitReady, readyWaited = waitAgentReady, true
+				waitReady = func(d time.Duration) error {
+					err := waitAgentReady(d)
+					readyWaited = readyWaited || err == nil
+					return err
+				}
 			}
 			readyBudget := *timeout
 			if readyBudget <= 0 {
