@@ -46,7 +46,7 @@ func TestHelpOverlayTabSwitchesToAllKeysAndBack(t *testing.T) {
 		t.Fatal("Tab did not switch to all keys")
 	}
 	view := stripAnsi(o.View())
-	for _, want := range []string{"KEYBOARD SHORTCUTS", "QUICK START", "GROUP NAVIGATION", "Tab 5 keys", "j/k scroll"} {
+	for _, want := range []string{"KEYBOARD SHORTCUTS", "QUICK START", "GROUP NAVIGATION", "Tab 5 keys"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("all keys view lacks %q:\n%s", want, view)
 		}
@@ -59,7 +59,11 @@ func TestHelpOverlayTabSwitchesToAllKeysAndBack(t *testing.T) {
 	if !strings.Contains(quick, "New session") {
 		t.Fatalf("Quick start lacks n / New session:\n%s", quick)
 	}
-	// j/k scroll in the full list.
+	// j/k scroll in the full list (a short terminal, so it scrolls).
+	o.SetSize(100, 30)
+	if !strings.Contains(stripAnsi(o.View()), "j/k scroll") {
+		t.Fatal("the scrolling full list does not say j/k scroll")
+	}
 	o.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	if o.scrollOffset != 1 || !o.IsVisible() {
 		t.Fatalf("j did not scroll the full list (offset %d)", o.scrollOffset)

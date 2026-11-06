@@ -749,7 +749,7 @@ func TestShowAroundKeyHasNoMainScreenConflict(t *testing.T) {
 func TestShowAroundInHelp(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(200, 400)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; the row is in the full list
 	view := stripAnsi(overlay.View())
 	key := defaultHotkeyBindings[hotkeyShowAround]
 	for _, line := range strings.Split(view, "\n") {
