@@ -33,5 +33,10 @@ func (h *Home) renderHealthWarning() string {
 	if h.healthWarningText == "" || time.Since(h.healthWarningAt) > 5*time.Second {
 		return ""
 	}
+	// An internal budget warning means nothing to a brand-new user on the
+	// onboarding tour: hold it back while the hint bar is up (ASK-211).
+	if h.hintBarVisible() {
+		return ""
+	}
 	return ansi.Truncate(ErrorStyle.Render("⚠ "+h.healthWarningText), h.width, "…")
 }

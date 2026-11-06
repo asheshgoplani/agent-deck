@@ -7,7 +7,9 @@ package ui
 // (come back), n (new session), ? (help). Each step advances when the user
 // does it. After step 4 the bar says "You know the basics" for a few seconds
 // and is gone for good; Esc hides it for good at any step. It shows once per
-// machine: a seen-file next to the Welcome's (.onboarding-hints-seen).
+// machine: a seen-file next to the Welcome's (.onboarding-hints-seen) holds
+// the current step while the tour runs (a restart resumes it) and "done"
+// once it ends or Esc hides it.
 //
 // While a session is attached, tmux owns the screen and this bar is not
 // drawn: step 1 names Ctrl+Q too, and step 2 goes into the attached
@@ -16,6 +18,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,24 +106,65 @@ func onboardingHintsSeenPath() string {
 	return path
 }
 
-// onboardingHintsSeen reports whether the bar was already shown on this
-// machine. An unresolvable path counts as seen (never nag).
+// The seen-file holds the bar's progress: "step N" while the tour is under
+// way (written at each step, so a restart resumes it), anything else (the
+// end, or Esc) means done for good (ASK-211 round 3: a user who quit at
+// step 1 or 2 used to lose steps 3 and 4).
+const onboardingHintsStepPrefix = "step "
+
+// onboardingHintsSavedStep returns the step a quit tour stopped at (1-4),
+// or 0 when there is none.
+func onboardingHintsSavedStep() int {
+	path := onboardingHintsSeenPath()
+	if path == "" {
+		return 0
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	rest, ok := strings.CutPrefix(strings.TrimSpace(string(data)), onboardingHintsStepPrefix)
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n < hintStepOpen || n > hintStepHelp {
+		return 0
+	}
+	return n
+}
+
+// onboardingHintsSeen reports whether the bar is done on this machine (shown
+// to the end, or hidden with Esc). An unresolvable path counts as seen (never
+// nag); a tour in progress does not.
 func onboardingHintsSeen() bool {
 	path := onboardingHintsSeenPath()
 	if path == "" {
 		return true
 	}
-	_, err := os.Stat(path)
-	return err == nil
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	return onboardingHintsSavedStep() == 0
 }
 
-func markOnboardingHintsSeen() {
+func writeOnboardingHintsFile(content string) {
 	path := onboardingHintsSeenPath()
 	if path == "" {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	_ = os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+	_ = os.WriteFile(path, []byte(content+"\n"), 0o644)
+}
+
+// markOnboardingHintsSeen records the bar as done for good.
+func markOnboardingHintsSeen() {
+	writeOnboardingHintsFile(time.Now().UTC().Format(time.RFC3339))
+}
+
+// saveOnboardingHintsStep records the current step so a restart resumes it.
+func saveOnboardingHintsStep(step int) {
+	writeOnboardingHintsFile(onboardingHintsStepPrefix + strconv.Itoa(step))
 }
 
 // armOnboardingHints is called on the first load: a machine that has not
@@ -128,42 +172,70 @@ func markOnboardingHintsSeen() {
 // first run (maybeStartOnboarding: no config.toml, no sessions) and on any
 // later start with no sessions yet after onboarding finished first run here
 // (the user quit on the welcome before making one). An existing user, whose
-// install predates onboarding, does not get it in an empty profile.
+// install predates onboarding, does not get it in an empty profile. A tour
+// the user quit half-way is armed again (resumeOnboardingHints picks it up
+// when sessions exist).
 func (h *Home) armOnboardingHints(freshInstall, noSessions bool) {
 	if onboardingHintsSeen() {
 		return
 	}
-	if freshInstall || (noSessions && onboardingFirstRunFinished()) {
+	if freshInstall || onboardingHintsSavedStep() > 0 || (noSessions && onboardingFirstRunFinished()) {
 		h.hints.armed = true
 	}
 }
 
+// resumeOnboardingHints restarts a tour the user quit half-way, at the step
+// it stopped at, on a start that has sessions (sessionName is the one the
+// bar talks about). Step 2 (come back from the session) resumes as step 3:
+// the user is already back on the list.
+func (h *Home) resumeOnboardingHints(sessionName string) {
+	saved := onboardingHintsSavedStep()
+	if !h.hints.armed || h.hints.step != hintStepOff || saved == 0 {
+		return
+	}
+	if saved == hintStepBack {
+		saved = hintStepNew
+	}
+	h.hints.armed = false
+	h.hints.session = sessionName
+	h.setHintStep(saved)
+}
+
+// setHintStep moves the bar to step and records it: steps 1-4 as progress,
+// the end and off as done for good.
+func (h *Home) setHintStep(step int) {
+	h.hints.step = step
+	if step >= hintStepOpen && step <= hintStepHelp {
+		saveOnboardingHintsStep(step)
+	} else {
+		markOnboardingHintsSeen()
+	}
+}
+
 // startOnboardingHints shows step 1 for a newly created session when armed.
-// The seen-file is written now, so the bar is once per machine even if the
-// user quits half-way.
+// Only the step is written now; the seen-file says done at the end or on
+// Esc, so a user who quits half-way gets the rest on the next start.
 func (h *Home) startOnboardingHints(sessionName string) {
 	if !h.hints.armed || h.hints.step != hintStepOff {
 		return
 	}
 	h.hints.armed = false
-	h.hints.step = hintStepOpen
 	h.hints.session = sessionName
-	markOnboardingHintsSeen()
+	h.setHintStep(hintStepOpen)
 }
 
 // advanceOnboardingHint moves to the next step when the user did the key of
 // step from.
 func (h *Home) advanceOnboardingHint(from int) {
 	if h.hints.step == from {
-		h.hints.step++
+		h.setHintStep(from + 1)
 	}
 }
 
 // hideOnboardingHints turns the bar off for good (Esc, or the end).
 func (h *Home) hideOnboardingHints() {
-	h.hints.step = hintStepOff
 	h.hints.armed = false
-	markOnboardingHintsSeen()
+	h.setHintStep(hintStepOff)
 }
 
 // onboardingHintsDoneCmd starts the timer that clears "You know the basics".
@@ -200,7 +272,7 @@ func (h *Home) onboardingHintKey(key string) bool {
 		h.advanceOnboardingHint(hintStepNew)
 	case "?":
 		if h.hints.step == hintStepHelp {
-			h.hints.step = hintStepDone
+			h.setHintStep(hintStepDone)
 		}
 	}
 	return false
@@ -239,6 +311,11 @@ func (h *Home) hintBarText() (step, long, short string) {
 	if name == "" {
 		name = "the session"
 	}
+	return h.hintBarTextFor(name)
+}
+
+// hintBarTextFor is hintBarText with the session called name.
+func (h *Home) hintBarTextFor(name string) (step, long, short string) {
 	newKey := h.actionKey(hotkeyNewSession)
 	if newKey == "" {
 		newKey = "n"
@@ -259,6 +336,47 @@ func (h *Home) hintBarText() (step, long, short string) {
 	return "", "", ""
 }
 
+// hintNameMin is the fewest cells a shortened session name keeps.
+const hintNameMin = 8
+
+// fitHintText picks the sentence for room cells. A long session name is
+// shortened (with …) before any key words go (ASK-211 round 3: step 1 lost
+// "Ctrl+Q brings you back here" on narrow terminals): the long sentence
+// with a shortened name, then the short one, then the short one with a
+// shortened name, and only then a cut at the end.
+func (h *Home) fitHintText(long, short string, room int) string {
+	room = max(0, room)
+	if lipgloss.Width(long) <= room {
+		return long
+	}
+	name := h.hints.session
+	if name == "" {
+		name = "the session"
+	}
+	shorten := func(pick func(step, long, short string) string) (string, bool) {
+		whole := pick(h.hintBarTextFor(name))
+		if !strings.Contains(whole, name) {
+			return whole, lipgloss.Width(whole) <= room
+		}
+		budget := room - (lipgloss.Width(whole) - lipgloss.Width(name))
+		if budget < hintNameMin {
+			return whole, false
+		}
+		text := pick(h.hintBarTextFor(truncateDisplay(name, budget, "…")))
+		return text, lipgloss.Width(text) <= room
+	}
+	if text, ok := shorten(func(_, l, _ string) string { return l }); ok {
+		return text
+	}
+	if lipgloss.Width(short) <= room {
+		return short
+	}
+	if text, ok := shorten(func(_, _, s string) string { return s }); ok {
+		return text
+	}
+	return truncateDisplay(short, room, "…")
+}
+
 // renderHintBar renders the one-line bar at the full width.
 func (h *Home) renderHintBar() string {
 	width := max(1, h.width)
@@ -275,11 +393,7 @@ func (h *Home) renderHintBar() string {
 		right = "Esc hide tips "
 	}
 	room := width - lipgloss.Width(left) - lipgloss.Width(right) - 1
-	text := long
-	if lipgloss.Width(text) > room {
-		text = short
-	}
-	text = truncateDisplay(text, max(0, room), "…")
+	text := h.fitHintText(long, short, room)
 	gap := max(0, width-lipgloss.Width(left)-lipgloss.Width(text)-lipgloss.Width(right))
 	return left + bar.Render(text+strings.Repeat(" ", gap)+right)
 }

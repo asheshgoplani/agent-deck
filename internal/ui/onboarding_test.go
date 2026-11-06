@@ -234,7 +234,7 @@ func TestOnboarding_FreshInstallShowsCheckPageExactlyOnce(t *testing.T) {
 	}
 	screen := onboardingScreen(h)
 	for _, want := range []string{"Agent Deck · quick check", "✓ tmux", "tmux 3.5a", "✓ agent-deck", "v1.16.36",
-		"Your agents", "✓ Claude Code", "x Codex", "install: npm", "Plain shell", "always works", "Enter continue", "r re-check", "q quit"} {
+		"Your agents", "✓ Claude Code", "x Codex", "not installed. Install with:", "npm install -g @openai/codex", "Plain shell", "always works", "Enter continue", "r re-check", "q quit"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("Welcome lacks %q:\n%s", want, screen)
 		}
@@ -356,7 +356,12 @@ func TestOnboarding_AgentDetectionFollowsPath(t *testing.T) {
 				for _, f := range tc.found {
 					isFound = isFound || f == a.Name
 				}
-				hint := "install: " + a.Install
+				// The command sits on its own line; a long one is cut with
+				// … at the end, so look for its start.
+				hint := a.Install
+				if len(hint) > 40 {
+					hint = hint[:40]
+				}
 				if isFound == strings.Contains(screen, hint) {
 					t.Fatalf("%s found=%v but install hint shown=%v:\n%s", a.Name, isFound, !isFound, screen)
 				}
@@ -410,7 +415,7 @@ func TestOnboarding_NoAgentStartsPlainShell(t *testing.T) {
 		t.Fatal("precondition: check page")
 	}
 	screen := onboardingScreen(h)
-	for _, want := range []string{"x Claude Code", "install: " + h.onboarding.agent("claude").Install,
+	for _, want := range []string{"x Claude Code", h.onboarding.agent("claude").Install,
 		"No agent yet. You can still start with a Plain shell.", "Enter continue with Plain shell"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("no-agent check page lacks %q:\n%s", want, screen)

@@ -833,6 +833,20 @@ func onboardingWrap(width int, text string) string {
 	return lipgloss.NewStyle().Width(width).Render(text)
 }
 
+// onboardingCommandLine puts a shell command on its own line so a copy gives
+// the whole command (ASK-211 round 3: wrapped commands broke on copy). It
+// keeps indent when the command fits after it, drops the indent when that
+// is what makes it fit, and truncates with … only when it cannot fit at all.
+func onboardingCommandLine(indent, cmd string, width int) string {
+	switch w := lipgloss.Width(cmd); {
+	case lipgloss.Width(indent)+w <= width:
+		return indent + cmd
+	case w <= width:
+		return cmd
+	}
+	return truncateDisplay(cmd, max(1, width), "…")
+}
+
 func displayFolder(folder string) string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		if folder == home {
@@ -901,7 +915,12 @@ func (o *OnboardingOverlay) checkSections(width int) dialogSections {
 
 	for _, a := range o.agents {
 		if !a.Found {
-			s.body = append(s.body, row(warn.Render("x"), name, a.Display, "install: "+a.Install, dim))
+			if a.Install == "" {
+				s.body = append(s.body, row(warn.Render("x"), name, a.Display, "not installed", dim))
+				continue
+			}
+			s.body = append(s.body, row(warn.Render("x"), name, a.Display, "not installed. Install with:", dim))
+			s.body = append(s.body, dim.Render(onboardingCommandLine(indent, a.Install, width)))
 			continue
 		}
 		var detail string

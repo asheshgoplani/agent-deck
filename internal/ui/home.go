@@ -2501,6 +2501,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			noSessions := msg.err == nil && len(msg.instances) == 0
 			freshInstall := h.maybeStartOnboarding(noSessions)
 			h.armOnboardingHints(freshInstall, noSessions)
+			if !noSessions && msg.err == nil {
+				h.resumeOnboardingHints(msg.instances[0].Title)
+			}
 			// The Alt+j/k tip is for moving between sessions: held back
 			// on the welcome (ASK-211), where there are none.
 			if noSessions && h.navHintActive {

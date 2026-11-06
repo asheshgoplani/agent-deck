@@ -318,13 +318,18 @@ func (h *Home) renderWelcome(width, height int) string {
 
 	var tail []string
 	if tool == "shell" && !h.welcomeAnyAgent {
-		hint := "No agent found yet."
+		hint, install := "No agent found yet.", ""
 		for _, a := range agents {
 			if a.Name == "claude" && a.Install != "" {
-				hint += " Install Claude Code: " + a.Install
+				hint += " Install Claude Code:"
+				install = a.Install
 			}
 		}
 		tail = append(tail, "", warn.Render(onboardingWrap(inner, hint)))
+		if install != "" {
+			// The command on its own line, never wrapped (copy gives it whole).
+			tail = append(tail, warn.Render(onboardingCommandLine("  ", install, inner)))
+		}
 	}
 	if h.welcomeNotice != "" {
 		tail = append(tail, "", ok.Render(onboardingWrap(inner, h.welcomeNotice)))

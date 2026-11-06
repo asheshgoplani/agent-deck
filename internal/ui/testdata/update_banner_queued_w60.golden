@@ -13,8 +13,8 @@
    │    i      Import your tmux sessions (none found)   │   
    │    ?      Read the 5 keys                          │   
    │                                                    │   
-   │  No agent found yet. Install Claude Code: curl -   │   
-   │  fsSL https://claude.ai/install.sh | bash          │   
+   │  No agent found yet. Install Claude Code:          │   
+   │    curl -fsSL https://claude.ai/install.sh | bash  │   
    │                                                    │   
    │  ↑↓ pick · Enter do it · q quit                    │   
    │                                                    │   

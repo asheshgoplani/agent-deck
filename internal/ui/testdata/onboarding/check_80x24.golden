@@ -1,6 +1,5 @@
                                                                                 
                                                                                 
-                                                                                
  ╭────────────────────────────────────────────────────────────────────────────╮ 
  │                                                                            │ 
  │  Agent Deck · quick check                                                  │ 
@@ -11,14 +10,15 @@
  │  Your agents                                                               │ 
  │  ✓ Claude Code   installed · signed in                                     │ 
  │  ✓ Codex         installed · not signed in                                 │ 
- │  x Gemini CLI    install: npm install -g @google/gemini-cli                │ 
- │  x Pi            install: npm install -g @mariozechner/pi-coding-agent     │ 
+ │  x Gemini CLI    not installed. Install with:                              │ 
+ │                  npm install -g @google/gemini-cli                         │ 
+ │  x Pi            not installed. Install with:                              │ 
+ │                  npm install -g @mariozechner/pi-coding-agent              │ 
  │    Plain shell   always works                                              │ 
  │                                                                            │ 
  │  Enter continue · l sign in to Codex · r re-check · q quit                 │ 
  │                                                                            │ 
  ╰────────────────────────────────────────────────────────────────────────────╯ 
-                                                                                
                                                                                 
                                                                                 
                                                                                 

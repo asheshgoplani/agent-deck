@@ -3713,11 +3713,24 @@ func (d *NewDialog) View() string {
 			helpText = "^F branch search │ Tab next │ Enter create │ Esc cancel"
 		}
 	} else if cur == focusCommand {
+		// The form calls this row "agent" (ASK-211 round 3). w/s/y are
+		// left out on the first form (those options sit under More
+		// options) and whenever the line would not fit on one row.
 		selectedCmd := d.GetSelectedCommand()
+		extras := []string{"w worktree", "s sandbox"}
 		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" {
-			helpText = "←→ tool │ w worktree │ s sandbox │ y yolo │ " + rowHint + " │ Esc cancel"
-		} else {
-			helpText = "←→ tool │ w worktree │ s sandbox │ " + rowHint + " │ Esc cancel"
+			extras = append(extras, "y yolo")
+		}
+		if d.firstSession {
+			extras = nil
+		}
+		for {
+			items := append(append([]string{"←→ agent"}, extras...), rowHint, "Esc cancel")
+			helpText = strings.Join(items, " │ ")
+			if len(extras) == 0 || lipgloss.Width(helpText) <= max(1, dialogWidth-8) {
+				break
+			}
+			extras = extras[:len(extras)-1]
 		}
 	} else if cur == focusModel {
 		if d.modelSuggestionActive {

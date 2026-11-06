@@ -129,10 +129,16 @@ func TestOnboardingRound1_QuitOnWelcomeThenHintsOnNextStart(t *testing.T) {
 	if line := hintBarLine(h2); !strings.Contains(line, "Step 1 of 4") {
 		t.Fatalf("first session after a relaunch: hint bar %q, want step 1", line)
 	}
-	// Seen now: a third start does not arm it again.
-	h3 := startDeck(t)
-	if h3.hints.armed {
-		t.Fatal("the hint bar armed again after it was shown")
+	// Quit at step 1 (round 3): the next start resumes the tour; once Esc
+	// hides it, a later start does not arm it again.
+	h3 := startDeck(t, session.NewInstanceWithTool("my-app", onboardingFolder(), "claude"))
+	if line := hintBarLine(h3); !strings.Contains(line, "Step 1 of 4") {
+		t.Fatalf("restart at step 1: hint bar %q, want step 1", line)
+	}
+	h3.handleMainKey(keyEsc)
+	h4 := startDeck(t)
+	if h4.hints.armed {
+		t.Fatal("the hint bar armed again after Esc hid it")
 	}
 }
 

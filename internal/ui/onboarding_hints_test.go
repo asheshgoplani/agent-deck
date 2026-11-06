@@ -180,6 +180,11 @@ func TestOnboardingHints_SeenFileOncePerMachine(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("starting the bar did not write the seen-file: %v", err)
 	}
+	// Round 3: starting the bar records progress, not done.
+	if onboardingHintsSeen() {
+		t.Fatal("starting the bar marked it done")
+	}
+	h.hideOnboardingHints()
 	h2 := NewHome()
 	h2.armOnboardingHints(true, true)
 	if h2.hints.armed {
