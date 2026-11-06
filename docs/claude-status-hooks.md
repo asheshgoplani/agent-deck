@@ -4,6 +4,35 @@ Claude can start a tool turn after a task notification or a blocked Stop without
 emitting UserPromptSubmit. Agent Deck subscribes to PreToolUse so those tool turns
 report running in session show, list, and Recall live status frames.
 
+## Normal inbox delivery at Stop
+
+When an urgent inbox message is pending at a turn boundary, Agent Deck's
+synchronous Stop hook intentionally returns `decision: "block"` with the messages
+in its `reason`. This continues the turn so Claude can handle them. The reason
+starts with:
+
+```text
+New session messages (normal inbox delivery; continue this turn to handle each):
+```
+
+Each record retains its own sender, priority, status, and text; a reply or waiting
+update does not mean a child finished. Genuine finished records retain their
+completion status and summary.
+
+[Issue #3053](https://github.com/asheshgoplani/agent-deck/issues/3053) reports Claude
+displaying successful inbox delivery beneath **“Stop hook error”** on the MAIA fork
+with Claude Code 2.1.317/2.1.318. This is reported fork runtime evidence, not an
+isolated upstream Claude UI reproduction. The label can wrap an intentional
+continuation rather than a failed hook process, crash, or timeout. The normal
+delivery heading explains the reason; changing it alone does not guarantee that
+Claude removes its outer label or that every Claude version uses that label.
+
+Disabling the Stop hook sacrifices this turn-boundary delivery. Making it
+asynchronous causes Claude to ignore its decision and reason. Agent Deck keeps
+the synchronous blocking contract and the consecutive-block guard: at most three
+blocks in a row, then pending records remain queued for another delivery path.
+A fresh user turn resets the budget.
+
 ## Upgrade each host and Claude configuration
 
 1. Upgrade the installed Agent Deck binary on the local or remote host. A local
