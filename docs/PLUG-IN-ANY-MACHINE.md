@@ -53,7 +53,11 @@ The repo ships a working Docker provider in
    ```
 
 The first `create` builds the image, which takes about a minute. Later ones
-take a few seconds.
+take a few seconds. A new docker sandbox comes up ready: Claude Code and git
+are installed, the project is at `/home/dev/<project>` (a small demo project
+unless you configure one) and Claude's first-run screens are done. A Claude
+login token can be added; see the example's
+[README](../examples/providers/docker/README.md).
 
 ## Configuration
 
@@ -231,6 +235,16 @@ The new-session dialog has a **Where** choice:
 
 Picking a new sandbox makes one with that provider, registers it as a remote,
 and starts the session there.
+While it is made, a status line above the list shows the step and the
+seconds so far. If it fails, a notice says at which step, why, and whether
+anything was left behind.
+
+A sandbox shows in the list as `remotes/<name>` with `· sandbox (provider
+<name>)`. Press `d` on that host row to destroy it: the confirm says how many
+sessions will be stopped. Confirming lists the sessions again and, like
+`remote destroy`, changes nothing when they cannot be listed or more run than
+you agreed to stop; otherwise it stops them, destroys the sandbox and removes
+the remote.
 
 ## Security notes
 

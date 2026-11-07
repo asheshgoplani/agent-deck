@@ -652,6 +652,7 @@ func (h *Home) getListContentStartY() int {
 	if h.maintenanceMsg != "" {
 		startY++ // Maintenance banner
 	}
+	startY += h.sandboxStatusHeight()
 	// Panel title: 2 lines (title + underline)
 	startY += 2
 	return startY

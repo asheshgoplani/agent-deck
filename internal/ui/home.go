@@ -1053,6 +1053,14 @@ type Home struct {
 	// sandboxProvisioner replaces provider.Provision for a "new sandbox"
 	// Where pick (tests stub it); nil uses defaultSandboxProvisioner.
 	sandboxProvisioner func(ctx context.Context, opts provider.ProvisionOptions) (*provider.Provisioned, error)
+	// sandboxDestroyDeps replaces the remote and provider calls of a TUI
+	// sandbox destroy (tests); nil uses the real ones.
+	sandboxDestroyDeps *sandboxDestroyDeps
+	// sandboxOps are the sandbox creates and destroys shown in the status
+	// line above the list (home_sandbox_destroy.go). Event-loop goroutine
+	// only.
+	sandboxOps   map[uint64]*sandboxOp
+	sandboxOpSeq uint64
 	// sandboxProvisionMu guards the count of sandbox provisionings in
 	// flight; quit waits for them (waitSandboxProvisions) so a cancelled
 	// create still finishes its rollback (#2918).
@@ -3679,6 +3687,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sandboxProvisionedMsg:
 		return h, h.handleSandboxProvisioned(msg)
 
+	case sandboxDestroyedMsg:
+		return h, h.handleSandboxDestroyed(msg)
+
 	case remoteCreateDirNeededMsg:
 		// The server refused the path; ask before retrying with --create-dir
 		// so a typo never silently creates a directory on the remote.
@@ -6295,6 +6306,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else if item.Type == session.ItemTypeRemoteGroup && item.Level == 0 {
+				// The host header of a provider sandbox: offer to destroy the
+				// sandbox (stopping its sessions, after a confirm that says how
+				// many). A plain remote's header is a local UI bucket with
+				// nothing to delete.
+				h.openDestroySandboxConfirm(item.RemoteName)
 			} else if item.Type == session.ItemTypeRemoteGroup && item.Level > 0 {
 				// One of the remote's own groups: delete it there, the way d on
 				// a local group header does here. The Level-0 host header is a
@@ -8009,6 +8026,7 @@ func (h *Home) sessionSwitcherOverlayRegion() terminalCellRect {
 	if h.maintenanceMsg != "" {
 		maintenanceBannerHeight = 1
 	}
+	maintenanceBannerHeight += h.sandboxStatusHeight() // sandbox status lines sit with the banners
 	debugBarHeight := 0
 	if h.debugMode {
 		debugBarHeight = 1

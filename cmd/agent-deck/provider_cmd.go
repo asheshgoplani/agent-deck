@@ -536,6 +536,25 @@ func runRemoteDestroy(args []string) int {
 		return 1
 	}
 
+	// Held until the destroy ends: a second destroy of this remote (here,
+	// in the TUI or another CLI) or a create of the same name is refused.
+	unlock, err := provider.LockRemote(name)
+	if err != nil {
+		fmt.Fprintf(errOut, "Error: %v\nNothing was changed.\n", err)
+		return 1
+	}
+	defer unlock()
+	// Read the remote again under the lock: a destroy that just ended may
+	// have removed it.
+	if cfg, err = session.ReloadUserConfig(); err != nil {
+		fmt.Fprintf(errOut, "Error: loading config: %v\n", err)
+		return 1
+	}
+	if rc, ok = cfg.Remotes[name]; !ok || !provider.IsSandbox(rc) {
+		fmt.Fprintf(errOut, "Error: remote '%s' is no longer a configured sandbox (another destroy may have removed it). Nothing was changed.\n", name)
+		return 1
+	}
+
 	defer providerWork.begin()()
 	ctx, stop := providerSignalContext()
 	defer stop()

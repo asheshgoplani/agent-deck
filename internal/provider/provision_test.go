@@ -283,3 +283,38 @@ func TestDestroyRemoteRejectsPlainRemote(t *testing.T) {
 		t.Fatal("plain remote removed")
 	}
 }
+
+// The provider destroyed the sandbox, then the local cleanup failed: the
+// error says the sandbox is gone and what is left to clean up, and it
+// matches ErrDestroyedCleanupFailed so callers can say so too.
+func TestDestroyRemoteSaysTheSandboxIsGoneWhenLocalCleanupFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores the read-only dir this test relies on")
+	}
+	freshHome(t)
+	configureFake(t)
+	state := fakeEnv(t, "ok")
+	p, err := Provision(context.Background(), ProvisionOptions{Provider: "fake", RemoteName: "d9", WaitSSH: okSeam, Install: okSeam})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandboxes := filepath.Dir(filepath.Dir(p.Remote.SSHConfig))
+	if err := os.Chmod(sandboxes, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sandboxes, 0o700) })
+
+	err = DestroyRemote(context.Background(), "d9")
+	if err == nil {
+		t.Fatal("DestroyRemote succeeded although the sandbox files could not be removed")
+	}
+	if got := readLines(t, filepath.Join(state, "destroyed.log")); len(got) != 1 {
+		t.Fatalf("destroyed = %q, want the sandbox destroyed (test precondition)", got)
+	}
+	if !strings.Contains(err.Error(), "sandbox "+p.Sandbox.ID+" was destroyed") {
+		t.Fatalf("err = %v, want it to say the sandbox was destroyed", err)
+	}
+	if !errors.Is(err, ErrDestroyedCleanupFailed) {
+		t.Fatalf("err = %v, want it to match ErrDestroyedCleanupFailed", err)
+	}
+}

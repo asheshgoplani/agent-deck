@@ -59,6 +59,7 @@ func (h *Home) embeddedPaneRect() terminalCellRect {
 	if h.maintenanceMsg != "" {
 		maintenanceBannerHeight = 1
 	}
+	maintenanceBannerHeight += h.sandboxStatusHeight() // sandbox status lines sit with the banners
 	debugBarHeight := 0
 	if h.debugMode {
 		debugBarHeight = 1

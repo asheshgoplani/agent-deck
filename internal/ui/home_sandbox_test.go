@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -114,7 +115,7 @@ func TestNewDialogWhereSubmit(t *testing.T) {
 			if h.newDialog.IsVisible() {
 				t.Fatal("dialog stayed open after submit")
 			}
-			if tt.wantProvision && h.err == nil {
+			if tt.wantProvision && len(h.sandboxStatusLines(time.Now())) == 0 {
 				t.Fatal("no status line while the sandbox is being provisioned")
 			}
 			h = drainCmd(t, h, cmd)

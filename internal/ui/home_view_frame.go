@@ -56,6 +56,7 @@ func (h *Home) contentChromeTop() int {
 	if h.maintenanceMsg != "" {
 		top++
 	}
+	top += h.sandboxStatusHeight()
 	return top
 }
 
@@ -82,11 +83,12 @@ func (h *Home) stackedPreviewTopY() int {
 	if h.maintenanceMsg != "" {
 		maintenanceBannerHeight = 1
 	}
+	sandboxStatusHeight := h.sandboxStatusHeight()
 	debugBarHeight := 0
 	if h.debugMode {
 		debugBarHeight = 1
 	}
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - sandboxStatusHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
 	listHeight := h.stackedListHeight(contentHeight)
 	// content top + full list block (title + body) + the 1-row separator.
 	return h.contentChromeTop() + listHeight + 1
@@ -915,6 +917,18 @@ func (h *Home) renderFrame() string {
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
+	// SANDBOX STATUS (a sandbox create or destroy in flight, or just done).
+	// Above the list, with its height reserved: the footer error line
+	// below the help bar is clipped by the viewport and auto-dismissed.
+	// ═══════════════════════════════════════════════════════════════════
+	sandboxStatusLines := h.sandboxStatusLines(time.Now())
+	sandboxStatusHeight := len(sandboxStatusLines)
+	for _, line := range sandboxStatusLines {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	// ═══════════════════════════════════════════════════════════════════
 	// MAIN CONTENT AREA - Responsive layout based on terminal width
 	// ═══════════════════════════════════════════════════════════════════
 	helpBarHeight := 2 // Help bar takes 2 lines (border + content)
@@ -923,7 +937,7 @@ func (h *Home) renderFrame() string {
 		debugBarHeight = 1
 	}
 	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - sandboxStatusHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
 
 	var mainContent string
 	if h.embeddedMode && h.embeddedSidebarHidden {
