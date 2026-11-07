@@ -38,9 +38,15 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	return &HTTPHandler{svc: svc, mcp: NewMCPHandler(svc, TransportHTTP)}
 }
 
-// BearerToken extracts a bearer token from an Authorization header.
+// BearerToken extracts a bearer token from an Authorization header. A bare
+// assistant token (no "Bearer " prefix) is accepted too: xAI's remote MCP
+// tool puts its "authorization" value in the header and does not document a
+// prefix.
 func BearerToken(h string) string {
 	h = strings.TrimSpace(h)
+	if strings.HasPrefix(h, TokenPrefix) && !strings.ContainsAny(h, " \t") {
+		return h
+	}
 	if len(h) < 7 || !strings.EqualFold(h[:7], "bearer ") {
 		return ""
 	}
