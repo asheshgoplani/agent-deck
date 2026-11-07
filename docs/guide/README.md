@@ -2,6 +2,10 @@
 
 [Back to the README](../../README.md)
 
+**Your AI agent command center**
+
+**Agent Deck is mission control for your AI coding agents.** Running Claude Code on ten projects, OpenCode on five more, another agent somewhere in the background? One terminal shows every session — running, waiting, or done — and one keystroke switches between them. Groups, search, forking, git worktrees, cost tracking, and a phone-controlled [conductor](conductor.md) keep a whole fleet manageable.
+
 ## Documentation
 
 **Onboarding** — five-minute walkthroughs for new users:
