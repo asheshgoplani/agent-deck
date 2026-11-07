@@ -64,10 +64,10 @@ More commands and every key: [Quick start and keys](docs/guide/quick-start.md).
 Paste this into your assistant (Hermes, OpenClaw, Grok, Claude, ChatGPT, Codex...):
 
 ```text
-Set yourself up to control my agent-deck sessions by following https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/docs/assistants/SETUP-PROMPT.md
+Read https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/docs/assistants/SETUP-PROMPT.md and follow it to connect yourself to agent-deck on my machine. Ask me before each step that changes anything.
 ```
 
-Or run `agent-deck connect <assistant>`, or open the Connect page in `agent-deck web`.
+It checks agent-deck, connects itself, saves its own config and tests it. Or run `agent-deck connect` and paste what it prints, or use the Connect page in `agent-deck web`.
 
 Your assistant can only read your sessions at first (read-only). You choose if it may do more. Details: [Connect an assistant](https://github.com/asheshgoplani/agent-deck/blob/main/docs/assistants/README.md).
 
