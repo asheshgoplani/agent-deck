@@ -124,6 +124,16 @@ func (s *Service) Call(ctx context.Context, rec Record, name string, rawArgs jso
 	}
 
 	tool, ok := LookupTool(name)
+	// Every call, refused or not, spends from the token's budget first, so
+	// a token cannot flood the audit log with unknown-tool, bad-argument or
+	// scope-missing calls.
+	if !s.limiter.allow(rec.Name, ok && tool.Write) {
+		limit := s.Limits.ReadPerMinute
+		if ok && tool.Write {
+			limit = s.Limits.WritePerMinute
+		}
+		return deny(CodeRateLimited, fmt.Sprintf("rate limit reached (%d calls per minute); wait and retry", limit), "")
+	}
 	if !ok {
 		return deny(CodeUnknownTool, fmt.Sprintf("unknown tool %q", name), "")
 	}
@@ -143,13 +153,6 @@ func (s *Service) Call(ctx context.Context, rec Record, name string, rawArgs jso
 	}
 	if tool.Write && s.ReadOnly {
 		return deny(CodeReadOnly, "this agent-deck server is read-only; "+tool.Name+" is disabled", "")
-	}
-	if !s.limiter.allow(rec.Name, tool.Write) {
-		limit := s.Limits.ReadPerMinute
-		if tool.Write {
-			limit = s.Limits.WritePerMinute
-		}
-		return deny(CodeRateLimited, fmt.Sprintf("rate limit reached (%d calls per minute); wait and retry", limit), "")
 	}
 
 	data, _, err := s.runTool(ctx, rec, tool, args)

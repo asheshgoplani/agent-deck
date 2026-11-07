@@ -56,6 +56,7 @@ type Store struct {
 	records map[string]Record
 	modTime time.Time
 	size    int64
+	info    os.FileInfo
 	loaded  bool
 }
 
@@ -111,13 +112,15 @@ func (s *Store) reloadLocked() error {
 	info, err := os.Stat(s.Path())
 	if errors.Is(err, os.ErrNotExist) {
 		s.records = map[string]Record{}
-		s.loaded, s.modTime, s.size = true, time.Time{}, 0
+		s.loaded, s.modTime, s.size, s.info = true, time.Time{}, 0, nil
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("checking assistant token store: %w", err)
 	}
-	if s.loaded && info.ModTime().Equal(s.modTime) && info.Size() == s.size {
+	// Writers replace the file by rename, so a new inode means new content
+	// even when a coarse mtime and an equal size (a rotated token) match.
+	if s.loaded && s.info != nil && os.SameFile(s.info, info) && info.ModTime().Equal(s.modTime) && info.Size() == s.size {
 		return nil
 	}
 	data, err := os.ReadFile(s.Path())
@@ -134,7 +137,7 @@ func (s *Store) reloadLocked() error {
 	for _, r := range f.Tokens {
 		recs[r.Name] = r
 	}
-	s.records, s.modTime, s.size, s.loaded = recs, info.ModTime(), info.Size(), true
+	s.records, s.modTime, s.size, s.info, s.loaded = recs, info.ModTime(), info.Size(), info, true
 	return nil
 }
 
@@ -158,7 +161,7 @@ func (s *Store) saveLocked() error {
 	// the same size must still be seen by other processes, and this process
 	// already has the new records in memory.
 	if info, err := os.Stat(s.Path()); err == nil {
-		s.modTime, s.size = info.ModTime(), info.Size()
+		s.modTime, s.size, s.info = info.ModTime(), info.Size(), info
 	}
 	return nil
 }

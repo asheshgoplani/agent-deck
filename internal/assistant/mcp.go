@@ -67,6 +67,9 @@ func NewMCPHandler(svc *Service, transport string) *MCPHandler {
 // (nothing is ever written back for one). The token is authenticated on
 // every message, so a revoke takes effect on the next call.
 func (h *MCPHandler) Handle(ctx context.Context, tokens TokenSource, line []byte) []byte {
+	if trimmed := strings.TrimSpace(string(line)); strings.HasPrefix(trimmed, "[") && json.Valid([]byte(trimmed)) {
+		return marshalResp(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{codeInvalidReq, "JSON-RPC batches are not supported; send one message per request"}})
+	}
 	var req rpcRequest
 	if err := json.Unmarshal(line, &req); err != nil {
 		return marshalResp(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{codeParse, "parse error: " + err.Error()}})
@@ -81,6 +84,9 @@ func (h *MCPHandler) Handle(ctx context.Context, tokens TokenSource, line []byte
 	}
 	if isNotification {
 		return nil
+	}
+	if req.JSONRPC != "2.0" {
+		return marshalResp(rpcResponse{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{codeInvalidReq, `jsonrpc must be "2.0"`}})
 	}
 	rec, err := h.authenticate(tokens)
 	if err != nil {

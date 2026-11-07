@@ -172,3 +172,17 @@ func TestAssistantRoutes_UnwiredAnswer503(t *testing.T) {
 		t.Fatalf("unwired /mcp = %d", rr.Code)
 	}
 }
+
+// Only canonical assistant paths skip the CSRF check.
+func TestAssistantCSRFExemptionNeedsCleanPath(t *testing.T) {
+	srv, _, _ := newAssistantServer(t, Config{Token: "owner-secret"})
+	req := newLocalRequest(http.MethodPost, "/api/assistant/v1/../../api/sessions", strings.NewReader(`{}`))
+	req.URL.Path = "/api/assistant/v1/../../api/sessions"
+	req.Header.Set("Authorization", "Bearer owner-secret")
+	req.Header.Set("Origin", "https://evil.example")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("unclean assistant path = %d, want 403 from the CSRF check", rr.Code)
+	}
+}
