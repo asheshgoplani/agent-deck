@@ -921,11 +921,28 @@ type ChangelogEntry struct {
 	Content string
 }
 
-// FetchChangelog fetches the CHANGELOG.md from GitHub
+// ChangelogEnv overrides where the changelog is read from: an http(s) URL
+// or a local file path. Unset means the CHANGELOG.md on GitHub main.
+const ChangelogEnv = "AGENTDECK_CHANGELOG_URL"
+
+// FetchChangelog fetches the CHANGELOG.md from GitHub, or from the URL or
+// file ChangelogEnv names.
 func FetchChangelog() (string, error) {
 	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/CHANGELOG.md", GitHubRepo)
+	if src := strings.TrimSpace(os.Getenv(ChangelogEnv)); src != "" {
+		if !strings.HasPrefix(src, "http://") && !strings.HasPrefix(src, "https://") {
+			data, err := os.ReadFile(strings.TrimPrefix(src, "file://")) // #nosec G304 -- operator-set override
+			if err != nil {
+				return "", fmt.Errorf("failed to read changelog: %w", err)
+			}
+			return string(data), nil
+		}
+		url = src
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	// #nosec G704 -- url is the fixed GitHub CHANGELOG URL, or the
+	// AGENTDECK_CHANGELOG_URL the operator set (tests, the sandbox simulation).
 	resp, err := client.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch changelog: %w", err)

@@ -48,6 +48,13 @@ type Report struct {
 	// Surface names where the report was filed from ("cli", "tui",
 	// "mac app"); it ends up in the footer. Empty means "cli".
 	Surface string
+	// AIAuthored marks a report a model wrote (an agent session's
+	// `feedback bug --from-agent`): the AI disclosure section then says
+	// "AI-authored" instead of "Human-written".
+	AIAuthored bool
+	// AIModel names the model for an AIAuthored report; empty means
+	// "unsure" (the form's own suggested answer).
+	AIModel string
 }
 
 // Diagnostics is the machine context attached to a bug report.
@@ -78,8 +85,9 @@ const (
 	hAlternatives = "Alternatives considered"
 	hWilling      = "Would you be up for implementing it?"
 
-	noResponse   = "_No response_" // what GitHub writes for an empty form field
-	humanWritten = "Human-written" // the ai_disclosure option for a form the user typed
+	noResponse   = "_No response_"                          // what GitHub writes for an empty form field
+	humanWritten = "Human-written"                          // the ai_disclosure option for a form the user typed
+	aiAuthored   = "AI-authored (a model wrote most of it)" // the option for an agent's report
 	notWilling   = "No, just proposing"
 	trimmedMark  = "(trimmed)"
 	footerPrefix = "Filed from agent-deck "
@@ -109,11 +117,18 @@ func Build(r Report, d Diagnostics) Issue {
 	sc := func(s string) string { return strings.TrimSpace(Scrub(strings.TrimSpace(StripControl(s, true)), home)) }
 
 	what, expected, steps := sc(r.WhatHappened), sc(r.Expected), sc(r.Steps)
-	title := oneLine(sc(r.Title))
+	title := StripKindPrefix(oneLine(sc(r.Title)))
 	if title == "" {
-		title = oneLine(firstLine(what))
+		title = StripKindPrefix(oneLine(firstLine(what)))
 	}
 	title = runewidth.Truncate(title, titleCells, "…")
+	disclosure, model := humanWritten, noResponse
+	if r.AIAuthored {
+		disclosure, model = aiAuthored, runewidth.Truncate(oneLine(sc(r.AIModel)), titleCells, "…")
+		if model == "" {
+			model = "unsure"
+		}
+	}
 
 	surface := oneLine(sc(r.Surface))
 	if surface == "" {
@@ -134,8 +149,8 @@ func Build(r Report, d Diagnostics) Issue {
 				{hProposal, userText(c(expected))},
 				{hAlternatives, userText(c(steps))},
 				{hWilling, notWilling},
-				{hAIDisclosure, humanWritten},
-				{hAIModel, noResponse},
+				{hAIDisclosure, disclosure},
+				{hAIModel, model},
 			}
 		}
 		env := joinNonEmpty(", ", sc(d.OS)+archSuffix(sc(d.Arch)), sc(d.Terminal))
@@ -149,8 +164,8 @@ func Build(r Report, d Diagnostics) Issue {
 			{hRepro, userText(c(steps))},
 			{hExpected, userText(ea)},
 			{hLogs, logBlock(capTail(sc(d.LogExcerpt), n))},
-			{hAIDisclosure, humanWritten},
-			{hAIModel, noResponse},
+			{hAIDisclosure, disclosure},
+			{hAIModel, model},
 		}
 	}
 	// Final pass over the assembled title and body, the way SanitizeIssue
@@ -240,6 +255,14 @@ func scrubBody(k Kind, body, home string) string {
 	}
 	flush()
 	return strings.Join(out, "\n")
+}
+
+var kindPrefixRe = regexp.MustCompile(`(?i)^(\s*\[(bug|feature)\])+\s*`)
+
+// StripKindPrefix removes leading "[bug]" / "[feature]" prefixes (any
+// case, repeated) so Build adds exactly one and title matching ignores them.
+func StripKindPrefix(title string) string {
+	return strings.TrimSpace(kindPrefixRe.ReplaceAllString(title, ""))
 }
 
 // TitlePrefix is the title prefix of the kind's issue form.

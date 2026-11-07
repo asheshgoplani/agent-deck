@@ -47,6 +47,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[macapp] Section](#macapp-section)
 - [[browser] Section](#browser-section)
 - [[ask] Section](#ask-section)
+- [[feedback] Section](#feedback-section)
 - [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -1401,6 +1402,21 @@ allow_sandboxed = false        # let sessions that run in a sandbox ask
 | `allow_sandboxed` | bool | `false` | Lets sessions that run in a sandbox ask; otherwise their requests are refused. |
 
 There is no key for the vault command: the vault is the fixed `/usr/local/bin/deck-secret`, which must be root-owned. These keys are guard rails an agent on the host can edit, not security boundaries.
+
+## [feedback] Section
+
+In-product feedback and problem reports (`agent-deck feedback`).
+
+```toml
+[feedback]
+disabled = false        # true stops the passive rating prompts
+agent_reports = false   # true lets agent sessions post with --from-agent
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `disabled` | bool | `false` | Suppresses the passive feedback rating prompts. Set when you answer `n`; `agent-deck feedback` asks to re-enable. |
+| `agent_reports` | bool | `false` | Lets agent sessions post public GitHub issues, "seen again" comments and "is it fixed" answers as this machine's `gh` account (`feedback bug|idea --from-agent`, `feedback fixed --from-agent`). Off means those refuse with `consent_required`; `--yes` does not stand in. A person turns it on with `agent-deck feedback agent-consent`, which shows where it posts, as which account and what is posted, then asks y/N; `--off` turns it off. |
 
 ## [tmux] Section
 
