@@ -4797,7 +4797,7 @@ func printHelp() {
 	fmt.Println("  tmux-hooks status         Show whether the tmux hook slot is agent-deck's")
 	fmt.Println("  pi-hooks install          Install or upgrade the pi extension")
 	fmt.Println("  pi-hooks uninstall        Remove the pi extension")
-	fmt.Println("  pi-hooks status           Show pi extension install status")
+	fmt.Println("  pi-hooks status           Show pi extension, pi version and wake socket status")
 	fmt.Println("  deepseek status           Show resolved dsh binary, DSH_HOME, profile")
 	fmt.Println("  deepseek profiles         List profiles under $DSH_HOME/profiles")
 	fmt.Println("  deepseek sessions [path]  List dsh sessions recorded for a workspace")

@@ -483,6 +483,11 @@ type Instance struct {
 	// `--no-identity` on `agent-deck add` / `agent-deck launch`.
 	IdentityInjectionDisabled bool `json:"identity_injection_disabled,omitempty"`
 
+	// PiSocketExported records that the last launch of this pi exported
+	// a socket path in AGENTDECK_PI_SOCKET, so a v5 extension serves the
+	// socket. Only the launch sets it here; nothing reads or persists it yet.
+	PiSocketExported bool `json:"pi_socket_exported,omitempty"`
+
 	// ContextLevel is the per-session override of the harness context-level
 	// (issue #2260): "none", "primer", or "full". Empty means unset — falls
 	// through to the group then global config (global < group < session
