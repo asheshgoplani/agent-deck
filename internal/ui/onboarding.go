@@ -634,19 +634,29 @@ func (h *Home) finishFirstRun(tool string) {
 			w.selectedTool = i
 		}
 	}
-	h.saveFirstRunConfig(w.GetConfig())
-	markOnboardingFirstRunDone()
+	// The marker records that first run finished, which means config.toml
+	// was written: a failed save leaves first run open, so the check page
+	// comes back at the next start instead of an install with no config
+	// that onboarding never offers again.
+	if h.saveFirstRunConfig(w.GetConfig()) == nil {
+		markOnboardingFirstRunDone()
+	}
 }
 
+// saveFirstRunUserConfig writes config.toml for first run; a test seam.
+var saveFirstRunUserConfig = session.SaveUserConfig
+
 // saveFirstRunConfig saves a first-run config merged onto disk, so fields the
-// wizard does not manage survive (#1067), and reloads what depends on it.
-func (h *Home) saveFirstRunConfig(config *session.UserConfig) {
+// wizard does not manage survive (#1067), and reloads what depends on it. A
+// failed save is shown and returned.
+func (h *Home) saveFirstRunConfig(config *session.UserConfig) error {
 	merged, mergeErr := session.MergePanelConfigOntoDisk(config)
 	if mergeErr == nil && merged != nil {
 		config = merged
 	}
-	if err := session.SaveUserConfig(config); err != nil {
-		h.err = err
+	saveErr := saveFirstRunUserConfig(config)
+	if saveErr != nil {
+		h.err = saveErr
 		h.errTime = time.Now()
 	}
 	_, _ = session.ReloadUserConfig()
@@ -654,6 +664,7 @@ func (h *Home) saveFirstRunConfig(config *session.UserConfig) {
 	if defaultTool := session.GetDefaultTool(); defaultTool != "" {
 		h.newDialog.SetDefaultTool(defaultTool)
 	}
+	return saveErr
 }
 
 // closeOnboarding hides the overlay, finishing first run if it was one.

@@ -275,6 +275,41 @@ func TestOnboarding_EscSkipsAndPersists(t *testing.T) {
 	}
 }
 
+// First run is finished only when config.toml was written: a save that
+// fails leaves no first-run marker, so the check page comes back at the next
+// start; once a save works, the marker is written and it does not.
+func TestOnboarding_FailedConfigSaveKeepsFirstRunOpen(t *testing.T) {
+	newOnboardingEnv(t, "claude")
+	prevSave := saveFirstRunUserConfig
+	t.Cleanup(func() { saveFirstRunUserConfig = prevSave })
+	saveFirstRunUserConfig = func(*session.UserConfig) error { return errors.New("disk full") }
+
+	h := startDeck(t)
+	if !checkVisible(h) {
+		t.Fatal("precondition: fresh install shows the check page")
+	}
+	h.Update(keyEsc)
+	if onboardingFirstRunFinished() || onboardingMarkerExists() {
+		t.Fatal("first-run marker written although config.toml failed to save")
+	}
+	if h.err == nil {
+		t.Fatal("the failed save is not shown")
+	}
+	h2 := startDeck(t)
+	if !checkVisible(h2) || !h2.onboarding.firstRun {
+		t.Fatal("after a failed save the next start does not bring the first-run check page back")
+	}
+
+	saveFirstRunUserConfig = prevSave
+	h2.Update(keyEsc)
+	if _, err := os.Stat(configFile(t)); err != nil {
+		t.Fatalf("config.toml not written: %v", err)
+	}
+	if !onboardingFirstRunFinished() {
+		t.Fatal("first-run marker missing after a successful save")
+	}
+}
+
 func TestOnboarding_ReopenAfterSkip(t *testing.T) {
 	e := newOnboardingEnv(t, "claude")
 	h := startDeck(t)
