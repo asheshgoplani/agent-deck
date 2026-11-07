@@ -746,18 +746,15 @@ func (i *Instance) buildClaudeExtraFlagsWithName(opts *ClaudeOptions, launchName
 	// without being re-tokenized. Appended last so user flags can override
 	// defaults claude accepts in last-wins ordering.
 	//
-	// KNOWN OPEN RESIDUAL (review finding on #1830, not yet fixed): these
-	// tokens are appended AFTER canResumeClaudeSession has already decided
-	// --resume vs --session-id above, so an operator-configured ExtraArgs
-	// entry of e.g. `--resume <foreign-uuid>` or `-c` still reaches the final
-	// command line on a command the chokepoint just refused. #1407 copies a
-	// parent's ExtraArgs onto every fork, so a misconfigured parent would
-	// propagate the bypass to all children. ExtraArgs is operator-configured
-	// (not an external input), which bounds the severity, but this flags is
-	// not the "cannot be bypassed" guarantee this file's package doc claims.
-	// Stripping/logging --resume/-r/-c/--fork-session/--session-id tokens
-	// from ExtraArgs on the claude path is deferred as a follow-up.
-	for _, tok := range i.ExtraArgs {
+	// These tokens are appended AFTER the builder has chosen its own
+	// selector (--resume / --session-id <own id>). An extra-arg fork (and the #1830
+	// review residual): once the session has a conversation of its own, a
+	// persisted `--resume <other> --fork-session` (an extra-arg fork's launch
+	// pair) or any other session selector would win (Claude is last-wins) and
+	// fork that other conversation again on every restart. Such selectors are
+	// left out here; see stripStaleSessionSelectors for the exact rules. With
+	// no own id yet (first start) the tokens pass through unchanged.
+	for _, tok := range i.claudeExtraArgsForCommand() {
 		flags = append(flags, shellescape.Quote(tok))
 	}
 
@@ -1470,6 +1467,11 @@ func (i *Instance) buildCopilotCommand(baseCommand string) string {
 func (i *Instance) buildClaudeResumeCommand() string {
 	// #2954: set below where the command starts a new conversation.
 	i.launchesFresh.Store(false)
+
+	// A session restarted with its own conversation id must not
+	// carry its first start's fork pair any more; drop it for good (the next
+	// save persists the repair) rather than only filtering it per command.
+	i.healStaleClaudeSelectorExtraArgs("restart")
 
 	// Source env files and init_script so resumed sessions have the same
 	// shell environment as freshly started ones (fixes #409).

@@ -1948,6 +1948,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		// or when the session is restarted. This saves 0-4 subprocess calls per session.
 
 		inst.acknowledgedAt = instData.AcknowledgedAt
+		// A stale fork pair persisted by an older build (a session
+		// that already has its own conversation id) is removed on load.
+		inst.healStaleClaudeSelectorExtraArgs("load")
 		instances[i] = inst
 	}
 
