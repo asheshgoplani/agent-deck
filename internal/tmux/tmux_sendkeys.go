@@ -19,6 +19,13 @@ import (
 // the vim-mode regression test in tmux_vim_mode_test.go (issue #1264).
 var keySenderExec = tmuxExec
 
+// preEnterDelayDefault is the historical pause between the delivered message
+// body and the submitting Enter — sized for Ink/curses composers to finish
+// processing a bracketed-paste end marker before the keystroke lands.
+// Composers with a wider input-coalescing window override it per session via
+// SetPreEnterDelay.
+const preEnterDelayDefault = 100 * time.Millisecond
+
 // SendKeys sends keys to the tmux session
 // Uses -l flag to treat keys as literal text, preventing tmux special key interpretation
 func (s *Session) SendKeys(keys string) error {
@@ -260,7 +267,9 @@ func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture f
 	// Delay for TUI apps (Ink, curses) to finish processing bracketed paste
 	// before Enter arrives. Without this, tmux 3.2+ paste sequences cause
 	// the immediately-following Enter to be swallowed by the paste handler.
-	time.Sleep(100 * time.Millisecond)
+	// Sessions whose composer coalesces a wider input window (e.g. Devin CLI)
+	// carry a larger preEnterDelay.
+	time.Sleep(s.effectivePreEnterDelay())
 	if check != nil {
 		var pane string
 		var capErr error

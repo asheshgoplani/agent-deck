@@ -661,6 +661,15 @@ type Session struct {
 	// from TmuxSettings.GetLaunchAs which already canonicalises.
 	LaunchAs string
 
+	// preEnterDelay widens the pause between delivering the message body and
+	// sending the submitting Enter in sendKeysAndEnterToTarget. The default
+	// (preEnterDelayDefault) is sized for Ink/curses composers processing a
+	// bracketed-paste end marker; some composers coalesce input arriving
+	// within a wider window into a single burst and insert a trailing Enter
+	// as a newline instead of submitting. Zero keeps the default. Set per
+	// tool by the session layer via SetPreEnterDelay.
+	preEnterDelay time.Duration
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -757,6 +766,28 @@ func (s *Session) SetDetectPatterns(toolName string, detectPatterns []string) {
 	defer s.mu.Unlock()
 	s.customToolName = toolName
 	s.customDetectPatterns = detectPatterns
+}
+
+// SetPreEnterDelay overrides the pause between delivering the message body
+// and sending the submitting Enter in SendKeysAndEnter. A zero or negative
+// value restores the built-in default (preEnterDelayDefault). Only composers
+// whose input-coalescing window exceeds the default need this — see the
+// preEnterDelay field comment.
+func (s *Session) SetPreEnterDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.preEnterDelay = d
+}
+
+// effectivePreEnterDelay returns the configured body→Enter pause, or the
+// transport default when unset.
+func (s *Session) effectivePreEnterDelay() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.preEnterDelay > 0 {
+		return s.preEnterDelay
+	}
+	return preEnterDelayDefault
 }
 
 // SetInjectStatusLine controls whether ConfigureStatusBar modifies tmux settings.
