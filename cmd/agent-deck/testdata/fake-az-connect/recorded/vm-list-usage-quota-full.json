@@ -1,0 +1,47 @@
+[
+  {
+    "currentValue": 0,
+    "limit": 2500,
+    "localName": "Availability Sets",
+    "name": {
+      "localizedValue": "Availability Sets",
+      "value": "availabilitySets"
+    }
+  },
+  {
+    "currentValue": 3,
+    "limit": 4,
+    "localName": "Total Regional vCPUs",
+    "name": {
+      "localizedValue": "Total Regional vCPUs",
+      "value": "cores"
+    }
+  },
+  {
+    "currentValue": 2,
+    "limit": 25000,
+    "localName": "Virtual Machines",
+    "name": {
+      "localizedValue": "Virtual Machines",
+      "value": "virtualMachines"
+    }
+  },
+  {
+    "currentValue": 3,
+    "limit": 4,
+    "localName": "Standard BS Family vCPUs",
+    "name": {
+      "localizedValue": "Standard BS Family vCPUs",
+      "value": "standardBSFamily"
+    }
+  },
+  {
+    "currentValue": 0,
+    "limit": 4,
+    "localName": "Standard DSv5 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard DSv5 Family vCPUs",
+      "value": "standardDSv5Family"
+    }
+  }
+]

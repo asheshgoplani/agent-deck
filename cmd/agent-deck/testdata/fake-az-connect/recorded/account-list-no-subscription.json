@@ -1,0 +1,14 @@
+[
+  {
+    "cloudName": "AzureCloud",
+    "id": "a1b2c3d4-0000-4000-8000-00000000000a",
+    "isDefault": true,
+    "name": "N/A(tenant level account)",
+    "state": "Enabled",
+    "tenantId": "a1b2c3d4-0000-4000-8000-00000000000a",
+    "user": {
+      "name": "dev.tester@outlook.com",
+      "type": "user"
+    }
+  }
+]

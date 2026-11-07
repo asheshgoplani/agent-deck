@@ -1,0 +1,808 @@
+[
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "1"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "2"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "1"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBSFamily",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B1ms",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B1ms",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "1"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "1"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "1"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBSFamily",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B1s",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B1s",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "20"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "80"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "20"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBSFamily",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B20ms",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B20ms",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "4"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBasv2Family",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B2als_v2",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B2als_v2",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "8"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBasv2Family",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B2as_v2",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B2as_v2",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "1"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBasv2Family",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B2ats_v2",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B2ats_v2",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "8"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBSFamily",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B2ms",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B2ms",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "4"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBSFamily",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B2s",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B2s",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "8"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBsv2Family",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B2s_v2",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B2s_v2",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "1"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardBsv2Family",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_B2ts_v2",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "B2ts_v2",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "8"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardDADSv5Family",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_D2ads_v5",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "D2ads_v5",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "8"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardDASv5Family",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_D2as_v5",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "D2as_v5",
+    "tier": "Standard"
+  },
+  {
+    "apiVersions": null,
+    "capabilities": [
+      {
+        "name": "MaxResourceVolumeMB",
+        "value": "0"
+      },
+      {
+        "name": "OSVhdSizeMB",
+        "value": "1047552"
+      },
+      {
+        "name": "vCPUs",
+        "value": "2"
+      },
+      {
+        "name": "MemoryGB",
+        "value": "8"
+      },
+      {
+        "name": "MaxDataDiskCount",
+        "value": "4"
+      },
+      {
+        "name": "PremiumIO",
+        "value": "True"
+      },
+      {
+        "name": "vCPUsAvailable",
+        "value": "2"
+      },
+      {
+        "name": "vCPUsPerCore",
+        "value": "1"
+      }
+    ],
+    "capacity": null,
+    "costs": null,
+    "family": "standardDSv5Family",
+    "kind": null,
+    "locationInfo": [
+      {
+        "extendedLocations": null,
+        "location": "__LOCATION__",
+        "type": null,
+        "zoneDetails": [],
+        "zones": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    ],
+    "locations": [
+      "__LOCATION__"
+    ],
+    "name": "Standard_D2s_v5",
+    "resourceType": "virtualMachines",
+    "restrictions": [],
+    "size": "D2s_v5",
+    "tier": "Standard"
+  }
+]

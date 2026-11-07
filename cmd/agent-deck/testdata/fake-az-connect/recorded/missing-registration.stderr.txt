@@ -1,0 +1,7 @@
+ERROR: (MissingSubscriptionRegistration) The subscription is not registered to use namespace '__NAMESPACE__'. See https://aka.ms/rps-not-found for how to register subscriptions.
+Code: MissingSubscriptionRegistration
+Message: The subscription is not registered to use namespace '__NAMESPACE__'. See https://aka.ms/rps-not-found for how to register subscriptions.
+Exception Details:	(MissingSubscriptionRegistration) The subscription is not registered to use namespace '__NAMESPACE__'. See https://aka.ms/rps-not-found for how to register subscriptions.
+	Code: MissingSubscriptionRegistration
+	Message: The subscription is not registered to use namespace '__NAMESPACE__'. See https://aka.ms/rps-not-found for how to register subscriptions.
+	Target: __NAMESPACE__

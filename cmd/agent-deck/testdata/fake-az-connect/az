@@ -1,0 +1,847 @@
+#!/usr/bin/env bash
+# Fake Azure CLI for `agent-deck provider connect azure` tests. No network,
+# no real az, no python. Answers with recorded azure-cli 2.6x output from
+# recorded/ (placeholders __LIKE_THIS__ filled in). See README.md next to it
+# for the switches and the state layout.
+#
+# Env:
+#   FAKE_AZ_STATE     state dir (required). argv.log gets one line per call:
+#                     the args joined by \x1f.
+#   FAKE_AZ_SCENARIO  comma list of switches (README.md).
+#   FAKE_AZ_LOGIN_WAIT  seconds the device-code login waits after printing
+#                     the code (default 0), to test the login timeout.
+# Written for bash 3.2 (macOS /bin/bash): no associative arrays, no ${x,,}.
+
+S="${FAKE_AZ_STATE:?FAKE_AZ_STATE not set}"
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+REC="$HERE/recorded"
+mkdir -p "$S"
+
+# ---- argv log ----
+{
+	first=1
+	for a in "$@"; do
+		if [ $first -eq 1 ]; then first=0; else printf '\037'; fi
+		printf '%s' "$a"
+	done
+	printf '\n'
+} >>"$S/argv.log"
+printf 'AZURE_CONFIG_DIR=%s\n' "${AZURE_CONFIG_DIR:-}" >>"$S/env.log"
+
+# ---- constants (match recorded/*.json) ----
+USER_NAME="dev.tester@outlook.com"
+TENANT="a1b2c3d4-0000-4000-8000-00000000000a"
+TENANT_DOMAIN="devtesteroutlook.onmicrosoft.com"
+OTHER_TENANT="b2c3d4e5-0000-4000-8000-00000000000b"
+SUB1="11111111-1111-4111-8111-111111111111"
+SUB1_NAME="Azure subscription 1"
+SUB2="22222222-2222-4222-8222-222222222222"
+SUB2_NAME="Pay-As-You-Go Dev"
+SUBD1="33333333-3333-4333-8333-333333333333"
+SUBD1_NAME="Free Trial"
+SUBD2="44444444-4444-4444-8444-444444444444"
+SUBD2_NAME="Azure for Students"
+SUBO="55555555-5555-4555-8555-555555555555"
+SUBO_NAME="Contoso Engineering"
+USER_OID="9f3e1c2a-0000-4000-8000-0000000000c1"
+CLI_APP="04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+LOCATIONS=" westeurope northeurope eastus eastus2 westus westus2 westus3 centralus uksouth ukwest swedencentral francecentral germanywestcentral norwayeast switzerlandnorth eastasia southeastasia japaneast australiaeast canadacentral brazilsouth centralindia "
+
+# ---- scenario ----
+SCEN=",${FAKE_AZ_SCENARIO:-},"
+sw() { case "$SCEN" in *",$1,"*) return 0 ;; esac; return 1; }
+swval() { # swval name -> value of name=value, or empty
+	local IFS=, x
+	for x in ${FAKE_AZ_SCENARIO:-}; do
+		case "$x" in "$1="*) printf '%s' "${x#*=}"; return 0 ;; esac
+	done
+	return 1
+}
+
+# ---- argument parsing ----
+# Boolean flags take no value; every other --option takes the next arg.
+BOOLS=" --all --wait --show-details -d --use-device-code --allow-no-subscriptions --only-show-errors --service-principal --yes -y --verbose --debug --identity --skip-assignment --create-cert --no-wait --include-inherited --include-groups --help -h --version "
+WORDS=()
+ONAMES=()
+OVALS=()
+ARGS=("$@")
+n=${#ARGS[@]}
+i=0
+while [ $i -lt $n ]; do
+	a="${ARGS[$i]}"
+	case "$a" in
+	-o) a=--output ;; -n) a=--name ;; -g) a=--resource-group ;; -l) a=--location ;;
+	-u) a=--username ;; -p) a=--password ;; -t) a=--tenant ;; -s) a=--subscription ;;
+	esac
+	case "$a" in
+	-*)
+		case "$BOOLS" in
+		*" $a "*) ONAMES[${#ONAMES[@]}]="$a"; OVALS[${#OVALS[@]}]="" ;;
+		*)
+			v=""
+			if [ $((i + 1)) -lt $n ]; then
+				i=$((i + 1))
+				v="${ARGS[$i]}"
+			fi
+			ONAMES[${#ONAMES[@]}]="$a"
+			OVALS[${#OVALS[@]}]="$v"
+			;;
+		esac
+		;;
+	*)
+		if [ ${#ONAMES[@]} -eq 0 ]; then
+			WORDS[${#WORDS[@]}]="$a"
+		else
+			# a stray positional after options (e.g. --tags a=b c=d)
+			k=$((${#OVALS[@]} - 1))
+			OVALS[$k]="${OVALS[$k]} $a"
+		fi
+		;;
+	esac
+	i=$((i + 1))
+done
+CMD="${WORDS[*]}"
+
+opt() { # opt --name -> value (exit 1 when absent)
+	local k=0
+	while [ $k -lt ${#ONAMES[@]} ]; do
+		if [ "${ONAMES[$k]}" = "$1" ]; then
+			printf '%s' "${OVALS[$k]}"
+			return 0
+		fi
+		k=$((k + 1))
+	done
+	return 1
+}
+has() { opt "$1" >/dev/null; }
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+OUT="$(opt --output || printf json)"
+
+# ---- output helpers ----
+err() { # err exitcode text...  (az's own format with --only-show-errors)
+	local code="$1"
+	shift
+	printf 'ERROR: %s\n' "$*" >&2
+	exit "$code"
+}
+arm_err() { # arm_err exitcode Code Message
+	printf 'ERROR: (%s) %s\nCode: %s\nMessage: %s\n' "$2" "$3" "$2" "$3" >&2
+	exit "$1"
+}
+esc() { printf '%s' "$1" | sed -e 's/[\\|&]/\\&/g'; }
+# render file KEY=VALUE... : print a recorded file with __KEY__ replaced.
+render() {
+	local f="$1" args=() kv
+	shift
+	for kv in "$@"; do
+		args[${#args[@]}]="-e"
+		args[${#args[@]}]="s|__${kv%%=*}__|$(esc "${kv#*=}")|g"
+	done
+	if [ ${#args[@]} -eq 0 ]; then cat "$REC/$f"; else sed "${args[@]}" "$REC/$f"; fi
+}
+emit() { # emit: stdin JSON to stdout unless -o none
+	if [ "$OUT" = none ]; then cat >/dev/null; else cat; fi
+}
+ok_none() { exit 0; }
+now_counter() { # next number from a counter file
+	local f="$S/$1" c=0
+	[ -f "$f" ] && c="$(cat "$f")"
+	c=$((c + 1))
+	printf '%s' "$c" >"$f"
+	printf '%s' "$c"
+}
+fake_uuid() { printf '%s-0000-4000-8000-%012d' "$1" "$2"; }
+new_secret() { # like a real client secret: xxx8Q~ + 34 chars of [A-Za-z0-9._~-]
+	local body
+	body="$(LC_ALL=C tr -dc 'A-Za-z0-9._~-' </dev/urandom 2>/dev/null | head -c 34)"
+	[ ${#body} -eq 34 ] || body="Fk$(date +%s)$$$RANDOM$RANDOM$RANDOM"
+	printf 'Zq%s8Q~%s' "$(now_counter secret.count)" "$body"
+}
+
+# ---- who is calling: the user's login, or a SP login in AZURE_CONFIG_DIR ----
+CFG="${AZURE_CONFIG_DIR:-$S/default-config}"
+SP_CTX=""
+[ -f "$CFG/fake-az-sp-login" ] && SP_CTX="$(cat "$CFG/fake-az-sp-login")"
+user_logged_in() {
+	[ -f "$S/logged_in" ] && return 0
+	sw logged_out && return 1
+	return 0
+}
+need_login() {
+	[ -n "$SP_CTX" ] && return 0
+	user_logged_in || err 1 "Please run 'az login' to setup account."
+}
+
+# ---- subscriptions of the scenario ----
+list_file() {
+	if sw no_subscription; then echo account-list-no-subscription.json
+	elif sw other_tenant; then echo account-list-other-tenant.json
+	elif sw disabled_sub; then echo account-list-disabled.json
+	elif sw multi_sub; then echo account-list-multi.json
+	else echo account-list.json; fi
+}
+show_file() {
+	if sw no_subscription || sw other_tenant; then echo account-show-tenant-level.json
+	elif sw disabled_sub; then echo account-show-disabled.json
+	else echo account-show.json; fi
+}
+# known_sub id-or-name -> "id|name|tenant" of a real subscription, or fail
+known_sub() {
+	local q
+	q="$(lower "$1")"
+	local rows
+	if sw no_subscription; then rows=""
+	elif sw other_tenant; then rows="$SUBO|$SUBO_NAME|$OTHER_TENANT"
+	elif sw disabled_sub; then rows="$SUBD1|$SUBD1_NAME|$TENANT
+$SUBD2|$SUBD2_NAME|$TENANT"
+	elif sw multi_sub; then rows="$SUB1|$SUB1_NAME|$TENANT
+$SUB2|$SUB2_NAME|$TENANT"
+	else rows="$SUB1|$SUB1_NAME|$TENANT"; fi
+	local IFS='
+'
+	local r id name
+	for r in $rows; do
+		id="${r%%|*}"
+		name="${r#*|}"
+		name="${name%%|*}"
+		if [ "$(lower "$id")" = "$q" ] || [ "$(lower "$name")" = "$q" ]; then
+			printf '%s' "$r"
+			return 0
+		fi
+	done
+	return 1
+}
+# SUB / SUB_NAME / SUB_TENANT for this call (--subscription, else the default)
+resolve_sub() {
+	local want r
+	want="$(opt --subscription || true)"
+	if [ -z "$want" ]; then
+		if [ -n "$SP_CTX" ] && [ -f "$CFG/fake-az-sp-sub" ]; then
+			want="$(cat "$CFG/fake-az-sp-sub")"
+		elif [ -f "$S/default_sub" ]; then
+			want="$(cat "$S/default_sub")"
+		else
+			sw no_subscription && err 1 "No subscription found. Run 'az account set' to select a subscription."
+			sw other_tenant && err 1 "No subscription found. Run 'az account set' to select a subscription."
+			if sw disabled_sub; then want="$SUBD1"; else want="$SUB1"; fi
+		fi
+	fi
+	r="$(known_sub "$want")" ||
+		err 1 "Subscription '$want' not found. Check the spelling and casing and try again."
+	SUB="${r%%|*}"
+	SUB_NAME="${r#*|}"
+	SUB_NAME="${SUB_NAME%%|*}"
+	SUB_TENANT="${r##*|}"
+}
+
+auth_failed() { # auth_failed action scope
+	local who="$USER_NAME" oid="$USER_OID"
+	if [ -n "$SP_CTX" ]; then
+		who="$SP_CTX"
+		oid="$(cat "$S/sps/$SP_CTX/object_id" 2>/dev/null || echo "$SP_CTX")"
+	fi
+	arm_err 1 AuthorizationFailed "The client '$who' with object id '$oid' does not have authorization to perform action '$1' over scope '$2' or the scope is invalid. If access was recently granted, please refresh your credentials."
+}
+
+ns_registered() { # Microsoft.Compute / Microsoft.Network
+	sw unregistered || return 0
+	[ -f "$S/registered/$1" ]
+}
+need_compute() {
+	ns_registered Microsoft.Compute ||
+		arm_err 1 MissingSubscriptionRegistration "The subscription is not registered to use namespace 'Microsoft.Compute'. See https://aka.ms/rps-not-found for how to register subscriptions."
+}
+need_network() { # az's real text (smoke test, azure-cli 2.7x), with Exception Details
+	ns_registered Microsoft.Network && return 0
+	render missing-registration.stderr.txt "NAMESPACE=Microsoft.Network" >&2
+	exit 1
+}
+# in_plus_list value list : value is one of the +-separated list (case-insensitive)
+in_plus_list() {
+	local v x IFS=+
+	v="$(lower "$1")"
+	for x in $2; do
+		[ "$(lower "$x")" = "$v" ] && return 0
+	done
+	return 1
+}
+
+group_dir() { printf '%s/groups/%s/%s' "$S" "$SUB" "$(lower "$1")"; }
+group_missing() {
+	arm_err 3 ResourceGroupNotFound "Resource group '$1' could not be found."
+}
+
+# sp_has_scope appId scope : the SP has a role assignment covering scope
+sp_covers() {
+	local f="$S/sps/$1/scopes" want sc
+	[ -f "$f" ] || return 0 # an SP we did not make (--sp-app-id): trust it
+	want="$(lower "$2")"
+	while IFS= read -r sc; do
+		sc="$(lower "$sc")"
+		case "$want" in "$sc" | "$sc"/*) return 0 ;; esac
+	done <"$f"
+	return 1
+}
+
+aadsts700016() { # appId tenant
+	err 1 "AADSTS700016: Application with identifier '$1' was not found in the directory '$2'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant. Trace ID: 6f0c2a51-0000-4000-8000-00000000f001 Correlation ID: 6f0c2a51-0000-4000-8000-00000000f002 Timestamp: 2026-11-05 09:15:02Z"
+}
+
+# sp_name_taken: someone else's app already has the default display name.
+TAKEN_APP="f0f0f0f0-0000-4000-8000-000000000900"
+TAKEN_NAME="agent-deck-sandboxes-sp"
+if sw sp_name_taken && [ ! -d "$S/sps/$TAKEN_APP" ]; then
+	mkdir -p "$S/sps/$TAKEN_APP" "$S/sps-by-name"
+	printf '%s' "$TAKEN_APP" >"$S/sps-by-name/$TAKEN_NAME"
+	printf '%s' "$TAKEN_NAME" >"$S/sps/$TAKEN_APP/name"
+	printf '%s' "$TENANT" >"$S/sps/$TAKEN_APP/tenant"
+	printf '%s' "$SUB1" >"$S/sps/$TAKEN_APP/subscription"
+	printf '%s' "0b1ec7aa-0000-4000-8000-000000000900" >"$S/sps/$TAKEN_APP/object_id"
+	printf '%s' "0a990b1d-0000-4000-8000-000000000900" >"$S/sps/$TAKEN_APP/app_object_id"
+	printf '/subscriptions/%s/resourceGroups/someone-elses-group\n' "$SUB1" >"$S/sps/$TAKEN_APP/scopes"
+	printf '%s' "Contributor" >"$S/sps/$TAKEN_APP/role"
+	(umask 077 && printf '%s' "Taken8Q~secret-used-on-another-machine" >"$S/sps/$TAKEN_APP/password")
+fi
+
+# =====================================================================
+case "$CMD" in
+
+# ---------------------------------------------------------------- login
+login)
+	if has --service-principal; then
+		[ "$(opt --password || true)" = "@-" ] ||
+			err 2 "fake az: a service principal login must use --password @- (secret on stdin)"
+		app="$(opt --username || true)"
+		ten="$(opt --tenant || true)"
+		[ -n "$app" ] || err 2 "the following arguments are required: --username/-u"
+		[ -n "$ten" ] || err 2 "the following arguments are required: --tenant/-t"
+		secret="$(cat)"
+		umask 077
+		printf '%s' "$secret" >"$S/sp_login_secret"
+		c="$(now_counter sp_login.count)"
+		[ -f "$S/deleted/$app" ] && aadsts700016 "$app" "$ten"
+		d="$(swval sp_propagation_delay || true)"
+		if [ -n "$d" ] && [ "$c" -le "$d" ]; then
+			aadsts700016 "$app" "$ten"
+		fi
+		if [ -d "$S/sps/$app" ]; then
+			[ "$(lower "$ten")" = "$(lower "$(cat "$S/sps/$app/tenant")")" ] || aadsts700016 "$app" "$ten"
+			if [ "$secret" != "$(cat "$S/sps/$app/password")" ]; then
+				err 1 "AADSTS7000215: Invalid client secret provided. Ensure the secret being sent in the request is the client secret value, not the client secret ID, for a secret added to app '$app'. Trace ID: 6f0c2a51-0000-4000-8000-00000000f003 Correlation ID: 6f0c2a51-0000-4000-8000-00000000f004 Timestamp: 2026-11-05 09:15:03Z"
+			fi
+		fi
+		[ -n "$secret" ] || err 1 "AADSTS7000216: 'client_assertion', 'client_secret' or 'request' is required for the 'client_credentials' grant type."
+		mkdir -p "$CFG"
+		printf '%s' "$app" >"$CFG/fake-az-sp-login"
+		# the SP's default subscription: the one its role is in
+		if [ -f "$S/sps/$app/subscription" ]; then
+			cp "$S/sps/$app/subscription" "$CFG/fake-az-sp-sub"
+		fi
+		if [ "$OUT" != none ]; then
+			resolve_sub
+			render account-show-sp.json "TENANT_ID=$ten" "SUB_ID=$SUB" "SUB_NAME=$SUB_NAME" "APP_ID=$app" |
+				sed -e '1s/^{/[{/' -e '$s/^}$/}]/'
+		fi
+		exit 0
+	fi
+	# user login: device code only (a browser cannot open in tests)
+	has --use-device-code || err 2 "fake az: only 'az login --use-device-code' is supported (no browser in tests)"
+	cat "$REC/login-device-code.stderr.txt" >&2
+	w="${FAKE_AZ_LOGIN_WAIT:-0}"
+	[ "$w" != 0 ] && sleep "$w"
+	ten="$(opt --tenant || true)"
+	if sw wrong_tenant_login; then
+		t="${ten:-contoso.onmicrosoft.com}"
+		err 1 "AADSTS50020: User account '$USER_NAME' from identity provider 'live.com' does not exist in tenant '$t' and cannot access the application '$CLI_APP'(Microsoft Azure CLI) in that tenant. The account needs to be added as an external user in the tenant first. Sign out and sign in again with a different Azure Active Directory user account. Trace ID: 6f0c2a51-0000-4000-8000-00000000f005 Correlation ID: 6f0c2a51-0000-4000-8000-00000000f006 Timestamp: 2026-11-05 09:14:11Z"
+	fi
+	if sw login_no_subscriptions_error || { sw no_subscription && ! has --allow-no-subscriptions; }; then
+		err 1 "No subscriptions found for $USER_NAME."
+	fi
+	printf 'user=%s\ntenant=%s\n' "$USER_NAME" "${ten:-$TENANT}" >"$S/logged_in"
+	if [ "$OUT" != none ]; then
+		render "$(list_file)" | emit
+	fi
+	;;
+
+logout)
+	if [ -n "$SP_CTX" ]; then
+		mv "$CFG/fake-az-sp-login" "$CFG/fake-az-sp-login.old"
+	else
+		[ -f "$S/logged_in" ] && mv "$S/logged_in" "$S/logged_out.old"
+	fi
+	;;
+
+# ------------------------------------------------------------- account
+"account show")
+	if [ -n "$SP_CTX" ]; then
+		resolve_sub
+		ten="$(cat "$S/sps/$SP_CTX/tenant" 2>/dev/null || echo "$SUB_TENANT")"
+		J="$(render account-show-sp.json "TENANT_ID=$ten" "SUB_ID=$SUB" "SUB_NAME=$SUB_NAME" "APP_ID=$SP_CTX")"
+		U="$SP_CTX"
+	else
+		user_logged_in || err 1 "Please run 'az login' to setup account."
+		ASKED_SUB="$(opt --subscription || true)"
+		if [ -n "$ASKED_SUB" ] || [ -f "$S/default_sub" ]; then
+			resolve_sub
+			J="$(render account-show.json | sed -e "s|$SUB1|$SUB|" -e "s|\"$SUB1_NAME\"|\"$(esc "$SUB_NAME")\"|" \
+				-e "s|\"tenantId\": \"$TENANT\"|\"tenantId\": \"$SUB_TENANT\"|")"
+		else
+			J="$(render "$(show_file)")"
+			if sw no_subscription || sw other_tenant; then SUB="$TENANT"; SUB_NAME="N/A(tenant level account)"
+			elif sw disabled_sub; then SUB="$SUBD1"; SUB_NAME="$SUBD1_NAME"
+			else SUB="$SUB1"; SUB_NAME="$SUB1_NAME"; fi
+			SUB_TENANT="$TENANT"
+		fi
+		ten="$TENANT"
+		if [ -n "$ASKED_SUB" ]; then
+			# --subscription: that subscription's own directory, like az
+			ten="$SUB_TENANT"
+		elif sw login_other_tenant; then
+			# the user's az login is for another directory than the subscription's
+			ten="$OTHER_TENANT"
+			J="$(printf '%s\n' "$J" | sed -e "s|\"tenantId\": \"$TENANT\"|\"tenantId\": \"$OTHER_TENANT\"|")"
+		fi
+		U="$USER_NAME"
+	fi
+	q="$(opt --query || true)"
+	if [ -n "$q" ]; then
+		case "$q" in
+		id) v="$SUB" ;; name) v="$SUB_NAME" ;; tenantId) v="$ten" ;; user.name) v="$U" ;;
+		*) err 2 "fake az: account show --query $q is not supported" ;;
+		esac
+		case "$OUT" in
+		tsv) printf '%s\n' "$v" ;; none) ;; *) printf '"%s"\n' "$v" ;;
+		esac
+		exit 0
+	fi
+	printf '%s\n' "$J" | emit
+	;;
+
+"account list")
+	if [ -n "$SP_CTX" ]; then
+		resolve_sub
+		ten="$(cat "$S/sps/$SP_CTX/tenant" 2>/dev/null || echo "$SUB_TENANT")"
+		render account-show-sp.json "TENANT_ID=$ten" "SUB_ID=$SUB" "SUB_NAME=$SUB_NAME" "APP_ID=$SP_CTX" |
+			sed -e '1s/^{/[{/' -e '$s/^}$/}]/' | emit
+		exit 0
+	fi
+	if ! user_logged_in; then
+		printf 'WARNING: Please run "az login" to access your accounts.\n' >&2
+		printf '[]\n' | emit
+		exit 0
+	fi
+	f="$(list_file)"
+	if has --all; then
+		render "$f" | emit
+	else
+		# without --all az hides subscriptions that are not Enabled
+		if sw disabled_sub || sw no_subscription; then printf '[]\n' | emit
+		else render "$f" | emit; fi
+	fi
+	;;
+
+"account set")
+	need_login
+	resolve_sub
+	if [ -n "$SP_CTX" ]; then
+		printf '%s' "$SUB" >"$CFG/fake-az-sp-sub"
+	else
+		printf '%s' "$SUB" >"$S/default_sub"
+	fi
+	;;
+
+# ------------------------------------------------------------ provider
+"provider show")
+	need_login
+	resolve_sub
+	ns="$(opt --namespace || true)"
+	case "$ns" in
+	Microsoft.Compute) rt=virtualMachines ;; Microsoft.Network) rt=networkInterfaces ;;
+	Microsoft.Resources) rt=resourceGroups ;; "") err 2 "the following arguments are required: --namespace/-n" ;;
+	*) rt=operations ;;
+	esac
+	if ns_registered "$ns"; then st=Registered; else st=NotRegistered; fi
+	q="$(opt --query || true)"
+	if [ -n "$q" ]; then
+		[ "$q" = registrationState ] || err 2 "fake az: provider show --query $q is not supported"
+		case "$OUT" in tsv) printf '%s\n' "$st" ;; none) ;; *) printf '"%s"\n' "$st" ;; esac
+		exit 0
+	fi
+	render provider-show.json "SUB_ID=$SUB" "NAMESPACE=$ns" "STATE=$st" "RESOURCE_TYPE=$rt" | emit
+	;;
+
+"provider register")
+	need_login
+	resolve_sub
+	ns="$(opt --namespace || true)"
+	[ -n "$ns" ] || err 2 "the following arguments are required: --namespace/-n"
+	if sw register_denied; then
+		auth_failed "$ns/register/action" "/subscriptions/$SUB"
+	fi
+	mkdir -p "$S/registered"
+	: >"$S/registered/$ns"
+	;;
+
+# --------------------------------------------------------------- group
+"group show")
+	need_login
+	resolve_sub
+	rg="$(opt --name || true)"
+	gd="$(group_dir "$rg")"
+	[ -d "$gd" ] || group_missing "$rg"
+	J="$(render group.json "SUB_ID=$SUB" "RG=$(cat "$gd/name")" "LOCATION=$(cat "$gd/location")")"
+	if [ ! -f "$gd/tagged" ]; then
+		# a group someone made by hand: no tags
+		J="$(printf '%s\n' "$J" | awk '/"tags": \{/ { print "  \"tags\": null,"; skip = 1; next } skip && /^  \},/ { skip = 0; next } !skip { print }')"
+	fi
+	printf '%s\n' "$J" | emit
+	;;
+
+"group exists")
+	need_login
+	resolve_sub
+	if [ -d "$(group_dir "$(opt --name)")" ]; then echo true; else echo false; fi
+	;;
+
+"group create")
+	need_login
+	resolve_sub
+	rg="$(opt --name || true)"
+	loc="$(lower "$(opt --location || true)")"
+	[ -n "$rg" ] || err 2 "the following arguments are required: --name/-n"
+	[ -n "$loc" ] || err 2 "the following arguments are required: --location/-l"
+	gd="$(group_dir "$rg")"
+	if sw no_group_permission && [ ! -d "$gd" ]; then
+		auth_failed "Microsoft.Resources/subscriptions/resourcegroups/write" "/subscriptions/$SUB/resourcegroups/$rg"
+	fi
+	case "$LOCATIONS" in
+	*" $loc "*) ;;
+	*) arm_err 1 LocationNotAvailableForResourceGroup "The provided location '$loc' is not available for resource group. List of available regions is '$(printf '%s' "$LOCATIONS" | sed -e 's/^ //' -e 's/ $//' -e 's/ /,/g')'." ;;
+	esac
+	if [ -d "$gd" ]; then
+		el="$(cat "$gd/location")"
+		if [ "$el" != "$loc" ]; then
+			arm_err 1 InvalidResourceGroupLocation "Invalid resource group location '$loc'. The Resource group already exists in location '$el'."
+		fi
+	else
+		mkdir -p "$gd"
+		printf '%s' "$rg" >"$gd/name"
+		printf '%s' "$loc" >"$gd/location"
+	fi
+	case "$(opt --tags || true)" in *agent-deck=sandboxes*) : >"$gd/tagged" ;; esac
+	render group.json "SUB_ID=$SUB" "RG=$(cat "$gd/name")" "LOCATION=$(cat "$gd/location")" | emit
+	;;
+
+# ------------------------------------------------------------------ vm
+"vm list-usage")
+	need_login
+	resolve_sub
+	loc="$(lower "$(opt --location || true)")"
+	[ -n "$loc" ] || err 2 "the following arguments are required: --location/-l"
+	sw usage_error && arm_err 1 InternalServerError "Encountered internal server error. Diagnostic information: timestamp '20261105T091500Z', subscription id '$SUB', tracking id '6f0c2a51-0000-4000-8000-00000000f007', request correlation id '6f0c2a51-0000-4000-8000-00000000f008'."
+	need_compute
+	case "$LOCATIONS" in
+	*" $loc "*) ;;
+	*) arm_err 1 NoRegisteredProviderFound "No registered resource provider found for location '$loc' and API version '2024-07-01' for type 'locations/usages'." ;;
+	esac
+	if sw quota_full; then render vm-list-usage-quota-full.json | emit; else render vm-list-usage.json | emit; fi
+	;;
+
+"vm list")
+	need_login
+	resolve_sub
+	rg="$(opt --resource-group || true)"
+	need_compute
+	if [ -n "$rg" ]; then
+		gd="$(group_dir "$rg")"
+		[ -d "$gd" ] || group_missing "$rg"
+		if [ -n "$SP_CTX" ] && ! sp_covers "$SP_CTX" "/subscriptions/$SUB/resourceGroups/$rg"; then
+			auth_failed "Microsoft.Compute/virtualMachines/read" "/subscriptions/$SUB/resourceGroups/$rg"
+		fi
+		loc="$(cat "$gd/location")"
+	else
+		loc=westeurope
+	fi
+	if [ -f "$S/vms.json" ]; then
+		sed -e "s|__SUB_ID__|$SUB|g" -e "s|__RG_UPPER__|$(esc "$(upper "$rg")")|g" -e "s|__LOCATION__|$loc|g" "$S/vms.json" | emit
+	else
+		printf '[]\n' | emit
+	fi
+	;;
+
+"vm list-skus")
+	need_login
+	resolve_sub
+	loc="$(lower "$(opt --location || true)")"
+	[ -n "$loc" ] || err 2 "fake az: vm list-skus needs --location (a full listing takes minutes)"
+	sw skus_error && arm_err 1 InternalServerError "Encountered internal server error. Diagnostic information: timestamp '20261105T091501Z', subscription id '$SUB', tracking id '6f0c2a51-0000-4000-8000-00000000f009', request correlation id '6f0c2a51-0000-4000-8000-00000000f00a'."
+	w="$(swval skus_wait || true)"
+	[ -n "$w" ] && exec sleep "$w" # like the real call, which can take minutes
+	case "$LOCATIONS" in
+	*" $loc "*) ;;
+	*) printf '[]\n' | emit; exit 0 ;; # az filters an unknown region to nothing
+	esac
+	rt="$(opt --resource-type || true)"
+	if [ -n "$rt" ] && [ "$(lower "$rt")" != virtualmachines ]; then printf '[]\n' | emit; exit 0; fi
+	all=0
+	has --all && all=1
+	# Like az: --size is a case-insensitive substring of the name; without
+	# --all a size restricted for this subscription in this region is left out.
+	render vm-list-skus.json "LOCATION=$loc" | awk -v size="$(lower "$(opt --size || true)")" \
+		-v missing="+$(lower "$(swval sku_missing || true)")+" -v restricted="+$(lower "$(swval sku_restricted || true)")+" \
+		-v all="$all" -v loc="$loc" '
+		/^  \{$/ { inb = 1; n = 0; name = ""; next }
+		inb && /^  \},?$/ {
+			inb = 0
+			lname = tolower(name)
+			if (size != "" && index(lname, size) == 0) next
+			if (index(missing, "+" lname "+") > 0) next
+			isr = index(restricted, "+" lname "+") > 0
+			if (isr && !all) next
+			out = out (cnt++ ? ",\n" : "") "  {"
+			for (k = 1; k <= n; k++) {
+				l = buf[k]
+				if (isr && l ~ /^    "restrictions": \[\],$/) {
+					l = "    \"restrictions\": [\n      {\n        \"reasonCode\": \"NotAvailableForSubscription\",\n        \"restrictionInfo\": {\n          \"locations\": [\n            \"" loc "\"\n          ],\n          \"zones\": null\n        },\n        \"type\": \"Location\",\n        \"values\": [\n          \"" loc "\"\n        ]\n      }\n    ],"
+				}
+				out = out "\n" l
+			}
+			out = out "\n  }"
+			next
+		}
+		inb {
+			buf[++n] = $0
+			if ($0 ~ /^    "name": "/) { name = $0; sub(/^    "name": "/, "", name); sub(/",?$/, "", name) }
+		}
+		END { if (cnt) printf "[\n%s\n]\n", out; else print "[]" }' | emit
+	;;
+
+# ------------------------------------------------------------- network
+"network nsg create")
+	need_login
+	resolve_sub
+	rg="$(opt --resource-group || true)"
+	name="$(opt --name || true)"
+	loc="$(lower "$(opt --location || true)")"
+	[ -n "$rg" ] || err 2 "the following arguments are required: --resource-group/-g"
+	[ -n "$name" ] || err 2 "the following arguments are required: --name/-n"
+	need_network
+	gd="$(group_dir "$rg")"
+	[ -d "$gd" ] || group_missing "$rg"
+	[ -n "$loc" ] || loc="$(cat "$gd/location")"
+	case "$LOCATIONS" in
+	*" $loc "*) ;;
+	*) arm_err 1 LocationNotAvailableForResourceType "The provided location '$loc' is not available for resource type 'Microsoft.Network/networkSecurityGroups'." ;;
+	esac
+	if in_plus_list "$loc" "$(swval region_closed || true)"; then
+		render nsg-create-region-closed.stderr.txt "NAME=$name" >&2
+		exit 1
+	fi
+	nd="$gd/nsgs"
+	if [ -f "$nd/$name" ] && [ "$(cat "$nd/$name")" != "$loc" ]; then
+		arm_err 1 InvalidResourceLocation "The resource '$name' already exists in location '$(cat "$nd/$name")' in resource group '$rg'. A resource with the same name cannot be created in location '$loc'. Please select a new resource name."
+	fi
+	mkdir -p "$nd"
+	printf '%s' "$loc" >"$nd/$name"
+	printf '%s %s %s\n' "$name" "$loc" "$(opt --tags || true)" >>"$S/nsg-created.log"
+	printf '{\n  "NewNSG": {\n    "location": "%s",\n    "name": "%s",\n    "provisioningState": "Succeeded",\n    "resourceGroup": "%s"\n  }\n}\n' "$loc" "$name" "$rg" | emit
+	;;
+
+"network nsg delete")
+	need_login
+	resolve_sub
+	rg="$(opt --resource-group || true)"
+	name="$(opt --name || true)"
+	need_network
+	gd="$(group_dir "$rg")"
+	[ -d "$gd" ] || group_missing "$rg"
+	sw nsg_delete_error && arm_err 1 InternalServerError "An error occurred."
+	# az exits 0 when there is nothing to delete
+	if [ -f "$gd/nsgs/$name" ]; then
+		mkdir -p "$gd/nsgs-deleted"
+		mv "$gd/nsgs/$name" "$gd/nsgs-deleted/$name.$(now_counter nsg_delete.count)"
+	fi
+	;;
+
+# --------------------------------------------------- service principal
+"ad sp create-for-rbac")
+	need_login
+	[ -z "$SP_CTX" ] || err 1 "fake az: create-for-rbac as a service principal is not modelled"
+	name="$(opt --name || true)"
+	role="$(opt --role || true)"
+	scope="$(opt --scopes || true)"
+	[ -n "$name" ] || name="azure-cli-2026-11-05-09-14-27"
+	if sw no_sp_permission; then
+		err 1 "Insufficient privileges to complete the operation."
+	fi
+	# the scope's subscription must be one of ours
+	sub_of_scope="$(printf '%s' "$scope" | sed -n 's|^/subscriptions/\([^/]*\).*|\1|p')"
+	if [ -n "$sub_of_scope" ]; then
+		r="$(known_sub "$sub_of_scope")" ||
+			err 1 "(SubscriptionNotFound) The subscription '$sub_of_scope' could not be found."
+		SUB="${r%%|*}"
+		SUB_TENANT="${r##*|}"
+	else
+		resolve_sub
+	fi
+	if [ -n "$scope" ]; then
+		rgs="$(printf '%s' "$scope" | sed -n 's|^/subscriptions/[^/]*/resource[Gg]roups/\([^/]*\).*|\1|p')"
+		if [ -n "$rgs" ] && [ ! -d "$(group_dir "$rgs")" ]; then
+			# az creates the app, then the role assignment fails
+			missing_rg="$rgs"
+		fi
+	fi
+	mkdir -p "$S/sps" "$S/sps-by-name"
+	if [ -f "$S/sps-by-name/$name" ] && [ ! -f "$S/deleted/$(cat "$S/sps-by-name/$name")" ]; then
+		app="$(cat "$S/sps-by-name/$name")"
+		printf 'Found an existing application instance: (id) %s. We will patch it.\n' "$(cat "$S/sps/$app/app_object_id")" >&2
+	else
+		c="$(now_counter app.count)"
+		app="$(fake_uuid 5a1e0c0d "$c")"
+		mkdir -p "$S/sps/$app"
+		printf '%s' "$app" >"$S/sps-by-name/$name"
+		printf '%s' "$name" >"$S/sps/$app/name"
+		fake_uuid 0b1ec7aa "$c" >"$S/sps/$app/object_id"
+		fake_uuid 0a990b1d "$c" >"$S/sps/$app/app_object_id"
+		: >"$S/sps/$app/scopes"
+	fi
+	printf '%s' "$SUB_TENANT" >"$S/sps/$app/tenant"
+	printf '%s' "$SUB" >"$S/sps/$app/subscription"
+	if [ -n "$scope" ] && [ -n "$role" ]; then
+		printf "Creating '%s' role assignment under scope '%s'\n" "$role" "$scope" >&2
+		if [ -n "${missing_rg:-}" ]; then
+			printf '  Role assignment creation failed.\n\n' >&2
+			err 1 "(ResourceGroupNotFound) Resource group '$missing_rg' could not be found."
+		fi
+		if sw no_role_permission; then
+			printf '  Role assignment creation failed.\n\n' >&2
+			arm_err 1 AuthorizationFailed "The client '$USER_NAME' with object id '$USER_OID' does not have authorization to perform action 'Microsoft.Authorization/roleAssignments/write' over scope '$scope/providers/Microsoft.Authorization/roleAssignments/$(fake_uuid 7a55e7aa 1)' or the scope is invalid. If access was recently granted, please refresh your credentials."
+		fi
+		grep -qixF "$scope" "$S/sps/$app/scopes" || printf '%s\n' "$scope" >>"$S/sps/$app/scopes"
+		printf '%s' "$role" >"$S/sps/$app/role"
+	fi
+	pw="$(new_secret)"
+	umask 077
+	printf '%s' "$pw" >"$S/sps/$app/password"
+	printf '%s' "$pw" >"$S/issued_secret"
+	printf 'The output includes credentials that you must protect. Be sure that you do not include these credentials in your code or check the credentials into your source control. For more information, see https://aka.ms/azadsp-cli\n' >&2
+	render sp-create-for-rbac.json "APP_ID=$app" "SP_NAME=$name" "PASSWORD=$pw" "TENANT_ID=$SUB_TENANT" | emit
+	;;
+
+"role assignment list")
+	need_login
+	app="$(opt --assignee || true)"
+	[ -n "$app" ] || err 2 "fake az: role assignment list needs --assignee"
+	if [ ! -f "$S/sps/$app/scopes" ] || [ -f "$S/deleted/$app" ]; then
+		# az resolves the assignee in Graph first
+		if [ -f "$S/deleted/$app" ]; then
+			err 1 "Cannot find user or service principal in graph database for '$app'. If the assignee is an appId, make sure the corresponding service principal is created with 'az ad sp create --id $app'."
+		fi
+		printf '[]\n' | emit
+		exit 0
+	fi
+	role="$(cat "$S/sps/$app/role" 2>/dev/null || echo Contributor)"
+	oid="$(cat "$S/sps/$app/object_id")"
+	entries=""
+	k=0
+	while IFS= read -r sc; do
+		[ -n "$sc" ] || continue
+		k=$((k + 1))
+		rgn="$(printf '%s' "$sc" | sed -n 's|^/subscriptions/[^/]*/resource[Gg]roups/\([^/]*\).*|\1|p')"
+		sid="$(printf '%s' "$sc" | sed -n 's|^/subscriptions/\([^/]*\).*|\1|p')"
+		e="$(render role-assignment.json "SCOPE=$sc" "ASSIGNMENT_ID=$(fake_uuid 7a55e7aa "$k")" "OBJECT_ID=$oid" "APP_ID=$app" "RG=$rgn" "SUB_ID=$sid" "ROLE=$role")"
+		if [ -z "$entries" ]; then entries="$e"; else entries="$entries,
+$e"; fi
+	done <"$S/sps/$app/scopes"
+	if sw wide_scope; then
+		sid="$(cat "$S/sps/$app/subscription")"
+		k=$((k + 1))
+		e="$(render role-assignment-subscription.json "SCOPE=/subscriptions/$sid" "ASSIGNMENT_ID=$(fake_uuid 7a55e7aa "$k")" "OBJECT_ID=$oid" "APP_ID=$app" "SUB_ID=$sid" "ROLE=User Access Administrator")"
+		if [ -z "$entries" ]; then entries="$e"; else entries="$entries,
+$e"; fi
+	fi
+	if [ -z "$entries" ]; then printf '[]\n' | emit; else printf '[\n%s\n]\n' "$entries" | emit; fi
+	;;
+
+"role assignment delete")
+	need_login
+	resolve_sub
+	app="$(opt --assignee || true)"
+	scope="$(opt --scope || true)"
+	if sw no_sp_permission; then
+		auth_failed "Microsoft.Authorization/roleAssignments/delete" "${scope:-/subscriptions/$SUB}/providers/Microsoft.Authorization/roleAssignments/$(fake_uuid 7a55e7aa 1)"
+	fi
+	f="$S/sps/$app/scopes"
+	if sw login_other_tenant && [ "$(cat "$S/sps/$app/tenant" 2>/dev/null)" != "$OTHER_TENANT" ]; then
+		# the login's directory does not see this app's assignments
+		err 1 "No matched assignments were found to delete"
+	fi
+	if [ ! -f "$f" ] || ! grep -qixF "$scope" "$f"; then
+		err 1 "No matched assignments were found to delete"
+	fi
+	grep -vixF "$scope" "$f" >"$f.new" || true
+	mv "$f.new" "$f"
+	;;
+
+"ad app delete")
+	need_login
+	app="$(opt --id || true)"
+	[ -n "$app" ] || err 2 "the following arguments are required: --id"
+	if sw no_sp_permission; then
+		err 1 "Insufficient privileges to complete the operation."
+	fi
+	if [ ! -d "$S/sps/$app" ] || [ -f "$S/deleted/$app" ] ||
+		{ sw login_other_tenant && [ "$(cat "$S/sps/$app/tenant" 2>/dev/null)" != "$OTHER_TENANT" ]; }; then
+		# an app in another directory than the login's looks missing, like az
+		err 1 "Resource '$app' does not exist or one of its queried reference-property objects are not present."
+	fi
+	mkdir -p "$S/deleted"
+	: >"$S/deleted/$app"
+	;;
+
+"ad sp list")
+	need_login
+	want="$(lower "$(opt --display-name || true)")"
+	[ -n "$want" ] || err 2 "fake az: ad sp list needs --display-name"
+	# like az: Graph startswith(displayName, ...), so a longer name matches too
+	entries=""
+	if [ -d "$S/sps-by-name" ]; then
+		for f in "$S/sps-by-name"/*; do
+			[ -f "$f" ] || continue
+			nm="$(basename "$f")"
+			case "$(lower "$nm")" in "$want"*) ;; *) continue ;; esac
+			app="$(cat "$f")"
+			[ -f "$S/deleted/$app" ] && continue
+			e="$(printf '  {\n    "appId": "%s",\n    "displayName": "%s",\n    "id": "%s",\n    "servicePrincipalType": "Application"\n  }' \
+				"$app" "$nm" "$(cat "$S/sps/$app/object_id")")"
+			if [ -z "$entries" ]; then entries="$e"; else entries="$entries,
+$e"; fi
+		done
+	fi
+	if [ -z "$entries" ]; then printf '[]\n' | emit; else printf '[\n%s\n]\n' "$entries" | emit; fi
+	;;
+
+"ad sp show")
+	need_login
+	app="$(opt --id || true)"
+	if [ ! -d "$S/sps/$app" ] || [ -f "$S/deleted/$app" ]; then
+		err 3 "Service principal '$app' doesn't exist"
+	fi
+	printf '{\n  "appId": "%s",\n  "displayName": "%s",\n  "id": "%s",\n  "servicePrincipalType": "Application"\n}\n' \
+		"$app" "$(cat "$S/sps/$app/name")" "$(cat "$S/sps/$app/object_id")" | emit
+	;;
+
+version | "")
+	if has --version || [ "$CMD" = version ]; then
+		printf '{\n  "azure-cli": "2.67.0",\n  "azure-cli-core": "2.67.0",\n  "azure-cli-telemetry": "1.1.0",\n  "extensions": {}\n}\n'
+		exit 0
+	fi
+	err 2 "fake az: no command given"
+	;;
+
+*)
+	err 2 "fake az: unexpected command: $CMD"
+	;;
+esac
+exit 0

@@ -305,6 +305,10 @@ the remote.
   sandbox through the `az` CLI, in one resource group, with ssh open only to
   your IP. Every resource is tagged, and list and destroy touch only tagged
   ones. It comes up ready: Claude Code, git and the project folder.
+  `agent-deck provider connect azure` sets it up in one step: it logs in to
+  Azure, makes the resource group and a service principal limited to it,
+  stores the secret (0600) and the config, and runs a check. See
+  [Connect in one step](../examples/providers/azure-vm/README.md#connect-in-one-step).
 
 See [examples/providers/README.md](../examples/providers/README.md).
 

@@ -1,0 +1,4 @@
+ERROR: (RequestDisallowedByAzure) Resource '__NAME__' was disallowed by Azure: The selected region is currently not accepting new customers: https://aka.ms/locationineligible.
+Code: RequestDisallowedByAzure
+Message: Resource '__NAME__' was disallowed by Azure: The selected region is currently not accepting new customers: https://aka.ms/locationineligible.
+Target: __NAME__

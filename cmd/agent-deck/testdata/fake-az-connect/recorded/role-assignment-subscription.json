@@ -1,0 +1,19 @@
+  {
+    "condition": null,
+    "conditionVersion": null,
+    "createdBy": "9f3e1c2a-0000-4000-8000-0000000000c1",
+    "createdOn": "2026-10-01T12:00:00.000000+00:00",
+    "delegatedManagedIdentityResourceId": null,
+    "description": null,
+    "id": "__SCOPE__/providers/Microsoft.Authorization/roleAssignments/__ASSIGNMENT_ID__",
+    "name": "__ASSIGNMENT_ID__",
+    "principalId": "__OBJECT_ID__",
+    "principalName": "__APP_ID__",
+    "principalType": "ServicePrincipal",
+    "roleDefinitionId": "/subscriptions/__SUB_ID__/providers/Microsoft.Authorization/roleDefinitions/acdd72a7-3385-48ef-bd42-f606fba81ae7",
+    "roleDefinitionName": "__ROLE__",
+    "scope": "__SCOPE__",
+    "type": "Microsoft.Authorization/roleAssignments",
+    "updatedBy": "9f3e1c2a-0000-4000-8000-0000000000c1",
+    "updatedOn": "2026-10-01T12:00:00.000000+00:00"
+  }

@@ -1,0 +1,16 @@
+{
+  "environmentName": "AzureCloud",
+  "homeTenantId": "a1b2c3d4-0000-4000-8000-00000000000a",
+  "id": "a1b2c3d4-0000-4000-8000-00000000000a",
+  "isDefault": true,
+  "managedByTenants": [],
+  "name": "N/A(tenant level account)",
+  "state": "Enabled",
+  "tenantDefaultDomain": "devtesteroutlook.onmicrosoft.com",
+  "tenantDisplayName": "Default Directory",
+  "tenantId": "a1b2c3d4-0000-4000-8000-00000000000a",
+  "user": {
+    "name": "dev.tester@outlook.com",
+    "type": "user"
+  }
+}
