@@ -362,7 +362,13 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		// flag (nothing was ever addressed to the parent) is nothing new. A
 		// parent whose flag is from an older epoch is scanned on every idle
 		// poll until its next record carries the new epoch (#3026 item 6).
+		// The daemon raised the flag itself, and a flag file write is best
+		// effort: its own copy also covers a commit whose flag file write
+		// failed (#3026 item 2).
 		flag, found := comms.ReadFlag(r.Dir, id)
+		if mem, ok := l.Flag(id); ok && (!found || mem.Epoch > flag.Epoch || (mem.Epoch == flag.Epoch && mem.Last > flag.Last)) {
+			flag, found = mem, true
+		}
 		if (!found || (flag.Epoch == f.Epoch && flag.Last <= f.Judged)) && (f.NextDue == 0 || now.UnixMilli() < f.NextDue) {
 			return
 		}
