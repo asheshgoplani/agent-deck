@@ -239,6 +239,10 @@ func (h *Home) maybeDrainPendingLaunchAgents() tea.Cmd {
 	case h.autoUpdateSuppressedReason != "", h.homebrewManaged, h.binaryOrphanReason != "",
 		h.autoInstallInFlight != "", h.restartExecutable() == "":
 		return nil
+	case !loadUpdateSettings().GetAutoInstall():
+		// The drain still spawns the updater child; a user who switched
+		// auto_install off has opted out of unattended runs entirely.
+		return nil
 	case time.Since(h.autoInstallAttempts[pendingDrainKey]) < autoInstallRetryAfter:
 		return nil
 	case !pendingLaunchAgents():
