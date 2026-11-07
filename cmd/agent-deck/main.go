@@ -403,7 +403,7 @@ const credsRefreshRemovedIn = "v1.16.21"
 // and remote-agent dispatch. Drop this stub two releases after
 // credsRefreshRemovedIn.
 func printCredsRefreshRemoved() {
-	fmt.Printf("creds-refresh was removed in %s. Disable any old unit with: systemctl --user disable --now agent-deck-creds-refresh. For long-lived logins use: claude setup-token (see README \"Vendor terms and logins\").\n", credsRefreshRemovedIn)
+	fmt.Printf("creds-refresh was removed in %s. Disable any old unit with: systemctl --user disable --now agent-deck-creds-refresh. For long-lived logins use: claude setup-token (see docs/guide/tools.md \"Vendor terms and logins\").\n", credsRefreshRemovedIn)
 }
 
 func main() {
