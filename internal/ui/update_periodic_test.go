@@ -360,3 +360,34 @@ func TestTick_InstallsAndReExecsWithoutKeypress(t *testing.T) {
 		t.Fatalf("unattended chain left a footer error: %v", h.err)
 	}
 }
+
+// TestInit_StartupUpdateCheckGate drives Init itself: the first update
+// check must be started at launch when checks are enabled, and not at all
+// with check_enabled = false or in a suppressed process.
+func TestInit_StartupUpdateCheckGate(t *testing.T) {
+	for _, env := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
+		t.Setenv(env, t.TempDir())
+	}
+	cases := []struct {
+		name       string
+		settings   session.UpdateSettings
+		suppressed string
+		wantCheck  bool
+	}{
+		{"enabled", session.UpdateSettings{}, "", true},
+		{"suppressed", session.UpdateSettings{}, "test", false},
+		{"check_enabled=false", session.UpdateSettings{CheckEnabled: boolPtr(false)}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubUpdateSettings(t, tc.settings)
+			stubAutoUpdateSuppressed(t, tc.suppressed)
+			h := newRestartTestHome(t)
+			defer h.cancel()
+			h.Init()
+			if h.updateCheckInFlight != tc.wantCheck {
+				t.Fatalf("startup check started = %v, want %v", h.updateCheckInFlight, tc.wantCheck)
+			}
+		})
+	}
+}
