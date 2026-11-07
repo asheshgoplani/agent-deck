@@ -25,7 +25,7 @@ type rowsTarget struct {
 	direct  bool
 	inst    *session.Instance
 	storage *session.Storage
-	env     *recallEnv
+	owner   *rowsLookup
 	native  string
 }
 
@@ -109,7 +109,8 @@ func instanceTarget(inst *session.Instance, peers []*session.Instance, storage *
 // resolveRowsTarget resolves <session> without the index first: deck
 // session id, then a conversation id bound to a deck session, then a deck
 // title or id prefix, then a native conversation file on disk, and only
-// then the index (#n, card ids, other harnesses).
+// then the index (#n, card ids, other harnesses). The target owns what it
+// opened; close releases it.
 func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 	if *f.transcript != "" {
 		h := *f.harness
@@ -118,10 +119,56 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 		}
 		return &rowsTarget{direct: true, src: query.RowsSource{Harness: h, Path: *f.transcript}, session: query.RowsSession{Harness: h, Path: *f.transcript}}, nil
 	}
+	lk, err := newRowsLookup(profile)
+	if err != nil {
+		return nil, err
+	}
+	t, err := lk.resolve(ref)
+	if err != nil {
+		lk.close()
+		return nil, err
+	}
+	t.owner = lk
+	return t, nil
+}
+
+// rowsLookup holds what resolving a <session> needs: the deck's sessions,
+// loaded once, and the recall index, opened at most once and only when a
+// ref falls through to it. A batch resolves every id through one lookup.
+type rowsLookup struct {
+	profile   string
+	storage   *session.Storage
+	instances []*session.Instance
+	env       *recallEnv
+	// envErr is the index open failure a batch lookup reports on every id
+	// that falls through to the index; a single-id lookup exits instead.
+	envErr  error
+	inBatch bool
+}
+
+// errRecallIndexUnavailable marks a batch entry whose id needed the recall
+// index when the index could not be opened.
+var errRecallIndexUnavailable = errors.New("recall index unavailable")
+
+func newRowsLookup(profile string) (*rowsLookup, error) {
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		return nil, err
 	}
+	return &rowsLookup{profile: profile, storage: storage, instances: instances}, nil
+}
+
+func (lk *rowsLookup) close() {
+	if lk.storage != nil {
+		lk.storage.Close()
+	}
+	if lk.env != nil {
+		lk.env.close()
+	}
+}
+
+func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
+	instances, storage := lk.instances, lk.storage
 	var inst *session.Instance
 	for _, match := range []func(*session.Instance) bool{
 		func(i *session.Instance) bool { return i.ID == ref },
@@ -145,9 +192,6 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 	if inst != nil {
 		t, err := instanceTarget(inst, instances, storage)
 		if err == nil || !errors.Is(err, query.ErrRowsUnsupported) {
-			if err != nil {
-				storage.Close()
-			}
 			return t, err
 		}
 		// Another harness: the index knows its native source.
@@ -156,29 +200,37 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 	if h, path := nativeTranscriptByID(ref); path != "" {
 		return &rowsTarget{direct: true, storage: storage, src: query.RowsSource{Harness: h, Path: path}, session: query.RowsSession{Harness: h, NativeID: ref, Path: path}}, nil
 	}
-	env := openRecallEnv(profile, NewCLIOutput(true, false))
-	h, path, sess, err := query.New(env.st, env.stateDB).NativeSource(context.Background(), ref)
+	if lk.env == nil && lk.envErr == nil {
+		if !lk.inBatch {
+			lk.env = openRecallEnv(lk.profile, NewCLIOutput(true, false))
+		} else if env, err := openRecallEnvErr(lk.profile, NewCLIOutput(true, false)); err != nil {
+			lk.envErr = fmt.Errorf("%w: %v", errRecallIndexUnavailable, err)
+		} else {
+			lk.env = env
+		}
+	}
+	if lk.envErr != nil {
+		return nil, lk.envErr
+	}
+	h, path, sess, err := query.New(lk.env.st, lk.env.stateDB).NativeSource(context.Background(), ref)
 	if err != nil {
-		env.close()
-		storage.Close()
 		if errors.Is(err, query.ErrNotFound) {
 			return nil, fmt.Errorf("no session, conversation or indexed transcript matches %q", ref)
 		}
 		return nil, err
 	}
-	t := &rowsTarget{storage: storage, env: env, native: sess.NativeID, direct: query.SupportsDirectRows(h)}
+	t := &rowsTarget{storage: storage, native: sess.NativeID, direct: query.SupportsDirectRows(h)}
 	t.src = query.RowsSource{Harness: h, Path: path}
 	t.session = query.RowsSession{ID: sess.DeckID, Harness: h, NativeID: sess.NativeID, Path: path, Title: sess.Title, Cwd: sess.CWD}
 	t.inst = inst
 	return t, nil
 }
 
+// close releases what resolveRowsTarget opened for this target; targets
+// resolved inside a batch share their lookup and own nothing.
 func (t *rowsTarget) close() {
-	if t.storage != nil {
-		t.storage.Close()
-	}
-	if t.env != nil {
-		t.env.close()
+	if t.owner != nil {
+		t.owner.close()
 	}
 }
 
@@ -230,7 +282,20 @@ func handleRecallTimelineRows(profile string, ref string, f rowsFlags, opts quer
 		exitCLI(1)
 	}
 	defer t.close()
+	result, code, err := readRowsTimeline(t, opts)
+	if err != nil {
+		out.Error(err.Error(), code)
+		exitCLI(1)
+	}
+	out.printJSON(result)
+}
+
+// readRowsTimeline is the object `recall timeline <session> --json` prints
+// for a resolved target, or the error and its CLI code. The single-id and
+// the --sessions batch paths both answer through it.
+func readRowsTimeline(t *rowsTarget, opts query.RowsOptions) (query.RowsTimeline, string, error) {
 	var result query.RowsTimeline
+	var err error
 	if t.direct {
 		result, err = query.ReadRows(context.Background(), t.src, opts)
 	} else if opts.Before != "" {
@@ -250,8 +315,7 @@ func handleRecallTimelineRows(profile string, ref string, f rowsFlags, opts quer
 		case errors.As(err, &re):
 			code = "RESYNC_REQUIRED"
 		}
-		out.Error(err.Error(), code)
-		exitCLI(1)
+		return query.RowsTimeline{}, code, err
 	}
 	result.Schema, result.Session = query.RowsSchema, t.session
 	result.Source = "native"
@@ -264,7 +328,7 @@ func handleRecallTimelineRows(profile string, ref string, f rowsFlags, opts quer
 	if fn := t.liveStatusFunc(); fn != nil {
 		result.Status = fn()
 	}
-	out.printJSON(result)
+	return result, "", nil
 }
 
 func handleRecallFollowRows(profile, ref, after string, f rowsFlags, withStatus bool) {
