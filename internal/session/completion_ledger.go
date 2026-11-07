@@ -32,6 +32,13 @@ type CompletionLedgerEntry struct {
 	Repeats        int       `json:"repeats,omitempty"`
 	LastRepeatAt   time.Time `json:"last_repeat_at,omitempty"`
 	LastRepeatUUID string    `json:"last_repeat_uuid,omitempty"`
+
+	// Suppressed marks a completion recorded while delivery to the parent was
+	// off (NoTransitionNotify or transition_events = false). It was never
+	// delivered, so checkDoneRepeat does not count it as the last delivered
+	// done and the export does not ship it. A delivered completion overwrites
+	// it with Suppressed false.
+	Suppressed bool `json:"suppressed,omitempty"`
 }
 
 // CompletionLedgerDir returns the directory holding per-child completion

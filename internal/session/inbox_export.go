@@ -327,6 +327,12 @@ func exportLedgerRecordsSince(since time.Time) ([]TransitionNotificationEvent, e
 		if !since.IsZero() && entry.FinishedAt.Before(since) {
 			continue
 		}
+		// Recorded while delivery was off: kept for `session children`,
+		// never delivered, so never exported either, whatever the child's
+		// flag says now.
+		if entry.Suppressed {
+			continue
+		}
 		out = append(out, completionLedgerEvent(entry))
 	}
 	return out, nil

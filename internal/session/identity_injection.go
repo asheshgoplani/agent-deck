@@ -410,7 +410,8 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\n## agent-deck CLI (flags go BEFORE positional arguments)\n")
 	b.WriteString("- `agent-deck session current --json` — this session's full, current metadata from the database (source of truth; the snapshot above may be renamed or re-parented later)\n")
 	b.WriteString("- `agent-deck session send <id-or-title> \"message\"` — message another session (`--message-file FILE` for long text)\n")
-	if i.NoTransitionNotify {
+	turnsReported := i.turnsReportedToParent()
+	if !turnsReported {
 		// This session's turns are never reported, so an answer reaches
 		// nobody unless it is sent back explicitly.
 		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; this session's turns are not reported, so reply with `agent-deck session send <id> \"answer\"`.\n")
@@ -429,8 +430,13 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\n## Completion sentinel\n")
 	b.WriteString("When a task you were given by a parent is fully done, end your final message with exactly one line:\n")
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
-	b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
-	b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
+	if !turnsReported {
+		b.WriteString("Notifications are off for this session, so your parent is not sent a record; the completion is still recorded and shows in `agent-deck session children`.\n")
+		b.WriteString("Questions and progress do not reach your parent either. To ask it something, use `agent-deck session send <parent-id> \"...\"` with the parent session id above.\n")
+	} else {
+		b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
+		b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
+	}
 	if i.fanoutHintApplies() {
 		b.WriteString("\n## Working style\n")
 		b.WriteString(FanoutHint + "\n")
@@ -438,6 +444,13 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\n" + identityPrecedenceNote)
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()
+}
+
+// turnsReportedToParent reports whether the daemon delivers this session's
+// turns and completions to its parent: false when the session opted out
+// (NoTransitionNotify) or [notifications] transition_events = false.
+func (i *Instance) turnsReportedToParent() bool {
+	return instanceAcceptsTransitionEvents(i) && GetNotificationsSettings().GetTransitionEventsEnabled()
 }
 
 // identityNoOpNoticeRule is the child-side form of the conductor's no-op
