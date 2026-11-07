@@ -49,7 +49,7 @@ func TestRemoteAgent_InProcessProbeMatchesCLI(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	probe, closeProbe, err := newRemoteAgentProbe("ch_support_test")
+	probe, fingerprint, closeProbe, err := newRemoteAgentProbe("ch_support_test")
 	if err != nil {
 		t.Fatalf("newRemoteAgentProbe: %v", err)
 	}
@@ -72,6 +72,15 @@ func TestRemoteAgent_InProcessProbeMatchesCLI(t *testing.T) {
 	}
 	if _, _, err := probe(); err != nil {
 		t.Fatalf("second probe: %v", err)
+	}
+	// The change feed's fingerprint reads the same rows: stable across
+	// reads, and read-only like the probe.
+	fp1, err := fingerprint()
+	if err != nil || fp1 == "" {
+		t.Fatalf("fingerprint: %q, %v", fp1, err)
+	}
+	if fp2, err := fingerprint(); err != nil || fp2 != fp1 {
+		t.Fatalf("fingerprint not stable: %q then %q (%v)", fp1, fp2, err)
 	}
 	if got := remoteAgentStamp(dbPath); got != stampBefore {
 		t.Fatalf("a probe must not write to the state DB: stamp %q -> %q", stampBefore, got)
