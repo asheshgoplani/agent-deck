@@ -149,7 +149,9 @@ reject a request whose protocol it does not speak.
 
 `create` gets `create_timeout_seconds` (default 600). The other actions get
 `timeout_seconds` (default 60). If your API returns before the machine boots,
-poll inside `create` until it has an address.
+poll inside `create` until it has an address. The `destroy` that rolls back a
+failed create also gets the full `timeout_seconds` (and at least 2 minutes),
+so set it to cover a destroy that deletes several resources one by one.
 
 If `create` times out or is interrupted (Ctrl-C, quitting the TUI), the
 provider may already have made the sandbox. agent-deck then runs `list` and
@@ -275,7 +277,8 @@ the remote.
   providers you trust.
 - No secrets in argv or logs. agent-deck puts nothing but the action in argv.
   Providers should read tokens from env or files, not argv (the ssh-vm
-  example uses a 0600 curl config file).
+  example uses a 0600 curl config file; the azure-vm example passes its
+  service principal secret to `az login` on stdin).
 - Provider output is untrusted. agent-deck validates every field before it
   writes an SSH config or runs ssh.
 - Host keys are pinned or trusted on first use, per sandbox. Each sandbox has
@@ -298,6 +301,10 @@ the remote.
 - [docker](../examples/providers/docker/): a local container, works as is.
 - [ssh-vm](../examples/providers/ssh-vm/): a template for a VM controller with
   an HTTP API.
+- [azure-vm](../examples/providers/azure-vm/): a small Azure Linux VM per
+  sandbox through the `az` CLI, in one resource group, with ssh open only to
+  your IP. Every resource is tagged, and list and destroy touch only tagged
+  ones. It comes up ready: Claude Code, git and the project folder.
 
 See [examples/providers/README.md](../examples/providers/README.md).
 
