@@ -55,6 +55,10 @@ const (
 type Unavailable struct {
 	Reason UnavailableReason
 	Err    error
+	// Absent: the target provably has no listener (no socket file, or a stale
+	// one nobody answers on). Only the pi wake reads it, to type a doorbell
+	// solely when nothing is there to refuse it.
+	Absent bool
 }
 
 func (u *Unavailable) Error() string {
