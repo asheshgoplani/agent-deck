@@ -3966,6 +3966,26 @@ type TmuxSettings struct {
 	Binaries map[string]string `toml:"binaries,omitempty"`
 }
 
+// misnamedTmuxBinarySockets returns, sorted, the [tmux.binaries] sockets
+// whose binary file is not named exactly "tmux". Such a binary still runs
+// agent-deck's own calls, but the socket's panes get its directory first on
+// PATH so that a bare "tmux" there (an agent, a hook) is the client that
+// matches the server; under another name that lookup finds the older tmux.
+func misnamedTmuxBinarySockets(binaries map[string]string) []string {
+	var out []string
+	for socket, bin := range binaries {
+		bin = strings.TrimSpace(bin)
+		if strings.TrimSpace(socket) == "" || bin == "" {
+			continue
+		}
+		if filepath.Base(bin) != "tmux" {
+			out = append(out, socket)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // GetInjectStatusLine returns whether to inject status line, defaulting to true.
 func (t TmuxSettings) GetInjectStatusLine() bool {
 	if t.InjectStatusLine == nil {
@@ -4608,6 +4628,12 @@ func LoadUserConfig() (*UserConfig, error) {
 
 	normalizeUIHiddenTools(&config.UI, config.Tools)
 	normalizeUIPreviewFields(&config.UI)
+	for _, socket := range misnamedTmuxBinarySockets(config.Tmux.Binaries) {
+		registryLog.Warn("tmux.binaries entry is not named tmux",
+			"socket", socket,
+			"path", strings.TrimSpace(config.Tmux.Binaries[socket]),
+			"hint", "name the file exactly tmux, in a directory of its own: agent-deck puts that directory first on PATH in the socket's panes, so a bare tmux there reaches this server")
+	}
 
 	// Keep the in-group sort mode in lockstep with the loaded config. This is
 	// the single funnel for TUI, web, and CLI; ReloadUserConfig routes through
