@@ -740,3 +740,34 @@ func TestBuildPiCommand_ProbeCarriesEveryLeadingAssignment(t *testing.T) {
 		t.Errorf("buildPiCommand(%q) = %q, want it to contain %q: FOO=1 and PATH= must both reach the probe", command, got, want)
 	}
 }
+
+// The socket is for local launches only: the extension of an SSH or sandboxed
+// pi runs in another filesystem and process namespace, which the host daemon
+// cannot reach. Such a launch exports nothing, not even the empty form, and
+// records PiSocketExported = false, even with a pi and extension that would
+// turn the socket on locally.
+func TestBuildPiCommand_SSHAndSandboxedLaunchesNeverExportTheSocket(t *testing.T) {
+	piSocketShortData(t)
+	installPiExtension(t)
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	writeFakePi(t, bin, `echo 1.3.0`)
+
+	local := &Instance{ID: "inst-local", Tool: "pi", IdentityInjectionDisabled: true}
+	if cmd := local.buildPiCommand("pi"); !exportsPiSocket(cmd) || !local.PiSocketExported {
+		t.Fatalf("test setup: a local launch must export the socket (flag %v): %q", local.PiSocketExported, cmd)
+	}
+
+	for name, inst := range map[string]*Instance{
+		"ssh":       {ID: "inst-ssh", Tool: "pi", IdentityInjectionDisabled: true, SSHHost: "remote", PiSocketExported: true},
+		"sandboxed": {ID: "inst-sandboxed", Tool: "pi", IdentityInjectionDisabled: true, Sandbox: NewSandboxConfig(""), PiSocketExported: true},
+	} {
+		cmd := inst.buildPiCommand("pi")
+		if strings.Contains(cmd, "AGENTDECK_PI_SOCKET") {
+			t.Errorf("%s launch exports AGENTDECK_PI_SOCKET: %q", name, cmd)
+		}
+		if inst.PiSocketExported {
+			t.Errorf("%s launch recorded PiSocketExported = true", name)
+		}
+	}
+}
