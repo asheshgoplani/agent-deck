@@ -136,13 +136,17 @@ func pasteAgent(tool string) string {
 	return ""
 }
 
-// pasteTargetTimeout bounds the check that runs between the key and the
-// upload (one ssh round trip on the attach's master connection). With the
-// clipboard read (clipboardReadTimeout) a Ctrl+V over an image holds the
-// input for at most 3.5 s; without an image only the clipboard read runs.
+// pasteTargetTimeout bounds the composer check (one ssh round trip on the
+// attach's master connection). It runs first, on every Ctrl+V-shaped key in
+// a remote attach, before the clipboard is read (so the macOS pasteboard
+// prompt never shows outside an agent's composer): any such key waits for
+// that round trip, at most 2 s. Only over an agent's composer is the
+// clipboard read too (clipboardReadTimeout), so the input is held for at
+// most 3.5 s there.
 const pasteTargetTimeout = 2 * time.Second
 
-// clipboardReadTimeout bounds the one clipboard read per Ctrl+V.
+// clipboardReadTimeout bounds the one clipboard read per Ctrl+V over an
+// agent's composer.
 const clipboardReadTimeout = 1500 * time.Millisecond
 
 // imageUploadTimeout is the upload's own deadline: a 20 MiB image over a
