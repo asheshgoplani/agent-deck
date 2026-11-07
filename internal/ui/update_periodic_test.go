@@ -87,6 +87,35 @@ func TestPeriodicUpdateCheck_Cadence(t *testing.T) {
 	}
 }
 
+// TestPeriodicUpdateCheck_StartupGate pins the Init-time call: a fresh Home
+// has never checked (zero lastUpdateCheck), so the startup poll is due —
+// and check_enabled = false or a suppressed process must hold it back
+// exactly as they hold back every later tick. Init routes through this
+// function, so its gate IS the startup gate (issue: startup check ran even
+// with check_enabled = false).
+func TestPeriodicUpdateCheck_StartupGate(t *testing.T) {
+	stubUpdateSettings(t, session.UpdateSettings{})
+	h := newRestartTestHome(t)
+	if h.lastUpdateCheck.IsZero() != true {
+		t.Fatal("fixture must start with no prior check")
+	}
+	if cmd := h.periodicUpdateCheck(time.Now()); cmd == nil {
+		t.Fatal("startup with checks enabled must schedule the first check")
+	}
+
+	h2 := newRestartTestHome(t)
+	h2.autoUpdateSuppressedReason = "test"
+	if cmd := h2.periodicUpdateCheck(time.Now()); cmd != nil {
+		t.Fatal("a suppressed process must not check at startup either")
+	}
+
+	stubUpdateSettings(t, session.UpdateSettings{CheckEnabled: boolPtr(false)})
+	h3 := newRestartTestHome(t)
+	if cmd := h3.periodicUpdateCheck(time.Now()); cmd != nil {
+		t.Fatal("check_enabled = false must stop the startup check too")
+	}
+}
+
 // TestUpdateCheckMsg_RecordsOutcome pins what the check result leaves
 // behind for the scheduler: a failed check marks the backoff, a good one
 // clears it, and both clear the in-flight flag.
@@ -329,5 +358,36 @@ func TestTick_InstallsAndReExecsWithoutKeypress(t *testing.T) {
 	}
 	if h.err != nil {
 		t.Fatalf("unattended chain left a footer error: %v", h.err)
+	}
+}
+
+// TestInit_StartupUpdateCheckGate drives Init itself: the first update
+// check must be started at launch when checks are enabled, and not at all
+// with check_enabled = false or in a suppressed process.
+func TestInit_StartupUpdateCheckGate(t *testing.T) {
+	for _, env := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
+		t.Setenv(env, t.TempDir())
+	}
+	cases := []struct {
+		name       string
+		settings   session.UpdateSettings
+		suppressed string
+		wantCheck  bool
+	}{
+		{"enabled", session.UpdateSettings{}, "", true},
+		{"suppressed", session.UpdateSettings{}, "test", false},
+		{"check_enabled=false", session.UpdateSettings{CheckEnabled: boolPtr(false)}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubUpdateSettings(t, tc.settings)
+			stubAutoUpdateSuppressed(t, tc.suppressed)
+			h := newRestartTestHome(t)
+			defer h.cancel()
+			h.Init()
+			if h.updateCheckInFlight != tc.wantCheck {
+				t.Fatalf("startup check started = %v, want %v", h.updateCheckInFlight, tc.wantCheck)
+			}
+		})
 	}
 }

@@ -50,7 +50,6 @@ func (h *Home) Init() tea.Cmd {
 		h.tick(),
 		h.reviverTick(),
 		h.triggersPollCmd(), // ⚡ badges and the Triggers panel (triggers_live.go)
-		h.requestUpdateCheck(time.Now()),
 		h.fetchRemoteSessions,
 		h.waitRemoteChange,
 		// Opt-in telemetry upload check, now and hourly. MaybeUpload re-reads
@@ -58,6 +57,13 @@ func (h *Home) Init() tea.Cmd {
 		// no-op for everyone who has not said yes.
 		telemetryUploadCmd(),
 		telemetryUploadTick(),
+	}
+
+	// The startup check goes through the same gate as the periodic one:
+	// [updates].check_enabled = false and a suppressed process (issue #2251)
+	// mean the TUI does not ask GitHub on its own — not even once.
+	if cmd := h.periodicUpdateCheck(time.Now()); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 
 	// Start listening for storage changes
