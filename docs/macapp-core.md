@@ -264,9 +264,11 @@ omitted when unknown. `recall follow` answers `resync_required` with
 
 A Codex `session send` keeps the exact-acceptance guard on every path,
 plain, queued and `--json --wait`: an unresolved earlier submission, an
-identity owned by another session, a held acceptance lock or a remote
-rollout refuse with exit 1 and `delivery: "acceptance_refused"` (nothing was
-typed). For the first message after the trust prompt, when the identity is
+identity owned by another session, a remote rollout or an acceptance lock
+still held when the send's wait ends refuse with exit 1 and
+`delivery: "acceptance_refused"` (nothing was typed). A send that waits for a
+busy target takes that lock only once the target is ready, so waiting senders
+do not refuse each other. For the first message after the trust prompt, when the identity is
 provably unavailable (none yet, or a stored id with no rollout),
 `--codex-composer-fallback` sends through the verified composer path
 instead of refusing; it is never used for `--json --wait`, and the send
