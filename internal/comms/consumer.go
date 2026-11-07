@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -430,6 +431,15 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 			}
 		}
 		f.Acked = kept
+		// Delivery state above the resume point belongs to records that may
+		// be gone: a new record reusing one of those cursors must not
+		// inherit their attempt or their failed wakes.
+		f.Settle(func(in Inflight) bool { return in.Cursor > resume })
+		for k := range f.WakeTries {
+			if c, err := strconv.ParseUint(k, 10, 64); err != nil || events.Cursor(c) > resume {
+				delete(f.WakeTries, k)
+			}
+		}
 		f.Normalize()
 		f.addGap(note)
 		pass.Gap = &note
