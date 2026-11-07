@@ -699,7 +699,8 @@ func drainScope(en CommsEnrollment) (inScope func(comms.Record) bool, draining, 
 // marker. It acknowledges the records the prompt showed (a wake line names
 // them) and the records injected into the previous turn, and returns the
 // rest as context, followed by the inbox drain within one shared budget.
-// Exact transcript turn keys suppress duplicates in both directions.
+// Exact turn keys suppress duplicates: a transcript turn in both directions,
+// a pi run only when the ledger showed it first (inboxShownKey).
 // A draining parent gets only what the ledger still
 // owed it; once that is delivered its marker is removed. ok is false when
 // the inbox path alone applies (no marker, or the ledger cannot be read:
@@ -777,17 +778,43 @@ func LedgerPromptContext(id, prompt string) (*LedgerDelivery, bool) {
 		dl.Text += drained
 	}
 	for _, ev := range evs {
-		dl.shownKeys = append(dl.shownKeys, inboxTurnKey(ev))
+		dl.shownKeys = append(dl.shownKeys, inboxShownKey(ev))
 	}
 	return dl, true
 }
 
+// inboxShownKey is the turn key a shown inbox record marks as shown: its
+// inboxTurnKey, except for a pi run. A pi inbox record carries no text, so it
+// must not stand for the ledger turn that does; the ledger showing that turn
+// first still retires the record (commsShownMatcher). Inbox first, the run is
+// shown twice, as before the pi run key, and nothing is lost.
+func inboxShownKey(ev TransitionNotificationEvent) string {
+	if strings.HasPrefix(strings.TrimSpace(ev.LastOutputHash), "pi-run:") && ev.TurnUUID == "" {
+		return ""
+	}
+	return inboxTurnKey(ev)
+}
+
+// piRunTurnKey is the ledger key of a pi run's turn: ingestCommsEntry commits
+// a pi spool entry that carries the run under it, and inboxTurnKey maps the
+// run's inbox record to it.
+func piRunTurnKey(childID, signal string) string {
+	return comms.Key(comms.KindTurn, childID, "pi", signal)
+}
+
 // inboxTurnKey is the ledger key of the turn an inbox record carries: the
-// key the ledger commits a transcript-classified turn under. "" when the
-// record is not provably that exact local transcript turn.
+// key the ledger commits a transcript-classified turn or a pi run under. ""
+// when the record is not provably that exact local turn.
 func inboxTurnKey(ev TransitionNotificationEvent) string {
-	if strings.TrimSpace(ev.TurnUUID) == "" || ev.OutputHashStale ||
-		strings.EqualFold(strings.TrimSpace(ev.ToStatus), "error") || ev.SourceRemote != "" {
+	if strings.EqualFold(strings.TrimSpace(ev.ToStatus), "error") || ev.SourceRemote != "" {
+		return ""
+	}
+	if sig := strings.TrimSpace(ev.LastOutputHash); strings.HasPrefix(sig, "pi-run:") && ev.TurnUUID == "" {
+		// A pi run. Its signal names the run for good (TurnFingerprint), so a
+		// stale flag does not make it another turn.
+		return piRunTurnKey(ev.ChildSessionID, sig)
+	}
+	if strings.TrimSpace(ev.TurnUUID) == "" || ev.OutputHashStale {
 		return ""
 	}
 	// TurnFingerprint uses the plain turn/finished form only when a signal
@@ -881,7 +908,7 @@ func LedgerStopDecision(id string, stopHookActive bool) (*LedgerDelivery, bool) 
 		if derr == nil && blocked {
 			dl.Decision, dl.Blocked, dl.Text = dec, true, dec.Reason
 			for _, ev := range evs {
-				dl.shownKeys = append(dl.shownKeys, inboxTurnKey(ev))
+				dl.shownKeys = append(dl.shownKeys, inboxShownKey(ev))
 			}
 			dl.onShown = func() { SpoolCommsWake(id, "inbox", "stop", dec.Reason, "") }
 		}

@@ -282,6 +282,15 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	// last answer is news when a human or a send started it, noise only for
 	// a background trigger.
 	identity := facts.UUID
+	piRun := ""
+	if identity == "" && e.Harness == "pi" && strings.HasPrefix(e.PiRun, "pi-run:") {
+		// The inbox keys a pi run by its run token (piRunSignal, hashed from
+		// the whole id when the entry was spooled); the same key (piRunTurnKey)
+		// lets inboxTurnKey match the two. An entry without one (spooled
+		// before the upgrade, a v3 extension) keeps session:turn.
+		piRun = e.PiRun
+		identity = piRun
+	}
 	if identity == "" && e.TurnID != "" {
 		identity = e.SessionID + ":" + e.TurnID
 	}
@@ -308,9 +317,14 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		rec.ReplyTo = facts.FromID
 		rec.To = append(rec.To, facts.FromID)
 	}
-	if classified {
+	switch {
+	case piRun != "":
+		// The default branch would build this same key (harness pi, identity
+		// piRun); the case names it beside inboxTurnKey's mapping.
+		rec.Key = piRunTurnKey(inst.ID, piRun)
+	case classified:
 		rec.Key = comms.Key(comms.KindTurn, inst.ID, identity)
-	} else {
+	default:
 		rec.Key = comms.Key(comms.KindTurn, inst.ID, e.Harness, identity)
 	}
 
