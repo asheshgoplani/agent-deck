@@ -7,9 +7,23 @@
                                                  copy; every eval must then fail grounding
     python3 -I check.py grade ANSWERS.json       grade model answers by each eval's checks
     python3 -I check.py coverage [--md]          promise coverage table
+    python3 -I check.py facts [--strict]         change each pinned fact in place, one
+                                                 occurrence at a time; report which survive
+    python3 -I check.py prompts                  the task-eval prompts as JSON (id, prompt),
+                                                 without expected output or checks, for a
+                                                 model run (model-run.sh)
+
+Global options, before or after the command:
+    --skill-dir DIR   the skill under test (default: the directory above this file)
+    --evals-dir DIR   its evals.json and promises.json (default: this file's directory)
+
+So one checker serves every skill: the agent-deck skill (the defaults), the watcher-creator
+skill (tests/skill-evals/watcher-creator) or a skill outside this repo.
 
 Data: evals.json (task, agent-friendliness and trigger evals) and promises.json (what the
-skill teaches). Exit 0 = all checks passed, 1 = a check failed, 2 = bad usage or input.
+skill teaches). evals.json may set "areas" (the promise and trigger areas) and
+"trigger_minimums" ({"per_area": 2, "near_miss": 5} by default) for a skill other than
+agent-deck. Exit 0 = all checks passed, 1 = a check failed, 2 = bad usage or input.
 """
 import json
 import os
@@ -24,16 +38,30 @@ EVALS_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILL_DIR = os.path.dirname(EVALS_DIR)
 REPO_DIR = os.path.dirname(os.path.dirname(SKILL_DIR))
 AREAS = ("core", "fleet", "session-share", "recall", "retro", "repro", "contributing")
+TRIGGER_MINIMUMS = {"per_area": 2, "near_miss": 5}
 CHECKERS = ("cli-drift", "config-drift", "trigger-terms")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 
 
-def load(skill_dir=SKILL_DIR):
-    with open(os.path.join(skill_dir, "evals", "evals.json")) as f:
+def load():
+    with open(os.path.join(EVALS_DIR, "evals.json")) as f:
         evals = json.load(f)
-    with open(os.path.join(skill_dir, "evals", "promises.json")) as f:
+    with open(os.path.join(EVALS_DIR, "promises.json")) as f:
         promises = json.load(f)["promises"]
     return evals, promises
+
+
+def areas(evals):
+    """The areas a skill's promises and trigger evals use (agent-deck's by default)."""
+    return tuple(evals.get("areas", AREAS))
+
+
+def trigger_minimums(evals):
+    return {**TRIGGER_MINIMUMS, **evals.get("trigger_minimums", {})}
+
+
+def mutant_dir(tmp):
+    return os.path.join(tmp, os.path.basename(SKILL_DIR.rstrip(os.sep)) or "skill")
 
 
 def task_evals(evals):
@@ -135,7 +163,7 @@ def check_schema(evals, promises, errs):
         errs.append(f"promise id duplicated: {dup}")
     known = set(pids)
     for p in promises:
-        if p.get("area") not in AREAS:
+        if p.get("area") not in areas(evals):
             errs.append(f"promise {p['id']}: unknown area {p.get('area')!r}")
         if p.get("kind") not in ("behaviour", "reference", "script"):
             errs.append(f"promise {p['id']}: unknown kind {p.get('kind')!r}")
@@ -275,12 +303,13 @@ def check_triggers(skill_dir, evals, errs):
     trig = [t for _, t in triggers(evals)]
     for i, t in triggers(evals):
         errs.extend(trigger_errors(skill_dir, i, t))
-    for area in AREAS:
+    mins = trigger_minimums(evals)
+    for area in areas(evals):
         n = sum(1 for t in trig if t["should_trigger"] and t.get("area") == area)
-        if n < 2:
-            errs.append(f"trigger evals: area {area} has {n} should-trigger queries, want >= 2")
-    if sum(1 for t in trig if not t["should_trigger"] and t.get("near_miss")) < 5:
-        errs.append("trigger evals: want >= 5 near-miss should-not-trigger queries")
+        if n < mins["per_area"]:
+            errs.append(f"trigger evals: area {area} has {n} should-trigger queries, want >= {mins['per_area']}")
+    if sum(1 for t in trig if not t["should_trigger"] and t.get("near_miss")) < mins["near_miss"]:
+        errs.append(f"trigger evals: want >= {mins['near_miss']} near-miss should-not-trigger queries")
 
 
 def coverage(evals, promises):
@@ -417,7 +446,7 @@ def allowed(allow, rel, inv):
 
 def check_cli(skill_dir, binary, errs, notes):
     allow = []
-    allow_path = os.path.join(skill_dir, "evals", "drift-allow.json")
+    allow_path = os.path.join(EVALS_DIR, "drift-allow.json")
     if os.path.exists(allow_path):
         with open(allow_path) as f:
             allow = json.load(f)["allow"]
@@ -481,6 +510,9 @@ def check_cli(skill_dir, binary, errs, notes):
 def check_config(skill_dir, errs, notes):
     """Every key and top-level table in config-reference.md's toml blocks is a toml tag
     in the Go source (UserConfig and friends)."""
+    if not os.path.isfile(os.path.join(skill_dir, "references", "config-reference.md")):
+        notes.append("config: skipped (the skill has no references/config-reference.md)")
+        return
     if not os.path.isdir(os.path.join(REPO_DIR, "internal")):
         notes.append("config: skipped (no repo source next to the skill)")
         return
@@ -511,7 +543,7 @@ def check_config(skill_dir, errs, notes):
 # ------------------------------------------------------------------- commands
 
 def run_static(skill_dir, binary=None, quiet=False):
-    evals, promises = load(skill_dir)
+    evals, promises = load()
     errs, notes = [], []
     check_schema(evals, promises, errs)
     check_anchors(skill_dir, promises, errs)
@@ -539,7 +571,9 @@ def run_static(skill_dir, binary=None, quiet=False):
 
 def checker_mutants(binary):
     """The drift checkers must catch an invented flag, command and config key."""
-    cases = [("config", "references/config-reference.md", "\n```toml\n[core]\nno_such_key_xyz = true\n```\n")]
+    cases = []
+    if os.path.isfile(os.path.join(SKILL_DIR, "references", "config-reference.md")):
+        cases.append(("config", "references/config-reference.md", "\n```toml\n[core]\nno_such_key_xyz = true\n```\n"))
     if binary:
         cases += [("cli flag", "SKILL.md", "\n`agent-deck session send --no-such-flag-xyz w hi`\n"),
                   ("cli command", "SKILL.md", "\n`agent-deck frobnicate-xyz now`\n"),
@@ -548,7 +582,7 @@ def checker_mutants(binary):
     rows = []
     for name, rel, extra in cases:
         tmp = tempfile.mkdtemp(prefix="skill-mutant-")
-        mut = os.path.join(tmp, "agent-deck")
+        mut = mutant_dir(tmp)
         shutil.copytree(SKILL_DIR, mut, ignore=shutil.ignore_patterns("scripts", "tests"))
         with open(os.path.join(mut, rel), "a", encoding="utf-8") as f:
             f.write(extra)
@@ -575,7 +609,7 @@ def cmd_mutate(binary=None):
         rows.append(f"{'killed  ' if dead else 'SURVIVED'} {row}")
     for _, e in task_evals(evals):
         tmp = tempfile.mkdtemp(prefix="skill-mutant-")
-        mut = os.path.join(tmp, "agent-deck")
+        mut = mutant_dir(tmp)
         shutil.copytree(SKILL_DIR, mut)
         for src in e["sources"]:
             rel, heading = split_source(src)
@@ -595,7 +629,7 @@ def cmd_mutate(binary=None):
     desc = frontmatter_description(SKILL_DIR)
     for i, t in triggers(evals):
         tmp = tempfile.mkdtemp(prefix="skill-mutant-")
-        mut = os.path.join(tmp, "agent-deck")
+        mut = mutant_dir(tmp)
         shutil.copytree(SKILL_DIR, mut, ignore=shutil.ignore_patterns("scripts", "tests"))
         garbled = desc
         for term in t["terms"]:
@@ -656,6 +690,86 @@ def cmd_grade(path):
     return 1 if fails or unknown else 0
 
 
+def change_in_place(text):
+    """The matched text with its fact changed: digits shifted, letters rotated, so the
+    surrounding text stays and only this occurrence stops saying what it said."""
+    out = []
+    for ch in text:
+        if ch.isdigit():
+            out.append(str((int(ch) + 1) % 10))
+        elif "a" <= ch.lower() <= "z":
+            base = ord("a") if ch.islower() else ord("A")
+            out.append(chr(base + (ord(ch) - base + 13) % 26))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def cmd_facts(strict):
+    """The in-place gap of `mutate` (RUNNER.md, "What they do not prove"), measured:
+    for every task eval, every `must` and every place in its cited sections where that
+    `must` matches, change only that occurrence (change_in_place) and re-check the
+    eval's grounding. A mutant survives when another occurrence still satisfies the
+    `must`: a fact changed in that one place would not be caught by `static`. Report
+    only, unless --strict."""
+    evals, _ = load()
+    total = killed = 0
+    survivors = []
+    pinned = 0  # evals with a must whose every in-place mutant is killed
+    tevals = task_evals(evals)
+    for _, e in tevals:
+        srcs = []
+        for src in e.get("sources", []):
+            rel, heading = split_source(src)
+            text = read(SKILL_DIR, rel)
+            body = None if text is None else section(text, heading)
+            if body is not None:
+                srcs.append((rel, heading, text.find(body), len(body)))
+        files = {rel: read(SKILL_DIR, rel) for rel, _, _, _ in srcs}
+
+        def joined(fs):
+            return "\n".join(section(fs[rel], h) or "" for rel, h, _, _ in srcs)
+        eval_pinned = False
+        for pat in e.get("checks", {}).get("must", []):
+            seen = set()
+            pat_survived = False
+            for rel, _, off, n in srcs:
+                for m in re.finditer(pat, files[rel][off:off + n], re.I | re.S):
+                    a, b = off + m.start(), off + m.end()
+                    if (rel, a) in seen or a == b:
+                        continue
+                    seen.add((rel, a))
+                    mutated = dict(files)
+                    mutated[rel] = files[rel][:a] + change_in_place(files[rel][a:b]) + files[rel][b:]
+                    total += 1
+                    if match(pat, joined(mutated)):
+                        line = files[rel][:a].count("\n") + 1
+                        col = a - files[rel].rfind("\n", 0, a)
+                        survivors.append(f"SURVIVED eval {e['id']}: {pat!r} changed at {rel}:{line}:{col}")
+                        pat_survived = True
+                    else:
+                        killed += 1
+            eval_pinned |= bool(seen) and not pat_survived
+        pinned += eval_pinned
+    for row in survivors:
+        print(row)
+    pct = 100 * killed // max(1, total)
+    print(f"facts: {pinned}/{len(tevals)} evals pin a fact that no in-place change survives "
+          f"(a must whose every occurrence is load-bearing)")
+    print(f"facts: {total} in-place mutants, {killed} killed ({pct}%), {len(survivors)} survived")
+    return 1 if strict and survivors else 0
+
+
+def cmd_prompts():
+    """The task-eval prompts for a model run, without anything that gives the answer."""
+    evals, _ = load()
+    out = [{"id": e["id"], "prompt": e["prompt"], "files": e.get("files", [])} for _, e in task_evals(evals)]
+    json.dump({"skill_name": evals.get("skill_name", os.path.basename(SKILL_DIR)), "evals": out},
+              sys.stdout, indent=1)
+    print()
+    return 0
+
+
 def cmd_coverage(md):
     evals, promises = load()
     cov = coverage(evals, promises)
@@ -676,7 +790,29 @@ def cmd_coverage(md):
     return 0
 
 
+def take_option(argv, name):
+    """Remove `name VALUE` from argv and return VALUE (None when absent)."""
+    if name not in argv:
+        return None
+    i = argv.index(name)
+    if i + 1 >= len(argv):
+        print(f"{name} needs a value", file=sys.stderr)
+        sys.exit(2)
+    value = argv[i + 1]
+    del argv[i:i + 2]
+    return os.path.abspath(value)
+
+
 def main(argv):
+    global SKILL_DIR, EVALS_DIR
+    argv = list(argv)
+    skill_dir, evals_dir = take_option(argv, "--skill-dir"), take_option(argv, "--evals-dir")
+    for d in (skill_dir, evals_dir):
+        if d and not os.path.isdir(d):
+            print(f"not a directory: {d}", file=sys.stderr)
+            return 2
+    SKILL_DIR = skill_dir or SKILL_DIR
+    EVALS_DIR = evals_dir or EVALS_DIR
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0 if argv else 2
@@ -693,6 +829,10 @@ def main(argv):
         return cmd_grade(rest[0])
     if cmd == "coverage":
         return cmd_coverage("--md" in rest)
+    if cmd == "facts":
+        return cmd_facts("--strict" in rest)
+    if cmd == "prompts":
+        return cmd_prompts()
     print(__doc__)
     return 2
 

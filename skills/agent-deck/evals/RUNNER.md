@@ -12,6 +12,9 @@ One skill, one eval set. Never use `claude -p` (or the skill-creator's `run_loop
 | `flows/fake-claude` | The fake Claude those evals launch: writes a transcript and fires hooks, never calls a model |
 | `flows/tmux-guard` | The `tmux` on their PATH: forwards only calls that name the private socket, refuses the rest |
 | `drift-allow.json` | Invocations the CLI drift check skips on purpose, each with a reason |
+| `model-run.sh` | Model-graded task evals: real Claude Code sessions in a sandbox answer, `check.py grade` grades (below) |
+
+`check.py` serves other skills too: `--skill-dir DIR --evals-dir DIR` point it at a skill and its eval set, whose `evals.json` sets its own `areas` and `trigger_minimums`. The watcher-creator skill's evals live in `tests/skill-evals/watcher-creator/` (outside the embedded skill directory, which install-skill copies to the pool) and run from `run.sh` and `TestWatcherCreatorSkillEvalsDeterministic`.
 
 ## One command
 
@@ -79,13 +82,31 @@ Isolation: a throwaway HOME and XDG dirs under a short `<work dir>/adflow.*` pat
 
 ## Task evals with a model
 
-Answer-only runs by fresh sub-agents (Workflow or Agent), never headless `claude -p`:
+`model-run.sh` runs them with real Claude Code sessions and grades the answers with `check.py grade`. Never `claude -p`: each batch of evals is one interactive Claude session that `agent-deck` launches (`add` + `session start` + `session send`, `--no-identity`) in a throwaway HOME, on a private tmux socket behind `flows/tmux-guard`.
 
-1. **With skill:** the agent reads only a copy of the skill (SKILL.md first, then the references it needs), never `evals/`, and writes the commands and facts it would give the user.
-2. **Without skill:** the agent may run only `agent-deck <cmd> --help`.
-3. Save the answers as `{"answers": [{"id": 1, "answer": "..."}]}` and grade them with `check.py grade` (or `run.sh --answers`). An answer passes when every `must` regex matches and no `must_not` matches.
+```bash
+skills/agent-deck/evals/model-run.sh --mode with --runs 3      # the skill, 3 runs; ~212 evals in batches of 20
+skills/agent-deck/evals/model-run.sh --mode without             # baseline: only `agent-deck <cmd> --help`
+skills/agent-deck/evals/model-run.sh --skill watcher-creator    # the watcher-creator skill's evals
+skills/agent-deck/evals/model-run.sh --skill-dir DIR --evals-dir DIR   # any skill
+skills/agent-deck/evals/model-run.sh --ids 1,2,af-1 --runs 1 --batch 3   # a quick subset
+```
 
-Repeat the with-skill run 3 times. An eval is **flaky** when it passes 1 or 2 times out of 3. It is **weak** when it passes without the skill: tighten its checks to a fact only the skill gives, or mark it `help_answerable` when the skill adds nothing to `--help`. Record each run's numbers, with the date and the change that ran them.
+1. **With skill:** the session's directory holds a copy of the skill (never `evals/` or `tests/`), `TASK.md` and `tasks.json` (`check.py prompts`: ids and prompts only, no expected output or checks). It reads SKILL.md first, then the references it needs, and writes `answers.json`.
+2. **Without skill:** the same, without the copy; the agent may run only `agent-deck <cmd> --help`.
+3. Answers are graded with `check.py grade`. An answer passes when every `must` regex matches and no `must_not` matches.
+
+**The sessions run on a dedicated token, never on a live login.** By default `model-run.sh` reads `conductor/CLAUDE_DEMO_TOKEN` with `deck-secret to-file` into the sandbox (`--token-secret` names another, `--token-file` takes a `claude setup-token` file, chmod 600), and exports it as `CLAUDE_CODE_OAUTH_TOKEN` through `[claude] env_file`; the sandbox's Claude config dir is fresh and holds no login. It refuses to start (exit 2, before any sandbox exists) when the token is missing, and refuses a login file (`.credentials.json`, or any file with a refresh token) passed as one: a live `~/.claude*/.credentials.json` shared with sandbox sessions is refreshed there, which logs out every other session on that account. `--preflight` checks and fetches the token and exits. `tests/test_model_run_token.sh` (in `run.sh`) checks all of this with a fake `deck-secret`.
+
+Each session has a deadline (`--deadline`, default 20 min, max 30) and gets one nudge if it goes idle without a complete `answers.json`. `--log-dir` keeps `answers-<mode>-<run>.json`, `grade-<mode>-<run>.log`, each pane and transcript, `tmux-calls.log` (the run fails if the guard refused a call other than Claude Code's own `show`/`display-message` probes) and `summary-<mode>.json`/`.md`: pass count per run, always-pass, flaky and never-pass evals, in/out tokens per session (from the transcripts), the skill's git sha (taken when the run starts) and a content hash of the skill and of `evals.json` + `promises.json`. Cite those in any score.
+
+Repeat the with-skill run 3 times (the default). An eval is **flaky** when it passes 1 or 2 times out of 3. It is **weak** when it passes without the skill: tighten its checks to a fact only the skill gives, or mark it `help_answerable` when the skill adds nothing to `--help`. Record each run's numbers, with the date and the change that ran them.
+
+What a model run does not prove: the dedicated-token path (`CLAUDE_CODE_OAUTH_TOKEN` from `[claude] env_file`) has only run against a fake vault so far (the real token did not exist yet); one session answers a whole batch, so later answers share context with earlier ones; the account's default model answers (record it); a pass means the regexes matched, not that the rest of the answer is right; and the sessions get the prompt in `tasks.json`, not the way a user would phrase a follow-up.
+
+## Facts changed in place
+
+`check.py facts` measures the gap `mutate` leaves (above): for every task eval, every `must` and every place in the cited sections where it matches, it changes only that occurrence (digits shifted, letters rotated) and re-checks grounding. A mutant survives when another occurrence still satisfies the `must`, so a fact changed in that one place would pass `static`. It prints each survivor (`file:line:col`), how many evals pin at least one fact that no in-place change survives, and the kill rate. It is a report (`run.sh` runs it; `--strict` fails on any survivor): the model runs are what catch a survivor that matters.
 
 ## Trigger evals
 
