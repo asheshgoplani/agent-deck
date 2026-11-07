@@ -45,6 +45,16 @@ func (f *turnTestFixture) turnSeq(t *testing.T, seq uint64) {
 	writeHookFileForTest(t, f.child.ID, body+"}")
 }
 
+// turnSeqFile writes <id>.turnseq, the copy of the count that outlives the
+// hook file.
+func (f *turnTestFixture) turnSeqFile(t *testing.T, seq uint64) {
+	t.Helper()
+	path := filepath.Join(filepath.Dir(hookStatusFilePath(f.child.ID)), f.child.ID+".turnseq")
+	if err := os.WriteFile(path, []byte(strconv.FormatUint(seq, 10)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // noHookHistory is [health] enabled = false: no <id>.events.jsonl.
 func noHookHistory(t *testing.T, id string) {
 	t.Helper()
@@ -195,8 +205,33 @@ func TestIssue3012_FreshStartJudgedByTurnSeq(t *testing.T) {
 			f.turnSeq(t, freshSeqAt+2)
 			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
 		}, []string{"urgent: "}, false},
-		// A count lower than the token's: the hook file was removed and
-		// written again (an unacknowledge, the prune). Something happened.
+		// The TUI removes the hook file on every attach-return; the count
+		// lives on in <id>.turnseq.
+		"a turn, then attach-return removed the hook file": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			f.turnSeqFile(t, freshSeqAt+2)
+			f.child.ClearHookStatus()
+			if _, err := os.Stat(hookStatusFilePath(f.child.ID)); !os.IsNotExist(err) {
+				t.Fatalf("precondition: ClearHookStatus removes the hook file, stat %v", err)
+			}
+			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
+		}, []string{"urgent: "}, false},
+		// The usual new child: no hook file yet, token at 0. Without the
+		// sidecar the removal reads 0 again, the turn is lost, and the
+		// pane back at its empty prompt reads as the boot.
+		"a token at 0, a turn, then attach-return removed the hook file": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			f.freshStartSeq(t, time.Now().Add(-time.Second), 0)
+			f.turnSeqFile(t, 2)
+			f.child.ClearHookStatus()
+			hookHistory(t, f.child.ID, "SessionStart")
+			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
+		}, []string{"urgent: "}, false},
+		"no turn, attach-return removed the hook file": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			f.turnSeqFile(t, freshSeqAt)
+			f.child.ClearHookStatus()
+			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
+		}, []string{freshStartLine}, true},
+		// A count lower than the token's: the instance's hook artifacts were
+		// removed and written again. Something happened.
 		"the count went back (hook file recreated)": {func(t *testing.T, f *turnTestFixture, st *pidStub) {
 			f.turnSeq(t, 0)
 			f.d.recordTerminalTurns("default", f.byID, f.idle(), nil)
@@ -373,5 +408,40 @@ func TestIssue3012_FreshStartTokenRecordsZeroTurnSeq(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil || !strings.Contains(string(data), `"turn_seq":0`) {
 		t.Fatalf("token %s (%v), want turn_seq 0 recorded", data, err)
+	}
+}
+
+// readHookTurnSeq takes the larger of the hook file's count and <id>.turnseq's,
+// so either one alone is enough.
+func TestIssue3012_ReadHookTurnSeqTakesTheLarger(t *testing.T) {
+	isolatedHomeDir(t)
+	for _, c := range []struct {
+		name, hook, side string
+		want             uint64
+	}{
+		{"hook file only", `{"event":"Stop","turn_seq":4}`, "", 4},
+		{"sidecar only (hook file removed)", "", "6", 6},
+		{"sidecar larger", `{"event":"Stop","turn_seq":4}`, "6", 6},
+		{"hook file larger (written by step 1)", `{"event":"Stop","turn_seq":9}`, "6", 9},
+		{"sidecar unreadable", `{"event":"Stop","turn_seq":4}`, "x", 4},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			id := "seq-" + strings.NewReplacer(" ", "-", "(", "", ")", "").Replace(c.name)
+			if c.hook != "" {
+				writeHookFileForTest(t, id, c.hook)
+			}
+			if c.side != "" {
+				path := filepath.Join(filepath.Dir(hookStatusFilePath(id)), id+".turnseq")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(c.side), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := readHookTurnSeq(id); got != c.want {
+				t.Fatalf("readHookTurnSeq = %d, want %d", got, c.want)
+			}
+		})
 	}
 }

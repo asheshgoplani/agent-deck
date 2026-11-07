@@ -23,21 +23,22 @@ import (
 // resuming restart leaves none (its boot is the restart token's); RestartFresh
 // starts a new conversation through Start and gets one. The daemon then
 // turns the child's arrival at its empty prompt with no turn since the start
-// (the hook file's turn_seq unchanged since the start, #3012) into one info
-// line. The line has its own
+// (turn_seq unchanged, #3012) into one info line. The line has its own
 // identity in the inbox, so a second sighting, on another path or after a
 // daemon restart, folds into it. A pane that shows nothing recognisable yet,
 // or a prompt reached before a hook event since the start shows that this
-// process's hooks fire, is judged again next poll, until the boot timeout. A menu, a login or model error is delivered as before. An
-// error or a turn spends the token silently, and nothing else does before
+// process's hooks fire, is judged again next poll, until the boot timeout. A
+// menu, a login or model error is delivered as before. An error or a turn
+// spends the token silently, and nothing else does before
 // restartTokenOrphanAge: a child launched with no kickoff and acknowledged
 // later (waiting -> idle at the same prompt) is still at its boot. That long
 // life is why the token needs Claude's hooks installed in its config dir:
-// with them every turn bumps the hook file's turn_seq, kept under the hook
-// lock whatever [health] says, so a /clear, a compaction or an inherited
-// claude -p after a turn cannot hide it. A token an older binary wrote, with
-// no turn_seq, is judged by the rules before it (freshStartTurnSeenLegacy)
-// until it is spent or ages out.
+// with them every turn bumps the instance's turn_seq, kept by the hook
+// handler under the status lock whatever [health] says and in <id>.turnseq
+// as well as the hook file, so a /clear, a compaction, an inherited claude -p
+// or the TUI removing the hook file on attach-return cannot hide it. A token
+// an older binary wrote, with no turn_seq, is judged by the rules before it
+// (freshStartTurnSeenLegacy) until it is spent or ages out.
 
 // freshStartDir holds the tokens under the runtime data dir.
 const freshStartDir = "fresh-start"
@@ -52,9 +53,6 @@ type freshStartToken struct {
 	// before the judge read it: one at 0 left the field out.
 	TurnSeq *uint64 `json:"turn_seq,omitempty"`
 }
-
-// freshStartHookTurnSeq is the child's turn_seq (a seam for tests).
-var freshStartHookTurnSeq = readHookTurnSeq
 
 // freshStartObservable reports whether claudeCmd runs the claude binary itself
 // (bare or a path), with no alias (#1822 F3, e.g. cdw) or inline env before
@@ -138,7 +136,7 @@ func freshStartTurnSeen(inst *Instance, tok freshStartToken) bool {
 	if tok.TurnSeq == nil {
 		return freshStartTurnSeenLegacy(inst, tok)
 	}
-	return freshStartHookTurnSeq(inst.ID) != *tok.TurnSeq || freshStartConversationMoved(inst, tok, restartHookStatus(inst.ID))
+	return readHookTurnSeq(inst.ID) != *tok.TurnSeq || freshStartConversationMoved(inst, tok, restartHookStatus(inst.ID))
 }
 
 // freshStartConversationMoved reports a conversation other than the start's:
