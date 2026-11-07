@@ -246,6 +246,9 @@ type unattendedDeps struct {
 	// [updates] auto_update_remotes is on (#2166); it never prompts and
 	// its failures are per-remote, never this run's.
 	sweepRemotes func(latest string)
+	// whatsNew prints the "What's new" block for (from, to] after a
+	// successful install (ASK-205); nil skips it. It never fails the run.
+	whatsNew func(from, to string)
 }
 
 // runUnattendedUpdate is `agent-deck update --unattended`: no prompts, no
@@ -365,6 +368,9 @@ func runUnattendedUpdate(d unattendedDeps) int {
 
 	fmt.Fprintf(d.out, "✓ Updated to v%s (unattended); running agent-deck processes restart themselves\n", info.LatestVersion)
 	log.Info("unattended_update_done", slog.String("installed", info.LatestVersion))
+	if d.whatsNew != nil {
+		d.whatsNew(d.version, info.LatestVersion)
+	}
 	// No PATH shadow scan here: the timer and a controller's nudge run
 	// with their own PATH (systemd's or launchd's default, an ssh
 	// command's), not the user's shell PATH, so a scan would report
@@ -419,6 +425,9 @@ func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 		drainPending: func() error { return drainPendingLaunchAgents(log) },
 		ensureTimer:  func() (update.TimerEnsureResult, error) { return session.AutoEnsureUpdateTimer(log) },
 		sweepRemotes: remoteFollowUpForTrigger(trigger, log),
+		// Printed for the log only: the version stays unseen so the TUI
+		// shows the What's new dialog when it restarts on the new binary.
+		whatsNew: func(from, to string) { printWhatsNewAfterUpdate(context.Background(), os.Stdout, from, to, false) },
 	}, closeLog
 }
 

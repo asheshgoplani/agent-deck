@@ -1,0 +1,25 @@
+Usage: agent-deck feedback fixed N --fixed|--not-fixed [--comment C] [--dry-run] [--json] [--yes] [--from-agent] [--again]
+
+Answer "Is it fixed for you?" on issue #N with a public comment:
+  "Fixed for me in vX." or "Still broken for me in vX.", your comment (scrubbed:
+  home paths become ~, tokens and host names are replaced), then (<os>/<arch>).
+The CLI shows where it posts, as which GitHub account, and the exact text, then
+asks y/N (default N). It posts with `gh issue comment` and records your answer
+so What's new asks once; a second answer on the same report needs --again.
+
+Flags:
+  --fixed | --not-fixed   your answer (exactly one)
+  --comment TEXT          optional comment
+  --dry-run               print the exact comment; send nothing (--json adds account, gh_ready)
+  --json                  JSON output, never prompts; posting also needs --yes
+  --yes                   post without the y/N prompt
+  --again                 answer a report you already answered
+  --from-agent            an agent session answers: never prompts; only an unanswered report an
+                          agent filed from this machine; needs [feedback] agent_reports (a person
+                          runs 'agent-deck feedback agent-consent'; --yes does not stand in) and
+                          AGENTDECK_INSTANCE_ID or --yes
+
+Inside an agent session (AGENTDECK_INSTANCE_ID set), terminal or not, a post
+is an agent's even without --from-agent: it refuses with consent_required unless
+[feedback] agent_reports is on, and then takes the --from-agent path. --dry-run
+sends nothing and runs the same checks (a refusal is ok:false with error_code).
