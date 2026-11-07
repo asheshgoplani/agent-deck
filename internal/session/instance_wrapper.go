@@ -691,6 +691,7 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 	if i.tmuxSession == nil {
 		return
 	}
+	i.tmuxSession.SetPreEnterDelay(preEnterDelayForTool(i.Tool))
 
 	// Merge built-in defaults with any user config overrides/extras
 	raw := MergeToolPatterns(i.Tool)

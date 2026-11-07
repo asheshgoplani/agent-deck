@@ -1409,6 +1409,21 @@ func (i *Instance) applyVimModeFromConfig() {
 	i.tmuxSession.VimMode = cfg.Claude.GetVimMode()
 }
 
+// preEnterDelayForTool returns the pause a tool's input composer needs between
+// the delivered message body and the submitting Enter, beyond the transport
+// default. Devin CLI's editor coalesces bytes arriving within ~100–150ms into
+// a single input burst and inserts a trailing Enter as a newline instead of
+// submitting — measured on Devin CLI 3000.10.27 under tmux 3.7b, where the
+// transport default of 100ms reliably newline'd and 150ms submitted. 300ms
+// clears the measured window with margin; every other tool returns 0 and
+// keeps the historical default.
+func preEnterDelayForTool(tool string) time.Duration {
+	if IsDevinCompatible(tool) {
+		return 300 * time.Millisecond
+	}
+	return 0
+}
+
 // NewInstanceWithGroup creates a new session instance with explicit group
 func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 	inst := NewInstance(title, projectPath)
