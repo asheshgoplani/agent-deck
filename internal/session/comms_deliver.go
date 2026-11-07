@@ -360,8 +360,8 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		// costs two small file reads per poll, not a scan). A flag from another
 		// epoch (the ledger was restored) is never compared with Judged; no
 		// flag (nothing was ever addressed to the parent) is nothing new. A
-		// parent whose flag is from an older epoch is scanned on every idle
-		// poll until its next record carries the new epoch (#3026 item 6).
+		// parent whose flag file is from an older epoch is scanned once: the
+		// pass below rewrites it in this epoch.
 		// The daemon raised the flag itself, and a flag file write is best
 		// effort: its own copy also covers a commit whose flag file write
 		// failed (#3026 item 2).
@@ -377,10 +377,12 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 	var line string
 	var carried []comms.Exported
 	capped := false
+	var judged events.Cursor
 	_, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
 		var acks []events.Cursor
 		f := p.File
 		f.Judged = p.Through
+		judged = p.Through
 		var wakeFailed []events.Cursor
 		f.Settle(func(in comms.Inflight) bool {
 			age := now.UnixMilli() - in.At
@@ -441,6 +443,7 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		commsLog.Warn("comms_deliver_failed", slog.String("parent", id), slog.String("error", err.Error()))
 		return
 	}
+	l.RenewFlag(id, judged)
 	if line != "" {
 		if _, _, err := l.Commit(comms.Record{Kind: comms.KindWake, From: "agent-deck", To: []string{id}, Profile: profile,
 			Trigger: "ledger", Via: "tmux", State: comms.StateTyped, Text: line, Refs: exportedIDs(carried),

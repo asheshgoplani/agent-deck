@@ -226,3 +226,70 @@ func TestCommsDeliver_TheJudgedCursorIsWrittenOnceThenHoldsTheFastPath(t *testin
 		t.Errorf("an info record woke the parent: %q", f.sent)
 	}
 }
+
+// After a restore bumps the epoch, a parent whose pending flag file is still
+// from the older epoch (nothing addressed to it in the warm window, so the
+// open did not rewrite it) is scanned once, then holds the fast path: the
+// delivery pass rewrites the mismatched flag instead of scanning on every
+// idle poll until a record addressed to it arrives.
+func TestCommsDeliver_AnOldEpochFlagIsScannedOnceThenHoldsTheFastPath(t *testing.T) {
+	f := newDeliverFixture(t)
+	dir := f.l.Reader().Dir
+	f.d.closeCommsLedgers() // the daemon stops; the ledger is restored under it
+	raw, err := os.ReadFile(filepath.Join(dir, "store.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["hwm"] = 1000
+	out, _ := json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(dir, "store.json"), out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if f.l = f.d.commsLedgerFor("default"); f.l == nil {
+		t.Fatal("ledger did not reopen")
+	}
+	epoch := f.l.Reader().Store.Epoch
+	if epoch < 2 {
+		t.Fatalf("test setup: the restored ledger kept epoch %d", epoch)
+	}
+	// The flag a record of the older epoch left.
+	old, _ := json.Marshal(comms.PendingFlag{Last: 3, Epoch: epoch - 1})
+	if err := os.MkdirAll(filepath.Dir(comms.FlagPath(dir, f.parent.ID)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(comms.FlagPath(dir, f.parent.ID), old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.l.Flag(f.parent.ID); ok {
+		t.Fatal("test setup: the ledger holds a flag of its own for the parent")
+	}
+	scans := 0
+	prev := commsScanHook
+	commsScanHook = func(id string) {
+		if id == f.parent.ID {
+			scans++
+		}
+	}
+	t.Cleanup(func() { commsScanHook = prev })
+	for i := 0; i < 10; i++ {
+		f.clock = f.clock.Add(time.Second)
+		f.poll(t, "waiting")
+	}
+	if scans > 1 {
+		t.Errorf("delivery passes that scanned a parent with an old-epoch flag = %d over 10 idle polls, want at most 1", scans)
+	}
+	// The rewritten flag still lets a new record through.
+	f.commit(t, comms.Record{Kind: comms.KindDelivery, State: comms.StateFailed, To: []string{f.parent.ID},
+		Tier: comms.TierUrgent, Text: "the send failed", Done: "ok", Summary: "the send failed"})
+	for i := 0; i < 3; i++ {
+		f.poll(t, "waiting")
+		f.clock = f.clock.Add(30 * time.Second)
+	}
+	if len(f.sent) == 0 {
+		t.Error("the delivery pass skipped an urgent record after rewriting the old-epoch flag")
+	}
+}
