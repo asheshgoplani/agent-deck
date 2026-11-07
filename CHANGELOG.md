@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.38] - 2026-11-07
+
+### Highlights
+
+- After a restart, a conductor whose recovery prompt was left typed in its composer now gets Enter again, so it picks up its work and `session send` to it no longer stalls (see Fixes; thanks @tsblack).
+- Parents on the comms ledger are woken more reliably by their children, pi children included (see Fixes; thanks @fpmx3bp).
+
+### Fixes
+
+- Conductor restart: the recovery prompt was submitted with one Enter. When Claude Code did not act on it, the prompt sat in the composer as a draft until someone pressed Enter, and `session send` to the conductor was blocked meanwhile. If the composer still holds exactly the recovery prompt, agent-deck now presses Enter up to 2 more times (after 0.5 s, then 1 s). It looks at the pane again right before each Enter and never touches anything else typed there (#3062, #3074; thanks @tsblack for the report, the timings and the proposal).
+- `session send` could hang for good when `ps` or `pgrep` hung while it read a session's process tree. Both now run under a time limit, and the send treats the process tree as incomplete instead of waiting (#3072; thanks @fpmx3bp for the report).
+- pi children: when a pi run continues inside one prompt (an auto-retry, a compaction or a continue before it settles), it keeps one run id, so the parent is no longer woken an extra time for that run (#3071; thanks @fpmx3bp for the report).
+- Comms ledger: after the ledger log is restored to an earlier point, a new record no longer inherits an old record's failed wake attempts, which could silence its urgent wake (#3069). A record whose pending flag could not be written to disk, such as an urgent record that needs a wake, is no longer skipped by the delivery pass until a later write succeeds (#3070). After a restore, a parent left with an old pending flag is scanned once instead of on every idle poll (#3075) (thanks @fpmx3bp for the reports).
+
+### Under the hood
+
+- Hook files now keep a per-session turn count (`turn_seq`) that survives `/clear`, compaction and restarts, also with `[health]` off, and the restart and fresh-start tokens record it. Every hook write takes the status lock so no count is lost. Nothing reads the count yet; it is the first step toward simpler checks of whether a child has had a turn since it started (#3080; thanks @tarekrached for the plan in #3012).
+- Comms test matrix: a new scenario checks that a parent on the comms ledger sees each run of a pi child exactly once (#3073; thanks @fpmx3bp for the report).
+
 ## [1.16.37] - 2026-11-07
 
 ### Highlights
