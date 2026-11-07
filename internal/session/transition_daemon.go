@@ -1608,23 +1608,20 @@ func readHookTurnSeq(instanceID string) uint64 {
 			seq = raw.TurnSeq
 		}
 	}
-	if data, err := readStatusFileNoFollow(hookTurnSeqPath(instanceID)); err == nil {
-		if n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err == nil {
-			seq = max(seq, n)
+	// A sandboxed handler writes it in the instance's scope, any other in
+	// the flat dir; a scope can outlive its sandbox, so read both.
+	hooksDir := GetHooksDir()
+	for _, path := range []string{
+		filepath.Join(hooksDir, instanceID+HookTurnSeqSuffix),
+		filepath.Join(hooksDir, "sandbox", instanceID, instanceID+HookTurnSeqSuffix),
+	} {
+		if data, err := readStatusFileNoFollow(path); err == nil {
+			if n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err == nil {
+				seq = max(seq, n)
+			}
 		}
 	}
 	return seq
-}
-
-// hookTurnSeqPath is <id>.turnseq, in the instance's sandbox scope when it has
-// one (that dir stays when ClearHookStatus removes the scoped hook file).
-func hookTurnSeqPath(instanceID string) string {
-	hooksDir := GetHooksDir()
-	scoped := filepath.Join(hooksDir, "sandbox", instanceID)
-	if info, err := os.Lstat(scoped); err == nil && info.IsDir() {
-		return filepath.Join(scoped, instanceID+HookTurnSeqSuffix)
-	}
-	return filepath.Join(hooksDir, instanceID+HookTurnSeqSuffix)
 }
 
 func readHookStatusFile(instanceID string) *HookStatus {

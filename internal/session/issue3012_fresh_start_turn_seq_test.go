@@ -445,3 +445,23 @@ func TestIssue3012_ReadHookTurnSeqTakesTheLarger(t *testing.T) {
 		})
 	}
 }
+
+// A sandbox scope can outlive its sandbox: a stale scoped sidecar must not
+// hide the live flat one.
+func TestIssue3012_ReadHookTurnSeqLeftoverScope(t *testing.T) {
+	isolatedHomeDir(t)
+	const id = "seq-scope"
+	scoped := filepath.Join(GetHooksDir(), "sandbox", id)
+	if err := os.MkdirAll(scoped, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scoped, id+".turnseq"), []byte("2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(GetHooksDir(), id+".turnseq"), []byte("6"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readHookTurnSeq(id); got != 6 {
+		t.Fatalf("readHookTurnSeq = %d, want the live flat count 6", got)
+	}
+}

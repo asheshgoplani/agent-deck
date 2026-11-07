@@ -886,9 +886,9 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 	// a count that restarted there would read as "no turn" to a token taken
 	// at the same number.
 	turnSeqPath := filepath.Join(hooksDir, filepath.Base(instanceID)+session.HookTurnSeqSuffix)
-	statusFile.TurnSeq = max(previous.TurnSeq, readHookTurnSeqFile(turnSeqPath))
-	bumped := isTurnSeqEvent(statusFile.Event)
-	if bumped {
+	sidecarSeq := readHookTurnSeqFile(turnSeqPath)
+	statusFile.TurnSeq = max(previous.TurnSeq, sidecarSeq)
+	if isTurnSeqEvent(statusFile.Event) {
 		statusFile.TurnSeq++
 	}
 	var hermesCwdRoots []string
@@ -917,6 +917,20 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 		}
 	}
 
+	// The sidecar first, once the write is accepted: ahead of the status
+	// file is harmless (readers take the larger), behind it would let an
+	// attach-return take the count back. A count only the status file had
+	// (a step-1 file) is copied over on the next write of any event.
+	if statusFile.TurnSeq > sidecarSeq {
+		if err := atomicHookWrite(turnSeqPath, []byte(strconv.FormatUint(statusFile.TurnSeq, 10))); err != nil {
+			hookHandlerLog.Warn("hook_turn_seq_write_failed",
+				slog.String("path", turnSeqPath),
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
 	jsonData, err := json.Marshal(statusFile)
 	if err != nil {
 		hookHandlerLog.Warn("hook_status_marshal_failed",
@@ -934,15 +948,6 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 			slog.String("error", err.Error()),
 		)
 		return false
-	}
-	if bumped {
-		if err := atomicHookWrite(turnSeqPath, []byte(strconv.FormatUint(statusFile.TurnSeq, 10))); err != nil {
-			hookHandlerLog.Warn("hook_turn_seq_write_failed",
-				slog.String("path", turnSeqPath),
-				slog.String("instance", instanceID),
-				slog.String("error", err.Error()),
-			)
-		}
 	}
 	// Keep anchor mutation in the same generation-locked critical section as
 	// acceptance and status publication. Restart cannot rotate generations in

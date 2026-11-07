@@ -232,7 +232,9 @@ type HookStatus struct {
 	Platform string
 	// TurnSeq is the hook file's turn_seq: the instance's turn edges
 	// (UserPromptSubmit and Stop) so far, carried through every other event
-	// (#3012). 0 for a file written before it existed.
+	// (#3012). 0 for a file written before it existed. From the hook file
+	// only, so 0 again after ClearHookStatus removes it: a judge reads the
+	// count with readHookTurnSeq, which also reads <id>.turnseq.
 	TurnSeq uint64
 }
 
