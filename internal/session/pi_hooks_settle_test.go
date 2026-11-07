@@ -298,7 +298,7 @@ func TestPiHookExtension_TailCapsLongText(t *testing.T) {
 func TestPiHookExtension_HandlersTolerateNoArguments(t *testing.T) {
 	h := newPiHarness(t)
 	var steps []piStep
-	for _, ev := range []string{"session_start", "agent_start", "input", "turn_start", "turn_end", "agent_settled", "session_shutdown"} {
+	for _, ev := range []string{"session_start", "before_agent_start", "agent_start", "input", "turn_start", "turn_end", "agent_settled", "session_shutdown"} {
 		steps = append(steps, piStep{Event: ev})
 	}
 	h.run(steps)
@@ -308,7 +308,7 @@ func TestPiHookExtension_HandlersTolerateNoArguments(t *testing.T) {
 // the same event would never run there.
 func TestPiHookExtension_RegistersEachEventOnce(t *testing.T) {
 	src := PiHookExtensionSource()
-	for _, ev := range []string{"session_start", "agent_start", "input", "turn_start", "turn_end", "agent_settled", "session_shutdown"} {
+	for _, ev := range []string{"session_start", "before_agent_start", "agent_start", "input", "turn_start", "turn_end", "agent_settled", "session_shutdown"} {
 		if n := strings.Count(src, `pi.on("`+ev+`"`); n != 1 {
 			t.Errorf("pi.on(%q) registered %d times, want exactly 1", ev, n)
 		}
