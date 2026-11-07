@@ -86,11 +86,10 @@ func (b BinaryExecutor) Run(ctx context.Context, profile string, args []string, 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	full := make([]string, 0, len(args)+2)
-	if profile != "" {
-		full = append(full, "-p", profile)
+	full, err := buildArgv(profile, args)
+	if err != nil {
+		return nil, err
 	}
-	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, b.Path, full...) //nolint:gosec // G204: fixed binary, argv built from validated tool arguments, no shell
 	cmd.Env = childenv.ForSelfReexec(TokenEnvVar)
 	cmd.Stdin = bytes.NewReader(stdin)
@@ -98,7 +97,7 @@ func (b BinaryExecutor) Run(ctx context.Context, profile string, args []string, 
 	stderr := &cappedBuffer{limit: 64 << 10}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = 5 * time.Second
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return stdout.buf.Bytes(), nil
 	}
@@ -114,6 +113,27 @@ func (b BinaryExecutor) Run(ctx context.Context, profile string, args []string, 
 		}
 	}
 	return stdout.buf.Bytes(), fmt.Errorf("running agent-deck: %w", err)
+}
+
+// maxExecArgs bounds the argv a tool may build. The widest tool call
+// (launch_session) uses about ten; the cap keeps the allocation in
+// buildArgv bounded whatever a caller passes.
+const maxExecArgs = 64
+
+// buildArgv returns the argv for one wrapped command: `-p profile` when a
+// profile is set, then args. It refuses more than maxExecArgs arguments, so
+// the capacity computed for the allocation can never overflow.
+func buildArgv(profile string, args []string) ([]string, error) {
+	n := int64(len(args))
+	if n > maxExecArgs {
+		return nil, fmt.Errorf("too many arguments for agent-deck: %d (max %d)", n, maxExecArgs)
+	}
+	capacity := int(n) + 2 // n <= maxExecArgs, so this cannot overflow
+	full := make([]string, 0, capacity)
+	if profile != "" {
+		full = append(full, "-p", profile)
+	}
+	return append(full, args...), nil
 }
 
 func firstWord(args []string) string {
