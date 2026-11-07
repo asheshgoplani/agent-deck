@@ -173,12 +173,17 @@ func TestHookCleanupStartupThousandOrphans(t *testing.T) {
 	require.NoError(t, os.WriteFile(registered, []byte("{}"), 0600))
 	require.NoError(t, os.Chtimes(registered, old, old))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "fresh.sid"), []byte("anchor"), 0600))
-	// Simulate a new process while keeping the fixture's registry on disk.
+	// Simulate a new process, past the cross-process sweep interval, while
+	// keeping the fixture's registry on disk.
 	registry, err := profileDataRootDir()
 	require.NoError(t, err)
 	hookStartupCleanup.Lock()
 	delete(hookStartupCleanup.completed, hookCleanupRoots{hooks: root, registry: registry})
 	hookStartupCleanup.Unlock()
+	stale := time.Now().Add(-hookStartupSweepInterval - time.Minute)
+	if err := os.Chtimes(filepath.Join(root, hookStartupSweepStamp), stale, stale); err != nil {
+		require.True(t, os.IsNotExist(err), err)
+	}
 	before, beforeErr := os.ReadDir("/proc/self/fd")
 	restarted, err := NewStorageWithProfile("default")
 	require.NoError(t, err)
@@ -186,7 +191,13 @@ func TestHookCleanupStartupThousandOrphans(t *testing.T) {
 	after, afterErr := os.ReadDir("/proc/self/fd")
 	entries, err := os.ReadDir(root)
 	require.NoError(t, err)
-	require.Len(t, entries, 2)
+	var names []string
+	for _, entry := range entries {
+		if entry.Name() != hookStartupSweepStamp {
+			names = append(names, entry.Name())
+		}
+	}
+	require.ElementsMatch(t, []string{"registered.json", "fresh.sid"}, names)
 	_, err = os.Stat(registered)
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(root, "fresh.sid"))
@@ -237,4 +248,57 @@ func TestHookCleanupDeferredDeletionError(t *testing.T) {
 	cleanup, err := s.DeleteInstanceDeferredCleanup("gone")
 	require.Error(t, err)
 	require.Nil(t, cleanup, "failed registry deletion must not schedule artifact cleanup")
+}
+
+// ASK-229: every short-lived CLI process (a Claude status line refresh, a hook
+// handler) opened every profile store for this sweep on its first storage
+// open: 3075 stores, ~1 CPU s per process on deckbox. Orphans have a 24-hour
+// grace period, so a process that starts within hookStartupSweepInterval of
+// the last completed sweep skips it; explicit cleanup always runs.
+func TestHookCleanupStartupSweepThrottledAcrossProcesses(t *testing.T) {
+	_ = hookCleanupStorage(t)
+	root := GetHooksDir()
+	require.NoError(t, os.MkdirAll(root, 0700))
+	registry, err := profileDataRootDir()
+	require.NoError(t, err)
+	newProcess := func() {
+		hookStartupCleanup.Lock()
+		delete(hookStartupCleanup.completed, hookCleanupRoots{hooks: root, registry: registry})
+		hookStartupCleanup.Unlock()
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	orphan := func(name string) string {
+		path := filepath.Join(root, name)
+		require.NoError(t, os.WriteFile(path, []byte("{}"), 0600))
+		require.NoError(t, os.Chtimes(path, old, old))
+		return path
+	}
+	// First process with the hooks root present: sweeps.
+	first := orphan("first-orphan.json")
+	newProcess()
+	s, err := NewStorageWithProfile("default")
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	_, err = os.Stat(first)
+	require.True(t, os.IsNotExist(err), "the first process sweeps")
+
+	// A second process right after: no registry scan, the orphan waits.
+	second := orphan("second-orphan.json")
+	newProcess()
+	s, err = NewStorageWithProfile("default")
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	_, err = os.Stat(second)
+	require.NoError(t, err, "a process within the sweep interval must not rescan every profile store")
+
+	// Once the interval has passed, the next process sweeps again.
+	stamp := filepath.Join(root, hookStartupSweepStamp)
+	stale := time.Now().Add(-hookStartupSweepInterval - time.Minute)
+	require.NoError(t, os.Chtimes(stamp, stale, stale))
+	newProcess()
+	s, err = NewStorageWithProfile("default")
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+	_, err = os.Stat(second)
+	require.True(t, os.IsNotExist(err), "a process after the interval sweeps")
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -117,18 +118,18 @@ func statuslineOwnerProfile(feedProfile, nativeID string) (string, bool, error) 
 	if err != nil {
 		return "", false, err
 	}
+	// The index spares a refresh from opening every unchanged store (ASK-229).
+	index := loadStatuslineOwnerIndex()
+	complete := false
+	defer func() { index.save(complete) }()
 	var owner string
 	matches := 0
 	for _, profile := range profiles {
-		storage, err := session.NewLiveReadOnlyStorageWithProfile(profile)
-		if err != nil {
+		ids, ok := index.claudeIDs(profile)
+		if !ok {
 			continue
 		}
-		var count int
-		toolCond, toolArgs := statedb.ClaudeToolPredicate()
-		err = storage.GetDB().DB().QueryRow(`SELECT count(*) FROM instances WHERE `+toolCond+` AND json_extract(tool_data, '$.claude_session_id') = ?`, append(toolArgs, nativeID)...).Scan(&count)
-		storage.Close()
-		if err != nil || count == 0 {
+		if _, found := slices.BinarySearch(ids, nativeID); !found {
 			continue
 		}
 		if profile == feedProfile {
@@ -137,6 +138,7 @@ func statuslineOwnerProfile(feedProfile, nativeID string) (string, bool, error) 
 		matches++
 		owner = profile
 	}
+	complete = true
 	if matches == 1 {
 		return owner, true, nil
 	}
