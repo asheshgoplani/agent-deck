@@ -12,6 +12,11 @@ const (
 	KindMacappAppFocus        = "macapp.app.focus"
 	KindMacappSessionClosed   = "macapp.session.closed"
 
+	// Switch the app to a session (`agent-deck switch`, docs/switch.md):
+	// the CLI's request and the app's reply, keyed by data.request_id.
+	KindMacappSwitch    = "macapp.switch"
+	KindMacappSwitchAck = "macapp.switch.ack"
+
 	// Ask the owner (docs/ask.md). macapp.ask and macapp.ask.ack are
 	// published only by the host's own `agent-deck ask` (IsMacappHostOnlyKind);
 	// macapp.ask.seen is a UI's frame.
@@ -22,14 +27,14 @@ const (
 
 // IsMacappUngatedKind reports whether `events publish` admits kind without
 // [macapp] plugins = true. Only the Mac app's own frames are ungated: the
-// open request and ack, the app's browser replies and focus claim, and the
-// ask dialog's seen frame. A
+// open request and ack, the switch request and ack, the app's browser
+// replies and focus claim, and the ask dialog's seen frame. A
 // macapp.browser.request drives the owner's browser and stays behind the
 // opt-in, like every plugin kind; macapp.session.closed is published by the
 // host itself, never from the CLI without the opt-in.
 func IsMacappUngatedKind(kind string) bool {
 	switch kind {
-	case KindMacappOpen, KindMacappOpenAck, KindMacappBrowserResponse, KindMacappAppFocus, KindMacappAskSeen:
+	case KindMacappOpen, KindMacappOpenAck, KindMacappSwitch, KindMacappSwitchAck, KindMacappBrowserResponse, KindMacappAppFocus, KindMacappAskSeen:
 		return true
 	}
 	return false
@@ -51,7 +56,7 @@ func IsMacappHostOnlyKind(kind string) bool {
 // replies, the only kinds `remote <name> events publish` forwards to a box.
 func IsMacappRemoteReplyKind(kind string) bool {
 	switch kind {
-	case KindMacappOpenAck, KindMacappBrowserResponse, KindMacappAppFocus, KindMacappAskSeen:
+	case KindMacappOpenAck, KindMacappSwitchAck, KindMacappBrowserResponse, KindMacappAppFocus, KindMacappAskSeen:
 		return true
 	}
 	return false
