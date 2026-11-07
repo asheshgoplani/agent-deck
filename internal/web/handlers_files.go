@@ -11,7 +11,7 @@ import (
 
 // fileLinkCSP stops a served file from running anything on the deck's origin,
 // even if a browser ignored the Content-Type.
-const fileLinkCSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"
+const fileLinkCSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox; " + frameAncestorsNone
 
 // handleFiles serves a file:// link from the web terminal (issue #2676):
 // GET /api/files?path=/abs/path, read-only, limited to [web] file_link_roots.
