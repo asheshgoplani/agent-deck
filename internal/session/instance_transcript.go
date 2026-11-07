@@ -364,7 +364,60 @@ func (i *Instance) responseVersionedFile(peers []*Instance) string {
 // parsed last response cannot have changed, so a poller can skip the read
 // (issue #2481). It costs one stat, never a parse.
 func (i *Instance) ResponseContentVersion(peers []*Instance) string {
-	path := i.responseVersionedFile(peers)
+	return transcriptContentVersion(i.responseVersionedFile(peers))
+}
+
+// ExactClaudeTranscriptPath resolves this instance's Claude transcript only at
+// the locations Claude derives from the instance's own config dir and its
+// working directories (#3030). Unlike GetJSONLPath it never globs other
+// project keys and never falls back to the process-wide config dir, so a
+// same-id file under a neighbouring project or another account cannot stand
+// in for this worker's conversation. When several project keys hold a copy,
+// the newest one wins, as in handoff. Live peers sharing the transcript are
+// refused with GetJSONLPathChecked's collision semantics.
+//
+// For a transcript at its normal location this is the same file GetJSONLPath
+// returns: GetJSONLPath tries exactly these candidates first.
+func (i *Instance) ExactClaudeTranscriptPath(peers []*Instance) (string, error) {
+	if !IsClaudeCompatible(i.Tool) || i.ClaudeSessionID == "" {
+		return "", fmt.Errorf("instance %s has no bound Claude session id", i.ID)
+	}
+	if !i.TranscriptIsResolvableLocally() {
+		return "", fmt.Errorf("transcript of instance %s is not on this host", i.ID)
+	}
+	if err := i.refuseCollidingTranscript(peers); err != nil {
+		return "", err
+	}
+	path := exactClaudeTranscriptPath(GetClaudeConfigDirForInstance(i), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
+	if path == "" {
+		return "", fmt.Errorf("%w for %s", errNoExactContextArtifact, i.ClaudeSessionID+".jsonl")
+	}
+	return path, nil
+}
+
+// ExactResponseContentVersion is ResponseContentVersion restricted to the
+// exact transcript: a Claude version comes only from ExactClaudeTranscriptPath,
+// and a Codex version from the exact rollout ResponseContentVersion already
+// uses. It returns "" when no exact file backs the response. For a transcript
+// at its normal location the two versions are equal, so a version handed out
+// by `session output --json` still matches (#3030).
+func (i *Instance) ExactResponseContentVersion(peers []*Instance) string {
+	switch {
+	case IsCodexCompatible(i.Tool):
+		return i.ResponseContentVersion(peers)
+	case IsClaudeCompatible(i.Tool):
+		path, err := i.ExactClaudeTranscriptPath(peers)
+		if err != nil {
+			return ""
+		}
+		return transcriptContentVersion(path)
+	}
+	return ""
+}
+
+// transcriptContentVersion is the opaque path/size/mtime version of one
+// regular file, or "" when path is empty or not a regular file.
+func transcriptContentVersion(path string) string {
 	if path == "" {
 		return ""
 	}
@@ -767,15 +820,24 @@ func (i *Instance) claudeTranscriptDir() string {
 // same transcript, corrupting routing. When there is no collision it delegates
 // to GetJSONLPath.
 func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
+	if err := i.refuseCollidingTranscript(peers); err != nil {
+		return "", err
+	}
+	return i.GetJSONLPath(), nil
+}
+
+// refuseCollidingTranscript is the collision refusal shared by
+// GetJSONLPathChecked and ExactClaudeTranscriptPath.
+func (i *Instance) refuseCollidingTranscript(peers []*Instance) error {
 	if i.ClaudeSessionIDCollidesWith(peers) {
 		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 			InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 			Source: "jsonl_resolve", OldID: i.ClaudeSessionID, Candidate: i.ClaudeSessionID,
 			Reason: "claude_session_id_collision_across_live_instances",
 		})
-		return "", fmt.Errorf("claude_session_id %q is shared by more than one live instance; refusing to resolve a colliding transcript path for instance %s", i.ClaudeSessionID, i.ID)
+		return fmt.Errorf("claude_session_id %q is shared by more than one live instance; refusing to resolve a colliding transcript path for instance %s", i.ClaudeSessionID, i.ID)
 	}
-	return i.GetJSONLPath(), nil
+	return nil
 }
 
 // resolveClaudeTranscriptPath returns the path to the Claude JSONL transcript for
