@@ -139,7 +139,7 @@
     }).catch(function (err) {
       setStatus($('status'), err.message, 'bad')
       $('tokens').textContent = ''
-      $('make').disabled = true
+      $('copy').disabled = true
     })
   }
 
@@ -147,11 +147,19 @@
     copyText($('setup-line').textContent, $('setup-status'))
   })
 
-  $('make').addEventListener('click', function () {
+  // KISS: no separate "create" step. Copy makes the block (a fresh token
+  // with the ticked scopes) when there is none yet or the ticks changed,
+  // shows it, and copies it.
+  var lastKey = ''
+  function formKey() {
+    return [$('kind').value, $('name').value.trim(), selectedScopes().join(',')].join('|')
+  }
+
+  function makeBlock() {
     var statusEl = $('status')
     setStatus(statusEl, 'Creating token...')
-    $('make').disabled = true
-    api('/api/connect/tokens', {
+    $('copy').disabled = true
+    return api('/api/connect/tokens', {
       assistant: $('kind').value,
       name: $('name').value.trim(),
       scopes: selectedScopes(),
@@ -159,24 +167,35 @@
     }).then(function (conn) {
       lastToken = conn.token
       lastBlock = conn.block
+      lastKey = formKey()
       var pre = $('block')
       pre.textContent = conn.block
       pre.hidden = false
-      $('copy').disabled = false
       $('test').disabled = false
       setStatus(statusEl, 'Token "' + conn.name + '" ready (' + conn.scopes.join(', ') + ').', 'ok')
-      return api('/api/connect/assistants')
-    }).then(function (info) {
-      if (info) renderTokens(info.tokens)
-    }).catch(function (err) {
-      setStatus(statusEl, err.message, 'bad')
-    }).then(function () {
-      $('make').disabled = false
+      api('/api/connect/assistants').then(function (info) {
+        if (info) renderTokens(info.tokens)
+      }, function () {})
+      return conn
+    }).then(function (conn) {
+      $('copy').disabled = false
+      return conn
+    }, function (err) {
+      $('copy').disabled = false
+      throw err
     })
-  })
+  }
 
   $('copy').addEventListener('click', function () {
-    if (lastBlock) copyText(lastBlock, $('status'))
+    if (lastBlock && lastKey === formKey()) {
+      copyText(lastBlock, $('status'))
+      return
+    }
+    makeBlock().then(function () {
+      copyText(lastBlock, $('status'))
+    }).catch(function (err) {
+      setStatus($('status'), err.message, 'bad')
+    })
   })
 
   $('test').addEventListener('click', function () {
