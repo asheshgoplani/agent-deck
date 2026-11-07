@@ -1582,6 +1582,28 @@ func hookStatusFilePath(instanceID string) string {
 	return filepath.Join(hooksDir, instanceID+".json")
 }
 
+// readHookTurnSeq is the instance's turn_seq from its hook file (#3012), 0
+// when there is no file or it predates the field. Unlike readHookStatusFile it
+// does not check the launch generation: the count belongs to the instance, not
+// to one process, so a token taken before a respawn reads the same counter
+// the new process continues.
+func readHookTurnSeq(instanceID string) uint64 {
+	if strings.TrimSpace(instanceID) == "" {
+		return 0
+	}
+	data, err := readStatusFileNoFollow(hookStatusFilePath(instanceID))
+	if err != nil {
+		return 0
+	}
+	var raw struct {
+		TurnSeq uint64 `json:"turn_seq"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return 0
+	}
+	return raw.TurnSeq
+}
+
 func readHookStatusFile(instanceID string) *HookStatus {
 	if strings.TrimSpace(instanceID) == "" {
 		return nil
@@ -1619,6 +1641,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		PiRunID                  string        `json:"pi_run_id"`
 		PiOrphanRuns             []PiOrphanRun `json:"pi_orphan_runs"`
 		ReceivedAtNS             int64         `json:"received_at_ns"`
+		TurnSeq                  uint64        `json:"turn_seq"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
@@ -1658,6 +1681,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		PiRunID:                  raw.PiRunID,
 		PiOrphanRuns:             orphanArray(raw.PiOrphanRuns), PiOrphanCount: min(len(raw.PiOrphanRuns), PiOrphanRunsMax),
 		ReceivedAt: receivedAtFromNS(raw.ReceivedAtNS),
+		TurnSeq:    raw.TurnSeq,
 	}
 	maskConsumedCodexCompletion(instanceID, hookStatus)
 	return hookStatus

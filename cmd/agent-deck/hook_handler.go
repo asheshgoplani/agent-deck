@@ -198,6 +198,12 @@ type hookStatusFile struct {
 	CodexCompletedSequence   uint64 `json:"codex_completed_sequence,omitempty"`
 	HookGeneration           string `json:"hook_generation,omitempty"`
 	Sequence                 uint64 `json:"sequence,omitempty"`
+	// TurnSeq counts the instance's turn edges (UserPromptSubmit and Stop),
+	// one per edge, for the life of the hook file (#3012). Every write carries
+	// it forward under the status lock, so a /clear, a compaction or a new
+	// process's SessionStart never loses it, and it does not depend on the
+	// [health] event history. A file written before it existed reads as 0.
+	TurnSeq uint64 `json:"turn_seq,omitempty"`
 	// Settles is the writer's capability bit (a v4+ extension: it sends
 	// agent_settled keyed by run; v3 sends agent_settled without the bit) and
 	// PiRunID the run token the extension minted at agent_start, both from the
@@ -840,10 +846,19 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mutateAnchor, held bool) bool {
 	hooksDir := getHooksDir()
 	generation := strings.TrimSpace(os.Getenv("AGENTDECK_HOOK_GENERATION"))
-	if !held && (generation != "" || statusFile.ReceivedAt != 0) {
+	// Every write takes the status lock: turn_seq is read from the previous
+	// file and written back, so an unlocked write could lose an increment.
+	if !held {
 		lockPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".lock")
 		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
+			// The status file cannot be written either: say so, as the
+			// write below would have.
+			hookHandlerLog.Warn("hook_status_write_failed",
+				slog.String("path", lockPath),
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 			return false
 		}
 		defer closeChecked(lock)
@@ -858,12 +873,16 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 	// Compare under the same lock as publication, including when no launch
 	// generation is present. A delayed tool must not erase a newer lifecycle
 	// event. Other harnesses retain their existing publication semantics.
-	if statusFile.Event == "PreToolUse" && statusFile.ReceivedAt != 0 {
-		var previous hookStatusFile
-		data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json"))
-		if err == nil && json.Unmarshal(data, &previous) == nil && previous.ReceivedAt >= statusFile.ReceivedAt {
-			return false
-		}
+	var previous hookStatusFile
+	if data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json")); err != nil || json.Unmarshal(data, &previous) != nil {
+		previous = hookStatusFile{}
+	}
+	if statusFile.Event == "PreToolUse" && statusFile.ReceivedAt != 0 && previous.ReceivedAt >= statusFile.ReceivedAt {
+		return false
+	}
+	statusFile.TurnSeq = previous.TurnSeq
+	if isTurnSeqEvent(statusFile.Event) {
+		statusFile.TurnSeq++
 	}
 	var hermesCwdRoots []string
 	if generation != "" {
@@ -931,6 +950,16 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 	}
 	appendHookEvent(instanceID, statusFile)
 	return true
+}
+
+// isTurnSeqEvent reports whether event is a turn edge that bumps turn_seq:
+// a submitted prompt or a Stop.
+func isTurnSeqEvent(event string) bool {
+	switch normalizeHookEventKey(event) {
+	case "userpromptsubmit", "stop":
+		return true
+	}
+	return false
 }
 
 const preToolLockBudget = 100 * time.Millisecond

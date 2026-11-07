@@ -84,6 +84,9 @@ type restartToken struct {
 	Transcript string `json:"transcript,omitempty"`
 	Offset     int64  `json:"offset,omitempty"`
 	Signal     string `json:"signal,omitempty"`
+	// TurnSeq is the hook file's turn_seq at the restart (#3012): a turn
+	// since then shows as a higher one. Recorded only; no judge reads it yet.
+	TurnSeq uint64 `json:"turn_seq,omitempty"`
 
 	// NewPID is the pane pid of the resumed process and SpawnedAt when the
 	// restart recorded it, from the spawned file; 0 while the restart runs.
@@ -129,7 +132,7 @@ func noteRestartToken(i *Instance, now time.Time) {
 	if facts, ok := instanceTurnFacts(i); ok && (facts.Pending || facts.FinalTextPending) {
 		return
 	}
-	tok := restartToken{At: now, Reason: i.restartReason, Tool: i.Tool, OldPID: instancePanePID(i)}
+	tok := restartToken{At: now, Reason: i.restartReason, Tool: i.Tool, OldPID: instancePanePID(i), TurnSeq: readHookTurnSeq(i.ID)}
 	if path := i.GetJSONLPath(); path != "" {
 		if info, err := os.Stat(path); err == nil {
 			tok.Transcript, tok.Offset = path, info.Size()
