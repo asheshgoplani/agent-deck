@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"al.essio.dev/pkg/shellescape"
 )
@@ -84,7 +85,8 @@ func findSpinnerInContent(content string, spinnerChars []string) (char string, l
 	// box frame or after real text (e.g. "│ ⠋ content") is decorative and
 	// skipped, while a spinner at the line start — or immediately after a
 	// short horizontal rule, as in pi's banner — is a genuine activity
-	// indicator.
+	// indicator. A frame followed by more braille is a cell of a drawing, not
+	// a spinner: Codex's home-screen logo has rows that begin with one (#3037).
 	for i := len(lines) - 1; i >= 0; i-- {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
@@ -96,7 +98,7 @@ func findSpinnerInContent(content string, spinnerChars []string) (char string, l
 				continue
 			}
 			prefix := strings.TrimSpace(lines[i][:idx])
-			if prefix == "" || isHorizontalRuleBannerPrefix(prefix) {
+			if (prefix == "" || isHorizontalRuleBannerPrefix(prefix)) && !brailleFollows(lines[i][idx+len(ch):]) {
 				return ch, lines[i], true
 			}
 		}
@@ -122,6 +124,14 @@ func isHorizontalRuleBannerPrefix(s string) bool {
 		}
 	}
 	return n > 0
+}
+
+// brailleFollows reports whether the first rune after any spaces in s is a
+// braille cell (U+2800 to U+28FF). A live spinner frame is followed by its
+// label or by nothing; braille after it means the frame is part of braille art.
+func brailleFollows(s string) bool {
+	r, _ := utf8.DecodeRuneInString(strings.TrimLeft(s, " "))
+	return r >= 0x2800 && r <= 0x28FF
 }
 
 // isBrailleSpinnerChar returns true for the classic 10-frame braille spinner.
