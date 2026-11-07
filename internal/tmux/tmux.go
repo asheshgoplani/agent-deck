@@ -661,6 +661,15 @@ type Session struct {
 	// from TmuxSettings.GetLaunchAs which already canonicalises.
 	LaunchAs string
 
+	// preEnterDelay widens the pause between delivering the message body and
+	// sending the submitting Enter in sendKeysAndEnterToTarget. The default
+	// (preEnterDelayDefault) is sized for Ink/curses composers processing a
+	// bracketed-paste end marker; some composers coalesce input arriving
+	// within a wider window into a single burst and insert a trailing Enter
+	// as a newline instead of submitting. Zero keeps the default. Set per
+	// tool by the session layer via SetPreEnterDelay.
+	preEnterDelay time.Duration
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -759,6 +768,28 @@ func (s *Session) SetDetectPatterns(toolName string, detectPatterns []string) {
 	s.customDetectPatterns = detectPatterns
 }
 
+// SetPreEnterDelay overrides the pause between delivering the message body
+// and sending the submitting Enter in SendKeysAndEnter. A zero or negative
+// value restores the built-in default (preEnterDelayDefault). Only composers
+// whose input-coalescing window exceeds the default need this — see the
+// preEnterDelay field comment.
+func (s *Session) SetPreEnterDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.preEnterDelay = d
+}
+
+// effectivePreEnterDelay returns the configured body→Enter pause, or the
+// transport default when unset.
+func (s *Session) effectivePreEnterDelay() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.preEnterDelay > 0 {
+		return s.preEnterDelay
+	}
+	return preEnterDelayDefault
+}
+
 // SetInjectStatusLine controls whether ConfigureStatusBar modifies tmux settings.
 // When set to false, the status bar is left unchanged, preserving user's tmux config.
 func (s *Session) SetInjectStatusLine(inject bool) {
@@ -818,7 +849,7 @@ func (s *Session) indicZeroWidthMarksArgs() []string {
 	if _, overridden := s.OptionOverrides["codepoint-widths"]; overridden {
 		return nil
 	}
-	ver := hostTmuxVersionString()
+	ver := socketTmuxVersionString(s.SocketName)
 	if !s.indicZeroWidthMarks {
 		removeOwnedIndicZeroWidthMarks(s.SocketName, ver)
 		return nil
@@ -1019,9 +1050,13 @@ func (s *Session) Start(command string) error {
 	// it starts — runs from SpawnBaseDir and can never inherit a directory that
 	// is later deleted. See workdir_guard.go.
 	cmd := newSpawnCommand(launcher, args...)
+	// The socket's own binary goes first on the client's PATH, which tmux
+	// hands to the new pane (see withSocketBinaryPATH); retries below use
+	// newSessionSpawnCommand, which does the same.
+	cmd.Env = withSocketBinaryPATH(s.SocketName, cmd.Env)
 	output, err := commandCombinedOutput(cmd)
 	if err != nil {
-		if launcher == "tmux" {
+		if isDirectTmuxLauncher(s.SocketName, launcher) {
 			if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
 				statusLog.Warn("tmux_stale_socket_recovery_failed",
 					slog.String("session", logging.SanitizeValue(s.Name)),
@@ -1031,7 +1066,7 @@ func (s *Session) Start(command string) error {
 				statusLog.Warn("tmux_start_retry_after_socket_recovery",
 					slog.String("session", s.Name),
 				)
-				output, err = commandCombinedOutput(newSpawnCommand(launcher, args...))
+				output, err = commandCombinedOutput(newSessionSpawnCommand(s.SocketName, launcher, args...))
 			}
 		}
 	}
@@ -1063,7 +1098,7 @@ func (s *Session) Start(command string) error {
 			initialLabel = "scope path"
 		}
 
-		tmuxArgs := stripSystemdRunPrefix(args)
+		tmuxArgs := stripSystemdRunPrefix(args, BinaryFor(s.SocketName))
 
 		// Tier 2: if the first attempt was service-mode, try scope-mode
 		// as an intermediate step BEFORE falling all the way to direct.
@@ -1074,8 +1109,8 @@ func (s *Session) Start(command string) error {
 		var scopeOutput []byte
 		triedScope := false
 		if wasServiceModeArgs(args) {
-			scopeRetryArgs := buildScopeArgsFromTmuxArgs(s.Name, tmuxArgs)
-			scopeOutput, scopeErr = commandCombinedOutput(newSpawnCommand("systemd-run", scopeRetryArgs...))
+			scopeRetryArgs := buildScopeArgsFromTmuxArgs(s.Name, BinaryFor(s.SocketName), tmuxArgs)
+			scopeOutput, scopeErr = commandCombinedOutput(newSessionSpawnCommand(s.SocketName, "systemd-run", scopeRetryArgs...))
 			triedScope = true
 			if scopeErr == nil {
 				output = scopeOutput
@@ -1093,7 +1128,7 @@ func (s *Session) Start(command string) error {
 		// initial attempt was scope-mode, in which case it's the next
 		// tier down).
 		if err != nil {
-			retryOutput, retryErr := commandCombinedOutput(newSpawnCommand("tmux", tmuxArgs...))
+			retryOutput, retryErr := commandCombinedOutput(newSessionSpawnCommand(s.SocketName, BinaryFor(s.SocketName), tmuxArgs...))
 			if retryErr == nil {
 				output = retryOutput
 				err = nil

@@ -229,7 +229,7 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 
 	// Build extra flags from options (for fork, we use ToArgsForFork which excludes session mode)
 	launchName := target.ClaudeLaunchName()
-	if extraArgsSupplyName(i.ExtraArgs) || extraArgsSelectSession(i.ExtraArgs) {
+	if extraArgsSupplyName(i.ExtraArgs) || extraArgsSelectSession(i.claudeExtraArgsForCommand()) {
 		launchName = ""
 	}
 	extraFlags := i.buildClaudeExtraFlagsWithName(opts, launchName)
@@ -416,8 +416,10 @@ func (i *Instance) createForkedClaudeInstance(
 	// (buildClaudeResumeCommand reads the fork's own ExtraArgs) and a
 	// fork-of-a-fork never sees them at all. Mirrors how ClaudeOptions are
 	// persisted via SetClaudeOptions further down. Copied, not aliased.
-	if len(i.ExtraArgs) > 0 {
-		forked.ExtraArgs = append([]string(nil), i.ExtraArgs...)
+	// Never the parent's session selectors (a stale fork pair would
+	// make the fork's own restarts fork the grandparent).
+	if args := i.claudeExtraArgsForCommand(); len(args) > 0 {
+		forked.ExtraArgs = append([]string(nil), args...)
 	}
 
 	// The parent is set before the one-shot command is baked: the launch env

@@ -32,6 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/provider"
+	"github.com/asheshgoplani/agent-deck/internal/reportloop"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -291,6 +292,8 @@ type Home struct {
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
 	askDialog            *AskDialog            // ASK-117: owner answers an agent's ask secret|choice|text
 	reportDialog         *ReportDialog         // "Report a problem" form: bug/idea -> GitHub issue (internal/issuereport)
+	whatsNewDialog       *WhatsNewDialog       // "What's new": fixed reports + highlights after an update (internal/reportloop)
+	whatsNewPending      *reportloop.WhatsNew  // startup notes waiting for a free screen (maybeShowWhatsNew)
 	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
 	tel                  homeTelemetry         // Opt-in telemetry sampler and TUI lifetime (home_telemetry.go)
 	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
@@ -3939,6 +3942,28 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case whatsNewLoadedMsg:
+		h.onWhatsNewLoaded(msg)
+		return h, nil
+
+	case whatsNewPreparedMsg:
+		if h.whatsNewDialog != nil {
+			h.whatsNewDialog.OnPrepared(msg)
+		}
+		return h, nil
+
+	case whatsNewPostedMsg:
+		if h.whatsNewDialog != nil {
+			h.whatsNewDialog.OnPosted(msg)
+		}
+		return h, nil
+
+	case whatsNewSeenMsg:
+		if msg.err != nil {
+			uiLog.Warn("whats_new_mark_seen_failed", slog.String("error", msg.err.Error()))
+		}
+		return h, nil
+
 	case feedbackSentMsg:
 		// Route the result into the dialog so stepSent renders success or an explicit
 		// error line (v1.7.37, #679 TUI follow-up). Auto-dismiss still fires via timer.
@@ -4641,6 +4666,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		h.expireDividerHover(time.Now())
+		h.maybeShowWhatsNew()
 		h.telemetrySample()
 
 		// Honor a pending `agent-deck session focus <id>` request from the CLI.
@@ -5136,6 +5162,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.reportDialog = d
 			return h, cmd
 		}
+		if h.whatsNewDialog.IsVisible() {
+			d, cmd := h.whatsNewDialog.Update(msg)
+			h.whatsNewDialog = d
+			if !d.IsVisible() {
+				// Closed: startup notes still waiting are dropped too.
+				h.whatsNewPending = nil
+			}
+			return h, cmd
+		}
 		if h.feedbackDialog.IsVisible() {
 			d, cmd := h.feedbackDialog.Update(msg)
 			h.feedbackDialog = d
@@ -5615,6 +5650,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			case item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil:
 				if req, ok := buildRemoteAttachRequest(item.RemoteName, item.RemoteSession.ID, openAs); ok {
+					// The window runs this machine's `agent-deck remote
+					// attach`, not a raw ssh line, so Ctrl+V image paste
+					// works there as after Enter (ASK-201).
+					if exe, err := os.Executable(); err == nil {
+						req.Remote.LocalCLI = exe
+						req.Remote.LocalProfile = h.profile
+						req.Remote.RemoteName = item.RemoteName
+					}
 					if err := h.openInNewWindow(req, true); err != nil {
 						h.setError(fmt.Errorf("open remote in new window: %w", err))
 					}
@@ -6864,6 +6907,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// "Show me around" (ASK-131): what you can do, then Tab to the
 		// agents and sign-in page. Never the first-run variant.
 		h.openOnboarding(onboardingPageTour, false)
+		return h, nil
+
+	case defaultHotkeyBindings[hotkeyWhatsNew]:
+		// "What's new" on demand: this release's notes and any of your
+		// reports it fixed, with "Is it fixed for you?" (whats_new_dialog.go).
+		if h.whatsNewDialog != nil {
+			// The on-demand dialog replaces startup notes still waiting.
+			h.whatsNewPending = nil
+			cmd := h.whatsNewDialog.Open()
+			h.whatsNewDialog.SetSize(h.width, h.height)
+			return h, cmd
+		}
 		return h, nil
 
 	case defaultHotkeyBindings[hotkeyReportProblem]:

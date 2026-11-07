@@ -70,7 +70,7 @@ func pushTitleEnabled() bool {
 // It never reads an agent registry or sends input to a running process. Existing
 // startup builders retain ownership of account and conversation selection.
 func (i *Instance) ClaudeLaunchName() string {
-	if i == nil || !IsClaudeCompatible(i.Tool) || extraArgsSupplyName(i.ExtraArgs) || extraArgsSelectSession(i.ExtraArgs) || !pushTitleEnabled() {
+	if i == nil || !IsClaudeCompatible(i.Tool) || extraArgsSupplyName(i.ExtraArgs) || extraArgsSelectSession(i.claudeExtraArgsForCommand()) || !pushTitleEnabled() {
 		return ""
 	}
 	// Match the resume builder's generated-fork distinction. Arbitrary per-row

@@ -63,6 +63,8 @@ type SessionRow struct {
 	ExitCode          *int           `json:"exit_code,omitempty" doc:"live"`
 	SubstateDetail    string         `json:"substate_detail,omitempty" doc:"live"`
 	TmuxSession       string         `json:"tmux_session,omitempty" doc:"live"`
+	TmuxSocketName    string         `json:"tmux_socket_name,omitempty" doc:"tmux -L socket the session lives on; absent on the default server"`
+	TmuxBinary        string         `json:"tmux_binary,omitempty" doc:"the [tmux.binaries] client for that socket; absent when none applies (run the bare tmux)"`
 	Profile           string         `json:"profile"`
 	CreatedAt         time.Time      `json:"created_at"`
 	SSHHost           string         `json:"ssh_host,omitempty"`
@@ -139,6 +141,7 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 
 // staticSessionRow fills the stored fields only; no tmux or pane access.
 func staticSessionRow(inst *session.Instance, instances []*session.Instance, profile string, transcripts map[*session.Instance]string) SessionRow {
+	socketName, binary := TmuxRoute(inst)
 	return SessionRow{
 		ID:                inst.ID,
 		ParentSessionID:   inst.ParentSessionID,
@@ -150,6 +153,8 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 		Account:           inst.Account,
 		Command:           inst.Command,
 		Status:            string(inst.Status),
+		TmuxSocketName:    socketName,
+		TmuxBinary:        binary,
 		Profile:           profile,
 		CreatedAt:         inst.CreatedAt,
 		SSHHost:           inst.SSHHost,
@@ -261,4 +266,20 @@ func parentProjectPath(inst *session.Instance, instances []*session.Instance) st
 		}
 	}
 	return ""
+}
+
+// TmuxRoute names the tmux server a session lives on, for clients that run
+// tmux against it themselves (a desktop app's terminal pane reads styles and
+// sizes and keeps a control-mode mirror over ssh): the -L socket name, and
+// the [tmux.binaries] client for that socket. A tmux client only talks to a
+// server of its own version (3.4 against 3.6a: "server exited
+// unexpectedly"), so "tmux -L <socket>" alone is not enough. Both are ""
+// (omitted from JSON) on the default server or a socket without its own
+// binary, so older consumers see no change.
+func TmuxRoute(inst *session.Instance) (socketName, binary string) {
+	socketName = inst.TmuxSocketName
+	if bin, ok := tmux.ConfiguredBinary(socketName); ok {
+		binary = bin
+	}
+	return socketName, binary
 }

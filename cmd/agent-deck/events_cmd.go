@@ -458,7 +458,7 @@ func readPublishData(name string) ([]byte, error) {
 // can publish without it.
 func checkRemoteReplyPublish(profile, kind, sessionID, data, dataFile string) error {
 	if !events.IsMacappRemoteReplyKind(kind) {
-		return fmt.Errorf("kind %q is not a Mac app reply (%s, %s, %s or %s)", kind, events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus, events.KindMacappAskSeen)
+		return fmt.Errorf("kind %q is not a Mac app reply (%s, %s, %s, %s or %s)", kind, events.KindMacappOpenAck, events.KindMacappSwitchAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus, events.KindMacappAskSeen)
 	}
 	if data != "" || dataFile != "-" {
 		return errors.New("the payload must come on stdin (--data-file -)")

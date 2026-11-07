@@ -70,7 +70,9 @@ jobs:
 
   e2e:
     name: playwright (e2e + screenshots)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright's chromium
+    # install (--with-deps) does not support yet. Move back once it does.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
       run:

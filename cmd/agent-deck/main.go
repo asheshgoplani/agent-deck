@@ -156,6 +156,22 @@ func writeVersionOutput(w io.Writer, currentVersion string) {
 	fmt.Fprintln(w)
 }
 
+// coreFeatures are the capabilities `agent-deck version --json` advertises,
+// so a client (the Mac app) can pick a call shape without trial and error.
+// A core that predates this list prints the plain version line instead of
+// JSON for `version --json`; clients treat that as "no features".
+//   - recall_timeline_batch: `recall timeline --json [--tail N] --sessions a,b,...`
+var coreFeatures = []string{"recall_timeline_batch"}
+
+// writeVersionJSON prints {"version": "...", "features": [...]}.
+func writeVersionJSON(w io.Writer, currentVersion string) {
+	out, _ := json.MarshalIndent(struct {
+		Version  string   `json:"version"`
+		Features []string `json:"features"`
+	}{currentVersion, coreFeatures}, "", "  ")
+	fmt.Fprintln(w, string(out))
+}
+
 // printUpdateNotice checks for updates and prints a one-liner if available
 // Uses cache to avoid API calls - only prints if update was already detected
 func printUpdateNotice() {
@@ -472,6 +488,8 @@ func main() {
 	// calls use Instance.TmuxSocketName directly — this default is only
 	// the installation-wide fallback for callers without a session handle.
 	tmux.SetDefaultSocketName(session.GetTmuxSettings().GetSocketName())
+	// [tmux.binaries]: the tmux binary per socket, for every tmux call.
+	tmux.SetSocketBinaries(session.GetTmuxSettings().Binaries)
 	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
 		session.ConfigureTmuxDisplay(cfg.Display)
 	}
@@ -524,6 +542,10 @@ func main() {
 			handleTelemetry(args[1:])
 			return
 		case "version", "--version", "-v":
+			if len(args) > 1 && args[1] == "--json" {
+				writeVersionJSON(os.Stdout, Version)
+				return
+			}
 			writeVersionOutput(os.Stdout, Version)
 			return
 		case "help", "--help", "-h":
@@ -654,6 +676,9 @@ func main() {
 			return
 		case "open":
 			handleOpen(profile, args[1:])
+			return
+		case "switch":
+			handleSwitch(profile, args[1:])
 			return
 		case "ask":
 			handleAsk(profile, args[1:])
@@ -1639,7 +1664,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -3202,24 +3227,27 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		cached = cachedStatus[0]
 	}
 	type sessionJSON struct {
-		ID                string    `json:"id"`
-		ParentSessionID   string    `json:"parent_session_id,omitempty"`
-		ParentProjectPath string    `json:"parent_project_path,omitempty"`
-		Title             string    `json:"title"`
-		Path              string    `json:"path"`
-		Group             string    `json:"group"`
-		Tool              string    `json:"tool"`
-		Account           string    `json:"account"`
-		Command           string    `json:"command,omitempty"`
-		ModelID           string    `json:"model_id,omitempty"`
-		Model             string    `json:"model,omitempty"`
-		ModelVersion      string    `json:"model_version,omitempty"`
-		Status            string    `json:"status"`
-		StatusSource      string    `json:"status_source,omitempty"`
-		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
-		ExitCode          *int      `json:"exit_code,omitempty"`
-		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time; usage-limit window, model-limit model, account-blocked reason)
-		TmuxSession       string    `json:"tmux_session,omitempty"`
+		ID                string `json:"id"`
+		ParentSessionID   string `json:"parent_session_id,omitempty"`
+		ParentProjectPath string `json:"parent_project_path,omitempty"`
+		Title             string `json:"title"`
+		Path              string `json:"path"`
+		Group             string `json:"group"`
+		Tool              string `json:"tool"`
+		Account           string `json:"account"`
+		Command           string `json:"command,omitempty"`
+		ModelID           string `json:"model_id,omitempty"`
+		Model             string `json:"model,omitempty"`
+		ModelVersion      string `json:"model_version,omitempty"`
+		Status            string `json:"status"`
+		StatusSource      string `json:"status_source,omitempty"`
+		Substate          string `json:"substate,omitempty"` // Honest Status v2: additive refinement
+		ExitCode          *int   `json:"exit_code,omitempty"`
+		SubstateDetail    string `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time; usage-limit window, model-limit model, account-blocked reason)
+		TmuxSession       string `json:"tmux_session,omitempty"`
+		// TmuxSocketName and TmuxBinary: see addTmuxRouteJSON.
+		TmuxSocketName    string    `json:"tmux_socket_name,omitempty"`
+		TmuxBinary        string    `json:"tmux_binary,omitempty"`
 		Profile           string    `json:"profile"`
 		CreatedAt         time.Time `json:"created_at"`
 		SSHHost           string    `json:"ssh_host,omitempty"`
@@ -3316,6 +3344,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		if cached[inst] {
 			sj.StatusSource = "cached"
 		}
+		sj.TmuxSocketName, sj.TmuxBinary = tmuxRouteFields(inst)
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			sj.TmuxSession = tmuxSess.Name
 			if v, known := viewers[tmuxSess.Name]; known {
@@ -4721,6 +4750,7 @@ func printHelp() {
 	fmt.Println("  rename, mv       Rename a session")
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
+	fmt.Println("  switch <query>   Show a session in the Mac app (or attach here) by id, title or part of one [--json]")
 	fmt.Println("  open <file|url>  Show a page in the Mac app Browser panel [--session <id|title>]")
 	fmt.Println("  ask <kind>       Ask the owner for a secret, choice or text in a dialog (docs/ask.md)")
 	fmt.Println("  browser <op>     Drive the session's Mac app Browser: open, tabs, close, click, type, read, shot")

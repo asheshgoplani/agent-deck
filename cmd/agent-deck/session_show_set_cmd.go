@@ -257,6 +257,7 @@ func handleSessionShow(profile string, args []string) {
 	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
 		jsonData["tmux_session"] = tmuxSession.Name
 	}
+	addTmuxRouteJSON(jsonData, inst)
 	// Who else has this session open (shared attach). Present only when tmux
 	// answered: [] is "nobody", an absent key is "unknown".
 	viewers, viewersKnown := inst.Viewers(context.Background())
@@ -458,6 +459,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  wait-timeout       Wait timer (claude): after a question with a \"(Recommended)\" option under the cursor has waited this long, take that option; never permission/trust prompts (Go duration >= 1m, e.g. 5m; off disables; empty uses [sessions] wait_timeout)")
 		fmt.Println("  order              0-based position in the group (see `session show --json` .order); clamps to the end")
 		fmt.Println("  intended-switch    Mark the CURRENT account+model as switched on purpose (value = reason; 24h); '' clears")
+		fmt.Println("  tmux-socket        tmux -L socket of a STOPPED session ('' = default server); the next start runs there with [tmux.binaries]")
 		fmt.Println()
 		fmt.Println("Intended switches:")
 		fmt.Println("  `account`/`model` with --intended \"<reason>\" record the switch as intended until --intended-for")

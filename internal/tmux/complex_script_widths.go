@@ -167,7 +167,7 @@ type IndicZeroWidthMarksInfo struct {
 // CheckIndicZeroWidthMarks reports whether the opt-in can take effect on
 // this host's tmux.
 func CheckIndicZeroWidthMarks() IndicZeroWidthMarksInfo {
-	return indicZeroWidthMarksInfo(hostTmuxVersionString())
+	return indicZeroWidthMarksInfo(socketTmuxVersionString(DefaultSocketName()))
 }
 
 func indicZeroWidthMarksInfo(ver string) IndicZeroWidthMarksInfo {

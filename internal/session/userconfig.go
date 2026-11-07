@@ -4023,6 +4023,42 @@ type TmuxSettings struct {
 	// Precedence at Instance creation: CLI flag `--tmux-socket <name>`
 	// wins, else this config value, else empty.
 	SocketName string `toml:"socket_name,omitempty"`
+
+	// Binaries maps a tmux -L socket name to the tmux binary agent-deck runs
+	// for every call on that socket: commands, new-session, attach, control
+	// pipes and the version probe. Sockets not listed, and the default
+	// server, run the "tmux" on PATH. A tmux client only talks to a server
+	// of its own version, so this lets a newer tmux (e.g. 3.6 for
+	// indic_zero_width_marks) serve one socket while older servers keep
+	// running, without changing PATH. Move a session onto that socket with
+	// `agent-deck session set <id> tmux-socket <name>` while it is stopped.
+	// Example:
+	//   [tmux]
+	//   socket_name = "deck36"
+	//   [tmux.binaries]
+	//   deck36 = "/usr/local/opt/tmux-3.6/bin/tmux"
+	// Default: empty (every socket runs "tmux" from PATH).
+	Binaries map[string]string `toml:"binaries,omitempty"`
+}
+
+// misnamedTmuxBinarySockets returns, sorted, the [tmux.binaries] sockets
+// whose binary file is not named exactly "tmux". Such a binary still runs
+// agent-deck's own calls, but the socket's panes get its directory first on
+// PATH so that a bare "tmux" there (an agent, a hook) is the client that
+// matches the server; under another name that lookup finds the older tmux.
+func misnamedTmuxBinarySockets(binaries map[string]string) []string {
+	var out []string
+	for socket, bin := range binaries {
+		bin = strings.TrimSpace(bin)
+		if strings.TrimSpace(socket) == "" || bin == "" {
+			continue
+		}
+		if filepath.Base(bin) != "tmux" {
+			out = append(out, socket)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GetInjectStatusLine returns whether to inject status line, defaulting to true.
@@ -4667,6 +4703,12 @@ func LoadUserConfig() (*UserConfig, error) {
 
 	normalizeUIHiddenTools(&config.UI, config.Tools)
 	normalizeUIPreviewFields(&config.UI)
+	for _, socket := range misnamedTmuxBinarySockets(config.Tmux.Binaries) {
+		registryLog.Warn("tmux.binaries entry is not named tmux",
+			"socket", socket,
+			"path", strings.TrimSpace(config.Tmux.Binaries[socket]),
+			"hint", "name the file exactly tmux, in a directory of its own: agent-deck puts that directory first on PATH in the socket's panes, so a bare tmux there reaches this server")
+	}
 
 	// Keep the in-group sort mode in lockstep with the loaded config. This is
 	// the single funnel for TUI, web, and CLI; ReloadUserConfig routes through
@@ -4955,6 +4997,20 @@ func IsCodexCompatible(toolName string) bool {
 	return false
 }
 
+// IsDevinCompatible returns true if the tool is "devin" or a custom tool
+// whose underlying command is "devin". Use this for capability gates where
+// custom tools wrapping Devin should inherit Devin's composer behavior
+// (e.g. its wider input-coalescing window — see preEnterDelayForTool).
+func IsDevinCompatible(toolName string) bool {
+	if toolName == "devin" {
+		return true
+	}
+	if def := GetToolDef(toolName); def != nil {
+		return strings.EqualFold(strings.TrimSpace(def.CompatibleWith), "devin") || isDevinCommand(def.Command)
+	}
+	return false
+}
+
 // isShellBinary returns true if cmd is a known interactive shell process name.
 // Used to distinguish "shell at a prompt" from "shell running a foreground command"
 // (e.g. "node" from "yarn dev", "java" from "mvn spring-boot:run").
@@ -5008,6 +5064,10 @@ func isClaudeCommand(command string) bool {
 
 func isCodexCommand(command string) bool {
 	return isCommand(command, "codex")
+}
+
+func isDevinCommand(command string) bool {
+	return isCommand(command, "devin")
 }
 
 func isCommand(command, wantBase string) bool {

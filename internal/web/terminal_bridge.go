@@ -294,7 +294,10 @@ func tmuxCommandContext(ctx context.Context, socketName string, args ...string) 
 	// Explicit per-session socket name wins — this is the v1.7.50 path.
 	if trimmed := strings.TrimSpace(socketName); trimmed != "" {
 		finalArgs := append([]string{tmuxutf8.Flag, "-L", trimmed}, utf8Args[1:]...)
-		cmd := exec.CommandContext(ctx, "tmux", finalArgs...)
+		// The socket's own binary ([tmux.binaries]): a tmux client only
+		// talks to a server of its own version.
+		// #nosec G204 -- "tmux" or the user's configured [tmux.binaries] path; args are an argv slice, never a shell
+		cmd := exec.CommandContext(ctx, tmux.BinaryFor(trimmed), finalArgs...)
 		// Unset TMUX so tmux-in-tmux guards don't trip: we are explicitly
 		// directing this to a different server than the one we're in.
 		cmd.Env = environWithoutTMUX(os.Environ())
@@ -308,7 +311,11 @@ func tmuxCommandContext(ctx context.Context, socketName string, args ...string) 
 		finalArgs = append([]string{tmuxutf8.Flag, "-S", socketPath}, utf8Args[1:]...)
 	}
 
-	cmd := exec.CommandContext(ctx, "tmux", finalArgs...)
+	bin := "tmux"
+	if hasSocket {
+		bin = tmux.BinaryForSocketPath(socketPath)
+	}
+	cmd := exec.CommandContext(ctx, bin, finalArgs...)
 	if hasSocket {
 		cmd.Env = environWithoutTMUX(os.Environ())
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -168,6 +169,14 @@ func tmuxArgs(socketName string, args ...string) []string {
 		args = args[1:]
 	}
 	name := strings.TrimSpace(socketName)
+	if name == "" && tmuxEnvNamesConfiguredSocket(os.Getenv) {
+		// A session with no socket name lives on the default server. Without
+		// -L, tmux would follow the inherited $TMUX instead, and inside a pane
+		// on a [tmux.binaries] socket (deck36, say) every call for a
+		// default-server session would go to the wrong server ("session is
+		// not running"). Name the default server explicitly there.
+		name = defaultTmuxSocketName
+	}
 	var out []string
 	if name == "" {
 		out = make([]string, len(args))
@@ -195,13 +204,14 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 	// Refuse, before the subprocess exists, to point a test binary at the
 	// user's live default server. See default_socket_guard.go.
 	assertTmuxSpawnIsolated(socketName, args)
-	// #nosec G204,G702 -- "tmux" is a fixed binary and every dynamic value is
+	// #nosec G204,G702 -- the binary is "tmux" or the user's configured
+	// [tmux.binaries] path for this socket, and every dynamic value is
 	// passed as a distinct argv element, never through a shell. Call sites may
 	// supply user-selected paths, but those cannot alter the executable or argv
 	// boundaries.
-	cmd := exec.Command("tmux", tmuxArgs(socketName, args...)...)
+	cmd := exec.Command(BinaryFor(socketName), tmuxArgs(socketName, args...)...)
 	cmd.WaitDelay = tmuxSubprocessWaitDelay
-	cmd.Env = childenv.WithoutClaudeJobDir() // #2683
+	cmd.Env = withSocketBinaryPATH(socketName, childenv.WithoutClaudeJobDir()) // #2683; PATH: see withSocketBinaryPATH
 	return cmd
 }
 
@@ -211,9 +221,9 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 // the -L plumbing centralised for them too.
 func tmuxExecContext(ctx context.Context, socketName string, args ...string) *exec.Cmd {
 	assertTmuxSpawnIsolated(socketName, args)
-	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, args...)...)
+	cmd := exec.CommandContext(ctx, BinaryFor(socketName), tmuxArgs(socketName, args...)...)
 	cmd.WaitDelay = tmuxSubprocessWaitDelay
-	cmd.Env = childenv.WithoutClaudeJobDir() // #2683
+	cmd.Env = withSocketBinaryPATH(socketName, childenv.WithoutClaudeJobDir()) // #2683; PATH: see withSocketBinaryPATH
 	return cmd
 }
 

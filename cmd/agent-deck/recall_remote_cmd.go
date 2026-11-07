@@ -40,7 +40,7 @@ var remoteRecallOptions = map[string]map[string]bool{
 	"context":  {"tier": true, "budget": true, "json": false},
 	"export":   {"since": true, "cards": false, "json": false},
 	"status":   {"json": false},
-	"timeline": {"json": false, "tail": true, "since": true, "before": true, "limit": true, "agent": true, "v1": false},
+	"timeline": {"json": false, "tail": true, "since": true, "before": true, "limit": true, "agent": true, "v1": false, "sessions": true},
 	"follow":   {"jsonl": false, "after": true, "status": false, "agent": true, "v1": false},
 }
 
@@ -110,6 +110,11 @@ func remoteRecallUnsupported(args []string, code int, stdout, stderr string) (re
 		return reasonPredatesRecall, true
 	case strings.Contains(combined, "recall is off"):
 		return reasonRecallOff, true
+	}
+	// A core older than the timeline batch rejects the flag itself; name
+	// it so a client falls back to one id per call.
+	if len(args) > 2 && args[1] == "timeline" && strings.Contains(combined, "flag provided but not defined: -sessions") {
+		return reasonPredatesRecall + " timeline --sessions", true
 	}
 	const marker = "unknown recall command: "
 	if idx := strings.Index(combined, marker); idx >= 0 {

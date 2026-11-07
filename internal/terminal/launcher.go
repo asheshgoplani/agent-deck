@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // ErrUnsupported is returned by OpenSessionInNewWindow on platforms that have
@@ -101,6 +102,20 @@ type RemoteAttach struct {
 	// SSHConfig is the remote's per-sandbox ssh_config (provider sandbox
 	// remotes); when set every ssh in the attach command passes it with -F.
 	SSHConfig string
+
+	// LocalCLI is this machine's agent-deck binary. With RemoteName set, the
+	// window runs `<LocalCLI> [-p LocalProfile] remote attach <RemoteName>
+	// <session>` instead of a raw ssh line, so the attach is the same as
+	// Enter in the TUI: Ctrl+V carries a clipboard image across (ASK-201),
+	// Ctrl+Q detaches, mosh falls back to ssh. Empty keeps the ssh line.
+	LocalCLI string
+
+	// LocalProfile is the profile the TUI runs under; empty or "default"
+	// adds no -p.
+	LocalProfile string
+
+	// RemoteName is the remote's name in this machine's config.
+	RemoteName string
 }
 
 // UsesMosh reports whether the attach runs over mosh rather than ssh.
@@ -177,7 +192,7 @@ func MoshArgsWithSSHConfig(host, moshServer, sshConfig string, argv []string) []
 // inside a fresh terminal window, attaches to the requested session.
 //
 // For local requests (Remote == nil) it produces a `tmux attach …`
-// invocation. For remote requests it produces an `ssh -tt …
+// invocation, run with the socket's [tmux.binaries] binary when it has one. For remote requests it produces an `ssh -tt …
 // '<agent-deck-path> [-p profile] session attach <name>'` invocation
 // that mirrors session.SSHRunner.Attach.
 //
@@ -193,7 +208,13 @@ func BuildAttachCommand(req AttachRequest) string {
 		return buildRemoteAttachCommand(name, req.Remote)
 	}
 	var b strings.Builder
-	b.WriteString("tmux")
+	// The socket's own binary ([tmux.binaries]), as on every other tmux
+	// call: a tmux client only talks to a server of its own version.
+	if bin := tmux.BinaryFor(req.SocketName); bin == "tmux" {
+		b.WriteString(bin)
+	} else {
+		b.WriteString(shellQuote(bin))
+	}
 	if req.ForceUTF8 {
 		b.WriteString(" -u")
 	}
@@ -219,6 +240,14 @@ func buildRemoteAttachCommand(remoteName string, r *RemoteAttach) string {
 	host := strings.TrimSpace(r.Host)
 	if host == "" {
 		return ""
+	}
+	if cli, remote := strings.TrimSpace(r.LocalCLI), strings.TrimSpace(r.RemoteName); cli != "" && remote != "" {
+		parts := []string{shellQuote(cli)}
+		if p := strings.TrimSpace(r.LocalProfile); p != "" && p != "default" {
+			parts = append(parts, "-p", shellQuote(p))
+		}
+		parts = append(parts, "remote", "attach", shellQuote(remote), shellQuote(remoteName))
+		return strings.Join(parts, " ")
 	}
 	agentDeckPath := strings.TrimSpace(r.AgentDeckPath)
 	if agentDeckPath == "" {

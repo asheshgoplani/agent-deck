@@ -1,0 +1,9 @@
+Usage: agent-deck switch <query> [--json] [--no-attach] [--wait <duration>]
+
+Show a session in the AgentDeck app (or this terminal). <query> is an id, an id prefix, a title or part of one; group names count too.
+  -json
+    	print one JSON object; never attaches in the terminal
+  -no-attach
+    	do not attach in this terminal when the app is not reached
+  -wait duration
+    	how long to wait for the app to acknowledge (at most 2m0s) (default 2s)

@@ -138,7 +138,7 @@ type onboardingRecheckMsg struct{}
 
 // onboardingKeys are the real, resolved keys the pages name.
 type onboardingKeys struct {
-	newSession, quickCreate, detach, altSession, prompt, queue, report, tour, help string
+	newSession, quickCreate, detach, altSession, prompt, queue, report, whatsNew, tour, help string
 }
 
 // OnboardingOverlay is the Welcome / What you can do overlay.
@@ -476,6 +476,7 @@ func (h *Home) onboardingKeys() onboardingKeys {
 		prompt:      h.actionKey(hotkeyPromptSession),
 		queue:       h.actionKey(hotkeyQueueMessage),
 		report:      h.actionKey(hotkeyReportProblem),
+		whatsNew:    h.actionKey(hotkeyWhatsNew),
 		tour:        h.actionKey(hotkeyShowAround),
 		help:        h.actionKey(hotkeyHelp),
 	}
@@ -842,10 +843,13 @@ func (o *OnboardingOverlay) tourSections(width int) dialogSections {
 		more = append(more, k.help+" all keys")
 	}
 	if k.tour != "" {
-		more = append(more, k.tour+" shows this again")
+		more = append(more, k.tour+" this page")
 	}
 	if k.report != "" {
-		more = append(more, k.report+" reports a problem")
+		more = append(more, k.report+" report a problem")
+	}
+	if k.whatsNew != "" {
+		more = append(more, k.whatsNew+" what's new")
 	}
 	s.foot = []string{""}
 	if len(more) > 0 {

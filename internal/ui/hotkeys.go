@@ -93,6 +93,11 @@ const (
 	// Every letter is taken (see hotkeyReportProblem); "alt+w" (welcome) is
 	// a chord no main-screen action, dialog or attach-loop intercept uses.
 	hotkeyShowAround = "show_around"
+	// hotkeyWhatsNew opens "What's new" (ASK-205): this release's notes,
+	// your reports it fixed and "Is it fixed for you?". Every letter is
+	// taken (see hotkeyReportProblem); "alt+n" (news) is a chord no
+	// main-screen action, dialog or attach-loop intercept uses.
+	hotkeyWhatsNew = "whats_new"
 	// Session switcher. While attached it is intercepted in the tmux attach
 	// loop (see internal/tmux/pty.go AttachOptions); on the home screen it is
 	// dispatched like any other hotkey. Must resolve to a "ctrl+<letter>" chord.
@@ -182,6 +187,7 @@ var hotkeyActionOrder = []string{
 	hotkeyAgentsPanel,
 	hotkeyReportProblem,
 	hotkeyShowAround,
+	hotkeyWhatsNew,
 	hotkeySwitchSession,
 	hotkeyAltSession,
 	hotkeyMRUBack,
@@ -243,6 +249,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyAgentsPanel:      "alt+a",
 	hotkeyReportProblem:    "Z",
 	hotkeyShowAround:       "alt+w",
+	hotkeyWhatsNew:         "alt+n",
 	hotkeySwitchSession:    "ctrl+s",
 	hotkeyAltSession:       "`",
 	hotkeyMRUBack:          "alt+left",
