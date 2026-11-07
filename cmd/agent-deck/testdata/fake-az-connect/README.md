@@ -47,13 +47,14 @@ Put the directory first in `PATH` (or point `azConnectLookPath` at it).
 | `skus_error` | `vm list-skus` fails (InternalServerError) |
 | `skus_wait=N` | `vm list-skus` hangs N seconds (the real call took ~80 s), then exits without output |
 | `nsg_delete_error` | `network nsg delete` fails (InternalServerError) |
-| `login_other_tenant` | the user's `account show` reports tenantId `b2c3d4e5-...-00000000000b` while the subscriptions stay in the home tenant (logged in to another directory) |
+| `login_other_tenant` | the user's `account show` reports tenantId `b2c3d4e5-...-00000000000b` while the subscriptions stay in the home tenant (logged in to another directory); `ad app delete` and `role assignment delete` of an app made in the home tenant answer as if it did not exist (`Resource '<id>' does not exist ...`, `No matched assignments were found to delete`), as az does from another directory |
 
 Other behaviour (no switch):
 
 - `group create` with a location not in the script's `LOCATIONS` list fails
   `LocationNotAvailableForResourceGroup`; an existing group in another
   location fails `InvalidResourceGroupLocation`.
+- `account show --subscription S` answers for S, with S's own `tenantId`.
 - `--subscription` must be one of the scenario's subscription ids or exact
   names, else `Subscription '<x>' not found. Check the spelling and casing and try again.`
 - `ad sp create-for-rbac` with a name it already made patches that app

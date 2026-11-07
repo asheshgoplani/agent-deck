@@ -2063,3 +2063,189 @@ func TestAzureConnect_SkuOffered(t *testing.T) {
 		}
 	}
 }
+
+// azSetConf rewrites one key of azure-vm.conf the way a user edit would.
+func (e *azTestEnv) azSetConf(key, value string) {
+	e.t.Helper()
+	conf, err := azReadConf(e.confPath())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	conf.set(key, value)
+	if err := os.WriteFile(e.confPath(), conf.bytes(), 0o600); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// A disconnect run while az is logged in to another directory must not
+// take az's "does not exist" (it only means "not in this directory") as a
+// finished delete: it stops before any delete and keeps the secret.
+func TestProviderConnectAzure_DisconnectWrongTenantKeepsSecret(t *testing.T) {
+	e := newAzConnectEnv(t, "")
+	e.mustConnect()
+	app := e.appID()
+	secret, err := os.ReadFile(e.secretPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.scenario("login_other_tenant")
+	if code := e.run("azure", "--disconnect", "--yes"); code != 1 {
+		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, e.stdout, e.stderr)
+	}
+	if got, want := e.stderr.String(), azTextDisconnectWrongTenant(app, azTestTenant, azTestOtherTenant); !strings.Contains(got, want) {
+		t.Fatalf("stderr:\n%s\nwant:\n%s", got, want)
+	}
+	if n := len(e.callsWith("ad", "app", "delete")) + len(e.callsWith("role", "assignment", "delete")); n != 0 {
+		t.Fatalf("%d delete calls after the tenant mismatch", n)
+	}
+	if e.stateExists(filepath.Join("deleted", app)) {
+		t.Fatal("app deleted in the fake")
+	}
+	if got, err := os.ReadFile(e.secretPath()); err != nil || !bytes.Equal(got, secret) {
+		t.Fatalf("secret file changed or removed (%v)", err)
+	}
+	if v := e.confValues(); v["sp_app_id"] != app || v["sp_tenant"] != azTestTenant || v[azKeySPCreated] != "true" {
+		t.Fatalf("azure-vm.conf changed: %v", v)
+	}
+	e.run("azure", "--disconnect", "--yes", "--json")
+	azWantKind(t, e, azKindWrongTenant)
+
+	// Back in the right directory the same disconnect goes through.
+	e.scenario("")
+	if code := e.run("azure", "--disconnect", "--yes"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, e.stderr)
+	}
+	if !e.stateExists(filepath.Join("deleted", app)) || azExists(e.secretPath()) {
+		t.Fatal("disconnect in the right directory did not finish")
+	}
+}
+
+// The subscription in azure-vm.conf must be reachable from the az login,
+// in the service principal's directory, before anything is deleted.
+func TestProviderConnectAzure_DisconnectSubscriptionNotReachedKeepsSecret(t *testing.T) {
+	const unknownSub = "99999999-9999-4999-8999-999999999999"
+	e := newAzConnectEnv(t, "")
+	e.mustConnect()
+	app := e.appID()
+	e.azSetConf("subscription", unknownSub)
+	// --force: the provider's own sandbox list fails on that subscription too.
+	if code := e.run("azure", "--disconnect", "--yes", "--force", "--json"); code != 1 {
+		t.Fatalf("exit %d\n%s", code, e.stdout)
+	}
+	ev := azWantKind(t, e, azKindWrongTenant)
+	if msg, _ := ev["message"].(string); !strings.Contains(msg, unknownSub) || !strings.Contains(msg, "az login --tenant "+azTestTenant) {
+		t.Fatalf("message:\n%v", ev["message"])
+	}
+	if n := len(e.callsWith("ad", "app", "delete")) + len(e.callsWith("role", "assignment", "delete")); n != 0 {
+		t.Fatalf("%d delete calls for an unreachable subscription", n)
+	}
+	if !azExists(e.secretPath()) || e.confValues()["sp_app_id"] != app {
+		t.Fatal("local files removed")
+	}
+}
+
+// A secret connect wrote elsewhere (sp_secret_file pointing to an older
+// config dir) goes too; anything that may not be connect's stays.
+func TestProviderConnectAzure_DisconnectSecretFileElsewhere(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		file   string
+		mode   os.FileMode
+		link   bool
+		remove bool
+	}{
+		{name: "connect's secret in another dir", file: "azure-sp-secret", mode: 0o600, remove: true},
+		{name: "another name", file: "my-sp-secret", mode: 0o600},
+		{name: "wider mode", file: "azure-sp-secret", mode: 0o644},
+		{name: "symlink", file: "azure-sp-secret", mode: 0o600, link: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newAzConnectEnv(t, "")
+			e.mustConnect()
+			other := filepath.Join(t.TempDir(), "old-config")
+			if err := os.MkdirAll(other, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			p := filepath.Join(other, tc.file)
+			target := p
+			if tc.link {
+				target = filepath.Join(other, "target")
+			}
+			secret, err := os.ReadFile(e.secretPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, secret, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(target, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if tc.link {
+				if err := os.Symlink(target, p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.azSetConf("sp_secret_file", p)
+			// --force: the provider refuses some of these files for its list.
+			if code := e.run("azure", "--disconnect", "--yes", "--force"); code != 0 {
+				t.Fatalf("exit %d\n%s", code, e.stderr)
+			}
+			if azExists(e.secretPath()) {
+				t.Fatal("the secret in the config dir is left")
+			}
+			_, err = os.Lstat(p)
+			if gone := errors.Is(err, os.ErrNotExist); gone != tc.remove {
+				t.Fatalf("%s removed = %v, want %v", p, gone, tc.remove)
+			}
+			if !tc.remove {
+				if !azExists(target) {
+					t.Fatal("symlink target removed")
+				}
+				if got := e.stderr.String(); !strings.Contains(got, fmt.Sprintf(azTextSecretElsewhereKeptFmt, p)) {
+					t.Fatalf("stderr does not report the kept file:\n%s", got)
+				}
+			}
+		})
+	}
+}
+
+// sp_tenant written as a domain name: the subscription's directory decides.
+// With neither sp_tenant nor subscription there is nothing to check
+// against, so disconnect deletes nothing.
+func TestProviderConnectAzure_DisconnectTenantFromSubscriptionOrRefuse(t *testing.T) {
+	e := newAzConnectEnv(t, "")
+	e.mustConnect()
+	app := e.appID()
+	e.azSetConf("sp_tenant", "devtesteroutlook.onmicrosoft.com")
+	e.scenario("login_other_tenant")
+	// --force: the fake's SP login does not take a domain as tenant.
+	if code := e.run("azure", "--disconnect", "--yes", "--force", "--json"); code != 1 {
+		t.Fatalf("exit %d\n%s", code, e.stdout)
+	}
+	if ev := azWantKind(t, e, azKindWrongTenant); ev["message"] != azTextDisconnectWrongTenant(app, azTestTenant, azTestOtherTenant) {
+		t.Fatalf("message:\n%v", ev["message"])
+	}
+	if len(e.callsWith("ad", "app", "delete")) != 0 || !azExists(e.secretPath()) {
+		t.Fatal("deleted something from the wrong directory")
+	}
+
+	conf, err := azReadConf(e.confPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf.remove("sp_tenant", "subscription")
+	if err := os.WriteFile(e.confPath(), conf.bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.scenario("")
+	if code := e.run("azure", "--disconnect", "--yes", "--force", "--json"); code != 1 {
+		t.Fatalf("exit %d\n%s", code, e.stdout)
+	}
+	if ev := azWantKind(t, e, azKindBadConfig); ev["message"] != azTextDisconnectTenantUnknown(e.confPath(), app) {
+		t.Fatalf("message:\n%v", ev["message"])
+	}
+	if len(e.callsWith("ad", "app", "delete")) != 0 || !azExists(e.secretPath()) {
+		t.Fatal("deleted something without a known directory")
+	}
+}

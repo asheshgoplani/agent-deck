@@ -383,6 +383,34 @@ const (
 	azTextListFailedForcedFmt    = "Warning: could not list the sandboxes of provider %s (%s); disconnecting anyway (--force)."
 )
 
+const azTextDisconnectWrongTenantFmt = `Service principal %s is in directory %s, but your az login is for directory %s.
+Nothing was removed. Log in to that directory, then run this again:
+  az login --tenant %s`
+
+func azTextDisconnectWrongTenant(appID, spTenant, loginTenant string) string {
+	return fmt.Sprintf(azTextDisconnectWrongTenantFmt, appID, spTenant, firstNonEmpty(loginTenant, "(unknown)"), spTenant)
+}
+
+const azTextDisconnectWrongSubscriptionFmt = `Your az login does not reach subscription %s in directory %s, where service principal %s was made.
+Azure said: %s
+Nothing was removed. Log in to that directory, then run this again:
+  az login --tenant %s`
+
+func azTextDisconnectWrongSubscription(subID, spTenant, appID, said string) string {
+	return fmt.Sprintf(azTextDisconnectWrongSubscriptionFmt, subID, spTenant, appID, said, spTenant)
+}
+
+const azTextDisconnectTenantUnknownFmt = `%s has no sp_tenant and no subscription, so disconnect cannot tell which directory service principal %s is in.
+Nothing was removed. Add sp_tenant = <directory id> to that file, then run this again.`
+
+func azTextDisconnectTenantUnknown(confPath, appID string) string {
+	return fmt.Sprintf(azTextDisconnectTenantUnknownFmt, confPath, appID)
+}
+
+const azTextSubInOtherTenantFmt = "the subscription is in directory %s"
+
+const azTextSecretElsewhereKeptFmt = "Left %s in place: sp_secret_file points there, but it does not look like the secret file connect writes. Remove it yourself if nothing else uses it."
+
 // Usage and generic errors.
 const (
 	azTextUnknownTargetFmt = "unknown provider to connect %q (known: azure)"

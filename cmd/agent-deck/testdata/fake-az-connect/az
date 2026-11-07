@@ -381,9 +381,11 @@ logout)
 		U="$SP_CTX"
 	else
 		user_logged_in || err 1 "Please run 'az login' to setup account."
-		if [ -f "$S/default_sub" ]; then
+		ASKED_SUB="$(opt --subscription || true)"
+		if [ -n "$ASKED_SUB" ] || [ -f "$S/default_sub" ]; then
 			resolve_sub
-			J="$(render account-show.json | sed -e "s|$SUB1|$SUB|" -e "s|\"$SUB1_NAME\"|\"$(esc "$SUB_NAME")\"|")"
+			J="$(render account-show.json | sed -e "s|$SUB1|$SUB|" -e "s|\"$SUB1_NAME\"|\"$(esc "$SUB_NAME")\"|" \
+				-e "s|\"tenantId\": \"$TENANT\"|\"tenantId\": \"$SUB_TENANT\"|")"
 		else
 			J="$(render "$(show_file)")"
 			if sw no_subscription || sw other_tenant; then SUB="$TENANT"; SUB_NAME="N/A(tenant level account)"
@@ -392,7 +394,10 @@ logout)
 			SUB_TENANT="$TENANT"
 		fi
 		ten="$TENANT"
-		if sw login_other_tenant; then
+		if [ -n "$ASKED_SUB" ]; then
+			# --subscription: that subscription's own directory, like az
+			ten="$SUB_TENANT"
+		elif sw login_other_tenant; then
 			# the user's az login is for another directory than the subscription's
 			ten="$OTHER_TENANT"
 			J="$(printf '%s\n' "$J" | sed -e "s|\"tenantId\": \"$TENANT\"|\"tenantId\": \"$OTHER_TENANT\"|")"
@@ -768,6 +773,10 @@ $e"; fi
 		auth_failed "Microsoft.Authorization/roleAssignments/delete" "${scope:-/subscriptions/$SUB}/providers/Microsoft.Authorization/roleAssignments/$(fake_uuid 7a55e7aa 1)"
 	fi
 	f="$S/sps/$app/scopes"
+	if sw login_other_tenant && [ "$(cat "$S/sps/$app/tenant" 2>/dev/null)" != "$OTHER_TENANT" ]; then
+		# the login's directory does not see this app's assignments
+		err 1 "No matched assignments were found to delete"
+	fi
 	if [ ! -f "$f" ] || ! grep -qixF "$scope" "$f"; then
 		err 1 "No matched assignments were found to delete"
 	fi
@@ -782,7 +791,9 @@ $e"; fi
 	if sw no_sp_permission; then
 		err 1 "Insufficient privileges to complete the operation."
 	fi
-	if [ ! -d "$S/sps/$app" ] || [ -f "$S/deleted/$app" ]; then
+	if [ ! -d "$S/sps/$app" ] || [ -f "$S/deleted/$app" ] ||
+		{ sw login_other_tenant && [ "$(cat "$S/sps/$app/tenant" 2>/dev/null)" != "$OTHER_TENANT" ]; }; then
+		# an app in another directory than the login's looks missing, like az
 		err 1 "Resource '$app' does not exist or one of its queried reference-property objects are not present."
 	fi
 	mkdir -p "$S/deleted"

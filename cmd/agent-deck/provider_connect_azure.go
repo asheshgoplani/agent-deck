@@ -1894,7 +1894,11 @@ func (c *azConnect) disconnect() error {
 		if err := c.findAz(); err != nil {
 			return err
 		}
-		if _, err := c.ensureLogin(); err != nil {
+		login, err := c.ensureLogin()
+		if err != nil {
+			return err
+		}
+		if err := c.checkDisconnectTarget(login, appID, conf.get("sp_tenant"), subID); err != nil {
 			return err
 		}
 		c.step("sp", "start", "")
@@ -1937,9 +1941,75 @@ func (c *azConnect) disconnect() error {
 	return nil
 }
 
+// checkDisconnectTarget makes sure the az login is in the service
+// principal's directory and reaches its subscription before anything is
+// deleted. From another directory az answers "does not exist" for the app
+// and its role assignments, which would look like a finished delete and
+// leave the app in Azure while the local secret goes.
+func (c *azConnect) checkDisconnectTarget(login azLogin, appID, spTenant, subID string) error {
+	want := ""
+	if azGUIDRe.MatchString(spTenant) {
+		want = spTenant
+	}
+	if want != "" && !strings.EqualFold(login.tenant, want) {
+		return azFail(azKindWrongTenant, azTextDisconnectWrongTenant(appID, want, login.tenant))
+	}
+	if subID != "" {
+		out, stderr, err := c.az("json", "account", "show", "--subscription", subID)
+		var sub struct {
+			TenantID string `json:"tenantId"`
+		}
+		if err == nil {
+			err = json.Unmarshal(out, &sub)
+		}
+		dir := firstNonEmpty(want, login.tenant)
+		if err != nil {
+			return azFail(azKindWrongTenant, azTextDisconnectWrongSubscription(subID, dir, appID, azSaid(stderr, err)))
+		}
+		if !azGUIDRe.MatchString(sub.TenantID) {
+			return azFail(azKindAzFailed, fmt.Sprintf(azTextAzUnexpectedFmt, "account show", "tenant id", sub.TenantID))
+		}
+		if want == "" {
+			// sp_tenant is a domain name: the subscription's directory decides.
+			want = sub.TenantID
+			if !strings.EqualFold(login.tenant, want) {
+				return azFail(azKindWrongTenant, azTextDisconnectWrongTenant(appID, want, login.tenant))
+			}
+		} else if !strings.EqualFold(sub.TenantID, want) {
+			return azFail(azKindWrongTenant, azTextDisconnectWrongSubscription(subID, want, appID,
+				fmt.Sprintf(azTextSubInOtherTenantFmt, sub.TenantID)))
+		}
+	}
+	if want == "" {
+		return azFail(azKindBadConfig, azTextDisconnectTenantUnknown(c.confPath, appID))
+	}
+	return nil
+}
+
+// connectSecretElsewhere reports whether p, the sp_secret_file of
+// azure-vm.conf, is another secret file connect wrote (say from an older
+// config dir): an absolute path named like connect's, a regular file (not a
+// symlink) with mode 0600. Anything else may be the user's and stays.
+func connectSecretElsewhere(p, ours string) bool {
+	if p == "" || !filepath.IsAbs(p) || filepath.Clean(p) != p || p == ours || filepath.Base(p) != azSecretFileName {
+		return false
+	}
+	st, err := os.Lstat(p)
+	return err == nil && st.Mode().IsRegular() && st.Mode().Perm() == 0o600
+}
+
 func (c *azConnect) removeLocal(conf *azConfFile, cfg *session.UserConfig) error {
 	if err := os.Remove(c.secretPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("removing %s: %w", c.secretPath, err)
+	}
+	if other := conf.get("sp_secret_file"); other != "" && other != c.secretPath {
+		if connectSecretElsewhere(other, c.secretPath) {
+			if err := os.Remove(other); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("removing %s: %w", other, err)
+			}
+		} else if _, err := os.Lstat(other); err == nil {
+			c.step("store", "warn", fmt.Sprintf(azTextSecretElsewhereKeptFmt, other))
+		}
 	}
 	if conf.exists {
 		conf.remove(append(append([]string{}, azManagedKeys...), "vm_size", azKeySPCreated, azKeySecretPending)...)
