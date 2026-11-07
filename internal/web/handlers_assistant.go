@@ -118,13 +118,10 @@ func (s *Server) handleConnectAssistants(w http.ResponseWriter, r *http.Request)
 		"tokens":       tokens,
 		"url":          requestBaseURL(r),
 		"read_only":    s.cfg.ReadOnly,
-		"setup_prompt": setupPromptURL,
+		"setup_prompt": assistant.SetupPromptURL,
 		"write_scopes": s.cfg.WebMutations && !s.cfg.ReadOnly,
 	})
 }
-
-// setupPromptURL is the paste-in self-setup prompt (docs/assistants).
-const setupPromptURL = "https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/docs/assistants/SETUP-PROMPT.md"
 
 type connectTokenRequest struct {
 	Assistant string   `json:"assistant"`

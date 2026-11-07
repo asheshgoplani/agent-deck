@@ -8,9 +8,9 @@ Assistants (optional; without one you get a generic block the assistant adapts):
   any        Any assistant (it sets itself up)
   hermes     Hermes Agent
   openclaw   OpenClaw
-  grok       Grok (xAI API remote MCP)
+  grok       Grok (xAI API, remote MCP)
   claude     Claude Code / Claude Desktop
-  chatgpt    ChatGPT (custom connector / Responses API)
+  chatgpt    ChatGPT (via Codex CLI or the Responses API)
   codex      Codex CLI
   slack      Slack bot (HTTP API)
   telegram   Telegram bot (HTTP API)

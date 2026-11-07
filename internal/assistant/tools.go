@@ -15,6 +15,10 @@ type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
+	// Annotations are the MCP tool hints. Read tools carry readOnlyHint, so
+	// clients such as Hermes (trust: untrusted) and OpenClaw run them without
+	// asking and ask the user before the others. Set by Tools().
+	Annotations map[string]any `json:"annotations,omitempty"`
 	// Scope is the scope the tool needs; "" means any valid token.
 	Scope Scope `json:"-"`
 	// Write marks tools counted against the write rate limit.
@@ -54,6 +58,14 @@ func objSchema(props map[string]any, required ...string) map[string]any {
 // Tools is the full tool list in a stable order. There is no stop, remove,
 // restart or kill tool, on purpose.
 func Tools() []Tool {
+	tools := toolList()
+	for i := range tools {
+		tools[i].Annotations = map[string]any{"readOnlyHint": !tools[i].Write}
+	}
+	return tools
+}
+
+func toolList() []Tool {
 	sessionProp := strProp("Session id or title, as returned by list_sessions")
 	return []Tool{
 		{
