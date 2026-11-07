@@ -197,6 +197,32 @@ func (i *Instance) recreateTmuxSession() {
 	i.tmuxSession.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 }
 
+// restoreTmuxBindingOnFailure puts the pre-recreate tmux session back onto
+// the instance when it still names a live session. The recreate path swaps
+// i.tmuxSession — and with it the name every later save persists — before
+// the replacement session is proven to exist, so a spawn that fails (or a
+// spawn subprocess killed externally before tmux ever ran) would otherwise
+// leave this instance bound to a name nothing answers on while the old
+// pane is still alive. Pointing back at the surviving session keeps the
+// pane attachable; a provably dead previous session is not restored.
+//
+// The verdict comes from ProbeExists, not Exists: a positive activity cache
+// can still describe a session we killed moments ago, and a completed
+// "session gone" probe is authoritative — while an inconclusive one (the
+// probe process itself was killed) errs toward the old binding, exactly the
+// reading that keeps the surviving pane reachable.
+func (i *Instance) restoreTmuxBindingOnFailure(prevTmux *tmux.Session) {
+	if prevTmux == nil || prevTmux == i.tmuxSession {
+		return
+	}
+	if exists, probeErr := prevTmux.ProbeExists(); !exists && probeErr == nil {
+		return
+	}
+	mcpLog.Info("restart_binding_restored",
+		slog.String("session_name", prevTmux.Name))
+	i.tmuxSession = prevTmux
+}
+
 func (i *Instance) prepareRestartMCPConfig() {
 	// Clear flag immediately to prevent it staying set if restart fails.
 	skipRegen := i.SkipMCPRegenerate
@@ -934,9 +960,10 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	// this path and every early-returning respawn fast path alike.)
 
 	// Kill old tmux session to prevent orphans before recreating (#138)
-	if i.tmuxSession != nil && i.tmuxSession.Exists() {
-		mcpLog.Debug("restart_killing_old_session", slog.String("session_name", i.tmuxSession.Name))
-		if killErr := i.tmuxSession.Kill(); killErr != nil {
+	prevTmux := i.tmuxSession
+	if prevTmux != nil && prevTmux.Exists() {
+		mcpLog.Debug("restart_killing_old_session", slog.String("session_name", prevTmux.Name))
+		if killErr := prevTmux.Kill(); killErr != nil {
 			mcpLog.Warn("restart_kill_old_session_failed", slog.String("error", killErr.Error()))
 		}
 	}
@@ -969,6 +996,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		// session shows no state at all. The freshly respawned process sits at
 		// its prompt, which is exactly "waiting".
 		if _, err := i.seedHermesHookGeneration("waiting", false); err != nil {
+			i.restoreTmuxBindingOnFailure(prevTmux)
 			return fmt.Errorf("seed hermes restart baseline: %w", err)
 		}
 		command = i.buildHermesCommand(i.Command)
@@ -1042,6 +1070,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	command, containerName, err := i.prepareCommand(command)
 	if err != nil {
 		i.recordPrepareFailure(command, err) // #1924, sister path
+		i.restoreTmuxBindingOnFailure(prevTmux)
 		return err
 	}
 	ownershipCommand = command
@@ -1065,6 +1094,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", logging.RedactCommandEnv(command)))
 	command, err = i.wrapTrackedCommandExit(command)
 	if err != nil {
+		i.restoreTmuxBindingOnFailure(prevTmux)
 		return err
 	}
 
@@ -1077,6 +1107,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		// changed something and is most likely to ask "why?" was the one that
 		// set StatusError with nothing to show for it.
 		i.recordTmuxStartFailure(command, err)
+		i.restoreTmuxBindingOnFailure(prevTmux)
 		i.Status = StatusError
 		return fmt.Errorf("failed to restart tmux session: %w", err)
 	}
@@ -1176,8 +1207,9 @@ func (i *Instance) RestartFresh() error {
 	// the one most likely to write a spurious failure.
 	i.bumpSpawnGenAndBarrier()
 
-	if i.tmuxSession != nil && i.tmuxSession.Exists() {
-		if killErr := i.tmuxSession.Kill(); killErr != nil {
+	prevTmux := i.tmuxSession
+	if prevTmux != nil && prevTmux.Exists() {
+		if killErr := prevTmux.Kill(); killErr != nil {
 			mcpLog.Warn("restart_fresh_kill_old_session_failed", slog.String("error", killErr.Error()))
 		}
 	}
@@ -1193,6 +1225,7 @@ func (i *Instance) RestartFresh() error {
 	i.recreateTmuxSession()
 
 	if err := i.Start(); err != nil {
+		i.restoreTmuxBindingOnFailure(prevTmux)
 		i.hermesStartFresh = false // a failed start must not make a later one fresh
 		i.Status = StatusError
 		return fmt.Errorf("failed to restart session fresh: %w", err)

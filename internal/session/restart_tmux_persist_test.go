@@ -2,6 +2,9 @@ package session
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -212,6 +215,74 @@ func TestRestartReportsAnUnrecordedTmuxName(t *testing.T) {
 	}
 	if !errors.Is(err, statedb.ErrInstanceNotStored) {
 		t.Errorf("reason = %v, want it to wrap ErrInstanceNotStored so the message names the cause", err)
+	}
+}
+
+// TestRestartKeepsLiveBindingWhenSpawnIsKilled is the regression for the
+// ghost-binding cascade: recreateTmuxSession mints a new tmux name BEFORE the
+// spawn proves it exists, so when the `tmux new-session` child is killed
+// externally (here: a shim that self-SIGKILLs on new-session, mirroring a
+// security-policy kill) the instance used to keep the name nothing answers on
+// — while the previous pane was still alive. Every later save then persisted
+// the dead name and the live session became an orphan no TUI could attach.
+// The restart must fall back to the still-live binding instead.
+func TestRestartKeepsLiveBindingWhenSpawnIsKilled(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	const oldName = "agentdeck_restartbinding_deadbeef"
+	storage, inst := restartPersistFixture(t, "_test_restart_binding_restore", oldName)
+
+	// The "previous" session is a real tmux session on the isolated socket,
+	// created with the REAL tmux binary before the shim goes on PATH.
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skipf("tmux not on PATH: %v", err)
+	}
+	if out, err := exec.Command(realTmux, "new-session", "-d", "-s", oldName, "sleep 60").CombinedOutput(); err != nil {
+		t.Fatalf("seed old session: %v: %s", err, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command(realTmux, "kill-session", "-t", oldName).Run()
+	})
+
+	// Every tmux invocation during the restart goes through this shim: the
+	// subprocess the spawn pipeline execs dies by signal (exactly what the
+	// incident's probes saw), while everything else still reaches the real
+	// server so has-session/display-message answer truthfully.
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "tmux")
+	script := "#!/bin/sh\ncase \" $* \" in\n" +
+		"  *\" new-session \"*|*\" kill-session \"*) kill -9 $$ ;;\n" +
+		"esac\nexec " + realTmux + " \"$@\"\n"
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write tmux shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err = inst.Restart()
+	if err == nil {
+		t.Fatal("restart must fail when its new-session child is killed")
+	}
+
+	live := inst.GetTmuxSession()
+	if live == nil || live.Name != oldName {
+		name := "<nil>"
+		if live != nil {
+			name = live.Name
+		}
+		t.Fatalf("binding after failed restart = %q, want the still-live %q", name, oldName)
+	}
+	if inst.Status != StatusError {
+		t.Fatalf("status = %q, want error (the restart did fail)", inst.Status)
+	}
+
+	// The next save must still record the live name — persisting the minted
+	// one here is exactly how the incident left ghost rows in state.db.
+	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTree([]*Instance{inst})); err != nil {
+		t.Fatalf("save after failed restart: %v", err)
+	}
+	if got := storedTmuxName(t, storage, inst.ID); got != oldName {
+		t.Errorf("stored tmux name = %q, want %q: the failed spawn's minted name leaked to disk", got, oldName)
 	}
 }
 
