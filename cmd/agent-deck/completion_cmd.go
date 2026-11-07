@@ -12,6 +12,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/agents"
+	"github.com/asheshgoplani/agent-deck/internal/assistant"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -108,6 +109,11 @@ var completionTree = []completionNode{
 	{name: "try"},
 	{name: "accounts"},
 	{name: "web"},
+	{
+		name: "connect",
+		// Subcommands, then the assistant kinds `connect <assistant>` takes.
+		subs: append([]string{"list", "revoke", "audit", "serve", "test"}, assistant.KindIDs()...),
+	},
 	{name: "debug-dump"},
 	{name: "perf"},
 	{name: "migrate-paths"},

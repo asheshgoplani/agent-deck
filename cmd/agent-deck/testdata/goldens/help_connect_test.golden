@@ -1,0 +1,12 @@
+Usage: agent-deck connect test [--token-file F | --name N] [--url U] [--json]
+
+Run list_sessions through the bridge with a token: over stdio (agent-deck connect serve)
+or, with --url, over HTTP (POST <url>/mcp). Prints ok and the session count.
+  -json
+    	Output as JSON
+  -name string
+    	Test the token saved for this name (instead of --token-file)
+  -token-file string
+    	File holding the assistant token
+  -url string
+    	Test over HTTP against this agent-deck web URL (default: local stdio bridge)
