@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/assistant"
 )
 
 // authorizeRequest accepts a bearer header or a cookie established by a
@@ -33,6 +35,13 @@ func (s *Server) authorizeStreamRequest(r *http.Request) bool {
 }
 
 func (s *Server) authorize(r *http.Request, allowQueryToken bool) bool {
+	// An assistant token (adk_...) is only ever valid on the assistant
+	// routes, which do their own auth. Refuse it on owner routes even when
+	// the server has no owner token, so a connected bot cannot reach the
+	// owner API by presenting its own credential.
+	if s.isAssistantCredential(r, allowQueryToken) {
+		return false
+	}
 	if s.cfg.Token == "" {
 		return true
 	}
@@ -166,4 +175,17 @@ func bearerToken(authHeader string) string {
 
 func secureEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// isAssistantCredential reports whether the request presents an assistant
+// token (bearer header, or the query token where that is accepted). An owner
+// token that happens to share the prefix is never mistaken for one.
+func (s *Server) isAssistantCredential(r *http.Request, allowQueryToken bool) bool {
+	looksAssistant := func(tok string) bool {
+		return strings.HasPrefix(tok, assistant.TokenPrefix) && (s.cfg.Token == "" || !secureEqual(tok, s.cfg.Token))
+	}
+	if looksAssistant(bearerToken(r.Header.Get("Authorization"))) {
+		return true
+	}
+	return allowQueryToken && looksAssistant(strings.TrimSpace(r.URL.Query().Get("token")))
 }

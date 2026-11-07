@@ -2,6 +2,8 @@ package web
 
 import (
 	"net/http"
+
+	"github.com/asheshgoplani/agent-deck/internal/assistant"
 	"net/url"
 	"strings"
 )
@@ -24,6 +26,13 @@ func (s *Server) csrfProtect(next http.Handler) http.Handler {
 	failClosed := s.cfg.Token != ""
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isMutationMethod(r.Method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Assistant routes authenticate only with a bearer header (never a
+		// cookie), which a cross-site page cannot attach, so the cookie CSRF
+		// check does not apply; the handler checks Origin itself.
+		if assistant.IsAssistantPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
