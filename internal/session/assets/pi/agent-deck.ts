@@ -21,8 +21,12 @@
 //
 // turn_start, turn_end and agent_settled also carry `settles: true` (this
 // extension sends agent_settled, so a turn_end that has not settled is a status
-// edge only) and `run_id`, a token minted at agent_start, so a late settle can
-// never attach to a newer run's turn_end.
+// edge only) and `run_id`, a token minted at the run's first agent_start, so a
+// late settle can never attach to a newer run's turn_end. One run can fire
+// agent_start several times (pi's agent.continue() on auto-retry, overflow
+// compaction or an agent_before_settle continue) but settles once, so the token
+// is kept until agent_settled, or until before_agent_start (once per prompt)
+// opens the next run on a pi without agent_settled.
 //
 // It is a no-op outside agent-deck: without AGENTDECK_INSTANCE_ID in the
 // environment nothing is spawned and no handler is registered. pi awaits
@@ -95,15 +99,21 @@ export default function (pi: ExtensionAPI) {
   // reset on agent_start; the input is consumed when the run settles.
   let lastInput = "";
   let lastTurn: { entryId: string; text: string; outcome: string; stopReason: string } | undefined;
-  // The run token, minted at agent_start; carried with the settles capability bit.
+  // The run token, minted at the run's first agent_start; carried with the
+  // settles capability bit. runOpen keeps it across the run's continues.
   let runId = "";
+  let runOpen = false;
   const runFields = () => ({ settles: true, run_id: runId || undefined });
 
   // Returning emit's promise (rather than firing and forgetting) is what makes
   // pi await delivery before it runs the next handler.
   pi.on("session_start", () => emit("session_start"));
+  pi.on("before_agent_start", () => {
+    runOpen = false;
+  });
   pi.on("agent_start", () => {
-    runId = randomUUID();
+    if (!runOpen) runId = randomUUID();
+    runOpen = true;
     lastTurn = undefined;
   });
   pi.on("input", (event?: any) => {
@@ -124,6 +134,8 @@ export default function (pi: ExtensionAPI) {
     const prompt = lastInput;
     lastTurn = undefined;
     lastInput = "";
+    const fields = runFields();
+    runOpen = false;
     let sessionId: string | undefined;
     try {
       sessionId = ctx?.sessionManager?.getSessionId();
@@ -134,7 +146,7 @@ export default function (pi: ExtensionAPI) {
     const answered = turn?.outcome === "completed" && turn.stopReason !== "toolUse" && event?.aborted !== true;
     const reported = answered ? turn.text.trim() : "";
     return emit("agent_settled", {
-      ...runFields(),
+      ...fields,
       session_id: sessionId,
       turn_id: turn?.entryId || undefined,
       last_assistant_message: reported ? tailBytes(reported, MAX_TEXT_BYTES) : undefined,
