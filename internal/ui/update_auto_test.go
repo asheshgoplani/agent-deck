@@ -295,3 +295,19 @@ func TestAutoInstall_DrainsPendingLaunchAgents(t *testing.T) {
 		t.Fatal("suppressed process must not drain")
 	}
 }
+
+// The pending-agents drain runs the same updater child as an install, so a
+// user who switched [updates].auto_install off has opted out of it too —
+// previously the drain bypassed that gate entirely.
+func TestAutoInstall_DrainHonoursAutoInstallOff(t *testing.T) {
+	h, f := newAutoInstallTestHome(t)
+	stubUpdateSettings(t, session.UpdateSettings{AutoInstall: boolPtr(false)})
+	h.updateInfo.Available = false
+	prev := pendingLaunchAgents
+	pendingLaunchAgents = func() bool { return true }
+	t.Cleanup(func() { pendingLaunchAgents = prev })
+
+	if cmd := h.maybeAutoInstall(h.updateInfo); cmd != nil || len(f.exes) != 0 {
+		t.Fatalf("auto_install=false must stop the drain too (exes=%v)", f.exes)
+	}
+}
