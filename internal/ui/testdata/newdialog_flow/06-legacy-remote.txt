@@ -6,6 +6,8 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
     ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮    
     │                                                                                                              │    
     │                                                                                                              │    
@@ -16,21 +18,17 @@
     │      Remote runs an older agent-deck; options are not verified on the remote (model, account, MCP and        │    
     │    worktree options hidden).                                                                                 │    
     │                                                                                                              │    
-    │    ▶ Name:                                                                                                   │    
-    │      > legacy-session                                                                                        │    
+    │    ▶ Name:  > legacy-session                                                                                 │    
     │                                                                                                              │    
-    │      Command:                                                                                                │    
-    │        shell     claude     gemini     opencode     opencode2     codex     pi     copilot     crush         │    
-    │        muse     cursor agent     hermes     deepseek     omp                                                 │    
+    │      Agent:   shell     claude     gemini     opencode     opencode2     codex     pi     copilot            │    
+    │               crush     muse     cursor agent     hermes     deepseek     omp                                │    
     │                                                                                                              │    
     │        Custom:                                                                                               │    
     │        > gemini                                                                                              │    
     │                                                                                                              │    
-    │      Path:                                                                                                   │    
-    │      > ~/project                                                                                             │    
+    │      Path:  > ~/project                                                                                      │    
     │                                                                                                              │    
-    │      [ ] Create in worktree                                                                                  │    
-    │      [ ] Run in Docker sandbox                                                                               │    
+    │      ▸ More options: worktree, Docker sandbox, multi-repo                                                    │    
     │                                                                                                              │    
     │      [ Create session ]                                                                                      │    
     │                                                                                                              │    
@@ -39,6 +37,8 @@
     │                                                                                                              │    
     │                                                                                                              │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯    
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

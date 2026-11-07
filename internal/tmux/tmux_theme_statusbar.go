@@ -485,3 +485,24 @@ func refreshStatusBarImmediate() error {
 	}
 	return nil
 }
+
+// SetSessionStatusLeft sets this session's own status-left, which tmux shows
+// for it instead of the global one (the notification bar). Used for the
+// onboarding hint "Step 2 of 4 · Ctrl+Q comes back here" while a new user
+// is inside their first session (ASK-211). A status-left from the user's
+// [tmux].options is left alone. text is a tmux format string.
+func (s *Session) SetSessionStatusLeft(text string) error {
+	if _, overridden := s.OptionOverrides["status-left"]; overridden {
+		return nil
+	}
+	return runBoundedMutation(s.SocketName, "set-option", "-t", s.Name, "status-left", text)
+}
+
+// ClearSessionStatusLeft removes what SetSessionStatusLeft set, so the
+// session follows the global status-left again.
+func (s *Session) ClearSessionStatusLeft() error {
+	if _, overridden := s.OptionOverrides["status-left"]; overridden {
+		return nil
+	}
+	return runBoundedMutation(s.SocketName, "set-option", "-t", s.Name, "-u", "status-left")
+}

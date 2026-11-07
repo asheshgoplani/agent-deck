@@ -88,6 +88,14 @@ func runTestMain(m *testing.M) int {
 	// via stubSyncOptOut(t).
 	syncOptOutToConfig = func() {}
 
+	// ASK-211: the New Session form probes PATH to mark missing tools and to
+	// start on the first installed agent. Tests must not depend on what the
+	// host (or container) has installed, so the probe is off by default:
+	// every tool counts as installed and the tool order is unchanged. Tests
+	// of the installed/missing states install their own probe
+	// (stubToolInstalled).
+	newDialogToolInstalled = nil
+
 	// Run tests
 	code := m.Run()
 

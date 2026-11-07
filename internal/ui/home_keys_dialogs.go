@@ -250,6 +250,14 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		parentSessionID := h.newDialog.GetParentSessionID()
 		parentProjectPath := h.newDialog.GetParentProjectPath()
 
+		// The hooks line (ASK-211) answers the Claude hooks question the old
+		// box asked: ticked installs, unticked skips, the same recorded
+		// decision either way. Applied before the session starts so its
+		// first launch already reports through the hook.
+		if asked, install := h.newDialog.HooksDecision(); asked {
+			h.applyClaudeHooksDecision(install)
+		}
+
 		// Only non-worktree sessions may need interactive "create directory" confirmation.
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -332,8 +340,6 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.newDialog.Hide()
 		h.clearError()           // Clear any validation error
 		h.pendingRemoteName = "" // #1353: drop the remote target on cancel
-		// Cancelled: no first session, so nothing to show around after it.
-		h.onboardingTourAfterCreate = false
 		return h, nil
 	}
 
@@ -511,6 +517,9 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "n", "N", "esc":
 			if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
 				return h, h.declineInstallHermesHooks()
+			}
+			if msg.String() == "esc" {
+				return h, h.laterInstallHooks()
 			}
 			return h, h.declineInstallHooks()
 		}
@@ -846,9 +855,32 @@ func logUsageFeedResults(results []session.UsageFeedResult) {
 // confirmInstallHooks handles the "yes" action for ConfirmInstallHooks.
 func (h *Home) confirmInstallHooks() tea.Cmd {
 	h.confirmDialog.Hide()
+	h.applyClaudeHooksDecision(true)
+	h.showPendingHooksPrompt()
+	return nil
+}
+
+// claudeHooksInstaller writes the Claude hooks; a seam so tests can watch the
+// decision without touching a Claude settings file.
+var claudeHooksInstaller = func(configDir string) error {
+	_, err := session.InjectClaudeHooks(configDir)
+	return err
+}
+
+// applyClaudeHooksDecision records the user's answer to the Claude hooks
+// question, from the New Session form's hooks line (ASK-211) or the old box:
+// install writes the hooks and starts the status watcher; skip records the
+// decline. Either way the question is closed for good.
+func (h *Home) applyClaudeHooksDecision(install bool) {
 	h.pendingHooksPrompt = false
+	if !install {
+		if db := statedb.GetGlobal(); db != nil {
+			_ = db.SetMeta("hooks_prompted", "declined")
+		}
+		return
+	}
 	configDir := session.GetClaudeConfigDir()
-	if _, err := session.InjectClaudeHooks(configDir); err != nil {
+	if err := claudeHooksInstaller(configDir); err != nil {
 		uiLog.Warn("hook_install_failed", slog.String("error", err.Error()))
 	} else {
 		uiLog.Info("claude_hooks_installed", slog.String("config_dir", configDir))
@@ -856,38 +888,75 @@ func (h *Home) confirmInstallHooks() tea.Cmd {
 	if config, err := session.LoadUserConfig(); err == nil {
 		logUsageFeedResults(session.HealUsageFeeds(config))
 	}
-	// Start the status file watcher
-	hookWatcher, err := session.NewStatusFileWatcher(nil)
-	if err != nil {
-		uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
-	} else {
-		h.hookWatcher = hookWatcher
-		go hookWatcher.Start()
+	// Start the status file watcher (once; unit tests run without workers).
+	if h.hookWatcher == nil && homeBackgroundWorkersEnabled {
+		hookWatcher, err := session.NewStatusFileWatcher(nil)
+		if err != nil {
+			uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
+		} else {
+			h.hookWatcher = hookWatcher
+			go hookWatcher.Start()
+		}
 	}
 	// Remember user's choice
 	if db := statedb.GetGlobal(); db != nil {
 		_ = db.SetMeta("hooks_prompted", "accepted")
 	}
-	h.showPendingHooksPrompt()
-	return nil
 }
 
 // declineInstallHooks handles the "no" action for ConfirmInstallHooks.
 func (h *Home) declineInstallHooks() tea.Cmd {
 	h.confirmDialog.Hide()
-	h.pendingHooksPrompt = false
-	// Remember user declined
-	if db := statedb.GetGlobal(); db != nil {
-		_ = db.SetMeta("hooks_prompted", "declined")
-	}
+	h.applyClaudeHooksDecision(false)
 	h.showPendingHooksPrompt()
 	return nil
 }
 
+// showClaudeHooksBox is the fallback for the Claude hooks question when the
+// New Session form's hooks line (ASK-211) cannot ask it: a profile that
+// already has sessions at start (as before onboarding, for users who create
+// with quick create, the CLI or a remote), or a local Claude-compatible
+// session created by another path than the form. The old box, at most once
+// per run and never over another dialog; its answer is recorded the same way.
+// install preselects Install, as the form's hooks line is ticked by default
+// (owner default 5); the startup box for existing users keeps Skip.
+func (h *Home) showClaudeHooksBox(install bool) (shown bool) {
+	if !h.pendingHooksPrompt || h.claudeHooksBoxShown || h.hasModalVisible() {
+		return false
+	}
+	h.claudeHooksBoxShown = true
+	h.confirmDialog.ShowInstallHooks(install)
+	h.confirmDialog.SetSize(h.width, h.height)
+	return true
+}
+
+// claudeHooksRelevant says whether the Claude hooks question means anything
+// here: the claude CLI is installed, or the profile has a Claude-compatible
+// session. A user with only a shell or Codex is not asked about Claude's
+// settings (ASK-211 round 2); the question stays open for later.
+func claudeHooksRelevant(instances []*session.Instance) bool {
+	for _, inst := range instances {
+		if inst != nil && session.IsClaudeCompatible(inst.Tool) {
+			return true
+		}
+	}
+	return newDialogToolInstalled != nil && newDialogToolInstalled("claude")
+}
+
+// laterInstallHooks closes the Claude hooks box without an answer (Esc): the
+// question stays open and is asked again by the form's line or a later start.
+func (h *Home) laterInstallHooks() tea.Cmd {
+	h.confirmDialog.Hide()
+	h.showPendingHooksPrompt()
+	return nil
+}
+
+// showPendingHooksPrompt shows the next hooks consent box. The Claude hooks
+// question is mostly no longer a box (ASK-211): it is the hooks line in the
+// New Session form while pendingHooksPrompt is set, with showClaudeHooksBox
+// as the fallback. Hermes keeps its box.
 func (h *Home) showPendingHooksPrompt() {
-	if h.pendingHooksPrompt {
-		h.confirmDialog.ShowInstallHooks()
-	} else if h.pendingHermesHooksPrompt {
+	if h.pendingHermesHooksPrompt {
 		h.confirmDialog.ShowInstallHermesHooks(filepath.Join(session.GetHermesConfigDir(), "config.yaml"), session.HermesHookEventsForInstall())
 	} else {
 		return

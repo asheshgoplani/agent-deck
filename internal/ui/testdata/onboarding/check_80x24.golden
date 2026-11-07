@@ -1,0 +1,24 @@
+                                                                                
+                                                                                
+ ╭────────────────────────────────────────────────────────────────────────────╮ 
+ │                                                                            │ 
+ │  Agent Deck · quick check                                                  │ 
+ │                                                                            │ 
+ │  ✓ tmux          tmux 3.5a                                                 │ 
+ │  ✓ agent-deck    v1.16.36                                                  │ 
+ │                                                                            │ 
+ │  Your agents                                                               │ 
+ │  ✓ Claude Code   installed · signed in                                     │ 
+ │  ✓ Codex         installed · not signed in                                 │ 
+ │  x Gemini CLI    not installed. Install with:                              │ 
+ │                  npm install -g @google/gemini-cli                         │ 
+ │  x Pi            not installed. Install with:                              │ 
+ │                  npm install -g @mariozechner/pi-coding-agent              │ 
+ │    Plain shell   always works                                              │ 
+ │                                                                            │ 
+ │  Enter continue · l sign in to Codex · r re-check · q quit                 │ 
+ │                                                                            │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                
+                                                                                
+                                                                                

@@ -1,21 +1,24 @@
 package ui
 
-// First-run onboarding (ASK-131): a Welcome page and a "What you can do"
-// page in one overlay.
+// First-run onboarding (ASK-131, reshaped by ASK-211 from Sharjeel's plan
+// and prototype): a quick check page and a "What you can do" page in one
+// overlay. The welcome itself is the empty main screen (welcome.go).
 //
-//   - Welcome: what agent-deck is, which coding agents are installed and
-//     signed in, an install hint for each missing one, and a guided sign-in
-//     that runs the tool's own login flow in a session. Enter opens the
-//     ordinary New Session dialog (the `n` path) with the highlighted agent
-//     and this folder filled in, so the next Enter creates it.
-//   - What you can do: the five things that matter, each with its real key.
-//     It opens once after the first session made from the Welcome, and any
-//     time with the show_around hotkey (default alt+w, "Show me around").
+//   - Quick check: tmux (version, or missing with an install line; missing
+//     blocks Enter), agent-deck's own version, and each coding agent
+//     (installed and signed in, or missing with an install line), plus a
+//     guided sign-in (l) that runs the tool's own login flow in a session.
+//     No agent found: Enter continues with a Plain shell. r re-checks.
+//     Enter continues to the welcome.
+//   - What you can do: the five things that matter, each with its real key,
+//     any time with the show_around hotkey (default alt+w, "Show me around").
 //
-// The Welcome opens by itself only on a fresh install: no config.toml (the
-// condition that used to open the setup wizard), no sessions and no
+// The check page opens by itself once on a fresh install: no config.toml
+// (the condition that used to open the setup wizard), no sessions and no
 // onboarding marker. It replaces the setup wizard there; an install with
 // sessions but no config.toml still gets the wizard exactly as before.
+// After that it opens only when something is wrong at start and there are
+// no sessions yet: tmux missing, or no agent CLI found.
 //
 // Sign-in state comes only from each tool's own status command, run with a
 // timeout and with its output discarded (only the exit code is read). No
@@ -28,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -51,18 +55,16 @@ var onboardingAgentNames = []string{"claude", "codex", "gemini", "pi"}
 var (
 	// onboardingLookPath finds an agent's binary on PATH.
 	onboardingLookPath = exec.LookPath
+	// onboardingTmuxCheck reports tmux's version line ("tmux 3.5a") and
+	// whether tmux is installed.
+	onboardingTmuxCheck = checkTmuxForOnboarding
 	// onboardingStatusRunner runs a tool's own sign-in status command and
 	// returns its exit code.
 	onboardingStatusRunner = runOnboardingStatus
 	// onboardingStatusTimeout bounds one status command.
 	onboardingStatusTimeout = 5 * time.Second
-	// onboardingRecheckEvery is how often sign-in is re-checked after a
-	// login session was started, while the Welcome is open.
-	onboardingRecheckEvery = 3 * time.Second
-	// onboardingRecheckFor bounds that re-checking.
-	onboardingRecheckFor = 10 * time.Minute
-	// onboardingStartLogin creates the login session.
-	onboardingStartLogin = func(h *Home, req onboardingLoginRequest) tea.Cmd { return h.createOnboardingLoginSession(req) }
+	// onboardingStartLogin runs the tool's own login in this terminal.
+	onboardingStartLogin = runOnboardingLogin
 	// onboardingCmdObserver, when set (tests), receives the commands the
 	// overlay queues instead of the Bubble Tea runtime.
 	onboardingCmdObserver func(tea.Cmd)
@@ -71,7 +73,7 @@ var (
 type onboardingPage int
 
 const (
-	onboardingPageWelcome onboardingPage = iota
+	onboardingPageCheck onboardingPage = iota
 	onboardingPageTour
 )
 
@@ -120,12 +122,10 @@ func (a onboardingAgent) canLogIn() bool {
 	return a.Found && len(a.StatusArgs) > 0 && strings.TrimSpace(a.Login) != "" && a.Auth != authSignedIn && a.Auth != authChecking
 }
 
-// onboardingLoginRequest is the session the Log in action starts.
+// onboardingLoginRequest is the login the sign-in action runs.
 type onboardingLoginRequest struct {
 	Agent   string
-	Title   string
-	Path    string
-	Tool    string // always "shell": the tool's own login command runs in it
+	Path    string // the folder it runs in
 	Command string // the login command, pinned to the account a new session would use
 }
 
@@ -134,27 +134,30 @@ type onboardingStatusMsg struct {
 	auth  onboardingAuth
 }
 
-type onboardingRecheckMsg struct{}
+// onboardingLoginDoneMsg says the login command of agent has exited.
+type onboardingLoginDoneMsg struct{ agent string }
 
 // onboardingKeys are the real, resolved keys the pages name.
 type onboardingKeys struct {
 	newSession, quickCreate, detach, altSession, prompt, queue, report, whatsNew, tour, help string
 }
 
-// OnboardingOverlay is the Welcome / What you can do overlay.
+// OnboardingOverlay is the quick check / What you can do overlay.
 type OnboardingOverlay struct {
 	visible       bool
 	page          onboardingPage
 	firstRun      bool // opened by a fresh install; dismissing it finishes first run
+	atStart       bool // opened at start (first run or a problem): q quits agent-deck
 	agents        []onboardingAgent
-	cursor        int // index into choices()
+	tmuxFound     bool
+	tmuxVersion   string // "tmux 3.5a", or "" when it could not be read
+	flash         string // the re-check result, or why Enter is blocked
 	folder        string
 	width, height int
 	keys          onboardingKeys
 
-	loginAgent    string    // agent whose login session was started
-	loginDeadline time.Time // stop re-checking after this
-	notice        string    // confirmation line ("Claude Code is signed in.")
+	loginAgent string // agent whose login just ran, until its re-check answers
+	notice     string // the sign-in result ("Claude Code is signed in.")
 }
 
 // NewOnboardingOverlay returns a hidden overlay.
@@ -176,10 +179,15 @@ func (o *OnboardingOverlay) agent(name string) *onboardingAgent {
 	return nil
 }
 
-// choices are the selectable rows: every installed agent, then a plain shell.
+// choices are the agents a first session can start: every installed agent
+// in order, then a plain shell.
 func (o *OnboardingOverlay) choices() []string {
+	return onboardingChoices(o.agents)
+}
+
+func onboardingChoices(agents []onboardingAgent) []string {
 	var out []string
-	for _, a := range o.agents {
+	for _, a := range agents {
 		if a.Found {
 			out = append(out, a.Name)
 		}
@@ -187,13 +195,58 @@ func (o *OnboardingOverlay) choices() []string {
 	return append(out, "shell")
 }
 
-// Selected is the highlighted choice ("shell" for a plain shell).
+// Selected is the agent first run picks as the default tool: the first
+// installed agent, or "shell" when none is installed.
 func (o *OnboardingOverlay) Selected() string {
-	c := o.choices()
-	if o.cursor < 0 || o.cursor >= len(c) {
-		return c[0]
+	return o.choices()[0]
+}
+
+// anyAgentFound reports whether at least one agent CLI is installed.
+func (o *OnboardingOverlay) anyAgentFound() bool {
+	return o.Selected() != "shell"
+}
+
+// loginTarget is the agent l signs in to: the first installed agent that
+// offers a sign-in and is not signed in yet, or nil.
+func (o *OnboardingOverlay) loginTarget() *onboardingAgent {
+	for i := range o.agents {
+		if o.agents[i].canLogIn() {
+			return &o.agents[i]
+		}
 	}
-	return c[o.cursor]
+	return nil
+}
+
+// checkTmuxForOnboarding finds tmux and reads `tmux -V` (no server is
+// contacted), bounded to a second.
+func checkTmuxForOnboarding() (version string, found bool) {
+	return TmuxVersion()
+}
+
+// TmuxVersion finds tmux and reads `tmux -V` ("tmux 3.5a"; no server is
+// contacted), bounded to a second, with the filtered child environment
+// (internal/childenv). It is shared with the printed check page in
+// cmd/agent-deck. version is "" when it cannot be read.
+func TmuxVersion() (version string, found bool) {
+	bin, err := exec.LookPath("tmux")
+	if err != nil {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "-V")
+	cmd.Env = childenv.ForLaunch("")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", true
+	}
+	return strings.TrimSpace(string(out)), true
+}
+
+// detect fills the agent rows and the tmux row afresh.
+func (o *OnboardingOverlay) detect() {
+	o.agents = detectOnboardingAgents()
+	o.tmuxVersion, o.tmuxFound = onboardingTmuxCheck()
 }
 
 // detectOnboardingAgents fills the agent rows from the harness table (with
@@ -233,14 +286,15 @@ func (o *OnboardingOverlay) show(page onboardingPage, firstRun bool, folder stri
 	o.folder = folder
 	o.keys = keys
 	o.notice = ""
-	o.agents = detectOnboardingAgents()
-	o.cursor = 0
+	o.flash = ""
+	o.detect()
 }
 
 // hide closes the overlay and stops any sign-in re-checking.
 func (o *OnboardingOverlay) hide() {
 	o.visible = false
 	o.firstRun = false
+	o.atStart = false
 	o.loginAgent = ""
 }
 
@@ -277,11 +331,15 @@ func (o *OnboardingOverlay) applyStatus(msg onboardingStatusMsg) bool {
 		return false
 	}
 	a.Auth = msg.auth
-	if msg.agent == o.loginAgent && msg.auth == authSignedIn {
-		o.loginAgent = ""
+	if msg.agent != o.loginAgent {
+		return false
+	}
+	o.loginAgent = ""
+	if msg.auth == authSignedIn {
 		o.notice = a.Display + " is signed in. You can start it now."
 		return true
 	}
+	o.notice = a.Display + " is not signed in yet. Press l to try again."
 	return false
 }
 
@@ -368,22 +426,17 @@ func onboardingStatusEnv(agent string) []string {
 	return env
 }
 
-// loginRequest builds the session the Log in action starts for agent: a
-// shell session that runs the tool's own login command (`claude auth login`,
-// `codex login`), on the config dir a new session would use. A shell, not a
-// Claude session, so a Claude that was never set up does not show its own
-// first-run screens before the login.
-func (o *OnboardingOverlay) loginRequest(agent string, instances []*session.Instance) (onboardingLoginRequest, bool) {
+// loginRequest builds the login the sign-in action runs for agent: the
+// tool's own login command (`claude auth login`, `codex login`), on the
+// config dir a new session would use. It runs in this terminal while the
+// TUI waits, not in a session: nothing is added to the session list, and
+// the check page re-checks the sign-in as soon as the login exits.
+func (o *OnboardingOverlay) loginRequest(agent string) (onboardingLoginRequest, bool) {
 	a := o.agent(agent)
 	if a == nil || !a.canLogIn() {
 		return onboardingLoginRequest{}, false
 	}
-	req := onboardingLoginRequest{
-		Agent: agent,
-		Title: ensureUniqueSessionTitle(agent+"-login", instances),
-		Path:  o.folder,
-	}
-	req.Tool, req.Command = "shell", a.Login
+	req := onboardingLoginRequest{Agent: agent, Path: o.folder, Command: a.Login}
 	switch agent {
 	case "claude":
 		if dir, source, _ := onboardingClaudeDir(); source != "default" && dir != "" {
@@ -410,19 +463,13 @@ func onboardingSeenPath() string {
 	return path
 }
 
-// onboardingSeen reports whether the Welcome was already shown. An
-// unresolvable path counts as seen (never nag).
-func onboardingSeen() bool {
-	path := onboardingSeenPath()
-	if path == "" {
-		return true
-	}
-	_, err := os.Stat(path)
-	return err == nil
-}
+// onboardingFirstRunDoneTag starts the marker when onboarding itself
+// finished first run on this install (wrote config.toml). Markers from older
+// versions hold only a timestamp: those installs predate this onboarding.
+const onboardingFirstRunDoneTag = "first-run-done"
 
 // onboardingMarkerExists reports whether the marker is positively there
-// (an unresolvable path is false here, unlike onboardingSeen).
+// (an unresolvable path is false).
 func onboardingMarkerExists() bool {
 	path := onboardingSeenPath()
 	if path == "" {
@@ -432,13 +479,59 @@ func onboardingMarkerExists() bool {
 	return err == nil
 }
 
-func markOnboardingSeen() {
+// onboardingFirstRunFinished reports whether onboarding finished first run
+// on this install. Only then may the check page come back later.
+func onboardingFirstRunFinished() bool {
+	path := onboardingSeenPath()
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	return err == nil && strings.HasPrefix(string(data), onboardingFirstRunDoneTag)
+}
+
+// markOnboardingFirstRunDone writes the marker as first run finishes (not as
+// the page opens, so quitting the check page brings it back next start).
+func markOnboardingFirstRunDone() {
 	path := onboardingSeenPath()
 	if path == "" {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	_ = os.WriteFile(path, []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644)
+	_ = os.WriteFile(path, []byte(onboardingFirstRunDoneTag+" "+time.Now().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+// onboardingConfigMissing reports whether there is no config.toml yet.
+func onboardingConfigMissing() bool {
+	configPath, err := session.GetUserConfigPath()
+	if err != nil || configPath == "" {
+		return false
+	}
+	_, err = os.Stat(configPath)
+	return os.IsNotExist(err)
+}
+
+// onboardingAnyAgentInstalled reports whether any agent can start here: one
+// of the check page's agents, any installed tool in the New Session picker
+// (opencode, copilot, cursor, custom tools...), or the configured
+// default_tool. Probes follow configured commands (session.ToolInstalled).
+func onboardingAnyAgentInstalled() bool {
+	if len(onboardingChoices(detectOnboardingAgents())) > 1 {
+		return true
+	}
+	if newDialogToolInstalled == nil {
+		// The probe is off (tests): every tool counts as installed.
+		return true
+	}
+	for _, name := range session.PickerToolNames() {
+		if name != "" && name != "shell" && newDialogToolInstalled(name) {
+			return true
+		}
+	}
+	if def := session.GetDefaultTool(); def != "" && def != "shell" && newDialogToolInstalled(def) {
+		return true
+	}
+	return false
 }
 
 // ---- Home wiring ----
@@ -498,23 +591,39 @@ func (h *Home) openOnboarding(page onboardingPage, firstRun bool) {
 	}
 	h.onboarding.show(page, firstRun, onboardingFolder(), h.onboardingKeys())
 	h.onboarding.SetSize(h.width, h.height)
-	if page == onboardingPageWelcome {
+	if page == onboardingPageCheck {
 		h.queueOnboarding(h.onboarding.statusChecks()...)
 	}
 }
 
-// maybeStartOnboarding runs on the first session load. On a fresh install
-// (the setup wizard is up on its first step because there is no config.toml,
-// there are no sessions, and the Welcome was never shown) the Welcome takes
-// the wizard's place. The marker is written as it opens, so it opens by
-// itself at most once.
-func (h *Home) maybeStartOnboarding(noSessions bool) {
-	if !noSessions || !h.setupWizard.IsVisible() || h.setupWizard.currentStep != stepWelcome || onboardingSeen() {
-		return
+// maybeStartOnboarding runs on the first session load and reports whether
+// this run is a fresh install's first run. On a fresh install (no
+// config.toml, no sessions, and onboarding never finished first run here)
+// the check page takes the setup wizard's place; it keeps coming back at
+// start until first run is finished (Enter, Esc or a pick writes
+// config.toml and the marker). Later it opens only on an install whose first
+// run onboarding finished, with no sessions, when something is wrong: tmux
+// missing or no agent at all. An install whose config predates onboarding
+// never sees it.
+func (h *Home) maybeStartOnboarding(noSessions bool) (freshInstall bool) {
+	if !noSessions {
+		return false
 	}
-	h.setupWizard.Hide()
-	markOnboardingSeen()
-	h.openOnboarding(onboardingPageWelcome, true)
+	if onboardingConfigMissing() && !onboardingFirstRunFinished() {
+		h.setupWizard.Hide()
+		h.openOnboarding(onboardingPageCheck, true)
+		h.onboarding.atStart = true
+		return true
+	}
+	if h.setupWizard.IsVisible() || !onboardingFirstRunFinished() {
+		return false
+	}
+	if _, found := onboardingTmuxCheck(); found && onboardingAnyAgentInstalled() {
+		return false
+	}
+	h.openOnboarding(onboardingPageCheck, false)
+	h.onboarding.atStart = true
+	return false
 }
 
 // finishFirstRun writes config.toml the way the setup wizard does when it is
@@ -526,18 +635,29 @@ func (h *Home) finishFirstRun(tool string) {
 			w.selectedTool = i
 		}
 	}
-	h.saveFirstRunConfig(w.GetConfig())
+	// The marker records that first run finished, which means config.toml
+	// was written: a failed save leaves first run open, so the check page
+	// comes back at the next start instead of an install with no config
+	// that onboarding never offers again.
+	if h.saveFirstRunConfig(w.GetConfig()) == nil {
+		markOnboardingFirstRunDone()
+	}
 }
 
+// saveFirstRunUserConfig writes config.toml for first run; a test seam.
+var saveFirstRunUserConfig = session.SaveUserConfig
+
 // saveFirstRunConfig saves a first-run config merged onto disk, so fields the
-// wizard does not manage survive (#1067), and reloads what depends on it.
-func (h *Home) saveFirstRunConfig(config *session.UserConfig) {
+// wizard does not manage survive (#1067), and reloads what depends on it. A
+// failed save is shown and returned.
+func (h *Home) saveFirstRunConfig(config *session.UserConfig) error {
 	merged, mergeErr := session.MergePanelConfigOntoDisk(config)
 	if mergeErr == nil && merged != nil {
 		config = merged
 	}
-	if err := session.SaveUserConfig(config); err != nil {
-		h.err = err
+	saveErr := saveFirstRunUserConfig(config)
+	if saveErr != nil {
+		h.err = saveErr
 		h.errTime = time.Now()
 	}
 	_, _ = session.ReloadUserConfig()
@@ -545,6 +665,7 @@ func (h *Home) saveFirstRunConfig(config *session.UserConfig) {
 	if defaultTool := session.GetDefaultTool(); defaultTool != "" {
 		h.newDialog.SetDefaultTool(defaultTool)
 	}
+	return saveErr
 }
 
 // closeOnboarding hides the overlay, finishing first run if it was one.
@@ -564,90 +685,100 @@ func (h *Home) handleOnboardingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc", "enter", "q":
 			h.closeOnboarding()
 		case "tab":
-			o.page = onboardingPageWelcome
-			o.agents = detectOnboardingAgents()
-			o.cursor = 0
+			o.page = onboardingPageCheck
+			o.flash = ""
+			o.detect()
 			h.queueOnboarding(o.statusChecks()...)
 		}
 		return h, nil
 	}
 	switch key {
-	case "esc":
+	case "enter", "esc":
+		if o.atStart && !o.tmuxFound {
+			o.flash = "agent-deck needs tmux. Install it, then press r."
+			return h, nil
+		}
+		// Continue to the welcome: the empty main screen (welcome.go).
 		h.closeOnboarding()
-	case "up", "k":
-		if o.cursor > 0 {
-			o.cursor--
+		h.welcomeSel = 0
+		h.refreshWelcomeAgents()
+	case "q", "ctrl+c":
+		if !o.atStart {
+			h.closeOnboarding()
+			return h, nil
 		}
-	case "down", "j":
-		if o.cursor < len(o.choices())-1 {
-			o.cursor++
-		}
+		o.hide()
+		return h.tryQuit()
 	case "tab":
 		o.page = onboardingPageTour
-		o.loginAgent = ""
 	case "r":
-		h.queueOnboarding(o.statusChecks()...)
+		h.recheckOnboarding()
 	case "l":
-		h.startOnboardingLogin(o.Selected())
-	case "enter":
-		tool := o.Selected()
-		firstRun := o.firstRun
-		h.closeOnboarding()
-		// Local dialog on this folder, as the Welcome says: not the remote
-		// dialog a remote cursor row would route `n` to, and not the cursor
-		// group's default path.
-		cmd := h.openLocalNewSessionDialog()
-		if h.newDialog.IsVisible() {
-			h.newDialog.SetPath(o.folder)
-			if tool == "shell" {
-				h.newDialog.SetDefaultTool("")
-			} else {
-				h.newDialog.SetDefaultTool(tool)
-			}
-			h.onboardingTourAfterCreate = firstRun
+		if a := o.loginTarget(); a != nil {
+			h.startOnboardingLogin(a.Name)
 		}
-		return h, cmd
 	}
 	return h, nil
 }
 
-// startOnboardingLogin starts agent's own login flow in a new session and
-// re-checks its sign-in until it reports signed in.
+// recheckOnboarding is r on the check page: tmux and the agents are found
+// again, sign-in is re-checked, and one line says what changed.
+func (h *Home) recheckOnboarding() {
+	o := h.onboarding
+	hadTmux, hadAgent := o.tmuxFound, o.anyAgentFound()
+	o.detect()
+	h.queueOnboarding(o.statusChecks()...)
+	switch {
+	case !o.tmuxFound:
+		o.flash = "Checked again: tmux is still not found."
+	case !hadTmux:
+		found := "tmux"
+		if o.tmuxVersion != "" {
+			found = o.tmuxVersion
+		}
+		o.flash = "Checked again: " + found + " found."
+	case !o.anyAgentFound():
+		o.flash = "Checked again: still no agent found."
+	case !hadAgent:
+		var names []string
+		for _, a := range o.agents {
+			if a.Found {
+				names = append(names, a.Display)
+			}
+		}
+		o.flash = "Checked again: " + strings.Join(names, " and ") + " found."
+	default:
+		o.flash = "Checked again: all good."
+	}
+}
+
+// startOnboardingLogin runs agent's own login flow in this terminal; the
+// check page re-checks its sign-in when the login exits.
 func (h *Home) startOnboardingLogin(agent string) {
-	h.instancesMu.RLock()
-	req, ok := h.onboarding.loginRequest(agent, h.instances)
-	h.instancesMu.RUnlock()
+	req, ok := h.onboarding.loginRequest(agent)
 	if !ok {
 		return
 	}
-	h.onboarding.loginAgent = agent
-	h.onboarding.loginDeadline = time.Now().Add(onboardingRecheckFor)
-	h.onboarding.notice = "Signing in to " + h.onboarding.agent(agent).Display + " in session " + req.Title + ". Come back with " + h.onboarding.keys.detach + "."
-	h.onboardingLoginTempID = "onboarding-login-" + agent
-	h.queueOnboarding(onboardingStartLogin(h, req), onboardingRecheckTick())
+	h.onboarding.loginAgent = ""
+	h.onboarding.notice = ""
+	h.queueOnboarding(onboardingStartLogin(req))
 }
 
-func onboardingRecheckTick() tea.Cmd {
-	return tea.Tick(onboardingRecheckEvery, func(time.Time) tea.Msg { return onboardingRecheckMsg{} })
+// runOnboardingLogin hands the terminal to the login command (the TUI
+// waits, as for an editor) and reports when it exits. It runs through sh
+// so a config-dir prefix (CLAUDE_CONFIG_DIR=... claude auth login) works;
+// the environment is the launch environment (internal/childenv).
+func runOnboardingLogin(req onboardingLoginRequest) tea.Cmd {
+	agent := req.Agent
+	return execProcessHoldingInput(onboardingLoginCommand(req), func(error) tea.Msg { return onboardingLoginDoneMsg{agent: agent} })
 }
 
-// createOnboardingLoginSession creates the login session through the normal
-// create path; sessionCreatedMsg attaches to it (onboardingLoginTempID).
-func (h *Home) createOnboardingLoginSession(req onboardingLoginRequest) tea.Cmd {
-	return h.createSessionInGroupWithWorktreeAndOptions(
-		req.Title, req.Path, req.Tool, req.Command,
-		session.DefaultGroupPath,
-		"", "", "", // no worktree
-		false, false, nil,
-		nil, // no extra claude args
-		"",  // no startup query
-		"",  // no Claude account: the command pins the config dir
-		"",
-		false, nil,
-		"", "",
-		h.onboardingLoginTempID,
-		false,
-	)
+// onboardingLoginCommand is the process runOnboardingLogin runs.
+func onboardingLoginCommand(req onboardingLoginRequest) *exec.Cmd {
+	cmd := exec.Command("/bin/sh", "-c", req.Command) // #nosec G204 -- the harness table's login command, quoted config dir
+	cmd.Dir = req.Path
+	cmd.Env = childenv.ForLaunch("")
+	return cmd
 }
 
 // handleOnboardingMsg handles the overlay's own messages. ok is false for any
@@ -657,16 +788,17 @@ func (h *Home) handleOnboardingMsg(msg tea.Msg) (handled bool) {
 	case onboardingStatusMsg:
 		h.onboarding.applyStatus(m)
 		return true
-	case onboardingRecheckMsg:
+	case onboardingLoginDoneMsg:
+		// Back from the login: re-check that agent's sign-in right away.
 		o := h.onboarding
-		if !o.IsVisible() || o.page != onboardingPageWelcome || o.loginAgent == "" || time.Now().After(o.loginDeadline) {
+		if !o.IsVisible() {
 			return true
 		}
-		if a := o.agent(o.loginAgent); a != nil && a.Auth == authSignedIn {
-			o.applyStatus(onboardingStatusMsg{agent: o.loginAgent, auth: authSignedIn})
-			return true
+		if c := o.statusCheck(m.agent); c != nil {
+			o.loginAgent = m.agent
+			o.notice = "Checking the sign-in..."
+			h.queueOnboarding(c)
 		}
-		h.queueOnboarding(o.statusCheck(o.loginAgent), onboardingRecheckTick())
 		return true
 	}
 	return false
@@ -697,13 +829,34 @@ func (o *OnboardingOverlay) View() string {
 	if o.page == onboardingPageTour {
 		s = o.tourSections(inner)
 	} else {
-		s = o.welcomeSections(inner)
+		s = o.checkSections(inner)
+	}
+	// Keep the box colour behind every styled name, detail and footer.
+	surface := surfaceBackgroundSGR()
+	for _, part := range []*[]string{&s.head, &s.body, &s.foot} {
+		for i, l := range *part {
+			(*part)[i] = fillSurfaceAfterResets(l, surface)
+		}
 	}
 	return lipgloss.Place(o.width, o.height, lipgloss.Center, lipgloss.Center, renderFittedDialog(style, o.height, s))
 }
 
 func onboardingWrap(width int, text string) string {
 	return lipgloss.NewStyle().Width(width).Render(text)
+}
+
+// onboardingCommandLine puts a shell command on its own line so a copy gives
+// the whole command (ASK-211 round 3: wrapped commands broke on copy). It
+// keeps indent when the command fits after it, drops the indent when that
+// is what makes it fit, and truncates with … only when it cannot fit at all.
+func onboardingCommandLine(indent, cmd string, width int) string {
+	switch w := lipgloss.Width(cmd); {
+	case lipgloss.Width(indent)+w <= width:
+		return indent + cmd
+	case w <= width:
+		return cmd
+	}
+	return truncateDisplay(cmd, max(1, width), "…")
 }
 
 func displayFolder(folder string) string {
@@ -718,88 +871,135 @@ func displayFolder(folder string) string {
 	return folder
 }
 
-func (o *OnboardingOverlay) welcomeSections(width int) dialogSections {
+// TmuxInstallLines are the tmux install commands for goos. The in-TUI check
+// page and the printed one (cmd/agent-deck check_text.go) both use them.
+func TmuxInstallLines(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{"Mac:    brew install tmux"}
+	case "linux":
+		return []string{
+			"Debian/Ubuntu:  sudo apt install tmux",
+			"Fedora/RHEL:    sudo dnf install tmux",
+			"Arch:           sudo pacman -S tmux",
+		}
+	}
+	return []string{"See https://github.com/tmux/tmux/wiki/Installing"}
+}
+
+// onboardingGOOS is the OS the tmux install line is for (a seam for tests).
+var onboardingGOOS = runtime.GOOS
+
+func (o *OnboardingOverlay) checkSections(width int) dialogSections {
 	title := lipgloss.NewStyle().Bold(true).Foreground(ColorCyan)
 	text := lipgloss.NewStyle().Foreground(ColorText)
+	name := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(ColorTextDim)
 	ok := lipgloss.NewStyle().Foreground(ColorGreen)
 	warn := lipgloss.NewStyle().Foreground(ColorYellow)
-	sel := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	bad := lipgloss.NewStyle().Foreground(ColorRed)
 	help := lipgloss.NewStyle().Foreground(ColorComment)
 
-	var s dialogSections
-	s.head = []string{
-		title.Render("Welcome to Agent Deck"),
-		"",
-		text.Render(onboardingWrap(width, "Run many AI coding agents at once, each in its own session. Switch between them with one key. Works on any machine, this one or a remote.")),
-		"",
-		title.Render("Your agents"),
+	const nameW = 13
+	row := func(mark string, n lipgloss.Style, label, detail string, detailStyle lipgloss.Style) string {
+		avail := width - 2 - nameW - 1
+		return mark + " " + n.Render(padRight(label, nameW)) + " " + detailStyle.Render(truncateDisplay(detail, avail, "…"))
 	}
+	indent := strings.Repeat(" ", 2+nameW+1)
 
-	selected := o.Selected()
-	found := 0
-	focus := 0
-	for _, a := range o.agents {
-		marker := "  "
-		nameStyle := text
-		if a.Found && a.Name == selected {
-			marker = sel.Render("> ")
-			nameStyle = sel
-			focus = len(s.body)
+	var s dialogSections
+	s.head = []string{title.Render("Agent Deck · quick check"), ""}
+
+	if o.tmuxFound {
+		v := o.tmuxVersion
+		if v == "" {
+			v = "installed"
 		}
-		name := nameStyle.Render(padRight(a.Display, 12))
-		var line string
+		s.body = append(s.body, row(ok.Render("✓"), name, "tmux", v, dim))
+	} else {
+		s.body = append(s.body, row(bad.Render("✗"), bad.Bold(true), "tmux", "not found. Every session runs inside tmux.", bad))
+		for _, l := range TmuxInstallLines(onboardingGOOS) {
+			s.body = append(s.body, indent+dim.Render(truncateDisplay(l, width-len(indent), "…")))
+		}
+	}
+	s.body = append(s.body, row(ok.Render("✓"), name, "agent-deck", "v"+Version, dim))
+	s.body = append(s.body, "", title.Render("Your agents"))
+
+	for _, a := range o.agents {
 		if !a.Found {
-			line = marker + warn.Render("x ") + name + dim.Render(" install: "+a.Install)
-			s.body = append(s.body, line)
+			if a.Install == "" {
+				s.body = append(s.body, row(warn.Render("x"), name, a.Display, "not installed", dim))
+				continue
+			}
+			s.body = append(s.body, row(warn.Render("x"), name, a.Display, "not installed. Install with:", dim))
+			s.body = append(s.body, dim.Render(onboardingCommandLine(indent, a.Install, width)))
 			continue
 		}
-		found++
-		state := a.Auth.label()
-		stateStyle := dim
+		var detail string
+		detailStyle := dim
 		switch a.Auth {
 		case authSignedIn:
-			stateStyle = ok
+			detail, detailStyle = "installed · signed in", ok
 		case authSignedOut, authTimedOut:
-			stateStyle = warn
+			detail, detailStyle = "installed · "+a.Auth.label(), warn
+		case authChecking, authUnknown:
+			detail = "installed · " + a.Auth.label()
+		default:
+			detail = "installed · you sign in on the first session"
 		}
-		line = marker + ok.Render("✓ ") + name + dim.Render(" installed · ") + stateStyle.Render(state)
-		if a.canLogIn() && a.Name == selected {
-			line += help.Render("  l: log in")
-		}
-		s.body = append(s.body, line)
+		s.body = append(s.body, row(ok.Render("✓"), name, a.Display, detail, detailStyle))
 	}
-	shellMarker, shellStyle := "  ", text
-	if selected == "shell" {
-		shellMarker, shellStyle = sel.Render("> "), sel
-		focus = len(s.body)
-	}
-	shellNote := " just a terminal, no agent"
-	if found == 0 {
-		shellNote = " no agent found: start a plain terminal"
-	}
-	s.body = append(s.body, shellMarker+"  "+shellStyle.Render(padRight("Plain shell", 12))+dim.Render(shellNote))
-	s.focus = focus
+	s.body = append(s.body, row(" ", name, "Plain shell", "always works", dim))
 
-	start := "Enter: new session with " + o.displayOf(selected) + " in " + displayFolder(o.folder) + ", Enter again starts it."
-	s.foot = []string{"", text.Render(onboardingWrap(width, start))}
+	s.foot = []string{""}
+	if o.flash != "" {
+		style := ok
+		if !strings.HasPrefix(o.flash, "Checked again: ") || strings.Contains(o.flash, "not found") || strings.Contains(o.flash, "no agent") {
+			style = warn
+		}
+		s.foot = append(s.foot, style.Render(onboardingWrap(width, o.flash)), "")
+	}
 	if o.notice != "" {
-		s.foot = append(s.foot, "", ok.Render(onboardingWrap(width, o.notice)))
+		style := ok
+		if strings.Contains(o.notice, "not signed in") {
+			style = warn
+		}
+		s.foot = append(s.foot, style.Render(onboardingWrap(width, o.notice)), "")
 	}
-	if o.keys.report != "" {
-		s.foot = append(s.foot, "", dim.Render(onboardingWrap(width, "Found a bug or have an idea? Press "+o.keys.report+" on the main screen to report it.")))
+	var items []string
+	switch {
+	case !o.atStart:
+		items = []string{"Esc close"}
+		if a := o.loginTarget(); a != nil {
+			items = append(items, "l sign in to "+a.Display)
+		}
+		items = append(items, "r re-check", "Tab what you can do")
+	case !o.tmuxFound:
+		items = []string{"r re-check after you install", "q quit"}
+	case !o.anyAgentFound():
+		s.foot = append(s.foot, text.Render(onboardingWrap(width, "No agent yet. You can still start with a Plain shell.")), "")
+		items = []string{"Enter continue with Plain shell", "r re-check", "q quit"}
+	default:
+		items = []string{"Enter continue"}
+		if a := o.loginTarget(); a != nil {
+			items = append(items, "l sign in to "+a.Display)
+		}
+		items = append(items, "r re-check", "q quit")
 	}
-	items := []string{"↑↓ pick", "Enter start", "l log in", "r re-check", "Tab what you can do", "Esc skip"}
-	s.foot = append(s.foot, "", help.Render(renderDialogFooterRows(width, 2, " · ", items)))
+	s.foot = append(s.foot, help.Render(renderDialogFooterRows(width, 2, " · ", items)))
 	return s
 }
 
-func (o *OnboardingOverlay) displayOf(choice string) string {
+// onboardingDisplayOf is choice's display name among agents ("Plain shell"
+// for a plain shell).
+func onboardingDisplayOf(agents []onboardingAgent, choice string) string {
 	if choice == "shell" {
-		return "a plain shell"
+		return "a Plain shell"
 	}
-	if a := o.agent(choice); a != nil {
-		return a.Display
+	for _, a := range agents {
+		if a.Name == choice {
+			return a.Display
+		}
 	}
 	return choice
 }

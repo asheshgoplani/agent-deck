@@ -256,6 +256,8 @@ func TestLayoutFollowupHelpUsesRunningLayoutUntilRestart(t *testing.T) {
 			assertHelp := func(h *Home, embedded bool) {
 				t.Helper()
 				_, _ = h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+				// ASK-211: '?' opens on "5 keys to start"; Tab shows all keys.
+				h.helpOverlay.Update(tea.KeyMsg{Type: tea.KeyTab})
 				rendered := ansi.Strip(h.helpOverlay.View())
 				hasEmbeddedEnter := strings.Contains(rendered, "Focus embedded terminal")
 				hasFlatShortcut := strings.Contains(rendered, "Alt+V")

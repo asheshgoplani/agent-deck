@@ -1,7 +1,8 @@
 package ui
 
-// First-run onboarding (ASK-131): Welcome with agent detection and sign-in,
-// first session in two keys, and the "What you can do" page. Every test runs
+// First-run onboarding (ASK-131, ASK-211): the quick check page with tmux,
+// agent detection and sign-in, the welcome empty screen (welcome_test.go),
+// and the "What you can do" page. Every test runs
 // in its own scratch HOME with a fake PATH lookup and a fake status runner;
 // no real agent CLI is ever run.
 
@@ -38,6 +39,9 @@ type onboardingEnv struct {
 	queued   []tea.Cmd
 	logins   []onboardingLoginRequest
 	lookPath []string
+
+	tmuxFound   bool
+	tmuxVersion string
 }
 
 func newOnboardingEnv(t *testing.T, found ...string) *onboardingEnv {
@@ -65,10 +69,23 @@ func newOnboardingEnv(t *testing.T, found ...string) *onboardingEnv {
 		e.found[f] = true
 	}
 
-	prevLook, prevRun, prevStart, prevObs, prevEvery := onboardingLookPath, onboardingStatusRunner, onboardingStartLogin, onboardingCmdObserver, onboardingRecheckEvery
+	prevLook, prevRun, prevStart, prevObs := onboardingLookPath, onboardingStatusRunner, onboardingStartLogin, onboardingCmdObserver
+	prevTmux, prevGOOS, prevVersion := onboardingTmuxCheck, onboardingGOOS, Version
 	t.Cleanup(func() {
-		onboardingLookPath, onboardingStatusRunner, onboardingStartLogin, onboardingCmdObserver, onboardingRecheckEvery = prevLook, prevRun, prevStart, prevObs, prevEvery
+		onboardingLookPath, onboardingStatusRunner, onboardingStartLogin, onboardingCmdObserver = prevLook, prevRun, prevStart, prevObs
+		onboardingTmuxCheck, onboardingGOOS, Version = prevTmux, prevGOOS, prevVersion
 	})
+	e.tmuxFound, e.tmuxVersion = true, "tmux 3.5a"
+	onboardingTmuxCheck = func() (string, bool) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if !e.tmuxFound {
+			return "", false
+		}
+		return e.tmuxVersion, true
+	}
+	onboardingGOOS = "linux"
+	Version = "1.16.36"
 	onboardingLookPath = func(bin string) (string, error) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -92,13 +109,23 @@ func newOnboardingEnv(t *testing.T, found ...string) *onboardingEnv {
 		}
 		return code, nil
 	}
-	onboardingStartLogin = func(h *Home, req onboardingLoginRequest) tea.Cmd {
+	onboardingStartLogin = func(req onboardingLoginRequest) tea.Cmd {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		e.logins = append(e.logins, req)
 		return nil
 	}
-	onboardingRecheckEvery = time.Millisecond
+	// The New Session form and the "any agent" check see the same fake PATH.
+	prevInstalled := newDialogToolInstalled
+	t.Cleanup(func() { newDialogToolInstalled = prevInstalled })
+	newDialogToolInstalled = func(name string) bool {
+		if name == "" || name == "shell" {
+			return true
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.found[name]
+	}
 	onboardingCmdObserver = func(c tea.Cmd) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -144,7 +171,7 @@ func runOnboardingCmd(c tea.Cmd) []tea.Msg {
 			out = append(out, runOnboardingCmd(sub)...)
 		}
 		return out
-	case onboardingStatusMsg, onboardingRecheckMsg:
+	case onboardingStatusMsg, onboardingLoginDoneMsg:
 		return []tea.Msg{m}
 	}
 	return nil
@@ -174,41 +201,62 @@ var (
 
 func onboardingScreen(h *Home) string { return stripAnsi(h.View()) }
 
-func welcomeVisible(h *Home) bool {
-	return h.onboarding.IsVisible() && h.onboarding.Page() == onboardingPageWelcome
+func checkVisible(h *Home) bool {
+	return h.onboarding.IsVisible() && h.onboarding.Page() == onboardingPageCheck
+}
+
+func (e *onboardingEnv) setTmux(found bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.tmuxFound = found
+}
+
+func (e *onboardingEnv) setFound(bins ...string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, b := range bins {
+		e.found[b] = true
+	}
 }
 
 func tourVisible(h *Home) bool {
 	return h.onboarding.IsVisible() && h.onboarding.Page() == onboardingPageTour
 }
 
-func TestOnboarding_FreshInstallShowsWelcomeExactlyOnce(t *testing.T) {
+func TestOnboarding_FreshInstallShowsCheckPageExactlyOnce(t *testing.T) {
 	newOnboardingEnv(t, "claude")
 	h := startDeck(t)
-	if !welcomeVisible(h) {
-		t.Fatal("fresh install: the Welcome is not shown")
+	if !checkVisible(h) {
+		t.Fatal("fresh install: the check page is not shown")
 	}
 	if h.setupWizard.IsVisible() {
-		t.Fatal("fresh install: the old setup wizard is still on screen with the Welcome")
+		t.Fatal("fresh install: the old setup wizard is still on screen with the check page")
 	}
 	screen := onboardingScreen(h)
-	for _, want := range []string{"Welcome to Agent Deck", "each in its own session", "Your agents", "Claude Code"} {
+	for _, want := range []string{"Agent Deck · quick check", "✓ tmux", "tmux 3.5a", "✓ agent-deck", "v1.16.36",
+		"Your agents", "✓ Claude Code", "x Codex", "not installed. Install with:", "npm install -g @openai/codex", "Plain shell", "always works", "Enter continue", "r re-check", "q quit"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("Welcome lacks %q:\n%s", want, screen)
 		}
 	}
 
-	// Second start on the same install, without touching anything.
+	// Second start on the same install, first run not finished (the
+	// process ended on the check page): the check page again, not the wizard.
 	h2 := startDeck(t)
-	if h2.onboarding.IsVisible() || h2.setupWizard.IsVisible() {
-		t.Fatalf("second start: welcome=%v wizard=%v, want neither", h2.onboarding.IsVisible(), h2.setupWizard.IsVisible())
+	if !checkVisible(h2) || !h2.onboarding.firstRun || h2.setupWizard.IsVisible() {
+		t.Fatalf("second start before finishing: check=%v firstRun=%v wizard=%v, want the first-run check page", checkVisible(h2), h2.onboarding.firstRun, h2.setupWizard.IsVisible())
+	}
+	h2.Update(keyEnter) // finish first run
+	h3 := startDeck(t)
+	if h3.onboarding.IsVisible() || h3.setupWizard.IsVisible() {
+		t.Fatalf("start after first run: check=%v wizard=%v, want neither", h3.onboarding.IsVisible(), h3.setupWizard.IsVisible())
 	}
 }
 
 func TestOnboarding_EscSkipsAndPersists(t *testing.T) {
 	newOnboardingEnv(t, "codex")
 	h := startDeck(t)
-	if !welcomeVisible(h) {
+	if !checkVisible(h) {
 		t.Fatal("precondition: Welcome shown")
 	}
 	h.Update(keyEsc)
@@ -227,6 +275,41 @@ func TestOnboarding_EscSkipsAndPersists(t *testing.T) {
 	}
 }
 
+// First run is finished only when config.toml was written: a save that
+// fails leaves no first-run marker, so the check page comes back at the next
+// start; once a save works, the marker is written and it does not.
+func TestOnboarding_FailedConfigSaveKeepsFirstRunOpen(t *testing.T) {
+	newOnboardingEnv(t, "claude")
+	prevSave := saveFirstRunUserConfig
+	t.Cleanup(func() { saveFirstRunUserConfig = prevSave })
+	saveFirstRunUserConfig = func(*session.UserConfig) error { return errors.New("disk full") }
+
+	h := startDeck(t)
+	if !checkVisible(h) {
+		t.Fatal("precondition: fresh install shows the check page")
+	}
+	h.Update(keyEsc)
+	if onboardingFirstRunFinished() || onboardingMarkerExists() {
+		t.Fatal("first-run marker written although config.toml failed to save")
+	}
+	if h.err == nil {
+		t.Fatal("the failed save is not shown")
+	}
+	h2 := startDeck(t)
+	if !checkVisible(h2) || !h2.onboarding.firstRun {
+		t.Fatal("after a failed save the next start does not bring the first-run check page back")
+	}
+
+	saveFirstRunUserConfig = prevSave
+	h2.Update(keyEsc)
+	if _, err := os.Stat(configFile(t)); err != nil {
+		t.Fatalf("config.toml not written: %v", err)
+	}
+	if !onboardingFirstRunFinished() {
+		t.Fatal("first-run marker missing after a successful save")
+	}
+}
+
 func TestOnboarding_ReopenAfterSkip(t *testing.T) {
 	e := newOnboardingEnv(t, "claude")
 	h := startDeck(t)
@@ -239,7 +322,7 @@ func TestOnboarding_ReopenAfterSkip(t *testing.T) {
 		t.Fatalf("%s did not reopen What you can do", keyShowMe.String())
 	}
 	h.Update(keyTab)
-	if !welcomeVisible(h) {
+	if !checkVisible(h) {
 		t.Fatal("Tab from What you can do did not open the agents page")
 	}
 	e.setStatus("claude", 0)
@@ -296,7 +379,7 @@ func TestOnboarding_AgentDetectionFollowsPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			newOnboardingEnv(t, tc.found...)
 			h := startDeck(t)
-			if !welcomeVisible(h) {
+			if !checkVisible(h) {
 				t.Fatal("Welcome not shown")
 			}
 			if got := h.onboarding.choices(); strings.Join(got, ",") != strings.Join(tc.choices, ",") {
@@ -308,245 +391,278 @@ func TestOnboarding_AgentDetectionFollowsPath(t *testing.T) {
 				for _, f := range tc.found {
 					isFound = isFound || f == a.Name
 				}
-				hint := "install: " + a.Install
+				// The command sits on its own line; a long one is cut with
+				// … at the end, so look for its start.
+				hint := a.Install
+				if len(hint) > 40 {
+					hint = hint[:40]
+				}
 				if isFound == strings.Contains(screen, hint) {
 					t.Fatalf("%s found=%v but install hint shown=%v:\n%s", a.Name, isFound, !isFound, screen)
 				}
 			}
-			if len(tc.found) == 0 && !strings.Contains(screen, "no agent found: start a plain terminal") {
+			if len(tc.found) == 0 && !strings.Contains(screen, "No agent yet. You can still start with a Plain shell.") {
 				t.Fatalf("no agent found, but no plain-shell offer:\n%s", screen)
 			}
 		})
 	}
 }
 
-func TestOnboarding_EnterOpensPrefilledDialogAndSecondEnterCreates(t *testing.T) {
+// Check page Enter -> welcome (no modal) -> Enter opens the filled New
+// Session form -> Enter creates: the first session is three keys away.
+func TestOnboarding_CheckEnterWelcomeEnterEnterCreates(t *testing.T) {
 	newOnboardingEnv(t, "claude", "codex")
 	h := startDeck(t)
-	h.Update(keyDown) // highlight codex
-	if got := h.onboarding.Selected(); got != "codex" {
-		t.Fatalf("after ↓ the highlight is %q, want codex", got)
-	}
-	keys := 0
 	h.Update(keyEnter)
-	keys++
-	if h.onboarding.IsVisible() || !h.newDialog.IsVisible() {
-		t.Fatal("Enter on the Welcome did not open the New Session dialog")
+	if h.onboarding.IsVisible() || h.newDialog.IsVisible() {
+		t.Fatal("Enter on the check page did not continue to the welcome")
 	}
-	if got := h.newDialog.GetSelectedCommand(); got != "codex" {
-		t.Fatalf("dialog tool = %q, want the highlighted codex", got)
+	if !h.welcomeActive() || !strings.Contains(onboardingScreen(h), "Welcome to Agent Deck") {
+		t.Fatalf("after the check page the welcome is not on screen:\n%s", onboardingScreen(h))
 	}
-	if got := h.newDialog.pathInput.Value(); got != h.onboarding.folder {
-		t.Fatalf("dialog path = %q, want this folder %q", got, h.onboarding.folder)
+	if got := session.GetDefaultTool(); got != "claude" {
+		t.Fatalf("default tool after first run = %q, want the first installed claude", got)
+	}
+	h.Update(keyEnter)
+	if !h.newDialog.IsVisible() {
+		t.Fatal("Enter on the welcome did not open the New Session dialog")
+	}
+	if got := h.newDialog.GetSelectedCommand(); got != "claude" {
+		t.Fatalf("dialog tool = %q, want the first installed claude", got)
+	}
+	// The form shows the folder with ~; compare the path it creates in.
+	if _, got, _ := h.newDialog.GetValues(); got != onboardingFolder() {
+		t.Fatalf("dialog path = %q, want this folder %q", got, onboardingFolder())
 	}
 	_, cmd := h.Update(keyEnter)
-	keys++
 	if !submitted(h, cmd) {
-		t.Fatalf("second Enter did not create (error %q)", h.newDialog.validationErr)
-	}
-	if keys != 2 {
-		t.Fatalf("Welcome to created session took %d keys, want 2", keys)
+		t.Fatalf("Enter in the filled form did not create (error %q)", h.newDialog.validationErr)
 	}
 	if got := h.newDialog.nameInput.Value(); got != "billing-api" {
 		t.Fatalf("session name = %q, want the folder name", got)
-	}
-	if got := session.GetDefaultTool(); got != "codex" {
-		t.Fatalf("default tool after the Welcome = %q, want codex", got)
-	}
-}
-
-// Reopened later ("Show me around", Tab), the Welcome's pick wins over the
-// configured default tool: Enter opens the dialog on the highlighted agent.
-func TestOnboarding_ReopenedEnterPrefillsHighlightedAgent(t *testing.T) {
-	newOnboardingEnv(t, "claude", "codex")
-	cfg := &session.UserConfig{DefaultTool: "claude"}
-	if err := session.SaveUserConfig(cfg); err != nil {
-		t.Fatal(err)
-	}
-	session.ClearUserConfigCache()
-	h := startDeck(t)
-	if h.onboarding.IsVisible() {
-		t.Fatal("precondition: no first-run Welcome with a config.toml")
-	}
-	h.Update(keyShowMe)
-	h.Update(keyTab)
-	h.Update(keyDown) // codex
-	if got := h.onboarding.Selected(); got != "codex" {
-		t.Fatalf("highlight = %q, want codex", got)
-	}
-	h.Update(keyEnter)
-	if !h.newDialog.IsVisible() {
-		t.Fatal("Enter on the reopened Welcome did not open the dialog")
-	}
-	if got := h.newDialog.GetSelectedCommand(); got != "codex" {
-		t.Fatalf("dialog tool = %q, want the highlighted codex over default_tool claude", got)
-	}
-	if got := session.GetDefaultTool(); got != "claude" {
-		t.Fatalf("reopened Welcome changed default_tool to %q", got)
-	}
-}
-
-// The Welcome promises "new session with <agent> in <this folder>". Reopened
-// with the list cursor on a remote session, Enter must still open the local
-// dialog on that agent and folder, not the remote dialog (which drops the
-// agent and creates on another machine).
-func TestOnboarding_WelcomeEnterOnRemoteCursorStaysLocal(t *testing.T) {
-	newOnboardingEnv(t, "claude")
-	if err := session.SaveUserConfig(&session.UserConfig{}); err != nil {
-		t.Fatal(err)
-	}
-	session.ClearUserConfigCache()
-	h := startDeck(t)
-	remote := session.RemoteSessionInfo{ID: "r1", Title: "remote-one", Status: "idle"}
-	h.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
-	h.cursor = 0
-	h.Update(keyShowMe)
-	h.Update(keyTab)
-	if !welcomeVisible(h) {
-		t.Fatal("precondition: Tab did not reach the Welcome")
-	}
-	h.Update(keyEnter)
-	if !h.newDialog.IsVisible() {
-		t.Fatal("Enter on the Welcome did not open the dialog")
-	}
-	if h.pendingRemoteName != "" {
-		t.Fatalf("Enter on the Welcome routed the create to remote %q", h.pendingRemoteName)
-	}
-	if got := h.newDialog.GetSelectedCommand(); got != "claude" {
-		t.Fatalf("dialog tool = %q, want the highlighted claude", got)
-	}
-	if got := h.newDialog.pathInput.Value(); got != h.onboarding.folder {
-		t.Fatalf("dialog path = %q, want the Welcome's folder %q", got, h.onboarding.folder)
-	}
-}
-
-// Reopened with the cursor in a group whose default path is another folder,
-// the dialog still uses the folder the Welcome shows.
-func TestOnboarding_ReopenedEnterUsesWelcomeFolder(t *testing.T) {
-	e := newOnboardingEnv(t, "claude")
-	if err := session.SaveUserConfig(&session.UserConfig{}); err != nil {
-		t.Fatal(err)
-	}
-	session.ClearUserConfigCache()
-	other := filepath.Join(e.home, "other-repo")
-	if err := os.MkdirAll(other, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	inst := session.NewInstanceWithTool("other", other, "claude")
-	h := startDeck(t, inst)
-	for i, item := range h.flatItems {
-		if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == inst.ID {
-			h.cursor = i
-		}
-	}
-	if got := h.getDefaultPathForGroup(inst.GroupPath); got != other {
-		t.Fatalf("precondition: group default path = %q, want %q", got, other)
-	}
-	h.Update(keyShowMe)
-	h.Update(keyTab)
-	h.Update(keyEnter)
-	if !h.newDialog.IsVisible() {
-		t.Fatal("Enter on the reopened Welcome did not open the dialog")
-	}
-	if got := h.newDialog.pathInput.Value(); got != h.onboarding.folder {
-		t.Fatalf("dialog path = %q, want the Welcome's folder %q", got, h.onboarding.folder)
 	}
 }
 
 func TestOnboarding_NoAgentStartsPlainShell(t *testing.T) {
 	newOnboardingEnv(t)
 	h := startDeck(t)
+	if !checkVisible(h) {
+		t.Fatal("precondition: check page")
+	}
+	screen := onboardingScreen(h)
+	for _, want := range []string{"x Claude Code", h.onboarding.agent("claude").Install,
+		"No agent yet. You can still start with a Plain shell.", "Enter continue with Plain shell"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("no-agent check page lacks %q:\n%s", want, screen)
+		}
+	}
+	h.Update(keyEnter)
+	if h.onboarding.IsVisible() {
+		t.Fatal("no agent: Enter must still continue (Plain shell)")
+	}
 	h.Update(keyEnter)
 	if !h.newDialog.IsVisible() {
-		t.Fatal("Enter did not open the dialog")
+		t.Fatal("Enter on the welcome did not open the dialog")
 	}
 	if got := h.newDialog.GetSelectedCommand(); got != "" {
 		t.Fatalf("no agent found: dialog tool = %q, want the plain shell", got)
 	}
 }
 
-func TestOnboarding_TourShownOnceAfterFirstCreate(t *testing.T) {
-	newOnboardingEnv(t, "claude")
+// tmux missing: the tmux row says so with the install line, Enter and Esc
+// are blocked, r re-checks and, once tmux is there, Enter continues.
+func TestOnboarding_TmuxMissingBlocksUntilRecheck(t *testing.T) {
+	e := newOnboardingEnv(t, "claude")
+	e.setTmux(false)
 	h := startDeck(t)
-	h.Update(keyEnter)
-	h.Update(keyEnter)
-	if h.onboarding.IsVisible() {
-		t.Fatal("What you can do opened before the session exists")
-	}
-	inst := session.NewInstanceWithTool("billing-api", h.onboarding.folder, "claude")
-	h.Update(sessionCreatedMsg{instance: inst})
-	if !tourVisible(h) {
-		t.Fatal("What you can do did not open after the first session was created")
+	if !checkVisible(h) {
+		t.Fatal("precondition: check page")
 	}
 	screen := onboardingScreen(h)
-	for _, want := range []string{"What you can do", "Sessions", "Switch", "Send", "Conductor", "Remotes",
-		"agent-deck conductor setup", "agent-deck remote add", "Ctrl+Q", "alt+w"} {
+	for _, want := range []string{"✗ tmux", "not found. Every session runs inside tmux.", "Debian/Ubuntu:  sudo apt install tmux", "Fedora/RHEL:    sudo dnf install tmux", "Arch:           sudo pacman -S tmux",
+		"r re-check after you install", "q quit"} {
 		if !strings.Contains(screen, want) {
-			t.Fatalf("What you can do lacks %q:\n%s", want, screen)
+			t.Fatalf("tmux-missing check page lacks %q:\n%s", want, screen)
 		}
 	}
-	h.Update(keyEsc)
-	inst2 := session.NewInstanceWithTool("second", h.onboarding.folder, "claude")
-	h.Update(sessionCreatedMsg{instance: inst2})
+	if strings.Contains(screen, "Enter continue") {
+		t.Fatalf("tmux missing, yet the footer offers Enter:\n%s", screen)
+	}
+	for _, k := range []tea.KeyMsg{keyEnter, keyEsc} {
+		h.Update(k)
+		if !checkVisible(h) {
+			t.Fatalf("%s left the check page while tmux is missing", k.String())
+		}
+	}
+	if !strings.Contains(onboardingScreen(h), "agent-deck needs tmux. Install it, then press r.") {
+		t.Fatalf("blocked Enter says nothing:\n%s", onboardingScreen(h))
+	}
+	h.Update(runeKey('r'))
+	if !strings.Contains(onboardingScreen(h), "Checked again: tmux is still not found.") {
+		t.Fatalf("re-check without tmux:\n%s", onboardingScreen(h))
+	}
+	e.setTmux(true)
+	h.Update(runeKey('r'))
+	screen = onboardingScreen(h)
+	if !strings.Contains(screen, "Checked again: tmux 3.5a found.") || !strings.Contains(screen, "✓ tmux") {
+		t.Fatalf("re-check after installing tmux:\n%s", screen)
+	}
+	h.Update(keyEnter)
 	if h.onboarding.IsVisible() {
-		t.Fatal("What you can do opened again on a later create")
+		t.Fatal("tmux found again, yet Enter is still blocked")
 	}
 }
 
-// The first create can land while a reload runs (the early-return branch of
-// sessionCreatedMsg). The tour belongs to that create: it opens then, and a
-// later create does not open it.
-func TestOnboarding_TourAfterCreateDuringReload(t *testing.T) {
-	newOnboardingEnv(t, "claude")
+// r re-checks the agents too: one installed meanwhile turns green and the
+// line says which.
+func TestOnboarding_RecheckFindsNewAgent(t *testing.T) {
+	e := newOnboardingEnv(t)
 	h := startDeck(t)
-	h.Update(keyEnter)
-	h.Update(keyEnter)
-	h.reloadMu.Lock()
-	h.isReloading = true
-	h.reloadMu.Unlock()
-	inst := session.NewInstanceWithTool("billing-api", h.onboarding.folder, "claude")
-	h.Update(sessionCreatedMsg{instance: inst})
-	h.reloadMu.Lock()
-	h.isReloading = false
-	h.reloadMu.Unlock()
-	if !tourVisible(h) {
-		t.Fatal("first create landed during a reload and What you can do did not open")
+	e.setFound("claude")
+	h.Update(runeKey('r'))
+	screen := onboardingScreen(h)
+	for _, want := range []string{"Checked again: Claude Code found.", "✓ Claude Code", "Enter continue"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("re-check lacks %q:\n%s", want, screen)
+		}
 	}
-	h.Update(keyEsc)
-	inst2 := session.NewInstanceWithTool("second", h.onboarding.folder, "claude")
-	h.Update(sessionCreatedMsg{instance: inst2})
-	if h.onboarding.IsVisible() {
-		t.Fatal("What you can do opened again on a later create")
+	if strings.Contains(screen, "No agent yet") {
+		t.Fatalf("still says no agent after one was found:\n%s", screen)
+	}
+	h.Update(runeKey('r'))
+	if !strings.Contains(onboardingScreen(h), "Checked again: all good.") {
+		t.Fatalf("second re-check:\n%s", onboardingScreen(h))
 	}
 }
 
-// A failed first create consumes the tour too: it must not pop on some
-// unrelated later create.
-func TestOnboarding_TourNotShownAfterFailedFirstCreate(t *testing.T) {
-	newOnboardingEnv(t, "claude")
+// All green: shown on first run only. Something wrong (no agent CLI) with
+// no sessions: shown again at start, not as first run.
+func TestOnboarding_ShownAgainOnlyWhenSomethingIsWrong(t *testing.T) {
+	e := newOnboardingEnv(t)
 	h := startDeck(t)
-	h.Update(keyEnter)
-	h.Update(keyEnter)
-	h.Update(sessionCreatedMsg{err: errors.New("tmux failed")})
-	if h.onboarding.IsVisible() {
-		t.Fatal("What you can do opened for a failed create")
+	h.Update(keyEnter) // finish first run with a plain shell
+	h2 := startDeck(t)
+	if !checkVisible(h2) || h2.onboarding.firstRun {
+		t.Fatalf("no agent at start: check page visible=%v firstRun=%v, want shown, not first run", checkVisible(h2), h2.onboarding.firstRun)
 	}
-	inst := session.NewInstanceWithTool("later", h.onboarding.folder, "claude")
-	h.Update(sessionCreatedMsg{instance: inst})
-	if h.onboarding.IsVisible() {
-		t.Fatal("failed first create, yet a later create opened What you can do")
+	h2.Update(keyEnter)
+	e.setFound("codex")
+	h3 := startDeck(t)
+	if h3.onboarding.IsVisible() {
+		t.Fatal("all green after first run, yet the check page opened again")
+	}
+	// No agent, but sessions exist: the user is past onboarding.
+	newOnboardingEnv(t)
+	if err := session.SaveUserConfig(&session.UserConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	session.ClearUserConfigCache()
+	h4 := startDeck(t, session.NewInstanceWithTool("shell-one", t.TempDir(), "shell"))
+	if h4.onboarding.IsVisible() {
+		t.Fatal("no agent but a session exists: check page must not nag")
 	}
 }
 
-func TestOnboarding_TourNotShownWhenDialogCancelled(t *testing.T) {
+// An install whose config.toml predates onboarding (an existing user) never
+// gets the check page, even with no sessions and no agent the check page
+// knows (ASK-211 review): it is not the install onboarding finished.
+func TestOnboarding_ExistingConfigNoSessionsNoKnownAgentNeverSeesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		marker string // "" none, else marker content (older versions: a timestamp)
+	}{
+		{"no marker", ""},
+		{"marker from an older version", "2026-01-02T03:04:05Z\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newOnboardingEnv(t) // nothing on PATH
+			if err := session.SaveUserConfig(&session.UserConfig{DefaultTool: "opencode"}); err != nil {
+				t.Fatal(err)
+			}
+			session.ClearUserConfigCache()
+			if tc.marker != "" {
+				p := onboardingSeenPath()
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(tc.marker), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := 0; i < 2; i++ {
+				h := startDeck(t)
+				if h.onboarding.IsVisible() || h.setupWizard.IsVisible() {
+					t.Fatalf("start %d: check=%v wizard=%v, want neither for an existing config", i+1, h.onboarding.IsVisible(), h.setupWizard.IsVisible())
+				}
+			}
+		})
+	}
+}
+
+// On the install onboarding finished, any installed picker tool counts as an
+// agent, not only the four the check page lists.
+func TestOnboarding_AnyInstalledToolCountsAsAgent(t *testing.T) {
+	e := newOnboardingEnv(t)
+	h := startDeck(t)
+	h.Update(keyEnter) // finish first run with a plain shell
+	e.setFound("opencode")
+	h2 := startDeck(t)
+	if h2.onboarding.IsVisible() {
+		t.Fatal("opencode is installed, yet the check page says no agent")
+	}
+}
+
+// q on the check page at start quits agent-deck; on a page reopened from
+// "Show me around" it only closes it.
+func TestOnboarding_QuitKey(t *testing.T) {
 	newOnboardingEnv(t, "claude")
 	h := startDeck(t)
-	h.Update(keyEnter)
-	h.Update(keyEsc) // cancel the dialog
-	inst := session.NewInstanceWithTool("later", h.onboarding.folder, "claude")
+	_, cmd := h.Update(runeKey('q'))
+	if h.onboarding.IsVisible() {
+		t.Fatal("q left the check page open")
+	}
+	if cmd == nil && !h.isQuitting {
+		t.Fatal("q on the start check page did not quit")
+	}
+	// q did not finish first run: the next start is the check page again,
+	// not the legacy setup wizard and not a config-less main screen.
+	if _, err := os.Stat(configFile(t)); err == nil {
+		t.Fatal("q on the first-run check page wrote config.toml")
+	}
+	again := startDeck(t)
+	if !checkVisible(again) || !again.onboarding.firstRun || again.setupWizard.IsVisible() {
+		t.Fatalf("start after q: check=%v firstRun=%v wizard=%v, want the first-run check page", checkVisible(again), again.onboarding.firstRun, again.setupWizard.IsVisible())
+	}
+
+	newOnboardingEnv(t, "claude")
+	if err := session.SaveUserConfig(&session.UserConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	session.ClearUserConfigCache()
+	h2 := startDeck(t)
+	h2.Update(keyShowMe)
+	h2.Update(keyTab)
+	if !checkVisible(h2) {
+		t.Fatal("precondition: reopened check page")
+	}
+	h2.Update(runeKey('q'))
+	if h2.onboarding.IsVisible() || h2.isQuitting {
+		t.Fatalf("q on a reopened page: visible=%v quitting=%v, want closed, not quitting", h2.onboarding.IsVisible(), h2.isQuitting)
+	}
+}
+
+// The first session made from the welcome no longer pops "What you can
+// do": the hint bar (lane B) teaches the first keys instead.
+func TestOnboarding_NoTourAfterFirstCreate(t *testing.T) {
+	newOnboardingEnv(t, "claude")
+	h := startDeck(t)
+	h.Update(keyEnter) // check page -> welcome
+	h.Update(keyEnter) // welcome -> form
+	h.Update(keyEnter) // create
+	inst := session.NewInstanceWithTool("billing-api", onboardingFolder(), "claude")
 	h.Update(sessionCreatedMsg{instance: inst})
 	if h.onboarding.IsVisible() {
-		t.Fatal("cancelled first session, yet a later create opened What you can do")
+		t.Fatal("What you can do opened after the first create")
 	}
 }
 
@@ -575,7 +691,7 @@ func TestOnboarding_SignInStatusPerTool(t *testing.T) {
 		t.Fatalf("a status check used -p: %q", calls)
 	}
 	screen := onboardingScreen(h)
-	for _, w := range []string{"signed in", "not signed in", "sign in inside the tool"} {
+	for _, w := range []string{"installed · signed in", "installed · not signed in", "installed · you sign in on the first session"} {
 		if !strings.Contains(screen, w) {
 			t.Fatalf("screen lacks %q:\n%s", w, screen)
 		}
@@ -620,18 +736,20 @@ func TestOnboarding_RealRunnerTimesOut(t *testing.T) {
 
 func TestOnboarding_LogInStartsToolsOwnLoginAndRecheckConfirms(t *testing.T) {
 	for _, tc := range []struct {
-		agent, tool, command string
-		down                 int
+		agent, command, signedIn string
 	}{
-		{"claude", "shell", "claude auth login", 0},
-		{"codex", "shell", "codex login", 1},
+		{"claude", "claude auth login", ""},
+		{"codex", "codex login", "claude"}, // l signs in to the first agent not signed in
 	} {
 		t.Run(tc.agent, func(t *testing.T) {
 			e := newOnboardingEnv(t, "claude", "codex")
+			if tc.signedIn != "" {
+				e.setStatus(tc.signedIn, 0)
+			}
 			h := startDeck(t)
 			e.settle(h, 2)
-			for i := 0; i < tc.down; i++ {
-				h.Update(keyDown)
+			if !strings.Contains(onboardingScreen(h), "l sign in to "+h.onboarding.agent(tc.agent).Display) {
+				t.Fatalf("footer does not offer sign-in to %s:\n%s", tc.agent, onboardingScreen(h))
 			}
 			if a := h.onboarding.agent(tc.agent); a.Auth != authSignedOut {
 				t.Fatalf("precondition: %s not signed in, got %v", tc.agent, a.Auth)
@@ -641,17 +759,15 @@ func TestOnboarding_LogInStartsToolsOwnLoginAndRecheckConfirms(t *testing.T) {
 			logins := append([]onboardingLoginRequest(nil), e.logins...)
 			e.mu.Unlock()
 			if len(logins) != 1 {
-				t.Fatalf("Log in started %d sessions, want 1", len(logins))
+				t.Fatalf("Log in ran %d logins, want 1", len(logins))
 			}
 			req := logins[0]
-			if req.Tool != tc.tool || req.Command != tc.command {
-				t.Fatalf("login session = %+v, want tool %q command %q", req, tc.tool, tc.command)
+			if req.Agent != tc.agent || req.Command != tc.command || req.Path != h.onboarding.folder {
+				t.Fatalf("login = %+v, want agent %q command %q in %q", req, tc.agent, tc.command, h.onboarding.folder)
 			}
-			if req.Title != tc.agent+"-login" || req.Path != h.onboarding.folder {
-				t.Fatalf("login session title/path = %q/%q", req.Title, req.Path)
-			}
-			// The tool's login finished: the next re-check flips the row.
+			// The tool's login finished: the re-check on return flips the row.
 			e.setStatus(tc.agent, 0)
+			h.Update(onboardingLoginDoneMsg{agent: tc.agent})
 			e.settle(h, 4)
 			if got := h.onboarding.agent(tc.agent).Auth; got != authSignedIn {
 				t.Fatalf("after login the re-check says %v, want signed in", got)
@@ -668,9 +784,10 @@ func TestOnboarding_LogInNotOfferedWhenSignedInOrNoStatus(t *testing.T) {
 	e.setStatus("claude", 0)
 	h := startDeck(t)
 	e.settle(h, 2)
-	h.Update(runeKey('l'))
-	h.Update(keyDown) // gemini: no status command
-	h.Update(runeKey('l'))
+	h.Update(runeKey('l')) // claude signed in, gemini has no status command
+	if strings.Contains(onboardingScreen(h), "l sign in") {
+		t.Fatalf("footer offers a sign-in with nothing to sign in to:\n%s", onboardingScreen(h))
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if len(e.logins) != 0 {
@@ -749,7 +866,7 @@ func TestShowAroundKeyHasNoMainScreenConflict(t *testing.T) {
 func TestShowAroundInHelp(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(200, 400)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; the row is in the full list
 	view := stripAnsi(overlay.View())
 	key := defaultHotkeyBindings[hotkeyShowAround]
 	for _, line := range strings.Split(view, "\n") {
@@ -767,11 +884,12 @@ func TestOnboarding_Goldens(t *testing.T) {
 	for _, sz := range [][2]int{{80, 24}, {120, 40}, {200, 50}} {
 		w, hgt := sz[0], sz[1]
 		o := NewOnboardingOverlay()
-		o.show(onboardingPageWelcome, true, "/work/billing-api", keys)
+		o.show(onboardingPageCheck, true, "/work/billing-api", keys)
+		o.atStart = true
 		o.SetSize(w, hgt)
 		o.agent("claude").Auth = authSignedIn
 		o.agent("codex").Auth = authSignedOut
-		assertOnboardingGolden(t, fmt.Sprintf("welcome_%dx%d", w, hgt), o.View())
+		assertOnboardingGolden(t, fmt.Sprintf("check_%dx%d", w, hgt), o.View())
 		o.page = onboardingPageTour
 		assertOnboardingGolden(t, fmt.Sprintf("tour_%dx%d", w, hgt), o.View())
 	}

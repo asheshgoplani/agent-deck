@@ -1,6 +1,9 @@
                                                                                                     
                                                                                                     
                                                                                                     
+                                                                                                    
+                                                                                                    
+                                                                                                    
        ╭────────────────────────────────────────────────────────────────────────────────────╮       
        │                                                                                    │       
        │                                                                                    │       
@@ -8,11 +11,11 @@
        │                                                                                    │       
        │      in group: agentbox                                                            │       
        │                                                                                    │       
-       │      Name:                                                                         │       
-       │      > demo                                                                        │       
+       │      Name:  > demo                                                                 │       
        │                                                                                    │       
-       │      Command:                                                                      │       
-       │        shell     claude     codex     gemini     hermes     opencode               │       
+       │      Agent:   shell     claude     codex     gemini     hermes     opencode        │       
+       │                                                                                    │       
+       │      Path:  > .                                                                    │       
        │                                                                                    │       
        │    ▶ Model ID:                                                                     │       
        │      > tool default (↓ to browse)                                                  │       
@@ -20,14 +23,8 @@
        │    │ ▶ ✎ Type custom model ID…                │                                    │       
        │    │   claude-sonnet-5                        │                                    │       
        │    │   claude-opus-5                          │                                    │       
-       │    │  ↑/↓ navigate │ Space select │ Esc back  │                                    │       
+       │    │  ↑/↓ navigate │ Space select │ Esc back  │multi-repo                          │       
        │    ╰──────────────────────────────────────────╯                                    │       
-       │                                                                                    │       
-       │      [ ] Create in worktree                                                        │       
-       │      [ ] Run in Docker sandbox                                                     │       
-       │                                                                                    │       
-       │      [ ] Multi-repo mode                                                           │       
-       │                                                                                    │       
        │    ─ Claude Options ─                                                              │       
        │      Session: (•) New  ( ) Continue  ( ) Resume                                    │       
        │      [ ] Skip permissions                                                          │       
@@ -44,6 +41,9 @@
        │                                                                                    │       
        │                                                                                    │       
        ╰────────────────────────────────────────────────────────────────────────────────────╯       
+                                                                                                    
+                                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     

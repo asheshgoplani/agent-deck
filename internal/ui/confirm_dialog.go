@@ -512,14 +512,18 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	c.focusedButton = 1
 }
 
-// ShowInstallHooks shows confirmation for installing Claude Code hooks
-func (c *ConfirmDialog) ShowInstallHooks() {
+// ShowInstallHooks shows confirmation for installing Claude Code hooks;
+// install preselects Install instead of Skip.
+func (c *ConfirmDialog) ShowInstallHooks(install bool) {
 	c.visible = true
 	c.confirmType = ConfirmInstallHooks
 	c.targetID = ""
 	c.targetName = ""
 	c.buttonCount = 2
 	c.focusedButton = 1
+	if install {
+		c.focusedButton = 0
+	}
 }
 
 // ShowInstallHermesHooks shows the Hermes-specific hook consent boundary.
@@ -902,15 +906,17 @@ func (c *ConfirmDialog) View() string {
 			hintStyle.Render("Enter / Esc / o dismiss"))
 
 	case ConfirmInstallHooks:
+		// Plain sentences that wrap once at the box width; no hard breaks
+		// (ASK-211 round 2: words were left alone on their own lines).
 		title = "Claude Code Hooks"
-		warning = "Agent-deck can install Claude Code lifecycle hooks\nfor real-time status detection (instant green/yellow/gray)."
-		details = "This writes to your Claude settings.json (preserves existing settings).\nNew/restarted sessions will use hooks; existing sessions continue unchanged.\nYou can disable later with: hooks_enabled = false in config.toml"
+		warning = "Show me when Claude is busy or needs me (adds a small hook to Claude's settings)."
+		details = "Turn it off later with hooks_enabled = false in config.toml."
 		borderColor = ColorAccent
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Install", ColorGreen, c.focusedButton == 0), "  ",
 			renderButton("Skip", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render(glueHintGroups("y install · n skip · ←/→ navigate · Enter select · Esc")))
+			hintStyle.Render(glueHintGroups("y install · n skip · Esc later")))
 
 	case ConfirmInstallHermesHooks:
 		title = "Hermes Agent Hooks"

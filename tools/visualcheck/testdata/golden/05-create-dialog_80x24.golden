@@ -5,17 +5,18 @@
     │                                                                      │
     │      in group: alpha                                                 │
     │                                                                      │
-    │    ▶ Name:                                                           │
-    │      > opencode-idle-2                                               │
+    │    ▶ Name:  > opencode-idle-2                                        │
     │                                                                      │
-    │      Command:                                                        │
-    │        shell     claude     gemini     opencode     opencode2        │
-    │        codex     pi     copilot     crush     muse                   │
-    │        cursor agent     hermes     deepseek     omp                  │
+    │      Agent:   claude     shell     gemini     opencode               │
+    │               opencode2     codex     pi     copilot     crush       │
+    │               muse     cursor agent     hermes     deepseek          │
+    │               omp                                                    │
+    │               ←→ change   grey = not installed                       │
     │                                                                      │
-    │        Custom:                                                       │
-    │        > custom command                                              │
+    │      Path:  > ~/project/work/opencode-idle                           │
     │                                                                      │
+    │      Model ID:                                                       │
+    │      > tool default (↓ to browse)                                    │
     │      ↓ more fields                                                   │
     │    Tab next │ ↑↓ navigate │ Enter create │ Esc cancel                │
     │                                                                      │

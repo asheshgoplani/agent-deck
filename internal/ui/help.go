@@ -91,6 +91,10 @@ type HelpOverlay struct {
 	// Runtime shortcuts follow the layout selected at startup. A saved
 	// opposite preference only takes effect after restart.
 	embeddedLayout bool
+
+	// allKeys selects the full key list. '?' opens on the short "5 keys to
+	// start" view (onboarding, ASK-211); Tab switches between the two.
+	allKeys bool
 }
 
 // SetHasAgents records whether anything has been adopted.
@@ -111,10 +115,22 @@ func NewHelpOverlay() *HelpOverlay {
 	return &HelpOverlay{hotkeys: resolveHotkeys(nil)}
 }
 
-// Show makes the help overlay visible
+// Show makes the help overlay visible on the short "5 keys to start" view.
 func (h *HelpOverlay) Show() {
 	h.visible = true
 	h.scrollOffset = 0
+	h.allKeys = false
+}
+
+// ShowAll makes the help overlay visible on the full key list.
+func (h *HelpOverlay) ShowAll() {
+	h.Show()
+	h.allKeys = true
+}
+
+// ShowingAllKeys reports whether the full key list is on screen.
+func (h *HelpOverlay) ShowingAllKeys() bool {
+	return h.allKeys
 }
 
 // Hide hides the help overlay
@@ -172,6 +188,17 @@ func (h *HelpOverlay) Update(msg tea.Msg) (*HelpOverlay, tea.Cmd) {
 	}
 
 	if key, ok := msg.(tea.KeyMsg); ok {
+		// Tab switches between "5 keys to start" and all keys.
+		if key.String() == "tab" {
+			h.allKeys = !h.allKeys
+			h.scrollOffset = 0
+			return h, nil
+		}
+		// The short view has nothing to scroll: any other key closes it.
+		if !h.allKeys {
+			h.Hide()
+			return h, nil
+		}
 		switch key.String() {
 		case "j", "down":
 			h.scrollOffset++
@@ -215,6 +242,9 @@ func (h *HelpOverlay) Update(msg tea.Msg) (*HelpOverlay, tea.Cmd) {
 func (h *HelpOverlay) View() string {
 	if !h.visible {
 		return ""
+	}
+	if !h.allKeys {
+		return h.viewShort()
 	}
 
 	// Define help sections
@@ -328,6 +358,7 @@ func (h *HelpOverlay) View() string {
 				{"Enter", quickStartEnter},
 				{restartKey, "Restart selected session"},
 				{detachKey, "Detach from session"},
+				{h.key(hotkeyNewSession, "n"), "New session"},
 				{helpKey, "Open this help"},
 				{showAroundKey, "Show me around: what you can do"},
 			},
@@ -337,7 +368,7 @@ func (h *HelpOverlay) View() string {
 			items: navigationItems,
 		},
 		{
-			title: "GROUP NAVIGATION (v1.7.60)",
+			title: "GROUP NAVIGATION",
 			items: [][2]string{
 				{"Alt+j / Alt+k", "Next / prev session in group"},
 				{"Alt+1 - Alt+9", "Jump to Nth session in group"},
@@ -623,15 +654,59 @@ func (h *HelpOverlay) View() string {
 	// Footer with appropriate hint
 	content.WriteString("\n\n")
 	if needsScroll {
-		content.WriteString(footerStyle.Render("j/k scroll • any other key to close"))
+		content.WriteString(footerStyle.Render("j/k scroll • Tab 5 keys • any other key to close"))
 	} else {
-		content.WriteString(footerStyle.Render("Press any key to close"))
+		content.WriteString(footerStyle.Render("Tab 5 keys • any other key to close"))
 	}
 
 	// Wrap in dialog box
-	box := DialogBoxStyle.
-		Width(dialogWidth).
-		Render(content.String())
+	box := renderSurfaceBox(DialogBoxStyle.Width(dialogWidth), content.String())
 
+	return centerInScreen(box, h.width, h.height)
+}
+
+// shortHelpKeys are the rows of the "5 keys to start" view (onboarding,
+// ASK-211; words from Sharjeel's prototype). Keys follow the user's hotkey
+// overrides; a key with no binding drops its row.
+func (h *HelpOverlay) shortHelpKeys() [][2]string {
+	enter := "Open the selected session"
+	if h.embeddedLayout {
+		enter = "Focus the selected session"
+	}
+	detach := DetachByteLabel(DetachByteFromBinding(h.key(hotkeyDetach, "ctrl+q")))
+	rows := [][2]string{
+		{"Enter", enter},
+		{detach, "Come back to this list"},
+		{h.key(hotkeyNewSession, "n"), "New session"},
+		{"↑ ↓", "Move between sessions"},
+		{h.key(hotkeyHelp, "?"), "This help"},
+	}
+	out := rows[:0]
+	for _, r := range rows {
+		if strings.TrimSpace(r[0]) != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// viewShort renders "5 keys to start": the keys a new user needs, with Tab
+// to the full list.
+func (h *HelpOverlay) viewShort() string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
+	keyStyle := lipgloss.NewStyle().Foreground(ColorPurple).Width(9)
+	descStyle := lipgloss.NewStyle().Foreground(ColorText)
+	noteStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+	tabStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+
+	lines := []string{titleStyle.Render("5 KEYS TO START"), ""}
+	for _, r := range h.shortHelpKeys() {
+		lines = append(lines, " "+keyStyle.Render(r[0])+" "+descStyle.Render(r[1]))
+	}
+	lines = append(lines, "", noteStyle.Render("That is all you need today."), "",
+		tabStyle.Render("Tab all keys")+dimStyle.Render(" │ Esc close"))
+
+	box := renderSurfaceBox(DialogBoxStyle.Width(fitDialogWidth(56, 35, h.width)), strings.Join(lines, "\n"))
 	return centerInScreen(box, h.width, h.height)
 }

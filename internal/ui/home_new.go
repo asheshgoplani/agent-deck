@@ -459,6 +459,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		if db := statedb.GetGlobal(); db != nil {
 			prompted, _ = db.GetMeta("hooks_prompted")
 		}
+		// The hooks live in Claude's own settings, shared by every
+		// profile: another profile's answer counts (ASK-211 review).
+		prompted = claudeHooksPrompted(prompted)
 		decision := claudeHooksStartupDecision(
 			session.CheckClaudeHooksPresent(configDir),
 			session.CheckClaudeHooksInstalled(configDir),

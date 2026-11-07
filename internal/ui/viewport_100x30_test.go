@@ -175,8 +175,9 @@ func TestNewDialogWideLayoutRetainsAllFields(t *testing.T) {
 	d.SetDefaultTool("codex")
 	d.SetSize(160, 48)
 	d.Show()
+	d.toggleMoreOptions() // ASK-211: worktree/Docker/multi-repo fold away
 	plain := stripAnsi(d.View())
-	for _, field := range []string{"New Session", "Name:", "Command:", "Model ID:", "Path:", "Create in worktree", "Run in Docker sandbox", "Multi-repo mode", "create"} {
+	for _, field := range []string{"New Session", "Name:", "Agent:", "Model ID:", "Path:", "Create in worktree", "Run in Docker sandbox", "Multi-repo mode", "create"} {
 		if !strings.Contains(plain, field) {
 			t.Fatalf("160x48 layout lost %q:\n%s", field, plain)
 		}

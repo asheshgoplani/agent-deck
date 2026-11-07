@@ -428,7 +428,7 @@ func TestWhatsNewDialogKeyHasNoMainScreenConflict(t *testing.T) {
 
 	overlay := NewHelpOverlay()
 	overlay.SetSize(200, 400)
-	overlay.Show()
+	overlay.ShowAll() // ? opens on the short 5-keys view; the row is in the full list
 	found := false
 	for _, line := range strings.Split(ansi.Strip(overlay.View()), "\n") {
 		if strings.Contains(line, key) && strings.Contains(line, "What's new") {

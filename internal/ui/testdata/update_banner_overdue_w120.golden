@@ -1,24 +1,24 @@
  ⟨ ○ │ ○ │ ○ ⟩  Agent Deck [_test]  no sessions                                                                  v0.0.0 
   All    ● 0   ◐ 0   ○ 0   !@#& filter • 0 all • % open • ^ archived • t view • * time                                  
  ⚠ v1.16.1 installed 3h ago, restart overdue: close the open dialog first (ctrl+t to restart now)                       
-SESSIONS                                   │ PREVIEW                                                                    
-────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
-╭──────────────────────────────────╮       │                                                                            
-│                                  │       │                     ✦                                                      
-│                ⬡                 │       │                Ready to Go                                                 
-│         No Sessions Yet          │       │          Your workspace is set up                                          
-│  Get started by creating you...  │       │   • Press n to create your first session                                   
-│  • Press n to create a new s...  │       │     • Press i to import tmux sessions                                      
-│  • Press i to import existin...  │       │                                                                            
-│                                  │       │                                                                            
-│                                  │       │                                                                            
-│                                  │       │                                                                            
-│                                  │       │                                                                            
-│                                  │       │                                                                            
-│                                  │       │                                                                            
-│                                  │       │                                                                            
-│                                  │       │                                                                            
-│                                  │       │                                                                            
-╰──────────────────────────────────╯       │                                                                            
+                      ╭──────────────────────────────────────────────────────────────────────────╮                      
+                      │                                                                          │                      
+                      │  Welcome to Agent Deck                                                   │                      
+                      │                                                                          │                      
+                      │  Run many AI coding agents at once, each in its own session. Switch      │                      
+                      │  between them with one key.                                              │                      
+                      │                                                                          │                      
+                      │  Start here                                                              │                      
+                      │  ▶ n      New session with a Plain shell in /work/my-app                 │                      
+                      │    i      Import your tmux sessions (none found)                         │                      
+                      │    ?      Read the 5 keys                                                │                      
+                      │                                                                          │                      
+                      │  No agent found yet. Install Claude Code:                                │                      
+                      │    curl -fsSL https://claude.ai/install.sh | bash                        │                      
+                      │                                                                          │                      
+                      │  ↑↓ pick · Enter do it · q quit                                          │                      
+                      │                                                                          │                      
+                      ╰──────────────────────────────────────────────────────────────────────────╯                      
+                                                                                                                        
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Jump:  a-z  Type hint  esc  Cancel   ↑↓ Nav │ +/- Move │ / Search │ G Global │ S Settings │ ? Help │ Z Report │ q Quit  

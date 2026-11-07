@@ -1,24 +1,24 @@
  ⟨ ○ │ ○ │ ○ ⟩  Agent Deck [_test]  no sessions      v0.0.0 
   All    ● 0   ◐ 0   ○ 0   !@#& filter • 0 all • % open • … 
  ⚠ v1.16.1 installed 3h ago, restart overdue: close the open
-SESSIONS                                                    
-────────────────────────────────────────────────────────────
-╭───────────────────────────────────╮                       
-│                 ⬡                 │                       
-│          No Sessions Yet          │                       
-│ • Press n to create a new session │                       
-────────────────────────────────────────────────────────────
-PREVIEW                                                     
-────────────────────────────────────────────────────────────
-                   ✦                                        
-              Ready to Go                                   
- • Press n to create your first session                     
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
+   ╭────────────────────────────────────────────────────╮   
+   │                                                    │   
+   │  Welcome to Agent Deck                             │   
+   │                                                    │   
+   │  Run many AI coding agents at once, each in its    │   
+   │  own session. Switch between them with one key.    │   
+   │                                                    │   
+   │  Start here                                        │   
+   │  ▶ n      New session with a Plain shell in …-app  │   
+   │    i      Import your tmux sessions (none found)   │   
+   │    ?      Read the 5 keys                          │   
+   │                                                    │   
+   │  No agent found yet. Install Claude Code:          │   
+   │    curl -fsSL https://claude.ai/install.sh | bash  │   
+   │                                                    │   
+   │  ↑↓ pick · Enter do it · q quit                    │   
+   │                                                    │   
+   ╰────────────────────────────────────────────────────╯   
                                                             
 ────────────────────────────────────────────────────────────
 a-z esc │                                        ↑↓ / S ? q 
