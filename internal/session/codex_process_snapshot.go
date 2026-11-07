@@ -9,10 +9,25 @@ import (
 	"time"
 )
 
-// psSnapshotTimeout bounds the pass's one whole-table ps. Every worker of the
-// pass waits on it, so a hung ps must not hold the whole sweep; on timeout
-// the pass falls back per row as on any other ps failure. A var for tests.
+// psSnapshotTimeout bounds a whole-table ps: the pass's shared one, and the
+// fresh one a probe without a pass reads. Every worker of the pass waits on
+// the shared one, and the send path waits on the fresh one, so a hung ps must
+// not hold either; on timeout the caller falls back to pgrep as on any other
+// ps failure. A var for tests.
 var psSnapshotTimeout = 10 * time.Second
+
+// pgrepFallbackTimeout bounds the whole pgrep fallback walk of one pane-tree
+// probe (every pane, every pgrep), so a hung pgrep cannot block the caller
+// either. A var for tests.
+var pgrepFallbackTimeout = 10 * time.Second
+
+// boundedProcessOutput runs name with args under ctx's deadline. WaitDelay keeps a
+// stray child holding stdout from outliving the bound.
+func boundedProcessOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = time.Second
+	return cmd.Output()
+}
 
 // processSnapshot is one read of the whole process table, shared by every
 // row of a status pass. Without it, Codex discovery ran `ps -eo pid=,ppid=`
@@ -39,9 +54,7 @@ func (p *StatusUpdatePass) processes() *processSnapshot {
 		// -ww: whole argv whatever the output width, as `ps -p <pid> -o args=` reads it.
 		ctx, cancel := context.WithTimeout(context.Background(), psSnapshotTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "ps", "-ww", "-eo", "pid=,ppid=,args=")
-		cmd.WaitDelay = time.Second // a stray child holding stdout must not outlive the bound
-		out, err := cmd.Output()
+		out, err := boundedProcessOutput(ctx, "ps", "-ww", "-eo", "pid=,ppid=,args=")
 		if err != nil {
 			p.procs.err = err
 			return
@@ -59,7 +72,9 @@ func (p *StatusUpdatePass) processes() *processSnapshot {
 // the snapshot is missing or incomplete.
 func (p *StatusUpdatePass) processTree(rootPIDs []int) ([]int, error) {
 	if p == nil {
-		procTable, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
+		ctx, cancel := context.WithTimeout(context.Background(), psSnapshotTimeout)
+		defer cancel()
+		procTable, err := boundedProcessOutput(ctx, "ps", "-eo", "pid=,ppid=")
 		if err != nil {
 			return nil, err
 		}
