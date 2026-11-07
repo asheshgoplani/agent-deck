@@ -486,8 +486,12 @@ func (i *Instance) collectTmuxPaneProcessTreePIDs(pass *StatusUpdatePass) ([]int
 		pgrepErr error
 	)
 	seen := make(map[int]bool)
+	// One budget for the whole fallback: a hung pgrep must not block the
+	// caller, and once it expires every remaining pgrep fails at once.
+	ctx, cancel := context.WithTimeout(context.Background(), pgrepFallbackTimeout)
+	defer cancel()
 	for _, panePID := range panePIDs {
-		pids, err := collectProcessTreePIDsViaPgrep(panePID)
+		pids, err := collectProcessTreePIDsViaPgrep(ctx, panePID)
 		pgrepErr = errors.Join(pgrepErr, err)
 		for _, pid := range pids {
 			if !seen[pid] {
@@ -638,7 +642,7 @@ func parsePSCommandNames(procTable []byte) map[int]string {
 	return commByPID
 }
 
-func collectProcessTreePIDsViaPgrep(rootPID int) ([]int, error) {
+func collectProcessTreePIDsViaPgrep(ctx context.Context, rootPID int) ([]int, error) {
 	var (
 		allPIDs  []int
 		probeErr error
@@ -652,8 +656,12 @@ func collectProcessTreePIDsViaPgrep(rootPID int) ([]int, error) {
 
 		// #nosec G204 -- "pgrep" is a fixed binary name and the only argument is
 		// strconv.Itoa(int), never reachable from external input.
-		childrenRaw, err := exec.Command("pgrep", "-P", strconv.Itoa(parent)).Output()
+		childrenRaw, err := boundedProcessOutput(ctx, "pgrep", "-P", strconv.Itoa(parent))
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				probeErr = errors.Join(probeErr, fmt.Errorf("codex process probe: pgrep children of %d: %w", parent, ctxErr))
+				continue
+			}
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 				continue // pgrep uses exit 1 when the process has no children.

@@ -3881,7 +3881,7 @@ func TestCollectProcessTreePIDsViaPgrepReportsFailure(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 
-	pids, err := collectProcessTreePIDsViaPgrep(100)
+	pids, err := collectProcessTreePIDsViaPgrep(context.Background(), 100)
 	if err == nil {
 		t.Fatal("pgrep execution failure must make process-tree discovery incomplete")
 	}
