@@ -142,6 +142,10 @@ The required headings, disclosure, intent, checklist and marker rules are in
 - **Merge** is always by the human maintainer, after clean reviews and green CI. A green
   gate is necessary, never sufficient. A declined diff with a real, well-evidenced problem
   may be reimplemented with credit to you.
+- **Landing** (maintainer, when the CHANGELOG entry is written): cite the issue number
+  (#N) in the version's `### Fixes` (or `### Fixed`) bullet, e.g. `- Fork hung (#123, #456)`;
+  that is how a reporter learns it is fixed. `agent-deck whats-new` and `feedback mine` read
+  that section to show "Your report #N: fixed in vX".
 
 ## Never
 

@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -339,6 +341,44 @@ func TestPR5_IdentityPromptExplainsEnvelope(t *testing.T) {
 	if strings.Contains(got, "the sender is notified") ||
 		!strings.Contains(got, "this session's turns are not reported, so reply with `agent-deck session send <id> \"answer\"`") {
 		t.Fatalf("no-notify identity prompt must ask for an explicit reply:\n%s", got)
+	}
+	// Its completion sentinel is recorded, not delivered.
+	if strings.Contains(got, "Your parent then receives one urgent record") ||
+		!strings.Contains(got, "the completion is still recorded and shows in `agent-deck session children`") {
+		t.Fatalf("no-notify identity prompt must say the completion is recorded, not delivered:\n%s", got)
+	}
+	// Its questions and progress are not delivered either.
+	if strings.Contains(got, "that wakes it") || strings.Contains(got, "delivered as progress") ||
+		!strings.Contains(got, "Questions and progress do not reach your parent either. To ask it something, use `agent-deck session send <parent-id> \"...\"`") {
+		t.Fatalf("no-notify identity prompt must not promise NEED:/progress delivery:\n%s", got)
+	}
+	// The global switch mutes every session the same way.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[notifications]\ntransition_events = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	globalOff := inst.BuildIdentityPrompt()
+	if strings.Contains(globalOff, "the sender is notified") || strings.Contains(globalOff, "Your parent then receives one urgent record") ||
+		strings.Contains(globalOff, "that wakes it") || !strings.Contains(globalOff, "the completion is still recorded") {
+		t.Fatalf("transition_events = false must give the muted wording:\n%s", globalOff)
+	}
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+	loud := inst.BuildIdentityPrompt()
+	if !strings.Contains(loud, "Your parent then receives one urgent record") || !strings.Contains(loud, "start a line with NEED:") {
+		t.Fatal("notifying session keeps the delivery and NEED: sentences")
 	}
 }
 

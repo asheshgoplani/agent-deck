@@ -136,13 +136,17 @@ func pasteAgent(tool string) string {
 	return ""
 }
 
-// pasteTargetTimeout bounds the check that runs between the key and the
-// upload (one ssh round trip on the attach's master connection). With the
-// clipboard read (clipboardReadTimeout) a Ctrl+V over an image holds the
-// input for at most 3.5 s; without an image only the clipboard read runs.
+// pasteTargetTimeout bounds the composer check (one ssh round trip on the
+// attach's master connection). It runs first, on every Ctrl+V-shaped key in
+// a remote attach, before the clipboard is read (so the macOS pasteboard
+// prompt never shows outside an agent's composer): any such key waits for
+// that round trip, at most 2 s. Only over an agent's composer is the
+// clipboard read too (clipboardReadTimeout), so the input is held for at
+// most 3.5 s there.
 const pasteTargetTimeout = 2 * time.Second
 
-// clipboardReadTimeout bounds the one clipboard read per Ctrl+V.
+// clipboardReadTimeout bounds the one clipboard read per Ctrl+V over an
+// agent's composer.
 const clipboardReadTimeout = 1500 * time.Millisecond
 
 // imageUploadTimeout is the upload's own deadline: a 20 MiB image over a
@@ -227,10 +231,37 @@ func pastedPaths(paths []string, tool string) string {
 	return strings.Join(parts, " ") + " "
 }
 
+// imagePasteKeys are the ways one read of the owner's keys can be an image
+// paste (ASK-201): Ctrl+V as a control byte; as xterm modifyOtherKeys mode 2
+// (tmux 3.5 and newer ask the terminal for it, and a local tmux in between
+// re-encodes the key the same way); as CSI u, with or without the press
+// event type; and an empty bracketed paste, which a terminal sends for Cmd+V
+// over a clipboard that holds only a picture when it pastes the clipboard's
+// (empty) text (Claude Code's own macOS image paste reacts to the same).
+var imagePasteKeys = []string{
+	"\x16",
+	"\x1b[27;5;118~",
+	"\x1b[118;5u",
+	"\x1b[118;5:1u",
+	"\x1b[200~\x1b[201~",
+}
+
+// isImagePasteKey reports whether data, one whole read, is one of
+// imagePasteKeys. A key inside a longer read (typed text, a paste with
+// content) is never one.
+func isImagePasteKey(data []byte) bool {
+	for _, key := range imagePasteKeys {
+		if string(data) == key {
+			return true
+		}
+	}
+	return false
+}
+
 // take reports whether data (one read of the owner's keys) is a Ctrl+V this
 // paste handles; false leaves it to be forwarded as it is.
 func (p *remoteImagePaste) take(data []byte) bool {
-	if p == nil || len(data) != 1 || data[0] != 0x16 {
+	if p == nil || !isImagePasteKey(data) {
 		return false
 	}
 	p.mu.Lock()
@@ -239,16 +270,20 @@ func (p *remoteImagePaste) take(data []byte) bool {
 	if busy {
 		return false // one upload at a time; a Ctrl+V meanwhile reaches the program as typed
 	}
-	clip := p.readImage()
-	if len(clip.data) == 0 && !clip.tooLarge && !clip.timedOut {
-		return false
-	}
+	// The composer check comes before the clipboard read. On macOS a read
+	// that is not the user's own paste can raise the pasteboard privacy
+	// prompt, so the clipboard is read only when the key will be taken as an
+	// image paste: never for Ctrl+V in an editor, a shell or a pager.
 	ctx, cancel := context.WithTimeout(context.Background(), pasteTargetTimeout)
 	tool, pane, err := p.target(ctx)
 	cancel()
 	agent := pasteAgent(tool)
 	if err != nil || agent == "" || !tmux.AgentComposerVisible(agent, pane) {
 		return false // not an agent's composer, or it cannot be told: the key goes on as typed
+	}
+	clip := p.readImage()
+	if len(clip.data) == 0 && !clip.tooLarge && !clip.timedOut {
+		return false
 	}
 	if clip.timedOut {
 		p.alertf(pasteClipboardSlowNotice())

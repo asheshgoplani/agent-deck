@@ -1,5 +1,10 @@
 Usage: agent-deck feedback
        agent-deck feedback bug|idea [flags]   (report a problem; see 'agent-deck feedback bug --help')
+       agent-deck feedback bug --from-agent --title T --what W [--json]   (agent sessions: no prompt, gh only)
+       agent-deck feedback mine [--json]       (the reports filed from this machine and their state)
+       agent-deck feedback fixed N --fixed|--not-fixed [--comment C]   (answer "Is it fixed for you?")
+       agent-deck feedback agent-consent [--off]   (let agent sessions post with --from-agent; asks y/N)
+       agent-deck whats-new [--json]           (what changed since you last looked; your fixed reports first)
 
 Rate agent-deck and optionally leave a comment.
 

@@ -467,7 +467,7 @@ func (h *Home) hasModalVisible() bool {
 		h.editSessionDialog.IsVisible() ||
 		(h.telemetryDialog != nil && h.telemetryDialog.IsVisible()) ||
 		(h.feedbackDialog != nil && h.feedbackDialog.IsVisible()) ||
-		h.reportDialog.IsVisible() ||
+		h.reportDialog.IsVisible() || h.whatsNewDialog.IsVisible() ||
 		h.zoxidePicker.IsVisible()
 }
 
@@ -652,6 +652,7 @@ func (h *Home) getListContentStartY() int {
 	if h.maintenanceMsg != "" {
 		startY++ // Maintenance banner
 	}
+	startY += h.sandboxStatusHeight()
 	// Panel title: 2 lines (title + underline)
 	startY += 2
 	return startY

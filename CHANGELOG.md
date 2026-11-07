@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Features
+
+- `recall timeline --json [--tail N] --sessions <id1>,<id2>,...` reads the first screens of up to 50 sessions in one call, also through `remote <name> recall timeline`. It prints one `agent-deck.recall.timeline-batch/v1` object with an entry per id in input order: the same timeline the single-id call prints, or that id's error and code. One id failing never fails the call. Sessions and the recall index are opened once per call and transcripts are tailed four at a time, so a 278-session box is about a dozen calls instead of 278. Only `--tail` combines with `--sessions`. `agent-deck version --json` prints `{"version", "features"}`, and `features` lists `recall_timeline_batch` so a client can choose the batch without trial and error.
+
 ## [1.16.36] - 2026-11-02
 
 ### Highlights

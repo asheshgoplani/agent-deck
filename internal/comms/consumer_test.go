@@ -565,6 +565,32 @@ func TestAWatermarkPastTheEndResumesAtTheEnd(t *testing.T) {
 	}
 }
 
+// The cursor the delivery pass judged resumes with the rest: a restored log
+// reuses the cursors past the resume point, and a judged cursor left above
+// them would let the delivery pass skip the new records.
+func TestARestoredLogLowersTheJudgedCursorToTheResumePoint(t *testing.T) {
+	l, r, dir := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "x"})
+	if err := writeConsumer(dir, ConsumerFile{ConsumerState: ConsumerState{Consumer: "X", Store: l.Store().ID, Epoch: l.Store().Epoch, Generation: 1, Watermark: 50},
+		Through: 50, Judged: 50, Updated: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	var gap *GapNote
+	if _, err := r.Do("X", func(p Pass) ([]events.Cursor, error) { gap = p.Gap; return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "restored" {
+		t.Fatalf("restored: %+v", gap)
+	}
+	f, found, err := ReadConsumer(dir, "X")
+	if err != nil || !found {
+		t.Fatalf("consumer file: found %v, %v", found, err)
+	}
+	if f.Judged > gap.Resumed {
+		t.Errorf("judged %d stayed above the resume point %d", f.Judged, gap.Resumed)
+	}
+}
+
 // Verifier round 4 (#5): profile names agent-deck itself accepts keep a
 // ledger; listing debris does not.
 func TestLedgerDirAcceptsRealProfileNamesOnly(t *testing.T) {

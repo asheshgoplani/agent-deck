@@ -41,6 +41,7 @@ const (
 	// that install could not prove stale. It is never a dead end.
 	ConfirmArchiveDestinationSwitch
 	ConfirmKillWindow
+	ConfirmDestroySandbox // destroy a provider sandbox and stop its sessions (TUI 'd' on its host header)
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -57,6 +58,10 @@ type ConfirmDialog struct {
 	hookEvents  []string
 
 	remoteName string // Remote name for remote session confirmations.
+
+	// sessionCount is how many sessions a ConfirmDestroySandbox stops;
+	// confirming agrees to stop at most that many.
+	sessionCount int
 
 	// switchFrom is the account the session runs under now (ConfirmSwitchAccount).
 	switchFrom string
@@ -193,6 +198,20 @@ func (c *ConfirmDialog) ShowDeleteRemoteGroup(remoteName, groupPath, groupName s
 	c.targetID = groupPath
 	c.targetName = groupName
 	c.remoteName = remoteName
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// ShowDestroySandbox asks before destroying a provider sandbox remote.
+// targetName carries its kind and targetID its sandbox id; sessions is
+// how many sessions on it will be stopped.
+func (c *ConfirmDialog) ShowDestroySandbox(remoteName, kind, sandboxID string, sessions int) {
+	c.visible = true
+	c.confirmType = ConfirmDestroySandbox
+	c.targetID = sandboxID
+	c.targetName = kind
+	c.remoteName = remoteName
+	c.sessionCount = sessions
 	c.buttonCount = 2
 	c.focusedButton = 1
 }
@@ -742,6 +761,21 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render(glueHintGroups("y delete · n cancel · ←/→ navigate · Enter select · Esc")))
+	case ConfirmDestroySandbox:
+		title = "⚠  Destroy Sandbox?"
+		warning = fmt.Sprintf("This will destroy the sandbox machine:\n\n  %s · %s · id %s", c.remoteName, c.targetName, c.targetID)
+		if c.sessionCount > 0 {
+			details = fmt.Sprintf("• %s on it will be stopped\n", pluralSessionCount(c.sessionCount))
+		} else {
+			details = "• No sessions run on it\n"
+		}
+		details += "• The machine and everything on it is deleted\n• The remote is removed from agent-deck"
+		borderColor = ColorRed
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Destroy", ColorRed, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render(glueHintGroups("y destroy · n cancel · ←/→ navigate · Enter select · Esc")))
 	case ConfirmUpdateRemote:
 		title = "Update Remote?"
 		warning = fmt.Sprintf("Update remote %s from v%s to v%s?", c.remoteName, c.targetName, c.targetID)

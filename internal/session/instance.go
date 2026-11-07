@@ -950,19 +950,44 @@ func resolveRealPath(p string) string {
 	return p
 }
 
+// reservedMultiRepoNames maps entry names agent-deck itself creates in a
+// multi-repo parent dir to the link name a repo with that basename gets
+// instead. Without this a repo such as ~/.claude became the link
+// <parent>/.claude and the generated CLAUDE.md was written through it (#3041).
+var reservedMultiRepoNames = map[string]string{
+	".claude":   "dot-claude",
+	"CLAUDE.md": "dot-CLAUDE.md",
+}
+
 // DeduplicateDirnames returns unique directory names for the given paths.
 // When multiple paths share the same basename, a numeric suffix is appended (e.g., "src-1").
+// Basenames reserved for agent-deck's own files in the parent dir (".claude")
+// are renamed first (".claude" becomes "dot-claude").
 func DeduplicateDirnames(paths []string) []string {
 	seen := make(map[string]int)
+	used := make(map[string]bool)
 	result := make([]string, len(paths))
 	for i, p := range paths {
 		dirname := filepath.Base(p)
-		if n := seen[dirname]; n > 0 {
-			result[i] = fmt.Sprintf("%s-%d", dirname, n)
-		} else {
-			result[i] = dirname
+		// Case-insensitive: on macOS ".Claude" is the same entry as ".claude".
+		for reserved, renamed := range reservedMultiRepoNames {
+			if strings.EqualFold(dirname, reserved) {
+				dirname = renamed
+				break
+			}
 		}
-		seen[dirname]++
+		n := seen[dirname]
+		candidate := dirname
+		if n > 0 {
+			candidate = fmt.Sprintf("%s-%d", dirname, n)
+		}
+		for used[candidate] {
+			n++
+			candidate = fmt.Sprintf("%s-%d", dirname, n)
+		}
+		used[candidate] = true
+		seen[dirname] = n + 1
+		result[i] = candidate
 	}
 	return result
 }
@@ -1382,6 +1407,21 @@ func (i *Instance) applyVimModeFromConfig() {
 		return
 	}
 	i.tmuxSession.VimMode = cfg.Claude.GetVimMode()
+}
+
+// preEnterDelayForTool returns the pause a tool's input composer needs between
+// the delivered message body and the submitting Enter, beyond the transport
+// default. Devin CLI's editor coalesces bytes arriving within ~100–150ms into
+// a single input burst and inserts a trailing Enter as a newline instead of
+// submitting — measured on Devin CLI 3000.10.27 under tmux 3.7b, where the
+// transport default of 100ms reliably newline'd and 150ms submitted. 300ms
+// clears the measured window with margin; every other tool returns 0 and
+// keeps the historical default.
+func preEnterDelayForTool(tool string) time.Duration {
+	if IsDevinCompatible(tool) {
+		return 300 * time.Millisecond
+	}
+	return 0
 }
 
 // NewInstanceWithGroup creates a new session instance with explicit group

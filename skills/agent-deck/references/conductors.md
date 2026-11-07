@@ -77,9 +77,9 @@ Four adapter types are supported:
 | Type | Required flag | Typical use |
 |------|---------------|-------------|
 | `webhook` | `--port` | Generic HTTP listener |
-| `github` | `--secret` | GitHub repo webhooks with HMAC verification |
-| `ntfy` | `--topic` | ntfy.sh push notifications |
-| `slack` | `--topic` | Slack (via Cloudflare Worker bridge) |
+| `github` | secret from `$GITHUB_WEBHOOK_SECRET` or `--secret-file <chmod-600 file>` (an inline `--secret` is refused) | GitHub repo webhooks with HMAC verification |
+| `ntfy` | `--topic` or `--random-topic` | ntfy.sh push notifications |
+| `slack` | `--topic` or `--random-topic` | Slack (via Cloudflare Worker bridge) |
 
 ```bash
 agent-deck watcher create <type> --name <name> <adapter-flags...>

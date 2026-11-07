@@ -53,7 +53,11 @@ The repo ships a working Docker provider in
    ```
 
 The first `create` builds the image, which takes about a minute. Later ones
-take a few seconds.
+take a few seconds. A new docker sandbox comes up ready: Claude Code and git
+are installed, the project is at `/home/dev/<project>` (a small demo project
+unless you configure one) and Claude's first-run screens are done. A Claude
+login token can be added; see the example's
+[README](../examples/providers/docker/README.md).
 
 ## Configuration
 
@@ -87,7 +91,7 @@ The table name (`docker` here) is the provider name you use on the CLI.
 ```json
 {"protocol":1,"action":"create","name":"<remote name>",
  "labels":{"agent-deck/remote":"<name>","agent-deck/profile":"<profile>",
-           "agent-deck/create-id":"<random id>"}}
+           "agent-deck/create-id":"<random id>","agent-deck/owner":"<person>"}}
 {"protocol":1,"action":"list"}
 {"protocol":1,"action":"status","id":"<sandbox id>"}
 {"protocol":1,"action":"destroy","id":"<sandbox id>"}
@@ -145,7 +149,9 @@ reject a request whose protocol it does not speak.
 
 `create` gets `create_timeout_seconds` (default 600). The other actions get
 `timeout_seconds` (default 60). If your API returns before the machine boots,
-poll inside `create` until it has an address.
+poll inside `create` until it has an address. The `destroy` that rolls back a
+failed create also gets the full `timeout_seconds` (and at least 2 minutes),
+so set it to cover a destroy that deletes several resources one by one.
 
 If `create` times out or is interrupted (Ctrl-C, quitting the TUI), the
 provider may already have made the sandbox. agent-deck then runs `list` and
@@ -219,7 +225,25 @@ asks first.
 - Without a terminal it refuses unless you pass `--yes`, and changes nothing.
 - If it cannot list the sessions, it refuses unless you pass `--force`.
 
-`agent-deck remote list` shows `sandbox (provider <name>)` for these remotes.
+`agent-deck remote list` shows `sandbox (provider <name>) · owner: <person>`
+for these remotes. `--json` adds `kind`, `provider`, `sandbox_id`, `owner` and
+`ssh_config` (the path of the sandbox's own ssh config). `remote list --owner
+<person>` (or `--owner me`) lists only that person's sandboxes.
+
+### Owners
+
+Every sandbox records who made it. The owner is `[sandbox] owner` in
+config.toml, or the login name (`$USER`) when that is not set:
+
+```toml
+[sandbox]
+owner = "alice"
+```
+
+It goes to the provider as the `agent-deck/owner` label, so the provider's
+own list or a cloud console shows whose machine it is, and it is kept on the
+remote. The TUI shows it on the sandbox's host row and preview, and the web
+fleet view on the remote's card.
 
 ## In the TUI
 
@@ -230,7 +254,20 @@ The new-session dialog has a **Where** choice:
 - **new sandbox (<provider>)** for each configured provider
 
 Picking a new sandbox makes one with that provider, registers it as a remote,
-and starts the session there.
+and starts the session there. A start prompt typed for a Claude session goes
+with it; model, effort and the other Claude options use the remote's own
+defaults.
+While it is made, a status line above the list shows the step and the
+seconds so far. If it fails, a notice says at which step, why, and whether
+anything was left behind.
+
+A sandbox shows in the list as `remotes/<name>` with `· owner: <person> ·
+sandbox (provider <name>)`; its preview says `Host: sandbox (provider <name>)
+· owner: <person>`. Press `d` on that host row to destroy it: the confirm says how many
+sessions will be stopped. Confirming lists the sessions again and, like
+`remote destroy`, changes nothing when they cannot be listed or more run than
+you agreed to stop; otherwise it stops them, destroys the sandbox and removes
+the remote.
 
 ## Security notes
 
@@ -240,7 +277,8 @@ and starts the session there.
   providers you trust.
 - No secrets in argv or logs. agent-deck puts nothing but the action in argv.
   Providers should read tokens from env or files, not argv (the ssh-vm
-  example uses a 0600 curl config file).
+  example uses a 0600 curl config file; the azure-vm example passes its
+  service principal secret to `az login` on stdin).
 - Provider output is untrusted. agent-deck validates every field before it
   writes an SSH config or runs ssh.
 - Host keys are pinned or trusted on first use, per sandbox. Each sandbox has
@@ -263,6 +301,10 @@ and starts the session there.
 - [docker](../examples/providers/docker/): a local container, works as is.
 - [ssh-vm](../examples/providers/ssh-vm/): a template for a VM controller with
   an HTTP API.
+- [azure-vm](../examples/providers/azure-vm/): a small Azure Linux VM per
+  sandbox through the `az` CLI, in one resource group, with ssh open only to
+  your IP. Every resource is tagged, and list and destroy touch only tagged
+  ones. It comes up ready: Claude Code, git and the project folder.
 
 See [examples/providers/README.md](../examples/providers/README.md).
 

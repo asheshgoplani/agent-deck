@@ -2,3 +2,5 @@
 !Dockerfile
 !sshd_config
 !entrypoint.sh
+!sandbox-setup.sh
+!demo-project

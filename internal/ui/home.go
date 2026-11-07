@@ -32,6 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/provider"
+	"github.com/asheshgoplani/agent-deck/internal/reportloop"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -291,6 +292,8 @@ type Home struct {
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
 	askDialog            *AskDialog            // ASK-117: owner answers an agent's ask secret|choice|text
 	reportDialog         *ReportDialog         // "Report a problem" form: bug/idea -> GitHub issue (internal/issuereport)
+	whatsNewDialog       *WhatsNewDialog       // "What's new": fixed reports + highlights after an update (internal/reportloop)
+	whatsNewPending      *reportloop.WhatsNew  // startup notes waiting for a free screen (maybeShowWhatsNew)
 	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
 	tel                  homeTelemetry         // Opt-in telemetry sampler and TUI lifetime (home_telemetry.go)
 	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
@@ -1057,6 +1060,14 @@ type Home struct {
 	// sandboxProvisioner replaces provider.Provision for a "new sandbox"
 	// Where pick (tests stub it); nil uses defaultSandboxProvisioner.
 	sandboxProvisioner func(ctx context.Context, opts provider.ProvisionOptions) (*provider.Provisioned, error)
+	// sandboxDestroyDeps replaces the remote and provider calls of a TUI
+	// sandbox destroy (tests); nil uses the real ones.
+	sandboxDestroyDeps *sandboxDestroyDeps
+	// sandboxOps are the sandbox creates and destroys shown in the status
+	// line above the list (home_sandbox_destroy.go). Event-loop goroutine
+	// only.
+	sandboxOps   map[uint64]*sandboxOp
+	sandboxOpSeq uint64
 	// sandboxProvisionMu guards the count of sandbox provisionings in
 	// flight; quit waits for them (waitSandboxProvisions) so a cancelled
 	// create still finishes its rollback (#2918).
@@ -3699,6 +3710,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sandboxProvisionedMsg:
 		return h, h.handleSandboxProvisioned(msg)
 
+	case sandboxDestroyedMsg:
+		return h, h.handleSandboxDestroyed(msg)
+
 	case remoteCreateDirNeededMsg:
 		// The server refused the path; ask before retrying with --create-dir
 		// so a typo never silently creates a directory on the remote.
@@ -3945,6 +3959,28 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reportCopiedMsg:
 		if h.reportDialog != nil {
 			h.reportDialog.OnCopied(msg)
+		}
+		return h, nil
+
+	case whatsNewLoadedMsg:
+		h.onWhatsNewLoaded(msg)
+		return h, nil
+
+	case whatsNewPreparedMsg:
+		if h.whatsNewDialog != nil {
+			h.whatsNewDialog.OnPrepared(msg)
+		}
+		return h, nil
+
+	case whatsNewPostedMsg:
+		if h.whatsNewDialog != nil {
+			h.whatsNewDialog.OnPosted(msg)
+		}
+		return h, nil
+
+	case whatsNewSeenMsg:
+		if msg.err != nil {
+			uiLog.Warn("whats_new_mark_seen_failed", slog.String("error", msg.err.Error()))
 		}
 		return h, nil
 
@@ -4658,6 +4694,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		h.expireDividerHover(time.Now())
+		h.maybeShowWhatsNew()
 		h.telemetrySample()
 
 		// Honor a pending `agent-deck session focus <id>` request from the CLI.
@@ -5158,6 +5195,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.reportDialog = d
 			return h, cmd
 		}
+		if h.whatsNewDialog.IsVisible() {
+			d, cmd := h.whatsNewDialog.Update(msg)
+			h.whatsNewDialog = d
+			if !d.IsVisible() {
+				// Closed: startup notes still waiting are dropped too.
+				h.whatsNewPending = nil
+			}
+			return h, cmd
+		}
 		if h.feedbackDialog.IsVisible() {
 			d, cmd := h.feedbackDialog.Update(msg)
 			h.feedbackDialog = d
@@ -5650,6 +5696,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			case item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil:
 				if req, ok := buildRemoteAttachRequest(item.RemoteName, item.RemoteSession.ID, openAs); ok {
+					// The window runs this machine's `agent-deck remote
+					// attach`, not a raw ssh line, so Ctrl+V image paste
+					// works there as after Enter (ASK-201).
+					if exe, err := os.Executable(); err == nil {
+						req.Remote.LocalCLI = exe
+						req.Remote.LocalProfile = h.profile
+						req.Remote.RemoteName = item.RemoteName
+					}
 					if err := h.openInNewWindow(req, true); err != nil {
 						h.setError(fmt.Errorf("open remote in new window: %w", err))
 					}
@@ -6341,6 +6395,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else if item.Type == session.ItemTypeRemoteGroup && item.Level == 0 {
+				// The host header of a provider sandbox: offer to destroy the
+				// sandbox (stopping its sessions, after a confirm that says how
+				// many). A plain remote's header is a local UI bucket with
+				// nothing to delete.
+				h.openDestroySandboxConfirm(item.RemoteName)
 			} else if item.Type == session.ItemTypeRemoteGroup && item.Level > 0 {
 				// One of the remote's own groups: delete it there, the way d on
 				// a local group header does here. The Level-0 host header is a
@@ -6893,6 +6953,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// "Show me around" (ASK-131): what you can do, then Tab to the
 		// agents and sign-in page. Never the first-run variant.
 		h.openOnboarding(onboardingPageTour, false)
+		return h, nil
+
+	case defaultHotkeyBindings[hotkeyWhatsNew]:
+		// "What's new" on demand: this release's notes and any of your
+		// reports it fixed, with "Is it fixed for you?" (whats_new_dialog.go).
+		if h.whatsNewDialog != nil {
+			// The on-demand dialog replaces startup notes still waiting.
+			h.whatsNewPending = nil
+			cmd := h.whatsNewDialog.Open()
+			h.whatsNewDialog.SetSize(h.width, h.height)
+			return h, cmd
+		}
 		return h, nil
 
 	case defaultHotkeyBindings[hotkeyReportProblem]:
@@ -8058,6 +8130,7 @@ func (h *Home) sessionSwitcherOverlayRegion() terminalCellRect {
 	if h.maintenanceMsg != "" {
 		maintenanceBannerHeight = 1
 	}
+	maintenanceBannerHeight += h.sandboxStatusHeight() // sandbox status lines sit with the banners
 	debugBarHeight := 0
 	if h.debugMode {
 		debugBarHeight = 1

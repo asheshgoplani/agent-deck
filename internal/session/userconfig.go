@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 
@@ -277,6 +279,10 @@ type UserConfig struct {
 	// speaking the agent-deck provider protocol that create, list, inspect and
 	// destroy sandboxes, which `remote add --provider` registers as remotes.
 	Providers map[string]ProviderConfig `toml:"providers,omitempty"`
+
+	// Sandbox holds settings for the sandboxes this machine creates with a
+	// provider ([sandbox]).
+	Sandbox SandboxSettings `toml:"sandbox,omitempty"`
 
 	// Remote holds settings for every remote attach ([remote]).
 	Remote RemoteAttachSettings `toml:"remote,omitempty"`
@@ -1153,6 +1159,13 @@ type FeedbackSettings struct {
 	// Disabled suppresses all passive feedback prompts when true.
 	// Defaults to false. Set by RecordOptOut paths; cleared on re-enable.
 	Disabled bool `toml:"disabled,omitempty"`
+
+	// AgentReports lets agent sessions file public GitHub issues and
+	// comments as this machine's gh account (`agent-deck feedback bug
+	// --from-agent`, `feedback fixed --from-agent`). Defaults to false:
+	// a person turns it on with `agent-deck feedback agent-consent`,
+	// which shows what is posted, where and as whom, and asks y/N.
+	AgentReports bool `toml:"agent_reports,omitempty"`
 }
 
 // TelemetrySettings configures opt-in usage telemetry (TELEMETRY.md).
@@ -1281,6 +1294,68 @@ type RemoteConfig struct {
 	// and mosh call for this remote passes it with -F. Empty uses the user's
 	// own ssh configuration.
 	SSHConfig string `toml:"ssh_config,omitempty"`
+
+	// Owner is the person who created this remote's sandbox, sent to the
+	// provider as the agent-deck/owner label ([sandbox] owner, else $USER).
+	// Empty for a plain SSH remote and for sandboxes made before owners.
+	Owner string `toml:"owner,omitempty"`
+}
+
+// SandboxSettings is the [sandbox] section: settings for the sandboxes
+// this machine creates with a provider.
+type SandboxSettings struct {
+	// Owner names the person who owns the sandboxes created here, e.g.
+	// "alice". It is sent to the provider as the agent-deck/owner label and
+	// shown on the sandbox's remote (remote list, TUI, web). Default: the
+	// login name ($USER). At most 64 printable characters.
+	Owner string `toml:"owner,omitempty"`
+}
+
+// Where SandboxOwnerSource found the owner, named for error messages.
+const (
+	OwnerSourceConfig = "[sandbox] owner"
+	OwnerSourceUser   = "$USER"
+	OwnerSourceLogin  = "the account's login name"
+)
+
+// SandboxOwner returns the owner for a new sandbox: [sandbox] owner, else
+// $USER, else the account's login name; "" when none is known.
+func (c *UserConfig) SandboxOwner() string {
+	owner, _ := c.SandboxOwnerSource()
+	return owner
+}
+
+// SandboxOwnerSource is SandboxOwner plus where the value came from
+// (OwnerSourceConfig, OwnerSourceUser or OwnerSourceLogin; "" with no
+// owner), so a refusal names the setting the user can actually change.
+func (c *UserConfig) SandboxOwnerSource() (owner, source string) {
+	if c != nil {
+		if owner := strings.TrimSpace(c.Sandbox.Owner); owner != "" {
+			return owner, OwnerSourceConfig
+		}
+	}
+	if owner := strings.TrimSpace(os.Getenv("USER")); owner != "" {
+		return owner, OwnerSourceUser
+	}
+	if u, err := user.Current(); err == nil {
+		if owner := strings.TrimSpace(u.Username); owner != "" {
+			return owner, OwnerSourceLogin
+		}
+	}
+	return "", ""
+}
+
+// PrintableOwner returns owner without its control and other
+// non-printable characters. An owner is free text from config.toml (a
+// hand-edited remote, [sandbox] owner) or the environment, so every view
+// that prints it to a terminal, a JSON client or the web goes through this.
+func PrintableOwner(owner string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, owner)
 }
 
 // ProviderConfig defines one sandbox provider ([providers.<name>]).
@@ -4880,6 +4955,20 @@ func IsCodexCompatible(toolName string) bool {
 	return false
 }
 
+// IsDevinCompatible returns true if the tool is "devin" or a custom tool
+// whose underlying command is "devin". Use this for capability gates where
+// custom tools wrapping Devin should inherit Devin's composer behavior
+// (e.g. its wider input-coalescing window — see preEnterDelayForTool).
+func IsDevinCompatible(toolName string) bool {
+	if toolName == "devin" {
+		return true
+	}
+	if def := GetToolDef(toolName); def != nil {
+		return strings.EqualFold(strings.TrimSpace(def.CompatibleWith), "devin") || isDevinCommand(def.Command)
+	}
+	return false
+}
+
 // isShellBinary returns true if cmd is a known interactive shell process name.
 // Used to distinguish "shell at a prompt" from "shell running a foreground command"
 // (e.g. "node" from "yarn dev", "java" from "mvn spring-boot:run").
@@ -4933,6 +5022,10 @@ func isClaudeCommand(command string) bool {
 
 func isCodexCommand(command string) bool {
 	return isCommand(command, "codex")
+}
+
+func isDevinCommand(command string) bool {
+	return isCommand(command, "devin")
 }
 
 func isCommand(command, wantBase string) bool {

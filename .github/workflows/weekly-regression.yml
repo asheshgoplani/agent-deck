@@ -74,7 +74,9 @@ concurrency:
 
 jobs:
   regression-check:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright's chromium
+    # install (--with-deps) does not support yet. Move back once it does.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout

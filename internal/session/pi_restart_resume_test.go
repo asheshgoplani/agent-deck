@@ -39,9 +39,9 @@ func (st *pidStub) piRestart(f *turnTestFixture, w *piWriter, at time.Time) {
 // resumed pi's session_start changes the poll's key (waiting|pi-run:<A> to
 // waiting|), and that flip is the one info line; nothing wakes. A second idle
 // restart with no run between writes only another session_start, which is no
-// status edge (the key stays waiting|): no line, no wake, and the sweep retires
-// the token at the boot timeout, as an unseen boot is on main. The next run rings
-// the parent as before.
+// status edge (the key stays waiting|), so its boot goes unseen: the sweep sends
+// the info line for it (#2813), as for Claude, and nothing wakes. The next run
+// rings the parent as before.
 func TestPiRestart_IdleRestartIsOneInfoLine(t *testing.T) {
 	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
 	f := newTurnTestFixture(t)
@@ -83,25 +83,62 @@ func TestPiRestart_IdleRestartIsOneInfoLine(t *testing.T) {
 		t.Fatalf("restart 2: no flip, so the token waits for the sweep")
 	}
 	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
-	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now().Add(2*time.Minute))
-	if errs := f.recordsTo(t, "error"); len(errs) != 0 {
-		t.Fatalf("restart 2: a pi child back at its prompt gets no report, got %+v", errs)
+	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now().Add(10*time.Second)) // past restartBootSettle
+	added = f.inboxRecords(t)[2:]
+	if len(added) != 1 || added[0].IsUrgent() || added[0].Text != "Restarted while idle; conversation resumed, no new turn." {
+		t.Fatalf("restart 2: the sweep sends the unseen boot's info line, got %+v", added)
+	}
+	if *f.sends != 1 {
+		t.Fatalf("restart 2: the restart wakes nobody, sends %d", *f.sends)
 	}
 	if _, left := readRestartToken(f.child.ID); left {
-		t.Fatalf("restart 2: the sweep retires the token past the boot timeout")
+		t.Fatalf("restart 2: the info line spends the token")
 	}
 
 	w.TurnStart("run-B")
 	f.piPoll()
 	w.TurnEnd("run-B").Settle("run-B", "entry-2")
 	f.piPoll()
-	f.wantRecords(t, "the first run after the restarts", 3, 2)
+	f.wantRecords(t, "the first run after the restarts", 4, 2)
 }
 
-// The sweep past the boot timeout: a resumed pi back at its prompt (its
-// session_start unseen) or already on a new run gets nothing, even while its
-// status reads running (past the 2-minute hook window the status comes from the
-// pane); one still booting (no session_start yet) or dead is reported once.
+// A session_start the old pi wrote before the restart (its last lifecycle write,
+// idle at its prompt) is not the resumed pi's boot: piBackAtPrompt bounds it by
+// the token. Until the resumed pi writes its own, the sweep inside the boot
+// timeout sends nothing and keeps the token.
+func TestPiRestart_PreTokenSessionStartIsNotTheBoot(t *testing.T) {
+	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
+	f := newTurnTestFixture(t)
+	piChild(f)
+	st := stubRestartPIDs(t)
+	usePiHookFile(t)
+	w := newPiWriter(t, f.child.ID, true)
+	w.TurnStart("run-A")
+	f.piPoll()
+	w.TurnEnd("run-A").Settle("run-A", "entry-1")
+	f.piPoll()
+	f.wantRecords(t, "the run before the restart", 1, 1)
+
+	w.Age(3 * time.Minute)
+	w.SessionStart()
+	st.piRestart(f, w, time.Now())
+	if _, ok := readRestartToken(f.child.ID); !ok {
+		t.Fatalf("a settles-capable pi child idle at its prompt gets a restart token")
+	}
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now().Add(10*time.Second)) // past restartBootSettle
+	f.wantRecords(t, "a pre-token session_start is not the boot", 1, 1)
+	if _, ok := readRestartToken(f.child.ID); !ok {
+		t.Fatalf("a pre-token session_start must not spend the token before the timeout")
+	}
+}
+
+// The sweep past the boot timeout: a resumed pi back at its prompt with its
+// session_start unseen gets the info line, never the urgent report; one back at
+// its prompt or already on a new run gets nothing when its status reads running
+// (past the 2-minute hook window the status comes from the pane); one still
+// booting (no session_start yet) or dead is reported once. The cases check the
+// report only.
 func TestPiRestart_SweepWaitsForTheSessionStart(t *testing.T) {
 	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
 	cases := []struct {

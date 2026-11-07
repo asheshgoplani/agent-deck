@@ -95,11 +95,34 @@ func (i *Instance) CanFork() bool {
 		return i.CanForkCodex()
 	}
 
-	// Claude sessions can fork if session ID is recent
+	// Claude sessions can fork if the session ID was detected recently, or if
+	// its transcript is on disk: a fork is `claude --resume <id>
+	// --fork-session`, which needs the transcript, not a fresh detection.
+	// #3032: a one-shot CLI never refreshes ClaudeDetectedAt for a session that
+	// already has an id, so the clock alone refused every session older than
+	// five minutes.
 	if i.ClaudeSessionID == "" {
 		return false
 	}
-	return time.Since(i.ClaudeDetectedAt) < 5*time.Minute
+	if time.Since(i.ClaudeDetectedAt) < 5*time.Minute {
+		return true
+	}
+	return i.claudeForkTranscriptOnDisk()
+}
+
+// claudeForkTranscriptOnDisk reports whether this session's Claude transcript
+// sits where the fork's `claude --resume` looks for it: the instance's own
+// config dir, under the project dir Claude derives from ProjectPath or
+// EffectiveWorkingDir. Only exact paths are stat'ed (no projects/* glob, no
+// global config-dir fallback): CanFork runs on TUI render and web snapshot
+// paths. Remote (--ssh) sessions have no local transcript, so the clock alone
+// still decides for them; non-Claude tools never get here with a Claude id
+// that matters.
+func (i *Instance) claudeForkTranscriptOnDisk() bool {
+	if !IsClaudeCompatible(i.Tool) || !i.TranscriptIsResolvableLocally() {
+		return false
+	}
+	return exactClaudeTranscriptPath(GetClaudeConfigDirForInstance(i), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir()) != ""
 }
 
 // CanForkPi returns true if this Pi session can be forked by Agent Deck.

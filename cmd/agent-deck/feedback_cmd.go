@@ -16,6 +16,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/issuereport"
+	"github.com/asheshgoplani/agent-deck/internal/reportloop"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -27,7 +28,9 @@ import (
 //
 // Overridable for tests.
 var ghUserLogin = func() string {
-	out, err := exec.Command("gh", "api", "user", "-q", ".login").Output()
+	cmd := exec.Command("gh", "api", "user", "-q", ".login")
+	cmd.Env = issuereport.GhEnv() // no prompts, no update notice, childenv
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -41,6 +44,23 @@ var ghUserLogin = func() string {
 func handleFeedback(args []string) {
 	// `agent-deck feedback bug|idea` files a structured GitHub issue
 	// (ASK-109); plain `agent-deck feedback` keeps the rating flow below.
+	if len(args) > 0 && (args[0] == "mine" || args[0] == "fixed" || args[0] == "agent-consent") {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		var code int
+		switch args[0] {
+		case "mine":
+			code = runFeedbackMine(ctx, args[1:], Version, os.Stdout)
+		case "fixed":
+			code = runFeedbackFixed(ctx, args[1:], Version, os.Stdin, os.Stdout)
+		default:
+			code = runFeedbackAgentConsent(ctx, args[1:], os.Stdin, os.Stdout)
+		}
+		stop()
+		if code != 0 {
+			exitCLI(code)
+		}
+		return
+	}
 	if len(args) > 0 && (args[0] == string(issuereport.KindBug) || args[0] == string(issuereport.KindIdea)) {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		code := runFeedbackReport(ctx, issuereport.Kind(args[0]), args[1:], Version, os.Stdin, os.Stdout)
@@ -188,19 +208,28 @@ func handleFeedbackWithSender(args []string, version string, sender *feedback.Se
 // login from gh; when empty, the "As:" line falls back to a generic
 // string with no @ prefix.
 func renderFeedbackDisclosure(w io.Writer, body, login string) {
-	asLine := "  As:     your GitHub account   (visible to anyone viewing the discussion)"
+	renderPublicPostDisclosure(w, publicPost{subject: "This feedback",
+		where: "https://github.com/asheshgoplani/agent-deck/discussions/600",
+		place: "discussion", page: "that discussion page"}, body, login)
+}
+
+// renderPublicPostDisclosure prints the #679 disclosure for any public
+// post: where it lands, how it is posted, which account carries it and
+// the exact body. `feedback fixed` uses it for an issue comment.
+func renderPublicPostDisclosure(w io.Writer, p publicPost, body, login string) {
+	asLine := fmt.Sprintf("  As:     your GitHub account   (visible to anyone viewing the %s)", p.place)
 	if login != "" {
-		asLine = fmt.Sprintf("  As:     @%s   (your own GitHub account — visible to anyone viewing the discussion)", login)
+		asLine = fmt.Sprintf("  As:     @%s   (your own GitHub account — visible to anyone viewing the %s)", login, p.place)
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "This feedback will be posted PUBLICLY on GitHub.")
+	fmt.Fprintf(w, "%s will be posted PUBLICLY on GitHub.\n", p.subject)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  Where:  https://github.com/asheshgoplani/agent-deck/discussions/600")
+	fmt.Fprintln(w, "  Where:  "+p.where)
 	fmt.Fprintln(w, "  How:    via the `gh` GitHub CLI (already installed and authenticated on this machine)")
 	fmt.Fprintln(w, asLine)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Anyone browsing that discussion page will see your GitHub username")
+	fmt.Fprintf(w, "Anyone browsing %s will see your GitHub username\n", p.page)
 	fmt.Fprintln(w, "next to the post. If you would rather keep this private, answer N.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Exact content that will be posted (no more, no less):")
@@ -266,6 +295,11 @@ func persistFeedbackOptOut(w io.Writer, userMessage string) {
 func printFeedbackHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck feedback")
 	fmt.Fprintln(w, "       agent-deck feedback bug|idea [flags]   (report a problem; see 'agent-deck feedback bug --help')")
+	fmt.Fprintln(w, "       agent-deck feedback bug --from-agent --title T --what W [--json]   (agent sessions: no prompt, gh only)")
+	fmt.Fprintln(w, "       agent-deck feedback mine [--json]       (the reports filed from this machine and their state)")
+	fmt.Fprintln(w, "       agent-deck feedback fixed N --fixed|--not-fixed [--comment C]   (answer \"Is it fixed for you?\")")
+	fmt.Fprintln(w, "       agent-deck feedback agent-consent [--off]   (let agent sessions post with --from-agent; asks y/N)")
+	fmt.Fprintln(w, "       agent-deck whats-new [--json]           (what changed since you last looked; your fixed reports first)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Rate agent-deck and optionally leave a comment.")
 	fmt.Fprintln(w)
@@ -322,6 +356,8 @@ type feedbackReportJSON struct {
 	Labels     []string `json:"labels,omitempty"`
 	Body       string   `json:"body,omitempty"`
 	URL        string   `json:"url,omitempty"`
+	Number     int      `json:"number,omitempty"`
+	Deduped    *bool    `json:"deduped,omitempty"`
 	URLTrimmed *bool    `json:"url_trimmed,omitempty"`
 	GhReady    *bool    `json:"gh_ready,omitempty"`
 	ErrorCode  string   `json:"error_code,omitempty"`
@@ -352,6 +388,7 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 	jsonOut := fs.Bool("json", false, "machine output; never prompts")
 	yes := fs.Bool("yes", false, "confirm sending (required with --json)")
 	noOpen := fs.Bool("no-open", false, "print the prefilled URL instead of opening a browser")
+	fromAgent := fs.Bool("from-agent", false, "an agent session files it: no prompt, gh only, de-duplicated, labelled "+agentLabel)
 	issueSrc := fs.String("issue", "", "file exactly this previewed issue: a JSON file from --dry-run --json, or - for stdin")
 	help := fs.Bool("help", false, "show help")
 	fs.BoolVar(help, "h", false, "show help")
@@ -360,7 +397,12 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 		if *jsonOut {
 			writeFeedbackJSON(w, feedbackReportJSON{ErrorCode: string(code), Message: msg, URL: url})
 		} else {
-			fmt.Fprintln(w, "Error: "+msg)
+			if code == errCodeConfirmRequired || code == errCodeConsentRequired {
+				msg = "(" + string(code) + "): " + msg
+			} else {
+				msg = ": " + msg
+			}
+			fmt.Fprintln(w, "Error"+msg)
 			if url != "" {
 				fmt.Fprintln(w, "You can still file it in your browser:")
 				fmt.Fprintln(w, url)
@@ -381,7 +423,30 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 		printFeedbackReportHelp(w, kind)
 		return 0
 	}
-	interactive := !*jsonOut && !*dryRun
+	if !*dryRun && !*fromAgent {
+		// Inside an agent session, a post is an agent's.
+		asAgent, refuse := agentPostInSession(in)
+		if refuse {
+			return fail(errCodeConsentRequired, inSessionConsentMessage, "")
+		}
+		*fromAgent = asAgent
+	}
+	if *fromAgent {
+		switch {
+		case *issueSrc != "":
+			return fail(issuereport.ErrInvalidInput, "--from-agent builds the issue from --title and --what; it cannot be combined with --issue", "")
+		case !*dryRun && !agentReportsAllowed():
+			// A person's opt-in, never --yes: the agent itself passes --yes.
+			return fail(errCodeConsentRequired, agentConsentMessage, "")
+		case os.Getenv(agentInstanceEnv) == "" && !*yes && !*dryRun:
+			return fail(issuereport.ErrInvalidInput, "--from-agent runs inside an agent-deck session ("+agentInstanceEnv+" is not set); add --yes to file anyway", "")
+		case strings.TrimSpace(*title) == "" || strings.TrimSpace(*what) == "":
+			return fail(issuereport.ErrInvalidInput, "--from-agent needs --title and --what", "")
+		}
+	}
+	// Inside an agent session a real post took the
+	// --from-agent path above (or was refused), so a prompt here has a person.
+	interactive := !*jsonOut && !*dryRun && !*fromAgent
 	var reader *bufio.Reader
 	if interactive {
 		reader = bufio.NewReader(in)
@@ -426,6 +491,10 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 		}
 		r := issuereport.Report{Kind: kind, Title: *title, WhatHappened: *what, Expected: *expected,
 			Steps: *steps, Tool: *tool, Surface: *surface}
+		if *fromAgent {
+			// A model wrote it: say so in the form's AI disclosure.
+			r.AIAuthored, r.AIModel = true, os.Getenv(agentModelEnv)
+		}
 		if interactive {
 			if err := promptMissingReportFields(ctx, w, reader, &r); err != nil {
 				return notSent()
@@ -435,10 +504,22 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 			return fail(issuereport.CodeOf(err), err.Error(), "")
 		}
 		logLines := 0
-		if kind == issuereport.KindBug {
+		if kind == issuereport.KindBug && !*fromAgent {
 			logLines = feedbackReportLogLines
 		}
-		is = issuereport.Build(r, feedbackCollectDiagnostics(version, logLines))
+		diag := feedbackCollectDiagnostics(version, logLines)
+		if *fromAgent {
+			// An agent posts with no prompt: version, OS and terminal only,
+			// never the debug.log tail.
+			diag.LogExcerpt = ""
+		}
+		is = issuereport.Build(r, diag)
+		if *fromAgent {
+			is = agentIssue(is)
+		}
+	}
+	if *fromAgent && !*dryRun {
+		return fileAgentReport(ctx, kind, is, *what, version, *jsonOut, w, fail)
 	}
 	fallbackURL, trimmed := issuereport.NewIssueURL(is)
 
@@ -524,8 +605,15 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 		}
 		return fail(code, err.Error(), url)
 	}
+	note := ""
+	number := 0
+	if res.Method == "gh" {
+		number = issueNumberFromURL(res.URL)
+		note = recordReport(reportloop.Report{Number: number, URL: res.URL, Title: is.Title, Kind: string(kind),
+			FiledVersion: strings.TrimPrefix(version, "v")})
+	}
 	if *jsonOut {
-		out := feedbackReportJSON{OK: true, Method: res.Method, URL: res.URL}
+		out := feedbackReportJSON{OK: true, Method: res.Method, URL: res.URL, Number: number}
 		if res.Method == "browser" {
 			out.URLTrimmed = &trimmed
 		}
@@ -535,6 +623,9 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 	switch {
 	case res.Method == "gh":
 		fmt.Fprintln(w, "Filed: "+res.URL)
+		if note != "" {
+			fmt.Fprintln(w, note)
+		}
 	case *noOpen:
 		fmt.Fprintln(w, "Open this URL and press Submit to file it:")
 		fmt.Fprintln(w, res.URL)
@@ -678,6 +769,17 @@ func printFeedbackReportHelp(w io.Writer, kind issuereport.Kind) {
 	fmt.Fprintln(w, "  --json           JSON output, never prompts; sending also needs --yes")
 	fmt.Fprintln(w, "  --yes            confirm sending without the y/N prompt")
 	fmt.Fprintln(w, "  --no-open        print the prefilled URL instead of opening a browser")
+	fmt.Fprintln(w, "  --from-agent     for agent sessions: needs --title and --what, never prompts, never opens")
+	fmt.Fprintln(w, "                   a browser (gh only, else gh_failed), runs inside a session ("+agentInstanceEnv+")")
+	fmt.Fprintln(w, "                   or with --yes. Needs [feedback] agent_reports, which a person turns on with")
+	fmt.Fprintln(w, "                   'agent-deck feedback agent-consent' (else consent_required; --yes does not")
+	fmt.Fprintln(w, "                   stand in). Posts the scrubbed text, version, OS and terminal (no log lines),")
+	fmt.Fprintln(w, "                   marked AI-authored (model: "+agentModelEnv+" or unsure), with the "+agentLabel)
+	fmt.Fprintln(w, "                   label; an open agent issue with exactly the same title gets a \"seen again\"")
+	fmt.Fprintln(w, "                   comment instead.")
+	fmt.Fprintln(w, "                   JSON: {ok, number, url, deduped, method}. The number is kept for 'feedback mine'.")
+	fmt.Fprintln(w, "                   Inside an agent session ("+agentInstanceEnv+" set), terminal or not,")
+	fmt.Fprintln(w, "                   any post (not --dry-run) takes this path, flag or not.")
 	fmt.Fprintln(w, "  --issue FILE|-   file exactly the issue a --dry-run --json printed (title, labels,")
 	fmt.Fprintln(w, "                   body); nothing is rebuilt. With - it is read from stdin and needs --yes.")
 	fmt.Fprintln(w, "                   It is scrubbed again and must carry the form's sections; with --yes,")

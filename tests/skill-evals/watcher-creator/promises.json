@@ -1,0 +1,746 @@
+{
+ "_doc": "What the watcher-creator skill teaches, one entry per teaching unit. anchor is a verbatim substring under heading in file (SKILL.md of cmd/agent-deck/assets/skills/watcher-creator); check.py static fails when it goes missing. checked_by names deterministic checkers (cli-drift); task evals list the promises they check in their own promises field.",
+ "promises": [
+  {
+   "id": "overview-routes",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Overview",
+   "anchor": "routes them to the appropriate conductor session",
+   "summary": "A watcher listens for events and routes them to a conductor session.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step1-five-options",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 1: Choose adapter type",
+   "anchor": "Present the five options:",
+   "summary": "Offer the five adapter types: webhook, ntfy, github, slack (Cloudflare Worker to ntfy), gmail (Pub/Sub).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step2-one-at-a-time",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 2: Gather required settings for the chosen type",
+   "anchor": "Ask for each required setting one at a time",
+   "summary": "Ask required settings one at a time.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step2-name-dir",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 2: Gather required settings for the chosen type",
+   "anchor": "This becomes the directory name under the effective watcher data dir",
+   "summary": "The watcher name is the directory name under the watcher data dir.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "data-dir-legacy",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 2: Gather required settings for the chosen type",
+   "anchor": "legacy `~/.agent-deck/watcher` remains in use when existing watcher state is present",
+   "summary": "Watcher data dir is $XDG_DATA_HOME/agent-deck/watcher, or legacy ~/.agent-deck/watcher when that state exists.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step2-conductor-name",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 2: Gather required settings for the chosen type",
+   "anchor": "the name `agent-deck conductor list` shows, not a session title",
+   "summary": "The conductor field is the conductor name from conductor list, not a session title.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step2-group",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 2: Gather required settings for the chosen type",
+   "anchor": "Which group the conductor session lives in (the `group` field in `clients.json`)",
+   "summary": "Ask for the group (clients.json group field).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step3-emit-only",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 3: Emit the exact agent-deck watcher create command",
+   "anchor": "Only emit commands — do not execute them.",
+   "summary": "Emit the create command, never execute it.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step3-create-first",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 3: Emit the exact agent-deck watcher create command",
+   "anchor": "Run `create` before anyone writes a `watcher.toml` by hand",
+   "summary": "create writes watcher.toml itself and refuses a name whose watcher.toml exists, so it runs first.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step3-no-overwrite",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 3: Emit the exact agent-deck watcher create command",
+   "anchor": "to change an existing watcher, edit its `watcher.toml` instead of re-running create",
+   "summary": "create fails for a registered name; edit watcher.toml to change a watcher.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step4-source-table",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 4: Optional settings go under [source] in that watcher.toml",
+   "anchor": "The engine reads a watcher's adapter settings only from the `[source]` table",
+   "summary": "Adapter settings live only under [source] in watcher.toml.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step4-strings",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 4: Optional settings go under [source] in that watcher.toml",
+   "anchor": "All values are TOML strings, ports too.",
+   "summary": "watcher.toml values are TOML strings, ports included.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step4-routing-not-in-toml",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 4: Optional settings go under [source] in that watcher.toml",
+   "anchor": "Routing is not read from this file",
+   "summary": "Routing comes only from clients.json, never from watcher.toml.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step4-reload",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 4: Optional settings go under [source] in that watcher.toml",
+   "anchor": "A file that does not parse stops the watcher from starting; after editing it, run `agent-deck watcher reload`",
+   "summary": "A broken watcher.toml stops the watcher; reload after editing.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step5-key-formats",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 5: Generate a clients.json entry",
+   "anchor": "The key format depends on adapter type:",
+   "summary": "clients.json key format per adapter type.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step5-wildcard",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 5: Generate a clients.json entry",
+   "anchor": "an exact key wins over a wildcard, and keys match case-insensitively",
+   "summary": "*@domain wildcard keys; exact wins; case-insensitive.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step5-entry-format",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 5: Generate a clients.json entry",
+   "anchor": "\"name\": \"Human-readable label\"",
+   "summary": "clients.json entry has conductor, group and name.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step6-start-marks",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 6: Start the watcher",
+   "anchor": "`watcher start` only marks the watcher running",
+   "summary": "start only marks it running; a TUI or web process runs the engine; reload applies now.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step6-list",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 6: Start the watcher",
+   "anchor": "`agent-deck watcher list` shows health and events per hour",
+   "summary": "watcher list shows health and events/hour.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step6-test-synthetic",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 6: Start the watcher",
+   "anchor": "from the fixed sender `test@synthetic.local`",
+   "summary": "watcher test uses the fixed sender test@synthetic.local, not the user's key.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "step6-routes",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Step 6: Start the watcher",
+   "anchor": "`agent-deck watcher routes` lists the loaded rules",
+   "summary": "watcher routes lists the loaded routing rules.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "notes-read-only",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Notes",
+   "anchor": "it does NOT execute `agent-deck watcher create` itself",
+   "summary": "The skill is read-only: it never runs create itself.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "notes-triage",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Notes",
+   "anchor": "Unknown senders are sent to triage.",
+   "summary": "Events are matched by sender against clients.json; unknown senders go to triage.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "notes-install-skill",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Notes",
+   "anchor": "agent-deck watcher install-skill watcher-creator",
+   "summary": "Install the skill into the pool with watcher install-skill.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "example-order",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Example walkthrough",
+   "anchor": "Run this first; it writes `github-myrepo/watcher.toml`",
+   "summary": "Worked example: create first, then clients.json, then start.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "example-github-url",
+   "area": "core",
+   "file": "SKILL.md",
+   "heading": "Example walkthrough",
+   "anchor": "Configure GitHub to send webhooks to `http://<your-server>:18461/github`.",
+   "summary": "GitHub posts to http://<server>:18461/github.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-path",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "accepts POST requests on `/webhook`",
+   "summary": "Webhook adapter serves POST /webhook.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-port-required",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "`watcher create webhook` requires `--port`",
+   "summary": "create webhook requires --port.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-port-default",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "the adapter falls back to `\"18460\"` only when a `watcher.toml` has no port",
+   "summary": "18460 is only the adapter's fallback.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-secret-source",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "or takes it from `$WEBHOOK_SECRET` or `--secret-file <path>` (chmod 600). Never put it on the command line.",
+   "summary": "Webhook secret: generated, $WEBHOOK_SECRET or --secret-file; never inline.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-secret-len",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "The secret must be at least 16 bytes.",
+   "summary": "Webhook secret >= 16 bytes.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-signature",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "`X-Webhook-Signature-256: sha256=<hex HMAC-SHA256 of timestamp + \"\\n\" + X-Webhook-Sender + \"\\n\" + raw body>`",
+   "summary": "Signature: HMAC-SHA256 of timestamp, sender, body joined by newlines.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-timestamp-window",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "(within 5 minutes of the watcher's clock)",
+   "summary": "X-Webhook-Timestamp within 5 minutes or 401.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-replay-409",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "each signature is accepted once and a replay gets 409",
+   "summary": "Replayed signature gets 409.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-token-loopback",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "On a loopback bind only, `X-Webhook-Token: <secret>` is accepted instead",
+   "summary": "X-Webhook-Token only on a loopback bind; 401 elsewhere.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-origin-403",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "Requests with an `Origin` header get 403.",
+   "summary": "Origin header gets 403.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-no-secret",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "`--no-secret` creates a watcher that accepts unsigned requests from local processes (not recommended)",
+   "summary": "--no-secret: unsigned local requests, not recommended.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-bind-default",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "Default is `\"127.0.0.1\"` (loopback only).",
+   "summary": "Webhook bind defaults to 127.0.0.1.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-host-check",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "On a loopback bind with no secret, requests must address it as `localhost`, `127.0.0.1` or `[::1]`",
+   "summary": "Unsigned loopback watcher refuses other Host names.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-nonloopback-secret",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "A non-loopback bind such as `\"0.0.0.0\"` only starts with a secret.",
+   "summary": "A non-loopback bind needs a secret.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-sender-header",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "Without it the sender is the connection's remote address (`ip:port`, a new port per connection)",
+   "summary": "Set X-Webhook-Sender; the fallback ip:port matches nothing reliably.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-sender-trust",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "The header is only trusted when the signature covers it",
+   "summary": "X-Webhook-Sender is trusted only when signed, token, or unsigned local.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "wh-sign-example",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "webhook",
+   "anchor": "never passing it as a command argument (other local users can read process arguments)",
+   "summary": "Sign with the secret read from watcher.toml, never as a command argument.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ntfy-stream",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "ntfy",
+   "anchor": "It auto-reconnects with exponential backoff.",
+   "summary": "ntfy adapter streams NDJSON and reconnects with backoff.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ntfy-topic",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "ntfy",
+   "anchor": "or `--random-topic` to generate a hard-to-guess one (not both)",
+   "summary": "--topic or --random-topic, not both.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ntfy-server-default",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "ntfy",
+   "anchor": "ntfy server URL (`--server`). Default is `\"https://ntfy.sh\"`.",
+   "summary": "ntfy server defaults to https://ntfy.sh.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ntfy-token",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "ntfy",
+   "anchor": "from `$NTFY_TOKEN` or `--token-file <path>` (chmod 600), never a CLI argument",
+   "summary": "ntfy token from $NTFY_TOKEN or --token-file.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ntfy-public-risk",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "ntfy",
+   "anchor": "anyone who knows a topic can read it and post fake events to it",
+   "summary": "Public ntfy.sh topics are readable/postable by anyone who knows them.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ntfy-create-warns",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "ntfy",
+   "anchor": "Create warns about a guessable topic on ntfy.sh without a token.",
+   "summary": "create warns about a guessable ntfy.sh topic without a token.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ntfy-sender",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "ntfy",
+   "anchor": "`ntfy:<topic>@<server-host>` (e.g., `ntfy:my-alerts@ntfy.sh`)",
+   "summary": "ntfy sender key ntfy:<topic>@<host>.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "ntfy-create",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "ntfy",
+   "anchor": "agent-deck watcher create ntfy --name <name> --random-topic",
+   "summary": "ntfy create command.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "gh-path",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "github",
+   "anchor": "receives GitHub webhook POST requests on `/github`",
+   "summary": "GitHub adapter serves POST /github with HMAC verification.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gh-secret-source",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "github",
+   "anchor": "It comes from `$GITHUB_WEBHOOK_SECRET` or `--secret-file <path>` (chmod 600); an inline `--secret` is refused.",
+   "summary": "GitHub secret from env or --secret-file; inline refused.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gh-port-default",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "github",
+   "anchor": "TCP port to listen on (`--port`). Default is `\"18461\"`.",
+   "summary": "GitHub port defaults to 18461.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gh-bind-tunnel",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "github",
+   "anchor": "set up a tunnel (e.g., ngrok)",
+   "summary": "Public bind or a tunnel when GitHub must reach the machine.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gh-events",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "github",
+   "anchor": "issues, pull_request, push. Unknown event types produce a generic event.",
+   "summary": "Supported GitHub events; unknown ones become generic events.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gh-sender",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "github",
+   "anchor": "or `*@github.com` for every sender.",
+   "summary": "GitHub sender key <login>@github.com or *@github.com.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gh-create",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "github",
+   "anchor": "GITHUB_WEBHOOK_SECRET=<secret> agent-deck watcher create github --name <name>",
+   "summary": "GitHub create command.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "slack-bridge",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "slack",
+   "anchor": "receives bridged Slack events from a Cloudflare Worker",
+   "summary": "Slack arrives via a Cloudflare Worker posting to ntfy.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "slack-v1v2",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "slack",
+   "anchor": "It supports both v1 (plain text) and v2 (structured JSON) payloads.",
+   "summary": "v1 plain text and v2 JSON payloads.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "slack-sender",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "slack",
+   "anchor": "`slack:<CHANNEL_ID>` (e.g., `slack:C0AABSF5GKD`)",
+   "summary": "Slack sender key slack:<CHANNEL_ID>.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "slack-channel-id",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "slack",
+   "anchor": "The channel ID comes from the Slack API or the channel URL in the Slack app.",
+   "summary": "Where to find the channel ID.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "slack-unknown",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "slack",
+   "anchor": "A v1 (plain text) payload carries no channel and arrives as `slack:unknown`.",
+   "summary": "v1 payloads arrive as slack:unknown.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "slack-create",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "slack",
+   "anchor": "agent-deck watcher create slack --name <name> --topic <topic>",
+   "summary": "Slack create command.",
+   "kind": "reference",
+   "checked_by": [
+    "cli-drift"
+   ]
+  },
+  {
+   "id": "gmail-not-available",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "there is no create command to emit and no `watcher oauth` command",
+   "summary": "gmail cannot be created or run yet; no oauth command.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-offer-alt",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "Tell the user so instead of inventing one, and offer another route for the mail",
+   "summary": "Say so and offer another route, never invent a command.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-topic-sub",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "Full Pub/Sub subscription resource name: `projects/<project-id>/subscriptions/<sub-name>`",
+   "summary": "Gmail topic and subscription are full Pub/Sub resource names.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-paths-default",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "Default: `<effective watcher data dir>/<name>/token.json`.",
+   "summary": "credentials.json and token.json default to the watcher dir.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-labels",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "Comma-separated Gmail label filter (e.g., `\"INBOX,UNREAD\"`). If absent, all messages pass through.",
+   "summary": "labels filter; absent = all.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-account",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "Informational Gmail address for display purposes.",
+   "summary": "account is informational only.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-prereq-sa",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "Grant the Gmail service account (`gmail-api-push@system.gserviceaccount.com`) the `Pub/Sub Publisher` role on the topic.",
+   "summary": "Grant gmail-api-push Pub/Sub Publisher on the topic.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-prereq-desktop",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "Download OAuth client credentials (Desktop app type) to `credentials.json`.",
+   "summary": "OAuth client credentials of Desktop app type.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-token",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "Place an OAuth `token.json` in the watcher directory (no agent-deck command creates it).",
+   "summary": "token.json is placed by hand; no command creates it.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "gmail-sender",
+   "area": "adapters",
+   "file": "SKILL.md",
+   "heading": "gmail",
+   "anchor": "or `*@example.com` for a whole domain.",
+   "summary": "Gmail sender key is the email address or *@domain.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "v-name",
+   "area": "validation",
+   "file": "SKILL.md",
+   "heading": "Validation checklist",
+   "anchor": "Lowercase letters, numbers, and hyphens only.",
+   "summary": "Name: lowercase letters, digits, hyphens.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "v-name-free",
+   "area": "validation",
+   "file": "SKILL.md",
+   "heading": "Validation checklist",
+   "anchor": "The name must not already be registered or have a `watcher.toml` (`agent-deck watcher list`).",
+   "summary": "Name must be fresh; check watcher list.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "v-port",
+   "area": "validation",
+   "file": "SKILL.md",
+   "heading": "Validation checklist",
+   "anchor": "The chosen port is not already in use by another watcher or service.",
+   "summary": "Port must be free (webhook/github).",
+   "kind": "behaviour"
+  },
+  {
+   "id": "v-conductor",
+   "area": "validation",
+   "file": "SKILL.md",
+   "heading": "Validation checklist",
+   "anchor": "check with `agent-deck conductor list`",
+   "summary": "Check the conductor with conductor list.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "v-conductor-title",
+   "area": "validation",
+   "file": "SKILL.md",
+   "heading": "Validation checklist",
+   "anchor": "its session titled `conductor-<name>`, which must not be archived",
+   "summary": "Delivery goes to the non-archived conductor-<name> session.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "v-required",
+   "area": "validation",
+   "file": "SKILL.md",
+   "heading": "Validation checklist",
+   "anchor": "All required fields for the chosen adapter type are present and non-empty.",
+   "summary": "All required fields present and non-empty.",
+   "kind": "behaviour"
+  },
+  {
+   "id": "v-key-format",
+   "area": "validation",
+   "file": "SKILL.md",
+   "heading": "Validation checklist",
+   "anchor": "(e.g., `slack:CHANNEL_ID` not just `CHANNEL_ID`)",
+   "summary": "Sender key matches the adapter's normalization.",
+   "kind": "behaviour"
+  }
+ ]
+}

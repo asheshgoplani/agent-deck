@@ -273,7 +273,9 @@ func TestNoDSNNothingInitialized(t *testing.T) {
 	if Enabled() || current() != nil {
 		t.Fatal("a client exists without a DSN")
 	}
-	if sentry.CurrentHub().Client() != nil {
+	// Since sentry-go 0.50 an unbound hub reports a shared no-op client
+	// instead of nil, so "no client" means "no enabled client".
+	if sentry.CurrentHub().Client().IsEnabled() {
 		t.Fatal("the global sentry hub got a client")
 	}
 	CaptureError(errors.New("boom"))
@@ -325,7 +327,7 @@ func TestNoOrgNoOrgTag(t *testing.T) {
 func TestSDKCollectsNothingAutomatically(t *testing.T) {
 	startForTest(t, "")
 	h := current()
-	if h == nil || h.Client() == nil {
+	if h == nil || !h.Client().IsEnabled() {
 		t.Fatal("no client after Init")
 	}
 	dc := h.Client().GetDataCollection()

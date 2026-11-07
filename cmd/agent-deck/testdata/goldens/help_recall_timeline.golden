@@ -1,5 +1,6 @@
 Usage: agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]
        agent-deck recall timeline --json --transcript <file> --harness claude|codex
+       agent-deck recall timeline --json [--tail N] --sessions <id1>,<id2>,...   (batch: one entry per id, at most 50)
        agent-deck recall timeline <session> --json --v1   (slice-6 turn shape)
 <session>: deck session id, title or id prefix; a Claude/Codex conversation id; or #n / any id the index knows.
 Rows are parsed from the native transcript directly, whatever the index or its deferral state. Needs [recall] enabled = true.
@@ -13,6 +14,8 @@ Rows are parsed from the native transcript directly, whatever the index or its d
     	Output canonical JSON
   -limit int
     	Maximum older rows with --before; otherwise stop after N new rows and resume with --since
+  -sessions string
+    	Comma-separated session ids: one call answers each id's timeline (at most 50; only --tail combines with it)
   -since string
     	Only what changed after this cursor: new rows in turns, changes to earlier rows in updates/removed
   -tail int

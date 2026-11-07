@@ -156,6 +156,22 @@ func writeVersionOutput(w io.Writer, currentVersion string) {
 	fmt.Fprintln(w)
 }
 
+// coreFeatures are the capabilities `agent-deck version --json` advertises,
+// so a client (the Mac app) can pick a call shape without trial and error.
+// A core that predates this list prints the plain version line instead of
+// JSON for `version --json`; clients treat that as "no features".
+//   - recall_timeline_batch: `recall timeline --json [--tail N] --sessions a,b,...`
+var coreFeatures = []string{"recall_timeline_batch"}
+
+// writeVersionJSON prints {"version": "...", "features": [...]}.
+func writeVersionJSON(w io.Writer, currentVersion string) {
+	out, _ := json.MarshalIndent(struct {
+		Version  string   `json:"version"`
+		Features []string `json:"features"`
+	}{currentVersion, coreFeatures}, "", "  ")
+	fmt.Fprintln(w, string(out))
+}
+
 // printUpdateNotice checks for updates and prints a one-liner if available
 // Uses cache to avoid API calls - only prints if update was already detected
 func printUpdateNotice() {
@@ -524,6 +540,10 @@ func main() {
 			handleTelemetry(args[1:])
 			return
 		case "version", "--version", "-v":
+			if len(args) > 1 && args[1] == "--json" {
+				writeVersionJSON(os.Stdout, Version)
+				return
+			}
 			writeVersionOutput(os.Stdout, Version)
 			return
 		case "help", "--help", "-h":
@@ -655,6 +675,9 @@ func main() {
 		case "open":
 			handleOpen(profile, args[1:])
 			return
+		case "switch":
+			handleSwitch(profile, args[1:])
+			return
 		case "ask":
 			handleAsk(profile, args[1:])
 			return
@@ -748,6 +771,9 @@ func main() {
 			return
 		case "feedback":
 			handleFeedback(args[1:])
+			return
+		case "whats-new":
+			handleWhatsNew(args[1:])
 			return
 		case "debug-dump":
 			if helpRequested(args[1:]) {
@@ -1625,11 +1651,11 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
-	"run-task": true, "inbox": true, "msg": true, "feedback": true, "telemetry": true,
+	"run-task": true, "inbox": true, "msg": true, "feedback": true, "whats-new": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true, "completion": true,
 	"__complete": true,
@@ -4455,6 +4481,7 @@ func handleUpdate(args []string) {
 	fmt.Printf("\n✓ Updated to v%s\n", info.LatestVersion)
 	fmt.Println("  Restart agent-deck to use the new version.")
 	printPathShadowing(os.Stdout, update.FindShadowingCopies(info.LatestVersion), updateCLILog)
+	printWhatsNewAfterUpdate(context.Background(), os.Stdout, info.CurrentVersion, info.LatestVersion, true)
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
@@ -4552,6 +4579,9 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	fmt.Printf("\n✓ Installed v%s\n", targetVersion)
 	fmt.Println("  Restart agent-deck to use this version.")
 	printPathShadowing(os.Stdout, update.FindShadowingCopies(targetVersion), updateCLILog)
+	if update.CompareVersions(Version, targetVersion) < 0 {
+		printWhatsNewAfterUpdate(context.Background(), os.Stdout, Version, targetVersion, true)
+	}
 }
 
 // brewRunner abstracts `brew <args...>` so tests can inject canned output
@@ -4703,6 +4733,7 @@ func printHelp() {
 	fmt.Println("  rename, mv       Rename a session")
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
+	fmt.Println("  switch <query>   Show a session in the Mac app (or attach here) by id, title or part of one [--json]")
 	fmt.Println("  open <file|url>  Show a page in the Mac app Browser panel [--session <id|title>]")
 	fmt.Println("  ask <kind>       Ask the owner for a secret, choice or text in a dialog (docs/ask.md)")
 	fmt.Println("  browser <op>     Drive the session's Mac app Browser: open, tabs, close, click, type, read, shot")
@@ -4733,6 +4764,7 @@ func printHelp() {
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
+	fmt.Println("  whats-new        What changed since the version you last saw, your fixed reports first")
 	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
 	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths and pin the XDG data root")

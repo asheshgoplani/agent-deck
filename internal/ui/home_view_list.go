@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/asheshgoplani/agent-deck/internal/provider"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -697,7 +698,18 @@ func (h *Home) renderRemoteGroupItemSuffix(b *strings.Builder, item session.Item
 	versionState := h.remoteVersions[item.RemoteName]
 	poll, hasPoll := h.remotePolls[item.RemoteName]
 	pollActive := h.remotePollActive[item.RemoteName]
+	rc := h.remotePollConfig[item.RemoteName]
 	h.remoteSessionsMu.RUnlock()
+	kindMarker := ""
+	if kind := provider.DisplayKind(rc); kind != "" {
+		// A sandbox's host is an ssh alias that means nothing to the
+		// user; say whose it is and what it is instead. The owner goes
+		// first so a narrow list, which cuts the row, still shows it.
+		if owner := session.PrintableOwner(rc.Owner); owner != "" {
+			kind = "owner: " + owner + " · " + kind
+		}
+		kindMarker = countStyle.Render(" · " + kind)
+	}
 
 	trailer := h.renderRemoteLatencyMarker(item.RemoteName, selected)
 	if hasPoll && poll.LastPollError != "" {
@@ -730,11 +742,12 @@ func (h *Home) renderRemoteGroupItemSuffix(b *strings.Builder, item session.Item
 		trailer += " " + DimStyle.Render("(R retry)")
 	}
 
-	line := fmt.Sprintf("%s%s %s%s%s%s%s",
+	line := fmt.Sprintf("%s%s %s%s%s%s%s%s",
 		remoteRowGutter(selected), // align with group hotkey gutter (flush with local root groups)
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
+		kindMarker,
 		renderRemoteVersionMarker(versionState, Version, selected), // #2164: drift marker, e.g. " v1.15.0 ↑"
 		remoteStatusSuffix(counts.running, counts.waiting, stale),
 		trailer,

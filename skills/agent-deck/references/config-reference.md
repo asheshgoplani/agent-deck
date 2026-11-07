@@ -40,6 +40,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[costs.budgets] and [costs.run_budget]](#costsbudgets-and-costsrun_budget)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[providers.<name>] Sandbox providers](#providersname-sandbox-providers)
+- [[sandbox] Section](#sandbox-section)
 - [[health] Section](#health-section)
 - [[status] Section](#status-section)
 - [[performance] Section](#performance-section)
@@ -47,6 +48,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[macapp] Section](#macapp-section)
 - [[browser] Section](#browser-section)
 - [[ask] Section](#ask-section)
+- [[feedback] Section](#feedback-section)
 - [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -1129,7 +1131,7 @@ desktop = false        # OS notification when a session needs input
 | `show_all` | bool | `false` | List every session with a status icon instead of only waiting ones. |
 | `minimal` | bool | `false` | Compact icon+count summary instead of names. Disables the `Ctrl+b 1-6` jump bindings and ignores `show_all`. |
 | `sort` | string | `"waiting"` | Order of the bar, and so which session each `Ctrl+b` number key jumps to. `"waiting"` lists the session that started waiting most recently first (with `show_all`, sessions that are not waiting are placed by the same time, which falls back to when they were created). `"last_accessed"` lists the session you used most recently first, like Alt+Tab; sessions never used come last. Only visits through the agent-deck TUI count: attaching from its session list and jumping with the bar's `Ctrl+b` number keys. Attaching with the `agent-deck` CLI or the web UI does not change the order. Ignored when `minimal = true`, which shows no names. Any other value is treated as `"waiting"`. |
-| `transition_events` | bool | `true` | Send a tmux message to a session's **parent** when a child transitions (e.g. running → waiting). Per-session override: `agent-deck session set-transition-notify <id> off`. |
+| `transition_events` | bool | `true` | Send a tmux message to a session's **parent** when a child transitions (e.g. running → waiting). Per-session override: `agent-deck session set-transition-notify <id> off`. A muted child's completion is still recorded (`agent-deck session children`) and logged (`done_suppressed`), and is neither delivered nor exported. |
 | `desktop` | bool | `false` | Raise an **OS notification** when a session starts waiting for input or errors out. |
 
 ### desktop
@@ -1273,13 +1275,27 @@ agent_deck_path = ""
 
 Provider output is untrusted and validated before use: sandbox id, host (DNS name or IP literal only), port, user, auth (`key` with a private key file that is a regular file, not a symlink, owned by you and mode `0600`/`0400`; or `agent`), labels, state and pinned host keys. A sandbox the provider created but agent-deck cannot use (invalid answer, ssh never answers, agent-deck cannot be installed) is destroyed again and the remote is not kept. A create that times out or is interrupted is followed by a `list`, and the sandbox carrying that request's `agent-deck/create-id` label is destroyed.
 
-A sandbox remote is an ordinary `[remotes.<name>]` entry with three more keys, all written by agent-deck:
+A sandbox remote is an ordinary `[remotes.<name>]` entry with four more keys, all written by agent-deck:
 
 | Key | Type | Description |
 |-----|------|-------------|
 | `provider` | string | The `[providers.<name>]` that created the sandbox. `remote destroy` only works on remotes that have it; `remote list` shows them as `sandbox (provider <name>)`. |
 | `sandbox_id` | string | The provider's id for the sandbox. |
 | `ssh_config` | string | Path of the sandbox's own ssh config, `<agent-deck data dir>/sandboxes/<remote>/ssh_config` (directory `0700`, files `0600`, beside `known_hosts` and `sandbox.json`). Every ssh and mosh call for the remote passes it with `-F`, so `~/.ssh/config`, `/etc/ssh/ssh_config` and `~/.ssh/known_hosts` are not used for it: `ProxyJump`, bastion or `ProxyCommand` settings there do not apply, and the provider must return a host and port that are reachable directly. Host keys the provider pins are checked strictly; without them the first key seen is trusted into the sandbox's own `known_hosts`. `host` is the alias `agentdeck-sb-<remote>`. |
+| `owner` | string | Who created the sandbox: `[sandbox] owner` (else `$USER`) when it was made, also sent to the provider as the `agent-deck/owner` label. `remote list` shows `owner: <name>` (and `"owner"` in `--json`), the TUI shows it on the sandbox's host row and preview, and the web fleet view on its card. `remote list --owner <name>` (or `--owner me`) lists only that person's sandboxes. Empty for sandboxes made before owners existed. |
+
+## [sandbox] Section
+
+Settings for the sandboxes this machine creates with a provider (`[providers.<name>]`, `remote add --provider`, `launch --provider`, the TUI's "new sandbox"). Not the Docker sandbox of the `[docker]` section.
+
+```toml
+[sandbox]
+owner = "alice"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `owner` | string | `$USER` | The person who owns the sandboxes created here. Sent with every create request as the label `agent-deck/owner` (the docker example stores it as the container label `agent-deck.label.agent-deck/owner`) and kept on the remote as `owner`. At most 64 printable characters; anything else is refused before a sandbox is created. |
 
 ## [health] Section
 
@@ -1360,7 +1376,7 @@ status_events = false      # Status owners publish session.status and session.tu
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the Mac app's own frames (`macapp.open`, `macapp.open.ack`, `macapp.browser.response`, `macapp.app.focus`, `macapp.ask.seen`); `macapp.ask` and `macapp.ask.ack` are never admitted (only `agent-deck ask` publishes them); `macapp.browser.request` also needs [`[browser] enabled`](#browser-section). Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
+| `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the Mac app's own frames (`macapp.open`, `macapp.open.ack`, `macapp.switch`, `macapp.switch.ack`, `macapp.browser.response`, `macapp.app.focus`, `macapp.ask.seen`); `macapp.ask` and `macapp.ask.ack` are never admitted (only `agent-deck ask` publishes them); `macapp.browser.request` also needs [`[browser] enabled`](#browser-section). Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
 | `transcript_events` | bool | `false` | The notify daemon publishes a `session.transcript` frame whenever a live session's native transcript grows. Restart required. |
 | `status_events` | bool | `false` | Every status owner (TUI poller, notify daemon) publishes `session.status` and `session.turn` frames on each status transition. |
 
@@ -1401,6 +1417,21 @@ allow_sandboxed = false        # let sessions that run in a sandbox ask
 | `allow_sandboxed` | bool | `false` | Lets sessions that run in a sandbox ask; otherwise their requests are refused. |
 
 There is no key for the vault command: the vault is the fixed `/usr/local/bin/deck-secret`, which must be root-owned. These keys are guard rails an agent on the host can edit, not security boundaries.
+
+## [feedback] Section
+
+In-product feedback and problem reports (`agent-deck feedback`).
+
+```toml
+[feedback]
+disabled = false        # true stops the passive rating prompts
+agent_reports = false   # true lets agent sessions post with --from-agent
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `disabled` | bool | `false` | Suppresses the passive feedback rating prompts. Set when you answer `n`; `agent-deck feedback` asks to re-enable. |
+| `agent_reports` | bool | `false` | Lets agent sessions post public GitHub issues, "seen again" comments and "is it fixed" answers as this machine's `gh` account (`feedback bug|idea --from-agent`, `feedback fixed --from-agent`). Off means those refuse with `consent_required`; `--yes` does not stand in. A person turns it on with `agent-deck feedback agent-consent`, which shows where it posts, as which account and what is posted, then asks y/N; `--off` turns it off. |
 
 ## [tmux] Section
 

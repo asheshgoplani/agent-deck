@@ -165,16 +165,26 @@ func requireRecallEnabled(out *CLIOutput) *session.UserConfig {
 }
 
 func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
+	env, err := openRecallEnvErr(profile, out)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	return env
+}
+
+// openRecallEnvErr is openRecallEnv returning a failure to open the index
+// instead of exiting, for a caller (the timeline batch) that must answer
+// the ids that never needed it. The recall gate still exits.
+func openRecallEnvErr(profile string, out *CLIOutput) (*recallEnv, error) {
 	cfg := requireRecallEnabled(out)
 	dbPath, err := recall.DBPath()
 	if err != nil {
-		out.Error(fmt.Sprintf("recall: resolve data dir: %v", err), ErrCodeInvalidOperation)
-		exitCLI(1)
+		return nil, fmt.Errorf("recall: resolve data dir: %v", err)
 	}
 	lockPath, err := recall.LockPath()
 	if err != nil {
-		out.Error(fmt.Sprintf("recall: resolve lock: %v", err), ErrCodeInvalidOperation)
-		exitCLI(1)
+		return nil, fmt.Errorf("recall: resolve lock: %v", err)
 	}
 	st, err := store.OpenCurrent(dbPath)
 	if errors.Is(err, store.ErrSchema) {
@@ -185,13 +195,12 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 		release()
 	}
 	if err != nil {
-		out.Error(fmt.Sprintf("recall: open %s: %v", dbPath, err), ErrCodeInvalidOperation)
-		exitCLI(1)
+		return nil, fmt.Errorf("recall: open %s: %v", dbPath, err)
 	}
 	env := &recallEnv{profile: profile, cfg: cfg, st: st, dbPath: dbPath, lockPath: lockPath, roots: session.RecallRoots()}
 	if env.queuePath, err = recall.QueuePath(); err != nil {
-		out.Error(fmt.Sprintf("recall: resolve queue: %v", err), ErrCodeInvalidOperation)
-		exitCLI(1)
+		st.Close()
+		return nil, fmt.Errorf("recall: resolve queue: %v", err)
 	}
 	if storage, err := session.NewStorageWithProfile(profile); err == nil {
 		env.storage = storage
@@ -202,7 +211,7 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 		}
 	}
 	env.registry = newRecallRegistry(env.profile, env.reg)
-	return env
+	return env, nil
 }
 
 // recallRegistry is session.RecallRegistry (every profile's state.db,

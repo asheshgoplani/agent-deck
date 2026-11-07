@@ -157,6 +157,7 @@ The main-menu composer currently supports local sessions only, not remote-sessio
 | `V` / `Y` | Copy visible terminal text / a fenced code block |
 | `Shift+drag` | Select text natively (`Option+drag` in iTerm2) — see below |
 | `Alt+W` | Show me around: what you can do, your agents and sign-in |
+| `Alt+N` | What's new: this version's highlights and your reports it fixed ("Is it fixed for you?"); opens by itself after an update |
 | `?` | Full help |
 
 > **Why can't I drag-select text?** The TUI holds the terminal in mouse
@@ -722,7 +723,7 @@ agent-deck session set-transition-notify worker off
 agent-deck session set-transition-notify worker on
 ```
 
-Suppression only affects dispatch — the parent link itself is unchanged. Deferred/retried events also honour the flag (guard is in `transition_notifier.dispatch` as well as both daemon entry points).
+Suppression only affects dispatch — the parent link itself is unchanged. Deferred/retried events also honour the flag (guard is in `transition_notifier.dispatch` as well as both daemon entry points). A muted child's completion (`===AGENTDECK_DONE===`) is still recorded, so `agent-deck session children` shows it, and logged as `done_suppressed`; it is neither delivered to the parent nor exported.
 
 **Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
 
@@ -1221,8 +1222,14 @@ agent-deck web --token my-secret
 # then open: http://127.0.0.1:8420/?token=my-secret
 ```
 
-A valid tokened visit stores an HttpOnly, SameSite=Strict cookie, so refreshes
-continue to work with `--token-file`. The server accepts requests addressed to
+A valid tokened visit stores an HttpOnly, SameSite=Strict cookie (Secure when
+reached over HTTPS, including through a proxy that sends
+`X-Forwarded-Proto: https` such as Tailscale Serve) that authenticates the API, the event streams and
+the terminal WebSocket, so refreshes and an app installed to the home screen
+keep working. The cookie lasts 30 days and each app launch renews it; changing
+the token signs every device out. A token containing `"`, `,`, `;`, a
+backslash or non-ASCII characters gets no cookie, so use a hex token like the
+one below. The server accepts requests addressed to
 localhost, loopback IPs, its listen address, and its machine name when bound
 to a network interface. A wildcard bind also accepts the machine's current
 interface IPs. For a reverse proxy or Tailscale Serve hostname, add

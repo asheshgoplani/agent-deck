@@ -5,7 +5,7 @@ Complete reference for all agent-deck CLI commands.
 ## Table of Contents
 
 - [Global Options](#global-options)
-- [Basic Commands](#basic-commands)
+- [Basic Commands](#basic-commands) (incl. `update`, `whats-new`, `feedback`)
 - [Shell Completion](#shell-completion)
 - [Web Command](#web-command)
 - [Session Commands](#session-commands)
@@ -173,6 +173,35 @@ agent-deck update --timer-status [--json]
 - `--timer-status` kinds: `launchd`, `systemd`, `systemd-legacy` (a hand-made `agentdeck-autoupdate.timer`; `legacy_unit` names it, and it is also set next to a canonical timer when both exist), `none`; `--json` prints `{installed, kind, path, active, detail, legacy_unit, legacy_path, last_run, next_run, note}` (`last_run`/`next_run` from `systemctl --user show`, RFC 3339 UTC; `note` says e.g. "no systemd user session"). A controller shows `unknown` for a remote whose binary predates it. The timer's output goes to `<log dir>/auto-update.log` on macOS and the journal on Linux.
 - On macOS every install (interactive, `--version`, the TUI prompt and `--unattended`) re-registers the `com.agentdeck.*` launch agents whose program is the replaced binary (`launchctl bootout` then `bootstrap`, then a `state = running` check for KeepAlive/RunAtLoad agents). Without this they crash-loop with `EX_CONFIG` (exit 78) because macOS ties a launch agent's identity to the file at its program path. If an agent does not come back the command exits 1 and prints the two `launchctl` commands to run by hand; the binary is already updated at that point.
 - Every install attempt (interactive `update`, `--version`, the startup prompt and `--unattended` from the timer, the TUI, the web or notify daemon, or a nudge) appends one line to `auto-update.log` in the agent-deck log dir: `<time> install <from> -> <to> ok|failed: <reason> source=<manual|manual-version|startup-prompt|timer|tui|web|nudge|...> pid=<pid> ppid=<ppid>`, plus `service=<launchd service>` under launchd. The file is created 0600.
+- After a successful interactive install (`update`, or `--version` to a newer release) it prints the same block as `whats-new` for the old version up to the new one and marks the new version seen. `--unattended` (the update timer) fetches nothing extra: it prints one line saying What's new shows on the next start, and leaves the range unseen so the TUI shows its What's new dialog after the restart. A changelog that cannot be read is one note line and never fails the update.
+
+### whats-new - What changed since the version you last saw
+
+```bash
+agent-deck whats-new                   # your fixed reports first, then each version's highlights
+agent-deck whats-new --json            # {ok, from, to, fixed:[{number,title,url,fixed_in,feedback}], versions:[{version,date,highlights}], text, empty}
+agent-deck whats-new --since 1.16.36   # changes after a given version
+agent-deck whats-new --mark-seen       # remember the current version as seen
+```
+
+- A report counts as fixed in the oldest release newer than the version it was filed on, and not newer than the running one, whose `### Fixes` (or `### Fixed`) section cites `#N`. Each fixed report shows `Your report #N: fixed in vX` with the `feedback fixed` command to answer.
+- The first run on a machine remembers the current version and prints `Nothing new since vX.`
+- The changelog is the `CHANGELOG.md` on GitHub `main`; `AGENTDECK_CHANGELOG_URL` (an http(s) URL or a file path) overrides it.
+
+### feedback - Report a problem, track it, say whether the fix works
+
+```bash
+agent-deck feedback                    # rate agent-deck (Discussion #600, disclosure + y/N)
+agent-deck feedback bug|idea [flags]   # file an issue; full text shown, y/N (see --help)
+agent-deck feedback bug --from-agent --title T --what W [--expected E] [--steps S] [--tool X] [--json]
+agent-deck feedback mine [--json]      # reports filed from this machine and their state
+agent-deck feedback fixed N --fixed|--not-fixed [--comment C] [--dry-run] [--json] [--yes] [--from-agent] [--again]
+agent-deck feedback agent-consent [--off]   # a person lets agent sessions post (shows what, where, as whom; y/N)
+```
+
+- `--from-agent` is the path for agent sessions: it never prompts and never opens a browser. It needs `[feedback] agent_reports = true`, which a person sets with `agent-deck feedback agent-consent` (else `consent_required`; `--yes` does not stand in). It runs inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) or with `--yes`, needs `--title` and `--what`, and posts the scrubbed issue (home paths as `~`, tokens, emails and host names replaced) with version, OS and terminal but no log lines, marked AI-authored (model from `AGENTDECK_AGENT_MODEL`, else `unsure`), with the `found-by-agent` label and a "Found by an agent session" footer. If the repo lacks a label it files once more without labels. It first searches open issues carrying that footer; one with exactly the same title (same kind, after dropping the `[bug]`/`[feature]` prefix, case and punctuation) gets a "Seen again on vX" comment with the scrubbed what-happened (capped at 4000 characters) instead of a new issue. Without a logged-in `gh` it fails with `gh_failed`. `--json` prints `{ok, number, url, deduped, method}`.
+- Every issue filed through `gh` (agent or person) and every duplicate is recorded in `reports.json` in the agent-deck data dir (mode 0600), so `feedback mine` and `whats-new` know your reports.
+- `feedback fixed` posts `Fixed for me in vX.` or `Still broken for me in vX.`, your scrubbed comment and `(<os>/<arch>, via agent-deck feedback fixed)` as a public comment on issue #N with `gh issue comment`. People see where it posts, which GitHub account carries it and the exact text, then answer y/N (default N). `--json` needs `--yes` (else `confirm_required`); `--dry-run --json` prints `{ok, dry_run, number, body, account, gh_ready}`; `--from-agent` never prompts, needs `agent_reports` and `AGENTDECK_INSTANCE_ID` or `--yes`, and answers only an unanswered report an agent filed from this machine (else `invalid_input`). People may answer any number. The answer is recorded so What's new asks once; a second answer on the same report needs `--again`. Inside an agent session (`AGENTDECK_INSTANCE_ID` set), terminal or not, any real post from `feedback bug|idea|fixed` counts as an agent's: without `agent_reports` it is refused with `consent_required`, with it it takes the `--from-agent` path; `feedback agent-consent` refuses there too. People post from the TUI, the Mac app or a shell outside sessions.
 
 ## Shell Completion
 
@@ -245,6 +274,12 @@ When token auth is enabled, open the web UI with:
 ```bash
 http://127.0.0.1:8420/?token=my-secret
 ```
+
+That visit sets an HttpOnly, SameSite=Strict cookie that authenticates the API,
+event streams and terminal WebSocket for 30 days (renewed on each app launch),
+so reloads and a home-screen install keep working. Use a hex token (`openssl
+rand -hex 32`): a token with `"`, `,`, `;`, a backslash or non-ASCII gets no
+cookie.
 
 ## Session Commands
 
@@ -786,6 +821,16 @@ agent-deck session switch-account "My Project" work
 
 Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`).
 
+### switch - Show any session in the Mac app
+
+```bash
+agent-deck switch "api server"          # id, id prefix, title, part of a title, group words
+agent-deck switch "voice 0956" --json   # {status, query, session, via, candidates, elapsed_ms}
+agent-deck switch docs --no-attach --wait 5s
+```
+
+Resolves exact id, unique id prefix, exact title (any case), then a fuzzy title and group match; numbers must match exactly and archived sessions are left out. On the Mac it opens `agentdeck://focus?session=<id>`; elsewhere it publishes `macapp.switch` and waits `--wait` (default 2s) for `macapp.switch.ack`. With no app it attaches in the terminal, or with `--json`/`--no-attach` reports `queued`. Exit 2 = no match, exit 3 = ambiguous (up to five `candidates`). Not `session switch`, which changes a session's harness or account. Details: `docs/switch.md`.
+
 ### open - Show a page in the macOS app Browser panel
 
 ```bash
@@ -1255,7 +1300,7 @@ In the TUI, remote sessions use the same status indicators and nested group tree
 agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
 agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
 agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--profile <name>]
-agent-deck remote <name> events publish --kind macapp.open.ack|macapp.browser.response|macapp.app.focus|macapp.ask.seen --session <id> --data-file - < reply.json
+agent-deck remote <name> events publish --kind macapp.open.ack|macapp.switch.ack|macapp.browser.response|macapp.app.focus|macapp.ask.seen --session <id> --data-file - < reply.json
 agent-deck remote <name> session send-status <send-id> --json
 ```
 

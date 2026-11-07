@@ -108,7 +108,7 @@ P1 enabled two producers; the pi producer followed (#2482 Pi row). Each is pinne
 |---|---|---|---|---|
 | Claude Code | `hook-handler` | `UserPromptSubmit.prompt` | `Stop.last_assistant_message` + `transcript_path` | `claude_*_v1.json` |
 | Codex CLI | `codex-notify` (the existing `notify` line) | `input-messages` (last) on the same payload | `agent-turn-complete.last-assistant-message`, keyed by `turn-id` | `codex_notify_v1.json` |
-| pi | the pi extension (v4) through `hook-handler` | last `input` text, carried as `prompt` on the settle payload | last `turn_end` text of the run, sent on `agent_settled` when the run completed; keyed by session id and `messageEntryId`; tail-capped at 16 KiB | `pi_agentsettled_v3.json` |
+| pi | the pi extension (v4) through `hook-handler` | last `input` text, carried as `prompt` on the settle payload | last `turn_end` text of the run, sent on `agent_settled` when the run completed; keyed by the run (`run_id`), the key its inbox record carries, so a ledger parent is shown the run once when the ledger reaches it first, and twice with its text kept when the inbox does; without a `run_id` (an entry spooled before the upgrade, or a v3 extension) by session id and `messageEntryId`; tail-capped at 16 KiB | `pi_agentsettled_v4.json`, `pi_agentsettled_v3.json` |
 
 A Codex `Stop` hook pointed at `hook-handler` is recognised by its
 `turn_id` and never spooled, so notify and Stop cannot produce one turn
@@ -116,8 +116,10 @@ twice (`codex_stop_v1.json`). A pi run that settles without text (tool-only,
 aborted or failed) spools one `status` edge instead (`pi_agentsettled_notext_v3.json`);
 a v2 extension spools nothing. A pi child's inbox record is keyed by its run
 (`pi-run:` plus a hash of the per-run `run_id` the v4 extension sends with `settles: true`), so
-each run rings the parent once: on its `agent_settled`, or, if none arrives within 10 s of the
-`turn_end`, on a fallback under the same persisted key. A `turn_start` never followed by a
+each run is one inbox record and rings the parent once: on its `agent_settled`, or, if none
+arrives within 10 s of the `turn_end`, on a fallback under the same persisted key. (A
+ledger-consuming parent sees the run once when the ledger shows it first, and twice with its
+text kept when the inbox does; see the prompt-hook dedupe below.) A `turn_start` never followed by a
 `turn_end` is released after the 2-minute hook-running window at the latest. Every pi write
 carries the previous runs in `pi_orphan_runs` (at most four, the oldest dropped; entries older than
 the 14-day consumed-key retention are dropped), so a quick follow-up or `/new` cannot erase a
@@ -330,7 +332,9 @@ measurement rows and never delivered.
 
 State: `<ledger>/cursors/<consumer>.json` holds the P0 `ConsumerState`
 (watermark plus sparse acknowledgements, store, epoch, generation) and
-the last pass (`through`, `pending`, `gaps`). Every read-modify-write runs
+the last pass (`through`, `pending`, `gaps`, `judged`; only the daemon's
+delivery pass sets `judged`, the last cursor it judged, which the fast path
+compares with the pending flag). Every read-modify-write runs
 under `<consumer>.lock` (flock, 5 s wait), so the prompt hook, the Stop
 hook, `msg read|ack` and the daemon never lose each other's
 acknowledgements. A pass reads the log from the watermark, moves the
@@ -468,17 +472,26 @@ of one 9000-byte budget. Status edges and reply copies addressed to the
 tagged sender are left to the inbox. Records that do not fit remain
 pending for a later prompt.
 
-Duplicates are removed by **exact transcript turn identity**, in both
-directions. An inbox record's key is
-`comms.Key(comms.KindTurn, ev.ChildSessionID, ev.TurnUUID)`; its ledger
-twin uses `r.Key`. `LedgerDelivery.Done(true)` remembers keys shown by
+Duplicates are removed by **exact turn identity**. An inbox record's key is
+`comms.Key(comms.KindTurn, ev.ChildSessionID, ev.TurnUUID)` for a transcript
+turn, and `comms.Key(comms.KindTurn, ev.ChildSessionID, "pi", signal)` for a pi
+run, whose `pi-run:` signal is the key the ledger commits a spool entry carrying
+that `run_id` under (hashed from the whole `run_id`, before the spool's cap); its
+ledger twin uses `r.Key`. `LedgerDelivery.Done(true)` remembers keys shown by
 either prompt or Stop path in `ConsumerFile.Shown` through `NoteShown`.
-`WasShown` prevents a later ledger copy from repeating an inbox turn;
-the inbox drain retires a twin already shown by the ledger, including
-one selected for the current prompt. Matching text, a recent record
+For a transcript turn this works in both directions: `WasShown` prevents a later
+ledger copy from repeating an inbox turn, and the inbox drain retires a twin
+already shown by the ledger, including one selected for the current prompt. A record
+marks a turn shown only when it carried the turn's text, so a pi run goes one
+way only: its inbox record carries none, and showing it never marks the ledger
+turn shown. Ledger first, the run is shown once; inbox first, it
+is shown twice and its text still arrives. Matching text, a recent record
 from the same child, or an unread spool is never evidence that a turn
-was shown. Error edges, stale hashes and records without a matching local
-transcript UUID signal keep their inbox delivery. Done context includes both
+was shown. Error edges, remote records, stale hashes and records without a matching
+local transcript UUID signal or pi-run signal keep their inbox delivery. A
+pi-run signal names its run for good, so a stale flag does not unmatch it. A pi
+run spooled without a `run_id` (before the upgrade) has no twin and is shown by
+both paths, as before. Done context includes both
 the summary and body before its inbox twin is retired. `shadowed_by_ledger`
 counts inbox twins retired by the shown-turn filter.
 

@@ -686,6 +686,12 @@ func (h *Home) confirmAction() tea.Cmd {
 		title := h.confirmDialog.targetName
 		h.confirmDialog.Hide()
 		return h.deleteRemoteSession(remoteName, sessionID, title)
+	case ConfirmDestroySandbox:
+		remoteName := h.confirmDialog.GetRemoteName()
+		sandboxID := h.confirmDialog.GetTargetID()
+		confirmed := h.confirmDialog.sessionCount
+		h.confirmDialog.Hide()
+		return h.destroySandboxCmd(remoteName, sandboxID, confirmed)
 	case ConfirmDeleteRemoteGroup:
 		groupPath := h.confirmDialog.GetTargetID()
 		remoteName := h.confirmDialog.GetRemoteName()

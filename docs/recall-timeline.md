@@ -50,6 +50,7 @@ of the background index sweep and meets the two second local append target.
 agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]
 agent-deck recall follow   <session> --after <cursor|end> --jsonl [--status]
 agent-deck recall timeline --json --transcript <file> --harness claude|codex
+agent-deck recall timeline --json [--tail N] --sessions <id1>,<id2>,...
 ```
 
 Both need `[recall] enabled = true` (exit 2 otherwise) but never need the
@@ -81,6 +82,30 @@ changed after a cursor: new rows in `turns`, changes to earlier rows in
 `updates` (merge by id) and ids to drop in `removed`. Paging with
 `--limit`/`--since` until the cursor stops moving yields exactly the full
 timeline. `--agent <id>` returns one Claude sub-agent sidechain.
+
+### First screens in one call (`--sessions`)
+
+`--sessions <id1>,<id2>,...` answers up to 50 sessions in one call, so a
+client can read every first screen on a box in a few calls instead of one
+round trip per session:
+
+```json
+{ "schema": "agent-deck.recall.timeline-batch/v1",
+  "sessions": [
+    { "session": "<id1>", "ok": true, "timeline": { …the object `recall timeline <id1> --json --tail N` prints… } },
+    { "session": "<id2>", "ok": false, "error": "no session, conversation or indexed transcript matches \"<id2>\"", "code": "NOT_FOUND" } ] }
+```
+
+Entries follow the input order, and each `timeline` equals the single-id
+answer. One id failing never fails the batch: the call exits 0 once the request
+is valid. Only `--tail` combines with `--sessions`; `--since`, `--before`,
+`--limit`, `--agent`, `--v1`, `--transcript` and a positional `<session>` are
+refused with `INVALID_OPERATION` (exit 2), as are more than 50 ids or an empty
+id. Sessions and the recall index are opened once per call and transcripts are
+tailed four at a time, each read bounded exactly as on the single path.
+`agent-deck version --json` lists `recall_timeline_batch` in `features` on cores
+that serve it; an older core prints its plain version line there, and a client
+falls back to one id per call.
 
 For older history, begin with `--tail N`, then request
 `--before <before_cursor> --limit N`. Each page contains at most N rows in

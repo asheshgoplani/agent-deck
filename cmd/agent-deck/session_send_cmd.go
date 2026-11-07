@@ -379,24 +379,76 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
+	// Wait for agent to be ready (unless --no-wait is specified).
+	// Issue #957: honor --timeout for the readiness phase too, not just the
+	// post-ready completion wait. Otherwise --timeout 5m against a busy
+	// recipient silently fails at ~80s.
+	busyAcceptsInput := !*wait && session.AcceptsInputWhileBusy(inst.Tool)
+	if busyAcceptsInput {
+		status, statusErr := fetchHookDrivenStatus(profile, inst.ID)
+		busyAcceptsInput = statusErr == nil && status == "running"
+	}
+	needsReady := !*noWait && !busyAcceptsInput
+	waitAgentReady := func(d time.Duration) error {
+		return send.WaitForAgentReady(tmuxSess, inst.Tool, d, send.PromptGates{
+			ClaudeComposer: session.IsClaudeCompatible(inst.Tool),
+			CodexPrompt:    session.IsCodexCompatible(inst.Tool),
+		})
+	}
+	var acceptanceGuard *codexAcceptanceGuard
+	failReady := func(err error) {
+		if acceptanceGuard != nil {
+			acceptanceGuard.Release()
+		}
+		telemetry.ErrorOccurred(telemetry.AreaSend, telemetry.KindTimeout, inst.Tool)
+		out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	readyWaited := false
+
 	// Every local Codex send participates in the same durable acceptance
 	// protocol, whether structured or human and whether it waits for completion
 	// or not. Structured remote/sandbox waits still fail closed; ordinary remote
 	// sends keep their legacy transport and never read host-local marker state.
 	structuredCodexWait := *jsonOutput && *wait && session.IsCodexCompatible(inst.Tool)
 	acceptanceFence := codexAcceptanceFence{}
-	var acceptanceGuard *codexAcceptanceGuard
 	if shouldAcquireCodexAcceptanceGuard(inst, *jsonOutput, *wait, *draft) {
 		// Every send keeps the double-send refusal: an unresolved earlier
-		// submission, an identity owned by another session, a held
-		// acceptance lock or a remote rollout all refuse, whatever the
-		// flags. Only --codex-composer-fallback, and only when the identity
-		// is provably unavailable (macapp-core-needs §3: right after the
+		// submission, an identity owned by another session, a remote rollout
+		// or an acceptance lock still held once the wait is over all refuse,
+		// whatever the flags. Only --codex-composer-fallback, and only when
+		// the identity is provably unavailable (macapp-core-needs §3: right after the
 		// trust prompt there is no identity, or the stored id has no
 		// rollout), sends through the verified composer path instead.
 		guardErr := hydrateLegacyCodexIdentity(inst, instances, storage)
 		if guardErr == nil {
-			acceptanceGuard, guardErr = acquireCodexAcceptanceGuard(inst, codexAcceptanceLockWait(*timeout))
+			// The lock is taken after the readiness wait, never across it:
+			// a busy Codex turn would otherwise hold every other sender off.
+			// No identity or a remote rollout refuses before the wait, as does
+			// an unavailable rollout generation (inside the helper). An
+			// unresolved earlier submission refuses only after it, because
+			// the end of the running turn is what lets it reconcile.
+			var waitReady func(time.Duration) error
+			if needsReady && inst.CodexRolloutIsResolvableLocally() && strings.TrimSpace(inst.CodexSessionID) != "" {
+				waitReady = func(d time.Duration) error {
+					err := waitAgentReady(d)
+					readyWaited = readyWaited || err == nil
+					return err
+				}
+			}
+			readyBudget := *timeout
+			if readyBudget <= 0 {
+				readyBudget = send.DefaultAgentReadyTimeout
+			}
+			var readyErr error
+			acceptanceGuard, readyErr, guardErr = acquireCodexAcceptanceWhenReady(
+				time.Now().Add(readyBudget), codexAcceptanceLockWait(*timeout), waitReady,
+				inst.LatestCodexTurnGeneration,
+				func(d time.Duration) (*codexAcceptanceGuard, error) { return acquireCodexAcceptanceGuard(inst, d) },
+			)
+			if readyErr != nil {
+				failReady(readyErr)
+			}
 		}
 		switch {
 		case guardErr == nil:
@@ -411,26 +463,11 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
-	// Wait for agent to be ready (unless --no-wait is specified).
-	// Issue #957: honor --timeout for the readiness phase too, not just the
-	// post-ready completion wait. Otherwise --timeout 5m against a busy
-	// recipient silently fails at ~80s.
-	busyAcceptsInput := !*wait && session.AcceptsInputWhileBusy(inst.Tool)
-	if busyAcceptsInput {
-		status, statusErr := fetchHookDrivenStatus(profile, inst.ID)
-		busyAcceptsInput = statusErr == nil && status == "running"
-	}
-	if !*noWait && !busyAcceptsInput {
-		if err := send.WaitForAgentReady(tmuxSess, inst.Tool, *timeout, send.PromptGates{
-			ClaudeComposer: session.IsClaudeCompatible(inst.Tool),
-			CodexPrompt:    session.IsCodexCompatible(inst.Tool),
-		}); err != nil {
-			if acceptanceGuard != nil {
-				acceptanceGuard.Release()
+	if needsReady {
+		if !readyWaited {
+			if err := waitAgentReady(*timeout); err != nil {
+				failReady(err)
 			}
-			telemetry.ErrorOccurred(telemetry.AreaSend, telemetry.KindTimeout, inst.Tool)
-			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
-			exitCLI(1)
 		}
 		// Issue #966: after a restart, Claude reaches "waiting" + composer
 		// visible before its slash-command parser registers. Bare `/foo`

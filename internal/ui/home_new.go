@@ -194,6 +194,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		feedbackDialog:            NewFeedbackDialog(),
 		askDialog:                 NewAskDialog(actualProfile),
 		reportDialog:              NewReportDialog(),
+		whatsNewDialog:            NewWhatsNewDialog(),
 		telemetryDialog:           NewTelemetryDialog(),
 		zoxidePicker:              NewZoxidePicker(),
 		feedbackSender:            feedback.NewSender(),

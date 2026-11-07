@@ -189,11 +189,32 @@ func writePrivateFile(path string, data []byte) error {
 	return nil
 }
 
+// ErrRemoteBusy means another agent-deck holds a sandbox remote's lock: a
+// create or a destroy of that remote is running.
+var ErrRemoteBusy = errors.New("remote is busy")
+
 // lockRemoteName takes the provisioning lock for remoteName (an flock on
 // <data dir>/sandboxes/.locks/<name>.lock, released when the process dies)
 // and returns its release. A held lock means another provisioning of that
 // name is running.
 func lockRemoteName(remoteName string) (func(), error) {
+	return lockRemote(remoteName, func() error {
+		return fmt.Errorf("remote %q is already being provisioned by another agent-deck; wait for it or pick another name", remoteName)
+	})
+}
+
+// LockRemote takes remoteName's sandbox lock for a destroy, the same lock a
+// create of that name holds, and returns its release. Every destroy holds
+// it from before it lists the remote's sessions until DestroyRemote
+// returns, so a second destroy of the same remote (in this agent-deck or
+// another) is refused with ErrRemoteBusy instead of racing the first.
+func LockRemote(remoteName string) (func(), error) {
+	return lockRemote(remoteName, func() error {
+		return fmt.Errorf("%w: another agent-deck is creating or destroying remote %q right now; wait for it to finish", ErrRemoteBusy, remoteName)
+	})
+}
+
+func lockRemote(remoteName string, busy func() error) (func(), error) {
 	dir, err := SandboxDir(remoteName)
 	if err != nil {
 		return nil, err
@@ -210,7 +231,7 @@ func lockRemoteName(remoteName string) (func(), error) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("remote %q is already being provisioned by another agent-deck; wait for it or pick another name", remoteName)
+			return nil, busy()
 		}
 		return nil, fmt.Errorf("locking sandbox name %q: %w", remoteName, err)
 	}

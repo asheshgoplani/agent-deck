@@ -47,7 +47,7 @@ end
 complete -c agent-deck -f -n "test (count (commandline -opc)) -eq 2; and contains -- (commandline -opc)[2] -p --profile" -a "(agent-deck __complete profiles)"
 
 # Top-level commands.
-complete -c agent-deck -f -n "__agent_deck_at '' '' 1" -a "add list ls remove rm rename mv status update launch try accounts web debug-dump perf migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox msg session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt provider open file costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek"
+complete -c agent-deck -f -n "__agent_deck_at '' '' 1" -a "add list ls remove rm rename mv status update launch try accounts web debug-dump perf migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox msg session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt provider open switch file costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek"
 
 # Subcommands.
 complete -c agent-deck -f -n "__agent_deck_at feedback '' 2" -a "bug idea"
@@ -150,6 +150,7 @@ complete -c agent-deck -f -n "__agent_deck_at session viewers 3" -a "(agent-deck
 complete -c agent-deck -f -n "__agent_deck_at skill attach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
 complete -c agent-deck -f -n "__agent_deck_at skill attached 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
 complete -c agent-deck -f -n "__agent_deck_at skill detach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at switch '' 2" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
 complete -c agent-deck -f -n "__agent_deck_at worktree finish 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
 complete -c agent-deck -f -n "__agent_deck_at worktree info 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
 complete -c agent-deck -f -n "__agent_deck_at wt finish 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"

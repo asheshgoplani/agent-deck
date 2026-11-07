@@ -97,8 +97,9 @@ func TestGenerateOSC52_WithTmux(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(text))
 	seq := generateOSC52(encoded, true)
 
-	// Should wrap in DCS passthrough
-	expected := "\x1bPtmux;\x1b\x1b]52;c;" + encoded + "\x07\x1b\\"
+	// Plain OSC 52 (set-clipboard on), then the DCS passthrough form
+	// (allow-passthrough on); see generateOSC52.
+	expected := "\x1b]52;c;" + encoded + "\x07" + "\x1bPtmux;\x1b\x1b]52;c;" + encoded + "\x07\x1b\\"
 	if seq != expected {
 		t.Errorf("expected %q, got %q", expected, seq)
 	}

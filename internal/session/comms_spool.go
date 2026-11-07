@@ -93,6 +93,8 @@ type CommsSpoolEntry struct {
 	State          string `json:"state,omitempty"` // status edge: the status entered
 	SessionID      string `json:"session_id,omitempty"`
 	TurnID         string `json:"turn_id,omitempty"`
+	RunID          string `json:"run_id,omitempty"` // pi: the run token a v4 extension minted at agent_start, capped
+	PiRun          string `json:"pi_run,omitempty"` // pi: piRunSignal of the FULL run_id, before the cap (the inbox's run key)
 	Text           string `json:"text,omitempty"`   // assistant text (turn_end), capped
 	TH             string `json:"th,omitempty"`     // sha256/16 of the FULL trimmed text, before the cap
 	Prompt         string `json:"prompt,omitempty"` // user prompt prefix (either edge)
@@ -169,11 +171,15 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		e.TH = turnTextHash(full) // the hash of the full text, before the cap
 	}
 	e.Text = capBytes(full, commsSpoolTextBytes)
+	if run := strings.TrimSpace(e.RunID); run != "" && e.Harness == "pi" {
+		e.PiRun = piRunSignal(run) // the status file and the inbox hash the whole id
+	}
 	e.Prompt = comms.CapText(strings.TrimSpace(e.Prompt), commsSpoolPromptBytes)
 	e.Harness = capBytes(e.Harness, commsSpoolIDBytes)
 	e.Event = capBytes(e.Event, commsSpoolIDBytes)
 	e.SessionID = capBytes(e.SessionID, commsSpoolIDBytes)
 	e.TurnID = capBytes(e.TurnID, commsSpoolIDBytes)
+	e.RunID = capBytes(e.RunID, commsSpoolIDBytes)
 	e.TranscriptPath = capBytes(e.TranscriptPath, commsSpoolCwdBytes)
 	e.Cwd = capBytes(e.Cwd, commsSpoolCwdBytes)
 	e.Via = capBytes(e.Via, commsSpoolIDBytes)

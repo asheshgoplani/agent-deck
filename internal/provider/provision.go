@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -23,12 +25,31 @@ const (
 	// off (timeout, cancel) before the provider answered, it finds exactly
 	// the sandbox that request made, if any.
 	LabelCreateID = "agent-deck/create-id"
+	// LabelOwner names the person who created the sandbox
+	// (UserConfig.SandboxOwner), so a provider list or a cloud console
+	// shows whose machine it is.
+	LabelOwner = "agent-deck/owner"
 )
 
+// rollbackTimeout is the least time the cleanup after a failed
+// provisioning gets; it runs on a fresh context so a cancelled caller still
+// cleans up. A var so tests can shorten it.
+var rollbackTimeout = 2 * time.Minute
+
+// cleanupBudget is the time a cleanup of calls provider calls gets: at
+// least rollbackTimeout, and enough for each call to use the provider's
+// own timeout_seconds. A cloud destroy deletes several resources one after
+// another; a shorter budget would kill it half way and leave resources
+// that list never shows.
+func cleanupBudget(client *Client, calls int) time.Duration {
+	d := time.Duration(calls)*client.Config.GetTimeout() + killWait
+	if d < rollbackTimeout {
+		return rollbackTimeout
+	}
+	return d
+}
+
 const (
-	// rollbackTimeout bounds the cleanup after a failed provisioning; it
-	// runs on a fresh context so a cancelled caller still cleans up.
-	rollbackTimeout = 2 * time.Minute
 	// waitSSHBudget bounds the default ssh readiness probe.
 	waitSSHBudget = 3 * time.Minute
 	// waitSSHAttempt bounds one probe attempt.
@@ -104,6 +125,10 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	if _, exists := cfg.Remotes[name]; exists {
 		return nil, fmt.Errorf("remote %q already exists (use 'agent-deck remote remove %s' or pick another --name)", name, name)
 	}
+	owner, ownerSource := cfg.SandboxOwnerSource()
+	if err := validateOwner(owner, ownerSource); err != nil {
+		return nil, err
+	}
 
 	createID, err := randomHex(8)
 	if err != nil {
@@ -112,6 +137,9 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	labels := map[string]string{LabelRemote: name, LabelCreateID: createID}
 	if opts.Profile != "" {
 		labels[LabelProfile] = opts.Profile
+	}
+	if owner != "" {
+		labels[LabelOwner] = owner
 	}
 	progress(fmt.Sprintf("Creating sandbox %q with provider %q...", name, opts.Provider))
 	sb, err := client.Create(ctx, name, labels)
@@ -137,6 +165,7 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 		Provider:      opts.Provider,
 		SandboxID:     sb.ID,
 		SSHConfig:     sshConfig,
+		Owner:         owner,
 	}
 	if err := registerRemote(name, rc); err != nil {
 		return nil, rollback(client, name, sb.ID, false, err)
@@ -160,9 +189,36 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	return &Provisioned{RemoteName: name, Remote: rc, Sandbox: *sb}, nil
 }
 
+// maxOwner caps the owner name, in runes.
+const maxOwner = 64
+
+// validateOwner refuses an owner name that cannot be a label value or a
+// display name: control or non-printable characters, or more than maxOwner
+// runes. Empty is allowed (no owner known; the label is left out). The
+// refusal names source (where the value came from) and never echoes it.
+func validateOwner(owner, source string) error {
+	if !utf8.ValidString(owner) || utf8.RuneCountInString(owner) > maxOwner {
+		return fmt.Errorf("invalid sandbox owner from %s: at most %d characters of UTF-8 text%s", source, maxOwner, ownerFixHint(source))
+	}
+	for _, r := range owner {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("invalid sandbox owner from %s: it contains a control or non-printable character%s", source, ownerFixHint(source))
+		}
+	}
+	return nil
+}
+
+// ownerFixHint says how to fix an owner that did not come from the config.
+func ownerFixHint(source string) string {
+	if source == session.OwnerSourceConfig {
+		return ""
+	}
+	return " (set owner in the [sandbox] section of config.toml to use another name)"
+}
+
 // rollback undoes a failed provisioning and joins its failures to cause.
 func rollback(client *Client, name, id string, registered bool, cause error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), rollbackTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupBudget(client, 1))
 	defer cancel()
 	var errs []error
 	if err := client.Destroy(ctx, id); err != nil {
@@ -188,7 +244,8 @@ func rollback(client *Client, name, id string, registered bool, cause error) err
 // caller still cleans up. Its failures are joined to cause, with the label
 // to look for by hand.
 func sweepInterruptedCreate(client *Client, name, createID string, cause error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), rollbackTimeout)
+	// A list, then normally one destroy.
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupBudget(client, 2))
 	defer cancel()
 	list, err := client.List(ctx)
 	if err != nil {
@@ -216,10 +273,16 @@ func sweepInterruptedCreate(client *Client, name, createID string, cause error) 
 	return cause
 }
 
+// ErrDestroyedCleanupFailed matches a DestroyRemote error where the provider
+// destroyed the sandbox but removing the remote or its files failed.
+var ErrDestroyedCleanupFailed = errors.New("local cleanup failed")
+
 // DestroyRemote destroys a sandbox remote: provider destroy, then
 // unregister, then remove the sandbox files. When the provider fails the
-// remote stays registered, so the user can retry. Stopping the remote's
-// sessions and asking for confirmation are the caller's job.
+// remote stays registered, so the user can retry. A failure after the
+// provider destroy matches ErrDestroyedCleanupFailed. Stopping the remote's
+// sessions and asking for confirmation are the caller's job, and so is
+// holding LockRemote(remoteName) from before the sessions are listed.
 func DestroyRemote(ctx context.Context, remoteName string) error {
 	cfg, err := session.LoadUserConfig()
 	if err != nil {
@@ -239,10 +302,15 @@ func DestroyRemote(ctx context.Context, remoteName string) error {
 	if err := client.Destroy(ctx, rc.SandboxID); err != nil {
 		return fmt.Errorf("destroying sandbox %s for remote %q: %w", rc.SandboxID, remoteName, err)
 	}
+	// The sandbox is gone from here on: a failure says so, so the caller
+	// does not tell the user it is still there.
 	if err := unregisterRemote(remoteName); err != nil {
-		return err
+		return fmt.Errorf("sandbox %s was destroyed, but removing remote %q failed (%w): %w", rc.SandboxID, remoteName, ErrDestroyedCleanupFailed, err)
 	}
-	return removeFilesFor(remoteName, rc)
+	if err := removeFilesFor(remoteName, rc); err != nil {
+		return fmt.Errorf("sandbox %s was destroyed and remote %q removed, but removing its files failed (%w): %w", rc.SandboxID, remoteName, ErrDestroyedCleanupFailed, err)
+	}
+	return nil
 }
 
 // removeFilesFor removes the sandbox dir the remote's ssh_config lives in

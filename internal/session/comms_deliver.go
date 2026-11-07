@@ -338,6 +338,10 @@ func (d *TransitionDaemon) startCommsDrain(id string, en CommsEnrollment) {
 	commsLog.Info("comms_consumer_unenrolled", slog.String("parent", id))
 }
 
+// commsScanHook is told of every delivery pass that reads the parent's
+// records (tests count the fast path's skips with it).
+var commsScanHook = func(string) {}
+
 // deliverToConsumer settles stale attempts and, when the parent is idle
 // and something warrants it, types one combined wake.
 func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, profile string, inst *Instance, status string, names comms.Names) {
@@ -351,20 +355,26 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 	}
 	now := commsNow()
 	if f, found, _ := comms.ReadConsumer(r.Dir, id); found {
-		// Nothing new since the last pass and no deadline due: skip the
+		// Nothing new since the last delivery pass and no deadline due: skip the
 		// read entirely (a parent with records waiting for its own prompt
-		// costs two small file reads per poll, not a scan).
-		flag, _ := comms.ReadFlag(r.Dir, id)
-		if flag.Last <= f.Through && (f.NextDue == 0 || now.UnixMilli() < f.NextDue) {
+		// costs two small file reads per poll, not a scan). A flag from another
+		// epoch (the ledger was restored) is never compared with Judged; no
+		// flag (nothing was ever addressed to the parent) is nothing new. A
+		// parent whose flag is from an older epoch is scanned on every idle
+		// poll until its next record carries the new epoch (#3026 item 6).
+		flag, found := comms.ReadFlag(r.Dir, id)
+		if (!found || (flag.Epoch == f.Epoch && flag.Last <= f.Judged)) && (f.NextDue == 0 || now.UnixMilli() < f.NextDue) {
 			return
 		}
 	}
+	commsScanHook(id)
 	var line string
 	var carried []comms.Exported
 	capped := false
 	_, err := r.Do(id, func(p comms.Pass) ([]events.Cursor, error) {
 		var acks []events.Cursor
 		f := p.File
+		f.Judged = p.Through
 		var wakeFailed []events.Cursor
 		f.Settle(func(in comms.Inflight) bool {
 			age := now.UnixMilli() - in.At
@@ -699,7 +709,8 @@ func drainScope(en CommsEnrollment) (inScope func(comms.Record) bool, draining, 
 // marker. It acknowledges the records the prompt showed (a wake line names
 // them) and the records injected into the previous turn, and returns the
 // rest as context, followed by the inbox drain within one shared budget.
-// Exact transcript turn keys suppress duplicates in both directions.
+// Exact turn keys suppress duplicates: a transcript turn in both directions,
+// a pi run only when the ledger showed it first (inboxShownKey).
 // A draining parent gets only what the ledger still
 // owed it; once that is delivered its marker is removed. ok is false when
 // the inbox path alone applies (no marker, or the ledger cannot be read:
@@ -777,17 +788,43 @@ func LedgerPromptContext(id, prompt string) (*LedgerDelivery, bool) {
 		dl.Text += drained
 	}
 	for _, ev := range evs {
-		dl.shownKeys = append(dl.shownKeys, inboxTurnKey(ev))
+		dl.shownKeys = append(dl.shownKeys, inboxShownKey(ev))
 	}
 	return dl, true
 }
 
+// inboxShownKey is the turn key a shown inbox record marks as shown: its
+// inboxTurnKey, except for a pi run. A pi inbox record carries no text, so it
+// must not stand for the ledger turn that does; the ledger showing that turn
+// first still retires the record (commsShownMatcher). Inbox first, the run is
+// shown twice, as before the pi run key, and nothing is lost.
+func inboxShownKey(ev TransitionNotificationEvent) string {
+	if strings.HasPrefix(strings.TrimSpace(ev.LastOutputHash), "pi-run:") && ev.TurnUUID == "" {
+		return ""
+	}
+	return inboxTurnKey(ev)
+}
+
+// piRunTurnKey is the ledger key of a pi run's turn: ingestCommsEntry commits
+// a pi spool entry that carries the run under it, and inboxTurnKey maps the
+// run's inbox record to it.
+func piRunTurnKey(childID, signal string) string {
+	return comms.Key(comms.KindTurn, childID, "pi", signal)
+}
+
 // inboxTurnKey is the ledger key of the turn an inbox record carries: the
-// key the ledger commits a transcript-classified turn under. "" when the
-// record is not provably that exact local transcript turn.
+// key the ledger commits a transcript-classified turn or a pi run under. ""
+// when the record is not provably that exact local turn.
 func inboxTurnKey(ev TransitionNotificationEvent) string {
-	if strings.TrimSpace(ev.TurnUUID) == "" || ev.OutputHashStale ||
-		strings.EqualFold(strings.TrimSpace(ev.ToStatus), "error") || ev.SourceRemote != "" {
+	if strings.EqualFold(strings.TrimSpace(ev.ToStatus), "error") || ev.SourceRemote != "" {
+		return ""
+	}
+	if sig := strings.TrimSpace(ev.LastOutputHash); strings.HasPrefix(sig, "pi-run:") && ev.TurnUUID == "" {
+		// A pi run. Its signal names the run for good (TurnFingerprint), so a
+		// stale flag does not make it another turn.
+		return piRunTurnKey(ev.ChildSessionID, sig)
+	}
+	if strings.TrimSpace(ev.TurnUUID) == "" || ev.OutputHashStale {
 		return ""
 	}
 	// TurnFingerprint uses the plain turn/finished form only when a signal
@@ -881,7 +918,7 @@ func LedgerStopDecision(id string, stopHookActive bool) (*LedgerDelivery, bool) 
 		if derr == nil && blocked {
 			dl.Decision, dl.Blocked, dl.Text = dec, true, dec.Reason
 			for _, ev := range evs {
-				dl.shownKeys = append(dl.shownKeys, inboxTurnKey(ev))
+				dl.shownKeys = append(dl.shownKeys, inboxShownKey(ev))
 			}
 			dl.onShown = func() { SpoolCommsWake(id, "inbox", "stop", dec.Reason, "") }
 		}

@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -143,6 +142,11 @@ const (
 	// of writes collapses into one probe after the last of them, and a
 	// probe can never start again the moment it ends.
 	remoteAgentProbeQuiet = 2 * time.Second
+	// remoteAgentActivityEvery is the least time between two probes for
+	// stamp moves that left the listed rows unchanged (see
+	// remoteAgentConfig.Fingerprint). Such writes come with agent activity,
+	// whose live status only tmux knows, so they are still probed, slower.
+	remoteAgentActivityEvery = 10 * time.Second
 	// remoteAgentPingEvery is how often {"event":"ping"} is pushed.
 	remoteAgentPingEvery = 20 * time.Second
 	// remoteAgentProfileEvery is how often an agent started without -p
@@ -182,10 +186,17 @@ type remoteAgentConfig struct {
 	WatchPath  string
 	WatchEvery time.Duration
 	ProbeQuiet time.Duration
-	Capture    func(context.Context, string) (string, error)
-	PaneEvery  time.Duration
-	PingEvery  time.Duration
-	IdleAfter  time.Duration
+	// Fingerprint, when set, cheaply identifies the state the listings are
+	// built from (the instances and groups rows). A stamp move that leaves
+	// it unchanged was a write to a table the listings do not read (a
+	// Claude status line, a cost event): it is probed no sooner than
+	// ActivityEvery after the last probe instead of after ProbeQuiet.
+	Fingerprint   func() (string, error)
+	ActivityEvery time.Duration
+	Capture       func(context.Context, string) (string, error)
+	PaneEvery     time.Duration
+	PingEvery     time.Duration
+	IdleAfter     time.Duration
 	// WriteStall bounds how long a write may wait for a full outbound queue.
 	WriteStall time.Duration
 	// MaxConcurrent caps subprocesses; MaxPushBytes caps pushed listings.
@@ -211,6 +222,9 @@ type remoteAgentConfig struct {
 func (c remoteAgentConfig) withDefaults() remoteAgentConfig {
 	if c.ProbeQuiet <= 0 {
 		c.ProbeQuiet = remoteAgentProbeQuiet
+	}
+	if c.ActivityEvery <= 0 {
+		c.ActivityEvery = remoteAgentActivityEvery
 	}
 	if c.PingEvery <= 0 {
 		c.PingEvery = remoteAgentPingEvery
@@ -285,7 +299,7 @@ func handleRemoteAgent(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, "remote-agent: a global state DB is registered; the probe would write last-activity rows")
 		exitCLI(1)
 	}
-	probe, closeProbe, err := newRemoteAgentProbe(profile)
+	probe, fingerprint, closeProbe, err := newRemoteAgentProbe(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
 		exitCLI(1)
@@ -313,6 +327,7 @@ func handleRemoteAgent(profile string, args []string) {
 	cfg := remoteAgentConfig{
 		Run:         runner,
 		Probe:       probe,
+		Fingerprint: fingerprint,
 		WatchPath:   dbPath,
 		WatchEvery:  remoteAgentStampEvery,
 		Capture:     remoteAgentPaneCapturer(profile),
@@ -348,20 +363,37 @@ func newRemoteAgentBinaryWatch(self string) *update.Watcher {
 
 // newRemoteAgentProbe opens the profile's storage once and returns a probe
 // that loads it, refreshes statuses, and formats both listings exactly as
-// the CLI would, plus the close for the storage handle. Like `list --json`
-// it warms the tmux and hook-status caches once per probe, then formats
-// both listings from that one load. The handle stays open for the life of
-// the agent, so unlike a `list` subprocess no probe checkpoints the WAL.
+// the CLI would, the change feed's fingerprint, and the close for the
+// storage handle. Like `list --json` the probe warms the tmux and
+// hook-status caches once per probe, then formats both listings from that
+// one load. The handle stays open for the life of the agent, so unlike a
+// `list` subprocess no probe checkpoints the WAL.
 //
-// The probe is read-only. UpdateStatus flushes last-activity evidence
+// The fingerprint is a hash of the instances and groups rows, the only
+// tables the listings load. It reads the rows without decoding them into
+// sessions, refreshing a status or touching tmux, so it costs a small
+// fraction of a probe.
+//
+// Both are read-only. UpdateStatus flushes last-activity evidence
 // through statedb.GetGlobal(), which a `list` subprocess registers at
 // startup and this process never does (handleRemoteAgent checks), so the
 // flush is a no-op here and a probe never moves the stamp the watcher
 // compares. TestRemoteAgent_InProcessProbeMatchesCLI pins this.
-func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func(), error) {
+func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func() (string, error), func(), error) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	fingerprint := func() (string, error) {
+		snap, err := storage.GetDB().LoadRegistrySnapshot()
+		if err != nil {
+			return "", err
+		}
+		h := sha256.New()
+		if err := json.NewEncoder(h).Encode(snap); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(h.Sum(nil)), nil
 	}
 	probe := func() (string, string, error) {
 		instances, groups, err := storage.LoadWithGroups()
@@ -380,7 +412,7 @@ func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func(), error) {
 		}
 		return string(l), string(g), nil
 	}
-	return probe, func() { _ = storage.Close() }, nil
+	return probe, fingerprint, func() { _ = storage.Close() }, nil
 }
 
 // remoteAgentPaneCapturer returns a capture func that reads the watched
@@ -735,13 +767,21 @@ loop:
 // probe, and a write landing while a probe runs (which that probe may or
 // may not have seen) is probed again rather than taken as seen. The probe
 // is read-only, so a stamp that moved during it was moved by someone else.
+// With a Fingerprint, a stamp move that left the instances and groups rows
+// unchanged (a status line or cost event write, several a second on a busy
+// host) is probed at most every ActivityEvery instead of every ProbeQuiet.
 func watchRemoteState(ctx context.Context, cfg remoteAgentConfig, write func(remoteAgentReply)) {
 	last := remoteAgentStamp(cfg.WatchPath)
 	// Seed with the current content so the first stamp change is judged
 	// against what the TUI already fetched at startup.
+	lastFP := ""
+	if cfg.Fingerprint != nil {
+		lastFP, _ = cfg.Fingerprint()
+	}
 	l0, g0, _ := cfg.Probe()
 	lastHash := remoteAgentContentHash(l0, g0)
 	lastProbeEnd := time.Now()
+	lastFullProbeEnd := lastProbeEnd
 	pending := false
 	t := time.NewTicker(cfg.WatchEvery)
 	defer t.Stop()
@@ -757,13 +797,29 @@ func watchRemoteState(ctx context.Context, cfg remoteAgentConfig, write func(rem
 		if !pending || time.Since(lastProbeEnd) < cfg.ProbeQuiet {
 			continue
 		}
-		pending = false
 		before := last
+		if cfg.Fingerprint != nil {
+			// A stamp move that left the listed rows as they were is probed
+			// at the activity interval, not the quiet one. pending stays set,
+			// so the probe still comes once that interval is up; the
+			// fingerprint is checked again at most every ProbeQuiet.
+			fp, err := cfg.Fingerprint()
+			if err == nil && fp == lastFP && lastFP != "" && time.Since(lastFullProbeEnd) < cfg.ActivityEvery {
+				lastProbeEnd = time.Now()
+				continue
+			}
+			if err != nil {
+				fp = ""
+			}
+			lastFP = fp
+		}
+		pending = false
 		stamp := remoteAgentStampNanos(cfg.WatchPath)
 		started := time.Now()
 		l, g, err := cfg.Probe()
 		elapsed := time.Since(started).Milliseconds()
 		lastProbeEnd = time.Now()
+		lastFullProbeEnd = lastProbeEnd
 		if ctx.Err() != nil {
 			return
 		}
@@ -1040,20 +1096,68 @@ func remoteAgentArgsAllowed(args []string) bool {
 }
 
 // remoteAgentContentHash hashes what the TUI would see, ignoring the
-// last_activity timestamps that a status refresh rewrites on every listing
+// last_activity_at timestamps that a status refresh rewrites on every listing
 // and a viewer's activity time, which moves with every keystroke in a shared
 // session (a viewer joining or leaving still counts as a change).
+//
+// It runs on every probe, and on a busy host a probe runs every couple of
+// seconds, so the scrub is a linear scan rather than a regexp: two
+// backtracking ReplaceAllString passes over a 146-session listing were a
+// sixth of an idle agent's CPU. remoteAgentScrubStringField removes exactly
+// what `"<key>":\s*"[^"]*",?` matched (TestRemoteAgentContentHash_MatchesRegexpScrub).
 func remoteAgentContentHash(listJSON, groupJSON string) string {
-	scrub := remoteAgentActivityField.ReplaceAllString(listJSON, "")
-	scrub = remoteAgentViewerActivityField.ReplaceAllString(scrub, "")
-	sum := sha256.Sum256([]byte(scrub + "\x00" + groupJSON))
-	return hex.EncodeToString(sum[:8])
+	scrub := remoteAgentScrubStringField(listJSON, "last_activity_at")
+	scrub = remoteAgentScrubStringField(scrub, "activity")
+	h := sha256.New()
+	_, _ = io.WriteString(h, scrub)
+	_, _ = io.WriteString(h, "\x00")
+	_, _ = io.WriteString(h, groupJSON)
+	var sum [sha256.Size]byte
+	return hex.EncodeToString(h.Sum(sum[:0])[:8])
 }
 
-var (
-	remoteAgentActivityField       = regexp.MustCompile(`"last_activity_at":\s*"[^"]*",?`)
-	remoteAgentViewerActivityField = regexp.MustCompile(`"activity":\s*"[^"]*",?`)
-)
+// remoteAgentScrubStringField drops every `"<key>": "<value>",` (the comma
+// optional, any JSON whitespace after the colon, the value ending at its
+// first quote) from s, leftmost first, the way the regexp
+// `"<key>":\s*"[^"]*",?` replaced with "" did. s comes back as is when the
+// key does not occur.
+func remoteAgentScrubStringField(s, key string) string {
+	pat := `"` + key + `":`
+	i := strings.Index(s, pat)
+	if i < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	from := 0
+	for i >= 0 {
+		start := from + i
+		k := start + len(pat)
+		for k < len(s) && (s[k] == ' ' || s[k] == '\t' || s[k] == '\n' || s[k] == '\f' || s[k] == '\r') {
+			k++
+		}
+		matched := false
+		if k < len(s) && s[k] == '"' {
+			if q := strings.IndexByte(s[k+1:], '"'); q >= 0 {
+				end := k + 1 + q + 1
+				if end < len(s) && s[end] == ',' {
+					end++
+				}
+				b.WriteString(s[from:start])
+				from = end
+				matched = true
+			}
+		}
+		if !matched {
+			// No match here; the next one can start one byte on.
+			b.WriteString(s[from : start+1])
+			from = start + 1
+		}
+		i = strings.Index(s[from:], pat)
+	}
+	b.WriteString(s[from:])
+	return b.String()
+}
 
 // remoteAgentStamp folds the mtime and size of the state DB, its WAL and
 // SHM into one comparable string.
