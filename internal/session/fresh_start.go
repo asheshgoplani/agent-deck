@@ -44,6 +44,9 @@ type freshStartToken struct {
 	At time.Time `json:"at"`
 	// SessionID is the conversation the start runs (freshStartTurnSeen).
 	SessionID string `json:"session_id,omitempty"`
+	// TurnSeq is the hook file's turn_seq at the start (#3012): a turn since
+	// then shows as a higher one. Recorded only; no judge reads it yet.
+	TurnSeq uint64 `json:"turn_seq,omitempty"`
 }
 
 // freshStartObservable reports whether claudeCmd runs the claude binary itself
@@ -78,7 +81,7 @@ func noteFreshStart(i *Instance, now time.Time) {
 		}
 	}
 	if CheckClaudeHooksInstalled(dir) {
-		writeTokenFile(freshStartDir, i.ID, ".json", freshStartToken{At: now, SessionID: i.ClaudeSessionID})
+		writeTokenFile(freshStartDir, i.ID, ".json", freshStartToken{At: now, SessionID: i.ClaudeSessionID, TurnSeq: readHookTurnSeq(i.ID)})
 	}
 }
 

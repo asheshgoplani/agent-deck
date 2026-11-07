@@ -230,6 +230,10 @@ type HookStatus struct {
 	// own session id, so its events must never bind the entry's session.
 	// Empty for agents that send no platform.
 	Platform string
+	// TurnSeq is the hook file's turn_seq: the instance's turn edges
+	// (UserPromptSubmit and Stop) so far, carried through every other event
+	// (#3012). 0 for a file written before it existed.
+	TurnSeq uint64
 }
 
 // hookGenerationForInstance resolves generation authority by instance, not by
