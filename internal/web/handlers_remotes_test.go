@@ -97,14 +97,14 @@ func TestServerStartCancelsRemoteFleetWhenListenFails(t *testing.T) {
 }
 
 func TestRemotesAPILabelsSandboxRemotes(t *testing.T) {
-	prev := loadRemoteKinds
-	loadRemoteKinds = func() map[string]string {
-		return remoteKindsFromConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{
+	prev := loadRemoteLabels
+	loadRemoteLabels = func() map[string]remoteLabels {
+		return remoteLabelsFromConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{
 			"build": {Host: "b"},
 			"sb1":   {Host: "agentdeck-sb-sb1", Provider: "docker", SandboxID: "c0ffee"},
 		}})
 	}
-	t.Cleanup(func() { loadRemoteKinds = prev })
+	t.Cleanup(func() { loadRemoteLabels = prev })
 	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{snapshot: session.RemoteFleetSnapshot{
 		Remotes: []session.RemoteFleetRemote{{Name: "build", Online: true}, {Name: "sb1", Online: true}},
 	}}})
@@ -131,5 +131,55 @@ func TestRemotesAPILabelsSandboxRemotes(t *testing.T) {
 		if r.Kind != want[r.Name] {
 			t.Fatalf("remote %q kind = %q, want %q", r.Name, r.Kind, want[r.Name])
 		}
+	}
+}
+
+// ASK-172: the fleet view names whose sandbox it is.
+func TestRemotesAPIShowsSandboxOwner(t *testing.T) {
+	prev := loadRemoteLabels
+	loadRemoteLabels = func() map[string]remoteLabels {
+		return remoteLabelsFromConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{
+			"build": {Host: "b"},
+			"sb1":   {Host: "agentdeck-sb-sb1", Provider: "docker", SandboxID: "c0ffee", Owner: "alice"},
+		}})
+	}
+	t.Cleanup(func() { loadRemoteLabels = prev })
+	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{snapshot: session.RemoteFleetSnapshot{
+		Remotes: []session.RemoteFleetRemote{{Name: "build", Online: true}, {Name: "sb1", Online: true}},
+	}}})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, newLocalRequest(http.MethodGet, "/api/remotes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Remotes []map[string]any `json:"remotes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	for _, r := range body.Remotes {
+		owner, has := r["owner"]
+		switch r["name"] {
+		case "sb1":
+			if owner != "alice" {
+				t.Fatalf("sb1 owner = %v, want alice", owner)
+			}
+		case "build":
+			if has {
+				t.Fatalf("plain remote got an owner: %v", owner)
+			}
+		}
+	}
+}
+
+// Review of #3019: the owner comes from config.toml; /api/remotes hands
+// clients only its printable characters.
+func TestRemotesAPIOwnerDropsControlChars(t *testing.T) {
+	labels := remoteLabelsFromConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{
+		"sb1": {Host: "agentdeck-sb-sb1", Provider: "docker", SandboxID: "c0ffee", Owner: "ali\x1b]0;x\x07ce\n"},
+	}})
+	if got := labels["sb1"].Owner; got != "ali]0;xce" {
+		t.Fatalf("sb1 owner = %q, want the printable %q", got, "ali]0;xce")
 	}
 }

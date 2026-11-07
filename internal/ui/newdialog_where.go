@@ -105,10 +105,15 @@ func (d *NewDialog) cycleWhere(delta int) {
 // sandbox pick: what the dialog does not carry there (#2918).
 const whereRemoteDefaultsNote = "Model, effort, Claude options: the remote's own defaults"
 
+// whereStartPromptNote, shown above it for a Claude session with a typed
+// start prompt, says what does travel besides name, tool and path.
+const whereStartPromptNote = "Start prompt: sent"
+
 // GetWhereRemoteCreateOptions collects what a session created on a remote
 // picked in the Where row carries. The dialog was filled from this
 // machine's config, so only what the user typed travels (name, tool, path,
-// worktree branch); the remote applies its own defaults for the rest, as
+// worktree branch, and a Claude session's start prompt, which the dialog
+// never pre-fills); the remote applies its own defaults for the rest, as
 // ResetRemoteDefaults arranges for a dialog opened on a remote row, and the
 // Where row says so. Settings that would silently not happen there
 // (multi-repo, the Docker sandbox) return an error message for the dialog.
@@ -124,6 +129,9 @@ func (d *NewDialog) GetWhereRemoteCreateOptions() (session.RemoteAddOptions, str
 	if d.worktreeEnabled {
 		opts.WorktreeBranch = strings.TrimSpace(d.branchInput.Value())
 	}
+	// Empty unless Claude is selected and the user typed one; the remote
+	// then starts the session with `launch --startup-query`.
+	opts.StartQuery = d.GetClaudeStartQuery()
 	return opts, ""
 }
 
@@ -146,6 +154,11 @@ func (d *NewDialog) renderWhereSection(content *strings.Builder, cur focusTarget
 	}
 	content.WriteString("\n")
 	if d.GetWhere().kind != whereLocal {
+		// Only when a prompt was typed: an empty one is never sent.
+		if d.GetClaudeStartQuery() != "" {
+			content.WriteString(valueStyle.Render("  " + whereStartPromptNote))
+			content.WriteString("\n")
+		}
 		content.WriteString(valueStyle.Render("  " + whereRemoteDefaultsNote))
 		content.WriteString("\n")
 	}

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -23,6 +25,10 @@ const (
 	// off (timeout, cancel) before the provider answered, it finds exactly
 	// the sandbox that request made, if any.
 	LabelCreateID = "agent-deck/create-id"
+	// LabelOwner names the person who created the sandbox
+	// (UserConfig.SandboxOwner), so a provider list or a cloud console
+	// shows whose machine it is.
+	LabelOwner = "agent-deck/owner"
 )
 
 const (
@@ -104,6 +110,10 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	if _, exists := cfg.Remotes[name]; exists {
 		return nil, fmt.Errorf("remote %q already exists (use 'agent-deck remote remove %s' or pick another --name)", name, name)
 	}
+	owner, ownerSource := cfg.SandboxOwnerSource()
+	if err := validateOwner(owner, ownerSource); err != nil {
+		return nil, err
+	}
 
 	createID, err := randomHex(8)
 	if err != nil {
@@ -112,6 +122,9 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 	labels := map[string]string{LabelRemote: name, LabelCreateID: createID}
 	if opts.Profile != "" {
 		labels[LabelProfile] = opts.Profile
+	}
+	if owner != "" {
+		labels[LabelOwner] = owner
 	}
 	progress(fmt.Sprintf("Creating sandbox %q with provider %q...", name, opts.Provider))
 	sb, err := client.Create(ctx, name, labels)
@@ -137,6 +150,7 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 		Provider:      opts.Provider,
 		SandboxID:     sb.ID,
 		SSHConfig:     sshConfig,
+		Owner:         owner,
 	}
 	if err := registerRemote(name, rc); err != nil {
 		return nil, rollback(client, name, sb.ID, false, err)
@@ -158,6 +172,33 @@ func Provision(ctx context.Context, opts ProvisionOptions) (*Provisioned, error)
 		return nil, rollback(client, name, sb.ID, true, fmt.Errorf("installing agent-deck on sandbox %s: %w", sb.ID, err))
 	}
 	return &Provisioned{RemoteName: name, Remote: rc, Sandbox: *sb}, nil
+}
+
+// maxOwner caps the owner name, in runes.
+const maxOwner = 64
+
+// validateOwner refuses an owner name that cannot be a label value or a
+// display name: control or non-printable characters, or more than maxOwner
+// runes. Empty is allowed (no owner known; the label is left out). The
+// refusal names source (where the value came from) and never echoes it.
+func validateOwner(owner, source string) error {
+	if !utf8.ValidString(owner) || utf8.RuneCountInString(owner) > maxOwner {
+		return fmt.Errorf("invalid sandbox owner from %s: at most %d characters of UTF-8 text%s", source, maxOwner, ownerFixHint(source))
+	}
+	for _, r := range owner {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("invalid sandbox owner from %s: it contains a control or non-printable character%s", source, ownerFixHint(source))
+		}
+	}
+	return nil
+}
+
+// ownerFixHint says how to fix an owner that did not come from the config.
+func ownerFixHint(source string) string {
+	if source == session.OwnerSourceConfig {
+		return ""
+	}
+	return " (set owner in the [sandbox] section of config.toml to use another name)"
 }
 
 // rollback undoes a failed provisioning and joins its failures to cause.

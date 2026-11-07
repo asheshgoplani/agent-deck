@@ -202,6 +202,8 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("        Ask each remote for its agent-deck version and update timer now (two SSH calls per remote)")
 		fmt.Println("  --retry")
 		fmt.Println("        Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
+		fmt.Println("  --owner <name>")
+		fmt.Println("        Show only sandboxes owned by <name>; \"me\" is this machine's [sandbox] owner (default $USER)")
 		fmt.Println("  --json")
 		fmt.Println("        Output as JSON")
 	case "sessions":
@@ -478,6 +480,7 @@ func handleRemoteList(args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	check := fs.Bool("check", false, "Ask each remote for its agent-deck version and update timer now")
 	retry := fs.Bool("retry", false, "Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
+	ownerFilter := fs.String("owner", "", "Show only sandboxes owned by this person (\"me\" = [sandbox] owner, else $USER)")
 	_ = parseCLIFlags(fs, args)
 
 	config, err := session.LoadUserConfig()
@@ -485,11 +488,22 @@ func handleRemoteList(args []string) {
 		fmt.Printf("Error: failed to load config: %v\n", err)
 		exitCLI(1)
 	}
+	owner := strings.TrimSpace(*ownerFilter)
+	if owner == "me" {
+		owner = config.SandboxOwner()
+	}
+	if owner != "" {
+		config = withRemotesOwnedBy(config, owner)
+	}
 
 	if len(config.Remotes) == 0 {
 		// #2920: --json must stay parseable with nothing configured.
 		if *jsonOutput {
 			fmt.Println("[]")
+			return
+		}
+		if owner != "" {
+			fmt.Printf("No sandboxes owned by %s.\n", session.PrintableOwner(owner))
 			return
 		}
 		fmt.Println("No remotes configured.")
@@ -548,9 +562,14 @@ func handleRemoteList(args []string) {
 			Kind      string `json:"kind,omitempty"`
 			Provider  string `json:"provider,omitempty"`
 			SandboxID string `json:"sandbox_id,omitempty"`
+			// Owner is who created the sandbox ([sandbox] owner or $USER
+			// on the machine that made it); SSHConfig is the path of its
+			// own ssh_config. Both omitted for plain remotes.
+			Owner     string `json:"owner,omitempty"`
+			SSHConfig string `json:"ssh_config,omitempty"`
 		}
 
-		var remotes []remoteJSON
+		remotes := []remoteJSON{}
 		for name, rc := range config.Remotes {
 			row := remoteJSON{
 				Name:          name,
@@ -560,6 +579,10 @@ func handleRemoteList(args []string) {
 				Kind:          provider.DisplayKind(rc),
 				Provider:      rc.Provider,
 				SandboxID:     rc.SandboxID,
+				Owner:         session.PrintableOwner(rc.Owner),
+			}
+			if provider.IsSandbox(rc) {
+				row.SSHConfig = rc.SSHConfig
 			}
 			state := versions[name]
 			row.VersionState = state.Compare(Version).String()
@@ -590,21 +613,47 @@ func handleRemoteList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "PROFILE", "VERSION / LAST POLL")
-	fmt.Println(strings.Repeat("-", 84))
+	// A sandbox's host cell ("sandbox (provider docker) · owner: alice")
+	// can be wider than the usual 30; widen the column so PATH and the
+	// rest stay aligned.
+	hosts := make(map[string]string, len(config.Remotes))
+	hostWidth := 30
+	for name, rc := range config.Remotes {
+		host := rc.Host
+		if kind := provider.DisplayKind(rc); kind != "" {
+			host = kind
+			if owner := session.PrintableOwner(rc.Owner); owner != "" {
+				host += " · owner: " + owner
+			}
+		}
+		hosts[name] = host
+		hostWidth = max(hostWidth, runewidth.StringWidth(host))
+	}
+	fmt.Printf("%-15s %s %-20s %-10s %s\n", "NAME", runewidth.FillRight("HOST", hostWidth), "PATH", "PROFILE", "VERSION / LAST POLL")
+	fmt.Println(strings.Repeat("-", 84+hostWidth-30))
 	for name, rc := range config.Remotes {
 		status := remoteVersionColumn(versions[name], Version) + " / " + remotePollColumn(configuredRemotePoll(polls[name], rc))
 		// The remote's own update timer, once a --check has read it (#2472).
 		if timer := versions[name].Timer; timer != nil {
 			status += " / " + remoteTimerColumn(timer)
 		}
-		host := rc.Host
-		if kind := provider.DisplayKind(rc); kind != "" {
-			host = kind
-		}
-		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, host, rc.GetAgentDeckPath(), rc.GetProfile(), status)
+		fmt.Printf("%-15s %s %-20s %-10s %s\n", name, runewidth.FillRight(hosts[name], hostWidth), rc.GetAgentDeckPath(), rc.GetProfile(), status)
 	}
 	fmt.Printf("\nTotal: %d remotes (controller v%s)\n", len(config.Remotes), Version)
+}
+
+// withRemotesOwnedBy returns a copy of cfg whose Remotes holds only the
+// sandboxes owned by owner (`remote list --owner`). Plain remotes and
+// sandboxes made before owners have none and never match.
+func withRemotesOwnedBy(cfg *session.UserConfig, owner string) *session.UserConfig {
+	filtered := *cfg
+	filtered.Remotes = map[string]session.RemoteConfig{}
+	for name, rc := range cfg.Remotes {
+		if rc.Owner != "" && rc.Owner == owner {
+			filtered.Remotes[name] = rc
+		}
+	}
+	return &filtered
 }
 
 // configuredRemotePoll treats a changed SSH identity as never polled.

@@ -91,7 +91,7 @@ The table name (`docker` here) is the provider name you use on the CLI.
 ```json
 {"protocol":1,"action":"create","name":"<remote name>",
  "labels":{"agent-deck/remote":"<name>","agent-deck/profile":"<profile>",
-           "agent-deck/create-id":"<random id>"}}
+           "agent-deck/create-id":"<random id>","agent-deck/owner":"<person>"}}
 {"protocol":1,"action":"list"}
 {"protocol":1,"action":"status","id":"<sandbox id>"}
 {"protocol":1,"action":"destroy","id":"<sandbox id>"}
@@ -223,7 +223,25 @@ asks first.
 - Without a terminal it refuses unless you pass `--yes`, and changes nothing.
 - If it cannot list the sessions, it refuses unless you pass `--force`.
 
-`agent-deck remote list` shows `sandbox (provider <name>)` for these remotes.
+`agent-deck remote list` shows `sandbox (provider <name>) · owner: <person>`
+for these remotes. `--json` adds `kind`, `provider`, `sandbox_id`, `owner` and
+`ssh_config` (the path of the sandbox's own ssh config). `remote list --owner
+<person>` (or `--owner me`) lists only that person's sandboxes.
+
+### Owners
+
+Every sandbox records who made it. The owner is `[sandbox] owner` in
+config.toml, or the login name (`$USER`) when that is not set:
+
+```toml
+[sandbox]
+owner = "alice"
+```
+
+It goes to the provider as the `agent-deck/owner` label, so the provider's
+own list or a cloud console shows whose machine it is, and it is kept on the
+remote. The TUI shows it on the sandbox's host row and preview, and the web
+fleet view on the remote's card.
 
 ## In the TUI
 
@@ -234,13 +252,16 @@ The new-session dialog has a **Where** choice:
 - **new sandbox (<provider>)** for each configured provider
 
 Picking a new sandbox makes one with that provider, registers it as a remote,
-and starts the session there.
+and starts the session there. A start prompt typed for a Claude session goes
+with it; model, effort and the other Claude options use the remote's own
+defaults.
 While it is made, a status line above the list shows the step and the
 seconds so far. If it fails, a notice says at which step, why, and whether
 anything was left behind.
 
-A sandbox shows in the list as `remotes/<name>` with `· sandbox (provider
-<name>)`. Press `d` on that host row to destroy it: the confirm says how many
+A sandbox shows in the list as `remotes/<name>` with `· owner: <person> ·
+sandbox (provider <name>)`; its preview says `Host: sandbox (provider <name>)
+· owner: <person>`. Press `d` on that host row to destroy it: the confirm says how many
 sessions will be stopped. Confirming lists the sessions again and, like
 `remote destroy`, changes nothing when they cannot be listed or more run than
 you agreed to stop; otherwise it stops them, destroys the sandbox and removes
