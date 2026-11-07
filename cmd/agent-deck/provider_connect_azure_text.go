@@ -409,7 +409,7 @@ func azTextDisconnectTenantUnknown(confPath, appID string) string {
 
 const azTextSubInOtherTenantFmt = "the subscription is in directory %s"
 
-const azTextSecretElsewhereKeptFmt = "Left %s in place: sp_secret_file points there, but it does not look like the secret file connect writes. Remove it yourself if nothing else uses it."
+const azTextSecretElsewhereKeptFmt = "Left %s in place: sp_secret_file points there, but it does not look like the secret file connect writes. Remove it yourself if nothing else uses it." //nolint:gosec // G101: user-facing text, not a credential
 
 // Usage and generic errors.
 const (
