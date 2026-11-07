@@ -4,9 +4,10 @@ package ui
 // by Sharjeel). Four pieces live here so newdialog.go stays readable:
 //
 //   - installed tools: the tool row lists installed agents first, then the
-//     plain shell, then the missing tools in grey. A missing tool shows its
-//     install line and Create refuses it. With no default tool configured the
-//     form starts on the first installed agent instead of the shell.
+//     plain shell, then the missing tools in grey. A missing tool shows a
+//     warning with its install line; Create still goes ahead (the probe can
+//     miss a tool the pane finds through the user's shell setup). With no
+//     default tool configured the form starts on the first installed agent instead of the shell.
 //   - the path is shown with ~ for the home folder.
 //   - the hooks line: when Claude hooks are not decided yet and the tool is
 //     Claude, one ticked line replaces the old "Claude Code Hooks" box.
@@ -136,23 +137,19 @@ func toolInstallInfo(cmd string) (display, install string) {
 	return display, ""
 }
 
-// missingToolLines are the lines under the tool row for a missing pick.
+// missingToolLines are the warning lines under the tool row for a missing
+// pick. They warn only: Create is not refused, since the pane may still find
+// the tool through the user's shell (an alias, a PATH set in an rc file).
 func (d *NewDialog) missingToolLines() []string {
 	if !d.selectedToolMissing() {
 		return nil
 	}
 	display, install := toolInstallInfo(d.GetSelectedCommand())
-	lines := []string{display + " is not installed."}
+	lines := []string{display + " not found here; Create still tries it."}
 	if install != "" {
 		lines = append(lines, "Install: "+install)
 	}
 	return lines
-}
-
-// missingToolError is the Create refusal for a missing tool.
-func (d *NewDialog) missingToolError() string {
-	display, _ := toolInstallInfo(d.GetSelectedCommand())
-	return display + " is not installed. Pick an installed agent with ←→."
 }
 
 // tildePath shows a local path with ~ for the home folder. The create

@@ -1870,12 +1870,6 @@ func (d *NewDialog) validate() (string, focusTarget) {
 		return "Session name cannot be empty", focusName
 	}
 
-	// Onboarding (ASK-211): a missing tool cannot be created here; its
-	// install line shows under the tool row.
-	if d.selectedToolMissing() {
-		return d.missingToolError(), focusCommand
-	}
-
 	// Check name length
 	if len(name) > MaxNameLength {
 		return fmt.Sprintf("Session name too long (max %d characters)", MaxNameLength), focusName

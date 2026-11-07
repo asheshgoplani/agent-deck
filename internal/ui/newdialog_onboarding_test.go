@@ -1,8 +1,8 @@
 package ui
 
 // ASK-211 onboarding: the New Session form (plan and prototype by Sharjeel).
-// Default tool = first installed agent, missing tools grey with an install
-// line and a refused Create, ~ paths, Path visible at 80x24, "More options",
+// Default tool = first installed agent, missing tools grey with a warning
+// and an install line (Create still goes ahead), ~ paths, Path visible at 80x24, "More options",
 // and the Claude hooks line that replaced the hooks box.
 
 import (
@@ -98,14 +98,14 @@ func TestNewDialogOnboarding_NoAgentInstalledFallsBackToShell(t *testing.T) {
 	}
 }
 
-func TestNewDialogOnboarding_MissingToolGreyInstallLineAndCreateBlocked(t *testing.T) {
+func TestNewDialogOnboarding_MissingToolGreyWarningCreateAllowed(t *testing.T) {
 	forceTrueColorProfile()
 	stubToolInstalled(t, "claude")
 	d := onboardingDialog(t, "", 120, 50)
 	d.focusIndex = d.indexOf(focusCommand)
 	d.updateFocus()
-	if strings.Contains(stripAnsi(d.View()), "is not installed") {
-		t.Fatal("an installed pick must not show an install line")
+	if strings.Contains(stripAnsi(d.View()), "not found here") {
+		t.Fatal("an installed pick must not show the missing warning")
 	}
 	// Claude, shell, then gemini (missing): two steps right.
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRight})
@@ -114,17 +114,16 @@ func TestNewDialogOnboarding_MissingToolGreyInstallLineAndCreateBlocked(t *testi
 		t.Fatalf("selected = %q, want gemini", got)
 	}
 	view := stripAnsi(d.View())
-	for _, want := range []string{"grey = not installed", "Gemini CLI is not installed.", "Install: npm install -g @google/gemini-cli"} {
+	for _, want := range []string{"grey = not installed", "Gemini CLI not found here; Create still tries it.", "Install: npm install -g @google/gemini-cli"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view lacks %q:\n%s", want, view)
 		}
 	}
-	msg := d.ShowValidationError()
-	if !strings.Contains(msg, "not installed") {
-		t.Fatalf("Create on a missing tool = %q, want a not-installed refusal", msg)
-	}
-	if d.currentTarget() != focusCommand {
-		t.Fatalf("refusal focus = %v, want the tool row", d.currentTarget())
+	// A warning, not a refusal: the probe cannot see aliases or a PATH set
+	// in the user's shell rc files, which the pane may still use.
+	d.nameInput.SetValue("demo")
+	if msg := d.ShowValidationError(); msg != "" {
+		t.Fatalf("Create on a tool not found = %q, want it allowed (warning only)", msg)
 	}
 	// The grey pill is styled differently from an installed one.
 	missing := renderToolPillsMarked([]string{"a", "b"}, 0, []bool{false, true}, "", 0)

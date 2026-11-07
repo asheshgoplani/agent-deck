@@ -112,23 +112,23 @@ func TestOnboardingReview_HintBarUsesBoundDetachKey(t *testing.T) {
 }
 
 // A Docker sandbox runs the tool from its image: a tool missing on the
-// host does not block Create.
+// host shows no warning.
 func TestOnboardingReview_SandboxNotBlockedByHostPath(t *testing.T) {
 	stubToolInstalled(t) // nothing installed on the host
 	d := onboardingDialog(t, "claude", 120, 50)
 	d.nameInput.SetValue("demo")
 	if !d.selectedToolMissing() {
-		t.Fatal("precondition: claude missing on the host is refused")
+		t.Fatal("precondition: claude missing on the host is flagged")
 	}
 	d.sandboxEnabled = true
 	if d.selectedToolMissing() {
-		t.Fatal("a sandboxed create is refused for a tool missing on the host")
+		t.Fatal("a sandboxed create is flagged for a tool missing on the host")
 	}
-	if msg := d.Validate(); strings.Contains(msg, "not installed") {
+	if msg := d.Validate(); msg != "" {
 		t.Fatalf("sandboxed Create refused: %q", msg)
 	}
-	if strings.Contains(stripAnsi(d.View()), "is not installed") {
-		t.Fatal("sandboxed form still shows the install line")
+	if strings.Contains(stripAnsi(d.View()), "not found here") {
+		t.Fatal("sandboxed form still shows the missing warning")
 	}
 }
 

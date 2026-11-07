@@ -555,13 +555,12 @@ func PickerToolNames() []string {
 }
 
 // ToolInstalled reports whether a new-session tool can start on this machine:
-// its command resolves on PATH (or, for an absolute path, exists). It uses the
-// same rules as the show_only_installed_tools probe, but runs on every call
-// whatever that flag says, so the new-session dialog can mark missing tools
-// and pick the first installed agent as the default (onboarding, ASK-211).
+// the program its command runs resolves where a local pane would look
+// (paneCommandInstalled). It runs on every call whatever
+// show_only_installed_tools says, so the new-session dialog can mark missing
+// tools and pick the first installed agent as the default (onboarding).
 // A built-in is probed by its configured command ([claude].command and the
-// like; a command with arguments counts as installed), then by its bare
-// name. Claude also counts when its own local install exists
+// like, arguments allowed), then by its bare name. Claude also counts when its own local install exists
 // (~/.claude/local/claude, often reached only through a shell alias).
 // "" and "shell" are always installed.
 func ToolInstalled(name string) bool {
@@ -575,12 +574,12 @@ func ToolInstalled(name string) bool {
 	}
 	r := currentRegistry()
 	if def, ok := r.custom[name]; ok {
-		return probeInstalled(def.Command)
+		return paneCommandInstalled(def.Command)
 	}
-	if cmd := strings.TrimSpace(GetToolCommand(name)); cmd != "" && cmd != name && probeInstalled(expandHomeCommand(cmd)) {
+	if cmd := strings.TrimSpace(GetToolCommand(name)); cmd != "" && cmd != name && paneCommandInstalled(cmd) {
 		return true
 	}
-	if probeInstalled(name) {
+	if paneCommandInstalled(name) {
 		return true
 	}
 	if name == "claude" {
@@ -591,6 +590,57 @@ func ToolInstalled(name string) bool {
 		}
 	}
 	return false
+}
+
+// paneCommandInstalled reports whether the program a configured command runs
+// can be found the way a local pane finds it. The command is split into
+// shell words and the program is the first word after any assignments and
+// exec/env-style prefixes (shellwords.CommandWords), so
+// "/opt/bin/claude --verbose" probes /opt/bin/claude and "npx -y pkg" probes
+// npx. A leading ~/ is expanded. A program with a slash must exist as an
+// executable file; a bare name is looked up on the process PATH and then in
+// the user bin dirs the pane prepends (localSpawnPathDirs: ~/.local/bin,
+// ~/bin, Homebrew on macOS). A command this cannot judge without a shell
+// (unbalanced quotes, an expansion, a pipe or a relative path) counts as
+// installed, so nothing is flagged on a guess.
+func paneCommandInstalled(command string) bool {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return false
+	}
+	if strings.ContainsAny(cmd, "$`|&;<>()") {
+		return true
+	}
+	words, ok := shellwords.Split(cmd)
+	if !ok {
+		return true
+	}
+	words = shellwords.CommandWords(words)
+	if len(words) == 0 {
+		return true
+	}
+	prog := expandHomeCommand(words[0])
+	if strings.Contains(prog, "/") {
+		if !filepath.IsAbs(prog) {
+			return true
+		}
+		return executableFile(prog)
+	}
+	if _, err := lookPathFn(prog); err == nil {
+		return true
+	}
+	for _, dir := range localSpawnPathDirs() {
+		if executableFile(filepath.Join(dir, prog)) {
+			return true
+		}
+	}
+	return false
+}
+
+// executableFile reports whether path is a file someone may execute.
+func executableFile(path string) bool {
+	info, err := statFn(path)
+	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
 }
 
 // expandHomeCommand turns a leading "~/" into the home folder, so a
