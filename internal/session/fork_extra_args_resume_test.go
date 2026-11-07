@@ -252,3 +252,39 @@ func TestStripStaleSessionSelectorArgs(t *testing.T) {
 		})
 	}
 }
+
+// TestExtraArgForkRepairViaSessionSetExtraArgs pins the manual workaround for
+// sessions on builds without the fix: `agent-deck session set <id>
+// extra-args ""` (the CLI hands SetField the argv tokens [""]), save, load,
+// restart. It must pass on builds without the fix as well as with it.
+func TestExtraArgForkRepairViaSessionSetExtraArgs(t *testing.T) {
+	extraArgsTestEnv(t)
+	s := newTestStorage(t)
+
+	inst := newExtraArgFork(t)
+	inst.ID = "extra-arg-fork-repair"
+	inst.CreatedAt = time.Now()
+	inst.ClaudeSessionID = forkOwnID
+
+	if _, _, err := SetField(inst, FieldExtraArgs, "", []string{""}); err != nil {
+		t.Fatalf("session set extra-args \"\": %v", err)
+	}
+	if inst.ExtraArgs != nil {
+		t.Fatalf("session set extra-args \"\" must clear ExtraArgs, got %v", inst.ExtraArgs)
+	}
+	if err := s.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := s.Load()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("load: %v (%d rows)", err, len(loaded))
+	}
+	got := loaded[0]
+	if len(got.ExtraArgs) != 0 {
+		t.Fatalf("cleared extra args must stay cleared after save/load, got %v", got.ExtraArgs)
+	}
+	got.markClaudeSessionIDVerified()
+	got.ClaudeDetectedAt = time.Now()
+	writeTranscript1349(t, got, forkOwnID, 3)
+	assertOwnResumeOnly(t, got.buildClaudeResumeCommand(), forkOwnID)
+}
