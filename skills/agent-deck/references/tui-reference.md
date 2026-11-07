@@ -201,6 +201,7 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Ctrl+E` | Open feedback dialog |
 | `Z` | Report a problem or idea: a short form, then the full GitHub issue text, filed only after you press `y` (`report_problem`, **rebindable**) |
 | `Alt+W` | Show me around: "What you can do" (sessions, switching, send, conductor, remotes, each with its key), then `Tab` for your agents and sign-in (`show_around`, **rebindable**) |
+| `Alt+N` | What's new: this version's highlights and any of your reports it fixed, each with "Is it fixed for you?" (`y`/`n`, optional comment, then the exact public comment and the GitHub account that posts it; posted only after you press `y`, never while gh is not logged in). Also opens by itself on the first start after an update (`whats_new`, **rebindable**) |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |
 
 ### Worktree Shortcuts
