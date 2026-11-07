@@ -18,7 +18,7 @@ SESSIONS                     │ PREVIEW
    ├─ ◐ claude-i18n          │ Status:  ● Connected
    └─ ○ shell-live           │ Session: <uuid>
   ▾ remotes/lab (0) · host … │ Model:   tool default
+                             │ Fork:    f quick fork, F fork with options
                              │
-                             │ ────────────────── Output ──────────────────
 ────────────────────────────────────────────────────────────────────────────────
 ⏎ Attach n/N New R Restart o Send │    ↑↓ Nav / Search S Settings ? Help q Quit

@@ -18,6 +18,7 @@ SESSIONS                                   │ PREVIEW
    ├─ ◐ claude-i18n claude                 │ Status:  ● Connected
    └─ ○ shell-live shell                   │ Session: <uuid>
   ▾ remotes/lab (0) · host down            │ Model:   tool default
+                                           │ Fork:    f quick fork, F fork with options
                                            │
                                            │ ─────────────────────────────── Output ───────────────────────────────
                                            │ Claude Code synthetic fixture
@@ -35,6 +36,5 @@ SESSIONS                                   │ PREVIEW
                                            │
                                            │
                                            │
-                                           │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  ⏎  Attach  n/N  New  g  Grp  R  Restart  T  Fresh  m  MCP  v  Both  s  Skills …     ↑↓ Nav │ ? Help │ q Quit
+Session:  ⏎  Attach  n/N  New  g  Grp  R  Restart  T  Fresh  f/F  Fork  m  MCP  v  Both …     ↑↓ Nav │ ? Help │ q Quit
