@@ -6,9 +6,10 @@ this module. Generic remote matrix coverage does not substitute for those cases.
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import uuid
 
-from runner import Rig, check, write_json
+from runner import BINARY, Rig, check, write_json
 
 
 def thread_id(identity):
@@ -170,11 +171,79 @@ def pi_child_two_turns(rig):
             check('urgent_woken_twice', wakes, 2)], {'records': records, 'stats': stats}
 
 
+def ledger_parent_pi_child(rig):
+    """A Claude parent listed in [comms] consumers reads a pi child's runs from
+    the ledger. Each run reaches it once or twice, never zero times: the ledger
+    turn carries the text, and its textless inbox twin is retired when the
+    ledger showed the run first. Here the daemon has ingested both before the
+    prompt, so each run is shown once, with its text, and never again."""
+    title = 'conductor-matrix-parent'
+    rig.config.write_text(rig.config.read_text().replace(
+        'ledger = true\n', 'ledger = true\nconsumers = ' + json.dumps([title]) + '\n', 1))
+    rig.parent = rig.add('claude', title, state='ready')
+    rig.child = rig.add('pi', 'matrix-child', rig.parent)
+    rig.tick()
+    log = (rig.output / 'daemon.log').open('w')
+    rig.live = subprocess.Popen([BINARY, '-p', 'default', 'notify-daemon'], env=rig.env, stdout=log, stderr=log)
+    log.close()
+    rig.processes.append(rig.live)
+    rig.tick()
+    markers = sorted(str(p.relative_to(rig.root)) for p in rig.root.rglob('comms/consumers/*.json'))
+    enrolled = any(p.endswith('/' + rig.parent + '.json') for p in markers)
+    # The fleet snapshot names the child too; it is state, not delivery.
+    hook_env = dict(rig.hook_envs.get(rig.parent, {}), AGENTDECK_NO_CHILDREN_CONTEXT='1')
+
+    def prompt(words):
+        payload = rig.fixture('claude_userpromptsubmit_v1.json')
+        payload.update(session_id='matrix-parent-thread', cwd=str(rig.root / 'work'), prompt=words)
+        saved, rig.hook_envs[rig.parent] = rig.hook_envs.get(rig.parent), hook_env
+        try:
+            out = rig.hook('claude', 'UserPromptSubmit', payload, rig.parent).stdout
+        finally:
+            rig.hook_envs[rig.parent] = saved
+        injected = json.loads(out) if out.strip() else {}
+        return injected.get('hookSpecificOutput', {}).get('additionalContext', '')
+
+    def flat(text):
+        # A context line quotes the text on one line.
+        return ' '.join(text.split())
+
+    def shown(context):
+        return sum(rig.child in line or 'matrix-child' in line for line in context.splitlines())
+
+    first = rig.emit('pi', 'urgent', turn='pi-turn-1', text='First run finished.\n===AGENTDECK_DONE=== status=ok summary=first')
+    rig.tick()
+    rig.tick()
+    after_first = prompt('Continue after the first run.')
+    second = rig.emit('pi', 'urgent', turn='pi-turn-2', text='Second run finished.\n===AGENTDECK_DONE=== status=ok summary=second')
+    rig.tick()
+    rig.tick()
+    after_second = prompt('Continue after the second run.')
+    rig.tick()
+    later = prompt('Anything else?')
+    records, turns = tool_turns(rig, rig.child)
+    stats = json.loads(rig.cli('inbox', 'stats', '--json', '--all').stdout)
+    wakes = sum(s.get('wakeups_urgent', 0) for s in stats if s.get('parent') == rig.parent)
+    contexts = [after_first, after_second]
+    return [check('parent_enrolled', enrolled, True),
+            check('two_turns', [row.get('text') for row in turns], [first, second]),
+            check('run_text_in_its_prompt', [flat(first) in flat(after_first), flat(second) in flat(after_second)], [True, True]),
+            check('run_text_shown_once', [flat(after_first).count(flat(first)),
+                                          flat(after_second).count(flat(first)) + flat(after_second).count(flat(second))], [1, 1]),
+            check('run_shown_once_or_twice', [shown(c) in (1, 2) for c in contexts], [True, True]),
+            check('ledger_first_run_shown_once', [shown(c) for c in contexts], [1, 1]),
+            check('ledger_turn_ids_in_prompt', [('#' + row['id'].upper()[-6:]) in c for row, c in zip(turns, contexts)], [True, True]),
+            check('nothing_repeats_later', shown(later), 0),
+            check('urgent_woken_twice', wakes, 2)], {
+                'records': records, 'stats': stats, 'markers': markers,
+                'contexts': {'after_first': after_first, 'after_second': after_second, 'later': later}}
+
+
 def run_scenarios(output):
     if not Path('/.dockerenv').exists():
         raise RuntimeError('scenarios run only in disposable Docker containers')
     probes = [('codex-subagent-filter', codex_subagent), ('codex-unchanged-generation-flap', codex_flapping),
-              ('pi-child-two-turns', pi_child_two_turns)]
+              ('pi-child-two-turns', pi_child_two_turns), ('ledger-parent-pi-child', ledger_parent_pi_child)]
     for tool in ('claude', 'codex'):
         probes.append((tool + '-conductor-self', lambda rig, tool=tool: conductor_self(rig, tool)))
         probes.append((tool + '-sibling-reply', lambda rig, tool=tool: sibling_reply(rig, tool)))
@@ -195,7 +264,8 @@ def run_scenarios(output):
     write_json(Path(output) / 'coverage.json', {
         'local': ['Codex subagent filtering', 'Codex unchanged generation flapping',
                   'Claude/Codex conductor self', 'Claude/Codex sibling send and reply boundaries',
-                  'Pi child: a second run rings the parent again'],
+                  'Pi child: a second run rings the parent again',
+                  'Pi child of a ledger parent: each run shown once or twice, with its text'],
         'not_exercised': ['remote variants of these focused scenarios', 'other harness conductor self',
                           'orphan integrator hierarchy', 'plain-shell and Codex-error status-only matrix']})
     write_json(Path(output) / 'scenarios.json', results)
