@@ -379,7 +379,10 @@ func (i *Instance) ResponseContentVersion(peers []*Instance) string {
 // For a transcript at its normal location this is the same file GetJSONLPath
 // returns: GetJSONLPath tries exactly these candidates first.
 func (i *Instance) ExactClaudeTranscriptPath(peers []*Instance) (string, error) {
-	if !IsClaudeCompatible(i.Tool) || i.ClaudeSessionID == "" {
+	if !IsClaudeCompatible(i.Tool) {
+		return "", fmt.Errorf("instance %s is not a Claude session", i.ID)
+	}
+	if i.ClaudeSessionID == "" {
 		return "", fmt.Errorf("instance %s has no bound Claude session id", i.ID)
 	}
 	if !i.TranscriptIsResolvableLocally() {
