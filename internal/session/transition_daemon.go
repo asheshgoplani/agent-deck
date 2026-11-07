@@ -215,6 +215,15 @@ type TransitionDaemon struct {
 	// with talkback_interval_secs (transition_daemon_remote.go). Lazily
 	// created by the Run loop.
 	remoteTalkback *remoteTalkbackScheduler
+
+	// ASK-229: empty profiles the daemon has loaded once and whose store has
+	// not changed since (transition_daemon_dormant.go). lastSyncEmpty is set
+	// by syncProfile when the profile it just loaded has no sessions;
+	// lastPassSynced counts the profiles the last SyncOnce fully synced.
+	// Accessed only from the single-threaded Run loop.
+	dormant        map[string]dormantProfile
+	lastSyncEmpty  bool
+	lastPassSynced int
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
@@ -289,16 +298,36 @@ func (d *TransitionDaemon) SyncOnce(_ context.Context) time.Duration {
 
 	d.passStatus = map[string]*HookStatus{}
 	defer func() { d.passStatus = nil }()
+	// Issue #1214 replay reads the completions directory once per pass, not
+	// once per profile (ASK-229: thousands of profiles).
+	completions, _ := loadCompletionRecordsByProfile()
+	now := time.Now()
+	rechecks := dormantRechecksPerPass
+	synced := 0
 	nextInterval := notifyPollSlow
 	for _, profile := range profiles {
-		interval := d.syncProfile(profile)
-		if interval < nextInterval {
-			nextInterval = interval
+		// ASK-229: an empty profile whose store is unchanged since the
+		// daemon last loaded it costs two stats, not a store open and a
+		// registry load.
+		if !d.skipDormantProfile(profile, now, &rechecks) {
+			interval := d.syncProfile(profile)
+			if interval < nextInterval {
+				nextInterval = interval
+			}
+			synced++
+			d.releaseEmptyProfileStore(profile, now)
 		}
 		// Issue #1214: replay any durable task-worker completion record whose
 		// parent was down/busy when the worker exited. Restart-safe and
 		// exactly-once via the record's Acked flag.
-		d.ReplayUnackedCompletions(profile)
+		d.replayUnackedCompletions(completions[profile])
+	}
+	d.pruneDormantProfiles(profiles)
+	d.lastPassSynced = synced
+	if synced == 0 {
+		// syncProfile sweeps fresh-start tokens; with every profile dormant
+		// only the orphan-age spend is left to do.
+		d.sweepFreshStartTokens(nil, now)
 	}
 
 	d.maybeSweepInboxTTL()
@@ -318,6 +347,12 @@ func (d *TransitionDaemon) ReplayUnackedCompletions(profile string) {
 	if err != nil {
 		return
 	}
+	d.replayUnackedCompletions(recs)
+}
+
+// replayUnackedCompletions is ReplayUnackedCompletions over records already
+// read (one profile's).
+func (d *TransitionDaemon) replayUnackedCompletions(recs []CompletionRecord) {
 	for _, rec := range recs {
 		if rec.Acked || strings.TrimSpace(rec.Status) == "" {
 			continue
@@ -525,6 +560,7 @@ func profilesForTransitionDaemon() []string {
 // persisted stopped or queued instances, so a stale sample cannot override
 // those decisions (issue #2526).
 func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
+	d.lastSyncEmpty = false
 	storage := d.getStorage(profile)
 	if storage == nil {
 		return notifyPollSlow
@@ -534,6 +570,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	if err != nil {
 		return notifyPollSlow
 	}
+	d.lastSyncEmpty = len(instances) == 0
 	if len(instances) > 0 {
 		// Issue #2770: warm the shared tmux caches once per pass, as the TUI
 		// (backgroundStatusUpdate), web and CLI status paths do once per tick.
@@ -809,7 +846,8 @@ func (d *TransitionDaemon) wakeForInfoDigests(profile string, byID map[string]*I
 // one every other profile's status detection also depends on, so a slow or
 // wedged health volume must not be able to block it.
 func (d *TransitionDaemon) journalStatusChanges(profile string, byID map[string]*Instance, statuses, substates map[string]string) {
-	writer := d.journalWriter(profile)
+	// The writer (a goroutine and a queue) is resolved on the first event,
+	// so a profile with nothing to journal never starts one (ASK-229).
 	seen, known := d.lastJournaled[profile]
 	if !known {
 		seen = map[string]string{}
@@ -833,6 +871,7 @@ func (d *TransitionDaemon) journalStatusChanges(profile string, byID map[string]
 		if from == "running" && to != "running" {
 			RecallNotifyInstanceAsync(byID[id], "turn_end")
 		}
+		writer := d.journalWriter(profile)
 		if writer == nil {
 			continue
 		}
