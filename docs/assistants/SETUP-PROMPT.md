@@ -17,7 +17,7 @@ Setup rules (keep them for the whole setup):
 - Ask the user before every step that installs, writes a file, starts a server or exposes anything. Say in one line what you will do.
 - Never show the token in the chat. Keep it in the token file, an environment variable or your config, nothing else.
 - Never open a tunnel or listen on a public address unless the user says yes to exactly that.
-- Start read-only. Do not ask for more scopes on your own.
+- Start read-only. Never run `agent-deck connect ... --scopes` yourself: only the user raises scopes.
 
 If you cannot run commands on the user's machine (you are a cloud API such as Grok or the OpenAI Responses API), skip to
 [Cloud assistants](#cloud-assistants-grok-openai-responses-api) and give the user the steps to run instead.
@@ -67,7 +67,7 @@ This creates a **read-only** token. Running it again rotates the token for that 
 | `config_path_hint` | where that config goes |
 | `test_command` | a command that checks the connection |
 | `context_prompt` | the usage guide and rules to keep (step 6) |
-| `skill_path`, `skill_url` | where your skill file goes and a ready copy (only for assistants with skills) |
+| `skill_path`, `skill_content`, `skill_url` | where your skill file goes, the ready file itself, and its web copy (only for assistants with skills) |
 | `raise_scope_hint` | how the user allows more |
 
 ## 3. Choose how to connect
@@ -83,18 +83,21 @@ Take the first one that fits:
 
 ## 4. Write your config
 
-Use `config_snippet` from the JSON (it is already in your format) and put it where `config_path_hint` says. The per-assistant
+Required: setup is not done until this config is saved. Use `config_snippet` from the JSON (it is already in your format) and put it where `config_path_hint` says. The per-assistant
 reference below shows the same thing with placeholders: `AGENT_DECK` = `mcp_stdio.command` (absolute path), `TOKEN_FILE` =
 `token_file`, `URL` = the agent-deck web address.
 
 ## 5. Test it
 
-Call `whoami`, then `list_sessions`. Or run the `test_command` from the JSON (for example `agent-deck connect test --name hermes`).
+Test through your own config: call your `agentdeck` tools `whoami`, then `list_sessions` (a new chat or a tool reload may be
+needed first), or your own check command (`hermes mcp test agentdeck`, `openclaw mcp probe`, `claude mcp list`). The
+`test_command` from the JSON (for example `agent-deck connect test --name hermes`) only proves the token works, not your config.
 Tell the user: "Connected to agent-deck read-only, N sessions." If it fails, see [Troubleshooting](#troubleshooting).
 
 ## 6. Keep the guide
 
-Save `context_prompt` (or the ready skill file at `skill_url`) where you keep long-term instructions, so every future chat has it:
+Write `skill_content` to `skill_path` as it is (it is the ready skill file), or save `context_prompt` where you keep
+long-term instructions, so every future chat has it:
 
 | Assistant | Where |
 |---|---|
@@ -129,6 +132,8 @@ In a few short lines:
 hermes mcp add agentdeck --command AGENT_DECK --args connect serve --token-file TOKEN_FILE   # --args must be last
 hermes mcp test agentdeck
 ```
+
+`hermes mcp add` asks one question ("Enable all 7 tools? [Y/n/select]"); without a terminal, pipe the answer: `printf 'y\n' | hermes mcp add ...`.
 
 or in `~/.hermes/config.yaml`:
 

@@ -75,6 +75,7 @@ type Connection struct {
 	TestCommand    string        `json:"test_command"`
 	SkillPath      string        `json:"skill_path,omitempty"`
 	SkillURL       string        `json:"skill_url,omitempty"`
+	SkillContent   string        `json:"skill_content,omitempty"`
 	SetupPrompt    string        `json:"setup_prompt"`
 	Block          string        `json:"block"`
 }
@@ -253,6 +254,7 @@ func Render(kind Kind, rec Record, token, tokenFile, baseURL, command string) *C
 	if kind.skillPath != "" {
 		c.SkillPath = kind.skillPath
 		c.SkillURL = skillURLBase + kind.ID + "/SKILL.md"
+		c.SkillContent = SkillFile(kind.ID)
 	}
 	c.Block = renderBlock(c, kind)
 	return c
