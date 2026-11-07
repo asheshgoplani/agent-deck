@@ -184,8 +184,16 @@
         "title": {
           "type": "string"
         },
+        "tmux_binary": {
+          "description": "the [tmux.binaries] client for that socket; absent when none applies (run the bare tmux)",
+          "type": "string"
+        },
         "tmux_session": {
           "description": "live",
+          "type": "string"
+        },
+        "tmux_socket_name": {
+          "description": "tmux -L socket the session lives on; absent on the default server",
           "type": "string"
         },
         "tool": {

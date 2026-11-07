@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // ErrUnsupported is returned by OpenSessionInNewWindow on platforms that have
@@ -191,7 +192,7 @@ func MoshArgsWithSSHConfig(host, moshServer, sshConfig string, argv []string) []
 // inside a fresh terminal window, attaches to the requested session.
 //
 // For local requests (Remote == nil) it produces a `tmux attach …`
-// invocation. For remote requests it produces an `ssh -tt …
+// invocation, run with the socket's [tmux.binaries] binary when it has one. For remote requests it produces an `ssh -tt …
 // '<agent-deck-path> [-p profile] session attach <name>'` invocation
 // that mirrors session.SSHRunner.Attach.
 //
@@ -207,7 +208,13 @@ func BuildAttachCommand(req AttachRequest) string {
 		return buildRemoteAttachCommand(name, req.Remote)
 	}
 	var b strings.Builder
-	b.WriteString("tmux")
+	// The socket's own binary ([tmux.binaries]), as on every other tmux
+	// call: a tmux client only talks to a server of its own version.
+	if bin := tmux.BinaryFor(req.SocketName); bin == "tmux" {
+		b.WriteString(bin)
+	} else {
+		b.WriteString(shellQuote(bin))
+	}
 	if req.ForceUTF8 {
 		b.WriteString(" -u")
 	}
