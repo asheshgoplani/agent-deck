@@ -370,6 +370,20 @@ func (l *Ledger) raiseFlags(r Record, cursor events.Cursor) {
 	}
 }
 
+// Flag returns the pending flag this ledger last raised for consumer, found
+// false when it raised none since open. It is what the flag file says when
+// the file's last write succeeded, and newer when that write failed: the
+// process that commits can trust it where the file is only best effort.
+func (l *Ledger) Flag(consumer string) (PendingFlag, bool) {
+	if l == nil {
+		return PendingFlag{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fl, ok := l.flags[consumer]
+	return fl, ok
+}
+
 // repairFlags rebuilds pending flags from the dedup window at open, so a
 // flag lost between a crash and its rewrite is seen again. Only Last is a
 // flag's business; a flag already newer is kept.
