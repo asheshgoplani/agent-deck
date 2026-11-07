@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -78,7 +79,7 @@ func (i *Instance) wakeConductorAfterSpawn() error {
 		return fmt.Errorf("conductor process started but recovery was not sent: %w", err)
 	}
 	// Recheck the pane immediately before input. Never clear a draft or send an
-	// interrupt, and never retry an uncertain submission of this recovery turn.
+	// interrupt.
 	guard := send.GuardComposerDraft(target, send.ComposerGuardOptions{Strip: tmux.StripANSI})
 	if guard.Refused {
 		return fmt.Errorf("conductor process started but recovery was not sent: composer occupied or unreadable")
@@ -88,7 +89,7 @@ func (i *Instance) wakeConductorAfterSpawn() error {
 		return fmt.Errorf("conductor process started but recovery was not sent: no safe empty composer")
 	}
 	// Verify the complete bounded body BEFORE Enter. If a remount swallows
-	// bytes, leave the draft untouched and report uncertainty, never retry it.
+	// bytes, leave the draft untouched and report uncertainty, never retype it.
 	message := conductorRecoveryMessage + " Recovery token: " + GenerateID() + "."
 	err = i.tmuxSession.SendKeysAndEnterChecked(message, target.CapturePaneFresh,
 		func(raw string, captureErr error) (bool, error) {
@@ -101,22 +102,131 @@ func (i *Instance) wakeConductorAfterSpawn() error {
 	if err != nil {
 		return fmt.Errorf("conductor process started but recovery submission is uncertain (not retried): %w", err)
 	}
-	// The unique body was observed intact before Enter. An empty composer
-	// now proves it left the composer. A blank/missing pane or
-	// a lingering draft is unknown, never success and never an Enter retry.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-		raw, err := target.CapturePaneFresh()
-		if err != nil {
-			continue
+	return confirmConductorRecoverySubmitted(target, message)
+}
+
+// Bounds for confirming the recovery turn left the composer. Variables so
+// tests can shorten them.
+var (
+	conductorRecoveryClearWindow = 3 * time.Second
+	conductorRecoveryClearPoll   = 100 * time.Millisecond
+	// One entry per extra Enter: at most 2 more after the first.
+	conductorRecoveryEnterBackoff = []time.Duration{500 * time.Millisecond, time.Second}
+)
+
+// conductorRecoverySubmitTarget is the pane surface the submit confirmation
+// needs. conductorRecoveryTarget satisfies it.
+type conductorRecoverySubmitTarget interface {
+	CapturePaneFresh() (string, error)
+	SendEnterChecked(before func() error) error
+}
+
+type conductorRecoveryComposerState int
+
+const (
+	recoveryComposerUnreadable conductorRecoveryComposerState = iota
+	recoveryComposerEmpty
+	recoveryComposerHoldsBody
+	recoveryComposerOther
+)
+
+// confirmConductorRecoverySubmitted waits for the verified recovery body to
+// leave the composer (issue #3062). An empty composer proves it was submitted
+// or queued. If the composer still holds EXACTLY the verified body after the
+// clear window, the Enter was not acted on: the body carries a unique token,
+// so it cannot be an operator draft, and pressing Enter again cannot submit
+// it twice. Enter is resent at most len(conductorRecoveryEnterBackoff)
+// times. An unreadable composer, or one holding anything else, stops at once
+// and is reported as uncertain.
+func confirmConductorRecoverySubmitted(target conductorRecoverySubmitTarget, message string) error {
+	for attempt := 0; ; attempt++ {
+		deadline := time.Now().Add(conductorRecoveryClearWindow)
+		for time.Now().Before(deadline) {
+			time.Sleep(conductorRecoveryClearPoll)
+			raw, err := target.CapturePaneFresh()
+			if classifyConductorRecoveryComposer(raw, err, message) == recoveryComposerEmpty {
+				return nil
+			}
 		}
-		draft, visible := send.ComposerDraft(raw, tmux.StripANSI)
-		if visible && draft == "" {
+		raw, err := target.CapturePaneFresh()
+		switch classifyConductorRecoveryComposer(raw, err, message) {
+		case recoveryComposerEmpty:
+			return nil
+		case recoveryComposerUnreadable:
+			return fmt.Errorf("conductor process started but recovery submission is uncertain (not retried): composer unreadable")
+		case recoveryComposerOther:
+			return fmt.Errorf("conductor process started but recovery submission is uncertain (not retried): composer holds other input")
+		}
+		if attempt >= len(conductorRecoveryEnterBackoff) {
+			return fmt.Errorf("conductor process started but recovery submission is uncertain: composer did not clear after %d Enter attempts", attempt+1)
+		}
+		time.Sleep(conductorRecoveryEnterBackoff[attempt])
+		cleared := false
+		err = target.SendEnterChecked(func() error {
+			raw, err := target.CapturePaneFresh()
+			switch classifyConductorRecoveryComposer(raw, err, message) {
+			case recoveryComposerHoldsBody:
+				return nil
+			case recoveryComposerEmpty:
+				cleared = true
+				return errConductorRecoveryCleared
+			default:
+				return fmt.Errorf("composer changed before Enter retry")
+			}
+		})
+		if cleared {
 			return nil
 		}
+		if err != nil {
+			return fmt.Errorf("conductor process started but recovery submission is uncertain (retry stopped): %w", err)
+		}
+		sessionLog.Info("conductor_recovery_enter_retried", slog.Int("attempt", attempt+2))
 	}
-	return fmt.Errorf("conductor process started but recovery submission is uncertain (not retried): composer did not clear")
+}
+
+var errConductorRecoveryCleared = errors.New("composer cleared")
+
+// classifyConductorRecoveryComposer reads one fresh frame. Only a composer
+// whose whole content is the verified recovery body is eligible for another
+// Enter.
+func classifyConductorRecoveryComposer(raw string, captureErr error, message string) conductorRecoveryComposerState {
+	if captureErr != nil {
+		return recoveryComposerUnreadable
+	}
+	draft, visible := send.ComposerDraft(raw, tmux.StripANSI)
+	if !visible {
+		return recoveryComposerUnreadable
+	}
+	if draft == "" {
+		return recoveryComposerEmpty
+	}
+	if conductorRecoveryComposerIsBody(tmux.StripANSI(raw), draft, message) {
+		return recoveryComposerHoldsBody
+	}
+	return recoveryComposerOther
+}
+
+// conductorRecoveryComposerIsBody compares whitespace-insensitively, since
+// the pane wraps the long body. A framed composer yields the whole body as
+// the draft. Without a frame the draft is only the prompt line, so the text
+// from that line to the bottom of the pane must be the body and nothing else.
+func conductorRecoveryComposerIsBody(content, draft, message string) bool {
+	compact := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	want := compact(message)
+	if compact(draft) == want {
+		return true
+	}
+	lines := strings.Split(content, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimLeft(lines[i], " \t")
+		for _, marker := range []string{"❯", "›"} {
+			if strings.HasPrefix(trimmed, marker) {
+				tail := trimmed[len(marker):] + "\n" + strings.Join(lines[i+1:], "\n")
+				return compact(tail) == want
+			}
+		}
+	}
+	return false
 }
 
 // conductorRecoveryTurnEnabled reads [conductor].recovery_turn. An unreadable

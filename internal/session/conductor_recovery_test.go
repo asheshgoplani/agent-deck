@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,7 +130,9 @@ func TestConductorRecoveryDraftDoesNotFailSpawn(t *testing.T) {
 	}
 }
 
-func TestConductorRecoveryDroppedEnterIsUncertain(t *testing.T) {
+// Issue #3062: the pane ignores the first Enter and redraws the body. The
+// composer still holds exactly the verified body, so one more Enter submits it.
+func TestConductorRecoveryRetriesIgnoredEnter(t *testing.T) {
 	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	inst, capture := recoveryFixture(t, false)
 	body := "#!/bin/sh\nprintf '\\033[2J\\033[H❯ '\nwhile IFS= read -r line; do printf 'enter\\n' >> '" + capture + "'; printf '\\033[2J\\033[H❯ %s' \"$line\"; done\n"
@@ -140,12 +143,132 @@ func TestConductorRecoveryDroppedEnterIsUncertain(t *testing.T) {
 		t.Fatal(err)
 	}
 	inst.IsConductor = true
-	if err := inst.wakeConductorAfterSpawn(); err == nil {
-		t.Fatal("unconsumed recovery draft was falsely accepted")
+	if err := inst.wakeConductorAfterSpawn(); err != nil {
+		t.Fatalf("ignored first Enter was not retried: %v", err)
 	}
 	b, err := os.ReadFile(capture)
-	if err != nil || string(b) != "enter\n" {
-		t.Fatalf("expected one Enter without retries, got %q (%v)", b, err)
+	if err != nil || string(b) != "enter\nenter\n" {
+		t.Fatalf("expected the first Enter plus one retry, got %q (%v)", b, err)
+	}
+}
+
+type fakeRecoveryPane struct {
+	enters int
+	frame  func(enters int) (string, error)
+	// beforeEnter is true while the pre-keystroke check runs.
+	beforeEnter bool
+}
+
+func (p *fakeRecoveryPane) CapturePaneFresh() (string, error) { return p.frame(p.enters) }
+
+func (p *fakeRecoveryPane) SendEnterChecked(before func() error) error {
+	p.beforeEnter = true
+	err := before()
+	p.beforeEnter = false
+	if err != nil {
+		return err
+	}
+	p.enters++
+	return nil
+}
+
+func fastRecoverySubmitTimings(t *testing.T) {
+	t.Helper()
+	window, poll, backoff := conductorRecoveryClearWindow, conductorRecoveryClearPoll, conductorRecoveryEnterBackoff
+	conductorRecoveryClearWindow = 30 * time.Millisecond
+	conductorRecoveryClearPoll = 5 * time.Millisecond
+	conductorRecoveryEnterBackoff = []time.Duration{5 * time.Millisecond, 10 * time.Millisecond}
+	t.Cleanup(func() {
+		conductorRecoveryClearWindow, conductorRecoveryClearPoll, conductorRecoveryEnterBackoff = window, poll, backoff
+	})
+}
+
+func TestConductorRecoverySubmitRetry(t *testing.T) {
+	const message = conductorRecoveryMessage + " Recovery token: tok-3062."
+	bodyFrame := "❯ " + message
+	for _, tc := range []struct {
+		name      string
+		frame     func(enters int) (string, error)
+		wantErr   bool
+		wantEnter int
+	}{
+		{"cleared after first enter", func(int) (string, error) { return "❯ ", nil }, false, 0},
+		{"first enter ignored", func(n int) (string, error) {
+			if n == 0 {
+				return bodyFrame, nil
+			}
+			return "❯ ", nil
+		}, false, 1},
+		{"two enters ignored", func(n int) (string, error) {
+			if n < 2 {
+				return bodyFrame, nil
+			}
+			return "❯ ", nil
+		}, false, 2},
+		{"never clears is bounded", func(int) (string, error) { return bodyFrame, nil }, true, 2},
+		{"operator draft is never touched", func(int) (string, error) { return "❯ operator draft", nil }, true, 0},
+		{"body plus operator text", func(int) (string, error) { return bodyFrame + " and more", nil }, true, 0},
+		{"unreadable pane", func(int) (string, error) { return "", errors.New("capture failed") }, true, 0},
+		{"blank pane", func(int) (string, error) { return "", nil }, true, 0},
+		{"draft replaces body after a retry", func(n int) (string, error) {
+			if n == 0 {
+				return bodyFrame, nil
+			}
+			return "❯ operator draft", nil
+		}, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fastRecoverySubmitTimings(t)
+			pane := &fakeRecoveryPane{frame: tc.frame}
+			err := confirmConductorRecoverySubmitted(pane, message)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v, wantErr=%v", err, tc.wantErr)
+			}
+			if pane.enters != tc.wantEnter {
+				t.Fatalf("Enter retries = %d, want %d", pane.enters, tc.wantEnter)
+			}
+		})
+	}
+}
+
+// An operator who types between the clear window and the retry keystroke
+// must not have that draft submitted: the frame is rechecked right before Enter.
+func TestConductorRecoveryRetryRechecksBeforeEnter(t *testing.T) {
+	fastRecoverySubmitTimings(t)
+	const message = conductorRecoveryMessage + " Recovery token: tok-3062."
+	pane := &fakeRecoveryPane{}
+	pane.frame = func(int) (string, error) {
+		// The clear window and the decision frame show the body; the
+		// operator edits it just before the retry keystroke.
+		if pane.beforeEnter {
+			return "❯ " + message + " plus an operator edit", nil
+		}
+		return "❯ " + message, nil
+	}
+	if err := confirmConductorRecoverySubmitted(pane, message); err == nil {
+		t.Fatal("changed composer was treated as submitted")
+	}
+	if pane.enters != 0 {
+		t.Fatalf("Enter sent into a changed composer: %d", pane.enters)
+	}
+}
+
+func TestConductorRecoveryComposerIsBodyWrapped(t *testing.T) {
+	message := conductorRecoveryMessage + " Recovery token: tok-3062."
+	// An unframed pane wraps the body without indentation.
+	var wrapped []string
+	line := "❯ " + message
+	for len(line) > 80 {
+		wrapped = append(wrapped, line[:80])
+		line = line[80:]
+	}
+	wrapped = append(wrapped, line)
+	pane := strings.Join(wrapped, "\n")
+	if got := classifyConductorRecoveryComposer(pane, nil, message); got != recoveryComposerHoldsBody {
+		t.Fatalf("wrapped body classified %v", got)
+	}
+	if got := classifyConductorRecoveryComposer(pane+"\noperator line", nil, message); got != recoveryComposerOther {
+		t.Fatalf("body with trailing text classified %v", got)
 	}
 }
 
