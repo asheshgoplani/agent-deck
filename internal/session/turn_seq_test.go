@@ -61,7 +61,7 @@ func TestIssue3012_FreshStartTokenRecordsTurnSeq(t *testing.T) {
 	_ = inst.buildClaudeCommand("claude")
 	noteFreshStart(inst, time.Now())
 	tok, ok := readFreshStartToken(inst.ID)
-	if !ok || tok.TurnSeq != 5 {
+	if !ok || tok.TurnSeq == nil || *tok.TurnSeq != 5 {
 		t.Fatalf("fresh-start token %+v ok=%v, want turn_seq 5", tok, ok)
 	}
 }

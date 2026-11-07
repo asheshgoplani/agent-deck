@@ -676,7 +676,8 @@ var restartSessionStartSince = func(id string, since time.Time) bool {
 	return false
 }
 
-// hookHistoryTurnSince reads child id's hook event history from since: seen
+// hookHistoryTurnSince (freshStartTurnSeenLegacy only) reads child id's hook
+// event history from since: seen
 // when it holds a SessionStart, turn when one is neither SessionStart nor
 // SessionEnd (a SessionEnd may be an older process's, landing late) or is a
 // second SessionStart.
