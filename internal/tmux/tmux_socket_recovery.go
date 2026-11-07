@@ -2,11 +2,13 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -242,6 +244,46 @@ func cachedSocketMismatch(socket string) (verdict, fresh bool) {
 		return false, false
 	}
 	return entry.mismatched, true
+}
+
+// hasSessionProbeAssumesAlive is the single owner of what a `has-session`
+// probe outcome means for callers that must not report a live session as
+// gone — Session.Exists and the pipe manager's socket variant run the same
+// bounded subprocess and resolve it here:
+//
+//   - the probe's context deadline fired, or the client never completed
+//     (killed by a signal, failed to exec, cut before the server answered):
+//     indeterminate — treat as alive. Reporting a live session as missing
+//     flips it to tmux_missing and lets restart machinery act on a pane that
+//     is still running, while a wrong "alive" verdict is corrected by the
+//     next probe.
+//   - the client/server protocol versions mismatch: treat as alive — the
+//     refusal came FROM the server, which proves it is up; only the client
+//     binary is wrong. The verdict is a property of the binary pair, settled
+//     out of band and cached per socket, so the probes themselves stay on
+//     Run() with nil stdio: no pipe, no copy goroutine, nothing for WaitDelay
+//     to bound on the status hot path.
+//   - the client ran to a non-zero exit: the server was asked and refused —
+//     the session is really gone.
+//   - err == nil: the session exists.
+//
+// Callers that need "gone" vs "indeterminate" split into an error use
+// ProbeExists instead: this verdict deliberately collapses every
+// non-authoritative failure into "alive".
+func hasSessionProbeAssumesAlive(ctx context.Context, socketName string, err error) bool {
+	if ctx.Err() == context.DeadlineExceeded {
+		return true
+	}
+	if err != nil && socketHasProtocolMismatch(socketName) {
+		return true
+	}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || !exitErr.Exited() {
+			return true
+		}
+	}
+	return err == nil
 }
 
 // defaultProbeSocketProtocolMismatch settles one client/server exchange on
