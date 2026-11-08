@@ -11,7 +11,8 @@ import (
 )
 
 // claudeTurnEdge returns "prompt" for a Claude UserPromptSubmit, "stop" for
-// a Claude Stop and "" for anything else (Codex and Cursor events carry a
+// a Claude Stop, "start" for a SessionStart (a fresh or resumed session
+// starts with no unattended turn) and "" for anything else (Codex and Cursor events carry a
 // turn_id or conversation_id and are not Claude turns).
 func claudeTurnEdge(p hookPayload) string {
 	if rawString(p.TurnID) != "" || p.ConversationID != "" {
@@ -22,6 +23,11 @@ func claudeTurnEdge(p hookPayload) string {
 		return "prompt"
 	case "stop":
 		return "stop"
+	case "sessionstart":
+		// Not "compact": an auto-compaction can happen inside a turn.
+		if p.Source != "compact" {
+			return "start"
+		}
 	}
 	return ""
 }
@@ -66,6 +72,11 @@ func denyUnattendedPermission(instanceID, origin string, p hookPayload) {
 	what := permissionRequestSummary(p)
 	fmt.Println(unattendedDenyDecision(origin, what))
 	conductor := session.ConductorNameFromTitle(os.Getenv("AGENTDECK_TITLE"))
+	if conductor == "" {
+		// A renamed conductor: resolve it from the registry, as
+		// resolveHumanConductor does.
+		conductor = session.ConductorNameFromTitle(conductorTitleLookup(instanceID, os.Getenv("AGENTDECK_PROFILE")))
+	}
 	if conductor == "" {
 		hookHandlerLog.Info("unattended_permission_denied",
 			slog.String("instance", instanceID), slog.String("origin", origin), slog.String("what", what))

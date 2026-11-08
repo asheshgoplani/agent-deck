@@ -56,6 +56,14 @@ const (
 	logLineOutputLength = 200
 )
 
+// dueGrace lets a tick that starts a little early still count as on time:
+// the timer fires every 60 s but each tick reads the clock a few hundred ms
+// after it starts, so without it an "every: 1m" order would run every 2 min.
+const dueGrace = 15 * time.Second
+
+// maxSendBackoff caps the retry delay after failed sends.
+const maxSendBackoff = 30 * time.Minute
+
 // ErrLocked is returned when another tick (or an edit) holds the lock.
 var ErrLocked = errors.New("another orders tick holds the lock")
 
@@ -71,6 +79,7 @@ type OrderState struct {
 	CapNoticed   bool      `json:"cap_noticed,omitempty"`
 	LastWake     time.Time `json:"last_wake,omitempty"`
 	SendFailing  bool      `json:"send_failing,omitempty"`
+	SendFails    int       `json:"send_fails,omitempty"` // consecutive failed sends (retry backoff)
 }
 
 // State is the whole orders-state.json.
@@ -224,7 +233,7 @@ func Tick(env Env) ([]Outcome, error) {
 			res.Result = ResultExpired
 		case !o.InActiveHours(now):
 			res.Result = ResultOutsideHours
-		case !s.NextCheck.IsZero() && now.Before(s.NextCheck):
+		case !s.NextCheck.IsZero() && now.Before(s.NextCheck.Add(-dueGrace)):
 			res.Result = ResultNotDue
 		}
 		if res.Result != "" {
@@ -313,8 +322,11 @@ func wake(env Env, o Order, s *OrderState, output, fp, today string) Outcome {
 	r, err := env.Send(o.Name, WakeText(o, s.LastOutput, output))
 	switch {
 	case err != nil:
-		// Retry on the next tick: the change is still unseen.
-		s.NextCheck = env.Now
+		// Retry while the change is still unseen: after 1 minute, then 2, 4,
+		// ... up to the order's own interval (at most 30 min), so a stopped
+		// conductor does not run the check every minute forever.
+		s.SendFails++
+		s.NextCheck = env.Now.Add(sendBackoff(s.SendFails, o.Every))
 		res.Result = ResultSendFailed
 		res.Detail = oneLine(err.Error())
 		if s.SendFailing {
@@ -328,11 +340,28 @@ func wake(env Env, o Order, s *OrderState, output, fp, today string) Outcome {
 		s.Fingerprint, s.LastOutput = fp, keep(output)
 		s.WakesToday++
 		s.LastWake = env.Now
-		s.SendFailing = false
+		s.SendFailing, s.SendFails = false, 0
 		res.Result = ResultWoke
 		res.Detail = fmt.Sprintf("%d/%d today", s.WakesToday, o.MaxWakesPerDay)
 	}
 	return res
+}
+
+func sendBackoff(fails int, every time.Duration) time.Duration {
+	d := time.Minute
+	for i := 1; i < fails && d < maxSendBackoff; i++ {
+		d *= 2
+	}
+	if d > every {
+		d = every
+	}
+	if d > maxSendBackoff {
+		d = maxSendBackoff
+	}
+	if d < time.Minute {
+		d = time.Minute
+	}
+	return d
 }
 
 // WakeText is the message a changed check sends to the conductor.

@@ -298,7 +298,7 @@ func runOrdersList(stdout io.Writer, profile string, args []string) error {
 	today := time.Now().Format("2006-01-02")
 	rows := []orderListRow{}
 	for _, o := range list {
-		r := orderListRow{Conductor: meta.Name, Name: o.Name, Status: o.Status, Every: o.Every.String(),
+		r := orderListRow{Conductor: meta.Name, Name: o.Name, Status: o.Status, Every: orders.FormatEvery(o.Every),
 			Active: o.Active, Check: o.Check, MaxWakes: o.MaxWakesPerDay, Expires: o.Expires}
 		if s := st[o.Name]; s != nil {
 			r.NextCheck, r.LastCheck, r.LastWake, r.SilentCheck = s.NextCheck, s.LastCheck, s.LastWake, s.SilentChecks

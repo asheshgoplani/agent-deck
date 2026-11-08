@@ -267,8 +267,11 @@ func TestTick_FailedSendKeepsChangeAndRetriesNextMinute(t *testing.T) {
 	if got := h.tick(t0.Add(16 * time.Minute)); got != ResultSendFailed {
 		t.Fatalf("retry must run on the next minute, got %q", got)
 	}
+	if got := h.tick(t0.Add(17 * time.Minute)); got != ResultNotDue {
+		t.Fatalf("second failure backs off to 2 minutes, got %q", got)
+	}
 	h.fail = nil
-	if got := h.tick(t0.Add(17 * time.Minute)); got != ResultWoke || len(h.sent) != 1 {
+	if got := h.tick(t0.Add(18 * time.Minute)); got != ResultWoke || len(h.sent) != 1 {
 		t.Fatalf("after recovery: %q sent=%d", got, len(h.sent))
 	}
 	log, _ := os.ReadFile(filepath.Join(h.dir, LogFileName))
@@ -343,5 +346,34 @@ func TestRunCheck_OutputExitCodeAndTimeout(t *testing.T) {
 	got := RunCheck(ctx, "sleep 30 & echo $! > "+pidFile+"; wait", dir)
 	if !strings.HasPrefix(got, "[check timed out") || time.Since(start) > 10*time.Second {
 		t.Fatalf("timeout: %q after %v", got, time.Since(start))
+	}
+}
+
+// The timer fires every 60 s but each tick reads the clock a little after it
+// starts; an "every: 1m" order must still run on every tick, not every other.
+func TestTick_EveryMinuteOrderRunsOnEveryTimerTick(t *testing.T) {
+	h := newHarness(t, "## m\nevery: 1m\ncheck: x\n")
+	t0 := time.Date(2026, 11, 8, 10, 0, 0, 300*int(time.Millisecond), h.berlin)
+	h.tick(t0)
+	if got := h.tick(t0.Add(59*time.Second + 900*time.Millisecond)); got != ResultSilent {
+		t.Fatalf("tick ~60 s later read the clock 100 ms early: %q, want it to run", got)
+	}
+	if got := h.tick(t0.Add(70 * time.Second)); got != ResultNotDue {
+		t.Fatalf("a manual tick 10 s after the last one must not run it again: %q", got)
+	}
+}
+
+func TestSendBackoff(t *testing.T) {
+	for _, c := range []struct {
+		fails int
+		every time.Duration
+		want  time.Duration
+	}{
+		{1, time.Hour, time.Minute}, {2, time.Hour, 2 * time.Minute}, {3, time.Hour, 4 * time.Minute},
+		{10, time.Hour, 30 * time.Minute}, {10, 15 * time.Minute, 15 * time.Minute}, {1, time.Minute, time.Minute},
+	} {
+		if got := sendBackoff(c.fails, c.every); got != c.want {
+			t.Errorf("sendBackoff(%d, %v) = %v want %v", c.fails, c.every, got, c.want)
+		}
 	}
 }

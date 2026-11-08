@@ -52,8 +52,10 @@ one skips. State is in `orders-state.json`, notable events in `orders.log`.
 
 ## Order turns
 
-The hook handler marks a turn whose prompt starts with `[ORDER ` as order-started
-(and one starting with `[HEARTBEAT]` as heartbeat-started) until the turn's Stop.
+The hook handler (Claude Code conductors; other agents get the wake text but
+not these two checks) marks a turn whose prompt starts with `[ORDER ` as order-started
+(and one starting with `[HEARTBEAT]` as heartbeat-started) until the turn's Stop
+or the next SessionStart; the owner's next prompt clears it too.
 In such a turn:
 
 - `agent-deck orders add|pause|resume|rm` refuse with exit 2: an order cannot make

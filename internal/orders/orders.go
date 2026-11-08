@@ -271,7 +271,7 @@ const header = "# Standing orders\n\n" +
 func Format(o Order) string {
 	lines := []string{"## " + o.Name}
 	if o.Every > 0 {
-		lines = append(lines, "every: "+formatEvery(o.Every))
+		lines = append(lines, "every: "+FormatEvery(o.Every))
 	}
 	if o.Active != "" {
 		lines = append(lines, "active: "+o.Active)
@@ -299,7 +299,8 @@ func oneLine(s string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", " ")), " ")
 }
 
-func formatEvery(d time.Duration) string {
+// FormatEvery renders an interval the way ORDERS.md writes it (15m, 2h, 1d).
+func FormatEvery(d time.Duration) string {
 	switch {
 	case d%(24*time.Hour) == 0:
 		return strconv.Itoa(int(d/(24*time.Hour))) + "d"

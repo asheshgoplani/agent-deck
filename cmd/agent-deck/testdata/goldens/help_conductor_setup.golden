@@ -16,6 +16,8 @@ Options:
         Enable heartbeat for this conductor (default)
   -no-heartbeat
         Disable heartbeat for this conductor
+  -no-orders
+        Do not install this host's one-minute standing-orders timer (agent-deck orders)
   -heartbeat-idle-minutes int
         Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)
   -no-clear-on-compact

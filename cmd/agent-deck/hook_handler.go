@@ -434,6 +434,8 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 		if err := session.RecordTurnOrigin(instanceID, rawString(payload.Prompt)); err != nil {
 			hookHandlerLog.Warn("turn_origin_write_failed", slog.String("error", err.Error()))
 		}
+	case "start":
+		session.ClearTurnOrigin(instanceID)
 	case "stop":
 		defer func() {
 			if !stopBlocked {
