@@ -185,7 +185,7 @@ func cliConductorMetaAgent(t *testing.T, dir string) string {
 func runConductorSetupCLI(t *testing.T, home string, args ...string) {
 	t.Helper()
 	full := append([]string{"conductor", "setup"}, args...)
-	full = append(full, "--json", "--no-heartbeat")
+	full = append(full, "--json", "--no-heartbeat", "--no-orders")
 	stdout, stderr, code := runAgentDeck(t, home, full...)
 	if code != 0 {
 		t.Fatalf("agent-deck %s: exit %d\nstdout: %s\nstderr: %s", strings.Join(full, " "), code, stdout, stderr)

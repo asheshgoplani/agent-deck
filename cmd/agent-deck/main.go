@@ -692,6 +692,9 @@ func main() {
 		case "triggers":
 			handleTriggers(profile, args[1:])
 			return
+		case "orders":
+			handleOrders(profile, args[1:])
+			return
 		case "trace":
 			handleTrace(profile, args[1:])
 			return
@@ -1653,7 +1656,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -4799,6 +4802,7 @@ func printHelp() {
 	fmt.Println("  provider         List and test sandbox providers (remote add --provider)")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
 	fmt.Println("  triggers         What wakes each session: jobs, heartbeats, channels (docs/triggers.md)")
+	fmt.Println("  orders           Standing orders: cheap checks that wake a conductor only on change (docs/orders.md)")
 	fmt.Println("  agents           List adopted agents, grouped by machine")
 	fmt.Println("  agent            Adopt and inspect agent definitions")
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
