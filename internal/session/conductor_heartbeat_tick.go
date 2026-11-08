@@ -212,16 +212,31 @@ func CommitHeartbeatTickPending(name, msg string) (bool, error) {
 	return true, nil
 }
 
+// writeHeartbeatJSON replaces path atomically. Each call writes its own temp
+// file in the same directory, so two heartbeat-tick processes (a manual run
+// racing the timer) never rename each other's half-written file.
 func writeHeartbeatJSON(path string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file for %s: %w", path, err)
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
 }
 
 // InboxSnapshot returns the pending count and content identity in one read.
