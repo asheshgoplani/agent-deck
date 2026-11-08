@@ -571,7 +571,8 @@ export default function (pi: ExtensionAPI) {
     await emit("session_shutdown");
   });
   // A doorbell is answered before hook-handler is awaited. A human prompt
-  // carries no nonce.
+  // carries no nonce. Registered with or without the socket: a listed parent
+  // relaunched without one is drained through its run starts.
   pi.on("before_agent_start", async (event?: any, ctx?: any) => {
     // Once per prompt: the next agent_start opens a new run (see runOpen).
     runOpen = false;
