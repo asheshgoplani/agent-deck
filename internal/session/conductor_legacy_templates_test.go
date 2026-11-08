@@ -34,3 +34,23 @@ func TestLegacyConductorTemplates_SessionsRowSkipsArchived(t *testing.T) {
 		}
 	}
 }
+
+// The legacy templates must describe the heartbeat reply the way the bridge
+// parses it today (tiers from #2469), not the pre-tier "only NEED: is
+// forwarded" wording.
+func TestLegacyConductorTemplates_HeartbeatReplyDocMatchesTiers(t *testing.T) {
+	want := "NEED: api-fix - asking whether to run integration tests against staging or prod\n" + conductorHeartbeatReplyDoc
+	for _, name := range []string{"conductor-claude.md", "conductor-hermes.md"} {
+		path := filepath.Join("..", "..", "conductor", name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("%s: heartbeat reply format does not match the shared template's tiered wording", name)
+		}
+		if strings.Contains(string(raw), "if it contains `NEED:` lines, those get") {
+			t.Errorf("%s: still says only NEED: lines are forwarded", name)
+		}
+	}
+}

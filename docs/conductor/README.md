@@ -237,7 +237,8 @@ NEED: {question or decision point}
 ```
 
 when it is blocked and wants to escalate.
-If a remote channel is attached, `NEED:` lines are forwarded to your chat; `[STATUS]` lines log to the task log and are only surfaced if you ask.
+If a remote channel is attached, the reply is routed by tier: `NEED:` / `[urgent]` lines are forwarded to your chat at once (retired after 3 unanswered cycles), `[info]` lines are batched into a digest, and `[STATUS]` / `AUTO:` lines stay local (task log) and are only surfaced if you ask.
+Outside a heartbeat the conductor reaches you with `agent-deck conductor notify --tier urgent|info "<one line>"`.
 
 The heartbeat prevents a failure mode where a conductor appears healthy (tmux alive, Claude alive) but has silently drifted: it thinks it is waiting on you, you think it is waiting on a worker, nothing moves for hours.
 

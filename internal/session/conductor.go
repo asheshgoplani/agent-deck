@@ -1596,6 +1596,26 @@ const conductorHeartbeatScript = `#!/bin/bash
 
 SESSION="conductor-{NAME}"
 PROFILE="{PROFILE}"
+CONDUCTOR_ROOT="{CONDUCTOR_ROOT}"
+CONDUCTOR_DIR="$CONDUCTOR_ROOT/{NAME}"
+
+# One run at a time: a manual run or a cron fallback must not race the timer.
+# flock holds heartbeat.lock and runs this script again with the lock closed
+# in it (-o), so nothing the run starts inherits the lock; a run that finds it
+# held exits 0. A flock that cannot be used (unknown flags, unwritable lock
+# file: sysexits codes) logs a line and the run goes on unlocked. Without
+# flock (macOS) the script runs unlocked; launchd never overlaps two runs.
+if [ -z "$AGENTDECK_HEARTBEAT_LOCKED" ] && [ -d "$CONDUCTOR_DIR" ] && [ -f "$0" ] && command -v flock >/dev/null 2>&1; then
+    AGENTDECK_HEARTBEAT_LOCKED=1 flock -n -o -E 75 "$CONDUCTOR_DIR/heartbeat.lock" "${BASH:-/bin/bash}" "$0" "$@"
+    LOCK_RC=$?
+    case "$LOCK_RC" in
+        75) exit 0 ;;
+        64|65|66|69|70|71|72|73|74|77|78)
+            printf 'heartbeat: flock unusable (exit %s); running unlocked\n' "$LOCK_RC" >> "$CONDUCTOR_DIR/heartbeat.log" ;;
+        *) exit "$LOCK_RC" ;;
+    esac
+fi
+unset AGENTDECK_HEARTBEAT_LOCKED
 
 # Check this conductor's heartbeat flag, including after teardown.
 if ! agent-deck -p "$PROFILE" conductor status "{NAME}" --json 2>/dev/null | grep -q '"heartbeat"[[:space:]]*:[[:space:]]*true'; then
@@ -1607,7 +1627,6 @@ STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | a
 
 # Resolve HEARTBEAT_RULES.md (per-conductor, then per-profile, then global fallback).
 # Mirrors the lookup order used by conductor/bridge.py since PR #218.
-CONDUCTOR_ROOT="{CONDUCTOR_ROOT}"
 RULES_FILE=""
 for candidate in \
     "$CONDUCTOR_ROOT/{NAME}/HEARTBEAT_RULES.md" \
@@ -1622,18 +1641,47 @@ for candidate in \
     fi
 done
 
-if [ "$STATUS" != "idle" ] && [ "$STATUS" != "waiting" ]; then
-    exit 0
-fi
+LOG_FILE="$CONDUCTOR_DIR/heartbeat.log"
+TICK_FAILURE="$CONDUCTOR_DIR/heartbeat-tick-failed"
+SEND_FAILURE="$CONDUCTOR_DIR/heartbeat-send-failed"
+TICK_ERROR="$CONDUCTOR_DIR/heartbeat-tick.stderr"
+CONDUCTOR_DOWN="$CONDUCTOR_DIR/heartbeat-conductor-down"
+
+# A conductor in error, stopped or gone gets no heartbeat. Say so once per
+# outage (one log line, one urgent item for the human) instead of going quiet.
+# The notice names when the outage started, so a second outage the same day
+# is not deduplicated into the first. "Missing" (session show printed no
+# status, which one failed read can also cause) needs two runs in a row.
+# Busy states (running, starting, ...) are normal and stay silent.
+STATUS_MISS="$CONDUCTOR_DIR/heartbeat-status-miss"
+case "$STATUS" in
+    idle|waiting)
+        unlink "$CONDUCTOR_DOWN" 2>/dev/null || true
+        unlink "$STATUS_MISS" 2>/dev/null || true
+        ;;
+    error|stopped|"")
+        if [ -z "$STATUS" ] && [ ! -f "$STATUS_MISS" ]; then
+            : > "$STATUS_MISS"
+            exit 0
+        fi
+        if [ ! -f "$CONDUCTOR_DOWN" ]; then
+            DOWN_STATUS="${STATUS:-missing}"
+            DOWN_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
+            printf 'heartbeat: conductor %s is %s; heartbeat not sent\n' "{NAME}" "$DOWN_STATUS" >> "$LOG_FILE"
+            agent-deck -p "$PROFILE" conductor notify --tier urgent --conductor "{NAME}" "conductor {NAME} is $DOWN_STATUS since $DOWN_SINCE; heartbeats are paused until it is back" >/dev/null 2>&1 || true
+            : > "$CONDUCTOR_DOWN"
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
 
 # Issue #2348: every send is a new turn that re-reads the conductor's whole
 # conversation. heartbeat-tick prints a delta-only {HEARTBEAT_PREFIX} message,
 # or nothing when no waiting/error session or inbox record changed since the
 # last delivered tick; nothing printed means no turn at all.
-LOG_FILE="$CONDUCTOR_ROOT/{NAME}/heartbeat.log"
-TICK_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick-failed"
-SEND_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-send-failed"
-TICK_ERROR="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick.stderr"
 if ! MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>"$TICK_ERROR"); then
     if [ ! -f "$TICK_FAILURE" ]; then
         IFS= read -r TICK_DETAIL < "$TICK_ERROR" || true
@@ -1655,11 +1703,18 @@ fi
 unlink "$TICK_ERROR" 2>/dev/null || true
 if [ -n "$MSG" ]; then
     # --source names this heartbeat in 'agent-deck triggers' (issue #2702).
-    if SEND_ERROR=$(agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q --source "heartbeat:{NAME}" 2>&1); then
+    # A send skipped by the idle gate or a muted trigger exits 0 without
+    # typing anything; only a real delivery is committed, so a skipped tick
+    # is offered again next time.
+    if SEND_OUT=$(agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --json --no-wait --source "heartbeat:{NAME}" 2>&1); then
         unlink "$SEND_FAILURE" 2>/dev/null || true
-        agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" --commit-message="$MSG" >/dev/null
+        if ! printf '%s\n' "$SEND_OUT" | grep -Eq '"(skipped|muted)"[[:space:]]*:[[:space:]]*true'; then
+            agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" --commit-message="$MSG" >/dev/null
+        fi
     elif [ ! -f "$SEND_FAILURE" ]; then
-        printf 'heartbeat: send failed: %s\n' "${SEND_ERROR%%$'\n'*}" >> "$LOG_FILE"
+        SEND_ERROR=$(printf '%s\n' "$SEND_OUT" | awk -F'"' '/"error"[[:space:]]*:/{print $4; exit}')
+        [ -n "$SEND_ERROR" ] || SEND_ERROR="${SEND_OUT%%$'\n'*}"
+        printf 'heartbeat: send failed: %s\n' "$SEND_ERROR" >> "$LOG_FILE"
         : > "$SEND_FAILURE"
     fi
 fi
