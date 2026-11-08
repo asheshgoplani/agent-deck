@@ -709,9 +709,11 @@ agent-deck add -t "Research" -c claude --mcp exa --mcp firecrawl /tmp/r
 ### list - List sessions
 
 ```bash
-agent-deck list [--json] [--all]
+agent-deck list [--json] [--all] [--no-archived]
 agent-deck ls  # Alias
 ```
+
+`--no-archived` leaves archived sessions out before any status work (for pollers that only need live sessions). When the batched pane capture of a live `list --json` times out, the listing does not capture each pane on its own: those rows carry `status_source: "stale"` (status is the last observation or the default, substate may be absent), and `--stats` reports `captures_skipped`.
 
 ### remove - Remove session
 

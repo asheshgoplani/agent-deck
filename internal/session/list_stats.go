@@ -31,6 +31,10 @@ type ListStats struct {
 	StatusPassMS int64 `json:"status_pass_ms"`
 	TmuxCalls    int64 `json:"tmux_calls"`
 	Sessions     int   `json:"sessions"`
+	// CapturesSkipped counts the panes this pass did not capture because the
+	// batched capture timed out (#3089): their status kept its previous value
+	// and their substate is the last known one or absent. Omitted when zero.
+	CapturesSkipped int64 `json:"captures_skipped,omitempty"`
 }
 
 // parseListStats scans stderr for the stats line a remote emits when asked

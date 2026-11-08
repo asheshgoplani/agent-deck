@@ -31,7 +31,7 @@ func TestEmitListStats_Format(t *testing.T) {
 	}
 	orig := os.Stderr
 	os.Stderr = w
-	emitListStats(46812*time.Millisecond, 312, 76)
+	emitListStats(session.ListStats{StatusPassMS: 46812, TmuxCalls: 312, Sessions: 76})
 	os.Stderr = orig
 	w.Close()
 	data, err := io.ReadAll(r)
