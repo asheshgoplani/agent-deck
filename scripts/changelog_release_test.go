@@ -66,6 +66,26 @@ func TestChangelogRelease_MovesUnreleasedUnderTheVersion(t *testing.T) {
 	}
 }
 
+func TestChangelogRelease_KeepsTheFileMode(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "CHANGELOG.md")
+	if err := os.WriteFile(file, []byte(changelogPreamble+"## [Unreleased]\n\n- A change.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runChangelogScript(t, "--file", file, "1.0.1", "2027-01-15"); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	fi, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v after release, want 0600", fi.Mode().Perm())
+	}
+	if left, _ := filepath.Glob(file + ".*"); len(left) != 0 {
+		t.Fatalf("temp files left behind: %v", left)
+	}
+}
+
 func TestChangelogRelease_DefaultDateIsTodayInBerlin(t *testing.T) {
 	code, out, got := runChangelogRelease(t, changelogPreamble+"## [Unreleased]\n\n- A change.\n", "1.0.1")
 	if code != 0 {
@@ -83,6 +103,7 @@ func TestChangelogRelease_RefusesAndLeavesTheFileAlone(t *testing.T) {
 	}{
 		{"empty Unreleased", changelogPreamble + "## [Unreleased]\n\n\n## [1.0.0] - 2027-01-10\n", "1.0.1", "nothing under '## [Unreleased]'", 1},
 		{"version already released", changelogPreamble + "## [Unreleased]\n\n- New.\n\n## [1.0.1] - 2027-01-10\n", "1.0.1", "already has a '## [1.0.1]' heading", 1},
+		{"released with odd spacing", changelogPreamble + "## [Unreleased]\n\n- New.\n\n## [1.0.1]- 2027-01-10\n", "1.0.1", "already has a '## [1.0.1]' heading", 1},
 		{"no Unreleased", changelogPreamble + "## [1.0.0] - 2027-01-10\n", "1.0.1", "found 0", 1},
 		{"two Unreleased", changelogPreamble + "## [Unreleased]\n- a\n## [Unreleased]\n- b\n", "1.0.1", "found 2", 1},
 		{"not a version", changelogPreamble + "## [Unreleased]\n- a\n", "1.0", "is not X.Y.Z", 2},
@@ -112,6 +133,7 @@ func TestChangelogRelease_Check(t *testing.T) {
 		{"version missing", ok, []string{"1.0.11"}, 1},
 		{"prefix of another version", ok, []string{"1.0.1"}, 1},
 		{"no Unreleased", changelogPreamble + "## [1.0.10] - 2027-01-15\n", []string{"1.0.10"}, 1},
+		{"heading with a tab before the date", changelogPreamble + "## [Unreleased]\n\n## [1.0.10]\t- 2027-01-15\n", []string{"1.0.10"}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, out, _ := runChangelogRelease(t, tc.content, append([]string{"--check"}, tc.args...)...)
@@ -131,7 +153,7 @@ func TestChangelog_RepoHasUnreleasedAndAnEntryForTheVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`(?m)^var Version = "([0-9][0-9.]*)"`).FindSubmatch(main)
+	m := regexp.MustCompile(`(?m)^var Version = "([^"]+)"`).FindSubmatch(main)
 	if m == nil {
 		t.Fatal(`no var Version = "X.Y.Z" in cmd/agent-deck/main.go`)
 	}

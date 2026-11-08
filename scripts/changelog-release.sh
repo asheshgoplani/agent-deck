@@ -51,7 +51,8 @@ fi
 
 unreleased=$(grep -c '^## \[Unreleased\][[:space:]]*$' "$file")
 # has_heading <version>: the file has a "## [<version>]" heading.
-has_heading() { awk -v h="## [$1]" '$0 == h || index($0, h " ") == 1 { f = 1 } END { exit !f }' "$file"; }
+# The "]" ends the version, so any spacing or date after it still counts.
+has_heading() { awk -v h="## [$1]" 'index($0, h) == 1 { f = 1 } END { exit !f }' "$file"; }
 
 if [ "$check" = 1 ]; then
   ok=1
@@ -72,8 +73,11 @@ if [ -z "$date" ]; then date=$(TZ=Europe/Berlin date +%F); fi
 [ "$unreleased" = 1 ] || die "$file: want exactly one '## [Unreleased]' heading, found $unreleased"
 has_heading "$version" && die "$file already has a '## [$version]' heading"
 
+# Write a copy next to the file (cp -p keeps its mode) and rename it over
+# the original, so a failed write never leaves a half-written changelog.
 tmp=$(mktemp "$file.XXXXXX") || exit 1
 trap 'rm -f "$tmp"' EXIT
+cp -p "$file" "$tmp" || exit 1
 # Body: the lines between "## [Unreleased]" and the next "## " heading,
 # without blank lines at either end.
 if ! awk -v heading="## [$version] - $date" '
@@ -99,5 +103,5 @@ if ! awk -v heading="## [$version] - $date" '
 ' "$file" >"$tmp"; then
   die "$file: nothing under '## [Unreleased]' to release"
 fi
-cat "$tmp" >"$file" || exit 1
+mv -f "$tmp" "$file" || exit 1
 echo "$file: moved Unreleased to '## [$version] - $date'"
