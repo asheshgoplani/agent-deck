@@ -361,6 +361,7 @@ func handleHookHandler() {
 
 // Capture ordering before reading stdin or doing any event-specific work.
 func handleHookHandlerReceivedAt(receivedAt time.Time) {
+	startHookDeadline()
 	instanceID := os.Getenv("AGENTDECK_INSTANCE_ID")
 	if instanceID == "" {
 		// No instance ID means this Claude session isn't managed by agent-deck.
@@ -1003,6 +1004,9 @@ const preToolLockRetry = 2 * time.Millisecond
 // A tool must never queue indefinitely behind a stalled lifecycle writer.
 // Contention beyond the budget leaves the last status intact and fails open.
 func lockHookStatus(lock *os.File, bounded bool) error {
+	if !bounded && !hookDeadline.IsZero() {
+		return lockHookStatusByDeadline(lock)
+	}
 	if !bounded {
 		return syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
 	}
@@ -1011,6 +1015,42 @@ func lockHookStatus(lock *os.File, bounded bool) error {
 		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) || !time.Now().Before(deadline) {
 			return err
+		}
+		time.Sleep(preToolLockRetry)
+	}
+}
+
+// hookDeadlineEnv is set by the pi extension to the milliseconds this handler
+// may live. Its own timer in pi cannot be relied on: it dies with pi, and the
+// detached handler would then outlive it. The variable is absent on the Claude
+// path, which is unchanged.
+const hookDeadlineEnv = "AGENTDECK_HOOK_DEADLINE_MS"
+
+// hookDeadline is the moment a self-bounded handler gives up; zero otherwise.
+var hookDeadline time.Time
+
+// startHookDeadline arms a watchdog that ends the process, non-zero, at the
+// deadline named by hookDeadlineEnv. It does nothing when the variable is unset
+// or not a positive number.
+func startHookDeadline() {
+	ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv(hookDeadlineEnv)))
+	if err != nil || ms <= 0 {
+		return
+	}
+	hookDeadline = time.Now().Add(time.Duration(ms) * time.Millisecond)
+	time.AfterFunc(time.Until(hookDeadline), func() { os.Exit(1) })
+}
+
+// lockHookStatusByDeadline takes the status lock without blocking in the
+// kernel: it retries until the handler's deadline, then ends the process.
+func lockHookStatusByDeadline(lock *os.File) error {
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
+		}
+		if !time.Now().Before(hookDeadline) {
+			os.Exit(1)
 		}
 		time.Sleep(preToolLockRetry)
 	}

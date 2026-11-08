@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -29,7 +30,7 @@ func handlePiHooks(args []string) {
 	case "uninstall":
 		handlePiHooksUninstall()
 	case "status":
-		handlePiHooksStatus()
+		handlePiHooksStatus(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown pi-hooks subcommand: %s\n", args[0])
 		printPiHooksUsage(os.Stderr)
@@ -49,7 +50,11 @@ func printPiHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  install      Install or upgrade the agent-deck pi extension")
 	fmt.Fprintln(w, "  uninstall    Remove the agent-deck pi extension")
-	fmt.Fprintln(w, "  status       Show current pi extension install status")
+	fmt.Fprintln(w, "  status       Show the extension install status, the pi version, whether")
+	fmt.Fprintln(w, "               the wake socket is on (or why not)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Status options:")
+	fmt.Fprintln(w, "  -p, --profile <name>  Profile to check the socket path for (default: current)")
 }
 
 func handlePiHooksInstall() {
@@ -85,7 +90,27 @@ func handlePiHooksUninstall() {
 	fmt.Printf("Extension: %s\n", session.PiHookExtensionPath(dir))
 }
 
-func handlePiHooksStatus() {
+// piHooksProfile is the profile status computes the socket path for: -p or
+// --profile after the subcommand wins, then AGENTDECK_PROFILE (which main's
+// global -p has already set by the time we get here). The forms are the ones
+// main's own extractor knows.
+func piHooksProfile(args []string) string {
+	explicit := ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case (args[i] == "-p" || args[i] == "--profile") && i+1 < len(args):
+			explicit = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-p="):
+			explicit = strings.TrimPrefix(args[i], "-p=")
+		case strings.HasPrefix(args[i], "--profile="):
+			explicit = strings.TrimPrefix(args[i], "--profile=")
+		}
+	}
+	return session.GetEffectiveProfile(explicit)
+}
+
+func handlePiHooksStatus(args []string) {
 	dir := session.PiExtensionsDir()
 	state, version := session.InspectPiHooks(dir)
 	switch state {
@@ -102,4 +127,22 @@ func handlePiHooksStatus() {
 		fmt.Println("Run 'agent-deck pi-hooks install' to install.")
 	}
 	fmt.Printf("Extension: %s\n", session.PiHookExtensionPath(dir))
+
+	// The path length does not depend on the instance, so any id will do.
+	sock := session.PiSocketPath(piHooksProfile(args), "status", session.PiStatusEnv())
+	if sock.Version != "" {
+		fmt.Printf("Pi: %s (via %s --version)\n", sock.Version, sock.Binary)
+	}
+	// Why the socket is off, most basic cause first: the extension that serves
+	// it, then the pi it needs, then the path it needs.
+	switch {
+	case state == session.PiHooksNotInstalled || state == session.PiHooksForeign:
+		fmt.Println("Socket: off (extension not installed)")
+	case state == session.PiHooksOutdated:
+		fmt.Printf("Socket: off (extension is v%d, current v%d)\n", version, session.PiHookExtensionVersion())
+	case sock.Path == "":
+		fmt.Printf("Socket: off (%s)\n", sock.Detail)
+	default:
+		fmt.Println("Socket: on")
+	}
 }

@@ -35,11 +35,12 @@ func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand str
 	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
 
 	return envPrefix + fmt.Sprintf(
-		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No Pi session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"%s",
+		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No Pi session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s%s --fork \"$source_file\" --session-dir \"$session_dir\"%s",
 		parentSessionDir,
 		sessionDir,
 		quotedInstanceID,
 		quotedProfile,
+		target.piSocketLaunchPrefix(cmd),
 		cmd,
 		target.piIdentityFlag(),
 	), nil
@@ -547,6 +548,22 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	}
 
 	return forked, cmd, nil
+}
+
+// RebuildPiForkCommand recomputes forked's start command after the caller changed
+// what a launch exports (a fork given a sandbox after it was created): a sandboxed
+// pi never exports the host socket, and the flag is recorded false.
+func (i *Instance) RebuildPiForkCommand(forked *Instance) error {
+	baseCommand := strings.TrimSpace(i.Command)
+	if baseCommand == "" {
+		baseCommand = "pi"
+	}
+	cmd, err := i.buildPiForkCommandForTarget(forked, baseCommand)
+	if err != nil {
+		return err
+	}
+	forked.ForkStartCommand = cmd
+	return nil
 }
 
 // CanForkCodex reports whether this Codex session can be forked. Forkability

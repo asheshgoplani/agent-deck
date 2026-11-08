@@ -658,6 +658,14 @@ func handleSessionFork(profile string, args []string) {
 	// Apply sandbox config if requested.
 	if *sandbox {
 		forkedInst.Sandbox = session.NewSandboxConfig(*sandboxImage)
+		if forkedInst.Tool == "pi" {
+			// The fork's command was built before it had a sandbox: a sandboxed pi
+			// never exports the host socket.
+			if err := inst.RebuildPiForkCommand(forkedInst); err != nil {
+				out.Error(fmt.Sprintf("failed to rebuild the fork command: %v", err), ErrCodeInvalidOperation)
+				exitCLI(1)
+			}
+		}
 	}
 
 	// Test seam: when set, capture the fully-prepared fork before tmux Start()
