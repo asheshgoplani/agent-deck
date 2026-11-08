@@ -203,7 +203,10 @@ GitHub holds workflow runs from first-time fork contributors at "Approve and run
 
 ## Cutting a release (maintainers)
 
-Before pushing a `v*` tag, run `make release-ready` (`scripts/release-readiness.sh`) on the exact commit you tag. It refuses a tag within 24 h of the previous one unless the release fixes it (`--fixes <that tag>`), an unbumped `Version`, an update, auto-install or deploy change merged less than 12 h ago (`--owner-ok` only with the owner's agreement), and a candidate whose update and auto-install paths fail end to end (`TestReleaseReadiness_UpdatePath`).
+Before pushing a `v*` tag, run `make release-ready` (`scripts/release-readiness.sh`) on the exact commit you tag. It refuses a tag within 24 h of the previous one unless the release fixes it (`--fixes <that tag>`), an unbumped `Version`, an update, auto-install or deploy change merged less than 12 h ago (`--owner-ok` only with the owner's agreement), and a candidate whose update and auto-install paths fail end to end (`TestReleaseReadiness_UpdatePath`), and a `Version` without its own `CHANGELOG.md` heading.
+
+- Every user-visible change adds one plain line under `## [Unreleased]` in CHANGELOG.md. Contributors leave the file alone; the maintainer adds the line when the change lands.
+- In the release PR, `make changelog-release VERSION=X.Y.Z` moves the Unreleased lines under `## [X.Y.Z] - <date>` and leaves an empty Unreleased on top. Write the release's `### Highlights` above them. A test in `scripts/` fails when CHANGELOG.md has no Unreleased section or the `Version` in `cmd/agent-deck/main.go` has no heading.
 
 ## License
 

@@ -66,9 +66,22 @@ func (r *readinessRepo) commit(hoursAgo int, path, content, subject string) {
 	r.git(hoursAgo, "commit", "-q", "-m", subject)
 }
 
+// setVersion commits a version bump the way a release PR does: the
+// Version line and a CHANGELOG.md heading for it under Unreleased.
 func (r *readinessRepo) setVersion(hoursAgo int, v string) {
 	r.t.Helper()
+	r.writeChangelog("## [Unreleased]\n\n## [" + v + "] - 2027-01-15\n\n- A change.\n")
+	r.git(hoursAgo, "add", "CHANGELOG.md")
 	r.commit(hoursAgo, "cmd/agent-deck/main.go", "package main\n\nvar Version = \""+v+"\" // set at build time\n", "chore: release v"+v)
+}
+
+// writeChangelog writes CHANGELOG.md (not committed) with body after a
+// fixed preamble.
+func (r *readinessRepo) writeChangelog(body string) {
+	r.t.Helper()
+	if err := os.WriteFile(filepath.Join(r.dir, "CHANGELOG.md"), []byte("# Changelog\n\n"+body), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
 }
 
 func (r *readinessRepo) tag(hoursAgo int, name string) {
@@ -148,7 +161,7 @@ func requireExit(t *testing.T, code int, out string, want int, contains ...strin
 func TestReleaseReadiness_ReadyCandidatePasses(t *testing.T) {
 	r := readyRepo(t)
 	code, out := r.run()
-	requireExit(t, code, out, 0, "READY: tag v1.0.1", "none since v1.0.0")
+	requireExit(t, code, out, 0, "READY: tag v1.0.1", "none since v1.0.0", "v1.0.1 has an entry")
 
 	// Past 24 h the gap rule does not apply, so a --fixes naming another
 	// tag is not a reason to refuse.
@@ -368,5 +381,24 @@ func TestReleaseReadiness_DefaultRunnerIsGoTestInTheCheckout(t *testing.T) {
 	wantArgs := "test -count=1 -v -run ^TestReleaseReadiness_UpdatePath$ ./internal/releasetests/"
 	if len(lines) < 2 || lines[1] != wantArgs {
 		t.Fatalf("go called with %q, want %q", lines[1:], wantArgs)
+	}
+}
+
+// The release's Version needs its own CHANGELOG.md heading, and the file
+// keeps an Unreleased section for the next changes.
+func TestReleaseReadiness_RequiresAChangelogEntryForTheVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name, changelog, want string
+	}{
+		{"no heading for the version", "## [Unreleased]\n\n- Not moved yet.\n\n## [1.0.0] - 2027-01-10\n", "no '## [1.0.1]' heading"},
+		{"no Unreleased section", "## [1.0.1] - 2027-01-15\n\n- A change.\n", "want exactly one '## [Unreleased]' heading, found 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := readyRepo(t)
+			r.writeChangelog(tc.changelog)
+			r.git(10, "commit", "-q", "-am", "docs: changelog")
+			code, out := r.run()
+			requireExit(t, code, out, 1, tc.want, "make changelog-release VERSION=1.0.1")
+		})
 	}
 }
