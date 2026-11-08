@@ -549,6 +549,11 @@ type Session struct {
 	// every row's frame from that single tmux call even when the pass itself
 	// runs longer than 500ms on a loaded host.
 	cachePrimedUntil time.Time
+	// captureSkipUntil is set when a batched capture timed out before
+	// reaching this pane (#3089): until then CapturePane answers from the
+	// last frame or with ErrCaptureTimeout instead of starting its own tmux
+	// client on a host that just failed to answer one.
+	captureSkipUntil time.Time
 	captureSf        singleflight.Group // Deduplicates concurrent CapturePane subprocess calls
 
 	// Content tracking for HasUpdated (separate from StateTracker)
@@ -739,6 +744,7 @@ func (s *Session) invalidateCache() {
 	s.cacheContent = ""
 	s.cacheTime = time.Time{}
 	s.cachePrimedUntil = time.Time{}
+	s.captureSkipUntil = time.Time{}
 }
 
 // SetCustomPatterns sets custom patterns for generic tool support

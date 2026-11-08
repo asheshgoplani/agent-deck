@@ -23,6 +23,7 @@ func cliList(profile string, args []string) {
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
 	includeSuperseded := fs.Bool("include-superseded", false, "Include archived source rows retained for cross-harness recovery")
+	noArchived := fs.Bool("no-archived", false, noArchivedFlagUsage)
 	// Undocumented: SSHRunner passes this on its own remote invocation
 	// (#2331) so a slow `list --json` names its own status-pass duration.
 	statsFlag := fs.Bool(strings.TrimLeft(session.ListStatsFlag, "-"), false, "")
@@ -42,6 +43,7 @@ func cliList(profile string, args []string) {
 		fmt.Println("  agent-deck list                    # List from default profile")
 		fmt.Println("  agent-deck -p work list            # List from 'work' profile")
 		fmt.Println("  agent-deck list --all              # List from all profiles")
+		fmt.Println("  agent-deck list --json --no-archived  # Live listing without archived sessions")
 	}
 
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
@@ -56,6 +58,7 @@ func cliList(profile string, args []string) {
 		Profile:           profile,
 		AllProfiles:       *allProfiles,
 		IncludeSuperseded: *includeSuperseded,
+		ExcludeArchived:   *noArchived,
 		LiveStatus:        jsonOutput.enabled() && !*allProfiles,
 	}, nil)
 	if jsonOutput.envelope() {
@@ -88,7 +91,7 @@ func cliList(profile string, args []string) {
 
 	if jsonOutput.enabled() {
 		if *statsFlag && listed.Stats != nil {
-			emitListStats(time.Duration(listed.Stats.StatusPassMS)*time.Millisecond, listed.Stats.TmuxCalls, listed.Stats.Sessions)
+			emitListStats(*listed.Stats)
 		}
 		rows := make([]core.SessionRow, len(listed.Sessions))
 		for i, row := range listed.Sessions {

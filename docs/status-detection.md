@@ -178,6 +178,17 @@ still reports a successful start, whatever its exit code).
 | notify daemon, no TUI | reloads Instances per pass, probes tmux; carries the previous pass's verdict and pending flip (`livePrior`) so the one-sample hold works | 1–3 s | `status` column on change |
 | `list --json`, `session show`, remote agent probe | one fresh pass, hooks cold-loaded, pane read; a persisted `running` is not treated as an observation | per call | nothing |
 
+A fresh pass reads every live pane through one batched capture per tmux
+socket. If that batch times out, the pass does not capture each pane on its
+own (that multiplied the load: 5 tmux calls became 164 on a loaded host,
+#3089). The panes it did not reach answer with their last frame or a capture
+timeout, so status keeps its last observed value (the default in a fresh
+process) and substate is the last known one or absent. Their rows carry
+`status_source: "stale"` and `list --json --stats` counts them as
+`captures_skipped`. A batch
+that outlasts the session-cache TTL also re-warms the session and pane-info
+caches once, so the rows do not each ask tmux again.
+
 ## Remote sessions
 
 `agent-deck remote sessions` runs `agent-deck list --json` over SSH on each

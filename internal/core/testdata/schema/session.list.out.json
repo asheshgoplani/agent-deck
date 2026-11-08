@@ -162,7 +162,7 @@
           "type": "string"
         },
         "status_source": {
-          "description": "cached for an absent historical row whose stored status was used; live after a status refresh",
+          "description": "cached for an absent historical row whose stored status was used; live after a status refresh; stale when the refresh could not capture the pane (batched capture timed out): status is the last observation or the default, substate last known or absent",
           "type": "string"
         },
         "substate": {

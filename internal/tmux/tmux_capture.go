@@ -79,6 +79,11 @@ func (s *Session) CapturePane() (string, error) {
 		logging.Aggregate(logging.CompPerf, "capture_pane_cache_hit", slog.String("session", s.TmuxName()))
 		return content, nil
 	}
+	if content, skipped, err := s.captureSkippedLocked(time.Now()); skipped {
+		s.cacheMu.RUnlock()
+		logging.Aggregate(logging.CompPerf, "capture_pane_batch_skipped", slog.String("session", s.TmuxName()))
+		return content, err
+	}
 	s.cacheMu.RUnlock()
 
 	// Slow path: deduplicate concurrent calls via singleflight.
