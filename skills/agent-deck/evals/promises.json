@@ -2524,7 +2524,7 @@
    "area": "core",
    "file": "references/cli-reference.md",
    "heading": "Conductor Commands",
-   "anchor": "Heartbeat sends use non-blocking `session send --no-wait -q`",
+   "anchor": "Heartbeat sends use non-blocking `session send --json --no-wait`",
    "summary": "conductor setup/teardown/status/list; heartbeat per conductor; notify-daemon transition nudges.",
    "kind": "reference",
    "checked_by": [
