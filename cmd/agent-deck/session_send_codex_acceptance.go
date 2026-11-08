@@ -75,14 +75,20 @@ func (g *codexAcceptanceGuard) Prepare(instanceID string, now time.Time) error {
 	return nil
 }
 
-func (g *codexAcceptanceGuard) RecordTransportOutcome(delivery string, now time.Time) error {
+// RecordTransportOutcome settles the submission marker from the send's
+// delivery. untyped reports that the input-prompt guard refused before any
+// keystroke reached the pane: a menu_open refusal is then as definitive a
+// non-delivery as composer_blocked. A menu_open seen after typing stays
+// ambiguous.
+func (g *codexAcceptanceGuard) RecordTransportOutcome(delivery string, untyped bool, now time.Time) error {
 	if g == nil || g.marker == nil {
 		return fmt.Errorf("Codex submission marker is unavailable")
 	}
-	switch delivery {
-	case deliveryLineTooLong, deliveryComposerBlocked, deliveryTargetBusy:
+	switch {
+	case delivery == deliveryLineTooLong, delivery == deliveryComposerBlocked, delivery == deliveryTargetBusy,
+		delivery == deliveryMenuOpen && untyped:
 		return session.ClearCodexSubmissionMarker(g.marker)
-	case deliverySubmitted:
+	case delivery == deliverySubmitted:
 		return g.marker.MarkSubmitted(now)
 	default:
 		return g.marker.MarkTransportAmbiguous(now)
