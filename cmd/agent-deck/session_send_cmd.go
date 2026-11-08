@@ -645,7 +645,7 @@ func handleSessionSend(profile string, args []string) {
 	// handleSessionStop/handleSessionRestart.
 	sendDetail := sendEventDetail(sendRes, sendErr, sentAt, sendJournalMetaFor(profile, storage, *queueWorker, message))
 	if acceptanceGuard != nil {
-		if markerErr := acceptanceGuard.RecordTransportOutcome(sendRes.delivery, time.Now()); markerErr != nil {
+		if markerErr := acceptanceGuard.RecordTransportOutcome(sendRes.delivery, sendRes.untyped, time.Now()); markerErr != nil {
 			acceptanceGuard.Release()
 			extra := sendRes.jsonFields()
 			extra["session_id"] = inst.ID
@@ -1292,6 +1292,10 @@ type sendDeliveryResult struct {
 	// slash command, or no known Claude session ID). An explicit pin is not
 	// a fallback.
 	fallbackReason send.UnavailableReason
+	// untyped reports that the --require-input-prompt guard refused before
+	// any keystroke reached the pane (#3085), so a menu_open is a definitive
+	// non-delivery like composer_blocked.
+	untyped bool
 	// socketMsgID is the msg_id SendOverClaudeSocket generated, set only on
 	// a successful socket send.
 	socketMsgID string
@@ -1476,6 +1480,7 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	if guard := tun.retry.promptGuard; guard != nil {
 		if err := guard.beforeBatch(); err != nil {
 			res.delivery, err = guard.refusal()
+			res.untyped = guard.typedBatches == 0
 			return res, err
 		}
 	}
@@ -1515,6 +1520,9 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	}
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
 	res.delivery = delivery
+	if guard := tun.retry.promptGuard; guard != nil && guard.refused && guard.typedBatches == 0 {
+		res.untyped = true
+	}
 	if delivery == deliveryDelivered {
 		res.note = send.UnconfirmedMessage(tool, verificationWindow(tun.retry.verificationChecks(claudeLike), tun.retry.checkDelay))
 	}
