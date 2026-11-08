@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -880,7 +881,13 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 	if statusFile.Event == "PreToolUse" && statusFile.ReceivedAt != 0 && previous.ReceivedAt >= statusFile.ReceivedAt {
 		return false
 	}
-	statusFile.TurnSeq = previous.TurnSeq
+	// The count also lives in <id>.turnseq, which outlives the status file:
+	// the TUI removes <id>.json on every attach-return (ClearHookStatus), and
+	// a count that restarted there would read as "no turn" to a token taken
+	// at the same number.
+	turnSeqPath := filepath.Join(hooksDir, filepath.Base(instanceID)+session.HookTurnSeqSuffix)
+	sidecarSeq := readHookTurnSeqFile(turnSeqPath)
+	statusFile.TurnSeq = max(previous.TurnSeq, sidecarSeq)
 	if isTurnSeqEvent(statusFile.Event) {
 		statusFile.TurnSeq++
 	}
@@ -907,6 +914,20 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 		b, err := json.Marshal(control)
 		if err != nil || atomicHookWrite(controlPath, b) != nil {
 			return false
+		}
+	}
+
+	// The sidecar first, once the write is accepted: ahead of the status
+	// file is harmless (readers take the larger), behind it would let an
+	// attach-return take the count back. A count only the status file had
+	// (a step-1 file) is copied over on the next write of any event.
+	if statusFile.TurnSeq > sidecarSeq {
+		if err := atomicHookWrite(turnSeqPath, []byte(strconv.FormatUint(statusFile.TurnSeq, 10))); err != nil {
+			hookHandlerLog.Warn("hook_turn_seq_write_failed",
+				slog.String("path", turnSeqPath),
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 		}
 	}
 
@@ -952,6 +973,20 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 	return true
 }
 
+// readHookTurnSeqFile is the count in <id>.turnseq, 0 when it is missing or
+// unreadable.
+func readHookTurnSeqFile(path string) uint64 {
+	data, err := readHookFileBounded(path)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // isTurnSeqEvent reports whether event is a turn edge that bumps turn_seq:
 // a submitted prompt or a Stop.
 func isTurnSeqEvent(event string) bool {
@@ -982,14 +1017,9 @@ func lockHookStatus(lock *os.File, bounded bool) error {
 }
 
 func readHookFileBounded(path string) ([]byte, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	f, _, err := session.OpenHookFileNoFollow(path)
 	if err != nil {
 		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path)
-	if f == nil {
-		_ = syscall.Close(fd)
-		return nil, errors.New("open hook file")
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, 64<<10))

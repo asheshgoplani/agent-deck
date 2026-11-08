@@ -676,7 +676,8 @@ var restartSessionStartSince = func(id string, since time.Time) bool {
 	return false
 }
 
-// hookHistoryTurnSince reads child id's hook event history from since: seen
+// hookHistoryTurnSince (freshStartTurnSeenLegacy only) reads child id's hook
+// event history from since: seen
 // when it holds a SessionStart, turn when one is neither SessionStart nor
 // SessionEnd (a SessionEnd may be an older process's, landing late) or is a
 // second SessionStart.
@@ -728,15 +729,11 @@ type restartHookEvent struct {
 func restartHookHistory(id string) []restartHookEvent {
 	// Non-blocking and regular files only: judgeRestart reads this inside
 	// emitTurn, so a FIFO planted at the path must not stall the daemon.
-	f, err := os.OpenFile(filepath.Join(filepath.Dir(hookStatusFilePath(id)), filepath.Base(id)+".events.jsonl"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, info, err := OpenHookFileNoFollow(filepath.Join(filepath.Dir(hookStatusFilePath(id)), filepath.Base(id)+".events.jsonl"))
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return nil
-	}
 	// The newest events are at the tail; a cut first line does not parse.
 	if info.Size() > maxHookStatusFileSize {
 		_, _ = f.Seek(info.Size()-maxHookStatusFileSize, io.SeekStart)
