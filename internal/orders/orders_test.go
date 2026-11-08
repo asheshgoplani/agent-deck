@@ -377,3 +377,20 @@ func TestSendBackoff(t *testing.T) {
 		}
 	}
 }
+
+// A log write that fails (open, write or close) must be reported, not
+// dropped: the outcome list carries one log-failed entry.
+func TestTick_LogWriteFailureIsReported(t *testing.T) {
+	h := newHarness(t, ciOrder)
+	if err := os.Mkdir(filepath.Join(h.dir, LogFileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Tick(h.env(time.Date(2026, 11, 8, 10, 0, 0, 0, h.berlin)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := out[len(out)-1]
+	if last.Result != "log-failed" || !strings.Contains(last.Detail, LogFileName) {
+		t.Fatalf("a failed orders.log write must be reported, outcomes: %+v", out)
+	}
+}

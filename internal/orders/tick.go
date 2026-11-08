@@ -47,6 +47,7 @@ const (
 	ResultSendFailed    = "send-failed"
 	ResultNotDelivered  = "not-delivered"
 	ResultInvalid       = "invalid"
+	ResultLogFailed     = "log-failed"
 	maxStoredOutput     = 2000 // runes kept of the last output (state + "Was:")
 	maxCapturedOutput   = 64 << 10
 	maxLogBytes         = 1 << 20
@@ -286,7 +287,10 @@ func Tick(env Env) ([]Outcome, error) {
 			return out, err
 		}
 	}
-	appendLog(env.Dir, now, out)
+	if err := appendLog(env.Dir, now, out); err != nil {
+		// The tick itself worked; say the log could not be written.
+		out = append(out, Outcome{Result: ResultLogFailed, Detail: err.Error()})
+	}
 	return out, nil
 }
 
@@ -464,8 +468,9 @@ func bashPath() string {
 }
 
 // appendLog writes the outcomes worth a line to orders.log: everything but
-// the quiet ones (not due, silent, paused, outside hours).
-func appendLog(dir string, now time.Time, out []Outcome) {
+// the quiet ones (not due, silent, paused, outside hours). An open, write or
+// close error is returned, never dropped.
+func appendLog(dir string, now time.Time, out []Outcome) (err error) {
 	var lines []string
 	for _, o := range out {
 		switch o.Result {
@@ -483,18 +488,25 @@ func appendLog(dir string, now time.Time, out []Outcome) {
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
-		return
+		return nil
 	}
 	path := filepath.Join(dir, LogFileName)
-	if fi, err := os.Stat(path); err == nil && fi.Size() > maxLogBytes {
+	if fi, serr := os.Stat(path); serr == nil && fi.Mode().IsRegular() && fi.Size() > maxLogBytes {
 		_ = os.Rename(path, path+".1")
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return
+		return fmt.Errorf("opening %s: %w", LogFileName, err)
 	}
-	defer f.Close()
-	_, _ = f.WriteString(strings.Join(lines, "\n") + "\n")
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("closing %s: %w", LogFileName, cerr)
+		}
+	}()
+	if _, err := f.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		return fmt.Errorf("writing %s: %w", LogFileName, err)
+	}
+	return nil
 }
 
 func orDash(s string) string {
