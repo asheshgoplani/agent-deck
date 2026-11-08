@@ -101,9 +101,12 @@ or:
 
 AUTO: frontend - told it to use the existing auth middleware
 NEED: api-fix - asking whether to run integration tests against staging or prod
+[info] docs-lane merged its PR
 ```
 
-The bridge parses your response: if it contains `NEED:` lines, those get forwarded to the user.
+Your response is parsed by tier: `NEED:` / `[urgent]` lines reach the user now (retired after 3 unanswered cycles), `[info]` lines are batched into a digest, everything else (`[STATUS]`, `AUTO:`) stays local.
+
+Outside a heartbeat (a wake-nudge or Stop-block turn) nothing you write reaches the user, so for a decision the user must act on now run `agent-deck conductor notify --tier urgent "<one line>"`, and `--tier info "<one line>"` for progress worth a digest. At most one urgent per decision.
 
 ## Auto-Response Guidelines
 
