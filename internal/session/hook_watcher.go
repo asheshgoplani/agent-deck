@@ -31,12 +31,36 @@ const (
 	codexConsumeLockDelay    = 5 * time.Millisecond
 )
 
+// OpenHookFileNoFollow opens a hook artifact for reading without following a
+// final-component symlink and without blocking, and only when it is a regular
+// file. The hook dirs (the sandbox scope in particular) are writable from a
+// container, so a FIFO or device planted there must not stall the reader.
+// O_NONBLOCK does not change reads of a regular file.
+func OpenHookFileNoFollow(path string) (*os.File, os.FileInfo, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("hook file %s: not a regular file", path)
+	}
+	return f, info, nil
+}
+
 // readStatusFileNoFollow reads a hook status file without following a
-// final-component symlink (O_NOFOLLOW) and bounded in size, so a compromised
+// final-component symlink (O_NOFOLLOW), regular files only and without
+// blocking (OpenHookFileNoFollow), and bounded in size, so a compromised
 // sandbox cannot symlink <id>.json at a sibling/host/device file to exfiltrate
-// or DoS the shared notify-daemon, nor OOM it with a huge real <id>.json.
+// or DoS the shared notify-daemon, block it with a FIFO, nor OOM it with a
+// huge real <id>.json.
 func readStatusFileNoFollow(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, _, err := OpenHookFileNoFollow(path)
 	if err != nil {
 		return nil, err
 	}

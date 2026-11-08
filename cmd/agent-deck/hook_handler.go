@@ -1017,14 +1017,9 @@ func lockHookStatus(lock *os.File, bounded bool) error {
 }
 
 func readHookFileBounded(path string) ([]byte, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	f, _, err := session.OpenHookFileNoFollow(path)
 	if err != nil {
 		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path)
-	if f == nil {
-		_ = syscall.Close(fd)
-		return nil, errors.New("open hook file")
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, 64<<10))
