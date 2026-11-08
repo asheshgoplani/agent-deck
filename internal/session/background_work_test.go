@@ -469,7 +469,7 @@ func TestBackgroundWork2473_ConductorTemplateMigratesV1624(t *testing.T) {
 	// Rebuilt from what shipped: the /cmd quick command, the no-op notice
 	// rule, the plain (non -q) reads and the #2972 archived-skip clause came
 	// after this sentence, so the old file has none of them.
-	v1624 := renderConductorInstructionsTemplate(preBackgroundWorkConductorInstructionsTemplate(preNoOpNoticeRuleConductorInstructionsTemplate(prePlainReadConductorInstructionsTemplate(preHarnessControlConductorInstructionsTemplate(preArchivedSessionsConductorInstructionsTemplate(conductorSharedClaudeMDTemplate))))), "", DefaultProfile, spec)
+	v1624 := renderConductorInstructionsTemplate(preBackgroundWorkConductorInstructionsTemplate(preNoOpNoticeRuleConductorInstructionsTemplate(prePlainReadConductorInstructionsTemplate(preHarnessControlConductorInstructionsTemplate(preArchivedSessionsConductorInstructionsTemplate(preStandingOrdersConductorInstructionsTemplate(conductorSharedClaudeMDTemplate)))))), "", DefaultProfile, spec)
 	if v1624 == current || strings.Contains(v1624, "background-work") {
 		t.Fatal("reconstructed v1.16.24 template still carries the new sentence")
 	}

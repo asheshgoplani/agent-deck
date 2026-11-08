@@ -761,6 +761,20 @@ Key constraints:
 
 Slack pairing follows the same one-bot-per-conductor pattern. See [docs/conductor/](docs/conductor/) for the full quickstart, including @BotFather steps, profile config, and verification commands.
 
+#### Standing orders
+
+Tell a conductor to watch something, and it is woken **only when that thing changes**. Orders live in `ORDERS.md` in the conductor's directory; one timer per host checks them every minute with a cheap shell command (no AI, no tokens). Same output as last time: nothing happens. Changed: the conductor gets one message with the old and new output, what to do, and what to ask you first.
+
+```bash
+agent-deck orders add watch-prs --every 30m \
+  --check "gh pr list --author @me --json number,statusCheckRollup -q '.[] | [.number, ([.statusCheckRollup[].conclusion] | unique)] | @json'" \
+  --do "land the PRs whose checks are all green; tell me in one line" \
+  --ask-first "merge"
+agent-deck orders list            # also: orders pause|resume|rm <name>
+```
+
+Each order has a daily wake cap (`max_wakes_per_day`, default 6), optional active hours and an expiry date. A conductor turn started by an order cannot add or change orders, and a permission prompt in that turn is denied and sent to you as a `NEED:`. `conductor setup` installs the timer (`--no-orders` skips it; `agent-deck orders install` adds it later). Example file: [examples/standing-orders/ORDERS.md](examples/standing-orders/ORDERS.md); details: [docs/orders.md](docs/orders.md).
+
 #### See also
 
 - [docs/conductor/](docs/conductor/) — full conductor guide with channel pairing walkthrough
