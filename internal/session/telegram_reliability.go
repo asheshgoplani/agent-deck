@@ -218,7 +218,29 @@ func envFileDeclaresTelegram(path string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), "TELEGRAM_STATE_DIR")
+	_, ok := envAssignmentValue(string(data), "TELEGRAM_STATE_DIR")
+	return ok
+}
+
+// envAssignmentValue returns the raw value of the first active
+// `[export ]KEY=value` line in env-file content. Comment lines, other
+// variables that merely share the prefix, and mentions after a `#` on
+// another assignment do not count: an operator disables a variable by
+// commenting its line out, and that must disable it here too.
+func envAssignmentValue(content, key string) (string, bool) {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "export"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+			line = strings.TrimLeft(rest, " \t")
+		}
+		if v, ok := strings.CutPrefix(line, key+"="); ok {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // reconcileConductorTelegramChannel restores the telegram channel id onto

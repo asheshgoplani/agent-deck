@@ -448,7 +448,7 @@ type Instance struct {
 
 	// Channels are Claude Code plugin-channel ids (e.g. "plugin:telegram@user/repo").
 	// When non-empty on a claude session, buildClaudeExtraFlags emits
-	// `--channels <csv>` so the session subscribes to inbound plugin messages.
+	// one `--channels <entry>` per channel so the session subscribes to inbound plugin messages.
 	// Without this flag the channel plugin runs as a plain MCP (tools only,
 	// no inbound delivery) which silently drops Telegram/Discord/Slack
 	// messages on conductor restart.

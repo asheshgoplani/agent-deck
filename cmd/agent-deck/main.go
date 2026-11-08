@@ -2046,7 +2046,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	})
 
 	// Plugin channel flag - can be specified multiple times; requires -c claude.
-	// Persisted on Instance.Channels and emitted as --channels <csv> on every
+	// Persisted on Instance.Channels and emitted as one --channels <entry> per channel on every
 	// claude Start/Restart so plugin channels deliver inbound messages.
 	var channelFlags []string
 	fs.Func("channel", "Plugin channel id (can specify multiple times); requires -c claude", func(s string) error {

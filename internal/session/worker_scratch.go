@@ -87,7 +87,7 @@ func configDeclaresTelegram(cfg *UserConfig) bool {
 		if err != nil {
 			continue // missing/unreadable env_file is not a telegram declaration
 		}
-		if strings.Contains(string(data), "TELEGRAM_STATE_DIR") {
+		if _, ok := envAssignmentValue(string(data), "TELEGRAM_STATE_DIR"); ok {
 			return true
 		}
 	}
