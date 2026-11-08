@@ -175,6 +175,15 @@ esac
 				}
 			}
 			setStatus(status)
+			if status == "missing" {
+				// One failed read is not an outage.
+				if err := run(); err != nil {
+					t.Fatal(err)
+				}
+				if n := countLines(t, logPath) + countLines(t, notified); n != 0 {
+					t.Fatalf("a single missing status must not alert: %d lines", n)
+				}
+			}
 			for i := 0; i < 3; i++ {
 				if err := run(); err != nil {
 					t.Fatalf("tick %d: %v", i+1, err)
@@ -187,7 +196,8 @@ esac
 			}
 			notes, _ := os.ReadFile(notified)
 			if strings.Count(string(notes), "\n") != 1 ||
-				!strings.Contains(string(notes), "notify --tier urgent --conductor ops ") {
+				!strings.Contains(string(notes), "notify --tier urgent --conductor ops ") ||
+				!strings.Contains(string(notes), " since ") {
 				t.Fatalf("dead conductor must notify once, urgent: %q", notes)
 			}
 
@@ -197,8 +207,10 @@ esac
 				t.Fatal(err)
 			}
 			setStatus(status)
-			if err := run(); err != nil {
-				t.Fatal(err)
+			for i := 0; i < 2; i++ { // "missing" needs two runs in a row
+				if err := run(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if n := countLines(t, logPath); n != 2 {
 				t.Fatalf("a second outage must log again: lines=%d", n)
@@ -319,5 +331,36 @@ func TestWriteHeartbeatJSON_ConcurrentWritersDoNotCollide(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("state file mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// A flock that rejects its flags (or cannot open the lock) must not stop the
+// heartbeat: the run logs one line and goes on unlocked.
+func TestHeartbeatScript_UnusableFlockRunsUnlocked(t *testing.T) {
+	fake := `#!/bin/bash
+while [ "$1" = "-p" ]; do shift 2; done
+case "$1 $2" in
+  "conductor status") echo '{"conductors": [{"heartbeat": true}]}' ;;
+  "session show") echo '{"status": "idle"}' ;;
+  "conductor heartbeat-tick")
+    if [[ "$5" != --commit-message=* ]]; then echo '[HEARTBEAT] [ops] Status: 1 waiting.'; fi ;;
+  "session send") echo "$4" >> "$HOME/sent"; echo '{"success": true}' ;;
+esac
+`
+	home, conductorDir, run := heartbeatScriptHarness(t, fake)
+	// A flock that only knows -n and fails on -o with a usage error (64).
+	badFlock := "#!/bin/bash\necho 'flock: unknown option -- o' >&2\nexit 64\n"
+	if err := os.WriteFile(filepath.Join(home, "bin", "flock"), []byte(badFlock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("an unusable flock must not fail the run: %v", err)
+	}
+	if n := countLines(t, filepath.Join(home, "sent")); n != 1 {
+		t.Fatalf("the heartbeat must still be sent unlocked: sends=%d", n)
+	}
+	logData, _ := os.ReadFile(filepath.Join(conductorDir, "heartbeat.log"))
+	if !strings.Contains(string(logData), "heartbeat: flock unusable (exit 64); running unlocked") {
+		t.Fatalf("an unusable flock must be logged: %q", logData)
 	}
 }
