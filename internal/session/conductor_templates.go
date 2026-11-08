@@ -6,6 +6,7 @@ import "strings"
 // generated template. Installers compare its fully rendered form byte-for-byte
 // before migrating, so any user customization is preserved.
 func previousConductorInstructionsTemplate(template string) string {
+	template = preStandingOrdersConductorInstructionsTemplate(template)
 	template = preArchivedSessionsConductorInstructionsTemplate(template)
 	template = preHarnessControlConductorInstructionsTemplate(template)
 	template = prePlainReadConductorInstructionsTemplate(template)
@@ -162,6 +163,26 @@ func preHarnessControlConductorInstructionsTemplate(template string) string {
 	return strings.Replace(template, conductorHarnessControlQuickCommandRow, "", 1)
 }
 
+// conductorStandingOrdersSection documents `agent-deck orders` (ORDERS.md)
+// in the shared template. It follows the heartbeat reply format, so a
+// conductor learns that time-based watching does not belong in heartbeat
+// rules (the heartbeat only fires when a child is waiting or errored).
+const conductorStandingOrdersSection = "\n\n## Standing Orders\n\n" +
+	"Time-based watching (\"check X every N, tell me when it changes\") lives in `ORDERS.md` in your conductor directory, not in heartbeat rules: a heartbeat only fires when a child is waiting or errored. When the user says \"watch X\" or \"stop watching X\", run:\n\n" +
+	"```bash\n" +
+	"agent-deck -p <PROFILE> orders add <name> --every 15m --check '<cheap shell command>' --do '<what to do when it changes>' --ask-first 'merge, push'\n" +
+	"agent-deck -p <PROFILE> orders list        # also: orders pause|resume|rm <name>\n" +
+	"```\n\n" +
+	"A timer runs each due check every minute with no AI. You are woken only when its output changes, by a message starting `[ORDER <name>]` with the old and new output, the `do:` text and the ask-first list. In that turn: if the change needs nothing, reply exactly `NO_REPLY`; ask the user (a `NEED:` line or `agent-deck ask`) before anything on the ask-first list, since nobody is watching and a permission prompt is denied; never add, change or remove orders (the CLI refuses from an order-started turn)."
+
+// preStandingOrdersConductorInstructionsTemplate reconstructs the template
+// from before the Standing Orders section, so a conductor written then is
+// recognised as generated and migrated. Per-name templates never carried
+// it, so this is a no-op there.
+func preStandingOrdersConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template, conductorStandingOrdersSection, "", 1)
+}
+
 // conductorHeartbeatReplyDoc is the tail of the heartbeat reply-format
 // example as of #2469 (urgent/info markers, conductor notify);
 // conductorHeartbeatReplyDocV0 is the wording v1.11.0-v1.16.24 shipped.
@@ -189,7 +210,12 @@ const (
 // those releases is treated as user-edited and left alone.
 func conductorInstructionsGenerations(template string) []string {
 	var gens []string
-	// Newest first: the release before the #2972 archived-skip clause.
+	// Newest first: the release before the Standing Orders section.
+	if noOrders := preStandingOrdersConductorInstructionsTemplate(template); noOrders != template {
+		gens = append(gens, noOrders)
+		template = noOrders
+	}
+	// Then the release before the #2972 archived-skip clause.
 	if noArchived := preArchivedSessionsConductorInstructionsTemplate(template); noArchived != template {
 		gens = append(gens, noArchived)
 		template = noArchived
@@ -337,7 +363,7 @@ or:
 
 AUTO: frontend - told it to use the existing auth middleware
 NEED: api-fix - asking whether to run integration tests against staging or prod
-` + conductorHeartbeatReplyDoc + `
+` + conductorHeartbeatReplyDoc + conductorStandingOrdersSection + `
 
 ## State Management
 

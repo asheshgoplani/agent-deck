@@ -66,6 +66,8 @@ type hookPayload struct {
 	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
 	Settles              json.RawMessage `json:"settles"`                // pi: the capability bit, sent with run_id by a v4+ extension (agent_settled itself is v3+)
 	RunID                json.RawMessage `json:"run_id"`                 // pi: the run token minted at agent_start
+	ToolName             json.RawMessage `json:"tool_name"`              // PermissionRequest / PreToolUse
+	ToolInput            json.RawMessage `json:"tool_input"`             // PermissionRequest / PreToolUse
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
 	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
@@ -423,6 +425,25 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// UserPromptSubmit, pi agent_settled).
 	spoolCommsFromHook(instanceID, payload)
 
+	// Turn origin (standing orders): a Claude prompt records whether an
+	// order or a heartbeat started this turn; the turn's Stop clears it,
+	// unless the Stop is blocked below and the same turn goes on.
+	stopBlocked := false
+	switch claudeTurnEdge(payload) {
+	case "prompt":
+		if err := session.RecordTurnOrigin(instanceID, rawString(payload.Prompt)); err != nil {
+			hookHandlerLog.Warn("turn_origin_write_failed", slog.String("error", err.Error()))
+		}
+	case "start":
+		session.ClearTurnOrigin(instanceID)
+	case "stop":
+		defer func() {
+			if !stopBlocked {
+				session.ClearTurnOrigin(instanceID)
+			}
+		}()
+	}
+
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)
 
@@ -502,8 +523,16 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// that exits with no decision falls through to Claude Code's default,
 	// which denies in UI-less contexts. Status-tracking behavior above is
 	// unchanged.
-	if normalizeHookEventKey(payload.HookEventName) == "permissionrequest" && parentIsDSP() {
-		fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+	//
+	// A turn started by a standing order or a heartbeat has nobody to answer
+	// the prompt: it is denied at once (before the DSP allow) and the owner
+	// gets a NEED, instead of the conductor waiting forever.
+	if normalizeHookEventKey(payload.HookEventName) == "permissionrequest" {
+		if origin := session.LoadTurnOrigin(instanceID); origin != "" {
+			denyUnattendedPermission(instanceID, origin, payload)
+		} else if parentIsDSP() {
+			fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+		}
 	}
 
 	// Conductor fleet snapshot: on the Claude turn-start edges (UserPromptSubmit,
@@ -576,6 +605,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 		if dl, ledgerOK := session.LedgerStopDecision(instanceID, resolveStopHookActive(payload)); ledgerOK {
 			printed := false
 			if dl.Blocked {
+				stopBlocked = true
 				if out, mErr := json.Marshal(dl.Decision); mErr == nil {
 					_, err := fmt.Println(string(out))
 					printed = err == nil
@@ -585,6 +615,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 			return
 		}
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
+			stopBlocked = true
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
 				// A Stop-hook block buys the parent another turn: a machine
