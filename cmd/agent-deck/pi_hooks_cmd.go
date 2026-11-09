@@ -146,3 +146,70 @@ func handlePiHooksStatus(args []string) {
 		fmt.Println("Socket: on")
 	}
 }
+
+// pi extension states as `doctor` and `session show` report them (#3098).
+// Without the extension a pi session's status and startup are read from the
+// pane only, which a custom footer or editor can defeat.
+const (
+	piHooksInstalled    = "installed"
+	piHooksOutdated     = "outdated"
+	piHooksForeign      = "foreign"
+	piHooksNotInstalled = "not-installed"
+	piHooksUnknown      = "unknown"
+)
+
+// piHooksReport is the extension state for one pi extensions dir. Version is
+// the on-disk version when the file is ours; Extension is "" when unknown.
+type piHooksReport struct {
+	State     string `json:"state"`
+	Version   int    `json:"version,omitempty"`
+	Extension string `json:"extension,omitempty"`
+}
+
+// piHooksStateForDir classifies the extension in a pi extensions dir.
+func piHooksStateForDir(dir string) piHooksReport {
+	state, version := session.InspectPiHooks(dir)
+	report := piHooksReport{Version: version, Extension: session.PiHookExtensionPath(dir)}
+	switch state {
+	case session.PiHooksInstalled:
+		report.State = piHooksInstalled
+	case session.PiHooksOutdated:
+		report.State = piHooksOutdated
+	case session.PiHooksForeign:
+		report.State = piHooksForeign
+	default:
+		report.State = piHooksNotInstalled
+	}
+	return report
+}
+
+// piHooksStateForInstance reports the extension a session's pi loads: empty
+// for other tools, unknown for a remote or sandboxed session (its extensions
+// dir is not this host's).
+func piHooksStateForInstance(inst *session.Instance) piHooksReport {
+	if inst == nil || inst.Tool != "pi" {
+		return piHooksReport{}
+	}
+	if inst.IsSSH() || inst.IsSandboxed() {
+		return piHooksReport{State: piHooksUnknown}
+	}
+	return piHooksStateForDir(session.PiExtensionsDir())
+}
+
+// piHooksLine is the human line for an extension state; every state that
+// needs action names the command.
+func piHooksLine(r piHooksReport) string {
+	switch r.State {
+	case piHooksInstalled:
+		return fmt.Sprintf("extension installed (v%d, %s)", r.Version, r.Extension)
+	case piHooksOutdated:
+		return fmt.Sprintf("extension outdated (v%d on disk, current v%d, %s); run '%s' to upgrade",
+			r.Version, session.PiHookExtensionVersion(), r.Extension, session.PiHooksInstallCommand())
+	case piHooksForeign:
+		return fmt.Sprintf("extension blocked: %s was not written by agent-deck; move it aside, then run '%s'", r.Extension, session.PiHooksInstallCommand())
+	case piHooksNotInstalled:
+		return fmt.Sprintf("extension not installed (pane detection only); run '%s' (%s)", session.PiHooksInstallCommand(), r.Extension)
+	default:
+		return "extension unknown (remote or sandboxed session)"
+	}
+}

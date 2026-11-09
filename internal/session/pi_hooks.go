@@ -437,3 +437,41 @@ func isDigits(s string) bool {
 	}
 	return s != ""
 }
+
+// PiHooksInstallCommand is the command that installs the extension into the
+// dir this process resolves. Like the codex-hooks line's CODEX_HOME, a set
+// PI_CODING_AGENT_DIR is spelled out so a shell without it does not install
+// into ~/.pi/agent instead.
+func PiHooksInstallCommand() string {
+	if dir := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); dir != "" {
+		return "PI_CODING_AGENT_DIR=" + shellescape.Quote(dir) + " agent-deck pi-hooks install"
+	}
+	return "agent-deck pi-hooks install"
+}
+
+// piStartupTimeoutHint is the startup-timeout hold's explanation for a pi
+// session spawned without the extension (#3098).
+func piStartupTimeoutHint() string {
+	return "The agent-deck pi extension is not installed, so pi's startup could only be detected from the screen.\n" +
+		"Install it with '" + PiHooksInstallCommand() + "' before restarting."
+}
+
+// applyStartupTimeoutHint tells the startup watchdog why it may not see this
+// session start. Without the extension, pi's startup is judged only from the
+// pane, so a layout the pane patterns do not know (a footer extension, #3098)
+// can expire a healthy session; the extension's session_start ends startup
+// whatever the layout. Recomputed on every spawn, so installing the extension
+// and restarting clears it. Remote and sandboxed sessions keep their
+// extension elsewhere, so this host cannot tell and stays quiet.
+func (i *Instance) applyStartupTimeoutHint() {
+	if i.tmuxSession == nil {
+		return
+	}
+	hint := ""
+	if i.Tool == "pi" && !i.IsSSH() && !i.IsSandboxed() {
+		if state, _ := InspectPiHooks(PiExtensionsDir()); state == PiHooksNotInstalled {
+			hint = piStartupTimeoutHint()
+		}
+	}
+	i.tmuxSession.SetStartupTimeoutHint(hint)
+}
