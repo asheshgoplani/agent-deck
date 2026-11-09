@@ -337,7 +337,7 @@ func (h *Home) renderWelcome(width, height int) string {
 	tail = append(tail, "", dim.Render(truncateDisplay("↑↓ pick · Enter do it · q quit", inner, "…")))
 
 	build := func(withAbout bool, padY int) string {
-		lines := []string{title.Render("Welcome to Agent Deck"), ""}
+		lines := []string{withBrandMark(title.Render("Welcome to Agent Deck"), inner), ""}
 		if withAbout {
 			lines = append(lines, about, "")
 		}

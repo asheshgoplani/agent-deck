@@ -24,6 +24,9 @@ var darkColors = struct {
 	Bg, Surface, Border, Text, TextDim  lipgloss.Color
 	Accent, Purple, Cyan, Green, Yellow lipgloss.Color
 	Orange, Red, Comment                lipgloss.Color
+	// Brand mark dots (running, waiting, idle) for a dark terminal: the
+	// brand kit's values, with its fixed 256- and 16-colour fallbacks.
+	BrandRunning, BrandWaiting, BrandIdle lipgloss.CompleteColor
 }{
 	Bg:      lipgloss.Color("#1a1b26"),
 	Surface: lipgloss.Color("#24283b"),
@@ -38,6 +41,10 @@ var darkColors = struct {
 	Orange:  lipgloss.Color("#ff9e64"),
 	Red:     lipgloss.Color("#f7768e"),
 	Comment: lipgloss.Color("#787fa0"),
+
+	BrandRunning: lipgloss.CompleteColor{TrueColor: "#5CC98F", ANSI256: "78", ANSI: "2"},
+	BrandWaiting: lipgloss.CompleteColor{TrueColor: "#E8B464", ANSI256: "179", ANSI: "3"},
+	BrandIdle:    lipgloss.CompleteColor{TrueColor: "#959DBD", ANSI256: "103", ANSI: "8"},
 }
 
 // Light Theme - Tokyo Night Light variant
@@ -45,6 +52,8 @@ var lightColors = struct {
 	Bg, Surface, Border, Text, TextDim  lipgloss.Color
 	Accent, Purple, Cyan, Green, Yellow lipgloss.Color
 	Orange, Red, Comment                lipgloss.Color
+	// Brand mark dots for a light terminal (darker, readable on white).
+	BrandRunning, BrandWaiting, BrandIdle lipgloss.CompleteColor
 }{
 	Bg:      lipgloss.Color("#d5d6db"),
 	Surface: lipgloss.Color("#e9e9ec"),
@@ -59,6 +68,10 @@ var lightColors = struct {
 	Orange:  lipgloss.Color("#965027"),
 	Red:     lipgloss.Color("#8c4351"),
 	Comment: lipgloss.Color("#6a6d7c"),
+
+	BrandRunning: lipgloss.CompleteColor{TrueColor: "#485E30", ANSI256: "64", ANSI: "2"},
+	BrandWaiting: lipgloss.CompleteColor{TrueColor: "#855710", ANSI256: "94", ANSI: "3"},
+	BrandIdle:    lipgloss.CompleteColor{TrueColor: "#5E6170", ANSI256: "60", ANSI: "0"},
 }
 
 // Active color variables (set by InitTheme)
@@ -76,6 +89,11 @@ var (
 	ColorOrange  lipgloss.Color
 	ColorRed     lipgloss.Color
 	ColorComment lipgloss.Color
+
+	// Brand mark dot colours (see RenderBrandMark).
+	ColorBrandRunning lipgloss.CompleteColor
+	ColorBrandWaiting lipgloss.CompleteColor
+	ColorBrandIdle    lipgloss.CompleteColor
 )
 
 // themeMu protects global color/style variables during live theme switches.
@@ -102,6 +120,9 @@ func InitTheme(theme string) {
 		ColorOrange = lightColors.Orange
 		ColorRed = lightColors.Red
 		ColorComment = lightColors.Comment
+		ColorBrandRunning = lightColors.BrandRunning
+		ColorBrandWaiting = lightColors.BrandWaiting
+		ColorBrandIdle = lightColors.BrandIdle
 	} else {
 		currentTheme = ThemeDark
 		ColorBg = darkColors.Bg
@@ -117,6 +138,9 @@ func InitTheme(theme string) {
 		ColorOrange = darkColors.Orange
 		ColorRed = darkColors.Red
 		ColorComment = darkColors.Comment
+		ColorBrandRunning = darkColors.BrandRunning
+		ColorBrandWaiting = darkColors.BrandWaiting
+		ColorBrandIdle = darkColors.BrandIdle
 	}
 	// Reinitialize styles with new colors
 	initStyles()
@@ -285,9 +309,6 @@ var (
 	ColorWarning  lipgloss.Color
 	ColorPrimary  lipgloss.Color
 )
-
-// LogoBorderStyle for the grid lines
-var LogoBorderStyle lipgloss.Style
 
 // LogoFrames kept for backward compatibility (empty state default)
 var LogoFrames = [][]string{
@@ -555,8 +576,6 @@ func initStyles() {
 	ColorWarning = ColorYellow
 	ColorPrimary = ColorAccent
 
-	// LogoBorderStyle
-	LogoBorderStyle = lipgloss.NewStyle().Foreground(ColorBorder)
 }
 
 // Helper Functions
@@ -719,57 +738,43 @@ func GetToolStyle(tool string) lipgloss.Style {
 	return DefaultToolStyle
 }
 
-// RenderLogoIndicator renders a single indicator with appropriate color
-func RenderLogoIndicator(indicator string) string {
-	var color lipgloss.Color
-	switch indicator {
-	case "●":
-		color = ColorGreen // Running
-	case "◐":
-		color = ColorYellow // Waiting
-	case "○":
-		color = ColorTextDim // Idle
-	default:
-		color = ColorTextDim
-	}
-	return lipgloss.NewStyle().Foreground(color).Bold(true).Render(indicator)
+// BrandMarkText is the agent-deck mark in its plain form: running and
+// waiting as filled dots, idle as a hollow ring. Three cells wide.
+const BrandMarkText = "●●○"
+
+// brandMarkWidth is the cells the mark plus its one-space gap take in front
+// of a name ("●●○ Agent Deck").
+const brandMarkWidth = 4
+
+// RenderBrandMark renders the agent-deck mark in the brand colours of the
+// active theme (dark or light). The colour profile picks truecolor, the
+// 256-colour or the 16-colour value; with no colour it is BrandMarkText.
+// No background and no bold, so the terminal's own background shows.
+func RenderBrandMark() string {
+	return renderBrandMarkLit(true, true, true)
 }
 
-// getLogoIndicators returns 3 indicators based on actual session status counts
-// Priority: Running > Waiting > Idle
-// Shows up to 3 indicators reflecting the real state
-func getLogoIndicators(running, waiting, idle int) []string {
-	indicators := make([]string, 0, 3)
-
-	// Add running indicators (green ●)
-	for i := 0; i < running && len(indicators) < 3; i++ {
-		indicators = append(indicators, "●")
+// renderBrandMarkLit renders the mark with only the lit dots in their brand
+// colour; an unlit dot keeps its glyph in the comment colour (the splash
+// screens light the dots in turn while they wait).
+func renderBrandMarkLit(running, waiting, idle bool) string {
+	dot := func(lit bool, c lipgloss.TerminalColor, glyph string) string {
+		if !lit {
+			c = ColorComment
+		}
+		return lipgloss.NewStyle().Foreground(c).Render(glyph)
 	}
-
-	// Add waiting indicators (yellow ◐)
-	for i := 0; i < waiting && len(indicators) < 3; i++ {
-		indicators = append(indicators, "◐")
-	}
-
-	// Fill remaining with idle (gray ○)
-	for len(indicators) < 3 {
-		indicators = append(indicators, "○")
-	}
-
-	return indicators
+	return dot(running, ColorBrandRunning, "●") +
+		dot(waiting, ColorBrandWaiting, "●") +
+		dot(idle, ColorBrandIdle, "○")
 }
 
-// RenderLogoCompact renders the compact inline logo for the header
-// Shows REAL status: running=●, waiting=◐, idle=○
-// Format: ⟨ ● │ ◐ │ ○ ⟩  (using angle brackets for modern look)
-func RenderLogoCompact(running, waiting, idle int) string {
-	indicators := getLogoIndicators(running, waiting, idle)
-	bracketStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
-	return bracketStyle.Render("⟨") +
-		" " + RenderLogoIndicator(indicators[0]) +
-		LogoBorderStyle.Render(" │ ") +
-		RenderLogoIndicator(indicators[1]) +
-		LogoBorderStyle.Render(" │ ") +
-		RenderLogoIndicator(indicators[2]) + " " +
-		bracketStyle.Render("⟩")
+// withBrandMark puts the mark in front of an already-rendered name when the
+// result fits in avail cells; otherwise it returns the name unchanged, so a
+// narrow box keeps its words and gives up the mark first.
+func withBrandMark(name string, avail int) string {
+	if lipgloss.Width(name)+brandMarkWidth > avail {
+		return name
+	}
+	return RenderBrandMark() + " " + name
 }
