@@ -302,6 +302,14 @@ func (s *Session) startupTimeoutIsCurrent() bool {
 //
 // Capture errors, including ErrCaptureTimeout, return false: the watchdog
 // falls back to its existing (pre-#2361) behaviour in that case.
+//
+// pi also counts as alive when its editor box is on screen
+// (piComposerBoxVisible, #3098). pi's prompt patterns key on its stock
+// footer, and an extension that replaces the footer and editor
+// (pi-powerline-footer) leaves an idle pi matching neither busy nor prompt,
+// so without this the watchdog killed a healthy pane. The box is checked
+// only here, after busy and prompt, so it ends startup without changing how
+// detection classifies the frame afterwards.
 func (s *Session) startupShowsAgentAlive() bool {
 	rawContent, err := s.CapturePane()
 	if err != nil {
@@ -310,7 +318,11 @@ func (s *Session) startupShowsAgentAlive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	content := s.prepareFrame(StripANSI(rawContent))
-	return s.hasBusyIndicator(content) || s.hasPromptIndicator(content)
+	if s.hasBusyIndicator(content) || s.hasPromptIndicator(content) {
+		return true
+	}
+	return inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand()) == "pi" &&
+		piComposerBoxVisible(content)
 }
 
 // GetWindowActivity returns Unix timestamp of last tmux window activity

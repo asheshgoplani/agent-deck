@@ -97,3 +97,63 @@ func isPiWorkingBanner(line string, spinnerChars []string) bool {
 	}
 	return false
 }
+
+// piComposerBoxVisible reports whether the frame ends with pi's editor box:
+// a horizontal-rule border, 1..12 input lines, another rule, with the lower
+// rule among the last 8 non-blank lines (pi's footer and widgets draw under
+// it). It keys on the editor's shape, not on footer text, so it holds when an
+// extension such as pi-powerline-footer replaces pi's footer and editor
+// (#3098). Only the overdue startup probe uses it; normal waiting/active
+// classification is unchanged.
+func piComposerBoxVisible(content string) bool {
+	lines := strings.Split(content, "\n")
+	end := len(lines) - 1
+	for end >= 0 && strings.TrimSpace(lines[end]) == "" {
+		end--
+	}
+	nonBlank := 0
+	for lower := end; lower > 0 && nonBlank < 8; lower-- {
+		if strings.TrimSpace(lines[lower]) == "" {
+			continue
+		}
+		nonBlank++
+		if !isPiComposerBorder(lines[lower]) {
+			continue
+		}
+		for upper := lower - 1; upper >= 0 && lower-upper-1 <= 12; upper-- {
+			if isPiComposerBorder(lines[upper]) {
+				if lower-upper-1 >= 1 {
+					return true
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
+// isPiComposerBorder reports whether line is a border of pi's editor box: a
+// plain rule (isPiComposerRule), or a rule carrying the editor's scroll
+// marker, stock "─── ↑ 3 more ───" or powerline "↑─────".
+func isPiComposerBorder(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if isPiComposerRule(trimmed) {
+		return true
+	}
+	for _, arrow := range []string{"↑", "↓"} {
+		before, after, ok := strings.Cut(trimmed, arrow)
+		if !ok {
+			continue
+		}
+		after = strings.TrimLeft(after, " ")
+		if digits := strings.TrimLeft(after, "0123456789"); len(digits) < len(after) {
+			rest, ok := strings.CutPrefix(digits, " more")
+			if !ok {
+				return false
+			}
+			after = rest
+		}
+		return isPiComposerRule(strings.TrimSpace(before) + strings.TrimSpace(after))
+	}
+	return false
+}
