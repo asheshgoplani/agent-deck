@@ -15,6 +15,10 @@
 #   4. Update path end to end: TestReleaseReadiness_UpdatePath builds the
 #      candidate, serves it as a fake release and lets an older build update
 #      itself (manual and auto-install) in a throwaway HOME. It must PASS.
+#   5. Changelog: CHANGELOG.md keeps a "## [Unreleased]" section and has a
+#      "## [X.Y.Z]" heading for the Version above. If it does not, run
+#      `make changelog-release VERSION=X.Y.Z` (scripts/changelog-release.sh),
+#      which moves the Unreleased lines under that heading, then commit.
 #
 # Why: 24 releases came within 24 h of the previous one, 11 of them fixing
 # it, and the auto-update rollout was fixed three times after shipping.
@@ -212,6 +216,16 @@ echo "  test output: $log"
 if [ "$rc" != 0 ] || ! grep -q -- "--- PASS: ${E2E_TEST} " "$log" || grep -q -E -- "--- (FAIL|SKIP): ${E2E_TEST}" "$log"; then
   tail -n 40 "$log" | sed 's/^/  | /'
   refuse "$E2E_TEST did not pass (exit $rc)"
+fi
+
+# 5. Changelog entry for this version.
+echo "5. changelog"
+if [ -n "$version" ]; then
+  if cl_out=$(bash "$(dirname "${BASH_SOURCE[0]}")/changelog-release.sh" --file CHANGELOG.md --check "$version" 2>&1); then
+    echo "  $cl_out"
+  else
+    refuse "${cl_out//$'\n'/; } (make changelog-release VERSION=$version moves the Unreleased lines there)"
+  fi
 fi
 
 echo

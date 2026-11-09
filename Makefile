@@ -1,4 +1,4 @@
-.PHONY: bench-fleet bench-ops build run install install-user uninstall uninstall-user clean dev release-ready release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
+.PHONY: bench-fleet bench-ops build run install install-user uninstall uninstall-user clean dev release-ready changelog-release release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -203,6 +203,13 @@ ci:
 # READY_ARGS, e.g. make release-ready READY_ARGS="--fixes v1.16.30".
 release-ready:
 	./scripts/release-readiness.sh $(READY_ARGS)
+
+# Move CHANGELOG.md's Unreleased lines under the release heading, e.g.
+# make changelog-release VERSION=1.16.39 (optional DATE=YYYY-MM-DD, default
+# today in Europe/Berlin). release-ready refuses a Version without a heading.
+changelog-release:
+	@if [ "$(origin VERSION)" != "command line" ]; then echo "usage: make changelog-release VERSION=X.Y.Z [DATE=YYYY-MM-DD]"; exit 2; fi
+	./scripts/changelog-release.sh $(VERSION) $(DATE)
 
 # Local release using GoReleaser
 # Prerequisites: brew install goreleaser
