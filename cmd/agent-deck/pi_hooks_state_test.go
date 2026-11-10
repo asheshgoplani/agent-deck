@@ -14,7 +14,7 @@ import (
 // session killed at startup (#3098). That state must be visible: `doctor` and
 // `session show` say whether the extension is installed and how to fix it.
 
-func TestPiHooksStateForDir(t *testing.T) {
+func TestPiHooksStateForAgentDir(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		content     string // written to agent-deck.ts unless skip
@@ -28,18 +28,25 @@ func TestPiHooksStateForDir(t *testing.T) {
 		{name: "foreign file", content: "// my own agent-deck.ts\n", wantState: piHooksForeign},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
+			agentDir := t.TempDir()
+			extDir := filepath.Join(agentDir, "extensions")
 			if !tc.skip {
-				if err := os.WriteFile(session.PiHookExtensionPath(dir), []byte(tc.content), 0o644); err != nil {
+				if err := os.MkdirAll(extDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(session.PiHookExtensionPath(extDir), []byte(tc.content), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			got := piHooksStateForDir(dir)
+			got := piHooksStateForAgentDir(agentDir)
 			if got.State != tc.wantState || got.Version != tc.wantVersion {
 				t.Fatalf("state = %+v, want state %q version %d", got, tc.wantState, tc.wantVersion)
 			}
-			if want := session.PiHookExtensionPath(dir); got.Extension != want {
+			if want := session.PiHookExtensionPath(extDir); got.Extension != want {
 				t.Fatalf("extension path = %q, want %q", got.Extension, want)
+			}
+			if got.AgentDir != agentDir {
+				t.Fatalf("agent dir = %q, want %q", got.AgentDir, agentDir)
 			}
 		})
 	}
@@ -78,8 +85,40 @@ func TestPiHooksStateForInstance(t *testing.T) {
 	}
 }
 
-func TestPiHooksLine(t *testing.T) {
+// A pi command with its own leading PI_CODING_AGENT_DIR loads extensions from
+// there, not from agent-deck's dir, so `session show` reports that dir and
+// names it in the install command (#3099 review).
+func TestPiHooksStateForInstanceUsesTheCommandAgentDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv("PI_CODING_AGENT_DIR", "")
+	if _, err := session.InstallPiHooks(filepath.Join(home, ".pi", "agent", "extensions")); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdDir := filepath.Join(home, "other-agent")
+	inst := session.NewInstanceWithTool("pi-cmd-dir", home, "pi")
+	inst.Command = "PI_CODING_AGENT_DIR=" + cmdDir + " pi"
+	got := piHooksStateForInstance(inst)
+	if got.State != piHooksNotInstalled {
+		t.Fatalf("command agent dir without the extension: state = %q, want %q (the default dir's extension is not the one this pi loads)", got.State, piHooksNotInstalled)
+	}
+	if want := filepath.Join(cmdDir, "extensions", "agent-deck.ts"); got.Extension != want {
+		t.Fatalf("extension path = %q, want %q", got.Extension, want)
+	}
+	if line, want := piHooksLine(got), "PI_CODING_AGENT_DIR="+cmdDir+" agent-deck pi-hooks install"; !strings.Contains(line, want) {
+		t.Fatalf("line = %q, want it to contain %q", line, want)
+	}
+
+	if _, err := session.InstallPiHooks(filepath.Join(cmdDir, "extensions")); err != nil {
+		t.Fatal(err)
+	}
+	if got := piHooksStateForInstance(inst); got.State != piHooksInstalled {
+		t.Fatalf("command agent dir with the extension: state = %q, want %q", got.State, piHooksInstalled)
+	}
+}
+
+func TestPiHooksLine(t *testing.T) {
 	const ext = "/x/extensions/agent-deck.ts"
 	current := session.PiHookExtensionVersion()
 	for _, tc := range []struct {
@@ -111,9 +150,8 @@ func TestPiHooksLine(t *testing.T) {
 // the command: run from a shell without it, a bare install would write to
 // ~/.pi/agent, which this pi does not load.
 func TestPiHooksLineNamesCustomAgentDir(t *testing.T) {
-	t.Setenv("PI_CODING_AGENT_DIR", "/custom dir/pi")
 	for _, state := range []string{piHooksNotInstalled, piHooksOutdated, piHooksForeign} {
-		got := piHooksLine(piHooksReport{State: state, Version: 1, Extension: "/custom dir/pi/extensions/agent-deck.ts"})
+		got := piHooksLine(piHooksReport{State: state, Version: 1, Extension: "/custom dir/pi/extensions/agent-deck.ts", AgentDir: "/custom dir/pi"})
 		if want := "PI_CODING_AGENT_DIR='/custom dir/pi' agent-deck pi-hooks install"; !strings.Contains(got, want) {
 			t.Fatalf("%s line = %q, want it to contain %q", state, got, want)
 		}

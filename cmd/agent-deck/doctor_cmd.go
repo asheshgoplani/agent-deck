@@ -53,7 +53,7 @@ func handleDoctor(args []string) {
 	codexHooks := codexHooksStateForConfig(codexConfig)
 	// pi extension for this host's pi agent dir: without it every pi session
 	// made here is pane detection only, startup included (#3098).
-	piHooks := piHooksStateForDir(session.PiExtensionsDir())
+	piHooks := piHooksStateForAgentDir(session.PiAgentDir())
 	// Profile store roots: which data root is active and whether a second
 	// one holds profiles too (stray XDG store incidents, 2026-09-19/20).
 	storeRoots, storeRootsErr := session.StoreRootReport()
