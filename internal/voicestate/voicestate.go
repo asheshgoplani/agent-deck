@@ -18,11 +18,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Source names the file a State came from.
@@ -160,15 +163,15 @@ func (r *Reader) Poll() *State {
 
 // refresh stats path and re-reads it only when the stat changed.
 func (r *Reader) refresh(c *fileCache, path string, now time.Time) {
-	fi, err := os.Stat(path)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxFileSize {
+	fi, err := os.Lstat(path)
+	if err != nil || !acceptable(fi) {
 		*c = fileCache{}
 		return
 	}
 	if c.present && fi.ModTime().Equal(c.mtime) && fi.Size() == c.size {
 		return
 	}
-	raw, err := os.ReadFile(path) // #nosec G304 -- fixed name under the voice state dir
+	fi, raw, err := readStateFile(path)
 	if err != nil {
 		*c = fileCache{}
 		return
@@ -190,7 +193,81 @@ func (r *Reader) refresh(c *fileCache, path string, now time.Time) {
 		c.state = nil
 		return
 	}
+	s.sanitize()
 	c.state = &s
+}
+
+// maxLabelRunes caps a free-text field drawn on a row (wake phrase, engine
+// name, host name): the file is the daemon's, but a row must stay one line.
+const maxLabelRunes = 32
+
+// sanitize drops control characters (newlines, ESC) from the free-text
+// fields the TUI draws and caps their length, so a bad value can neither
+// break the row onto two lines nor send escape sequences to the terminal.
+func (s *State) sanitize() {
+	if s.WakePhrase != nil {
+		w := cleanLabel(*s.WakePhrase)
+		s.WakePhrase = &w
+	}
+	s.TTS, s.STT = cleanLabel(s.TTS), cleanLabel(s.STT)
+	s.TTSEffective, s.STTEffective = cleanLabel(s.TTSEffective), cleanLabel(s.STTEffective)
+	s.From = cleanLabel(s.From)
+}
+
+func cleanLabel(v string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range v {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			continue
+		}
+		if n == maxLabelRunes {
+			b.WriteRune('…')
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+// acceptable is a state file the reader may read: a regular file (not a
+// symlink, FIFO or device), within the size cap, owned by this user. The
+// daemon writes it with tmp + rename as the owner, so anything else is not
+// its file.
+func acceptable(fi os.FileInfo) bool {
+	if !fi.Mode().IsRegular() || fi.Size() > maxFileSize {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Getuid()
+}
+
+// readStateFile reads path without following a symlink and without
+// blocking: the file can be swapped between the Lstat and the open, and the
+// TUI's Update loop must never hang on a FIFO or read a huge file. The
+// checks are repeated on the open descriptor.
+func readStateFile(path string) (os.FileInfo, []byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- fixed name under the voice state dir
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !acceptable(fi) {
+		return nil, nil, errors.New("not a voice state file")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(raw) > maxFileSize {
+		return nil, nil, errors.New("voice state file over the size cap")
+	}
+	return fi, raw, nil
 }
 
 func (r *Reader) liveCurrent(now time.Time) *State {

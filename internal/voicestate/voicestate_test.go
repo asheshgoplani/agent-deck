@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -101,6 +102,104 @@ func TestReader_NoBadgeCases(t *testing.T) {
 			t.Errorf("got %+v from a missing dir", s)
 		}
 	})
+}
+
+// The reader never follows the state file into another file, never blocks
+// on a FIFO, and never reads a file past the size cap: anything that is not
+// the daemon's own regular file reads as no voice.
+func TestReader_OnlyReadsItsOwnRegularFile(t *testing.T) {
+	t.Run("symlink to a live state file", func(t *testing.T) {
+		r, clock, dir := newTestReader(t, map[int]bool{4242: true})
+		elsewhere := t.TempDir()
+		writeAt(t, elsewhere, "other.json", liveCurrent(1), clock.t)
+		if err := os.Symlink(filepath.Join(elsewhere, "other.json"), filepath.Join(dir, "current.json")); err != nil {
+			t.Fatal(err)
+		}
+		if s := r.Poll(); s != nil {
+			t.Errorf("followed a symlink to %+v, want no voice", s)
+		}
+	})
+	t.Run("symlinked mirror", func(t *testing.T) {
+		r, clock, dir := newTestReader(t, nil)
+		elsewhere := t.TempDir()
+		writeAt(t, elsewhere, "m.json", liveMirror(true), clock.t)
+		if err := os.Symlink(filepath.Join(elsewhere, "m.json"), filepath.Join(dir, "mirror.json")); err != nil {
+			t.Fatal(err)
+		}
+		if s := r.Poll(); s != nil {
+			t.Errorf("followed a symlink to %+v, want no voice", s)
+		}
+	})
+	t.Run("fifo", func(t *testing.T) {
+		r, _, dir := newTestReader(t, nil)
+		if err := syscall.Mkfifo(filepath.Join(dir, "current.json"), 0o600); err != nil {
+			t.Skipf("mkfifo: %v", err)
+		}
+		done := make(chan *State, 1)
+		go func() { done <- r.Poll() }()
+		select {
+		case s := <-done:
+			if s != nil {
+				t.Errorf("got %+v from a FIFO", s)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Poll blocked on a FIFO")
+		}
+	})
+	t.Run("fifo opened directly", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "current.json")
+		if err := syscall.Mkfifo(p, 0o600); err != nil {
+			t.Skipf("mkfifo: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() { _, _, err := readStateFile(p); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Error("readStateFile read a FIFO")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("readStateFile blocked on a FIFO (the Lstat-then-open race)")
+		}
+	})
+	t.Run("over the size cap", func(t *testing.T) {
+		r, clock, dir := newTestReader(t, map[int]bool{4242: true})
+		body := liveCurrent(1)
+		body = body[:len(body)-1] + `,"pad":"` + strings.Repeat("x", maxFileSize) + `"}`
+		writeAt(t, dir, "current.json", body, clock.t)
+		if s := r.Poll(); s != nil {
+			t.Error("read a file over the size cap")
+		}
+	})
+}
+
+// Free-text fields are drawn on a row: control characters (a newline, an
+// ESC sequence) are dropped and the length is capped, so the row stays one
+// line and nothing reaches the terminal as a command.
+func TestReader_SanitizesDrawnText(t *testing.T) {
+	r, clock, dir := newTestReader(t, map[int]bool{4242: true})
+	body := strings.Replace(liveCurrent(1), `"wakePhrase":"jarvis"`, `"wakePhrase":"jar\nvis\u001b[2J"`, 1)
+	body = strings.Replace(body, `"phase":"listening"`, `"phase":"resting"`, 1)
+	body = strings.Replace(body, `"fallingBack":false`, `"fallingBack":true`, 1)
+	body = strings.Replace(body, `"ttsEffective":"local"`, `"ttsEffective":"`+strings.Repeat("q", 200)+`\r"`, 1)
+	writeAt(t, dir, "current.json", body, clock.t)
+	s := r.Poll()
+	if s == nil {
+		t.Fatal("no state")
+	}
+	b := s.Badge(clock.t)
+	for _, text := range []string{b.Full, b.Narrow, s.Words(clock.t)} {
+		if strings.ContainsAny(text, "\n\r\x1b") {
+			t.Errorf("control character reaches the row: %q", text)
+		}
+	}
+	if !strings.Contains(b.Full, `say "jarvis[2J"`) {
+		t.Errorf("badge = %q, want the wake phrase without control characters", b.Full)
+	}
+	if n := len([]rune(b.Full)); n > 80 {
+		t.Errorf("badge is %d runes; a 200-rune engine name must be capped", n)
+	}
 }
 
 // The heartbeat rule: content unchanged for longer than 3*heartbeatMs+5s,
