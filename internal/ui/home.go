@@ -44,6 +44,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
+	"github.com/asheshgoplani/agent-deck/internal/voicestate"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
 )
 
@@ -314,6 +315,12 @@ type Home struct {
 	triggersRev      string
 	triggersKey      string
 	triggersPollGen  int
+	// Voice mic badge (voice_badge.go): the reader stats ~/.claude/voice on
+	// the tick; rows render from voiceState only. voiceNow is the clock the
+	// badge words use (nil = time.Now).
+	voiceReader *voicestate.Reader
+	voiceState  *voicestate.State
+	voiceNow    func() time.Time
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -4712,6 +4719,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// rate-limited, and a no-op when nothing has been adopted.
 		h.refreshAgentsPanel()
 
+		// 🎙 voice badge: stat the voice state file, re-read it only when
+		// it changed (voice_badge.go). Local file, no network; any error
+		// reads as no voice.
+		h.refreshVoiceState()
+
 		var remoteFetchCmd tea.Cmd
 		var remoteLatencyCmd tea.Cmd
 
@@ -8560,6 +8572,17 @@ func (h *Home) renderSessionItem(
 		titleFloor := min(available, minSessionTitleWidth)
 		badgeBudget = max(0, available-titleFloor)
 	}
+	// 🎙 voice badge (voice_badge.go): this row holds the voice mic. It is
+	// fitted first so it is the last badge dropped; the others share what
+	// is left of the budget.
+	voiceWordsBudget := -1
+	if listWidth > 0 {
+		voiceWordsBudget = max(0, listWidth-reserved-2-cellWidth(displayTitle))
+	}
+	voiceBadgeText, voiceWidth := fitVoiceBadge(h.voiceForLocal(inst), selected, badgeBudget, voiceWordsBudget, h.voiceClock())
+	if badgeBudget >= 0 {
+		badgeBudget = max(0, badgeBudget-voiceWidth)
+	}
 	cachedViewers, cachedViewersKnown := inst.ViewersCached()
 	viewersBadgeText, viewersWidth := fitViewersBadge(cachedViewers, cachedViewersKnown, selected, badgeBudget)
 	// ⚡N: how many triggers wake this session (triggers_live.go). Read from
@@ -8583,18 +8606,18 @@ func (h *Home) renderSessionItem(
 		accountBadge = accountStyle.Render(accountBadge)
 	}
 	if listWidth > 0 {
-		budget := max(0, listWidth-reserved-viewersWidth-triggersWidth-accountWidth-1)
+		budget := max(0, listWidth-reserved-voiceWidth-viewersWidth-triggersWidth-accountWidth-1)
 		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
 	}
 	title := titleStyle.Render(displayTitle)
 
-	// Build row: [gutter][baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
+	// Build row: [gutter][baseIndent][selection][tree][chevron][status] [title] [voice] [tool] [badges]
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -8602,6 +8625,7 @@ func (h *Home) renderSessionItem(
 		windowChevron,
 		status,
 		title,
+		voiceBadgeText,
 		tool,
 		maestroBadge,
 		yoloBadge,
