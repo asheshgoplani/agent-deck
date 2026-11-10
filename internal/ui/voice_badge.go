@@ -140,7 +140,8 @@ func (h *Home) voiceInRemoteGroup(remoteName, groupPath string) bool {
 	if groupPath == "" {
 		return true
 	}
-	return match.Group == groupPath || strings.HasPrefix(match.Group, groupPath+"/")
+	g := normalizeRemoteGroupPath(match.Group) // as the header counts do
+	return g == groupPath || strings.HasPrefix(g, groupPath+"/")
 }
 
 // voiceBadgeStyle is the badge's color: yellow while an engine falls back,
@@ -196,11 +197,7 @@ func (h *Home) voiceGroupMarker(selected bool) string {
 	if b.Full == "" {
 		return ""
 	}
-	glyph := voiceGroupGlyph
-	if strings.HasPrefix(b.Narrow, "☾") {
-		glyph = "☾"
-	}
-	return voiceBadgeStyle(b.Tone, selected).Render(" " + glyph)
+	return voiceBadgeStyle(b.Tone, selected).Render(" " + voiceGroupGlyph)
 }
 
 // voicePreviewLine is the preview pane's "Voice here · <state>" line, empty

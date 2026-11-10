@@ -8572,14 +8572,11 @@ func (h *Home) renderSessionItem(
 		titleFloor := min(available, minSessionTitleWidth)
 		badgeBudget = max(0, available-titleFloor)
 	}
-	// 🎙 voice badge (voice_badge.go): this row holds the voice mic. It is
-	// fitted first so it is the last badge dropped; the others share what
-	// is left of the budget.
-	voiceWordsBudget := -1
-	if listWidth > 0 {
-		voiceWordsBudget = max(0, listWidth-reserved-2-cellWidth(displayTitle))
-	}
-	voiceBadgeText, voiceWidth := fitVoiceBadge(h.voiceForLocal(inst), selected, badgeBudget, voiceWordsBudget, h.voiceClock())
+	// 🎙 voice badge (voice_badge.go): this row holds the voice mic. Its
+	// glyph form is fitted first so it outlasts the viewers, ⚡ and account
+	// badges; the words replace it below only if the whole title still fits.
+	voiceState := h.voiceForLocal(inst)
+	voiceBadgeText, voiceWidth := fitVoiceBadge(voiceState, selected, badgeBudget, 0, h.voiceClock())
 	if badgeBudget >= 0 {
 		badgeBudget = max(0, badgeBudget-voiceWidth)
 	}
@@ -8604,6 +8601,13 @@ func (h *Home) renderSessionItem(
 			accountStyle = SessionStatusSelStyle
 		}
 		accountBadge = accountStyle.Render(accountBadge)
+	}
+	if voiceWidth > 0 {
+		wordsBudget := -1
+		if listWidth > 0 {
+			wordsBudget = max(0, listWidth-reserved-cellWidth(displayTitle)-viewersWidth-triggersWidth-accountWidth-1)
+		}
+		voiceBadgeText, voiceWidth = fitVoiceBadge(voiceState, selected, -1, wordsBudget, h.voiceClock())
 	}
 	if listWidth > 0 {
 		budget := max(0, listWidth-reserved-voiceWidth-viewersWidth-triggersWidth-accountWidth-1)

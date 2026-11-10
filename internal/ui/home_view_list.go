@@ -1021,16 +1021,19 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	remoteViewersBadge := renderViewersBadge(remoteViewers, remoteViewersKnown, selected)
 
 	// 🎙 voice badge right after the title when this remote row holds the
-	// mic (voice_badge.go), fitted to what the rest of the row leaves.
+	// mic (voice_badge.go). It is fitted before the tool, viewers and
+	// pending badges, so on a narrow list it is the last to go: the words
+	// when the whole row still fits, else the glyph, which only the title
+	// outranks.
 	voiceBadgeText := ""
 	if voiceSt := h.voiceForRemote(item.RemoteName, rs.ID); voiceSt != nil {
-		budget := -1
+		budget, wordsBudget := -1, -1
 		if listWidth > 0 {
-			rest := cellWidth(remoteRowGutter(selected)+indent+treeConnector+" "+statusIcon+" "+titleStr) +
-				cellWidth(toolStr) + cellWidth(remoteViewersBadge) + cellWidth(pendingStr)
-			budget = max(0, listWidth-rest-1)
+			head := cellWidth(remoteRowGutter(selected) + indent + treeConnector + " " + statusIcon + " " + titleStr)
+			budget = max(0, listWidth-head-1)
+			wordsBudget = max(0, budget-cellWidth(toolStr)-cellWidth(remoteViewersBadge)-cellWidth(pendingStr))
 		}
-		voiceBadgeText, _ = fitVoiceBadge(voiceSt, selected, budget, budget, h.voiceClock())
+		voiceBadgeText, _ = fitVoiceBadge(voiceSt, selected, budget, wordsBudget, h.voiceClock())
 	}
 
 	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s%s\n",

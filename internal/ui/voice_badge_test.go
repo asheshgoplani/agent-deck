@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/triggers"
 	"github.com/asheshgoplani/agent-deck/internal/voicestate"
 )
 
@@ -278,5 +279,62 @@ func TestVoiceBadge_RefreshNilReader(t *testing.T) {
 	h.refreshVoiceState()
 	if h.voiceState != nil {
 		t.Error("empty voice dir left a stale state")
+	}
+}
+
+// Review finding: the words must not cut the title once the other badges
+// (viewers, ⚡, account) take their share; the glyph is used instead.
+func TestVoiceBadge_WordsNeverCutTitleWithOtherBadges(t *testing.T) {
+	h, inst := voiceHome(t, micLocal("listening"), nil)
+	h.triggerBadges = map[string]triggers.Badge{inst.ID: {Count: 3}}
+	for w := 24; w <= 80; w++ {
+		row, _ := voiceLocalRow(t, h, inst, w, false)
+		if strings.Contains(row, "listening") && !strings.Contains(row, "conductor-inno ") {
+			t.Errorf("width %d: words cut the title:\n%s", w, row)
+		}
+		if strings.Contains(row, "⚡") && !strings.Contains(row, "🎙") {
+			t.Errorf("width %d: ⚡ kept while 🎙 dropped (voice is dropped last):\n%s", w, row)
+		}
+	}
+}
+
+// Review finding: on a remote row the voice badge is fitted before the
+// tool, viewers and pending badges, so it is the last one to go.
+func TestVoiceBadge_RemoteRowBadgeDroppedLast(t *testing.T) {
+	rs := session.RemoteSessionInfo{ID: "r1", Title: "conductor-inno", Tool: "claude", Status: "waiting", RemoteName: "innobox"}
+	st := &voicestate.State{On: true, Phase: "speaking", Target: voicestate.Target{SessionID: "r1", Remote: "innobox"}}
+	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"innobox": {rs}})
+	row, _ := voiceRemoteRow(t, h, rs, 30)
+	if !strings.Contains(row, "conductor-inno 🎙▶") {
+		t.Errorf("narrow remote row dropped the voice badge for the tool name:\n%s", row)
+	}
+}
+
+// Review finding: an ungrouped remote session sits under the default group
+// header; the collapsed header must still show 🎙.
+func TestVoiceBadge_CollapsedRemoteDefaultGroup(t *testing.T) {
+	rs := session.RemoteSessionInfo{ID: "r1", Title: "t", Status: "waiting", Group: "", RemoteName: "innobox"}
+	st := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: "r1", Remote: "innobox"}}
+	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"innobox": {rs}})
+	path := "remotes/innobox/" + session.DefaultGroupPath
+	h.remoteGroupsCollapsed = map[string]bool{path: true}
+	var sb strings.Builder
+	h.renderRemoteGroupItem(&sb, session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "innobox", Path: path, Level: 1}, false, 120)
+	if !strings.Contains(stripAnsi(sb.String()), "🎙") {
+		t.Errorf("collapsed default-group header lacks 🎙:\n%s", stripAnsi(sb.String()))
+	}
+}
+
+// The header glyph is 🎙 in every state (resting included), toned like the
+// row badge.
+func TestVoiceBadge_CollapsedHeaderRestingShowsMic(t *testing.T) {
+	jarvis := "jarvis"
+	st := micLocal("resting")
+	st.WakePhrase = &jarvis
+	h, _ := voiceHome(t, st, nil)
+	var sb strings.Builder
+	h.renderGroupItem(&sb, session.Item{Type: session.ItemTypeGroup, Group: &session.Group{Name: "work", Path: "work"}, Path: "work"}, false, 0, map[string]groupRenderStats{}, 120)
+	if got := sb.String(); !strings.Contains(got, DimStyle.Render(" 🎙")) {
+		t.Errorf("resting collapsed header = %q, want a dim 🎙", stripAnsi(got))
 	}
 }
