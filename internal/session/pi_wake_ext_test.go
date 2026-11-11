@@ -780,6 +780,38 @@ const scenarios = {
     return out;
   },
 
+  async stop_race() {
+    // A successor renames its socket over the path just after the stopping
+    // owner checked that the path still holds its own (CodeRabbit, #3024).
+    const a = makeRuntime();
+    await a.start();
+    const aIno = stat(SOCK).ino;
+    let accepted = 0;
+    const b = net.createServer((c) => { accepted++; c.on("error", () => {}); c.end(); });
+    const bPriv = path.join(path.dirname(SOCK), "successor.sock");
+    await new Promise((r) => b.listen(bPriv, r));
+    const bIno = stat(bPriv).ino;
+    const realStat = fs.statSync;
+    let raced = false;
+    fs.statSync = function (p, ...rest) {
+      const st = realStat.call(fs, p, ...rest);
+      if (!raced && p === SOCK && rest[0] && rest[0].bigint) {
+        raced = true;
+        fs.renameSync(bPriv, SOCK);
+      }
+      return st;
+    };
+    try {
+      await a.stop();
+    } finally {
+      fs.statSync = realStat;
+    }
+    const after = stat(SOCK);
+    const probe = await new Promise((resolve) => { const c = net.connect(SOCK); c.on("connect", () => { c.destroy(); resolve(true); }); c.on("error", () => resolve(false)); });
+    const leftovers = fs.readdirSync(path.dirname(SOCK)).filter((n) => n !== path.basename(SOCK));
+    b.close();
+    return { raced, aIno, bIno, after, probe, accepted, leftovers };
+  },
   async foreign_unlink() {
     const a = makeRuntime();
     await a.start();
@@ -1821,6 +1853,20 @@ func TestPiWakeExtension_AStarterKilledMidStartLeavesTheLiveOwnersSocket(t *test
 // private path that is renamed to the public one, so close never names the
 // public path, and stop unlinks the public path only when its dev and ino are
 // ours.
+// CodeRabbit (agent-deck.ts:492): a stop that checks the path holds its own
+// socket and then removes it by name removes a successor's socket renamed over
+// the path in between; the successor then serves nothing until it restarts.
+// The successor's socket survives the race, and nothing is left beside it.
+func TestPiWakeExtension_AStopRacingASuccessorsTakeoverLeavesTheSuccessorsSocket(t *testing.T) {
+	res, _ := runPiWake(t, "stop_race", piWakeOpts{})
+	isBool(t, res, "raced", true)
+	wantAt(t, res, "after.ino", get(t, res, "bIno"))
+	isBool(t, res, "probe", true)
+	if n := lenAt(t, res, "leftovers"); n != 0 {
+		t.Errorf("the stop left %v beside the successor's socket", get(t, res, "leftovers"))
+	}
+}
+
 func TestPiWakeExtension_StopNeverUnlinksASocketItDoesNotOwn(t *testing.T) {
 	res, _ := runPiWake(t, "foreign_unlink", piWakeOpts{})
 	isBool(t, res, "first.isSocket", true)

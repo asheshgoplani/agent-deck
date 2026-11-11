@@ -360,12 +360,9 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   // both rename, and the last wins; the other's stop leaves the winner's socket
   // alone because the dev/ino differ. The private name is never the public
   // one, so the unlink Server.close does by name can only ever hit a file that
-  // is already gone. One window remains: stop checks dev/ino and then removes
-  // the path, and a socket renamed in between is removed with it, so a pi that
-  // takes over inside a predecessor's stop is left without a socket. It then
-  // serves nothing, so it is not the host either (see the header): the daemon
-  // rings it nothing and its run starts get none of the ledger's records until
-  // it restarts; they stay pending meanwhile.
+  // is already gone. A stop never removes the public path by name after
+  // checking it, which would also remove a socket renamed over it in between
+  // (unpublish).
   // The name carries the owner's pid and 8 random characters, so starters do
   // not collide on it.
   const privateName = () => "p" + process.pid + "-" + crypto.randomBytes(6).toString("hex").slice(0, 8);
@@ -472,6 +469,32 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
     }
   };
 
+  // unpublish removes the public path when it holds the socket this runtime
+  // bound. Checking it and then removing it by name would also remove a
+  // successor's socket renamed over the path in between, which would then serve
+  // nothing until it restarted. So the path is moved aside first, which is
+  // atomic, and what was moved is checked: ours is removed, and a successor's
+  // is linked back (a link never replaces, so a still newer socket at the path
+  // is left alone). The successor's path is empty only for that instant.
+  const unpublish = (mine: { dev: bigint; ino: bigint }) => {
+    const st = fs.statSync(sockPath, { bigint: true });
+    if (st.dev !== mine.dev || st.ino !== mine.ino) return;
+    const aside = path.join(path.dirname(sockPath), privateName());
+    fs.renameSync(sockPath, aside);
+    try {
+      const moved = fs.statSync(aside, { bigint: true });
+      if (moved.dev !== mine.dev || moved.ino !== mine.ino) {
+        try {
+          fs.linkSync(aside, sockPath);
+        } catch {
+          // A newer socket is at the path already: it wins.
+        }
+      }
+    } finally {
+      fs.rmSync(aside, { force: true });
+    }
+  };
+
   const stop = async () => {
     if (starting) await starting;
     const srv = server;
@@ -488,8 +511,7 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
       });
       // The public path is ours only while it still holds the socket we bound;
       // gone before shutdown returns, so a /reload runtime can bind at once.
-      const st = fs.statSync(sockPath, { bigint: true });
-      if (mine && st.dev === mine.dev && st.ino === mine.ino) fs.rmSync(sockPath, { force: true });
+      if (mine) unpublish(mine);
     } catch {
       // Shutdown must never throw into pi, and a path that is gone is fine.
     }
