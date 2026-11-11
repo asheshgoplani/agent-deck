@@ -138,9 +138,11 @@ func tempHomeWithConfig(t *testing.T, contents string) string {
 // TestRemoteSessionsPlainJSONStaysBareArray pins the contract that existing
 // consumers (conductor scripts, skills) rely on when they pipe
 // `agent-deck remote sessions --json` through `jq '.[]'`: a per-remote fetch
-// failure must not turn the output into an object (the process still exits non-zero, #3107). The configured remote is
-// deliberately unreachable, so FetchSessions fails and exercises the "some
-// remotes errored" branch of the plain (non-envelope) --json path.
+// failure must not turn the output into an object. Since #3107 the process
+// exits non-zero and writes the error to stderr, while stdout stays a bare
+// array. The configured remote is deliberately unreachable, so FetchSessions
+// fails and exercises the "some remotes errored" branch of the plain
+// (non-envelope) --json path.
 //
 // walk defect #2: a zero-session result must marshal as `[]`, never `null`
 // — `jq '.[]'` and `for row in $(jq -c '.[]')` both choke on `null` (no
