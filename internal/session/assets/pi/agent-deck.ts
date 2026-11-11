@@ -450,7 +450,11 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
       owned = { dev: st.dev, ino: st.ino };
       server = srv;
     } catch (e) {
-      if (priv) fs.rmSync(priv, { force: true });
+      try {
+        if (priv) fs.rmSync(priv, { force: true });
+      } catch {
+        // Left for the next start's sweep; the warning below still goes out.
+      }
       warn("could not serve " + sockPath + ": " + String(e) +
         "; until this pi restarts it gets no socket wakes and none of the ledger's records (agent-deck msg read shows them)");
     }
@@ -506,7 +510,8 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   };
 
   const stop = async () => {
-    if (starting) await starting;
+    // Shutdown must never throw into pi, whatever became of the bind it waits for.
+    if (starting) await starting.catch(() => {});
     const srv = server;
     if (!srv) return;
     server = null;

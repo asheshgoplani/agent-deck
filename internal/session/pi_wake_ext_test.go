@@ -780,6 +780,27 @@ const scenarios = {
     return out;
   },
 
+  async failed_bind_cleanup_throws() {
+    // A bind whose rename fails, and whose removal of its private socket then
+    // throws too, with a shutdown arriving while it is under way.
+    const realRename = fs.renameSync, realRm = fs.rmSync;
+    fs.renameSync = function (from, to, ...rest) {
+      if (to === SOCK) throw new Error("rename refused");
+      return realRename.call(fs, from, to, ...rest);
+    };
+    fs.rmSync = function (p, ...rest) {
+      if (path.dirname(String(p)) === path.dirname(SOCK) && /^p[0-9]+-/.test(path.basename(String(p)))) throw new Error("rm refused");
+      return realRm.call(fs, p, ...rest);
+    };
+    const rt = makeRuntime();
+    let startErr = null, stopErr = null;
+    const started = rt.start().catch((e) => { startErr = String(e); });
+    const stopped = rt.stop().catch((e) => { stopErr = String(e); });
+    await Promise.all([started, stopped]);
+    fs.renameSync = realRename;
+    fs.rmSync = realRm;
+    return { startErr, stopErr, warns: warns.slice() };
+  },
   async stop_race() {
     // A successor renames its socket over the path just after the stopping
     // owner checked that the path still holds its own (CodeRabbit, #3024).
@@ -1853,6 +1874,21 @@ func TestPiWakeExtension_AStarterKilledMidStartLeavesTheLiveOwnersSocket(t *test
 // private path that is renamed to the public one, so close never names the
 // public path, and stop unlinks the public path only when its dev and ino are
 // ours.
+// Forge (p5): a bind that fails, and whose cleanup of its private socket then
+// fails too, only warns: neither session_start nor a shutdown that waits for the
+// bind throws into pi.
+func TestPiWakeExtension_AFailedBindsCleanupNeverThrowsIntoPi(t *testing.T) {
+	res, _ := runPiWake(t, "failed_bind_cleanup_throws", piWakeOpts{})
+	for _, k := range []string{"startErr", "stopErr"} {
+		if v := get(t, res, k); v != nil {
+			t.Errorf("%s: %v", k, v)
+		}
+	}
+	if w := fmt.Sprint(get(t, res, "warns")); !strings.Contains(w, "could not serve") {
+		t.Errorf("the failed bind did not warn: %s", w)
+	}
+}
+
 // CodeRabbit (agent-deck.ts:492): a stop that checks the path holds its own
 // socket and then removes it by name removes a successor's socket renamed over
 // the path in between; the successor then serves nothing until it restarts.
