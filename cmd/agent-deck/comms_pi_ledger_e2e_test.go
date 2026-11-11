@@ -353,6 +353,35 @@ func TestPiLedgerE2E_APiInAnotherPaneOfTheParentsSessionNeitherTakesNorAcksItsRe
 	}
 }
 
+// CodeRabbit (hook_handler.go:226): a pi started in another pane of a listed
+// Claude parent's session inherits the session's AGENTDECK_INSTANCE_ID. Its run
+// start is given none of the Claude parent's records, and its receipt is never
+// applied, so the Claude parent's own prompt still shows them.
+func TestPiLedgerE2E_APiInAClaudeParentsSessionNeitherTakesNorAcksItsRecords(t *testing.T) {
+	e := newPiLedgerE2E(t) // a Claude parent, enrolled
+	if en, ok := session.LoadCommsEnrollment(e.parent.ID); !ok || en.Tool != "claude" {
+		t.Fatalf("test setup: marker %+v (found %v), want an enrolled claude marker", en, ok)
+	}
+	e.runOnce()
+	e.pass()
+
+	other := captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "split-run", "pi-split-sess", "before_agent_start", `,"prompt":"what changed?"`)
+	})
+	if strings.Contains(other, "Built and tested.") {
+		t.Errorf("a pi in the Claude parent's session was given the parent's records: %q", other)
+	}
+	token := ""
+	if m := regexp.MustCompile(`<!-- agent-deck-delivery:([0-9A-Za-z]+) -->`).FindStringSubmatch(other); m != nil {
+		token = m[1]
+	}
+	e.hookAs(e.parent.ID, "split-run", "pi-split-sess", "turn_start", fmt.Sprintf(`,"injected_token":%q`, token))
+	e.pass()
+	if got := e.prompt("what is next?"); !strings.Contains(got, "Built and tested.") {
+		t.Errorf("the Claude parent's prompt lacks the record a pi in its session took: %q", got)
+	}
+}
+
 // edit changes the parent's tool in place, under the same id, as a session
 // edit or a conductor re-registered with another agent does: the stored Tool
 // changes at once, and the pane keeps running what it launched until a restart.

@@ -280,7 +280,7 @@ func TestCommsConsumes_AListedPiEnrolsOnlyOnceALaunchExportedTheSocket(t *testin
 
 // Forge round 2 #1: the marker of a pi parent says its launch exported the
 // wake socket, so its hooks take the ledger's edges only from the pi that
-// serves it (PiLedgerServedOnly). A relaunch without the socket drains the
+// serves it (PiLedgerAdmits). A relaunch without the socket drains the
 // parent and the marker stops asking for a serving pi.
 func TestCommsEnrollment_APiParentAsksForTheServingPiWhileItsLaunchExportsTheSocket(t *testing.T) {
 	piSocketShortData(t)
@@ -297,8 +297,8 @@ func TestCommsEnrollment_APiParentAsksForTheServingPiWhileItsLaunchExportsTheSoc
 	if en, ok := LoadCommsEnrollment(f.parent.ID); !ok || !en.PiSocket || en.Draining {
 		t.Fatalf("a socket-exported pi's marker = %+v (found %v), want enrolled with pi_socket", en, ok)
 	}
-	if !PiLedgerServedOnly(f.parent.ID) {
-		t.Fatal("a socket-exported pi parent takes ledger edges from a pi that does not serve its socket")
+	if PiLedgerAdmits(f.parent.ID, false) || !PiLedgerAdmits(f.parent.ID, true) {
+		t.Fatal("a socket-exported pi parent takes ledger edges from a pi that does not serve its socket, or not from the one that does")
 	}
 
 	f.launchPi(t, "1.1.0", false)
@@ -306,7 +306,7 @@ func TestCommsEnrollment_APiParentAsksForTheServingPiWhileItsLaunchExportsTheSoc
 	if en, ok := LoadCommsEnrollment(f.parent.ID); !ok || en.PiSocket || !en.Draining {
 		t.Fatalf("after a relaunch without the socket the marker = %+v (found %v), want draining without pi_socket", en, ok)
 	}
-	if PiLedgerServedOnly(f.parent.ID) {
+	if !PiLedgerAdmits(f.parent.ID, false) {
 		t.Error("a pi relaunched without the socket still waits for a pi that serves one")
 	}
 

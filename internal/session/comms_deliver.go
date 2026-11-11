@@ -143,7 +143,7 @@ type CommsEnrollment struct {
 	// PiSocket says the parent is a pi whose last launch exported the wake
 	// socket (PiSocketExported). Its hooks then take the ledger's consumer edges
 	// (context, receipts, run starts) only from the pi that serves that socket
-	// (PiLedgerServedOnly). Every pass keeps it and Tool true to the instance
+	// (PiLedgerAdmits). Every pass keeps it and Tool true to the instance
 	// (refreshCommsMarker): a relaunch without the socket clears it, and a
 	// tool changed in place rewrites both.
 	PiSocket bool `json:"pi_socket,omitempty"`
@@ -231,19 +231,29 @@ func commsDeliversTo(id string) bool {
 	return ok && !en.Draining && CommsLedgerEnabled()
 }
 
-// PiLedgerServedOnly reports a pi parent whose ledger edges belong only to the
-// pi serving its wake socket: its marker says its launch exported one. A pi
-// that serves it marks its payloads pane_host; any other pi of the session (a
-// pi in another tmux pane or window, which inherits the session's
+// PiLedgerAdmits reports whether a pi payload (one that is not a guest of the
+// pane) may take id's ledger consumer edges: its context, its receipts and its
+// run starts. Never for a parent enrolled as another harness: a pi started in
+// another pane of a Claude parent's session inherits the session's
+// AGENTDECK_INSTANCE_ID, and the records are the Claude parent's. For a pi
+// parent whose marker says its launch exported a wake socket, only the pi that
+// serves it, which marks its payloads pane_host (paneHost); any other pi of the
+// session (a pi in another tmux pane or window, which inherits the session's
 // AGENTDECK_INSTANCE_ID but not the launch's socket; an older pi whose socket a
 // restart took over; a launched pi whose bind failed) is given no context, and
 // its receipts and run starts are not applied, so the parent's records wait for
-// the pi that serves. Without the marker (not enrolled, or a pi that drains
-// after a relaunch without the socket) a pi's edges are taken unless it is a
-// guest of the pane.
-func PiLedgerServedOnly(id string) bool {
+// the pi that serves. A pi parent without the socket (one that drains after a
+// relaunch without it) and a parent with no marker take a pi's edges.
+func PiLedgerAdmits(id string, paneHost bool) bool {
 	en, ok := LoadCommsEnrollment(id)
-	return ok && en.Tool == "pi" && en.PiSocket
+	switch {
+	case !ok:
+		return true
+	case en.Tool != "pi":
+		return false
+	default:
+		return paneHost || !en.PiSocket
+	}
 }
 
 // commsAnyEnrollment reports whether any marker exists (the daemon's cheap

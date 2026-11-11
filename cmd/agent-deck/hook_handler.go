@@ -214,16 +214,17 @@ func piGuestOfThePane(p hookPayload) bool {
 
 // piLedgerConsumer reports a pi payload that may take the ledger's consumer
 // edges for instanceID: its context, its receipts and its run starts. Never a
-// guest of the pane; and for a parent whose launch exported the wake socket,
-// only the pi that serves it (pane_host). A pi in another tmux pane or window
-// of the parent's session inherits the session's AGENTDECK_INSTANCE_ID but not
-// the launch's socket or host pid, so it is no guest, yet serves nothing: it is
-// given none of the parent's records, which wait for the pi that serves.
+// guest of the pane, nor a pi of a parent enrolled as another harness; and for
+// a parent whose launch exported the wake socket, only the pi that serves it
+// (pane_host). A pi in another tmux pane or window of the parent's session
+// inherits the session's AGENTDECK_INSTANCE_ID but not the launch's socket or
+// host pid, so it is no guest, yet serves nothing: it is given none of the
+// parent's records, which wait for the parent (session.PiLedgerAdmits).
 func piLedgerConsumer(instanceID string, p hookPayload) bool {
 	if piGuestOfThePane(p) {
 		return false
 	}
-	return rawBool(p.PaneHost) || !session.PiLedgerServedOnly(instanceID)
+	return session.PiLedgerAdmits(instanceID, rawBool(p.PaneHost))
 }
 
 // piBeforeAgentStart prints the context a pi run starts with: what the
