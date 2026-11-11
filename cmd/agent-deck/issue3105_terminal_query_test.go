@@ -28,7 +28,10 @@ const (
 // issue3105Env is a sandboxed environment for the real binary on a PTY: a
 // temp HOME with a private tmux socket name, a private TMUX_TMPDIR, no TMUX,
 // and a TERM for which termenv does issue the query (it skips screen*, tmux*
-// and dumb).
+// and dumb). CI is removed too: termenv treats any non-empty CI as "not a
+// TTY" and then never queries (termenv v0.16.0 termenv.go:32), so on a CI
+// runner (GitHub Actions sets CI=true) the non-TUI test would pass even
+// without the fix and the TUI test would fail even with it.
 func issue3105Env(t *testing.T) (env []string, home string) {
 	t.Helper()
 	home = t.TempDir()
@@ -46,7 +49,7 @@ func issue3105Env(t *testing.T) (env []string, home string) {
 	}
 	for _, kv := range os.Environ() {
 		key := strings.SplitN(kv, "=", 2)[0]
-		if key == "HOME" || key == "TERM" || key == "COLORTERM" || key == "COLORFGBG" ||
+		if key == "HOME" || key == "TERM" || key == "COLORTERM" || key == "COLORFGBG" || key == "CI" ||
 			strings.HasPrefix(key, "XDG_") || strings.HasPrefix(key, "AGENTDECK_") ||
 			strings.HasPrefix(key, "AGENT_DECK_") || strings.HasPrefix(key, "TMUX") {
 			continue
