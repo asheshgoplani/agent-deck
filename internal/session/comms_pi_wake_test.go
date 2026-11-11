@@ -604,42 +604,55 @@ func TestCommsDeliver_PiRefusedWakeBoundRestartsAfterAnAnswer(t *testing.T) {
 }
 
 // Forge (p5): the inbox doorbell rides the same socket, so it keeps the run of
-// refusals true too. A refused inbox doorbell starts the run, and an answered
-// one ends it: the ledger's refusals after it get a fresh five minutes.
+// refusals true too. A refused inbox doorbell starts the run, silence (pushed)
+// leaves it, and an answered one ends it: the ledger's refusals after the answer
+// get a fresh five minutes.
 func TestCommsDeliver_PiRefusedWakeRunFollowsTheInboxDoorbell(t *testing.T) {
 	var mu sync.Mutex
-	answerNext := false
+	mode := "busy"
+	setMode := func(m string) {
+		mu.Lock()
+		mode = m
+		mu.Unlock()
+	}
 	w := newPiWakeFixture(t, func(_ int, f map[string]any, c net.Conn) {
 		mu.Lock()
-		a := answerNext
+		m := mode
 		mu.Unlock()
-		if a {
+		switch m {
+		case "queued":
 			answer(c, f, "queued")
-			return
-		}
-		refuse(c, f, "busy")
+		case "busy":
+			refuse(c, f, "busy")
+		} // "silent": no reply, the frame reads as pushed
 	})
 	line := comms.WakePrefix + " 1 pending (1 urgent; data): [urgent] kid (pi) #ABC123: «done»"
 	if _, err := wakeSend(w.parent, "default", line, "01J0ABCDEF0123456789ABCDE1", []string{"r1"}); err != nil {
 		t.Fatalf("wakeSend: %v", err)
 	}
-	if st := w.state(t); st.RefusedSince != w.clock.UnixMilli() {
-		t.Errorf("a refused inbox doorbell did not start the run: RefusedSince %d, want %d", st.RefusedSince, w.clock.UnixMilli())
+	started := w.clock.UnixMilli()
+	if st := w.state(t); st.RefusedSince != started {
+		t.Errorf("a refused inbox doorbell did not start the run: RefusedSince %d, want %d", st.RefusedSince, started)
 	}
+	setMode("silent")
+	w.clock = w.clock.Add(time.Second)
+	if _, err := wakeSend(w.parent, "default", line, "01J0ABCDEF0123456789ABCDE3", []string{"r1"}); err != nil {
+		t.Fatalf("wakeSend: %v", err)
+	}
+	if st := w.state(t); st.RefusedSince != started {
+		t.Errorf("a silent inbox doorbell (no reply) changed the run: RefusedSince %d, want %d", st.RefusedSince, started)
+	}
+	setMode("busy")
 	w.urgent(t, "shipped the build")
 	for i := 0; i < 4; i++ { // the ledger is refused for four minutes
 		w.clock = w.clock.Add(61 * time.Second)
 		w.deliver(t, "waiting")
 	}
-	mu.Lock()
-	answerNext = true
-	mu.Unlock()
+	setMode("queued")
 	if _, err := wakeSend(w.parent, "default", line, "01J0ABCDEF0123456789ABCDE2", []string{"r1"}); err != nil {
 		t.Fatalf("wakeSend: %v", err)
 	}
-	mu.Lock()
-	answerNext = false
-	mu.Unlock()
+	setMode("busy")
 	if st := w.state(t); st.RefusedSince != 0 {
 		t.Fatalf("an answered inbox doorbell left RefusedSince %d", st.RefusedSince)
 	}

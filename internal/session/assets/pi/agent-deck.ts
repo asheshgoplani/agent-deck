@@ -475,27 +475,33 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   // nothing until it restarted. So the path is moved aside first, which is
   // atomic, and what was moved is checked: ours is removed, and a successor's
   // is linked back (a link never replaces, so a still newer socket at the path
-  // is left alone; a link that fails otherwise renames it back). The
-  // successor's path is empty only for that instant. A stop killed inside it
-  // leaves the successor's socket under the moved-aside name, which the next
-  // start's sweep removes, so that successor serves nothing until it restarts.
+  // is left alone). The successor's path is empty only for that instant. What
+  // was moved is removed only once it is known to be ours or back at the path
+  // (or beaten by a newer one): if the check or the link fails otherwise, it is
+  // left where it is rather than deleted. A stop killed inside the window, or a
+  // link that failed so, leaves the successor's socket under the moved-aside
+  // name, which a later start's sweep removes once this pid is gone, so that
+  // successor serves nothing until it restarts.
   const unpublish = (mine: { dev: bigint; ino: bigint }) => {
     const st = fs.statSync(sockPath, { bigint: true });
     if (st.dev !== mine.dev || st.ino !== mine.ino) return;
     const aside = path.join(path.dirname(sockPath), privateName());
     fs.renameSync(sockPath, aside);
+    let done = false;
     try {
       const moved = fs.statSync(aside, { bigint: true });
-      if (moved.dev !== mine.dev || moved.ino !== mine.ino) {
+      if (moved.dev === mine.dev && moved.ino === mine.ino) {
+        done = true;
+      } else {
         try {
           fs.linkSync(aside, sockPath);
+          done = true;
         } catch (e: any) {
-          // A newer socket at the path wins; any other failure puts it back.
-          if (e?.code !== "EEXIST") fs.renameSync(aside, sockPath);
+          done = e?.code === "EEXIST"; // a newer socket at the path wins
         }
       }
     } finally {
-      fs.rmSync(aside, { force: true });
+      if (done) fs.rmSync(aside, { force: true });
     }
   };
 

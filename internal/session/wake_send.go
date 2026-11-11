@@ -264,19 +264,21 @@ func wakeSendOpt(o wakeOpts, parent *Instance, profile, line, nonce string, ids 
 }
 
 // notePiWakeRun keeps a parent's run of refused socket wakes (RefusedSince)
-// true to one doorbell's outcome: an answer from the extension (a reply, or a
-// refusal word after the frame was written) ends the run, and a transient
-// refusal starts one if none is running (a clock that stepped back past its
-// start restarts it). The inbox doorbell notes its outcome here too, so an
-// answered inbox wake gives the ledger a fresh bound; settling the run as
-// failed stays with the ledger (ringPiWake), which owns the records.
+// true to one doorbell's outcome: an answer from the extension (submitted,
+// queued, or a refusal word after the frame was written) ends the run, and a
+// transient socket refusal (one that carries its reason) starts one if none is
+// running (a clock that stepped back past its start restarts it). Silence
+// (pushed) and a typed doorbell change nothing. The inbox doorbell notes its
+// outcome here too, so an answered inbox wake gives the ledger a fresh bound;
+// settling the run as failed stays with the ledger (ringPiWake), which owns
+// the records.
 func notePiWakeRun(f *comms.ConsumerFile, out wakeOutcome, now int64) {
 	switch {
-	case out.Refused && !out.Permanent:
+	case out.Refused && !out.Permanent && out.Err != "":
 		if f.RefusedSince == 0 || f.RefusedSince > now {
 			f.RefusedSince = now
 		}
-	case out.Via == "socket" && (out.AfterWrite || (!out.Refused && out.Err == "")):
+	case out.Via == "socket" && (out.AfterWrite || out.State == comms.StateLanded || out.State == comms.StateQueued):
 		f.RefusedSince = 0
 	}
 }
@@ -574,7 +576,7 @@ func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Ins
 				// A hook settled the attempt meanwhile: nothing to give back or bound.
 			default:
 				since = p.File.RefusedSince
-				if now-since >= piRefusedWakeBound.Milliseconds() {
+				if since != 0 && now-since >= piRefusedWakeBound.Milliseconds() {
 					// The bound: settled as a permanent refusal, the wake kept consumed.
 					for i := 0; i < commsMaxWakeTries; i++ {
 						p.File.NoteWakeFailed(released)
