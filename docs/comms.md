@@ -645,7 +645,7 @@ refusal has stopped. A refusal that would repeat on its own (the socket down, a
 dial that failed, `busy`, `duplicate`) is retried, but only for 5 minutes from
 the first one, well past any rebind or `/reload` window: the per-parent start of
 the run is kept in the consumer file (`refused_since`, cleared once the extension
-answers), and a refusal past it is settled as a permanent one, so a pi whose
+answers; an inbox doorbell's answer or refusal counts too), and a refusal past it is settled as a permanent one, so a pi whose
 extension stopped listening is listed there instead of being dialled every
 minute in silence. Silence, a failed write and `pushed` prove nothing either,
 so they are never typed and never re-sent in the same pass; a wake no hook

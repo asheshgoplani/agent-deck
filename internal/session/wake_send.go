@@ -252,7 +252,33 @@ func wakeSendOpt(o wakeOpts, parent *Instance, profile, line, nonce string, ids 
 		})
 		_ = r.Close()
 	}
-	return piWakeLeg(o, "inbox", parent, profile, line, nonce, ids)
+	out, err := piWakeLeg(o, "inbox", parent, profile, line, nonce, ids)
+	if r, _, ok := openLedgerFor(parent.ID); ok {
+		_, _ = r.Do(parent.ID, func(p comms.Pass) ([]events.Cursor, error) {
+			notePiWakeRun(p.File, out, commsNow().UnixMilli())
+			return nil, nil
+		})
+		_ = r.Close()
+	}
+	return out, err
+}
+
+// notePiWakeRun keeps a parent's run of refused socket wakes (RefusedSince)
+// true to one doorbell's outcome: an answer from the extension (a reply, or a
+// refusal word after the frame was written) ends the run, and a transient
+// refusal starts one if none is running (a clock that stepped back past its
+// start restarts it). The inbox doorbell notes its outcome here too, so an
+// answered inbox wake gives the ledger a fresh bound; settling the run as
+// failed stays with the ledger (ringPiWake), which owns the records.
+func notePiWakeRun(f *comms.ConsumerFile, out wakeOutcome, now int64) {
+	switch {
+	case out.Refused && !out.Permanent:
+		if f.RefusedSince == 0 || f.RefusedSince > now {
+			f.RefusedSince = now
+		}
+	case out.Via == "socket" && (out.AfterWrite || (!out.Refused && out.Err == "")):
+		f.RefusedSince = 0
+	}
 }
 
 // wakeDispatch is the nudge senders' entry to the leg for a doorbell that must
@@ -528,10 +554,10 @@ func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Ins
 	if _, err := r.Do(inst.ID, func(p comms.Pass) ([]events.Cursor, error) {
 		stopped = ""
 		now := commsNow().UnixMilli()
+		notePiWakeRun(p.File, out, now)
 		switch {
 		case out.Accepted:
 			p.File.AcceptNonce(plan.nonce)
-			p.File.RefusedSince = 0
 		case out.Refused:
 			released := p.File.ReleaseNonce(plan.nonce)
 			// Do #1 noted this wake's settle as the deadline, and nothing earlier
@@ -544,14 +570,9 @@ func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Ins
 				for i := 0; i < commsMaxWakeTries; i++ {
 					p.File.NoteWakeFailed(released)
 				}
-				p.File.RefusedSince = 0
 			case len(released) == 0:
 				// A hook settled the attempt meanwhile: nothing to give back or bound.
 			default:
-				// A clock that stepped back past the start restarts the run.
-				if p.File.RefusedSince == 0 || p.File.RefusedSince > now {
-					p.File.RefusedSince = now
-				}
 				since = p.File.RefusedSince
 				if now-since >= piRefusedWakeBound.Milliseconds() {
 					// The bound: settled as a permanent refusal, the wake kept consumed.
@@ -566,8 +587,6 @@ func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Ins
 					p.File.AutoWakes-- // a transient refusal never consumes the automatic wake cap
 				}
 			}
-		case out.Err == "":
-			p.File.RefusedSince = 0 // the extension answered
 		}
 		return nil, nil
 	}); err != nil {

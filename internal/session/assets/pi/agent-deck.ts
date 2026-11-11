@@ -475,7 +475,10 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   // nothing until it restarted. So the path is moved aside first, which is
   // atomic, and what was moved is checked: ours is removed, and a successor's
   // is linked back (a link never replaces, so a still newer socket at the path
-  // is left alone). The successor's path is empty only for that instant.
+  // is left alone; a link that fails otherwise renames it back). The
+  // successor's path is empty only for that instant. A stop killed inside it
+  // leaves the successor's socket under the moved-aside name, which the next
+  // start's sweep removes, so that successor serves nothing until it restarts.
   const unpublish = (mine: { dev: bigint; ino: bigint }) => {
     const st = fs.statSync(sockPath, { bigint: true });
     if (st.dev !== mine.dev || st.ino !== mine.ino) return;
@@ -486,8 +489,9 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
       if (moved.dev !== mine.dev || moved.ino !== mine.ino) {
         try {
           fs.linkSync(aside, sockPath);
-        } catch {
-          // A newer socket is at the path already: it wins.
+        } catch (e: any) {
+          // A newer socket at the path wins; any other failure puts it back.
+          if (e?.code !== "EEXIST") fs.renameSync(aside, sockPath);
         }
       }
     } finally {

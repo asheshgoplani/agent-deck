@@ -603,6 +603,57 @@ func TestCommsDeliver_PiRefusedWakeBoundRestartsAfterAnAnswer(t *testing.T) {
 	}
 }
 
+// Forge (p5): the inbox doorbell rides the same socket, so it keeps the run of
+// refusals true too. A refused inbox doorbell starts the run, and an answered
+// one ends it: the ledger's refusals after it get a fresh five minutes.
+func TestCommsDeliver_PiRefusedWakeRunFollowsTheInboxDoorbell(t *testing.T) {
+	var mu sync.Mutex
+	answerNext := false
+	w := newPiWakeFixture(t, func(_ int, f map[string]any, c net.Conn) {
+		mu.Lock()
+		a := answerNext
+		mu.Unlock()
+		if a {
+			answer(c, f, "queued")
+			return
+		}
+		refuse(c, f, "busy")
+	})
+	line := comms.WakePrefix + " 1 pending (1 urgent; data): [urgent] kid (pi) #ABC123: «done»"
+	if _, err := wakeSend(w.parent, "default", line, "01J0ABCDEF0123456789ABCDE1", []string{"r1"}); err != nil {
+		t.Fatalf("wakeSend: %v", err)
+	}
+	if st := w.state(t); st.RefusedSince != w.clock.UnixMilli() {
+		t.Errorf("a refused inbox doorbell did not start the run: RefusedSince %d, want %d", st.RefusedSince, w.clock.UnixMilli())
+	}
+	w.urgent(t, "shipped the build")
+	for i := 0; i < 4; i++ { // the ledger is refused for four minutes
+		w.clock = w.clock.Add(61 * time.Second)
+		w.deliver(t, "waiting")
+	}
+	mu.Lock()
+	answerNext = true
+	mu.Unlock()
+	if _, err := wakeSend(w.parent, "default", line, "01J0ABCDEF0123456789ABCDE2", []string{"r1"}); err != nil {
+		t.Fatalf("wakeSend: %v", err)
+	}
+	mu.Lock()
+	answerNext = false
+	mu.Unlock()
+	if st := w.state(t); st.RefusedSince != 0 {
+		t.Fatalf("an answered inbox doorbell left RefusedSince %d", st.RefusedSince)
+	}
+	for i := 0; i < 4; i++ { // four more minutes refused: inside the fresh run
+		w.clock = w.clock.Add(61 * time.Second)
+		w.deliver(t, "waiting")
+	}
+	for _, r := range w.wakeRecs(t) {
+		if r.Via == "socket" && r.State == comms.StateFailed {
+			t.Errorf("the ledger's refusals after an answered inbox doorbell were settled as failed: %+v", r)
+		}
+	}
+}
+
 // R-B (revising the earlier permanent-refusal ruling with new evidence): pi has
 // no composer-draft guard, so a typed doorbell can merge into and submit an
 // operator's draft. Every refusal, post-write or not, therefore types nothing:
