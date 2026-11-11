@@ -20,6 +20,7 @@ type opencodeMCPServer struct {
 	Command     []string          `json:"command,omitempty"`
 	Environment map[string]string `json:"environment,omitempty"`
 	URL         string            `json:"url,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
 }
 
 // opencodeConfig is the top-level shape of opencode.json (local or global).
@@ -52,27 +53,66 @@ func (c *opencodeConfig) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(payload, &c.MCP)
 }
 
-// setOpenCodeMCPServers preserves native V2 MCP options such as timeouts.
+// setOpenCodeMCPServers merges the managed servers into the mcp map. Only
+// entries whose name is in the agent-deck catalog are replaced or removed;
+// every other entry (hand-configured servers) is left as is. For a managed
+// entry that already exists, keys agent-deck does not set (headers when none
+// are configured, timeout, enabled, ...) are kept. Native V2 options such as
+// timeouts are preserved too.
 func setOpenCodeMCPServers(config map[string]interface{}, servers map[string]opencodeMCPServer, v2 bool) {
 	mcp, _ := config["mcp"].(map[string]interface{})
-	if _, native := mcp["servers"]; v2 || native {
-		if mcp == nil {
-			mcp = make(map[string]interface{})
+	existingServers, _ := mcp["servers"].(map[string]interface{})
+	_, native := mcp["servers"]
+	if !v2 && !native {
+		config["mcp"] = mergeOpenCodeServerMap(mcp, servers)
+		return
+	}
+	if mcp == nil {
+		mcp = make(map[string]interface{})
+	}
+	if !native {
+		// Moving to native V2: carry legacy direct entries into servers
+		// rather than dropping hand-configured ones.
+		existingServers = make(map[string]interface{})
+		for name, value := range mcp {
+			if server, ok := value.(map[string]interface{}); ok && server["type"] != nil {
+				existingServers[name] = value
+				delete(mcp, name)
+			}
 		}
-		if v2 && !native {
-			// A catalog rewrite replaces the legacy direct server map too;
-			// leaving those entries alongside servers is not native V2 config.
-			for name, value := range mcp {
-				if server, ok := value.(map[string]interface{}); ok && server["type"] != nil {
-					delete(mcp, name)
+	}
+	mcp["servers"] = mergeOpenCodeServerMap(existingServers, servers)
+	config["mcp"] = mcp
+}
+
+// mergeOpenCodeServerMap returns existing with the managed (catalog) names
+// replaced by the desired servers.
+func mergeOpenCodeServerMap(existing map[string]interface{}, desired map[string]opencodeMCPServer) map[string]interface{} {
+	managed := GetAvailableMCPs()
+	out := make(map[string]interface{}, len(existing)+len(desired))
+	for name, value := range existing {
+		if _, isManaged := managed[name]; !isManaged {
+			out[name] = value
+		}
+	}
+	for name, srv := range desired {
+		entry := map[string]interface{}{}
+		if prev, ok := existing[name].(map[string]interface{}); ok {
+			for k, v := range prev {
+				entry[k] = v
+			}
+		}
+		if data, err := json.Marshal(srv); err == nil {
+			var fields map[string]interface{}
+			if json.Unmarshal(data, &fields) == nil {
+				for k, v := range fields {
+					entry[k] = v
 				}
 			}
 		}
-		mcp["servers"] = servers
-		config["mcp"] = mcp
-		return
+		out[name] = entry
 	}
-	config["mcp"] = servers
+	return out
 }
 
 // opencodeMCPConfigDirOverride allows tests to override ~/.config/opencode.
@@ -221,8 +261,9 @@ func buildOpenCodeMCPServers(enabledNames []string) map[string]opencodeMCPServer
 				}
 			}
 			servers[name] = opencodeMCPServer{
-				Type: "remote",
-				URL:  def.URL,
+				Type:    "remote",
+				URL:     def.URL,
+				Headers: def.Headers,
 			}
 			continue
 		}
