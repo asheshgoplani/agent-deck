@@ -152,17 +152,23 @@ func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, toolDataExp
 	return s.touchStamp()
 }
 
-// WriteLaunchDecision records, in the instance's tool_data, the decision of
-// the launch that just spawned its pane in tmuxSession: the tool it launched
-// (launched_tool), whether a pi's launch exported the wake socket, and the tmux
-// session it describes (see launchToolDataExpr). A start writes it after a
+// WriteLaunchDecision records the decision of the launch that just spawned its
+// pane in tmuxSession: in tool_data, the tool it launched (launched_tool),
+// whether a pi's launch exported the wake socket, and the tmux session it
+// describes (see launchToolDataExpr); and that session's name in tmux_session,
+// in the same UPDATE, since a start whose name was taken spawns under a new one
+// (tmux.Session.Start) and no save follows a start. A start writes it after a
 // successful spawn; a restart folds it into its outcome write. An instance
 // with no row yet (started before its first save) returns ErrInstanceNotStored,
 // and its first save records the decision instead.
 func (s *StateDB) WriteLaunchDecision(id, tmuxSession, tool string, exported bool) error {
+	if tmuxSession == "" {
+		return fmt.Errorf("record launch decision for %q: the launch has no tmux session name", id)
+	}
 	var affected int64
 	if err := withBusyRetry(func() error {
-		res, err := s.db.Exec(`UPDATE instances SET tool_data = `+launchToolDataExpr(exported)+` WHERE id = ?`, tool, tmuxSession, id)
+		res, err := s.db.Exec(`UPDATE instances SET tmux_session = ?, tool_data = `+launchToolDataExpr(exported)+` WHERE id = ?`,
+			tmuxSession, tool, tmuxSession, id)
 		if err != nil {
 			return err
 		}

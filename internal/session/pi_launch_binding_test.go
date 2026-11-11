@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // The launch decision (pi_socket_exported, launched_tool) lives in tool_data
@@ -133,6 +135,49 @@ func TestPiLaunchDecision_AFullSaveNeverWritesItsViewOverANewerLaunch(t *testing
 	}
 	if storedPiSocketExported(t, storage, inst.ID) {
 		t.Error("the daemon reads the stale true: the relaunched pi's doorbell is never typed")
+	}
+}
+
+// Forge (p5): a start whose tmux name is taken spawns under a new one
+// (tmux.Session.Start), and no save follows a start. The launch write records
+// the name it spawned under with the decision, so the daemon, which loads the
+// row, still trusts it.
+func TestPiLaunchDecision_AStartUnderATakenTmuxNameRecordsTheNameItSpawnedUnder(t *testing.T) {
+	storage, inst := piStartFixture(t, "1.3.0", false)
+	taken := inst.tmuxSession.TmuxName()
+	blocker := tmux.NewSession("pi-start-blocker", t.TempDir())
+	blocker.Name, blocker.SocketName = taken, inst.tmuxSession.SocketName
+	if err := blocker.Start("sleep 300"); err != nil {
+		t.Fatalf("test setup: the blocker did not start: %v", err)
+	}
+	t.Cleanup(func() { _ = blocker.Kill() })
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if sess := inst.GetTmuxSession(); sess != nil {
+			_ = sess.Kill()
+		}
+		joinSpawnWatchers(t, inst)
+	})
+	spawned := inst.tmuxSession.TmuxName()
+	if spawned == taken || !inst.PiSocketExported {
+		t.Fatalf("test setup: the start spawned under %q (taken %q) with PiSocketExported %v", spawned, taken, inst.PiSocketExported)
+	}
+	var row *Instance
+	for _, in := range mustLoad(t, storage) {
+		if in.ID == inst.ID {
+			row = in
+		}
+	}
+	if row == nil {
+		t.Fatal("instance missing from storage")
+	}
+	if got := row.tmuxSession.TmuxName(); got != spawned {
+		t.Errorf("storage names tmux session %q, want %q, the one the start spawned under", got, spawned)
+	}
+	if !row.PiSocketExported || row.LaunchedTool != "pi" {
+		t.Errorf("the daemon reads PiSocketExported %v, LaunchedTool %q after a start under a taken name, want true and \"pi\"", row.PiSocketExported, row.LaunchedTool)
 	}
 }
 
