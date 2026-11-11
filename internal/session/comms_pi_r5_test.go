@@ -137,6 +137,10 @@ func TestPiRestart_PersistsTheSocketDecisionBothWays(t *testing.T) {
 			if err := storage.SaveWithGroups(instances, NewGroupTree(instances)); err != nil { // the state before the restart
 				t.Fatal(err)
 			}
+			// What the launch before the restart recorded.
+			if err := storage.GetDB().WriteLaunchDecision(inst.ID, inst.tmuxSession.TmuxName(), "pi", tc.was); err != nil {
+				t.Fatal(err)
+			}
 			if got := storedPiSocketExported(t, storage, inst.ID); got != tc.was {
 				t.Fatalf("fixture: stored PiSocketExported = %v, want %v", got, tc.was)
 			}
@@ -250,6 +254,10 @@ func piStartFixture(t *testing.T, version string, was bool) (*Storage, *Instance
 	inst.PiSocketExported = was
 	instances := []*Instance{inst}
 	if err := storage.SaveWithGroups(instances, NewGroupTree(instances)); err != nil {
+		t.Fatal(err)
+	}
+	// What an earlier launch of this pi recorded.
+	if err := storage.GetDB().WriteLaunchDecision(inst.ID, inst.tmuxSession.TmuxName(), "pi", was); err != nil {
 		t.Fatal(err)
 	}
 	if got := storedPiSocketExported(t, storage, inst.ID); got != was {
@@ -429,12 +437,13 @@ func TestPiStart_ALostSpawnRaceDoesNotOverwriteTheWinnersFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	name := inst.tmuxSession.TmuxName()
 	done := make(chan error, 1)
 	go func() { done <- inst.Start() }() // waits for the lock behind us
 	time.Sleep(300 * time.Millisecond)
 	// The winner spawns and records that its launch exported the socket.
 	recordInstanceSpawn(inst.ID)
-	if err := storage.GetDB().WritePiSocketExported(inst.ID, true); err != nil {
+	if err := storage.GetDB().WriteLaunchDecision(inst.ID, name, "pi", true); err != nil {
 		t.Fatal(err)
 	}
 	release()
@@ -474,11 +483,12 @@ func TestPiStartWithMessage_ALostSpawnRaceDoesNotOverwriteTheWinnersFlag(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	name := inst.tmuxSession.TmuxName()
 	done := make(chan error, 1)
 	go func() { done <- inst.StartWithMessage("get started") }() // waits for the lock behind us
 	time.Sleep(300 * time.Millisecond)
 	recordInstanceSpawn(inst.ID)
-	if err := storage.GetDB().WritePiSocketExported(inst.ID, true); err != nil {
+	if err := storage.GetDB().WriteLaunchDecision(inst.ID, name, "pi", true); err != nil {
 		t.Fatal(err)
 	}
 	release()

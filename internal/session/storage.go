@@ -1181,11 +1181,12 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// command that was never explicitly validated as one.
 	toolData = WriteSubcommandPassthroughToToolData(toolData, inst.SubcommandPassthrough)
 	toolData = writeTrackCommandExitToToolData(toolData, inst.TrackCommandExit)
-	toolData = WritePiSocketExportedToToolData(toolData, inst.PiSocketExported)
-	// launched_tool is the launch's to write; a save writes it only for a launch
-	// that found no row (a session started before its first save).
+	// The launch decision is the launch's to write (pi_socket_persist.go); a
+	// save writes it only for a launch that found no row (a session started
+	// before its first save). Otherwise it is left out, and the stored one is
+	// carried forward.
 	if inst.launchUnrecorded.Load() {
-		toolData = writeLaunchedToolToToolData(toolData, inst.LaunchedTool)
+		toolData = writeLaunchDecisionToToolData(toolData, tmuxName, inst.LaunchedTool, inst.PiSocketExported)
 	}
 	// Identity-injection opt-out lives in the same extras zone so a restart
 	// from any process honours `--no-identity`.
@@ -1409,8 +1410,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			Favorite:                  ReadFavoriteFromToolData(r.ToolData),
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
-			PiSocketExported:          ReadPiSocketExportedFromToolData(r.ToolData),
-			LaunchedTool:              ReadLaunchedToolFromToolData(r.ToolData),
+			PiSocketExported:          rowPiSocketExported(r),
+			LaunchedTool:              rowLaunchedTool(r),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
@@ -1559,8 +1560,8 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			Favorite:                  ReadFavoriteFromToolData(r.ToolData),
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
-			PiSocketExported:          ReadPiSocketExportedFromToolData(r.ToolData),
-			LaunchedTool:              ReadLaunchedToolFromToolData(r.ToolData),
+			PiSocketExported:          rowPiSocketExported(r),
+			LaunchedTool:              rowLaunchedTool(r),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
@@ -2007,4 +2008,18 @@ func decodeSandboxConfig(data json.RawMessage) *SandboxConfig {
 		return nil
 	}
 	return &cfg
+}
+
+// rowPiSocketExported is the row's launch decision about the pi socket, trusted
+// only while the row names the tmux session it was made for.
+func rowPiSocketExported(r *statedb.InstanceRow) bool {
+	exported, _ := ReadLaunchDecisionFromToolData(r.ToolData, r.TmuxSession)
+	return exported
+}
+
+// rowLaunchedTool is the tool the row's last recorded launch ran, under the same
+// binding as rowPiSocketExported; "" falls back to the stored tool.
+func rowLaunchedTool(r *statedb.InstanceRow) string {
+	_, tool := ReadLaunchDecisionFromToolData(r.ToolData, r.TmuxSession)
+	return tool
 }

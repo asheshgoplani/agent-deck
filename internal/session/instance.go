@@ -486,8 +486,10 @@ type Instance struct {
 	// PiSocketExported records that the last launch of this pi exported
 	// a socket path in AGENTDECK_PI_SOCKET: a v5 or later extension serves the socket, so the daemon never
 	// types a doorbell into it (a connect failure is a rebind or reload window,
-	// not an absent pi). Persisted in the tool_data extras zone
-	// (pi_socket_persist.go); a pi with no record is treated as launched without it.
+	// not an absent pi). Persisted in the tool_data extras zone with the tmux
+	// session it was recorded for (pi_socket_persist.go), and read back only
+	// while the row still names that session; a pi with no record is treated as
+	// launched without it.
 	PiSocketExported bool `json:"pi_socket_exported,omitempty"`
 
 	// LaunchedTool is the tool the last launch of this session ran: what its
@@ -496,7 +498,8 @@ type Instance struct {
 	// here (commsParentTool). Written by the launch's targeted write (start and
 	// every restart), and by a full save only for a launch that found no row to
 	// write to (launchUnrecorded), so a stale save cannot revert it; empty for a
-	// session no launch of this version recorded.
+	// session no launch of this version recorded, or whose recorded launch was
+	// for another tmux session (see PiSocketExported).
 	LaunchedTool string `json:"launched_tool,omitempty"`
 
 	// ContextLevel is the per-session override of the harness context-level

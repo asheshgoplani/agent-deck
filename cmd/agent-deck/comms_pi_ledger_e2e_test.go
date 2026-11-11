@@ -59,15 +59,17 @@ func newPiLedgerE2EFor(t *testing.T, parentTool string) *piLedgerE2E {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = storage.Close() })
-	parent := &session.Instance{ID: "parent-pi-e2e", Title: "pi parent", ProjectPath: home, GroupPath: session.DefaultGroupPath, Tool: parentTool,
-		PiSocketExported: parentTool == "pi", Status: session.StatusWaiting, CreatedAt: time.Now()}
+	// Built with its tmux session, which the launch decision is recorded for.
+	parent := session.NewInstanceWithTool("pi parent", home, parentTool)
+	parent.ID, parent.GroupPath, parent.PiSocketExported = "parent-pi-e2e", session.DefaultGroupPath, parentTool == "pi"
+	parent.Status, parent.CreatedAt = session.StatusWaiting, time.Now()
 	child := &session.Instance{ID: "child-pi-e2e", Title: "pi child", ProjectPath: home, GroupPath: session.DefaultGroupPath, Tool: "pi", Status: session.StatusWaiting, ParentSessionID: parent.ID, CreatedAt: time.Now()}
 	if err := storage.SaveWithGroups([]*session.Instance{parent, child}, nil); err != nil {
 		t.Fatal(err)
 	}
 	db := storage.GetDB()
 	// The parent's launch, as Start records it.
-	if err := db.WriteLaunchDecision(parent.ID, parentTool, parent.PiSocketExported); err != nil {
+	if err := db.WriteLaunchDecision(parent.ID, parent.GetTmuxSession().TmuxName(), parentTool, parent.PiSocketExported); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.RegisterInstance(false); err != nil { // a live TUI heartbeat: the daemon reads DB rows
@@ -380,7 +382,7 @@ func (e *piLedgerE2E) relaunch(exported bool) {
 	if err := storage.SaveWithGroups([]*session.Instance{e.parent, e.child}, nil); err != nil {
 		e.t.Fatal(err)
 	}
-	if err := storage.GetDB().WriteLaunchDecision(e.parent.ID, e.parent.Tool, exported); err != nil {
+	if err := storage.GetDB().WriteLaunchDecision(e.parent.ID, e.parent.GetTmuxSession().TmuxName(), e.parent.Tool, exported); err != nil {
 		e.t.Fatal(err)
 	}
 	e.status(e.parent.ID, "waiting")

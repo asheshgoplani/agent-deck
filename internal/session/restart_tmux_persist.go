@@ -123,20 +123,24 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 }
 
 // persistLaunchDecision records, once the pane has spawned, what its launch
-// was: the tool it launched (launched_tool) and whether a pi's launch exported a
-// socket path in AGENTDECK_PI_SOCKET. Start and StartWithMessage are the launch
+// was: the tool it launched (launched_tool), whether a pi's launch exported a
+// socket path in AGENTDECK_PI_SOCKET, and the tmux session it spawned in. Start and StartWithMessage are the launch
 // paths the CLI, the web and the TUI share, and none of them saves the instance
 // afterwards, so a start that changed the decision would otherwise leave the
 // old value in storage. They call it right after the spawn succeeds, so a
 // failure before it, or a spawn another process won, leaves storage as it was.
 // It is a targeted write of two keys. A new session the web, the TUI or a fork
 // starts before its first save matches no row: it is marked launchUnrecorded,
-// and that first save writes the launched tool (the socket decision rides
-// every save). A failure is logged and never fails the launch.
+// and that first save records the decision. A failure is logged and never
+// fails the launch.
 func (i *Instance) persistLaunchDecision() {
 	i.noteLaunch()
+	name := ""
+	if i.tmuxSession != nil {
+		name = i.tmuxSession.TmuxName()
+	}
 	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
-		return db.WriteLaunchDecision(i.ID, i.Tool, i.PiSocketExported)
+		return db.WriteLaunchDecision(i.ID, name, i.Tool, i.PiSocketExported)
 	})
 	i.launchUnrecorded.Store(err != nil)
 	if err != nil && !errors.Is(err, errNoStateDB) && !errors.Is(err, statedb.ErrInstanceNotStored) {

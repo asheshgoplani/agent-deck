@@ -150,7 +150,7 @@ func (f *deliverFixture) launchPi(t *testing.T, version string, exports bool) {
 	}
 	// The launch's own targeted write (persistLaunchDecision): a save carries
 	// an extras key it omits forward, so only this clears an earlier true.
-	if err := storage.GetDB().WriteLaunchDecision(f.parent.ID, f.parent.Tool, f.parent.PiSocketExported); err != nil {
+	if err := storage.GetDB().WriteLaunchDecision(f.parent.ID, f.parent.tmuxSession.TmuxName(), f.parent.Tool, f.parent.PiSocketExported); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()

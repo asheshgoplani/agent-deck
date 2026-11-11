@@ -94,17 +94,26 @@ func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (Wri
 
 // WriteRestartOutcomeWithLaunch is WriteRestartOutcome that also records, in
 // the same UPDATE, the launch decision: the tool the restart launched
-// (launched_tool) and whether a pi's launch exported the wake socket. The
-// launched tool is what the pane runs, which a tool edit does not change until
-// the next restart.
+// (launched_tool), whether a pi's launch exported the wake socket, and the tmux
+// session the decision describes (launch_tmux_session). The launched tool is
+// what the pane runs, which a tool edit does not change until the next restart.
 func (s *StateDB) WriteRestartOutcomeWithLaunch(id, tmuxSession, status, tool string, exported bool) (WriteStamps, error) {
-	return s.writeRestartOutcome(id, tmuxSession, status, tool, launchToolDataExpr(exported), tool)
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, launchToolDataExpr(exported), tool, tmuxSession)
 }
 
-// launchToolDataExpr records the launch decision; its one parameter is the
-// launched tool.
+// launchToolDataExpr records the launch decision; its two parameters are the
+// launched tool and the tmux session the launch spawned in.
+//
+// The decision lives in tool_data extras, which every binary's full save
+// carries forward (MergeToolDataExtras), including a binary that launches the
+// session without writing a decision of its own. So the decision names the
+// tmux session it was made for, and a reader trusts it only while the row
+// still names that session. A restart that recreates the session mints a new
+// name, so an older binary's restart reads as a launch with no record. (A
+// start reuses the stored name, so an older binary's start of a stopped pi is
+// not caught here; the bound on refused socket wakes makes that one visible.)
 func launchToolDataExpr(exported bool) string {
-	return `json_set(` + piSocketToolDataExpr(exported) + `, '$.launched_tool', ?)`
+	return `json_set(` + piSocketToolDataExpr(exported) + `, '$.launched_tool', ?, '$.launch_tmux_session', ?)`
 }
 
 // piSocketToolDataExpr is the tool_data expression that records the decision.
@@ -143,27 +152,17 @@ func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, toolDataExp
 	return s.touchStamp()
 }
 
-// WritePiSocketExported records, in the instance's tool_data, whether its last
-// launch exported a socket path in AGENTDECK_PI_SOCKET: the key is set when true and removed when
-// false, as the full save writes it. A start writes it after a successful launch
-// (a restart folds it into its outcome write).
-func (s *StateDB) WritePiSocketExported(id string, exported bool) error {
-	return withBusyRetry(func() error {
-		_, err := s.db.Exec(`UPDATE instances SET tool_data = `+piSocketToolDataExpr(exported)+` WHERE id = ?`, id)
-		return err
-	})
-}
-
 // WriteLaunchDecision records, in the instance's tool_data, the decision of
-// the launch that just spawned its pane: the tool it launched (launched_tool)
-// and whether a pi's launch exported the wake socket. A start writes it after a
+// the launch that just spawned its pane in tmuxSession: the tool it launched
+// (launched_tool), whether a pi's launch exported the wake socket, and the tmux
+// session it describes (see launchToolDataExpr). A start writes it after a
 // successful spawn; a restart folds it into its outcome write. An instance
 // with no row yet (started before its first save) returns ErrInstanceNotStored,
 // and its first save records the decision instead.
-func (s *StateDB) WriteLaunchDecision(id, tool string, exported bool) error {
+func (s *StateDB) WriteLaunchDecision(id, tmuxSession, tool string, exported bool) error {
 	var affected int64
 	if err := withBusyRetry(func() error {
-		res, err := s.db.Exec(`UPDATE instances SET tool_data = `+launchToolDataExpr(exported)+` WHERE id = ?`, tool, id)
+		res, err := s.db.Exec(`UPDATE instances SET tool_data = `+launchToolDataExpr(exported)+` WHERE id = ?`, tool, tmuxSession, id)
 		if err != nil {
 			return err
 		}
