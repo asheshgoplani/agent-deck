@@ -230,6 +230,11 @@ func newPiWakeFixtureIn(t *testing.T, profile string, script func(int, map[strin
 	return w
 }
 
+// settle waits for every doorbell leg dispatched so far: a typed doorbell is
+// sent in the background, counted in the notifier's legs or in strayLegs, so a
+// check that nothing was typed after it does not race the leg.
+func (w *piWakeFx) settle() { w.d.notifier.Flush() }
+
 // urgent commits a ledger-only urgent record, the kind that wakes a parent.
 func (w *piWakeFx) urgent(t *testing.T, text string) comms.Record {
 	t.Helper()
@@ -627,7 +632,7 @@ func TestCommsDeliver_PiPostWriteRefusalNeverTypes(t *testing.T) {
 			if w.ext.count() != 1 {
 				t.Fatalf("frames = %d, want 1", w.ext.count())
 			}
-			time.Sleep(300 * time.Millisecond) // a typed doorbell is dispatched in the background
+			w.settle() // every doorbell leg dispatched so far has finished
 			if typed := w.typed.all(); len(typed) != 0 {
 				t.Fatalf("typed %q after a refusal: pi has no draft guard", typed)
 			}
@@ -677,7 +682,7 @@ func TestCommsDeliver_PiClientLocalRefusalTypesNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			w := newPiWakeFixture(t, replyWith("submitted"))
 			_ = call(w)
-			time.Sleep(300 * time.Millisecond)
+			w.settle()
 			if typed := w.typed.all(); len(typed) != 0 {
 				t.Fatalf("typed %q for a refused call", typed)
 			}
@@ -765,7 +770,7 @@ func TestCommsDeliver_PiRelaunchedWithoutTheSocketIsDrainedAndTheLedgerPassTypes
 	if en, ok := LoadCommsEnrollment(w.parent.ID); !ok || !en.Draining {
 		t.Fatalf("a listed pi relaunched without the socket is not draining: %+v (found %v)", en, ok)
 	}
-	time.Sleep(300 * time.Millisecond)
+	w.settle()
 	if typed := w.typed.all(); len(typed) != 0 || w.ext.count() != 0 {
 		t.Errorf("the ledger pass rang a pi launched without the socket: typed %q, frames %d", typed, w.ext.count())
 	}
@@ -840,7 +845,7 @@ func TestInboxNudge_PiInboxAndLedgerDoorbellsInOnePassRingOnce(t *testing.T) {
 		t.Errorf("the inbox doorbell carries the inbox record's id: %v", first["ids"])
 	}
 	w.deliver(t, "waiting") // the ledger pass of the same poll
-	time.Sleep(300 * time.Millisecond)
+	w.settle()
 	if w.ext.count() != 1 {
 		t.Fatalf("frames = %d, want one doorbell for both", w.ext.count())
 	}
@@ -1061,7 +1066,10 @@ func TestInboxNudge_PiParentRidesTheSocketOnAllThreeDoorbellPaths(t *testing.T) 
 				defer n.Flush()
 			}
 			w.ext.waitFrame(t)
-			time.Sleep(200 * time.Millisecond)
+			if n != nil {
+				n.Flush()
+			}
+			w.settle()
 			if w.ext.count() != 1 || len(w.typed.all()) != 0 {
 				t.Errorf("frames %d typed %q, want one frame and nothing typed", w.ext.count(), w.typed.all())
 			}
@@ -1092,18 +1100,20 @@ func TestInboxNudge_PiParentRidesTheSocketOnAllThreeDoorbellPaths(t *testing.T) 
 // adds no second one. A refusal leaves none. Claude's synchronous tmux record is
 // unchanged.
 func TestInboxNudge_PiWakeRecordComesFromTheSendLegWithItsOutcome(t *testing.T) {
-	fire := func(f *deliverFixture) {
+	fire := func(f *deliverFixture) *TransitionNotifier {
 		w := defaultWakeNudgeWiring()
 		w.isIdle = func(*Instance, string) bool { return true }
 		w.nudger = NewWakeNudger(0)
-		(&TransitionNotifier{wake: w}).fireWakeNudge(f.parent, TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: "kid",
+		n := &TransitionNotifier{wake: w}
+		n.fireWakeNudge(f.parent, TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: "kid",
 			Profile: "default", ToStatus: "waiting", TargetSessionID: f.parent.ID, TargetKind: "parent", Tier: TurnTierUrgent, Text: "r", Timestamp: time.Now()})
+		return n
 	}
 	t.Run("a socket wake: one via socket record with the leg's state, none via tmux", func(t *testing.T) {
 		w := newPiWakeFixture(t, replyWith("submitted"))
-		fire(w.deliverFixture)
+		n := fire(w.deliverFixture)
 		fr := w.ext.waitFrame(t)
-		time.Sleep(300 * time.Millisecond)
+		n.Flush() // the leg spools its record before it finishes
 		recs := w.wakeRecs(t)
 		if len(recs) != 1 || recs[0].Via != "socket" || recs[0].State != "landed" || recs[0].Ref != fr["id"] {
 			t.Errorf("wake records: %+v", recs)
@@ -1111,9 +1121,9 @@ func TestInboxNudge_PiWakeRecordComesFromTheSendLegWithItsOutcome(t *testing.T) 
 	})
 	t.Run("a refused wake leaves no record", func(t *testing.T) {
 		w := newPiWakeFixture(t, refuseWith("busy"))
-		fire(w.deliverFixture)
+		n := fire(w.deliverFixture)
 		w.ext.waitFrame(t)
-		time.Sleep(300 * time.Millisecond)
+		n.Flush()
 		if recs := w.wakeRecs(t); len(recs) != 0 {
 			t.Errorf("wake records for a refusal: %+v", recs)
 		}

@@ -180,7 +180,7 @@ func TestInboxNudge_PiDoorbellIsReservedBeforeTheGoroutineRuns(t *testing.T) {
 	}
 	release()
 	w.ext.waitFrame(t)
-	time.Sleep(300 * time.Millisecond)
+	w.settle()
 	if n := w.ext.count(); n != 1 {
 		t.Errorf("frames = %d, want exactly the one doorbell", n)
 	}
@@ -549,7 +549,7 @@ func TestCommsDeliver_PiPaneTreeHiccupNeverTypes(t *testing.T) {
 			piWakePanePIDs = func(*Instance) (map[int]bool, error) { return tree, nil }
 			w.urgent(t, "shipped the build")
 			w.deliver(t, "waiting")
-			time.Sleep(300 * time.Millisecond) // a typed doorbell is dispatched in the background
+			w.settle() // every doorbell leg dispatched so far has finished
 			if typed := w.typed.all(); len(typed) != 0 {
 				t.Fatalf("typed %q into a pane whose tree could not be read: a live pi may be there", typed)
 			}
@@ -567,7 +567,7 @@ func TestCommsDeliver_PiPaneTreeHiccupNeverTypes(t *testing.T) {
 			// The settle retries once, under a new nonce, and still never types.
 			w.clock = w.clock.Add(61 * time.Second)
 			w.deliver(t, "waiting")
-			time.Sleep(300 * time.Millisecond)
+			w.settle()
 			st = w.state(t)
 			if len(st.Inflight) != 1 {
 				t.Fatalf("after the settle: %+v", st)
@@ -598,7 +598,7 @@ func TestCommsDeliver_PiForeignPeerInACompleteTreeIsAPermanentRefusal(t *testing
 	}
 	w.urgent(t, "shipped the build")
 	w.deliver(t, "waiting")
-	time.Sleep(300 * time.Millisecond)
+	w.settle()
 	if typed := w.typed.all(); len(typed) != 0 {
 		t.Fatalf("typed %q although a foreign process owns the socket", typed)
 	}
@@ -616,7 +616,7 @@ func TestCommsDeliver_PiForeignPeerInACompleteTreeIsAPermanentRefusal(t *testing
 		w.clock = w.clock.Add(step)
 		w.deliver(t, "waiting")
 	}
-	time.Sleep(300 * time.Millisecond)
+	w.settle()
 	if len(w.typed.all()) != 0 || w.ext.count() != 0 {
 		t.Errorf("a permanent refusal repeated: frames %d typed %q", w.ext.count(), w.typed.all())
 	}
@@ -639,7 +639,7 @@ func TestCommsDeliver_PiUnavailableButNotAbsentNeverTypes(t *testing.T) {
 			setup(w)
 			w.urgent(t, "shipped the build")
 			w.deliver(t, "waiting")
-			time.Sleep(300 * time.Millisecond) // a typed doorbell is dispatched in the background
+			w.settle() // every doorbell leg dispatched so far has finished
 			if typed := w.typed.all(); len(typed) != 0 {
 				t.Fatalf("typed %q although pi is not provably absent", typed)
 			}
@@ -656,7 +656,7 @@ func TestCommsDeliver_PiUnavailableButNotAbsentNeverTypes(t *testing.T) {
 			if _, err := wakeSend(w.parent, "default", line, "01J0ABCDEF0123456789ABCDEF", []string{"r1"}); err != nil {
 				t.Fatalf("wakeSend: %v", err)
 			}
-			time.Sleep(300 * time.Millisecond)
+			w.settle()
 			if typed := w.typed.all(); len(typed) != 0 {
 				t.Errorf("wakeSend typed %q although pi is not provably absent", typed)
 			}
@@ -736,8 +736,7 @@ func TestInboxNudge_PiSocketRouteSurvivesEnrolmentEndingAfterDispatch(t *testing
 		t.Fatal("test setup: the parent is still a consumer")
 	}
 	release()
-	w.d.notifier.Flush()
-	time.Sleep(200 * time.Millisecond)
+	w.settle()
 	if typed := w.typed.all(); len(typed) != 0 {
 		t.Errorf("typed %q: the route changed under a dispatched doorbell", typed)
 	}

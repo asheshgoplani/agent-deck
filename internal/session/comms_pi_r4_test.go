@@ -207,7 +207,7 @@ func TestPiLaunchedWithSocket_ConnectFailureNeverTypesAndTheSettleRetries(t *tes
 			// The ledger pass.
 			w.urgent(t, "shipped the build")
 			w.deliver(t, "waiting")
-			time.Sleep(300 * time.Millisecond) // a typed doorbell is dispatched in the background
+			w.settle() // every doorbell leg dispatched so far has finished
 			if typed := w.typed.all(); len(typed) != 0 {
 				t.Fatalf("typed %q into a pi launched with the socket", typed)
 			}
@@ -346,7 +346,7 @@ func TestCommsDeliver_PiPartialPaneTreeIsPushedNotPermanent(t *testing.T) {
 	setPanePIDs(t, map[int]bool{os.Getpid() + 1: true}, errors.New("read /proc: partial tree"))
 	w.urgent(t, "shipped the build")
 	w.deliver(t, "waiting")
-	time.Sleep(300 * time.Millisecond)
+	w.settle()
 	if typed := w.typed.all(); len(typed) != 0 {
 		t.Fatalf("typed %q after a partial tree read", typed)
 	}
@@ -369,7 +369,7 @@ func TestCommsDeliver_PiPartialPaneTreeIsPushedNotPermanent(t *testing.T) {
 	// The settle retries once, under a new nonce, never typing and never giving up.
 	w.clock = w.clock.Add(95 * time.Second)
 	w.deliver(t, "waiting")
-	time.Sleep(300 * time.Millisecond)
+	w.settle()
 	st = w.state(t)
 	if len(st.Inflight) != 1 {
 		t.Fatalf("after the settle: %+v", st)
