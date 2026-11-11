@@ -14,8 +14,9 @@ func TestMergeToolPatternsBuiltinOverrides(t *testing.T) {
 	t.Cleanup(ClearUserConfigCache)
 
 	cfg := &UserConfig{Tools: map[string]ToolDef{
-		"pi":    {PromptPatternsExtra: []string{"custom-pi-footer"}},
-		"codex": {BusyPatterns: []string{"custom-busy"}, PromptPatterns: []string{"custom-prompt"}},
+		"pi":     {PromptPatternsExtra: []string{"custom-pi-footer"}},
+		"codex":  {BusyPatterns: []string{"custom-busy"}, PromptPatterns: []string{"custom-prompt"}},
+		"claude": {BusyPatternsExtra: []string{"custom-claude-busy"}},
 	}}
 	if err := SaveUserConfig(cfg); err != nil {
 		t.Fatal(err)
@@ -33,7 +34,14 @@ func TestMergeToolPatternsBuiltinOverrides(t *testing.T) {
 	if !slices.Equal(codex.BusyPatterns, []string{"custom-busy"}) || !slices.Equal(codex.PromptPatterns, []string{"custom-prompt"}) {
 		t.Fatalf("codex replacement patterns were dropped: %#v", codex)
 	}
-	if GetToolDef("pi") != nil || GetToolDef("codex") != nil {
+	claude := MergeToolPatterns("claude")
+	if !slices.Contains(claude.BusyPatterns, "custom-claude-busy") {
+		t.Fatalf("claude busy extras were dropped: %v", claude.BusyPatterns)
+	}
+	if !slices.Contains(claude.BusyPatterns, "ctrl+c to interrupt") {
+		t.Fatal("claude defaults were replaced by extras")
+	}
+	if GetToolDef("pi") != nil || GetToolDef("codex") != nil || GetToolDef("claude") != nil {
 		t.Fatal("built-in pattern overrides must not register custom tools")
 	}
 }
