@@ -260,8 +260,10 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 
 	// The prompt that started this turn, when the harness reported it with
 	// the turn (codex-notify): for an enrolled parent it confirms the records
-	// a wake line showed it.
-	if e.Prompt != "" {
+	// a wake line showed it. A pi that is not the parent's consumer (a guest of
+	// the pane, a pi in another pane) confirms nothing, and its prompt is not
+	// the parent's own turn.
+	if e.Prompt != "" && !e.PiNotConsumer {
 		d.commsAckPrompt(l, inst, e.Prompt, "")
 	}
 	rec := comms.Record{

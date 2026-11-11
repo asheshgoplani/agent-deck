@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
@@ -272,6 +273,53 @@ func TestPiLedgerE2E_ABusyPiParentIsRungOnceForItsChildsRunWhenItSettles(t *test
 	}
 	if n := sock.count(); n != 1 {
 		t.Errorf("doorbells after the busy pi parent settled = %d, want exactly 1", n)
+	}
+}
+
+// CodeRabbit (hook_handler.go:170): a pi that is not the parent's consumer (a
+// guest of the pane, a pi in another pane of the session) settles a run of its
+// own. Its turn is recorded, but its prompt is not the parent's own: it neither
+// acknowledges the parent's wake nor resets the parent's automatic wake count.
+func TestPiLedgerE2E_ANonConsumerPisSettledRunNeitherAcksNorResetsTheParentsWakes(t *testing.T) {
+	e := newPiLedgerE2EFor(t, "pi")
+	sock := newFakePiSocket(t)
+	restore := session.SetPiWakeSeamsForTest(e.parent.ID, sock.path, map[int]bool{os.Getpid(): true})
+	t.Cleanup(func() {
+		e.d.Flush()
+		restore()
+	})
+	// The child asks; the idle parent is rung once.
+	e.hook("turn_start", "")
+	e.status(e.child.ID, "running")
+	e.pass()
+	e.hook("turn_end", "")
+	e.hook("agent_settled", `,"turn_id":"entry-1","last_assistant_message":"Should we ship on Friday or Monday?","prompt":"ask the parent"`)
+	e.status(e.child.ID, "waiting")
+	for i := 0; i < 5; i++ {
+		e.pass()
+	}
+	if n := sock.count(); n != 1 {
+		t.Fatalf("test setup: doorbells = %d, want 1", n)
+	}
+	en, ok := session.LoadCommsEnrollment(e.parent.ID)
+	if !ok {
+		t.Fatal("test setup: the parent is not enrolled")
+	}
+	before, _, err := comms.ReadConsumer(en.Dir, e.parent.ID)
+	if err != nil || before.AutoWakes != 1 {
+		t.Fatalf("test setup: AutoWakes %d (%v), want 1", before.AutoWakes, err)
+	}
+	for name, extra := range map[string]string{"a guest of the pane": `,"pane_guest":true`, "a pi in another pane": ""} {
+		e.hookAs(e.parent.ID, "other-run", "pi-other-sess", "agent_settled",
+			`,"turn_id":"o-1","last_assistant_message":"done here","prompt":"summarise the diff"`+extra)
+		e.pass()
+		after, _, err := comms.ReadConsumer(en.Dir, e.parent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.AutoWakes != before.AutoWakes {
+			t.Errorf("%s: its settled run reset the parent's automatic wakes (%d, was %d)", name, after.AutoWakes, before.AutoWakes)
+		}
 	}
 }
 

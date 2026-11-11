@@ -109,6 +109,11 @@ type CommsSpoolEntry struct {
 	WakeNonce string `json:"wake_nonce,omitempty"`
 	// InjectedToken is the delivery token of an "injected" edge.
 	InjectedToken string `json:"injected_token,omitempty"`
+	// PiNotConsumer marks a pi turn end from a pi that may not take the
+	// parent's ledger consumer edges (a guest of the pane, a pi in another pane
+	// of the session): its prompt acknowledges nothing and is not the parent's
+	// own turn.
+	PiNotConsumer bool `json:"pi_not_consumer,omitempty"`
 	// Refs are the record ids a wake carried.
 	Refs []string `json:"refs,omitempty"`
 	// Err and AfterWrite qualify a wake the send leg typed after the socket
