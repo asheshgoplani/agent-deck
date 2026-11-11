@@ -622,13 +622,14 @@ attempt the hook has meanwhile replaced or acknowledged is left to the hook.
 | `submitted` (the run started with the nonce) | `transport_accepted` | `via: socket`, `state: landed` |
 | `queued` (handed to pi, no run seen in 1.5 s) | stays `attempted` | `state: queued` |
 | no reply, a malformed one, a failed write | stays `attempted`, never typed | `state: pushed`, `err` |
-| `busy`, `duplicate` with `notSent` | back to pending, the wake count undone; the first idle pass after the 1 min debounce rings again | none |
+| `busy`, `duplicate` with `notSent` | back to pending, the wake count undone; the first idle pass after the 1 min debounce rings again, for 5 min from the first such refusal (see below) | none |
 | `bad_request` or an unknown word with `notSent`, or refused before the write | back to pending, the wake stays counted, socket wakes for these records stop, nothing typed | `via: socket`, `state: failed`, `err` the reason (`after_write` when the frame was written) |
-| a pi launched with the socket exported, and the socket is down (no file, a refused connection: a rebind or reload window) | back to pending, nothing typed, the first idle pass after the debounce rings again | none |
+| a pi launched with the socket exported, and the socket is down (no file, a refused connection: a rebind or reload window) | back to pending, nothing typed, the first idle pass after the debounce rings again, for 5 min from the first such refusal (see below) | none |
 | a pi launched without the socket (too old, no extension, path too long, socket off, or by an older binary) and nobody answers | the doorbell is typed once, dispatched in the background like a Claude wake | `via: tmux`, nothing in `err` |
 | the pane tree could not be read completely (or is empty) | stays `attempted`, never typed, the 90 s settle retries | `state: pushed`, `err: pane_tree_unreadable` |
 | a complete, successfully read pane tree that lacks the socket's peer, or a socket the wake will not use (permissions) | back to pending, wakes for these records stop, nothing typed | `via: socket`, `state: failed`, `err` the reason |
-| the connection was cancelled or failed for a reason that proves nothing | back to pending, retried by the first idle pass after the debounce | none |
+| the connection was cancelled or failed for a reason that proves nothing | back to pending, retried by the first idle pass after the debounce, for 5 min from the first such refusal (see below) | none |
+| any of the three rows above, 5 min or more after the first refusal of the run with no answer that took in between | back to pending, wakes for these records stop, nothing typed; one Warn log | `via: socket`, `state: failed`, `err` `<reason>_for_5m` |
 
 **Nothing is typed into a pi whose extension answers.** Pi has no composer-draft
 guard, so a typed line can merge into an operator's draft and submit it, which
@@ -640,7 +641,13 @@ is how pi has always been woken. Anything short of proof (a peer the pane tree
 does not hold, a socket the wake will not use, a dial that failed for another
 reason) may hide a live pi and types nothing. `agent-deck pi-hooks status` prints
 `Socket wakes stopped: <reason> (<parent>)` for a parent whose wakes a permanent
-refusal has stopped. Silence, a failed write and `pushed` prove nothing either,
+refusal has stopped. A refusal that would repeat on its own (the socket down, a
+dial that failed, `busy`, `duplicate`) is retried, but only for 5 minutes from
+the first one, well past any rebind or `/reload` window: the per-parent start of
+the run is kept in the consumer file (`refused_since`, cleared once the extension
+answers), and a refusal past it is settled as a permanent one, so a pi whose
+extension stopped listening is listed there instead of being dialled every
+minute in silence. Silence, a failed write and `pushed` prove nothing either,
 so they are never typed and never re-sent in the same pass; a wake no hook
 acknowledged within 90 seconds is retried once under a new nonce.
 

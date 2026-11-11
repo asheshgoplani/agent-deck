@@ -137,6 +137,11 @@ type ConsumerFile struct {
 	// nothing is consumed and the records ride the next run start. Bounded: the
 	// oldest go first.
 	Injections map[string]Injection `json:"injections,omitempty"`
+	// RefusedSince is when the run of pi socket wakes now being refused
+	// without an answer that would take (no listener, a failed dial, busy,
+	// duplicate) started: Unix ms of its first refusal, 0 once the extension
+	// answers. The run is bounded (piRefusedWakeBound in the session package).
+	RefusedSince int64 `json:"refused_since,omitempty"`
 }
 
 // Injection is one pi injection's record of what it showed.

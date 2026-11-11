@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -412,7 +413,7 @@ func piWakeLeg(o wakeOpts, origin string, parent *Instance, profile, line, nonce
 			// pi. Nothing is typed; the records stay pending and the next pass
 			// rings again.
 			commsLog.Debug("pi_wake_socket_down", slog.String("parent", parent.ID), slog.String("reason", string(unavailable.Reason)))
-			return wakeOutcome{Refused: true}, nil
+			return wakeOutcome{Refused: true, Err: "socket_down"}, nil
 		case unavailable.Absent:
 			// Launched without the socket (or by a binary that predates it) and
 			// nobody answers: pi has always been woken by the typed line.
@@ -431,7 +432,7 @@ func piWakeLeg(o wakeOpts, origin string, parent *Instance, profile, line, nonce
 			// A cancel or a dial that failed for a reason that proves nothing: the
 			// records stay pending and the next pass tries again.
 			commsLog.Debug("pi_wake_unconfirmed", slog.String("parent", parent.ID), slog.String("reason", string(unavailable.Reason)))
-			return wakeOutcome{Refused: true}, nil
+			return wakeOutcome{Refused: true, Err: string(unavailable.Reason)}, nil
 		default:
 			// A socket the wake will not use (permissions) may belong to a live pi.
 			commsLog.Warn("pi_wake_refused_permanent", slog.String("parent", parent.ID), slog.String("reason", string(unavailable.Reason)))
@@ -441,7 +442,7 @@ func piWakeLeg(o wakeOpts, origin string, parent *Instance, profile, line, nonce
 		if refused.AfterWrite && (refused.Reason == "busy" || refused.Reason == "duplicate") {
 			// notSent is authoritative and the condition passes: pending, no record.
 			commsLog.Debug("pi_wake_refused_transient", slog.String("parent", parent.ID), slog.String("reason", refused.Reason))
-			return wakeOutcome{Refused: true}, nil
+			return wakeOutcome{Refused: true, Err: refused.Reason}, nil
 		}
 		// Any other refusal would repeat every pass: the records stay pending
 		// (they ride the next run start), socket wakes for them stop, and a
@@ -496,9 +497,23 @@ func typedDoorbell(o wakeOpts, origin string, parent *Instance, profile, line, n
 	return wakeOutcome{Via: "tmux", Accepted: true}, nil
 }
 
+// piRefusedWakeBound is how long a pi parent's socket wakes may go on being
+// refused without an answer that takes (no listener, a dial that failed, busy,
+// duplicate) before the wake is settled as failed. It is well past any rebind
+// or /reload window, so a pi that comes back is rung as usual; past it, an
+// extension that stopped listening is no longer dialled every minute in silence.
+const piRefusedWakeBound = 5 * time.Minute
+
 // ringPiWake rings the doorbell Do #1 carried and settles it (Do #2). The
 // settle is compare-and-set on the nonce: an attempt a hook has since replaced
 // or acknowledged is left to the hook.
+//
+// A transient refusal gives the automatic wake back and the next pass rings
+// again, but only for piRefusedWakeBound from the first refusal of the run
+// (RefusedSince): a refusal past it is settled as a permanent one, with one
+// failed wake record carrying the reason, so `pi-hooks status` lists the
+// parent under "Socket wakes stopped". The records stay pending and ride the
+// parent's next run start.
 func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Instance, plan *piWakePlan) {
 	legs := &strayLegs
 	if d.notifier != nil && d.notifier.wake != nil {
@@ -508,10 +523,15 @@ func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Ins
 	if err != nil {
 		commsLog.Warn("comms_wake_send_failed", slog.String("parent", inst.ID), slog.String("error", err.Error()))
 	}
+	stopped := ""
+	var since int64
 	if _, err := r.Do(inst.ID, func(p comms.Pass) ([]events.Cursor, error) {
+		stopped = ""
+		now := commsNow().UnixMilli()
 		switch {
 		case out.Accepted:
 			p.File.AcceptNonce(plan.nonce)
+			p.File.RefusedSince = 0
 		case out.Refused:
 			released := p.File.ReleaseNonce(plan.nonce)
 			// Do #1 noted this wake's settle as the deadline, and nothing earlier
@@ -524,13 +544,41 @@ func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Ins
 				for i := 0; i < commsMaxWakeTries; i++ {
 					p.File.NoteWakeFailed(released)
 				}
-			case len(released) > 0 && p.File.AutoWakes > 0:
-				p.File.AutoWakes-- // a transient refusal never consumes the automatic wake cap
+				p.File.RefusedSince = 0
+			case len(released) == 0:
+				// A hook settled the attempt meanwhile: nothing to give back or bound.
+			default:
+				// A clock that stepped back past the start restarts the run.
+				if p.File.RefusedSince == 0 || p.File.RefusedSince > now {
+					p.File.RefusedSince = now
+				}
+				since = p.File.RefusedSince
+				if now-since >= piRefusedWakeBound.Milliseconds() {
+					// The bound: settled as a permanent refusal, the wake kept consumed.
+					for i := 0; i < commsMaxWakeTries; i++ {
+						p.File.NoteWakeFailed(released)
+					}
+					stopped = out.Err
+					if stopped == "" {
+						stopped = "refused"
+					}
+				} else if p.File.AutoWakes > 0 {
+					p.File.AutoWakes-- // a transient refusal never consumes the automatic wake cap
+				}
 			}
+		case out.Err == "":
+			p.File.RefusedSince = 0 // the extension answered
 		}
 		return nil, nil
 	}); err != nil {
 		commsLog.Warn("comms_wake_settle_failed", slog.String("parent", inst.ID), slog.String("error", err.Error()))
+		return
+	}
+	if stopped != "" {
+		reason := fmt.Sprintf("%s_for_%dm", stopped, int(piRefusedWakeBound.Minutes()))
+		commsLog.Warn("pi_wake_refused_too_long", slog.String("parent", inst.ID), slog.String("reason", stopped),
+			slog.Time("since", time.UnixMilli(since)))
+		SpoolCommsWakeOutcome(inst.ID, "ledger", "socket", comms.StateFailed, plan.line, plan.nonce, reason, false, plan.ids)
 	}
 }
 

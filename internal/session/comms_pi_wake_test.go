@@ -459,24 +459,141 @@ func TestCommsDeliver_PiRefusedLastSlotWakeRetriesAtTheDebounce(t *testing.T) {
 	}
 }
 
-// Max 5: a refusal never consumes the automatic wake cap.
+// Max 5: a refusal never consumes the automatic wake cap, while the run of
+// refusals is inside its bound (piRefusedWakeBound); every pass rings.
 func TestCommsDeliver_PiRefusedWakeDoesNotConsumeTheAutoWakeCap(t *testing.T) {
 	w := newPiWakeFixture(t, refuseWith("busy"))
 	w.urgent(t, "shipped the build")
-	for i := 0; i < comms.MaxAutoWakes+2; i++ {
+	passes := 0
+	for start := w.clock; w.clock.Sub(start) < piRefusedWakeBound; w.clock = w.clock.Add(61 * time.Second) {
 		w.deliver(t, "waiting")
-		w.clock = w.clock.Add(61 * time.Second)
+		passes++
 	}
 	st := w.state(t)
 	if st.AutoWakes != 0 || st.CapNoted {
-		t.Errorf("after %d refusals: AutoWakes %d CapNoted %v", comms.MaxAutoWakes+2, st.AutoWakes, st.CapNoted)
+		t.Errorf("after %d refusals: AutoWakes %d CapNoted %v", passes, st.AutoWakes, st.CapNoted)
 	}
-	if w.ext.count() != comms.MaxAutoWakes+2 {
-		t.Errorf("frames = %d, want one per pass", w.ext.count())
+	if w.ext.count() != passes {
+		t.Errorf("frames = %d, want one per pass (%d)", w.ext.count(), passes)
 	}
 	for _, r := range w.ledgerRecords(t) {
 		if r.Kind == comms.KindError {
 			t.Errorf("the cap note was written: %+v", r)
+		}
+	}
+	if recs := w.wakeRecs(t); len(recs) != 0 {
+		t.Errorf("a refusal inside the bound left wake records %+v", recs)
+	}
+}
+
+// Review (#3024, should fix): a pi socket that stays down, or keeps answering
+// busy, is not dialled every minute forever in silence. Five minutes after the
+// first refusal of the run the wake is settled as a permanent refusal: its
+// records stop being rung (they stay pending and ride the next run start), one
+// failed wake record names the reason, and `pi-hooks status` lists the parent
+// under "Socket wakes stopped". Nothing is typed.
+func TestCommsDeliver_PiRefusedWakesAreBoundedThenListedAsStopped(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup  func(*piWakeFx)
+		reason string
+	}{
+		"busy": {func(*piWakeFx) {}, "busy_for_5m"},
+		"socket down": {func(w *piWakeFx) {
+			piWakeSocketFor = func(string, string) string { return filepath.Join(filepath.Dir(w.ext.path), "none.sock") }
+		}, "socket_down_for_5m"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newPiWakeFixture(t, refuseWith("busy"))
+			tc.setup(w)
+			w.urgent(t, "shipped the build")
+			start := w.clock
+			rings := func() int { return w.ext.count() + len(w.typed.all()) }
+			var atBound int
+			for i := 0; i < 12; i++ {
+				w.deliver(t, "waiting")
+				if w.clock.Sub(start) >= piRefusedWakeBound && atBound == 0 {
+					atBound = i + 1
+				}
+				w.clock = w.clock.Add(61 * time.Second)
+			}
+			if atBound == 0 {
+				t.Fatal("test setup: the passes never reached the bound")
+			}
+			if len(w.typed.all()) != 0 {
+				t.Fatalf("typed %q: pi has no draft guard", w.typed.all())
+			}
+			// The pass that crossed the bound is the last to ring.
+			if name == "busy" && w.ext.count() != atBound {
+				t.Errorf("frames = %d, want %d: a ring per pass until the bound, none after", w.ext.count(), atBound)
+			}
+			before := rings()
+			for _, step := range []time.Duration{5 * time.Minute, time.Hour} {
+				w.clock = w.clock.Add(step)
+				w.deliver(t, "waiting")
+			}
+			if rings() != before {
+				t.Errorf("the wake was rung again after the bound (%d rings, was %d)", rings(), before)
+			}
+			st := w.state(t)
+			if st.Pending != 1 || len(st.Inflight) != 0 {
+				t.Errorf("the record is not back to pending after the bound: %+v", st)
+			}
+			var failed []comms.Record
+			for _, r := range w.wakeRecs(t) {
+				if r.Via == "socket" && r.State == comms.StateFailed {
+					failed = append(failed, r)
+				}
+			}
+			if len(failed) != 1 || failed[0].Err != tc.reason {
+				t.Fatalf("want one failed socket wake record with err %q, got %+v", tc.reason, failed)
+			}
+			stopped := PiSocketWakesStopped()
+			if len(stopped) != 1 || stopped[0].Parent != w.parent.ID || stopped[0].Reason != tc.reason {
+				t.Errorf("pi-hooks status lists %+v, want the parent with %q", stopped, tc.reason)
+			}
+		})
+	}
+}
+
+// An answer that takes ends the run of refusals: a pi that was busy for four
+// minutes, then took a wake, starts a fresh five minutes the next time it is
+// refused.
+func TestCommsDeliver_PiRefusedWakeBoundRestartsAfterAnAnswer(t *testing.T) {
+	var mu sync.Mutex
+	queued := false
+	w := newPiWakeFixture(t, func(_ int, f map[string]any, c net.Conn) {
+		mu.Lock()
+		q := queued
+		mu.Unlock()
+		if q {
+			answer(c, f, "queued")
+			return
+		}
+		refuse(c, f, "busy")
+	})
+	w.urgent(t, "shipped the build")
+	for i := 0; i < 4; i++ { // 0..3 min: refused
+		w.deliver(t, "waiting")
+		w.clock = w.clock.Add(61 * time.Second)
+	}
+	mu.Lock()
+	queued = true
+	mu.Unlock()
+	w.deliver(t, "waiting") // answered: the run ends
+	mu.Lock()
+	queued = false
+	mu.Unlock()
+	if st := w.state(t); st.RefusedSince != 0 {
+		t.Fatalf("an answer left RefusedSince %d", st.RefusedSince)
+	}
+	w.urgent(t, "and the docs")
+	for i := 0; i < 4; i++ { // a fresh run: four more minutes refused, inside its own bound
+		w.clock = w.clock.Add(61 * time.Second)
+		w.deliver(t, "waiting")
+	}
+	for _, r := range w.wakeRecs(t) {
+		if r.Via == "socket" && r.State == comms.StateFailed {
+			t.Errorf("a refusal inside a fresh run was settled as failed: %+v", r)
 		}
 	}
 }
