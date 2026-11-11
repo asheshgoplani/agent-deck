@@ -86,7 +86,13 @@ func setOpenCodeMCPServers(config map[string]interface{}, servers map[string]ope
 }
 
 // mergeOpenCodeServerMap returns existing with the managed (catalog) names
-// replaced by the desired servers.
+// replaced by the desired servers. Every existing entry whose name is in the
+// catalog is dropped unless it is in desired, so desired must be built from
+// the full set of agent-deck-managed names (a catalog-named entry left out of
+// it is removed). Entries not in the catalog are never touched. When a managed
+// entry keeps its type, keys agent-deck does not emit are kept; when its type
+// changes (remote <-> local), only timeout and enabled carry over so stale
+// url, headers, command or environment cannot survive.
 func mergeOpenCodeServerMap(existing map[string]interface{}, desired map[string]opencodeMCPServer) map[string]interface{} {
 	managed := GetAvailableMCPs()
 	out := make(map[string]interface{}, len(existing)+len(desired))
@@ -98,8 +104,12 @@ func mergeOpenCodeServerMap(existing map[string]interface{}, desired map[string]
 	for name, srv := range desired {
 		entry := map[string]interface{}{}
 		if prev, ok := existing[name].(map[string]interface{}); ok {
+			prevType, _ := prev["type"].(string)
+			sameType := prevType == "" || prevType == srv.Type
 			for k, v := range prev {
-				entry[k] = v
+				if sameType || k == "timeout" || k == "enabled" {
+					entry[k] = v
+				}
 			}
 		}
 		if data, err := json.Marshal(srv); err == nil {

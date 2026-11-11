@@ -148,3 +148,29 @@ func TestWriteOpenCodeGlobalMCP_NativeV2KeepsUnrelatedEntries(t *testing.T) {
 		t.Fatalf("v2 write lost entries: %v", mcp)
 	}
 }
+
+func TestWriteOpenCodeGlobalMCP_AttachTypeChangeDropsStaleFields(t *testing.T) {
+	path := setupOpenCodeMergeFixture(t)
+	// "cat" was remote in the seed; the catalog now defines it as stdio.
+	cfg := &UserConfig{MCPs: map[string]MCPDef{
+		"cat": {Command: "echo", Args: []string{"meow"}},
+	}}
+	t.Cleanup(resetUserConfigCache(t, cfg))
+	if err := WriteOpenCodeGlobalMCP([]string{"remote-keep", "local-keep", "cat"}); err != nil {
+		t.Fatal(err)
+	}
+	_, mcp := readOpenCodeMCPMap(t, path)
+	assertUnrelatedSurvive(t, mcp)
+	cat, _ := mcp["cat"].(map[string]any)
+	if cat["type"] != "local" {
+		t.Fatalf("type not updated: %v", cat)
+	}
+	for _, stale := range []string{"url", "headers"} {
+		if _, ok := cat[stale]; ok {
+			t.Fatalf("stale %q survived type change: %v", stale, cat)
+		}
+	}
+	if cat["timeout"] != float64(5000) {
+		t.Fatalf("timeout should carry over: %v", cat)
+	}
+}
