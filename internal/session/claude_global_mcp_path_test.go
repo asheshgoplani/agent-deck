@@ -32,7 +32,7 @@ func defaultClaudeDirEnv(t *testing.T) string {
 	ClearUserConfigCache()
 	t.Cleanup(ClearUserConfigCache)
 	if len(GetAvailableMCPs()) == 0 {
-		t.Skip("catalog did not load from the temp config")
+		t.Fatal("catalog did not load from the temp config")
 	}
 	return home
 }
@@ -90,5 +90,42 @@ func TestMCPGlobalConfigPathForTool_Claude(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", explicit)
 	if got, want := MCPGlobalConfigPathForTool("claude"), filepath.Join(explicit, ".claude.json"); got != want {
 		t.Errorf("explicit dir path = %q, want %q", got, want)
+	}
+}
+
+// Reading must agree with writing: after a global attach in the default case,
+// GetMCPInfo (used by `mcp attached`, `session show`, web and TUI) lists it,
+// along with project MCPs from the projects map of ~/.claude.json.
+func TestGetMCPInfo_ReadsHomeClaudeJSONAfterAttach(t *testing.T) {
+	home := defaultClaudeDirEnv(t)
+	proj := filepath.Join(home, "proj")
+	seed := `{"projects": {"` + proj + `": {"mcpServers": {"pm": {"type": "stdio", "command": "x"}}}}}`
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteGlobalMCP([]string{"alpha"}); err != nil {
+		t.Fatalf("WriteGlobalMCP: %v", err)
+	}
+	ClearMCPCache(proj)
+	info := GetMCPInfo(proj)
+	if len(info.Global) != 1 || info.Global[0] != "alpha" {
+		t.Errorf("Global = %v, want [alpha]", info.Global)
+	}
+	if len(info.Project) != 1 || info.Project[0] != "pm" {
+		t.Errorf("Project = %v, want [pm]", info.Project)
+	}
+}
+
+// A config_dir set in config.toml is an explicit dir: use $DIR/.claude.json.
+func TestClaudeConfigFilePath_ConfigTomlDir(t *testing.T) {
+	home := defaultClaudeDirEnv(t)
+	dir := filepath.Join(home, ".claude-cfg")
+	toml := "[claude]\nconfig_dir = \"" + dir + "\"\n\n[mcps.alpha]\ncommand = \"alpha-server\"\n"
+	if err := os.WriteFile(filepath.Join(home, ".config", "agent-deck", "config.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	if got, want := claudeConfigFilePath(), filepath.Join(dir, ".claude.json"); got != want {
+		t.Errorf("config.toml dir path = %q, want %q", got, want)
 	}
 }
