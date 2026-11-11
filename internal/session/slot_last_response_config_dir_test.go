@@ -136,3 +136,19 @@ func TestSlotLastResponse_NoSlotSessionStillUsesProcessWideDir(t *testing.T) {
 		t.Fatalf("disk scan = %q %+v, want noslot-id / from default", id, scan)
 	}
 }
+
+// A session with no slot whose group dir changed after its transcript was
+// written keeps reading that transcript from the process-wide dir.
+func TestSlotLastResponse_NoSlotGroupDirFallsBackToProcessWideDir(t *testing.T) {
+	home := withTempAgentDeckHome(t, `
+[groups."work".claude]
+config_dir = "~/.claude-groupdir"
+`)
+	inst := slotLastResponseInstance(t, home, "group-old-id", "")
+	slotLastResponseWrite(t, filepath.Join(home, ".claude"), inst, inst.ClaudeSessionID, "older reply", time.Time{})
+
+	resp, err := inst.getClaudeLastResponse()
+	if err != nil || resp.Content != "older reply" {
+		t.Fatalf("got %+v, %v; want the process-wide transcript", resp, err)
+	}
+}
