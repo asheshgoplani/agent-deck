@@ -471,15 +471,19 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 	needBudget := false
 	pass := func(p comms.Pass) ([]events.Cursor, error) {
 		line, carried, piWake, needBudget, budgetHold = "", nil, nil, false, false
+		// Read under the lock, per run: a second run (after the budget read)
+		// must not judge an attempt made since the first by the first's clock.
+		now = commsNow()
 		var acks []events.Cursor
 		f := p.File
 		f.Judged = p.Through
 		judged = p.Through
 		var wakeFailed []events.Cursor
 		f.Settle(func(in comms.Inflight) bool {
-			// A negative age (the clock stepped back) counts as stale: a backward
-			// step must never hold an attempt.
-			age := now.UnixMilli() - in.At
+			// A negative age (the clock stepped back further than
+			// commsClockStepSlack) counts as stale: a backward step must never
+			// hold an attempt.
+			age := commsAttemptAge(now.UnixMilli(), in.At)
 			if in.Via == comms.ViaWake {
 				if age > commsWakeSettle.Milliseconds() || age < 0 {
 					wakeFailed = append(wakeFailed, in.Cursor)
@@ -829,6 +833,22 @@ func settleTurnAttempts(f *comms.ConsumerFile, now int64) []events.Cursor {
 // commsNextDueHorizon is the furthest ahead any pass sets a deadline.
 const commsNextDueHorizon = 2 * commsAttemptStale
 
+// commsClockStepSlack is how far an attempt's stamp may be ahead of the clock
+// that reads it and still count as just made: another process stamped it with
+// a clock a little ahead, or the clock stepped back by a few seconds (an NTP
+// slew). Further ahead than that, the clock stepped back for real.
+const commsClockStepSlack = 5 * time.Second
+
+// commsAttemptAge is how long ago at was by now, in Unix ms: 0 for a stamp up
+// to commsClockStepSlack ahead, negative for one further ahead.
+func commsAttemptAge(now, at int64) int64 {
+	age := now - at
+	if age < 0 && age >= -commsClockStepSlack.Milliseconds() {
+		return 0
+	}
+	return age
+}
+
 // commsReceiptWindow is how long a pi injection waits for its receipt before it
 // counts as dropped and its records ride the next run start again.
 const commsReceiptWindow = 30 * time.Second
@@ -837,7 +857,7 @@ const commsReceiptWindow = 30 * time.Second
 // its way (the extension echoes it on its next turn_start, and the daemon
 // ingests that a poll later): it is neither re-injected nor dropped yet.
 func inReceiptWindow(in comms.Inflight, now int64) bool {
-	age := now - in.At
+	age := commsAttemptAge(now, in.At)
 	return in.Via == comms.ViaPrompt && in.Token != "" && in.State == comms.ReceiptAttempted &&
 		age >= 0 && age < commsReceiptWindow.Milliseconds()
 }

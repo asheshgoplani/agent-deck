@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/comms"
+	"github.com/asheshgoplani/agent-deck/internal/costs"
 )
 
 // PR-B commit 3, review round 4 (Forge R3). Tests first.
@@ -426,4 +427,70 @@ func TestCommsDeliver_BackwardClockStepSettlesAWakeAttempt(t *testing.T) {
 		t.Errorf("the record was held by the backward step (ok %v)", ok)
 	}
 	dl.Done(false)
+}
+
+// Review (#3024, comms_deliver.go:484): a step back of a few seconds, or an
+// attempt stamped by another process whose clock reads a little ahead, is not a
+// backward step: the attempt is not settled, for a Claude parent's injection as
+// for a pi's wake. Further back than commsClockStepSlack it still is.
+func TestCommsDeliver_AFewSecondsBackDoNotSettleAnAttempt(t *testing.T) {
+	w := newPiWakeFixture(t, replyWith("submitted"))
+	setPanePIDs(t, map[int]bool{}, nil) // an unvetted wake stays attempted
+	w.urgent(t, "shipped the build")
+	w.deliver(t, "waiting")
+	st := w.state(t)
+	if len(st.Inflight) != 1 {
+		t.Fatalf("test setup: want one attempted wake, got %+v", st)
+	}
+	first, _ := jsonHas(t, st.Inflight[0], "nonce")
+	w.clock = w.clock.Add(-3 * time.Second)
+	w.commit(t, comms.Record{Kind: comms.KindTurn, Tier: comms.TierInfo, Text: "fyi"}) // something new: the pass scans
+	w.deliver(t, "waiting")
+	st = w.state(t)
+	if len(st.Inflight) != 1 {
+		t.Fatalf("a step back of 3 s settled the wake attempt: %+v", st)
+	}
+	if n, _ := jsonHas(t, st.Inflight[0], "nonce"); n != first {
+		t.Errorf("a step back of 3 s replaced the wake attempt: nonce %v -> %v", first, n)
+	}
+	if len(st.WakeTries) != 0 {
+		t.Errorf("a step back of 3 s counted a wake that did not take: %+v", st.WakeTries)
+	}
+}
+
+// CodeRabbit (comms_deliver.go:490): the pass runs twice for a pi wake, around
+// the budget read. An injection a pi run start makes in between is stamped
+// after the first run's clock, and the second run must not read it as stale:
+// the record would be rung again although it was just shown.
+func TestCommsDeliver_AnInjectionMadeDuringTheBudgetReadIsNotSettled(t *testing.T) {
+	w := newPiWakeFixture(t, replyWith("submitted"))
+	orig := wakeBudgetCheck
+	t.Cleanup(func() { wakeBudgetCheck = orig })
+	injected := false
+	wakeBudgetCheck = func(string, *Instance) costs.BudgetResult {
+		if !injected {
+			injected = true
+			w.clock = w.clock.Add(30 * time.Second) // the budget read took a while
+			dl, ok := LedgerPromptContext(w.parent.ID, "my own prompt", "", true)
+			if !ok || !strings.Contains(dl.Text, "shipped the build") {
+				t.Errorf("test setup: the run start was not given the record (ok %v)", ok)
+			}
+			if ok {
+				dl.Done(true)
+			}
+		}
+		return costs.BudgetResult{Action: costs.BudgetActionNone}
+	}
+	w.urgent(t, "shipped the build")
+	w.deliver(t, "waiting")
+	if !injected {
+		t.Fatal("test setup: the pass never read the budget")
+	}
+	if n := w.ext.count(); n != 0 {
+		t.Errorf("the record a run start was just shown was rung (%d frames)", n)
+	}
+	st := w.state(t)
+	if len(st.Inflight) != 1 || st.Inflight[0].Via != comms.ViaPrompt {
+		t.Errorf("the injection's attempt was settled as stale: %+v", st)
+	}
 }
