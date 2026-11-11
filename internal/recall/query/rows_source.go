@@ -84,7 +84,9 @@ var ErrRowsUnsupported = errors.New("recall rows: harness is not read directly")
 
 // SupportsDirectRows reports whether ReadRows/FollowRows read the harness's
 // native file without the index.
-func SupportsDirectRows(harness string) bool { return harness == "claude" || harness == "codex" }
+func SupportsDirectRows(harness string) bool {
+	return harness == "claude" || harness == "codex" || harness == "pi"
+}
 
 type rowsCursor struct {
 	V int            `json:"v"`

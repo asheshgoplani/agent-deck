@@ -49,7 +49,7 @@ func newTimelineFixture(t *testing.T, harness string, recall bool) *timelineFixt
 
 	inst := session.NewInstanceWithTool("timeline", t.TempDir(), harness)
 	inst.ID = "timeline-session"
-	var path string
+	var path, header string
 	switch harness {
 	case "claude":
 		inst.ClaudeSessionID = "conversation-1"
@@ -57,12 +57,17 @@ func newTimelineFixture(t *testing.T, harness string, recall bool) *timelineFixt
 	case "codex":
 		inst.CodexSessionID = "thread-timeline"
 		path = filepath.Join(home, ".codex", "sessions", "2026", "11", "15", "rollout-2026-11-15T00-00-00-thread-timeline.jsonl")
+	case "pi":
+		inst.PiSessionID = "pi-timeline"
+		path = filepath.Join(home, ".pi", "agent-deck", inst.ID, "2026-11-15T00-00-00-000Z_pi-timeline.jsonl")
+		inst.PiSessionPath = path
+		header = fmt.Sprintf("{\"type\":\"session\",\"version\":3,\"id\":\"pi-timeline\",\"cwd\":%q}\n", inst.EffectiveWorkingDir())
 	}
 	if path != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, nil, 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(header), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -83,9 +88,12 @@ func (f *timelineFixture) appendTurns(t *testing.T, first, n int) {
 	for i := first; i < first+n; i++ {
 		for _, role := range []string{"user", "assistant"} {
 			id, text := fmt.Sprintf("%s-%d", role, i), fmt.Sprintf("%s turn %d", role, i)
-			if f.inst.Tool == "claude" {
+			switch f.inst.Tool {
+			case "claude":
 				fmt.Fprintf(&b, "{\"type\":%q,\"uuid\":%q,\"sessionId\":\"conversation-1\",\"message\":{\"role\":%q,\"content\":[{\"type\":\"text\",\"text\":%q}]}}\n", role, id, role, text)
-			} else {
+			case "pi":
+				fmt.Fprintf(&b, "{\"type\":\"message\",\"id\":%q,\"message\":{\"role\":%q,\"content\":%q}}\n", id, role, text)
+			default:
 				fmt.Fprintf(&b, "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":%q,\"role\":%q,\"content\":[{\"type\":\"input_text\",\"text\":%q}]}}\n", id, role, text)
 			}
 		}
@@ -135,7 +143,7 @@ func rowTexts(rows []query.Row) []string {
 // same session: the rows v2 object from query.ReadRows, paged with the
 // CLI's tail, since, before and limit.
 func TestSessionTimeline_MatchesRecallTimeline(t *testing.T) {
-	for _, harness := range []string{"claude", "codex"} {
+	for _, harness := range []string{"claude", "codex", "pi"} {
 		t.Run(harness, func(t *testing.T) {
 			f := newTimelineFixture(t, harness, true)
 			f.appendTurns(t, 0, 10)
@@ -229,6 +237,7 @@ func TestSessionTimeline_Errors(t *testing.T) {
 		{name: "unknown agent", tool: "claude", query: "agent=nosuchagent", status: http.StatusNotFound, code: "NOT_FOUND", message: "transcript not found"},
 		{name: "agent too long", tool: "claude", query: "agent=" + strings.Repeat("a", 5000), status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "agent on codex", tool: "codex", query: "agent=abc", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
+		{name: "agent on pi", tool: "pi", query: "agent=abc", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "agent with a path", tool: "claude", query: "agent=..%2F..%2Fx", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "before without limit", tool: "claude", query: "before=x", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "non-integer tail", tool: "claude", query: "tail=ten", status: http.StatusBadRequest, code: "INVALID_REQUEST"},

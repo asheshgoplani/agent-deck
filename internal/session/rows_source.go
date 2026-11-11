@@ -30,7 +30,7 @@ func RowsHarness(tool string) string {
 // `recall timeline` and the web timeline route share it.
 func LiveRowsSource(inst *Instance, peers []*Instance) (query.RowsSource, query.RowsSession, error) {
 	h := RowsHarness(inst.Tool)
-	if h != "claude" && h != "codex" {
+	if !query.SupportsDirectRows(h) {
 		return query.RowsSource{}, query.RowsSession{}, fmt.Errorf("%w: %s", query.ErrRowsUnsupported, inst.Tool)
 	}
 	resolve := func() (string, error) {
@@ -46,6 +46,9 @@ func LiveRowsSource(inst *Instance, peers []*Instance) (query.RowsSource, query.
 	native := inst.ClaudeSessionID
 	if native == "" {
 		native = inst.CodexSessionID
+	}
+	if native == "" {
+		native = inst.PiSessionID
 	}
 	src := query.RowsSource{Harness: h, Path: path, Resolve: resolve}
 	sess := query.RowsSession{ID: inst.ID, Harness: h, NativeID: native, Path: path, Title: inst.Title, Cwd: inst.EffectiveWorkingDir()}

@@ -106,9 +106,10 @@ type transcriptSizes struct {
 var transcriptGrowth = &transcriptSizes{sizes: map[string]int64{}}
 
 // LiveTranscriptPath is the native transcript an instance writes now:
-// Claude Code's JSONL or Codex's live rollout. "" when there is none.
-// peers are the profile's other sessions (a Codex thread bound to one of
-// them is never this session's); nil when unknown.
+// Claude Code's JSONL, Codex's live rollout, or Pi's exact session
+// document. "" when there is none. peers are the profile's other sessions
+// (a Codex thread bound to one of them is never this session's); nil when
+// unknown.
 func LiveTranscriptPath(inst *Instance, peers []*Instance) string {
 	switch {
 	case inst == nil:
@@ -124,6 +125,15 @@ func LiveTranscriptPath(inst *Instance, peers []*Instance) string {
 		return p
 	case IsCodexCompatible(inst.Tool):
 		return CodexLiveRolloutPath(inst, peers)
+	case inst.Tool == "pi":
+		if !inst.TranscriptIsResolvableLocally() {
+			return ""
+		}
+		artifact, err := resolveExactPiSessionArtifact(inst)
+		if err != nil {
+			return ""
+		}
+		return artifact.Path
 	}
 	return ""
 }

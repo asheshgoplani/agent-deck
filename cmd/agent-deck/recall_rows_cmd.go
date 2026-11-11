@@ -41,8 +41,8 @@ func registerRowsFlags(fs interface {
 }) rowsFlags {
 	return rowsFlags{
 		v1:         fs.Bool("v1", false, "Slice-6 output (turns with role/kind/text, turn frames) instead of rows"),
-		transcript: fs.String("transcript", "", "Read this Claude Code JSONL or Codex rollout instead of a session's"),
-		harness:    fs.String("harness", "", "With --transcript: claude or codex"),
+		transcript: fs.String("transcript", "", "Read this Claude Code JSONL, Codex rollout or Pi session instead of a session's"),
+		harness:    fs.String("harness", "", "With --transcript: claude, codex or pi"),
 	}
 }
 
@@ -88,7 +88,7 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 	if *f.transcript != "" {
 		h := *f.harness
 		if !query.SupportsDirectRows(h) {
-			return nil, fmt.Errorf("--transcript needs --harness claude or codex")
+			return nil, fmt.Errorf("--transcript needs --harness claude, codex or pi")
 		}
 		return &rowsTarget{direct: true, src: query.RowsSource{Harness: h, Path: *f.transcript}, session: query.RowsSession{Harness: h, Path: *f.transcript}}, nil
 	}
@@ -146,7 +146,7 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 	for _, match := range []func(*session.Instance) bool{
 		func(i *session.Instance) bool { return i.ID == ref },
 		func(i *session.Instance) bool {
-			return ref != "" && (i.ClaudeSessionID == ref || i.CodexSessionID == ref)
+			return ref != "" && (i.ClaudeSessionID == ref || i.CodexSessionID == ref || i.PiSessionID == ref)
 		},
 	} {
 		for _, i := range instances {
