@@ -98,7 +98,7 @@ func notSubmittedOutcome(cause error, w send.WithdrawResult) (string, error) {
 // the way, where Backspace is not editing.
 func guardRefusalOutcome(target sendRetryTarget, message string, opts sendRetryOptions) (string, error) {
 	delivery, err := opts.promptGuard.refusal()
-	if delivery != deliveryTypedNotSubmitted || err == nil {
+	if delivery != deliveryTypedNotSubmitted {
 		return delivery, err
 	}
 	w := send.ObserveLeft(target, message, opts.composerBody, tmux.StripANSI)
