@@ -69,7 +69,18 @@ type tmuxPTYBridge struct {
 // Tests replace it to observe which tmux target a terminal attaches to.
 var attachTmuxPTYBridge = newTmuxPTYBridge
 
+// attachSizeIgnoringTmuxPTYBridge is the constructor for phone terminals
+// (`?ignore-size=1`): the client attaches with `-f ignore-size`, so its small
+// viewport never resizes the window other viewers of the session share.
+var attachSizeIgnoringTmuxPTYBridge = func(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter) (*tmuxPTYBridge, error) {
+	return newTmuxPTYBridgeWithSizePolicy(tmuxSession, tmuxSocketName, sessionID, writer, true)
+}
+
 func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter) (*tmuxPTYBridge, error) {
+	return newTmuxPTYBridgeWithSizePolicy(tmuxSession, tmuxSocketName, sessionID, writer, false)
+}
+
+func newTmuxPTYBridgeWithSizePolicy(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter, ignoreSize bool) (*tmuxPTYBridge, error) {
 	if tmuxSession == "" {
 		return nil, fmt.Errorf("tmux session name is required")
 	}
@@ -85,6 +96,9 @@ func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsC
 	}
 
 	cmd := tmuxAttachCommand(tmuxSession, tmuxSocketName)
+	if ignoreSize {
+		cmd.Args = append(cmd.Args, "-f", "ignore-size")
+	}
 
 	// The web client is one more viewer of a possibly shared session: size
 	// the window to whoever is using it (internal/tmux sharedview.go), with
@@ -198,7 +212,8 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	// sharedview.go). The previous `tmux resize-window` call here was removed
 	// because it implicitly flipped the window to `window-size=manual` and
 	// pinned it to the web viewport, which dragged native attached clients
-	// (Ghostty, iTerm) along with it.
+	// (Ghostty, iTerm) along with it. A phone client attached with
+	// `-f ignore-size` resizes only its own view; the window keeps its size.
 	if err := pty.Setsize(b.ptmx, &pty.Winsize{
 		Rows: uint16(rows), // #nosec G115 -- terminal rows fits in uint16; PTY ABI enforces this
 		Cols: uint16(cols), // #nosec G115 -- terminal cols fits in uint16; PTY ABI enforces this

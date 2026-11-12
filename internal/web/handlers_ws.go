@@ -175,7 +175,11 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	var bridge *tmuxPTYBridge
 	if menuSession.TmuxSession != "" {
-		bridge, err = attachTmuxPTYBridge(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
+		attach := attachTmuxPTYBridge
+		if r.URL.Query().Get("ignore-size") == "1" {
+			attach = attachSizeIgnoringTmuxPTYBridge
+		}
+		bridge, err = attach(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
 		if err != nil && fromCache && errors.Is(err, ErrTmuxSessionNotFound) {
 			// The cached snapshot can name a tmux session that was replaced
 			// since it was published (restart/start recreate the tmux session
@@ -187,7 +191,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					(freshSession.TmuxSession != menuSession.TmuxSession ||
 						freshSession.TmuxSocketName != menuSession.TmuxSocketName) {
 					menuSession = freshSession
-					bridge, err = attachTmuxPTYBridge(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
+					bridge, err = attach(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
 				}
 			}
 		}
