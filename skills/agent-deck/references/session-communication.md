@@ -46,6 +46,8 @@ agent-deck -p <profile> session search "term" --json --limit 5           # subst
 
 - **`send` result is evidence-graded, not binary.** With `--json --wait` (or `--no-wait`) read the `delivery`
   field: `submitted` / `unverified` / `typed_not_submitted` / `no_evidence` / `send_failed`.
+  A send that typed but could not submit says what it left in the input box: `typed_withdrawn`
+  (agent-deck removed its own text; retry is safe) or `composer_residue:"left"` (still typed there, unsubmitted).
   A plain `--json` send is queued and answers `delivery:"queued"`; poll `session send-status <send_id> --json`.
   Exit 0 plus `delivery:"unverified"` is NOT proof the turn started (#1793: a boundary-sized
   Codex send can pass every check and never submit). Confirm with `session show --json`

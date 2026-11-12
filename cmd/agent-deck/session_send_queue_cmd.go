@@ -502,6 +502,7 @@ const (
 var notSentDeliveries = map[string]bool{
 	deliveryTargetBusy:        true,
 	deliveryComposerBlocked:   true,
+	deliveryWithdrawn:         true,
 	deliveryAcceptanceRefused: true,
 }
 

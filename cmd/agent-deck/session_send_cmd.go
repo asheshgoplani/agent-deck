@@ -574,6 +574,11 @@ func handleSessionSend(profile string, args []string) {
 	// Both modes run the composer-draft guard (issue #1409) and submit
 	// verification with a machine-checkable delivery status (issue #1413).
 	tun := sendTuning(*noWait, *requireInputPrompt)
+	if !*noTag {
+		// Named as the origin if this send's text is ever left in the
+		// target's composer (see healComposerResidue).
+		tun.residueSender = senderID
+	}
 	if *queueWorker || busyAcceptsInput {
 		// A live Claude composer already exists. Startup preflight and the
 		// 30-check idle-turn probe add delay without proving this queued send.
@@ -676,6 +681,10 @@ func handleSessionSend(profile string, args []string) {
 			// the evidence line is the message.
 			out.ErrorWithData(fmt.Sprintf("message not submitted to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		case deliveryNoEvidence:
+			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliveryWithdrawn:
+			// Typed, not submitted, and taken back: the composer is as it
+			// was before the send. Safe to retry.
 			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		case deliveryComposerBlocked:
 			// Nothing was typed: the operator's draft is exactly as they
@@ -1308,6 +1317,23 @@ type sendDeliveryResult struct {
 	// both make --wait decline to wait, but only one of them is a fact about
 	// the target (round-2 review of #2100).
 	busyProbeFailed bool
+
+	// composerResidue is what this send left in the target's composer:
+	// "" (not established), composerResidueNone, composerResidueRemoved or
+	// composerResidueLeft. --json composer_residue.
+	composerResidue string
+	// residueVerified (composerResidue left only): what is left was verified
+	// as only this send's own text. --json composer_residue_verified.
+	residueVerified bool
+	// clearedResidue: the composer held exactly a verified residue of an
+	// earlier failed agent-deck send; it was removed (never submitted)
+	// before this send typed. --json cleared_residue.
+	clearedResidue bool
+	// composerHolds is composerHoldsAgentDeckResidue when the refusal is
+	// caused by a recorded residue of an earlier failed send; residueAge is
+	// that residue's age.
+	composerHolds string
+	residueAge    time.Duration
 }
 
 func completionTimeoutPayload(data map[string]interface{}) map[string]interface{} {
@@ -1378,6 +1404,19 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 	if r.socketMsgID != "" {
 		fields["msg_id"] = r.socketMsgID
 	}
+	if r.composerResidue != "" {
+		fields["composer_residue"] = r.composerResidue
+		if r.composerResidue == composerResidueLeft {
+			fields["composer_residue_verified"] = r.residueVerified
+		}
+	}
+	if r.clearedResidue {
+		fields["cleared_residue"] = true
+	}
+	if r.composerHolds != "" {
+		fields["composer_holds"] = r.composerHolds
+		fields["residue_age_seconds"] = int64(r.residueAge / time.Second)
+	}
 	return fields
 }
 
@@ -1400,6 +1439,13 @@ type sendExecTuning struct {
 	settleDelay time.Duration
 	// retry is the verification-loop budget (issues #876, #1413).
 	retry sendRetryOptions
+	// residue, when non-nil, records text a failed send left in the
+	// target's composer and lets a later send recognise it (self-heal).
+	// targetID keys it (the target instance id); residueSender is recorded
+	// as the residue's origin. nil disables both.
+	residue       sendResidueStore
+	targetID      string
+	residueSender string
 }
 
 func sendTuning(noWait, requireInputPrompt bool) sendExecTuning {
@@ -1486,18 +1532,47 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	}
 
 	if draftReader, guarded := composerDraftReaderFor(tool); guarded {
-		guard := send.GuardComposerDraft(target, send.ComposerGuardOptions{
-			HoldWait:     tun.guardHold,
-			PollInterval: tun.guardPoll,
-			ClearWait:    tun.guardClearWait,
-			Strip:        tmux.StripANSI,
-			Draft:        draftReader,
-		})
+		fullBody := composerFullBodyReaderFor(tool)
+		runGuard := func() send.ComposerGuardResult {
+			return send.GuardComposerDraft(target, send.ComposerGuardOptions{
+				HoldWait:     tun.guardHold,
+				PollInterval: tun.guardPoll,
+				ClearWait:    tun.guardClearWait,
+				Strip:        tmux.StripANSI,
+				Draft:        draftReader,
+				FullBody:     fullBody,
+			})
+		}
+		guard := runGuard()
 		res.held = guard.Held
 		if guard.Refused {
 			res.delivery = deliveryComposerBlocked
-			return res, fmt.Errorf("message not sent: composer is occupied or unreadable; existing draft preserved")
+			res.composerResidue = composerResidueNone
+			heal := healComposerResidue(target, fullBody, tun)
+			if heal.named {
+				res.composerHolds = composerHoldsAgentDeckResidue
+				res.residueAge = heal.age
+				return res, heal.err
+			}
+			if !heal.cleared {
+				return res, errComposerOccupied
+			}
+			// A verified residue of an earlier failed send was removed;
+			// the composer must now pass the guard like any other send.
+			res.clearedResidue = true
+			guard = runGuard()
+			res.held += guard.Held
+			if guard.Refused {
+				return res, errComposerOccupied
+			}
+			res.delivery, res.composerResidue = "", ""
 		}
+		if guard.ComposerEmpty {
+			// Nothing an earlier failed send left is in the composer now.
+			clearResidue(tun)
+		}
+		tun.retry.composerEmptyBeforeSend = guard.ComposerEmpty
+		tun.retry.composerBody = fullBody
 		if claudeLike {
 			// Provenance for the #1777 attribution gate, taken from the
 			// capture the guard already made just before we type: with no
@@ -1520,6 +1595,12 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	}
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
 	res.delivery = delivery
+	var residue *composerResidueError
+	if errors.As(err, &residue) {
+		res.composerResidue = residue.residue
+		res.residueVerified = residue.residue == composerResidueLeft && residue.withdraw.Verified
+		recordResidue(tun, message, residue)
+	}
 	if guard := tun.retry.promptGuard; guard != nil && guard.refused && guard.typedBatches == 0 {
 		res.untyped = true
 	}
@@ -1542,6 +1623,19 @@ func composerDraftReaderFor(tool string) (send.ComposerDraftReader, bool) {
 		return send.CodexComposerDraft, true
 	}
 	return nil, false
+}
+
+// composerFullBodyReaderFor returns the reader for tool's WHOLE composer
+// body, or nil. Only a full-body reader may let send.WithdrawTyped remove
+// typed text (ownership must cover every row a Backspace could reach), so a
+// tool without one (Codex, pi, everything else) never has text removed: a
+// send that cannot submit reports it left. Codex gets one once its composer
+// can be read row for row.
+func composerFullBodyReaderFor(tool string) send.ComposerFullBodyReader {
+	if session.IsClaudeCompatible(tool) {
+		return send.ClaudeComposerFullBody
+	}
+	return nil
 }
 
 // skipClaudeDeliveryVerify reports whether the Claude-tuned post-send delivery

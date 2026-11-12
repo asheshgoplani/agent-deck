@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -224,7 +225,13 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// The same capture tells whether the composer shows a Claude prompt
 	// suggestion. Typing replaces it; the Enter after typing is then gated
 	// on the composer holding our message rather than the suggestion.
-	composerPasteFreeBeforeSend, suggestionShownBeforeSend := send.ProbeComposerBeforeSend(i.tmuxSession.CapturePaneFresh, UsesClaudeDeliveryVerify(i.Tool))
+	//
+	// The same capture says whether the composer was empty before typing
+	// (probe.ComposerEmpty): if a pre-Enter check then refuses the submit,
+	// send.TypeAndSubmitReport takes this send's own typed text back instead
+	// of leaving it in the composer.
+	probe := send.ProbeComposer(i.tmuxSession.CapturePaneFresh, UsesClaudeDeliveryVerify(i.Tool))
+	composerPasteFreeBeforeSend, suggestionShownBeforeSend := probe.PasteMarkerFree, probe.SuggestionShown
 
 	// Issue #2079: a large or slow-mounting composer can swallow the leading
 	// bytes of a paste, submitting a truncated tail that the agent answers as
@@ -250,8 +257,12 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	if UsesClaudeDeliveryVerify(i.Tool) {
 		expectedBreaks = send.ExpectedPasteMarkerLineBreaks(message)
 	}
-	sendErr := send.TypeAndSubmit(i.tmuxSession, message, expectedBreaks, suggestionShownBeforeSend)
+	_, sendErr := send.TypeAndSubmitReport(i.tmuxSession, message, expectedBreaks, suggestionShownBeforeSend, probe.ComposerEmpty, probe.FullBody)
 	if sendErr != nil {
+		var notSubmitted *send.NotSubmittedError
+		if errors.As(sendErr, &notSubmitted) {
+			return fmt.Errorf("failed to send message: %w; %s", sendErr, notSubmitted.Withdraw.Describe())
+		}
 		return fmt.Errorf("failed to send message: %w", sendErr)
 	}
 

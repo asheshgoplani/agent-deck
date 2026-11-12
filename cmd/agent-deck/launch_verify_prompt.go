@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -70,15 +71,19 @@ func verifyPromptConsumedAfterLaunch(
 // taken before typing (send.ProbeComposerBeforeSend), the probe the waited
 // launch path runs too: a composer free of a paste marker, and whether a
 // Claude prompt suggestion is shown, so the submit confirms our typed text
-// replaced it before pressing Enter.
+// replaced it before pressing Enter. The same capture says whether the
+// composer was empty (send.ProbeComposer), the provenance that lets a send
+// that typed and could not submit take its own text back.
 func launchPromptSendOptions(target sendRetryTarget, tool string) sendRetryOptions {
-	pasteFree, suggestion := send.ProbeComposerBeforeSend(target.CapturePaneFresh, session.UsesClaudeDeliveryVerify(tool))
+	probe := send.ProbeComposer(target.CapturePaneFresh, session.UsesClaudeDeliveryVerify(tool))
 	return sendRetryOptions{
 		maxRetries:                  8,
 		checkDelay:                  150 * time.Millisecond,
 		tool:                        tool,
-		composerPasteFreeBeforeSend: pasteFree,
-		suggestionShownBeforeSend:   suggestion,
+		composerPasteFreeBeforeSend: probe.PasteMarkerFree,
+		suggestionShownBeforeSend:   probe.SuggestionShown,
+		composerEmptyBeforeSend:     probe.ComposerEmpty,
+		composerBody:                probe.FullBody,
 	}
 }
 
@@ -135,8 +140,33 @@ func verifyPromptConsumedAfterLaunchAttributed(
 		_ = target.SendEnter()
 	} else {
 		// Typing replaces a prompt suggestion; with one shown, Enter follows
-		// only once the composer holds our message instead of it.
-		_ = send.TypeAndSubmit(target, message, 0, session.UsesClaudeDeliveryVerify(tool) && send.ComposerBodyIsSuggestion(capture.Raw))
+		// only once the composer holds our message instead of it. The
+		// capture above is the composer-empty provenance: if the submit is
+		// refused after typing, the retry takes its own text back.
+		probe := send.ProbeComposer(func() (string, error) {
+			if !capture.OK {
+				return "", fmt.Errorf("capture before the launch prompt retry: %w", capture.Err)
+			}
+			return capture.Raw, nil
+		}, session.UsesClaudeDeliveryVerify(tool))
+		_, err := send.TypeAndSubmitReport(target, message, 0, probe.SuggestionShown, probe.ComposerEmpty, probe.FullBody)
+		// The retry's own verdict says what it left in the composer. A
+		// withdrawn retry leaves an empty composer that the poll below
+		// would read as "consumed", so it is reported here, not polled.
+		var notSubmitted *send.NotSubmittedError
+		if errors.As(err, &notSubmitted) {
+			if warn != nil {
+				fmt.Fprintf(warn, "warning: launch prompt may not have been consumed by claude after retry: the retry was not submitted (%v); %s\n", notSubmitted.Cause, notSubmitted.Withdraw.Describe())
+			}
+			return
+		}
+		if err != nil {
+			residue := send.ObserveLeft(target, message, probe.FullBody, tmux.StripANSI)
+			if warn != nil {
+				fmt.Fprintf(warn, "warning: launch prompt may not have been consumed by claude after retry: the retry failed to send (%v); %s\n", err, residue.Describe())
+			}
+			return
+		}
 	}
 	switch pollPromptConsumed(target, message, maxWait, pollInterval) {
 	case promptConsumed:

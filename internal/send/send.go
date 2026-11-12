@@ -4,6 +4,7 @@
 package send
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -162,6 +163,11 @@ func CheckPasteMarker(content string, expectedBreaks int) (verdict PasteMarkerVe
 	return PasteMarkerIntact, declared
 }
 
+// ErrPasteTruncated is wrapped by PasteTruncationCheck's refusal: the
+// composer's paste marker proves only a fragment of the message landed, so
+// Enter was withheld.
+var ErrPasteTruncated = errors.New("prompt truncated in transit")
+
 // PasteTruncationCheck builds the pre-Enter guard both send paths use
 // (Instance.sendMessageWhenReady on the launch path, sendInitialKeysChecked
 // behind `session send`): it reads the composer's newest paste marker and
@@ -188,8 +194,8 @@ func PasteTruncationCheck(expectedBreaks int) func(pane string, captureErr error
 		verdict, declared := CheckPasteMarker(pane, expectedBreaks)
 		if verdict == PasteMarkerTruncated {
 			return false, fmt.Errorf(
-				"prompt truncated in transit: composer shows a paste with %d line breaks ([Pasted text +%d lines]) but the message has %d; refusing to submit a partial prompt",
-				declared, declared, expectedBreaks)
+				"%w: composer shows a paste with %d line breaks ([Pasted text +%d lines]) but the message has %d; refusing to submit a partial prompt",
+				ErrPasteTruncated, declared, declared, expectedBreaks)
 		}
 		return true, nil
 	}

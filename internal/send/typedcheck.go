@@ -173,22 +173,109 @@ type TypedSender interface {
 // once the typed message is painted, still running the paste check on that
 // frame. With neither check the send is a plain SendKeysAndEnter.
 func TypeAndSubmit(t TypedSender, message string, expectedBreaks int, suggestionShown bool) error {
+	_, err := TypeAndSubmitReport(t, message, expectedBreaks, suggestionShown, false, nil)
+	return err
+}
+
+// SubmitReport is what TypeAndSubmitReport observed while typing, for the
+// caller's later decisions about the composer.
+type SubmitReport struct {
+	// OwnedChip is the exact collapsed paste label ("[Pasted text #1 +3
+	// lines]", #N included) the composer showed on THIS send's post-paste,
+	// pre-Enter frame, read through the full-body reader, when the
+	// composer was empty before the send and that frame held exactly one
+	// chip. It is the only chip WithdrawTyped may treat as ours; "" when
+	// none is known (no chip, no reader, or no empty-before provenance).
+	OwnedChip string
+}
+
+// TypeAndSubmitReport is TypeAndSubmit for a caller that can say whether the
+// composer was empty immediately before the send (composerEmptyBefore: a
+// visible composer with an empty full body; a prompt suggestion counts as
+// empty) and how to read the target's whole composer body (read; nil for a
+// tool without a ComposerFullBodyReader, whose typed text is then never
+// removed).
+//
+// When a pre-Enter check refuses Enter after the message was typed
+// (ErrComposerNotOurMessage or ErrPasteTruncated), the typed text would
+// otherwise stay in the composer (the 11-12 Nov incident). It is then taken
+// back with WithdrawTyped, which deletes only text it can attribute to this
+// send and only when composerEmptyBefore, and the refusal is returned as a
+// *NotSubmittedError carrying what was done.
+//
+// When the whole message was typed and passed the pre-Enter check but the
+// Enter itself could not be sent, nothing is deleted (the Enter may have
+// half-landed); the error is a *NotSubmittedError whose Withdraw is
+// ObserveLeft's one-capture report. That is only known when a pre-Enter
+// check ran (multi-line body or a shown suggestion); a plain
+// SendKeysAndEnter failure, like any other transport error (send-keys
+// failed, ErrCanonicalLineOverflow), is returned unchanged: nothing, or an
+// unknown amount, was typed, and the caller decides how to observe it.
+//
+// The report is filled whatever the outcome; its OwnedChip is what a later
+// end-of-budget withdrawal by the caller must pass to WithdrawTyped.
+func TypeAndSubmitReport(t TypedSender, message string, expectedBreaks int, suggestionShown, composerEmptyBefore bool, read ComposerFullBodyReader) (SubmitReport, error) {
+	var rep SubmitReport
+	noteChip := func(pane string, captureErr error) {
+		if rep.OwnedChip != "" || captureErr != nil || read == nil || !composerEmptyBefore {
+			return
+		}
+		if body, ok := read(pane, tmux.StripANSI); ok {
+			if d := NormalizePromptText(body); pasteChipRe.MatchString(d) {
+				rep.OwnedChip = d
+			}
+		}
+	}
+	typedFully, err := typeAndSubmit(t, message, expectedBreaks, suggestionShown, noteChip)
+	switch {
+	case err == nil:
+		return rep, nil
+	case errors.Is(err, ErrComposerNotOurMessage) || errors.Is(err, ErrPasteTruncated):
+		return rep, &NotSubmittedError{Cause: err, Withdraw: WithdrawTyped(t, message, rep.OwnedChip, read, tmux.StripANSI, composerEmptyBefore)}
+	case typedFully:
+		return rep, &NotSubmittedError{Cause: err, Withdraw: ObserveLeft(t, message, read, tmux.StripANSI)}
+	}
+	return rep, err
+}
+
+// typeAndSubmit types message and submits it behind the pre-Enter checks.
+// typedFully reports that a pre-Enter check ran and passed on the typed
+// message, so a later error came from pressing Enter, not from typing.
+// noteFrame (nil for none) sees every post-paste, pre-Enter frame a check
+// is handed, in order, before the check judges it.
+func typeAndSubmit(t TypedSender, message string, expectedBreaks int, suggestionShown bool, noteFrame func(string, error)) (typedFully bool, err error) {
+	if noteFrame == nil {
+		noteFrame = func(string, error) {}
+	}
 	var pasteCheck func(string, error) (bool, error)
 	if expectedBreaks > 0 {
-		pasteCheck = PasteTruncationCheck(expectedBreaks)
+		inner := PasteTruncationCheck(expectedBreaks)
+		pasteCheck = func(pane string, captureErr error) (bool, error) {
+			noteFrame(pane, captureErr)
+			return inner(pane, captureErr)
+		}
 	}
 	check := pasteCheck
 	if suggestionShown {
 		check = TypedComposerCheck(t.CapturePaneFresh, message, tmux.StripANSI, pasteCheck)
 	}
 	if check == nil {
-		return t.SendKeysAndEnter(message)
+		return false, t.SendKeysAndEnter(message)
 	}
-	err := t.SendKeysAndEnterChecked(message, t.CapturePaneFresh, check)
+	noted := func(pane string, captureErr error) (bool, error) {
+		noteFrame(pane, captureErr)
+		ok, checkErr := check(pane, captureErr)
+		if ok {
+			typedFully = true
+		}
+		return ok, checkErr
+	}
+	err = t.SendKeysAndEnterChecked(message, t.CapturePaneFresh, noted)
 	if errors.Is(err, ErrSubmitDeferred) {
+		typedFully = false
 		_, err = SubmitWhenTyped(t, t.CapturePaneFresh, message, tmux.StripANSI, pasteCheck, deferredSubmitPolls, deferredSubmitInterval)
 	}
-	return err
+	return typedFully, err
 }
 
 // ProbeComposerBeforeSend reads one pane capture taken immediately before an
@@ -199,9 +286,44 @@ func TypeAndSubmit(t TypedSender, message string, expectedBreaks int, suggestion
 // replaced it). claude says the target is a Claude composer; the suggestion
 // rule applies to nothing else. A capture failure reports both false.
 func ProbeComposerBeforeSend(capture func() (string, error), claude bool) (pasteMarkerFree, suggestionShown bool) {
+	p := ProbeComposer(capture, claude)
+	return p.PasteMarkerFree, p.SuggestionShown
+}
+
+// ComposerProbe is ProbeComposer's reading of the capture taken immediately
+// before an initial submit.
+type ComposerProbe struct {
+	// PasteMarkerFree: no "[Pasted text …]" marker (issue #1777).
+	PasteMarkerFree bool
+	// SuggestionShown: a Claude prompt suggestion is painted.
+	SuggestionShown bool
+	// ComposerEmpty: a Claude composer is visible and its whole body
+	// (ClaudeComposerFullBody) is empty; a suggestion counts as empty. It is
+	// TypeAndSubmitReport's composerEmptyBefore. Always false for a
+	// non-Claude target.
+	ComposerEmpty bool
+	// FullBody is the reader TypeAndSubmitReport should withdraw through:
+	// ClaudeComposerFullBody for a Claude target, nil otherwise.
+	FullBody ComposerFullBodyReader
+}
+
+// ProbeComposer is ProbeComposerBeforeSend plus the composer-empty
+// provenance TypeAndSubmitReport needs before it may take typed text back.
+// A capture failure reports every fact false.
+func ProbeComposer(capture func() (string, error), claude bool) ComposerProbe {
+	p := ComposerProbe{}
+	if claude {
+		p.FullBody = ClaudeComposerFullBody
+	}
 	raw, err := capture()
 	if err != nil {
-		return false, false
+		return p
 	}
-	return !ComposerHoldsPasteMarker(raw, tmux.StripANSI), claude && ComposerBodyIsSuggestion(raw)
+	p.PasteMarkerFree = !ComposerHoldsPasteMarker(raw, tmux.StripANSI)
+	if claude {
+		p.SuggestionShown = ComposerBodyIsSuggestion(raw)
+		body, ok := ClaudeComposerFullBody(raw, tmux.StripANSI)
+		p.ComposerEmpty = ok && FullBodyEmpty(body)
+	}
+	return p
 }

@@ -361,6 +361,11 @@ func runTmuxSend(
 	tun sendExecTuning,
 	reason send.UnavailableReason,
 ) (sendDeliveryResult, error) {
+	if tun.residue == nil && strings.TrimSpace(inst.ID) != "" {
+		// Record text a failed send leaves in this target's composer, so a
+		// later send can recognise (and, when verified, remove) it.
+		tun.residue, tun.targetID = session.FileSendResidueStore{}, inst.ID
+	}
 	res, err := executeSend(tmuxTarget, inst.Tool, message, noWait, tun)
 	res.transport = "tmux"
 	// Only a genuine "socket was attempted and refused" reason is a fallback
