@@ -803,9 +803,6 @@ func TestCodexAcceptanceGuardClearsOnlyDefinitiveNonDelivery(t *testing.T) {
 	}{
 		{name: "line too long", delivery: deliveryLineTooLong, retained: false},
 		{name: "composer blocked", delivery: deliveryComposerBlocked, retained: false},
-		// agent-deck removed its own typed text and never pressed Enter on
-		// it: nothing reached Codex.
-		{name: "typed withdrawn", delivery: deliveryWithdrawn, retained: false},
 		{name: "submitted", delivery: deliverySubmitted, retained: true},
 		{name: "delivered", delivery: deliveryDelivered, retained: true},
 		{name: "menu open", delivery: deliveryMenuOpen, retained: true},

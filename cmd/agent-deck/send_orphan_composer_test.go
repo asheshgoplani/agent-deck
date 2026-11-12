@@ -16,11 +16,12 @@ import (
 // said "not sent", and the ~1 kB payload stayed typed for 19 hours while every
 // later send was refused as "composer is occupied or unreadable").
 //
-// These tests drive the whole executeSend pipeline against a stateful fake
-// Claude composer, in both send modes. They use delivery string literals,
-// jsonFields() keys and error substrings only, so this file compiles on the
-// base commit and the fail-first check is behavioural. Tests that need new
-// API (a residue store) live in send_residue_selfheal_test.go.
+// agent-deck REPORTS what such a send left; it never deletes or submits
+// anything in another session's input box (PR 3123 second review). These
+// tests drive the whole executeSend pipeline against a stateful fake Claude
+// composer, in both send modes. They use delivery string literals,
+// jsonFields() keys and error substrings only. Tests that need the leftover
+// record store live in send_residue_report_test.go.
 // ---------------------------------------------------------------------------
 
 type orphanSeg struct {
@@ -32,7 +33,8 @@ type orphanSeg struct {
 // orphanPane is an idle Claude pane. A multi-line body collapses behind a
 // "[Pasted text #1 +N lines]" chip (one atomic unit for Backspace), exactly
 // like Claude's composer; anything else is plain text. It has no
-// SendBackspaces method: orphanPaneBS adds it.
+// SendBackspaces method: orphanPaneBS adds a recording one, so any delete
+// key reaching the pane is counted and fails the test.
 type orphanPane struct {
 	mu            sync.Mutex
 	segs          []orphanSeg
@@ -175,25 +177,18 @@ func (p *orphanPane) configure(f func(*orphanPane)) {
 	f(p)
 }
 
-// orphanPaneBS is an orphanPane whose transport can send Backspace.
-// noop: the keys are accepted but delete nothing (a composer that ignores
-// them). fail: the send-keys call itself errors.
+// orphanPaneBS is an orphanPane whose transport COULD send Backspace: a trap.
+// agent-deck must never call it; every call is recorded and applied, so a
+// regression both shows in bsCalls and changes the input box.
 type orphanPaneBS struct {
 	*orphanPane
-	noop bool
-	fail bool
 }
 
 func (p *orphanPaneBS) SendBackspaces(n int) error {
 	p.mu.Lock()
 	p.bsCalls = append(p.bsCalls, n)
 	p.mu.Unlock()
-	if p.fail {
-		return errors.New("tmux send-keys failed")
-	}
-	if !p.noop {
-		p.backspace(n)
-	}
+	p.backspace(n)
 	return nil
 }
 
@@ -349,17 +344,21 @@ func TestOrphan_ComposerChangedUnderUsIsNeverDeleted(t *testing.T) {
 				if fields["composer_residue_verified"] != false {
 					t.Fatalf("composer_residue_verified = %v, want false (composer mixed with other text)", fields["composer_residue_verified"])
 				}
-				if !strings.Contains(err.Error(), "left in the composer") || !strings.Contains(err.Error(), "mixed with other text") {
-					t.Fatalf("error %q must say the text is left in the composer and may be mixed with other text", err)
+				if !strings.Contains(err.Error(), stillTypedNotice) || !strings.Contains(err.Error(), "it may be mixed with other text") {
+					t.Fatalf("error %q must say the text is still typed in the input box and may be mixed with other text", err)
 				}
 			})
 		}
 	}
 }
 
-// --- 4. verify fails but the composer holds only ours: withdraw ---------------
+// --- 4. verify fails and the input box holds only ours: report, never delete -
 
-func TestOrphan_TruncatedPasteIsWithdrawn(t *testing.T) {
+// stillTypedNotice is the exact statement the ruling requires on every report
+// of a send whose text stayed in the input box.
+const stillTypedNotice = "this send's text is still typed, unsubmitted, in the target's input box; a person must submit or clear it"
+
+func TestOrphan_TruncatedPasteIsReportedLeftNeverDeleted(t *testing.T) {
 	for _, mode := range issue2077Modes() {
 		for name, msg := range map[string]string{"short multi-line": orphanMultiLine, "long multi-line with backticks (~1kB)": orphanLongMultiLine()} {
 			t.Run(mode.name+"/"+name, func(t *testing.T) {
@@ -368,19 +367,25 @@ func TestOrphan_TruncatedPasteIsWithdrawn(t *testing.T) {
 				if err == nil {
 					t.Fatalf("want an error, delivery=%q", res.delivery)
 				}
-				if res.delivery != "typed_withdrawn" {
-					t.Fatalf("delivery = %q, want typed_withdrawn; err=%v; composer still holds %q", res.delivery, err, pane.composer())
+				if res.delivery != "typed_not_submitted" {
+					t.Fatalf("delivery = %q, want typed_not_submitted; err=%v", res.delivery, err)
 				}
-				requireOrphanResidue(t, res, "removed")
-				if got := pane.composer(); got != "" {
-					t.Fatalf("composer = %q, want empty (our text removed)", got)
+				f := requireOrphanResidue(t, res, "left")
+				if f["composer_residue_verified"] != true {
+					t.Fatalf("composer_residue_verified = %v, want true (only our own chip)", f["composer_residue_verified"])
 				}
 				typed, enters, bs := pane.counts()
-				if typed != 1 || enters != 0 || bs == 0 {
-					t.Fatalf("typed=%d enters=%d backspace calls=%d, want 1, 0, >0", typed, enters, bs)
+				if typed != 1 || enters != 0 || bs != 0 {
+					t.Fatalf("typed=%d enters=%d backspace calls=%d, want 1, 0, 0", typed, enters, bs)
 				}
-				if !strings.Contains(err.Error(), "message not sent") || !strings.Contains(err.Error(), "removed from the composer") {
-					t.Fatalf("error %q must say not sent and that the typed text was removed", err)
+				if pane.composer() == "" {
+					t.Fatal("the input box was emptied: agent-deck must leave its text for a person")
+				}
+				if !strings.Contains(err.Error(), "prompt truncated in transit") || !strings.Contains(err.Error(), stillTypedNotice) {
+					t.Fatalf("error %q must give the cause and say the text is still typed", err)
+				}
+				if strings.Contains(err.Error(), "mixed with other text") {
+					t.Fatalf("verified leftover must not say mixed: %q", err)
 				}
 				if res.jsonFields()["submitted"] != false {
 					t.Fatalf("submitted = %v, want false", res.jsonFields()["submitted"])
@@ -390,104 +395,73 @@ func TestOrphan_TruncatedPasteIsWithdrawn(t *testing.T) {
 	}
 }
 
-// A swallowed Enter: the composer verifiably holds our message at the end of
-// the verify budget, so it is withdrawn too (the issue #2077 shape, now
-// cleaned up). ~1 kB single line with backticks exercises many batches.
-func TestOrphan_SwallowedEnterIsWithdrawnAtEndOfBudget(t *testing.T) {
+// A swallowed Enter: the input box verifiably holds our message at the end
+// of the verify budget. It is reported left (verified) and left alone.
+func TestOrphan_SwallowedEnterIsReportedLeftAtEndOfBudget(t *testing.T) {
 	for _, mode := range issue2077Modes() {
 		for name, msg := range map[string]string{"short": orphanSingleLine, "long single-line with backticks (~1kB)": orphanLongSingleLine()} {
 			t.Run(mode.name+"/"+name, func(t *testing.T) {
 				pane := &orphanPaneBS{orphanPane: &orphanPane{}}
 				res, err := orphanSend(t, pane, msg, mode.noWait)
-				if err == nil {
-					t.Fatalf("want an error, delivery=%q", res.delivery)
+				if err == nil || res.delivery != "typed_not_submitted" {
+					t.Fatalf("delivery=%q err=%v, want typed_not_submitted", res.delivery, err)
 				}
-				if res.delivery != "typed_withdrawn" {
-					t.Fatalf("delivery = %q, want typed_withdrawn; err=%v; composer still holds %d bytes", res.delivery, err, len(pane.composer()))
+				if f := requireOrphanResidue(t, res, "left"); f["composer_residue_verified"] != true {
+					t.Fatalf("composer_residue_verified = %v, want true", f["composer_residue_verified"])
 				}
-				requireOrphanResidue(t, res, "removed")
-				if got := pane.composer(); got != "" {
-					t.Fatalf("composer = %q, want empty", got)
+				if got := pane.composer(); got != msg {
+					t.Fatalf("composer = %q, want our message left exactly as typed", got)
 				}
-				typed, _, _ := pane.counts()
-				if typed != 1 {
-					t.Fatalf("typed %d times, want 1", typed)
+				if typed, _, bs := pane.counts(); typed != 1 || bs != 0 {
+					t.Fatalf("typed=%d backspace calls=%d, want 1 and 0", typed, bs)
 				}
-				// Never more Backspace than the visible text could need in total
-				// plus the fixed slack.
-				total := 0
-				for _, n := range pane.bsCalls {
-					total += n
-				}
-				if limit := len([]rune(msg)) + 64; total > limit {
-					t.Fatalf("sent %d Backspaces for a %d-rune message (limit %d)", total, len([]rune(msg)), limit)
+				if !strings.Contains(err.Error(), stillTypedNotice) {
+					t.Fatalf("error %q lacks %q", err, stillTypedNotice)
 				}
 			})
 		}
 	}
 }
 
-// --- 5. cleanup impossible: our text is left, and the report says so ----------
-
-func TestOrphan_CleanupImpossibleIsReportedAsLeft(t *testing.T) {
-	type mk func() (sendRetryTarget, *orphanPane)
-	targets := []struct {
-		name string
-		mk   mk
-	}{
-		{"target cannot send backspace", func() (sendRetryTarget, *orphanPane) { p := &orphanPane{truncateBy: 1}; return p, p }},
-		{"backspace is a no-op", func() (sendRetryTarget, *orphanPane) {
-			p := &orphanPaneBS{orphanPane: &orphanPane{truncateBy: 1}, noop: true}
-			return p, p.orphanPane
-		}},
-		{"backspace send-keys fails", func() (sendRetryTarget, *orphanPane) {
-			p := &orphanPaneBS{orphanPane: &orphanPane{truncateBy: 1}, fail: true}
-			return p, p.orphanPane
-		}},
-	}
+// A target with no delete keys at all gets exactly the same report.
+func TestOrphan_TargetWithoutDeleteKeysGetsSameReport(t *testing.T) {
 	for _, mode := range issue2077Modes() {
-		for _, tg := range targets {
-			t.Run(mode.name+"/"+tg.name, func(t *testing.T) {
-				target, pane := tg.mk()
-				res, err := orphanSend(t, target, orphanMultiLine, mode.noWait)
-				if err == nil {
-					t.Fatalf("want an error, delivery=%q", res.delivery)
-				}
-				if res.delivery != "typed_not_submitted" {
-					t.Fatalf("delivery = %q, want typed_not_submitted; err=%v", res.delivery, err)
-				}
-				fields := requireOrphanResidue(t, res, "left")
-				if fields["composer_residue_verified"] != true {
-					t.Fatalf("composer_residue_verified = %v, want true (the composer holds only our chip)", fields["composer_residue_verified"])
-				}
-				for _, want := range []string{"message not sent and left in the composer", "a human must submit or clear it"} {
-					if !strings.Contains(err.Error(), want) {
-						t.Fatalf("error %q lacks %q", err, want)
-					}
-				}
-				if _, enters, _ := pane.counts(); enters != 0 {
-					t.Fatalf("pressed Enter %d times", enters)
-				}
-				if pane.composer() == "" {
-					t.Fatal("setup: the composer should still hold our chip")
-				}
-			})
-		}
-	}
-	// The end-of-budget path (swallowed Enter) with no way to clean up.
-	for _, mode := range issue2077Modes() {
-		t.Run(mode.name+"/swallowed Enter, target cannot send backspace", func(t *testing.T) {
-			pane := &orphanPane{}
-			res, err := orphanSend(t, pane, orphanSingleLine, mode.noWait)
+		t.Run(mode.name, func(t *testing.T) {
+			pane := &orphanPane{truncateBy: 1}
+			res, err := orphanSend(t, pane, orphanMultiLine, mode.noWait)
 			if err == nil || res.delivery != "typed_not_submitted" {
 				t.Fatalf("delivery=%q err=%v, want typed_not_submitted", res.delivery, err)
 			}
-			fields := requireOrphanResidue(t, res, "left")
-			if fields["composer_residue_verified"] != true {
-				t.Fatalf("composer_residue_verified = %v, want true", fields["composer_residue_verified"])
+			if f := requireOrphanResidue(t, res, "left"); f["composer_residue_verified"] != true {
+				t.Fatalf("composer_residue_verified = %v, want true", f["composer_residue_verified"])
 			}
-			if got := pane.composer(); got != orphanSingleLine {
-				t.Fatalf("composer = %q, want our message left as typed", got)
+			if !strings.Contains(err.Error(), "message not sent") || !strings.Contains(err.Error(), stillTypedNotice) {
+				t.Fatalf("error %q", err)
+			}
+		})
+	}
+}
+
+// --- 5. pre-type refusals say "none" -------------------------------------------
+
+// menuPane shows an open selection menu on every capture.
+type menuPane struct{ *orphanPaneBS }
+
+func (m *menuPane) CapturePaneFresh() (string, error) { return guardedMenu, nil }
+
+func TestOrphan_PreTypePromptGuardRefusalIsNone(t *testing.T) {
+	for _, mode := range issue2077Modes() {
+		t.Run(mode.name, func(t *testing.T) {
+			pane := &menuPane{&orphanPaneBS{orphanPane: &orphanPane{}}}
+			tun := issue2077Tuning(mode.noWait)
+			tun.requireInputPrompt = true
+			res, err := executeSend(pane, "claude", orphanSingleLine, mode.noWait, tun)
+			if err == nil {
+				t.Fatalf("want a refusal, delivery=%q", res.delivery)
+			}
+			requireOrphanResidue(t, res, "none")
+			if typed, enters, bs := pane.counts(); typed != 0 || enters != 0 || bs != 0 {
+				t.Fatalf("typed=%d enters=%d backspaces=%d, want none", typed, enters, bs)
 			}
 		})
 	}
@@ -495,15 +469,16 @@ func TestOrphan_CleanupImpossibleIsReportedAsLeft(t *testing.T) {
 
 // --- 6. follow-up sends (no residue store wired) -----------------------------
 
-func TestOrphan_FollowUpSendAfterWithdrawDeliversNormally(t *testing.T) {
+// Once a person clears the leftover, the next send goes through normally.
+func TestOrphan_FollowUpAfterPersonClearsDeliversNormally(t *testing.T) {
 	for _, mode := range issue2077Modes() {
 		t.Run(mode.name, func(t *testing.T) {
 			pane := &orphanPaneBS{orphanPane: &orphanPane{truncateBy: 1}}
 			res, err := orphanSend(t, pane, orphanMultiLine, mode.noWait)
-			if err == nil || res.delivery != "typed_withdrawn" {
-				t.Fatalf("setup: first send delivery=%q err=%v, want typed_withdrawn; composer=%q", res.delivery, err, pane.composer())
+			if err == nil || res.delivery != "typed_not_submitted" {
+				t.Fatalf("setup: first send delivery=%q err=%v, want typed_not_submitted", res.delivery, err)
 			}
-			pane.configure(func(p *orphanPane) { p.truncateBy = 0; p.submitOnEnter = true })
+			pane.configure(func(p *orphanPane) { p.segs = nil; p.truncateBy = 0; p.submitOnEnter = true })
 			const next = "[inbox] a new transition notification is waiting"
 			res2, err := orphanSend(t, pane, next, mode.noWait)
 			if err != nil {
@@ -521,7 +496,7 @@ func TestOrphan_FollowUpSendAfterWithdrawDeliversNormally(t *testing.T) {
 func TestOrphan_FollowUpAfterLeftWithoutRecordIsRefusedAndNothingDeleted(t *testing.T) {
 	for _, mode := range issue2077Modes() {
 		t.Run(mode.name, func(t *testing.T) {
-			pane := &orphanPaneBS{orphanPane: &orphanPane{truncateBy: 1}, noop: true}
+			pane := &orphanPaneBS{orphanPane: &orphanPane{truncateBy: 1}}
 			res, err := orphanSend(t, pane, orphanMultiLine, mode.noWait)
 			if err == nil || res.delivery != "typed_not_submitted" {
 				t.Fatalf("setup: first send delivery=%q err=%v, want typed_not_submitted", res.delivery, err)
@@ -531,6 +506,9 @@ func TestOrphan_FollowUpAfterLeftWithoutRecordIsRefusedAndNothingDeleted(t *test
 			res2, err := orphanSend(t, pane, "[inbox] next", mode.noWait)
 			if err == nil || res2.delivery != "composer_blocked" {
 				t.Fatalf("follow-up delivery=%q err=%v, want composer_blocked", res2.delivery, err)
+			}
+			if !strings.Contains(err.Error(), "composer is occupied or unreadable; existing draft preserved") {
+				t.Fatalf("follow-up error %q lost the wording callers grep", err)
 			}
 			typed, enters, bs := pane.counts()
 			if typed != 1 || enters != entersBefore || bs != bsBefore {

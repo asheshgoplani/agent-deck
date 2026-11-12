@@ -176,22 +176,6 @@ func (s *Session) SendNamedKey(key string) error {
 	return runSendKeysBounded(cmd)
 }
 
-// SendBackspaces sends n Backspace keys to the session in one tmux call, as
-// n separate BSpace arguments (not -N, which old tmux lacks). n <= 0 sends
-// nothing. send.WithdrawTyped uses it to take back text a failed send typed.
-func (s *Session) SendBackspaces(n int) error {
-	if n <= 0 {
-		return nil
-	}
-	s.invalidateCache()
-	args := make([]string, 0, n+3)
-	args = append(args, "send-keys", "-t", s.Name)
-	for range n {
-		args = append(args, "BSpace")
-	}
-	return runSendKeysBounded(keySenderExec(s.SocketName, args...))
-}
-
 // SendNamedKeyToPrimaryWindow sends a tmux key name to the managed agent window.
 func (s *Session) SendNamedKeyToPrimaryWindow(key string) error {
 	s.invalidateCache()

@@ -85,15 +85,8 @@ func (g *codexAcceptanceGuard) RecordTransportOutcome(delivery string, untyped b
 		return fmt.Errorf("Codex submission marker is unavailable")
 	}
 	switch {
-	// typed_withdrawn is definitive too: it is reported only when agent-deck
-	// itself removed the whole of its own typed text with Backspace and the
-	// composer then read empty, and Enter never submitted it (a composer that
-	// emptied by itself is typed_not_submitted, never typed_withdrawn). The
-	// text never left the composer, so nothing reached Codex. Codex has no
-	// full-body composer reader today, so it cannot withdraw yet; this keeps
-	// the marker honest when it can.
 	case delivery == deliveryLineTooLong, delivery == deliveryComposerBlocked, delivery == deliveryTargetBusy,
-		delivery == deliveryWithdrawn, delivery == deliveryMenuOpen && untyped:
+		delivery == deliveryMenuOpen && untyped:
 		return session.ClearCodexSubmissionMarker(g.marker)
 	case delivery == deliverySubmitted:
 		return g.marker.MarkSubmitted(now)

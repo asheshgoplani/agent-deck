@@ -85,7 +85,7 @@ func TestOrphanReview2_PlaceholderShapedMessageIsReportedLeft(t *testing.T) {
 	const msg = `Try "make lint" then "make test" and paste the summary "ok"`
 	for _, mode := range issue2077Modes() {
 		t.Run(mode.name, func(t *testing.T) {
-			pane := &orphanPaneBS{orphanPane: &orphanPane{}, noop: true}
+			pane := &orphanPaneBS{orphanPane: &orphanPane{}}
 			res, err := orphanSend(t, pane, msg, mode.noWait)
 			if pane.composer() != msg {
 				t.Fatalf("setup: composer = %q", pane.composer())
@@ -126,9 +126,10 @@ func (f *transportFailPane) SendKeysAndEnterChecked(body string, _ func() (strin
 	return f.send(body)
 }
 
-// M2: a transport failure after typing began observes the composer: text in
-// it is reported left (unverified) and recorded; an empty composer is none.
-// Nothing is ever deleted on this path.
+// M2: a transport failure after typing began observes the input box: text in
+// it is reported left (unverified) and recorded; an empty box is absent
+// (send_failed as before: typing may have begun, so never "none"). Nothing is
+// ever deleted on this path.
 func TestOrphanReview2_TransportFailureAfterTypingReportsResidue(t *testing.T) {
 	long := orphanLongSingleLine()
 	cases := []struct {
@@ -144,9 +145,9 @@ func TestOrphanReview2_TransportFailureAfterTypingReportsResidue(t *testing.T) {
 		{"final Enter failed (plain send)", func() *transportFailPane {
 			return &transportFailPane{orphanPaneBS: &orphanPaneBS{orphanPane: &orphanPane{}}, enterFails: true}
 		}, orphanSingleLine, "left", true},
-		{"nothing typed", func() *transportFailPane {
+		{"box reads empty", func() *transportFailPane {
 			return &transportFailPane{orphanPaneBS: &orphanPaneBS{orphanPane: &orphanPane{}}}
-		}, orphanSingleLine, "none", false},
+		}, orphanSingleLine, "absent", false},
 	}
 	for _, mode := range issue2077Modes() {
 		for _, tc := range cases {
@@ -171,6 +172,10 @@ func TestOrphanReview2_TransportFailureAfterTypingReportsResidue(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), "failed to send message") {
 					t.Fatalf("error %q lost the failed-to-send wording", err)
+				}
+				wantDelivery := map[string]string{"left": "typed_not_submitted", "absent": "send_failed"}[tc.want]
+				if res.delivery != wantDelivery {
+					t.Fatalf("delivery = %q, want %q", res.delivery, wantDelivery)
 				}
 			})
 		}
@@ -202,41 +207,8 @@ func TestOrphanReview2_LaunchRetrySurfacesComposerResidue(t *testing.T) {
 	if _, enters, bs := inner.counts(); enters != 0 || bs != 0 {
 		t.Fatalf("enters=%d backspace calls=%d, want none", enters, bs)
 	}
-	if !strings.Contains(warn.String(), "composer") || !strings.Contains(warn.String(), "may still be in the composer") {
+	if !strings.Contains(warn.String(), "still typed, unsubmitted, in the target's input box") {
 		t.Fatalf("warning %q does not say what the retry left in the composer", warn.String())
-	}
-}
-
-// L1: a short verified residue ("continue") is too common to be told apart
-// from a human's own draft: it is never auto-cleared, it is refused with the
-// named origin instead.
-func TestOrphanReview2_ShortResidueIsNeverAutoCleared(t *testing.T) {
-	const short = "continue"
-	for _, mode := range issue2077Modes() {
-		t.Run(mode.name, func(t *testing.T) {
-			store := newMemResidueStore()
-			inner := &orphanPane{}
-			stuck := &orphanPaneBS{orphanPane: inner, noop: true}
-			if res, err := executeSend(stuck, "claude", short, mode.noWait, residueTuning(mode.noWait, store)); err == nil || res.delivery != "typed_not_submitted" {
-				t.Fatalf("setup: delivery=%q err=%v", res.delivery, err)
-			}
-			if rec, ok, _ := store.Load(residueTarget); !ok || !rec.Verified {
-				t.Fatalf("setup: record = %+v ok=%v, want verified", rec, ok)
-			}
-			stuck.noop = false
-			inner.configure(func(p *orphanPane) { p.submitOnEnter = true })
-			_, entersBefore, bsBefore := inner.counts()
-			res, err := executeSend(stuck, "claude", "[inbox] a new transition notification is waiting", mode.noWait, residueTuning(mode.noWait, store))
-			if err == nil || res.delivery != "composer_blocked" {
-				t.Fatalf("delivery=%q err=%v, want composer_blocked", res.delivery, err)
-			}
-			if res.jsonFields()["composer_holds"] != "agent_deck_residue" || !strings.Contains(err.Error(), "left by a failed agent-deck send") {
-				t.Fatalf("refusal must name the agent-deck residue: err=%v fields=%v", err, res.jsonFields())
-			}
-			if _, enters, bs := inner.counts(); enters != entersBefore || bs != bsBefore || inner.composer() != short {
-				t.Fatalf("short residue touched: enters %d->%d backspaces %d->%d composer %q", entersBefore, enters, bsBefore, bs, inner.composer())
-			}
-		})
 	}
 }
 

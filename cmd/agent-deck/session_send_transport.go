@@ -362,8 +362,8 @@ func runTmuxSend(
 	reason send.UnavailableReason,
 ) (sendDeliveryResult, error) {
 	if tun.residue == nil && strings.TrimSpace(inst.ID) != "" {
-		// Record text a failed send leaves in this target's composer, so a
-		// later send can recognise (and, when verified, remove) it.
+		// Record (hash only) text a failed send leaves in this target's
+		// input box, so a later refusal can say whose it is. Never removed.
 		tun.residue, tun.targetID = session.FileSendResidueStore{}, inst.ID
 	}
 	res, err := executeSend(tmuxTarget, inst.Tool, message, noWait, tun)

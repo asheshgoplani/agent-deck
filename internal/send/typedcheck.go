@@ -178,42 +178,35 @@ func TypeAndSubmit(t TypedSender, message string, expectedBreaks int, suggestion
 }
 
 // SubmitReport is what TypeAndSubmitReport observed while typing, for the
-// caller's later decisions about the composer.
+// caller's later report about the input box.
 type SubmitReport struct {
 	// OwnedChip is the exact collapsed paste label ("[Pasted text #1 +3
-	// lines]", #N included) the composer showed on THIS send's post-paste,
-	// pre-Enter frame, read through the full-body reader, when the
-	// composer was empty before the send and that frame held exactly one
-	// chip. It is the only chip WithdrawTyped may treat as ours; "" when
-	// none is known (no chip, no reader, or no empty-before provenance).
+	// lines]", #N included) the input box showed on THIS send's post-paste,
+	// pre-Enter frame, read through the full-body reader, when the box was
+	// empty before the send and that frame held exactly one chip. It is used
+	// only to mark a chip-only leftover as Verified (ObserveComposer); ""
+	// when none is known (no chip, no reader, or no empty-before
+	// provenance). It never authorises a key press.
 	OwnedChip string
 }
 
 // TypeAndSubmitReport is TypeAndSubmit for a caller that can say whether the
-// composer was empty immediately before the send (composerEmptyBefore: a
+// input box was empty immediately before the send (composerEmptyBefore: a
 // visible composer with an empty full body; a prompt suggestion counts as
-// empty) and how to read the target's whole composer body (read; nil for a
-// tool without a ComposerFullBodyReader, whose typed text is then never
-// removed).
+// empty) and how to read the target's whole input box (read; nil for a tool
+// without a ComposerFullBodyReader).
 //
-// When a pre-Enter check refuses Enter after the message was typed
-// (ErrComposerNotOurMessage or ErrPasteTruncated), the typed text would
-// otherwise stay in the composer (the 11-12 Nov incident). It is then taken
-// back with WithdrawTyped, which deletes only text it can attribute to this
-// send and only when composerEmptyBefore, and the refusal is returned as a
-// *NotSubmittedError carrying what was done.
-//
-// When the whole message was typed and passed the pre-Enter check but the
-// Enter itself could not be sent, nothing is deleted (the Enter may have
-// half-landed); the error is a *NotSubmittedError whose Withdraw is
-// ObserveLeft's one-capture report. That is only known when a pre-Enter
-// check ran (multi-line body or a shown suggestion); a plain
-// SendKeysAndEnter failure, like any other transport error (send-keys
-// failed, ErrCanonicalLineOverflow), is returned unchanged: nothing, or an
-// unknown amount, was typed, and the caller decides how to observe it.
-//
-// The report is filled whatever the outcome; its OwnedChip is what a later
-// end-of-budget withdrawal by the caller must pass to WithdrawTyped.
+// It never deletes or submits anything beyond what TypeAndSubmit does: when
+// a pre-Enter check refuses Enter after the message was typed
+// (ErrComposerNotOurMessage or ErrPasteTruncated), or the whole message was
+// typed and passed the pre-Enter check but the Enter itself could not be
+// sent, the typed text stays where it is. The error is then a
+// *NotSubmittedError whose Observed is ObserveComposer's one-capture report
+// of what the input box holds (Verified forced false after a failed Enter,
+// which may have half-landed). A plain SendKeysAndEnter failure, like any
+// other transport error (send-keys failed, ErrCanonicalLineOverflow), is
+// returned unchanged: nothing, or an unknown amount, was typed, and the
+// caller decides how to observe it.
 func TypeAndSubmitReport(t TypedSender, message string, expectedBreaks int, suggestionShown, composerEmptyBefore bool, read ComposerFullBodyReader) (SubmitReport, error) {
 	var rep SubmitReport
 	noteChip := func(pane string, captureErr error) {
@@ -231,9 +224,14 @@ func TypeAndSubmitReport(t TypedSender, message string, expectedBreaks int, sugg
 	case err == nil:
 		return rep, nil
 	case errors.Is(err, ErrComposerNotOurMessage) || errors.Is(err, ErrPasteTruncated):
-		return rep, &NotSubmittedError{Cause: err, Withdraw: WithdrawTyped(t, message, rep.OwnedChip, read, tmux.StripANSI, composerEmptyBefore)}
+		return rep, &NotSubmittedError{Cause: err, Observed: ObserveComposer(t, message, rep.OwnedChip, read, tmux.StripANSI, composerEmptyBefore)}
 	case typedFully:
-		return rep, &NotSubmittedError{Cause: err, Withdraw: ObserveLeft(t, message, read, tmux.StripANSI)}
+		o := ObserveComposer(t, message, rep.OwnedChip, read, tmux.StripANSI, composerEmptyBefore)
+		if o.State == ComposerLeft {
+			o.Verified = false
+			o.Reason = ObserveReasonEnterFailed
+		}
+		return rep, &NotSubmittedError{Cause: err, Observed: o}
 	}
 	return rep, err
 }
@@ -302,13 +300,13 @@ type ComposerProbe struct {
 	// TypeAndSubmitReport's composerEmptyBefore. Always false for a
 	// non-Claude target.
 	ComposerEmpty bool
-	// FullBody is the reader TypeAndSubmitReport should withdraw through:
-	// ClaudeComposerFullBody for a Claude target, nil otherwise.
+	// FullBody is the reader TypeAndSubmitReport reports the input box
+	// through: ClaudeComposerFullBody for a Claude target, nil otherwise.
 	FullBody ComposerFullBodyReader
 }
 
 // ProbeComposer is ProbeComposerBeforeSend plus the composer-empty
-// provenance TypeAndSubmitReport needs before it may take typed text back.
+// provenance TypeAndSubmitReport needs to call a leftover verified.
 // A capture failure reports every fact false.
 func ProbeComposer(capture func() (string, error), claude bool) ComposerProbe {
 	p := ComposerProbe{}

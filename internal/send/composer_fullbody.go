@@ -5,9 +5,9 @@ import "strings"
 // ComposerFullBodyReader returns the WHOLE text of the visible composer from
 // a raw (ANSI-bearing) pane capture, every row including blank ones, and ok =
 // false when the frame has no composer it can read completely. Unlike a
-// ComposerDraftReader (which may stop at the first paragraph), it is safe to
-// decide ownership of everything a Backspace could delete. WithdrawTyped only
-// ever deletes through one; a tool without one never has text removed.
+// ComposerDraftReader (which may stop at the first paragraph), it sees every
+// row, so ObserveComposer can say whether the whole input box is this send's
+// text. It is only ever read; nothing is deleted through it.
 type ComposerFullBodyReader func(raw string, strip func(string) string) (body string, ok bool)
 
 // ClaudeComposerFullBody is Claude Code's ComposerFullBodyReader: every row
@@ -17,7 +17,7 @@ type ComposerFullBodyReader func(raw string, strip func(string) string) (body st
 // prompt suggestion (ComposerBodyIsSuggestion, decided on the raw SGR) reads
 // as an empty body. Plain text shaped like Claude's idle placeholder or
 // queued hint is returned as it is: only the caller knows whether it is a
-// prefix of its own message (WithdrawTyped) or may be read as empty
+// prefix of its own message (ObserveComposer) or may be read as empty
 // (FullBodyEmpty). ok is
 // false when the frame has no bounded composer, or its first non-blank row
 // does not start with the prompt glyph.
@@ -67,7 +67,7 @@ func ClaudeComposerFullBody(raw string, strip func(string) string) (string, bool
 // composer for a caller that has no message of its own in it (the pre-send
 // guard and probe): empty, or shaped like Claude's idle placeholder or queued
 // hint. A caller that typed a message must decide ownership first
-// (WithdrawTyped, ObserveLeft).
+// (ObserveComposer).
 func FullBodyEmpty(body string) bool {
 	d := NormalizePromptText(body)
 	return d == "" || IsComposerPlaceholder(d)

@@ -153,9 +153,10 @@ type ComposerGuardResult struct {
 	// ComposerEmpty is true when the guard's last successful capture showed
 	// a VISIBLE composer holding no draft (a prompt suggestion or Claude's
 	// placeholder counts as empty), read through ComposerGuardOptions.FullBody
-	// when set. It is the provenance WithdrawTyped needs before it may delete
-	// anything: text in the composer after the send that matches what we
-	// typed is then ours. False for an unscopable pane.
+	// when set. It is the provenance ObserveComposer needs before it may
+	// call a leftover verified (text in the input box after the send that
+	// matches what we typed is then ours), and it expires the leftover
+	// record. False for an unscopable pane.
 	ComposerEmpty bool
 }
 

@@ -1714,9 +1714,9 @@ func TestExecuteSend_MultilineMessageRefusedOnTruncatedPasteMarker(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "prompt truncated in transit") {
 		t.Fatalf("want a truncation error, got %v (res=%+v)", err, res)
 	}
-	// The fragment was typed and Enter withheld; this mock cannot send
-	// Backspace, so the fragment stays in the composer and the report says
-	// so (it used to be send_failed, "not sent", with the text left behind).
+	// The fragment was typed and Enter withheld; it stays in the input box
+	// (agent-deck never deletes) and the report says so (it used to be
+	// send_failed, "not sent", with the text left behind unmentioned).
 	if res.delivery != deliveryTypedNotSubmitted || res.jsonFields()["composer_residue"] != composerResidueLeft {
 		t.Fatalf("delivery: want %q with composer_residue left, got %q (%v)", deliveryTypedNotSubmitted, res.delivery, res.jsonFields())
 	}

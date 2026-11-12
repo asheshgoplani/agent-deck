@@ -16,21 +16,19 @@ import (
 const (
 	sendResidueVersion = 1
 	sendResidueMaxSize = 4 << 10
-	// SendResidueMaxAge is how long a verified residue record may AUTHORISE
-	// a later send to remove the stuck composer text it describes.
-	SendResidueMaxAge = 24 * time.Hour
 	// SendResidueKeepAge is how long a record is kept to NAME a stuck
-	// composer text's origin and age in a refusal. Older records are
+	// input box text's origin and age in a refusal. Older records are
 	// ignored and removed.
 	SendResidueKeepAge = 7 * 24 * time.Hour
 )
 
-// SendResidue records that a `session send` typed its message, could not
-// submit it and could not take it back: the text is still in the target's
-// composer. It holds hashes only, never the message or the draft text. A
-// later send uses it to recognise that exact draft as agent-deck's own
-// (draft_sha256 must match the composer's normalized draft exactly), so a
-// human's draft can never match.
+// SendResidue records that a `session send` typed its message and could not
+// submit it: the text is still in the target's input box. It holds hashes
+// only, never the message or the draft text. A later send's refusal uses it
+// only to say what the input box holds (agent-deck's own unsent message when
+// draft_sha256 matches the box's normalized body exactly, else unknown
+// text). It never authorises a key press: agent-deck never deletes or
+// submits anything in another session's input box.
 type SendResidue struct {
 	Version    int    `json:"version"`
 	InstanceID string `json:"instance_id"`
@@ -53,13 +51,6 @@ type SendResidue struct {
 func SendResidueHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
-}
-
-// AuthorizesClear reports whether r is young enough (SendResidueMaxAge) to
-// authorise removing the text it describes at now.
-func (r SendResidue) AuthorizesClear(now time.Time) bool {
-	age := now.Sub(r.CreatedAt)
-	return age >= 0 && age <= SendResidueMaxAge
 }
 
 // Retained reports whether r is still kept (SendResidueKeepAge) to name the
@@ -107,8 +98,6 @@ func sendResiduePath(instanceID string) (string, error) {
 
 // Load returns the record for instanceID. A missing, dropped (older than
 // SendResidueKeepAge, then also removed) or foreign record reports false.
-// A returned record may still be too old to authorise a clear
-// (AuthorizesClear).
 func (FileSendResidueStore) Load(instanceID string) (SendResidue, bool, error) {
 	path, err := sendResiduePath(instanceID)
 	if err != nil {

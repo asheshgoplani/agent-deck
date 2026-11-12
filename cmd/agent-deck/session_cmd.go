@@ -791,14 +791,6 @@ const (
 	// deliveryTypedNotSubmitted: the message body is still sitting unsent in
 	// the composer after the bounded Enter-retry budget (issue #1413).
 	deliveryTypedNotSubmitted = "typed_not_submitted"
-	// deliveryWithdrawn: the message was typed, a pre-Enter check (or the
-	// end of the Enter-retry budget) withheld its submission, and the typed
-	// text was then removed from the composer by agent-deck itself
-	// (send.WithdrawTyped), which is as it was before the send. Not
-	// delivered and nothing left behind, so a retry is safe, like
-	// composer_blocked. A composer found already empty is never
-	// typed_withdrawn (something else emptied it, maybe by submitting).
-	deliveryWithdrawn = "typed_withdrawn"
 	// deliveryNoEvidence: no positive delivery signal was ever observed
 	// (issue #876 silent-drop classification).
 	deliveryNoEvidence = "no_evidence"

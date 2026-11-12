@@ -73,7 +73,7 @@ func verifyPromptConsumedAfterLaunch(
 // Claude prompt suggestion is shown, so the submit confirms our typed text
 // replaced it before pressing Enter. The same capture says whether the
 // composer was empty (send.ProbeComposer), the provenance that lets a send
-// that typed and could not submit take its own text back.
+// that typed and could not submit report its leftover as verified.
 func launchPromptSendOptions(target sendRetryTarget, tool string) sendRetryOptions {
 	probe := send.ProbeComposer(target.CapturePaneFresh, session.UsesClaudeDeliveryVerify(tool))
 	return sendRetryOptions{
@@ -142,7 +142,8 @@ func verifyPromptConsumedAfterLaunchAttributed(
 		// Typing replaces a prompt suggestion; with one shown, Enter follows
 		// only once the composer holds our message instead of it. The
 		// capture above is the composer-empty provenance: if the submit is
-		// refused after typing, the retry takes its own text back.
+		// refused after typing, the warning says what the input box holds.
+		// Nothing is ever deleted.
 		probe := send.ProbeComposer(func() (string, error) {
 			if !capture.OK {
 				return "", fmt.Errorf("capture before the launch prompt retry: %w", capture.Err)
@@ -150,18 +151,21 @@ func verifyPromptConsumedAfterLaunchAttributed(
 			return capture.Raw, nil
 		}, session.UsesClaudeDeliveryVerify(tool))
 		_, err := send.TypeAndSubmitReport(target, message, 0, probe.SuggestionShown, probe.ComposerEmpty, probe.FullBody)
-		// The retry's own verdict says what it left in the composer. A
-		// withdrawn retry leaves an empty composer that the poll below
-		// would read as "consumed", so it is reported here, not polled.
+		// The retry's own verdict says what it left in the input box, so
+		// it is reported here, not polled.
 		var notSubmitted *send.NotSubmittedError
 		if errors.As(err, &notSubmitted) {
 			if warn != nil {
-				fmt.Fprintf(warn, "warning: launch prompt may not have been consumed by claude after retry: the retry was not submitted (%v); %s\n", notSubmitted.Cause, notSubmitted.Withdraw.Describe())
+				fmt.Fprintf(warn, "warning: launch prompt may not have been consumed by claude after retry: the retry was not submitted (%v); %s\n", notSubmitted.Cause, notSubmitted.Observed.Describe())
 			}
 			return
 		}
 		if err != nil {
-			residue := send.ObserveLeft(target, message, probe.FullBody, tmux.StripANSI)
+			residue := send.ObserveComposer(target, message, "", probe.FullBody, tmux.StripANSI, probe.ComposerEmpty)
+			if residue.State == send.ComposerLeft {
+				residue.Verified = false
+				residue.Reason = "the retry failed after typing may have begun"
+			}
 			if warn != nil {
 				fmt.Fprintf(warn, "warning: launch prompt may not have been consumed by claude after retry: the retry failed to send (%v); %s\n", err, residue.Describe())
 			}

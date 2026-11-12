@@ -228,8 +228,8 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	//
 	// The same capture says whether the composer was empty before typing
 	// (probe.ComposerEmpty): if a pre-Enter check then refuses the submit,
-	// send.TypeAndSubmitReport takes this send's own typed text back instead
-	// of leaving it in the composer.
+	// the error says this send's text is still typed in the input box
+	// (send.TypeAndSubmitReport only reports; it never deletes).
 	probe := send.ProbeComposer(i.tmuxSession.CapturePaneFresh, UsesClaudeDeliveryVerify(i.Tool))
 	composerPasteFreeBeforeSend, suggestionShownBeforeSend := probe.PasteMarkerFree, probe.SuggestionShown
 
@@ -261,7 +261,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	if sendErr != nil {
 		var notSubmitted *send.NotSubmittedError
 		if errors.As(sendErr, &notSubmitted) {
-			return fmt.Errorf("failed to send message: %w; %s", sendErr, notSubmitted.Withdraw.Describe())
+			return fmt.Errorf("failed to send message: %w; %s", sendErr, notSubmitted.Observed.Describe())
 		}
 		return fmt.Errorf("failed to send message: %w", sendErr)
 	}

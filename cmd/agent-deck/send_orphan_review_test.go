@@ -86,8 +86,8 @@ func (r *reviewPane) SendKeysAndEnterChecked(body string, capture func() (string
 	return r.SendEnter()
 }
 
-// Finding 1: ownership was checked on the composer's FIRST paragraph only,
-// so a human's paragraph after our text was deleted unchecked.
+// First review finding 1: a person's paragraph after our text must survive
+// and make the leftover unverified (every paragraph is read).
 func TestOrphanReview_HumanParagraphAfterOurTextIsNeverDeleted(t *testing.T) {
 	const note = "HUMAN NOTE keep this paragraph"
 	for _, mode := range issue2077Modes() {
@@ -113,32 +113,10 @@ func TestOrphanReview_HumanParagraphAfterOurTextIsNeverDeleted(t *testing.T) {
 	}
 }
 
-// Finding 1 (progress): a clock or spinner elsewhere in the pane is not
-// Backspace progress; only the composer body changing is.
-func TestOrphanReview_ClockTickIsNotBackspaceProgress(t *testing.T) {
-	for _, mode := range issue2077Modes() {
-		t.Run(mode.name, func(t *testing.T) {
-			pane := newReviewPane(&orphanPane{})
-			pane.noop = true
-			pane.clock = true
-			res, err := orphanSend(t, pane, orphanSingleLine, mode.noWait)
-			if err == nil || res.delivery != "typed_not_submitted" {
-				t.Fatalf("delivery=%q err=%v, want typed_not_submitted", res.delivery, err)
-			}
-			if !strings.Contains(err.Error(), "backspace made no progress") {
-				t.Fatalf("error %q, want reason backspace made no progress (backspace calls %v)", err, pane.bsCalls)
-			}
-			if _, _, bs := pane.counts(); bs != 1 {
-				t.Fatalf("backspace calls = %v, want exactly one batch before giving up", pane.bsCalls)
-			}
-		})
-	}
-}
-
-// Finding 4: a composer that is empty when withdrawal starts was emptied by
-// something other than this send (it may have been submitted): never
-// typed_withdrawn, which a queue retries.
-func TestOrphanReview_ComposerEmptiedByOtherIsNotWithdrawn(t *testing.T) {
+// An input box that reads empty after the refusal was emptied by something
+// other than this send (it may have been submitted): composer_residue
+// "absent", typed_not_submitted, which no queue retries.
+func TestOrphanReview_ComposerEmptiedByOtherIsAbsent(t *testing.T) {
 	for _, mode := range issue2077Modes() {
 		t.Run(mode.name, func(t *testing.T) {
 			inner := &orphanPane{truncateBy: 1}
@@ -151,7 +129,7 @@ func TestOrphanReview_ComposerEmptiedByOtherIsNotWithdrawn(t *testing.T) {
 			if res.delivery != "typed_not_submitted" {
 				t.Fatalf("delivery = %q, want typed_not_submitted (agent-deck removed nothing); err=%v", res.delivery, err)
 			}
-			requireOrphanResidue(t, res, "none")
+			requireOrphanResidue(t, res, "absent")
 			if !strings.Contains(err.Error(), "may have been submitted") {
 				t.Fatalf("error %q must say the message may have been submitted", err)
 			}
@@ -159,24 +137,26 @@ func TestOrphanReview_ComposerEmptiedByOtherIsNotWithdrawn(t *testing.T) {
 	}
 }
 
-// Finding 3: a pre-Enter refusal whose withdrawal is then stopped by the
-// input-prompt guard (a menu opened) must still report the residue.
-func TestOrphanReview_GuardRefusalDuringWithdrawKeepsResidue(t *testing.T) {
+// A pre-Enter refusal after which a menu covers the pane (the one capture
+// that reports cannot read the input box) still reports the text left.
+func TestOrphanReview_MenuAfterRefusalKeepsResidue(t *testing.T) {
 	for _, mode := range issue2077Modes() {
 		t.Run(mode.name, func(t *testing.T) {
 			pane := newReviewPane(&orphanPane{truncateBy: 1})
-			// capture 1 after typing: the pre-Enter check; 2: withdrawal's
-			// first frame; 3: the guard's check before the Backspace.
-			pane.menuAfterCaps = 3
+			// capture 1 after typing: the pre-Enter check; 2: the report's
+			// one look, which a menu now covers.
+			pane.menuAfterCaps = 2
 			tun := issue2077Tuning(mode.noWait)
 			tun.requireInputPrompt = true
 			res, err := executeSend(pane, "claude", orphanMultiLine, mode.noWait, tun)
 			if err == nil || res.delivery != "typed_not_submitted" {
 				t.Fatalf("delivery=%q err=%v, want typed_not_submitted", res.delivery, err)
 			}
-			requireOrphanResidue(t, res, "left")
-			if _, enters, _ := pane.counts(); enters != 0 {
-				t.Fatalf("pressed Enter %d times", enters)
+			if f := requireOrphanResidue(t, res, "left"); f["composer_residue_verified"] != false {
+				t.Fatalf("composer_residue_verified = %v, want false (unreadable)", f["composer_residue_verified"])
+			}
+			if _, enters, bs := pane.counts(); enters != 0 || bs != 0 {
+				t.Fatalf("pressed Enter %d times, Backspace %d times", enters, bs)
 			}
 		})
 	}
@@ -224,6 +204,59 @@ func TestOrphanReview_EnterTransportFailureAfterFullTypeReportsLeft(t *testing.T
 			}
 			if pane.composer() == "" {
 				t.Fatal("setup: the composer should still hold our chip")
+			}
+		})
+	}
+}
+
+// guardedReviewPane adds the tmux transport's guarded send: the prompt
+// guard's before() runs ahead of the final Enter, after the post-paste check
+// already passed (internal/tmux sendKeysAndEnterCheckedToTarget).
+type guardedReviewPane struct{ *reviewPane }
+
+func (g *guardedReviewPane) SendKeysAndEnterCheckedGuarded(keys string, capture func() (string, error), check tmux.PostPasteCheck, before func() error) error {
+	// before() runs ahead of every keystroke batch: the body, then Enter.
+	if err := before(); err != nil {
+		return err
+	}
+	g.typeBody(keys)
+	pane, capErr := capture()
+	if ok, err := check(pane, capErr); !ok {
+		if err == nil {
+			err = errors.New("withheld")
+		}
+		return err
+	}
+	if err := before(); err != nil {
+		return err
+	}
+	return g.SendEnter()
+}
+
+// Third review, finding 1: a menu that opens after the post-paste check
+// passed makes the prompt guard withhold the final Enter. That is the
+// guard's refusal (its "typed, not submitted" evidence), not a failed Enter.
+func TestOrphanReview_GuardWithholdsFinalEnterIsGuardRefusal(t *testing.T) {
+	for _, mode := range issue2077Modes() {
+		t.Run(mode.name, func(t *testing.T) {
+			pane := &guardedReviewPane{newReviewPane(&orphanPane{})}
+			// capture 1 after typing: the post-paste check (clean); 2: the
+			// guard's look before the final Enter, which a menu now covers.
+			pane.menuAfterCaps = 2
+			tun := issue2077Tuning(mode.noWait)
+			tun.requireInputPrompt = true
+			res, err := executeSend(pane, "claude", orphanMultiLine, mode.noWait, tun)
+			if err == nil || res.delivery != "typed_not_submitted" {
+				t.Fatalf("delivery=%q err=%v, want typed_not_submitted", res.delivery, err)
+			}
+			if strings.Contains(err.Error(), "enter could not be sent") {
+				t.Fatalf("error %q calls the guard's refusal a failed Enter", err)
+			}
+			if !strings.Contains(err.Error(), "typed, not submitted") {
+				t.Fatalf("error %q lost the guard's typed-not-submitted evidence", err)
+			}
+			if _, enters, bs := pane.counts(); enters != 0 || bs != 0 {
+				t.Fatalf("pressed Enter %d times, Backspace %d times", enters, bs)
 			}
 		})
 	}

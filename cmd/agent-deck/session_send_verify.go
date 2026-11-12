@@ -82,23 +82,23 @@ type sendRetryOptions struct {
 	composerPasteFreeBeforeSend bool
 
 	// suggestionShownBeforeSend mirrors send.ComposerGuardResult.SuggestionShown
-	// for the initial submit (send.TypeAndSubmit).
+	// for the initial submit (send.TypeAndSubmitReport).
 	suggestionShownBeforeSend bool
 
 	// composerEmptyBeforeSend mirrors send.ComposerGuardResult.ComposerEmpty:
-	// the guard saw a visible, empty composer just before the send. Only then
-	// may a send that typed and could not submit take its text back
-	// (send.WithdrawTyped); without it nothing is ever deleted.
+	// the guard saw a visible, empty input box just before the send. Only
+	// then may a leftover be reported verified as this send's own text
+	// (send.ObserveComposer). It never authorises a key press.
 	composerEmptyBeforeSend bool
-	// composerBody reads the target tool's whole composer body
+	// composerBody reads the target tool's whole input box
 	// (composerFullBodyReaderFor); nil when the tool has no full-body
-	// reader, in which case typed text that could not be submitted is
-	// reported left, never removed.
+	// reader, in which case a send that typed and did not submit carries no
+	// composer_residue (unknown).
 	composerBody send.ComposerFullBodyReader
 	// ownedPasteChip is the exact paste chip label this send's own paste
 	// showed before Enter (send.SubmitReport.OwnedChip), set by
-	// sendWithRetryTarget after the initial submit. The end-of-budget
-	// withdrawal treats only that chip as ours; "" means no chip is.
+	// sendWithRetryTarget after the initial submit. Only that chip may be
+	// reported as verified ours; "" means no chip is.
 	ownedPasteChip string
 
 	// targetBusyByHook, when non-nil, reports the target's hook-driven busy
@@ -205,17 +205,18 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	opts.ownedPasteChip = report.OwnedChip
 	if err != nil {
 		// A pre-Enter check withheld Enter after the body was typed, or the
-		// Enter itself failed after a full type. The typed text has been
-		// taken back where that was provably safe; say exactly what is left
-		// in the composer. Checked before the input-prompt guard's refusal:
-		// a guard that refused during the withdrawal must not hide that
-		// this send's text may still be in the composer.
-		var notSubmitted *send.NotSubmittedError
-		if errors.As(err, &notSubmitted) {
-			return notSubmittedOutcome(notSubmitted.Cause, notSubmitted.Withdraw)
-		}
+		// Enter itself failed after a full type. The typed text stays where
+		// it is (agent-deck never deletes); say what the input box holds.
+		// The input-prompt guard's own refusal comes first: when it withheld
+		// the final Enter (a menu opened after the post-paste check passed)
+		// the transport reports a failed Enter, but the verdict, and its
+		// typed-not-submitted evidence, are the guard's.
 		if opts.promptGuard != nil && opts.promptGuard.refused {
 			return guardRefusalOutcome(target, message, opts)
+		}
+		var notSubmitted *send.NotSubmittedError
+		if errors.As(err, &notSubmitted) {
+			return notSubmittedOutcome(notSubmitted)
 		}
 		// A refused over-long line is a distinct, actionable outcome: the
 		// transport typed nothing, so the composer is untouched and the
@@ -477,7 +478,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			return deliverySubmitted, nil
 		case send.OutcomeFailed:
 			delivery, err := deliveryFailure(v, opts.maxRetries)
-			return withdrawIfStuck(target, message, opts, delivery, err)
+			return reportIfStuck(target, message, opts, delivery, err)
 		case send.OutcomeDeliveredUnconfirmed:
 			// The body reached the pane and Enter was sent; nothing showed
 			// the harness taking it, nothing showed it failing. Delivered,
@@ -779,13 +780,13 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			return deliverySubmitted, nil
 		case send.OutcomeFailed:
 			delivery, err := deliveryFailure(v, checks)
-			return withdrawIfStuck(target, message, opts, delivery, err)
+			return reportIfStuck(target, message, opts, delivery, err)
 		}
 		if opts.tool == "pi" && piComposerHoldsMessage(lastContent, message) {
 			// Pi's editor is border-framed rather than glyph-led, so the
 			// generic composer check cannot see it holding the body.
 			delivery, err := composerHoldsFailure(checks)
-			return withdrawIfStuck(target, message, opts, delivery, err)
+			return reportIfStuck(target, message, opts, delivery, err)
 		}
 		return deliveryDelivered, nil
 	}

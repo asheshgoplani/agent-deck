@@ -169,7 +169,7 @@ func CheckPasteMarker(content string, expectedBreaks int) (verdict PasteMarkerVe
 var ErrPasteTruncated = errors.New("prompt truncated in transit")
 
 // PasteTruncationCheck builds the pre-Enter guard both send paths use
-// (Instance.sendMessageWhenReady on the launch path, sendInitialKeysChecked
+// (Instance.sendMessageWhenReady on the launch path, TypeAndSubmitReport
 // behind `session send`): it reads the composer's newest paste marker and
 // reports ok=false — withholding Enter — only when the marker proves a
 // fragment, not the whole prompt, landed (issue #2079).

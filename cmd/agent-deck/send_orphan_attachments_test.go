@@ -14,12 +14,11 @@ import (
 //	[Image #8] [Image #9] [Image #10][Pasted text #11 +5 lines]
 //
 // agent-deck cannot attribute that line to its own text without guessing
-// (the placeholders are not a prefix of the message, the line is not the one
-// paste chip of this send, and whether Backspace drops an attachment or only
-// its label is not knowable from the pane), so it must delete nothing, say
-// its own payload is still there (case c, composer_residue "left",
-// unverified), and the next send must name that leftover instead of the
-// generic "occupied" refusal, never clearing it.
+// (the placeholders are not a prefix of the message and the line is not the
+// one paste chip of this send). It deletes nothing (it never does), says its
+// own payload is still there (composer_residue "left", unverified), and the
+// next send names that leftover (composer_holds "agent_deck_residue")
+// instead of the generic "occupied" refusal, never clearing it.
 
 const attachmentsComposerLine = "[Image #8] [Image #9] [Image #10][Pasted text #11 +5 lines]"
 
@@ -80,7 +79,7 @@ func TestOrphanAttachments_PlaceholderLeftoverIsNeverDeletedAndReportedLeft(t *t
 			if err2 == nil || res2.delivery != "composer_blocked" {
 				t.Fatalf("follow-up: delivery=%q err=%v, want composer_blocked", res2.delivery, err2)
 			}
-			if !strings.Contains(err2.Error(), "left by a failed agent-deck send") {
+			if !strings.Contains(err2.Error(), "agent-deck's own unsent message") || !strings.Contains(err2.Error(), "it may be mixed with other text") {
 				t.Fatalf("follow-up error %q must name the agent-deck leftover", err2)
 			}
 			if res2.jsonFields()["composer_holds"] != "agent_deck_residue" {

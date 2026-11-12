@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/send"
@@ -14,47 +13,63 @@ import (
 )
 
 // A `session send` that types its message and then cannot submit it must not
-// leave that text in the target's composer without saying so (11-12 Nov
+// leave that text in the target's input box without saying so (11-12 Nov
 // incident: the CLI said "not sent", the ~1 kB payload sat typed for 19 hours
-// and every later send was refused as "composer is occupied"). This file
-// holds the reporting and the self-heal; send.WithdrawTyped does the removal.
+// and every later send was refused as "composer is occupied").
+//
+// This file only REPORTS. agent-deck never deletes or submits anything in
+// another session's input box: no Backspace, no clearing, no "self-heal". A
+// missed cleanup costs a person one keypress; a wrong deletion or a double
+// delivery costs their text or their trust (PR 3123, second review: a
+// Backspace withdraw deleted human pastes and whitespace, and reported a
+// submitted message as withdrawn so the queue delivered it twice). A safe way
+// to clear agent-deck's own leftover is a separate design whose test list is
+// that review's findings.
 
 var sendResidueLog = logging.ForComponent(logging.CompSession)
 
-// composer_residue values: what this send left in the target's composer.
+// composer_residue values: what this send left in the target's input box.
 const (
-	// composerResidueNone: nothing of this send is in the composer (nothing
-	// was typed, or the composer was found empty).
+	// composerResidueNone: nothing was typed. Only a refusal before any
+	// keystroke (the composer guard's composer_blocked, the input-prompt
+	// guard's pre-type refusal) reports it.
 	composerResidueNone = "none"
-	// composerResidueRemoved: the send typed, could not submit, and removed
-	// exactly what it typed.
-	composerResidueRemoved = "removed"
-	// composerResidueLeft: the send's text is still typed, unsubmitted, in
-	// the composer; a human (or a self-healing later send) must deal with it.
+	// composerResidueLeft: the send typed (or may have) and the input box
+	// shows text: this send's text is still typed there, unsubmitted, and a
+	// person must submit or clear it. composer_residue_verified says whether
+	// it was verified as only this send's text.
 	composerResidueLeft = "left"
+	// composerResidueAbsent: the send typed (or may have) but the input box
+	// now reads empty: something other than this send emptied it and the
+	// message may have been submitted. Do not blindly resend.
+	composerResidueAbsent = "absent"
 )
 
-// residueMinClearRunes is the shortest recorded residue (normalized draft,
-// in runes) a later send may remove on the record's say-so. Short text
-// ("continue", "yes") is too common: a human could have typed the very same
-// words after the residue was gone, so it is refused with its origin named
-// instead.
-const residueMinClearRunes = 16
-
-// composerHoldsAgentDeckResidue is the --json composer_holds value for a
-// refusal caused by text a previous failed agent-deck send left behind.
-const composerHoldsAgentDeckResidue = "agent_deck_residue"
+// composer_holds values on a composer_blocked refusal: what the input box
+// holds, as far as the leftover record can tell.
+const (
+	// composerHoldsAgentDeckResidue: exactly the text an earlier failed
+	// agent-deck send left there (the record's hash matches).
+	composerHoldsAgentDeckResidue = "agent_deck_residue"
+	// composerHoldsUnknownText: an earlier send left a message there, but
+	// the input box has changed since (the hash does not match).
+	composerHoldsUnknownText = "unknown_text"
+	// composerHoldsOtherText: no leftover is on record: a person's draft?
+	composerHoldsOtherText = "other_text"
+	// composerHoldsUnreadable: the input box could not be read.
+	composerHoldsUnreadable = "unreadable"
+)
 
 // errComposerOccupied is the refusal when the composer guard finds a draft
 // before anything was typed. The words "composer is occupied or unreadable;
 // existing draft preserved" are matched by callers and tests; keep them.
 var errComposerOccupied = errors.New("message not sent: composer is occupied or unreadable; existing draft preserved, nothing was typed")
 
-// composerResidueError carries what a send that typed and did not submit left
-// in the composer. Error() is the full report line.
+// composerResidueError carries what a send left in the input box. Error() is
+// the full report line.
 type composerResidueError struct {
 	residue  string
-	withdraw send.WithdrawResult
+	observed send.ComposerObservation
 	err      error
 }
 
@@ -62,80 +77,97 @@ func (e *composerResidueError) Error() string { return e.err.Error() }
 
 func (e *composerResidueError) Unwrap() error { return e.err }
 
-// notSubmittedOutcome maps a send that typed its message and did not submit
-// it (cause) plus what send.WithdrawTyped (or send.ObserveLeft) found to the
-// delivery status and report:
-//
-//   - removed: agent-deck deleted exactly its own text -> typed_withdrawn,
-//     the only outcome a queue may retry as "nothing happened";
-//   - not needed: the composer was already empty, but agent-deck removed
-//     nothing, so something else emptied it and may have submitted it ->
-//     typed_not_submitted, composer_residue none (never typed_withdrawn: a
-//     retry could deliver the message twice);
-//   - left -> typed_not_submitted, naming the reason.
-func notSubmittedOutcome(cause error, w send.WithdrawResult) (string, error) {
-	switch w.Outcome {
-	case send.WithdrawRemoved:
-		return deliveryWithdrawn, &composerResidueError{residue: composerResidueRemoved, withdraw: w,
-			err: fmt.Errorf("message not sent: %w; the typed text was removed from the composer, which is as it was before the send", cause)}
-	case send.WithdrawNotNeeded:
-		return deliveryTypedNotSubmitted, &composerResidueError{residue: composerResidueNone, withdraw: w,
-			err: fmt.Errorf("message not confirmed: %w; the composer was emptied by something other than this send; the message may have been submitted", cause)}
+// nothingTyped marks a refusal before any keystroke as composer_residue none.
+func nothingTyped(err error) error {
+	if err == nil {
+		return nil
 	}
-	mixed := ""
-	if !w.Verified {
-		mixed = " (it may be mixed with other text)"
-	}
-	return deliveryTypedNotSubmitted, &composerResidueError{residue: composerResidueLeft, withdraw: w,
-		err: fmt.Errorf("message not sent and left in the composer: %w; %s; this send's text is still typed, unsubmitted, in the target's composer%s: a human must submit or clear it", cause, w.Reason, mixed)}
+	return &composerResidueError{residue: composerResidueNone, err: err}
 }
 
-// guardRefusalOutcome is the input-prompt guard's refusal once the send may
-// have typed. Before any keystroke it is the guard's own verdict. After
-// typing, the typed text is reported left in the composer (unverified), and
-// recorded when the composer can be read, unless one fresh capture proves the
-// composer empty. Nothing is deleted: the guard refused because a menu is in
-// the way, where Backspace is not editing.
+// reportTyped maps a send that typed its message (or may have) and did not
+// submit it (cause), plus one look at the input box (o), to the delivery and
+// the report. leftDelivery is the delivery while text is (or may be) there;
+// absentDelivery when the box reads empty. A tool without a full-body reader
+// gets no composer_residue (unknown), never none. Nothing is ever deleted.
+func reportTyped(cause error, o send.ComposerObservation, leftDelivery, absentDelivery string) (string, error) {
+	switch {
+	case o.State == send.ComposerEmpty:
+		return absentDelivery, &composerResidueError{residue: composerResidueAbsent, observed: o,
+			err: fmt.Errorf("message not confirmed: %w; %s", cause, o.Describe())}
+	case o.State == send.ComposerUnreadable && o.Reason == send.ObserveReasonNoFullBody:
+		return leftDelivery, fmt.Errorf("%w; %s", cause, o.Describe())
+	}
+	if o.State != send.ComposerLeft {
+		o.Verified = false
+	}
+	return leftDelivery, &composerResidueError{residue: composerResidueLeft, observed: o,
+		err: fmt.Errorf("message not sent: %w; %s", cause, o.Describe())}
+}
+
+// notSubmittedOutcome reports a *send.NotSubmittedError from the initial
+// submit. A pre-Enter refusal (the body was typed, Enter was withheld) is
+// typed_not_submitted whatever the box shows. A failed Enter after a full
+// type is a transport failure: typed_not_submitted while text is there,
+// send_failed (its old retry semantics) when the box reads empty.
+func notSubmittedOutcome(ns *send.NotSubmittedError) (string, error) {
+	if errors.Is(ns.Cause, send.ErrComposerNotOurMessage) || errors.Is(ns.Cause, send.ErrPasteTruncated) {
+		return reportTyped(ns.Cause, ns.Observed, deliveryTypedNotSubmitted, deliveryTypedNotSubmitted)
+	}
+	return reportTyped(fmt.Errorf("failed to send message: %w", ns.Cause), ns.Observed, deliveryTypedNotSubmitted, deliverySendFailed)
+}
+
+// guardRefusalOutcome is the input-prompt guard's refusal. Before any
+// keystroke it is the guard's own verdict, composer_residue none. After
+// typing, one capture says what the input box holds, reported left
+// (unverified: a menu took the prompt over) or absent.
 func guardRefusalOutcome(target sendRetryTarget, message string, opts sendRetryOptions) (string, error) {
 	delivery, err := opts.promptGuard.refusal()
 	if delivery != deliveryTypedNotSubmitted {
-		return delivery, err
+		return delivery, nothingTyped(err)
 	}
-	w := send.ObserveLeft(target, message, opts.composerBody, tmux.StripANSI)
-	if w.Outcome == send.WithdrawLeft {
-		w.Reason = "the input prompt was taken over before the send could finish"
+	o := send.ObserveComposer(target, message, opts.ownedPasteChip, opts.composerBody, tmux.StripANSI, opts.composerEmptyBeforeSend)
+	if o.State == send.ComposerLeft {
+		o.Verified = false
+		o.Reason = "the input prompt was taken over before the send could finish"
 	}
-	return notSubmittedOutcome(err, w)
+	return reportTyped(err, o, deliveryTypedNotSubmitted, deliveryTypedNotSubmitted)
 }
 
 // transportFailureOutcome is a send whose transport failed with a plain
 // error (cause), possibly after typing began: a chunk's send-keys failed
-// mid-paste, or the final Enter failed. One fresh capture says what is in the
-// composer; nothing is ever deleted here (an unknown amount landed, the Enter
-// may have half-landed). Text in the composer is reported left, unverified,
-// and recorded; an empty composer is none. A tool without a full-body reader
-// keeps the plain send_failed report.
+// mid-paste, or the final Enter failed. One capture says what is in the
+// input box: text is reported left (unverified, typed_not_submitted), an
+// empty box absent (send_failed, as before). A tool without a full-body
+// reader keeps the plain send_failed report.
 func transportFailureOutcome(target sendRetryTarget, message string, opts sendRetryOptions, cause error) (string, error) {
 	if opts.composerBody == nil {
 		return deliverySendFailed, cause
 	}
-	w := send.ObserveLeft(target, message, opts.composerBody, tmux.StripANSI)
-	if w.Outcome == send.WithdrawNotNeeded {
-		return deliverySendFailed, &composerResidueError{residue: composerResidueNone, withdraw: w,
-			err: fmt.Errorf("%w; the composer is empty, nothing of this send is left in it", cause)}
+	o := send.ObserveComposer(target, message, opts.ownedPasteChip, opts.composerBody, tmux.StripANSI, opts.composerEmptyBeforeSend)
+	if o.State == send.ComposerLeft {
+		o.Verified = false
+		o.Reason = "the send failed after typing may have begun"
 	}
-	w.Verified = false
-	if w.Reason == send.WithdrawReasonEnterFailed {
-		w.Reason = "the send failed after typing may have begun"
+	return reportTyped(cause, o, deliveryTypedNotSubmitted, deliverySendFailed)
+}
+
+// reportIfStuck runs at the end of the verify budget. A typed_not_submitted
+// verdict means the input box still held our message after every bounded
+// Enter retry: one more capture says what it holds now, and the report says
+// so. Every other verdict passes through unchanged. Nothing is deleted.
+func reportIfStuck(target sendRetryTarget, message string, opts sendRetryOptions, delivery string, err error) (string, error) {
+	if delivery != deliveryTypedNotSubmitted || err == nil {
+		return delivery, err
 	}
-	return notSubmittedOutcome(cause, w)
+	o := send.ObserveComposer(target, message, opts.ownedPasteChip, opts.composerBody, tmux.StripANSI, opts.composerEmptyBeforeSend)
+	return reportTyped(err, o, deliveryTypedNotSubmitted, deliveryTypedNotSubmitted)
 }
 
 // forgetOwnedChipIfEmptied drops the owned paste chip label once any
-// post-Enter frame shows the composer empty: our chip left the composer
-// (submitted or queued), so a chip with the same label seen later is a new
-// paste, quite possibly a human's (Claude may restart paste numbering for
-// each prompt), and must never be removed as ours.
+// post-Enter frame shows the input box empty: our chip left it (submitted
+// or queued), so a chip with the same label seen later is a new paste,
+// quite possibly a person's, and must never be reported as verified ours.
 func (o *sendRetryOptions) forgetOwnedChipIfEmptied(raw string, captureErr error) {
 	if o.ownedPasteChip == "" || captureErr != nil || o.composerBody == nil {
 		return
@@ -145,55 +177,33 @@ func (o *sendRetryOptions) forgetOwnedChipIfEmptied(raw string, captureErr error
 	}
 }
 
-// withdrawIfStuck runs at the end of the verify budget. A typed_not_submitted
-// verdict means the composer still holds our message after every bounded
-// Enter retry; take it back where that is provably safe and report what is
-// left. Every other verdict passes through unchanged.
-func withdrawIfStuck(target sendRetryTarget, message string, opts sendRetryOptions, delivery string, err error) (string, error) {
-	if delivery != deliveryTypedNotSubmitted || err == nil {
-		return delivery, err
-	}
-	// Only the exact chip label this send's own paste showed before Enter
-	// is ours; a chip the composer shows now may be a human's own paste
-	// that arrived after our message was submitted.
-	w := send.WithdrawTyped(target, message, opts.ownedPasteChip, opts.composerBody, tmux.StripANSI, opts.composerEmptyBeforeSend)
-	if w.Outcome == send.WithdrawNotNeeded {
-		// The composer emptied without us between the verdict and now: the
-		// message may have been taken up late, or a human cleared it. Keep
-		// the verdict; say the composer is clear.
-		return delivery, &composerResidueError{residue: composerResidueNone, withdraw: w,
-			err: fmt.Errorf("%w; the composer was emptied by something other than this send; the message may have been submitted late", err)}
-	}
-	return notSubmittedOutcome(err, w)
-}
-
 // sendResidueStore keeps the per-target record of text a failed send left in
-// the composer (session.FileSendResidueStore in production). Keyed by the
-// target instance id.
+// the input box (session.FileSendResidueStore in production). Keyed by the
+// target instance id. The record only makes later refusals informative; it
+// never authorises a key press.
 type sendResidueStore interface {
 	Load(instanceID string) (session.SendResidue, bool, error)
 	Save(instanceID string, r session.SendResidue) error
 	Clear(instanceID string) error
 }
 
-// recordResidue writes (or, when nothing is left, clears) the residue record
-// for res's outcome. Best effort: a store failure is logged, never fails the
-// send.
+// recordResidue writes the leftover record for a composer_residue "left"
+// report. Best effort: a store failure is logged, never fails the send.
 func recordResidue(tun sendExecTuning, message string, cr *composerResidueError) {
 	if tun.residue == nil || tun.targetID == "" || cr == nil {
 		return
 	}
-	if cr.residue != composerResidueLeft || cr.withdraw.Draft == "" {
+	if cr.residue != composerResidueLeft || cr.observed.Draft == "" {
 		return
 	}
 	rec := session.SendResidue{
-		DraftSHA256:   session.SendResidueHash(cr.withdraw.Draft),
-		DraftLen:      len(cr.withdraw.Draft),
+		DraftSHA256:   session.SendResidueHash(cr.observed.Draft),
+		DraftLen:      len(cr.observed.Draft),
 		MessageSHA256: session.SendResidueHash(message),
-		// A residue that is only a paste chip is never verified: the label
+		// A leftover that is only a paste chip is never verified: the label
 		// ("[Pasted text #1 +20 lines]") is generic, not unique to this
-		// send's text, so it must never authorise a later removal.
-		Verified:  cr.withdraw.Verified && !send.IsPasteChip(cr.withdraw.Draft),
+		// send's text.
+		Verified:  cr.observed.Verified && !send.IsPasteChip(cr.observed.Draft),
 		Sender:    tun.residueSender,
 		CreatedAt: time.Now(),
 	}
@@ -202,7 +212,7 @@ func recordResidue(tun sendExecTuning, message string, cr *composerResidueError)
 	}
 }
 
-// clearResidue drops the target's residue record: the composer was seen
+// clearResidue drops the target's leftover record: the input box was seen
 // empty, so nothing a failed send left is there any more.
 func clearResidue(tun sendExecTuning) {
 	if tun.residue == nil || tun.targetID == "" {
@@ -213,112 +223,74 @@ func clearResidue(tun sendExecTuning) {
 	}
 }
 
-// residueCheck is what healComposerResidue found behind a guard refusal.
-type residueCheck struct {
-	// cleared: the composer held exactly a verified residue and it was
-	// removed; the caller re-runs the guard and sends.
-	cleared bool
-	// named: the composer holds a recorded residue that was not removed;
-	// err names it.
-	named bool
-	age   time.Duration
-	err   error
+// blockedComposer is what describeBlockedComposer found behind a
+// composer_blocked refusal.
+type blockedComposer struct {
+	// holds is the composer_holds value, "" when not established (no
+	// record store or no full-body reader for the tool).
+	holds  string
+	age    time.Duration
+	sender string
+	err    error
 }
 
-// healComposerResidue runs when the composer guard refused. If the target's
-// residue record is retained (session.SendResidueKeepAge) and the composer's
-// normalized FULL body hashes exactly to it, the body is text a previous
-// agent-deck send typed and could not submit:
+// describeBlockedComposer runs when the composer guard refused, before
+// anything was typed. With the leftover record store wired and a full-body
+// reader for the tool, one capture says what the input box holds:
 //
-//   - verified (it was only that send's text, typed into a composer verified
-//     empty) and recorded within session.SendResidueMaxAge: remove it, never
-//     submit it. That sender was told "not sent" and may have retried or
-//     re-routed, so submitting would deliver a stale, possibly duplicate
-//     message; removing it restores what it was told.
-//   - unverified, older than SendResidueMaxAge, or the removal stopped: keep
-//     refusing, but name the residue's origin and age.
+//   - exactly what an earlier failed send left (record hash matches):
+//     agent-deck's own unsent message, with its sender and age;
+//   - a record exists but the hash differs: unknown text;
+//   - no record: other text (a person's draft?);
+//   - unreadable: the generic occupied-or-unreadable wording.
 //
-// Anything else (no record, a dropped record, a body that does not hash to
-// it, a tool without a full-body reader) is a human's draft as far as
-// agent-deck can tell: untouched, generic refusal. A human draft cannot
-// match: matching needs the exact hash of text agent-deck recorded.
-func healComposerResidue(target sendRetryTarget, read send.ComposerFullBodyReader, tun sendExecTuning) residueCheck {
+// It only reads the record and the pane. It never sends a key: no code path
+// may read the record and then press anything in the target.
+func describeBlockedComposer(target sendRetryTarget, read send.ComposerFullBodyReader, tun sendExecTuning) blockedComposer {
+	generic := blockedComposer{err: errComposerOccupied}
 	if tun.residue == nil || tun.targetID == "" || read == nil {
-		return residueCheck{}
-	}
-	rec, ok, err := tun.residue.Load(tun.targetID)
-	if err != nil {
-		sendResidueLog.Warn("send_residue_load_failed", slog.String("instance_id", tun.targetID), slog.String("error", err.Error()))
-		return residueCheck{}
-	}
-	if !ok {
-		return residueCheck{}
-	}
-	now := time.Now()
-	if !rec.Retained(now) {
-		clearResidue(tun)
-		return residueCheck{}
+		return generic
 	}
 	raw, err := target.CapturePaneFresh()
 	if err != nil {
-		return residueCheck{}
+		return blockedComposer{holds: composerHoldsUnreadable, err: errComposerOccupied}
 	}
-	body, visible := read(raw, tmux.StripANSI)
-	draft := send.NormalizePromptText(body)
-	if !visible || draft == "" || session.SendResidueHash(draft) != rec.DraftSHA256 {
-		return residueCheck{}
-	}
-	age := now.Sub(rec.CreatedAt)
-	why := "it was not verified as agent-deck's own text only (it may include other text), so it is neither submitted nor removed"
-	switch {
-	case rec.Verified && !rec.AuthorizesClear(now):
-		why = fmt.Sprintf("it is older than %s, too old to be removed automatically, so it is neither submitted nor removed", session.SendResidueMaxAge)
-	case rec.Verified && utf8.RuneCountInString(draft) < residueMinClearRunes:
-		why = fmt.Sprintf("it is shorter than %d characters, too common to be told apart from text a human typed, so it is neither submitted nor removed", residueMinClearRunes)
-	case rec.Verified:
-		// The recorded body is the whole of what may be removed: pass it
-		// (the current full body, which hashes to the record) as the
-		// message, so ownership is "a prefix of that exact body". No chip
-		// is owned: a chip-only residue is never recorded verified.
-		w := send.WithdrawTyped(target, body, "", read, tmux.StripANSI, true)
-		switch {
-		case w.Outcome != send.WithdrawLeft:
-			clearResidue(tun)
-			return residueCheck{cleared: true}
-		case w.Verified && w.Draft != "":
-			// Partly removed: the record follows what is left.
-			rec.DraftSHA256, rec.DraftLen = session.SendResidueHash(w.Draft), len(w.Draft)
-			if err := tun.residue.Save(tun.targetID, rec); err != nil {
-				sendResidueLog.Warn("send_residue_save_failed", slog.String("instance_id", tun.targetID), slog.String("error", err.Error()))
-			}
-			why = fmt.Sprintf("it is agent-deck's own text but could not be removed (%s), so it is neither submitted nor removed", w.Reason)
-		default:
-			// Someone typed into it while it was being removed (or it became
-			// unreadable): it is no longer provably only agent-deck's text.
-			clearResidue(tun)
-			why = fmt.Sprintf("removing it stopped (%s), so what is left is neither submitted nor removed", w.Reason)
-		}
-	}
-	from := ""
-	if rec.Sender != "" {
-		from = fmt.Sprintf(" (from %s)", rec.Sender)
-	}
-	return residueCheck{named: true, age: age, err: fmt.Errorf(
-		"message not sent: the composer holds text left by a failed agent-deck send %s ago%s, unsubmitted; %s: a human must submit or clear it; nothing was typed, existing draft preserved",
-		age.Round(time.Second), from, why)}
-}
-
-// SendBackspaces lets send.WithdrawTyped take back typed text through the
-// input-prompt guard: never into an open picker, where Backspace is not
-// editing.
-func (g *promptGuardTarget) SendBackspaces(n int) error {
-	bs, ok := g.sendRetryTarget.(send.BackspaceSender)
+	body, ok := read(raw, tmux.StripANSI)
 	if !ok {
-		return errors.New("target cannot send backspace")
+		return blockedComposer{holds: composerHoldsUnreadable, err: errComposerOccupied}
 	}
-	raw, err := g.CapturePaneFresh()
-	if guardErr := g.checkAfterTyping(raw, err); guardErr != nil {
-		return guardErr
+	draft := send.NormalizePromptText(body)
+	if send.FullBodyEmpty(body) {
+		// It emptied between the guard's look and this one: nothing to name.
+		return generic
 	}
-	return bs.SendBackspaces(n)
+	rec, found, err := tun.residue.Load(tun.targetID)
+	if err != nil {
+		sendResidueLog.Warn("send_residue_load_failed", slog.String("instance_id", tun.targetID), slog.String("error", err.Error()))
+		found = false
+	}
+	now := time.Now()
+	if found && !rec.Retained(now) {
+		clearResidue(tun)
+		found = false
+	}
+	if !found {
+		return blockedComposer{holds: composerHoldsOtherText, err: errors.New(
+			"message not sent: the input box holds other text (a person's draft?); nothing was typed; composer is occupied or unreadable; existing draft preserved")}
+	}
+	age := now.Sub(rec.CreatedAt).Round(time.Second)
+	if session.SendResidueHash(draft) != rec.DraftSHA256 {
+		return blockedComposer{holds: composerHoldsUnknownText, age: age, err: fmt.Errorf(
+			"message not sent: the input box holds unknown text (agent-deck left a message there %s ago, but the box has changed since); nothing was typed; composer is occupied or unreadable; existing draft preserved", age)}
+	}
+	from := rec.Sender
+	if from == "" {
+		from = "an unknown sender"
+	}
+	mixed := ""
+	if !rec.Verified {
+		mixed = send.MixedNotice
+	}
+	return blockedComposer{holds: composerHoldsAgentDeckResidue, age: age, sender: rec.Sender, err: fmt.Errorf(
+		"message not sent: the input box holds agent-deck's own unsent message from %s, %s old; nothing was typed; a person must submit or clear it%s", from, age, mixed)}
 }
