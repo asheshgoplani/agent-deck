@@ -115,6 +115,21 @@ func (m *CodexSubmissionMarker) updatePhase(phase string, now time.Time) error {
 // tookInputSince (nil for none) may instead show that the unchanged turn took
 // up user input recorded after the attempt began. Without either, delivery
 // remains unknowable and all later sends fail closed.
+// ErrCodexGenerationUndeterminable reports that the newest turn start in the
+// exact rollout could not be located, so the persisted marker can neither be
+// confirmed nor cleared. It is deliberately distinct from an invalid marker:
+// the marker is intact and the failure belongs to the rollout read, and a
+// caller must never present it as evidence that the marker is corrupt.
+var ErrCodexGenerationUndeterminable = errors.New("current Codex turn generation is not determinable")
+
+// ReconcileCodexSubmissionMarker decides what a persisted marker means now.
+//
+// currentGeneration is the instance's current accepted-turn generation, or ""
+// when the newest turn start was not found within the caller's backward-scan
+// budget. A marker that recorded a generation while the rollout can no longer
+// produce one is NOT a corrupt marker (every persisted marker is validated, and
+// its own generation still parses); it is an unreadable rollout, and reporting
+// it as an invalid generation sent operators looking at the wrong artefact.
 func ReconcileCodexSubmissionMarker(
 	instanceID, codexSessionID, currentGeneration string,
 	tookInputSince func(generation string, since time.Time) (bool, error),
@@ -125,6 +140,16 @@ func ReconcileCodexSubmissionMarker(
 	}
 	if marker.InstanceID != strings.TrimSpace(instanceID) || marker.CodexSessionID != strings.TrimSpace(codexSessionID) {
 		return "", fmt.Errorf("Codex submission marker ownership does not match this instance")
+	}
+	if strings.TrimSpace(currentGeneration) == "" && marker.PriorTurnGeneration != "" {
+		path, pathErr := codexSubmissionMarkerPath(codexSessionID)
+		if pathErr != nil {
+			return "", pathErr
+		}
+		return "", fmt.Errorf(
+			"%w: the rollout's newest turn start is beyond the backward scan window, so submission %s at %s can be neither confirmed nor cleared; the marker and its own generation are intact, nothing was typed, and a second send stays refused",
+			ErrCodexGenerationUndeterminable, marker.AttemptID, path,
+		)
 	}
 	if currentGeneration == marker.PriorTurnGeneration {
 		took, evidenceErr := false, error(nil)
