@@ -69,8 +69,9 @@ func TestOrphanAttachments_PlaceholderLeftoverIsNeverDeletedAndReportedLeft(t *t
 				}
 			}
 
-			// The next send is refused, names the leftover as agent-deck's
-			// and its age, and touches nothing.
+			// The next send is refused, names the failed send and its age
+			// without calling the unverified text agent-deck's own, and
+			// touches nothing.
 			rec, ok, _ := store.Load(residueTarget)
 			if !ok || rec.Verified {
 				t.Fatalf("record = %+v ok=%v, want an unverified record", rec, ok)
@@ -79,11 +80,11 @@ func TestOrphanAttachments_PlaceholderLeftoverIsNeverDeletedAndReportedLeft(t *t
 			if err2 == nil || res2.delivery != "composer_blocked" {
 				t.Fatalf("follow-up: delivery=%q err=%v, want composer_blocked", res2.delivery, err2)
 			}
-			if !strings.Contains(err2.Error(), "agent-deck's own unsent message") || !strings.Contains(err2.Error(), "it may be mixed with other text") {
-				t.Fatalf("follow-up error %q must name the agent-deck leftover", err2)
+			if !strings.Contains(err2.Error(), "an agent-deck send from") || !strings.Contains(err2.Error(), "never verified as agent-deck's") {
+				t.Fatalf("follow-up error %q must name the failed agent-deck send", err2)
 			}
-			if res2.jsonFields()["composer_holds"] != "agent_deck_residue" {
-				t.Fatalf("follow-up fields = %v, want composer_holds=agent_deck_residue", res2.jsonFields())
+			if res2.jsonFields()["composer_holds"] != "agent_deck_residue_unverified" {
+				t.Fatalf("follow-up fields = %v, want composer_holds=agent_deck_residue_unverified", res2.jsonFields())
 			}
 			if got := pane.composer(); got != attachmentsComposerLine {
 				t.Fatalf("follow-up changed the composer: %q", got)

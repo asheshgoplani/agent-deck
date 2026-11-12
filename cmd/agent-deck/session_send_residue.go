@@ -48,9 +48,16 @@ const (
 // composer_holds values on a composer_blocked refusal: what the input box
 // holds, as far as the leftover record can tell.
 const (
-	// composerHoldsAgentDeckResidue: exactly the text an earlier failed
-	// agent-deck send left there (the record's hash matches).
+	// composerHoldsAgentDeckResidue: the input box matches (record hash)
+	// the text an earlier failed agent-deck send left there, verified then
+	// as only that send's own text. A hash match is not authorship: a
+	// person may have typed or recalled the same text since.
 	composerHoldsAgentDeckResidue = "agent_deck_residue"
+	// composerHoldsAgentDeckResidueUnverified: the input box matches
+	// (record hash) what an earlier failed send saw there, but that was
+	// never verified as agent-deck's: it may be partly or wholly a person's
+	// draft (the 11-12 Nov incident's box held only other text).
+	composerHoldsAgentDeckResidueUnverified = "agent_deck_residue_unverified"
 	// composerHoldsUnknownText: an earlier send left a message there, but
 	// the input box has changed since (the hash does not match).
 	composerHoldsUnknownText = "unknown_text"
@@ -238,8 +245,11 @@ type blockedComposer struct {
 // anything was typed. With the leftover record store wired and a full-body
 // reader for the tool, one capture says what the input box holds:
 //
-//   - exactly what an earlier failed send left (record hash matches):
-//     agent-deck's own unsent message, with its sender and age;
+//   - the same text an earlier failed send left (record hash matches):
+//     agent_deck_residue when that send verified it as only its own text,
+//     agent_deck_residue_unverified otherwise, with its sender and age.
+//     A hash match is not authorship, so the wording says "matches" and
+//     asks the reader to check before clearing;
 //   - a record exists but the hash differs: unknown text;
 //   - no record: other text (a person's draft?);
 //   - unreadable: the generic occupied-or-unreadable wording.
@@ -287,10 +297,13 @@ func describeBlockedComposer(target sendRetryTarget, read send.ComposerFullBodyR
 	if from == "" {
 		from = "an unknown sender"
 	}
-	mixed := ""
+	// A hash match says the box holds the same text, not who put it there:
+	// never call it agent-deck's own when it was not verified, and always
+	// tell the reader to check before clearing.
 	if !rec.Verified {
-		mixed = send.MixedNotice
+		return blockedComposer{holds: composerHoldsAgentDeckResidueUnverified, age: age, sender: rec.Sender, err: fmt.Errorf(
+			"message not sent: the input box holds the text it held when an agent-deck send from %s failed %s ago; that text was never verified as agent-deck's and may be partly or wholly a person's draft; nothing was typed; check it before clearing; existing draft preserved", from, age)}
 	}
 	return blockedComposer{holds: composerHoldsAgentDeckResidue, age: age, sender: rec.Sender, err: fmt.Errorf(
-		"message not sent: the input box holds agent-deck's own unsent message from %s, %s old; nothing was typed; a person must submit or clear it%s", from, age, mixed)}
+		"message not sent: the input box matches the unsent message an agent-deck send from %s left there %s ago (if a person typed or recalled the same text since, it is theirs); nothing was typed; check it before clearing, then submit or clear it", from, age)}
 }

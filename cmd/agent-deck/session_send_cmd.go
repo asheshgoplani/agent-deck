@@ -1406,7 +1406,7 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 	}
 	if r.composerHolds != "" {
 		fields["composer_holds"] = r.composerHolds
-		if r.composerHolds == composerHoldsAgentDeckResidue || r.composerHolds == composerHoldsUnknownText {
+		if r.composerHolds == composerHoldsAgentDeckResidue || r.composerHolds == composerHoldsAgentDeckResidueUnverified || r.composerHolds == composerHoldsUnknownText {
 			fields["residue_age_seconds"] = int64(r.residueAge / time.Second)
 		}
 		if r.residueSender != "" {

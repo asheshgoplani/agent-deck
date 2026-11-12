@@ -244,11 +244,12 @@ func TestNoDelete_HumanPasteChipSurvives(t *testing.T) {
 
 // noDeleteTokens are the transport calls that delete text in an input box.
 // No send-path source may contain them.
-var noDeleteTokens = []string{"BSpace", "SendBackspaces", `"C-u"`, "SendCtrlU"}
+var noDeleteTokens = []string{"BSpace", "SendBackspaces", `"C-u"`, "SendCtrlU", `"C-h"`, `"C-w"`, `\x7f`, `\x08`}
 
 // TestNoDelete_SendPathSourcesHaveNoDeleteKeys is a source guard: no
-// non-test .go file in internal/send/ or cmd/agent-deck/session_send*.go may
-// name a delete key. `session send-keys` (session_send_keys_cmd.go) is
+// non-test .go file in internal/send/, cmd/agent-deck/session_send*.go or the
+// launch paths (cmd/agent-deck/launch_verify_prompt.go,
+// internal/session/instance_start.go) may name a delete key. `session send-keys` (session_send_keys_cmd.go) is
 // exempt: it types exactly the keys a person asks for.
 func TestNoDelete_SendPathSourcesHaveNoDeleteKeys(t *testing.T) {
 	var files []string
@@ -265,6 +266,11 @@ func TestNoDelete_SendPathSourcesHaveNoDeleteKeys(t *testing.T) {
 		t.Fatal("found no cmd/agent-deck/session_send*.go files: the guard would pass vacuously")
 	}
 	files = append(files, cmdFiles...)
+	// The launch paths report a refused prompt through the same call; a
+	// withdraw added there would reach a target's input box too.
+	files = append(files,
+		filepath.Join("..", "..", "cmd", "agent-deck", "launch_verify_prompt.go"),
+		filepath.Join("..", "session", "instance_start.go"))
 	checked := 0
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") || filepath.Base(f) == "session_send_keys_cmd.go" {

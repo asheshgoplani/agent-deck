@@ -13,7 +13,8 @@ import (
 )
 
 // The per-target leftover record (hash only) makes later refusals
-// informative: "agent-deck's own unsent message from <sender>, <age> old",
+// informative: "matches the unsent message an agent-deck send from <sender>
+// left there <age> ago", the same text "never verified as agent-deck's",
 // "unknown text" or "other text (a person's draft?)". It never authorises a
 // key press: every test here also asserts that the follow-up send touched
 // nothing (PR 3123 second review, finding 4: a self-heal deleted a draft a
@@ -121,7 +122,7 @@ func TestResidue_OwnLeftoverIsNamedNeverCleared(t *testing.T) {
 			if _, ok := f["residue_age_seconds"]; !ok {
 				t.Fatalf("fields = %v, want residue_age_seconds", f)
 			}
-			for _, want := range []string{"the input box holds agent-deck's own unsent message from " + residueSender, " old; nothing was typed; a person must submit or clear it"} {
+			for _, want := range []string{"the input box matches the unsent message an agent-deck send from " + residueSender + " left there ", " ago (if a person typed or recalled the same text since, it is theirs); nothing was typed; check it before clearing, then submit or clear it"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("error %q lacks %q", err, want)
 				}
@@ -158,10 +159,10 @@ func TestResidue_UnverifiedLeftoverIsNamedMixed(t *testing.T) {
 			if err == nil || res.delivery != "composer_blocked" {
 				t.Fatalf("delivery=%q err=%v, want composer_blocked", res.delivery, err)
 			}
-			if !strings.Contains(err.Error(), "agent-deck's own unsent message") || !strings.Contains(err.Error(), "it may be mixed with other text") {
-				t.Fatalf("error %q must name agent-deck's leftover and say it may be mixed", err)
+			if strings.Contains(err.Error(), "agent-deck's own") || !strings.Contains(err.Error(), "never verified as agent-deck's and may be partly or wholly a person's draft") {
+				t.Fatalf("error %q must name the failed send without calling the text agent-deck's own", err)
 			}
-			if res.jsonFields()["composer_holds"] != "agent_deck_residue" {
+			if res.jsonFields()["composer_holds"] != "agent_deck_residue_unverified" {
 				t.Fatalf("fields = %v", res.jsonFields())
 			}
 			requireUntouched(t, pane.orphanPane, entersBefore, bsBefore, before)
@@ -252,8 +253,8 @@ func TestResidue_RecalledDraftWithinHoursIsNeverDeleted(t *testing.T) {
 	if err == nil || res.delivery != "composer_blocked" {
 		t.Fatalf("delivery=%q err=%v, want composer_blocked", res.delivery, err)
 	}
-	if !strings.Contains(err.Error(), "from sender-7, 1h0m0s old") {
-		t.Fatalf("error %q must name the sender and age", err)
+	if !strings.Contains(err.Error(), "from sender-7 left there 1h0m0s ago") || !strings.Contains(err.Error(), "if a person typed or recalled the same text since, it is theirs") {
+		t.Fatalf("error %q must name the sender and age, and say a recalled draft is the person's", err)
 	}
 	requireUntouched(t, inner, 0, 0, recalled)
 	if len(inner.submitted) != 0 {
@@ -298,7 +299,7 @@ func TestResidue_DaysOldLeftoverIsNamedNotCleared(t *testing.T) {
 	if err == nil || res.delivery != "composer_blocked" {
 		t.Fatalf("delivery=%q err=%v, want composer_blocked", res.delivery, err)
 	}
-	if !strings.Contains(err.Error(), "agent-deck's own unsent message from sender-7") {
+	if !strings.Contains(err.Error(), "matches the unsent message an agent-deck send from sender-7 left there 30h0m0s ago") {
 		t.Fatalf("error %q must name the agent-deck origin, sender and age", err)
 	}
 	if res.jsonFields()["composer_holds"] != "agent_deck_residue" {
