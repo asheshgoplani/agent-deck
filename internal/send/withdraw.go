@@ -40,6 +40,12 @@ const (
 	WithdrawReasonBudget       = "removal budget exhausted"
 	WithdrawReasonNotEmpty     = "composer was not empty before the send"
 	WithdrawReasonEnterFailed  = "enter could not be sent"
+	// WithdrawReasonAttachments: the composer shows image placeholders
+	// ("[Image #8]"), which Claude makes from file paths in a pasted body.
+	// They cannot be matched against the typed text, and whether Backspace
+	// removes the attachment or only its label is not visible in the pane,
+	// so nothing is removed.
+	WithdrawReasonAttachments = "composer shows image placeholders (attachments) in place of the typed text, which agent-deck cannot match to this send and never removes"
 )
 
 // WithdrawResult is what WithdrawTyped did and what it left behind.
@@ -75,6 +81,9 @@ const (
 // pasteChipRe matches a composer draft that is exactly one collapsed paste
 // marker, Claude's "[Pasted text #1 +3 lines]".
 var pasteChipRe = regexp.MustCompile(`^\[Pasted (text|Content) [^\]]*\]$`)
+
+// imageChipRe matches a Claude image placeholder anywhere in a draft.
+var imageChipRe = regexp.MustCompile(`\[Image #\d+\]`)
 
 // withdrawBudget is the most Backspaces WithdrawTyped may send for message:
 // its rune count as typed (CRLF and CR read as one line break, whitespace
@@ -190,6 +199,9 @@ func WithdrawTyped(t ComposerGuardTarget, message, ownedChip string, read Compos
 			return left(WithdrawReasonNotEmpty, false, draft)
 		}
 		if !owned(draft) {
+			if imageChipRe.MatchString(draft) {
+				return left(WithdrawReasonAttachments, false, draft)
+			}
 			return left(WithdrawReasonForeign, false, draft)
 		}
 		if settled {
