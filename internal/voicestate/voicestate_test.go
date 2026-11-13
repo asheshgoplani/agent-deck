@@ -200,6 +200,24 @@ func TestReader_SanitizesDrawnText(t *testing.T) {
 	if n := len([]rune(b.Full)); n > 80 {
 		t.Errorf("badge is %d runes; a 200-rune engine name must be capped", n)
 	}
+
+	// An unknown phase (or an older daemon's mode) is drawn as-is in the
+	// preview words, so it is cleaned too.
+	for _, field := range []string{`"phase":"listening"`, `"mode":"listening"`} {
+		body := liveCurrent(1)
+		if field == `"mode":"listening"` {
+			body = strings.Replace(body, `"phase":"listening",`, ``, 1)
+		}
+		body = strings.Replace(body, field, strings.SplitN(field, ":", 2)[0]+`:"odd\u001b]0;x\u0007\nphase"`, 1)
+		writeAt(t, dir, "current.json", body, clock.t.Add(time.Second))
+		s := r.Poll()
+		if s == nil {
+			t.Fatalf("%s: no state", field)
+		}
+		if w := s.Words(clock.t); strings.ContainsAny(w, "\n\r\x1b\a") {
+			t.Errorf("%s: control character reaches the preview: %q", field, w)
+		}
+	}
 }
 
 // The heartbeat rule: content unchanged for longer than 3*heartbeatMs+5s,

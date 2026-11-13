@@ -212,6 +212,8 @@ func (s *State) sanitize() {
 	s.TTS, s.STT = cleanLabel(s.TTS), cleanLabel(s.STT)
 	s.TTSEffective, s.STTEffective = cleanLabel(s.TTSEffective), cleanLabel(s.STTEffective)
 	s.From = cleanLabel(s.From)
+	// An unknown phase or older-daemon mode is drawn as-is (Words).
+	s.Phase, s.Mode = cleanLabel(s.Phase), cleanLabel(s.Mode)
 }
 
 func cleanLabel(v string) string {
