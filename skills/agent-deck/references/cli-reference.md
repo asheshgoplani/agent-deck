@@ -1437,7 +1437,8 @@ agent-deck codex-hooks status
 agent-deck codex-hooks uninstall
 ```
 
-Codex turn-level status uses its notify hook. CLI `add`
+Codex turn-level status uses its notify hook. Install it once per Codex home using
+the explicit creation flag or the manual command. CLI `add`
 and `launch` with `--install-codex-hooks` install it into the session's resolved Codex home only when `notify`
 is absent. For remote hosts, run the flagged command on the owning host. Existing notify
 settings are never replaced; SSH-wrapper and sandbox sessions are skipped.

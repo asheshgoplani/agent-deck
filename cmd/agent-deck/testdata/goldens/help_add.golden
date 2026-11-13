@@ -43,6 +43,8 @@ Options:
     	Group path (defaults to parent folder)
   -hint value
     	Durable hint key=value for recall (repeatable; e.g. --hint purpose="fix flaky auth test")
+  -install-codex-hooks
+    	Install a missing Codex notify hook in the shared Codex home; persists independently of this session
   -json
     	Output as JSON
   -location string
