@@ -268,7 +268,7 @@ func TestAddCodexDoesNotReinstallRemovedHooks(t *testing.T) {
 }
 
 func TestAddCodexHookFailurePreservesRegistration(t *testing.T) {
-	for _, kind := range []string{"locked", "custom command"} {
+	for _, kind := range []string{"locked", "custom command", "shell startup"} {
 		t.Run(kind, func(t *testing.T) {
 			home := t.TempDir()
 			codexHome := filepath.Join(home, "codex")
@@ -279,10 +279,20 @@ func TestAddCodexHookFailurePreservesRegistration(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer lock.Release()
-			} else {
+			} else if kind == "custom command" {
 				command = "codex --model example"
 			}
 			env := []string{"CODEX_HOME=" + codexHome}
+			if kind == "shell startup" {
+				env = []string{"CODEX_HOME="}
+				dir := filepath.Join(home, ".config", "agent-deck")
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[shell]\ninit_script = 'export CODEX_HOME=/other-codex'\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			out, stderr, code := runAgentDeckEnv(t, home, "", env, "add", "--install-codex-hooks", "--json", "--no-parent", "-t", "retained", "-c", command, home)
 			if code != 0 || !json.Valid([]byte(out)) || !strings.Contains(stderr, "Warning: Codex hooks:") {
 				t.Fatalf("expected successful JSON registration with warning: %d %s %s", code, out, stderr)

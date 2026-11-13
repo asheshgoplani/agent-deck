@@ -21,6 +21,11 @@ func installMissingCodexHooks(inst *session.Instance) error {
 	if inst == nil || inst.IsSandboxed() {
 		return nil
 	}
+	if cfg, err := session.LoadUserConfig(); err != nil {
+		return fmt.Errorf("reading config for Codex hook installation: %w", err)
+	} else if cfg != nil && strings.TrimSpace(os.Getenv("CODEX_HOME")) == "" && (len(cfg.Shell.EnvFiles) > 0 || cfg.Shell.InitScript != "" || cfg.Shell.GetLaunchShell() || cfg.Codex.EnvFile != "") {
+		return fmt.Errorf("shell startup can change the Codex home; set CODEX_HOME explicitly or install hooks manually")
+	}
 	if session.IsCodexCompatible(inst.Tool) && (inst.Wrapper != "" || inst.Tool != "codex" || (strings.TrimSpace(inst.Command) != "" && strings.TrimSpace(inst.Command) != "codex") || session.GetCodexCommand() != "codex") {
 		return fmt.Errorf("cannot safely resolve a custom Codex command home; install hooks manually")
 	}
