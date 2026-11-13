@@ -20,7 +20,7 @@ class _StopLoop(Exception):
     pass
 
 
-def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_payloads=None):
+def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_payloads=None, messages=None):
     """Drive heartbeat_loop for len(session_lists) ticks; return per-tick bytes sent."""
     ticks = iter(session_lists)
     inbox_ticks = iter(inbox_counts or [0] * len(session_lists))
@@ -47,6 +47,8 @@ def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_pay
 
     def fake_send(_session, message, **_kwargs):
         per_tick[-1] += len(message.encode())
+        if messages is not None:
+            messages.append(message)
         return True, "[STATUS] All clear.", None
 
     async def fake_running(_name, _profile):
@@ -122,3 +124,21 @@ def test_unreadable_inbox_does_not_silence_heartbeat(monkeypatch, tmp_path):
     conductor = [{"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}]
     per_tick = _run_loop(monkeypatch, tmp_path, [conductor], [0], ["__unreadable__"])
     assert per_tick[0] > 0, per_tick
+
+
+
+
+# Archiving tears down the pane, so an archived session can read as error. It
+# is not a crash, so it must neither wake the conductor nor be counted.
+ARCHIVED_ERROR = {"title": "old-run", "status": "error", "group": "ops", "path": "/src/old", "archived": True}
+
+
+def test_archived_error_session_does_not_wake_the_conductor(monkeypatch, tmp_path):
+    assert _run_loop(monkeypatch, tmp_path, [[ARCHIVED_ERROR]]) == [0]
+
+
+def test_archived_error_session_is_not_counted(monkeypatch, tmp_path):
+    messages: list[str] = []
+    _run_loop(monkeypatch, tmp_path, [[ARCHIVED_ERROR] + WAITING], messages=messages)
+    assert len(messages) == 1
+    assert "0 error" in messages[0] and "old-run" not in messages[0], messages[0]

@@ -59,7 +59,9 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 			in.InboxError = in.InboxError || err != nil
 			continue
 		}
-		if inst.ResolveConductorName() != "" ||
+		// An archived session's pane is gone on purpose; counting it would
+		// report every archived session as an error on every tick.
+		if inst.IsArchived() || inst.ResolveConductorName() != "" ||
 			(inst.GroupPath != name && !strings.HasPrefix(inst.GroupPath, name+"/")) {
 			continue
 		}

@@ -6114,6 +6114,10 @@ type sessionRenderState struct {
 	// callers that build a fake snapshot without touching this field (many
 	// tests do) get the pre-finding-1 behavior of counting everything.
 	archivedSuperseded bool
+	// archived is true for every archived session. Archiving tears down the
+	// pane, so these rows carry a stopped or error status that the active
+	// view never shows; the status counters skip them for that reason.
+	archived bool
 }
 
 // shouldPersistAutoNameDesc decides whether the background status loop should
@@ -6266,6 +6270,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			substate:           inst.CachedSubstate(),
 			tool:               inst.DisplayToolThreadSafe(),
 			archivedSuperseded: inst.IsArchived() && inst.SupersededBy != "",
+			archived:           inst.IsArchived(),
 			// Label fields: read here, on the refresher's goroutine, so the
 			// render path never takes Instance.mu per row (#1753). Title goes
 			// through GetTitleThreadSafe because SetField/ReconcileTitleFromClaude/
@@ -19208,8 +19213,13 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 	// hidden from list --json and must not inflate this header pill either
 	// (issue: header/status totals exceeded list --json's by the number of
 	// superseded sources still holding a live tmux process).
+	//
+	// Every other archived session is skipped too: the status filters only
+	// ever show active rows, so a pill that counted archived sessions offered
+	// a number its own filter could not show ("23 error", then "No sessions
+	// match").
 	for _, state := range snapshot {
-		if state.archivedSuperseded {
+		if state.archivedSuperseded || state.archived {
 			continue
 		}
 		switch statusBucket(state.status) {
@@ -19246,6 +19256,9 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		age, known := h.remoteRowAgeLocked(name)
 		stale := known && age >= remoteRowStaleAge
 		for _, rs := range sessions {
+			if rs.Archived {
+				continue
+			}
 			switch statusBucket(session.Status(rs.Status)) {
 			case session.StatusRunning:
 				if stale {
@@ -25573,6 +25586,10 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	// this panel has to derive from the same tracked set or it overcounts
 	// and shows phantom rows for sessions the enumerable list doesn't have.
 	visibleSessions := session.VisibleInstances(group.Sessions)
+	// Count and list only the partition the list shows: an archived session's
+	// torn-down pane reads as stopped or error, which the active view never
+	// shows, and the archived view shows only archived rows.
+	visibleSessions = session.FilterInstancesByArchive(visibleSessions, h.statusFilter == FilterModeArchived)
 
 	// Session count
 	countStyle := lipgloss.NewStyle().

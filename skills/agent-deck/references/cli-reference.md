@@ -140,6 +140,7 @@ agent-deck status [-v|-q|--json]
 - Default: `2 waiting - 5 running - 3 idle`
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
+- Archived sessions are not counted or listed: archiving stops the pane on purpose, so their stopped/error status is not news. `list --json` still includes them, each with `"archived": true`.
 
 ### migrate-paths - Copy legacy data into XDG layout
 
@@ -324,6 +325,7 @@ Auto-detects current session if no ID provided.
 - `opencode_session_id`: the native OpenCode conversation id, present for OpenCode sessions only (an empty string until one is known or set with `session set <id> opencode-session-id <ses_...>`)
 - Attached MCPs (local, global, project)
 - tmux session name
+- `archived` (always present) and `archived_at` (only when archived), as in `list --json`. Archiving records `stopped`, including for a session whose pane was already gone.
 - `substate` / `substate_detail` (omitted when none). Substate `background-work` (Claude) means the foreground turn ended but a Workflow, background agents, shells or a Monitor are still in flight: status is `running`, `substate_detail` reads e.g. `workflow comms-followon-round3 3/5 · 18m32s`, and a `background_work` object carries the structure:
 
 | Field | Meaning |

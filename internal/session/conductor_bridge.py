@@ -4926,6 +4926,10 @@ async def heartbeat_loop(
                         continue
                     if s_group != name and not s_group.startswith(f"{name}/"):
                         continue
+                    # An archived session's pane is gone on purpose; counting
+                    # it would report every archive as an error on every tick.
+                    if s.get("archived"):
+                        continue
                     scoped_sessions.append(s)
 
                 waiting = sum(1 for s in scoped_sessions if s.get("status", "") == "waiting")

@@ -3725,6 +3725,10 @@ func handleStatus(profile string, args []string) {
 	// superseded by a "Restart with new session ID" so status totals never
 	// exceed the enumerable session list.
 	instances = session.VisibleInstances(instances)
+	// Archived sessions are left out entirely, as in the TUI header: their pane
+	// was torn down on purpose, so their stopped/error status is not news.
+	// list --json still enumerates them, each marked "archived".
+	instances = session.FilterInstancesByArchive(instances, false)
 
 	if len(instances) == 0 {
 		if *jsonOutput {
