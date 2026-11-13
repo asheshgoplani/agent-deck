@@ -174,3 +174,33 @@ func TestWriteOpenCodeGlobalMCP_AttachTypeChangeDropsStaleFields(t *testing.T) {
 		t.Fatalf("timeout should carry over: %v", cat)
 	}
 }
+
+func TestWriteOpenCodeGlobalMCP_LegacyServerNamedServers(t *testing.T) {
+	path := setupOpenCodeMergeFixture(t)
+	seed := `{"mcp": {"servers": {"type": "remote", "url": "https://named.invalid/mcp"}}}`
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteOpenCodeGlobalMCP([]string{"cat"}); err != nil {
+		t.Fatal(err)
+	}
+	_, mcp := readOpenCodeMCPMap(t, path)
+	named, _ := mcp["servers"].(map[string]any)
+	if named["type"] != "remote" || named["url"] != "https://named.invalid/mcp" || len(named) != 2 {
+		t.Fatalf("legacy server named \"servers\" changed: %v", mcp)
+	}
+	if mcp["cat"] == nil {
+		t.Fatalf("attached entry not written beside the legacy server: %v", mcp)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg opencodeConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.MCP["cat"]; !ok {
+		t.Fatalf("reader does not see the attached entry: %v", cfg.MCP)
+	}
+}

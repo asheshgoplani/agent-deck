@@ -63,6 +63,12 @@ func setOpenCodeMCPServers(config map[string]interface{}, servers map[string]ope
 	mcp, _ := config["mcp"].(map[string]interface{})
 	existingServers, _ := mcp["servers"].(map[string]interface{})
 	_, native := mcp["servers"]
+	if _, legacyServer := existingServers["type"]; legacyServer {
+		// A legacy server named "servers", not the V2 container (the reader
+		// in UnmarshalJSON makes the same distinction).
+		native = false
+		existingServers = nil
+	}
 	if !v2 && !native {
 		config["mcp"] = mergeOpenCodeServerMap(mcp, servers)
 		return
