@@ -540,10 +540,11 @@ func TestPiLedgerE2E_APiParentEditedToClaudeKeepsThePiRulesUntilItRestarts(t *te
 
 // CodeRabbit (hook_handler.go:226, the restart window): a listed pi parent is
 // restarted as Claude, and its hooks run before the daemon's next poll moves the
-// marker. Its pane runs Claude now, and every pi left in the parent's session
-// serves no socket (the restart replaced the pane that served it), so none is
-// pane_host: a pi run start is given none of its records, its receipts are not
-// applied, and the Claude parent's prompt shows the record once.
+// marker. Its pane runs Claude now. A pi without pane_host (one in another pane
+// of the session) is given none of its records and its receipts are not
+// applied, and the Claude parent's prompt shows the record once. Not covered: a
+// pi that outlives its replaced pane without shutting down still serves the
+// socket and is pane_host until the next poll.
 func TestPiLedgerE2E_APiParentRestartedAsClaudeAdmitsNoPiBeforeTheNextPoll(t *testing.T) {
 	e := newPiLedgerE2EFor(t, "pi")
 	e.runOnce()

@@ -312,8 +312,11 @@ func (h *Home) adoptRestartRecord(sessionID string) {
 	if inst == nil {
 		return
 	}
-	// The launch write is the restart's on every path: the recreate path's
-	// outcome write, or a respawn-pane path's launch decision write.
+	// The launch write is the restart's last own write on every path: the
+	// recreate path's outcome write, or a respawn-pane or fresh restart's launch
+	// decision write. A restart from the archived view also unarchives first,
+	// a second own write this does not account for, so its save still aborts
+	// and reloads, as it did before the launch write was stamped.
 	h.adoptOwnWrite(inst.LaunchRecordStamps(), "restart_record")
 }
 

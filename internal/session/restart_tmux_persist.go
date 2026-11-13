@@ -140,7 +140,8 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 // not handed to a later full save: that save carries this process's view, and
 // another launch may have recorded its own decision under the same tmux name by
 // then (a respawn keeps the name), which the snapshot merge cannot tell from
-// the value this process loaded. The row keeps the previous launch's record.
+// the value this process loaded. The row keeps the previous launch's record
+// (or, if only the last_modified bump failed, this launch's).
 func (i *Instance) persistLaunchDecision() {
 	i.noteLaunch()
 	name := ""
