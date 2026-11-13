@@ -522,6 +522,12 @@ func printCodexHooksUsage(w io.Writer) {
 
 func handleCodexHooksInstall() {
 	configPath := getCodexConfigPath()
+	lock, err := session.AcquireConfigFileLockTimeout(configPath, time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error locking codex config: %v\n", err)
+		exitCLI(1)
+	}
+	defer lock.Release()
 	content, err := readFileOrEmpty(configPath)
 	if err != nil {
 		// Never treat an unreadable config as empty: the write below would replace it.
@@ -589,6 +595,12 @@ func handleCodexHooksInstall() {
 
 func handleCodexHooksUninstall() {
 	configPath := getCodexConfigPath()
+	lock, err := session.AcquireConfigFileLockTimeout(configPath, time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error locking codex config: %v\n", err)
+		exitCLI(1)
+	}
+	defer lock.Release()
 	content, err := readFileOrEmpty(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading codex config: %v\n", err)
@@ -642,9 +654,9 @@ func handleCodexHooksStatus() {
 }
 
 // Codex notify-hook state of one CODEX_HOME, as `session show` / `doctor`
-// report it. Nothing in `add` / `remote add` installs the hook, so a codex
-// session's light is content detection only until `codex-hooks install` is
-// run for its CODEX_HOME; that has to be said, not left blank. Unknown is a
+// report it. Opt-in creation fills an absent notify setting for local CLI sessions,
+// but existing custom settings and failed installs can still leave a session
+// using content detection only; that has to be said, not left blank. Unknown is a
 // first-class answer: a remote session's CODEX_HOME is on the other host.
 const (
 	codexHooksInstalled    = "installed"

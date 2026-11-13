@@ -81,6 +81,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// races the conductor for the bot lock (Telegram 409, dropped messages).
 	inheritTelegramEnv := fs.Bool("inherit-telegram-env", false, "Keep TELEGRAM_* env vars in the child (#1133); off by default to prevent duplicate plugin pollers")
 	noIdentity := fs.Bool("no-identity", false, "Do not inject the agent-deck session identity block into the harness (global default: [launch] inject_identity)")
+	installCodexHooks := fs.Bool("install-codex-hooks", false, "Install a missing Codex notify hook in the shared Codex home; persists independently of this session")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -775,6 +776,12 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// The (title, location) pair is now taken in the state db; the start and
 	// attach below must not hold the lock for other registrations.
 	releaseLaunchRegistration()
+
+	if *installCodexHooks {
+		if err := installMissingCodexHooks(newInstance); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Codex hooks: %v\n", err)
+		}
+	}
 
 	autoHints := map[string]string{hintKeyPurpose: firstLineClipped(initialMessage, derivedPurposeLimit)}
 	if parentInstance != nil {
