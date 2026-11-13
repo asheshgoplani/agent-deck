@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -499,20 +501,34 @@ func TestCommsDeliver_PiRefusedWakeDoesNotConsumeTheAutoWakeCap(t *testing.T) {
 // under "Socket wakes stopped". Nothing is typed.
 func TestCommsDeliver_PiRefusedWakesAreBoundedThenListedAsStopped(t *testing.T) {
 	for name, tc := range map[string]struct {
-		setup  func(*piWakeFx)
+		reply  string
+		down   bool
 		reason string
 	}{
-		"busy": {func(*piWakeFx) {}, "busy_for_5m"},
-		"socket down": {func(w *piWakeFx) {
-			piWakeSocketFor = func(string, string) string { return filepath.Join(filepath.Dir(w.ext.path), "none.sock") }
-		}, "socket_down_for_5m"},
+		"busy":        {reply: "busy", reason: "busy_for_5m"},
+		"duplicate":   {reply: "duplicate", reason: "duplicate_for_5m"},
+		"socket down": {reply: "busy", down: true, reason: "socket_down_for_5m"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			w := newPiWakeFixture(t, refuseWith("busy"))
-			tc.setup(w)
+			w := newPiWakeFixture(t, refuseWith(tc.reply))
+			// Every ring resolves the socket path once, whether or not a frame
+			// reaches the extension, so a ring is counted on every path.
+			var dials atomic.Int32
+			resolve := piWakeSocketFor
+			piWakeSocketFor = func(profile, id string) string {
+				dials.Add(1)
+				if tc.down {
+					return filepath.Join(filepath.Dir(w.ext.path), "none.sock")
+				}
+				return resolve(profile, id)
+			}
+			var logBuf syncBuffer
+			prevLog := commsLog
+			commsLog = slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			t.Cleanup(func() { w.settle(); commsLog = prevLog })
 			w.urgent(t, "shipped the build")
 			start := w.clock
-			rings := func() int { return w.ext.count() + len(w.typed.all()) }
+			rings := func() int { return int(dials.Load()) + len(w.typed.all()) }
 			var atBound int
 			for i := 0; i < 12; i++ {
 				w.deliver(t, "waiting")
@@ -528,8 +544,11 @@ func TestCommsDeliver_PiRefusedWakesAreBoundedThenListedAsStopped(t *testing.T) 
 				t.Fatalf("typed %q: pi has no draft guard", w.typed.all())
 			}
 			// The pass that crossed the bound is the last to ring.
-			if name == "busy" && w.ext.count() != atBound {
-				t.Errorf("frames = %d, want %d: a ring per pass until the bound, none after", w.ext.count(), atBound)
+			if got := rings(); got != atBound {
+				t.Errorf("rings = %d, want %d: a ring per pass until the bound, none after", got, atBound)
+			}
+			if !tc.down && w.ext.count() != atBound {
+				t.Errorf("frames = %d, want %d", w.ext.count(), atBound)
 			}
 			before := rings()
 			for _, step := range []time.Duration{5 * time.Minute, time.Hour} {
@@ -555,6 +574,10 @@ func TestCommsDeliver_PiRefusedWakesAreBoundedThenListedAsStopped(t *testing.T) 
 			stopped := PiSocketWakesStopped()
 			if len(stopped) != 1 || stopped[0].Parent != w.parent.ID || stopped[0].Reason != tc.reason {
 				t.Errorf("pi-hooks status lists %+v, want the parent with %q", stopped, tc.reason)
+			}
+			w.settle()
+			if logged := logBuf.take(); strings.Count(logged, `"pi_wake_refused_too_long"`) != 1 {
+				t.Errorf("want pi_wake_refused_too_long logged once: %s", logged)
 			}
 		})
 	}
@@ -600,6 +623,67 @@ func TestCommsDeliver_PiRefusedWakeBoundRestartsAfterAnAnswer(t *testing.T) {
 		if r.Via == "socket" && r.State == comms.StateFailed {
 			t.Errorf("a refusal inside a fresh run was settled as failed: %+v", r)
 		}
+	}
+}
+
+// Maintainer (#3024, wake_send.go:278): the run of refusals measures one
+// episode. Once the bound settles it and a run start delivers the records, a new
+// urgent record hours later is not settled by its first refusal: it is rung
+// again on the next pass, with no second failed record.
+func TestCommsDeliver_PiRefusedWakeRunEndsWithItsEpisode(t *testing.T) {
+	w := newPiWakeFixture(t, refuseWith("busy"))
+	w.urgent(t, "shipped the build")
+	start := w.clock
+	for w.clock.Sub(start) <= piRefusedWakeBound+time.Minute {
+		w.deliver(t, "waiting")
+		w.clock = w.clock.Add(61 * time.Second)
+	}
+	failed := func() int {
+		n := 0
+		for _, r := range w.wakeRecs(t) {
+			if r.Via == "socket" && r.State == comms.StateFailed {
+				n++
+			}
+		}
+		return n
+	}
+	if failed() != 1 {
+		t.Fatalf("test setup: want the first episode settled with one failed record, got %d", failed())
+	}
+	// The operator prompts pi: the records ride the run start and are acked.
+	dl, ok := LedgerPromptContext(w.parent.ID, "carry on", "", w.parent.Tool == "pi")
+	if !ok || !strings.Contains(dl.Text, "shipped the build") {
+		t.Fatalf("the run start did not carry the settled record (ok %v)", ok)
+	}
+	dl.Done(true)
+	// The extension returned the context to pi and echoed the receipt; the next
+	// run start settles the injection.
+	w.injectedEdge(t, tokenOf(t, dl))
+	dl2, ok := LedgerPromptContext(w.parent.ID, "and again", "", w.parent.Tool == "pi")
+	if !ok {
+		t.Fatal("enrolled parent fell back to the inbox path")
+	}
+	dl2.Done(true)
+	w.deliver(t, "waiting")
+	if st := w.state(t); st.Pending != 0 {
+		t.Fatalf("test setup: the run start did not deliver the record: %+v", st)
+	}
+
+	// Hours later a new urgent record's first ring meets one transient refusal.
+	w.clock = w.clock.Add(3 * time.Hour)
+	w.urgent(t, "and the docs")
+	frames := w.ext.count()
+	w.deliver(t, "waiting")
+	if w.ext.count() != frames+1 {
+		t.Fatalf("the new record was not rung (frames %d, was %d)", w.ext.count(), frames)
+	}
+	if n := failed(); n != 1 {
+		t.Errorf("one refusal of a new episode was settled at once: %d failed socket wake records, want 1", n)
+	}
+	w.clock = w.clock.Add(61 * time.Second)
+	w.deliver(t, "waiting")
+	if w.ext.count() != frames+2 {
+		t.Errorf("the new record was not rung again on the next pass (frames %d, want %d)", w.ext.count(), frames+2)
 	}
 }
 

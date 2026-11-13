@@ -513,11 +513,19 @@ func (d *TransitionDaemon) deliverToConsumer(l *comms.Ledger, r *comms.Reader, p
 		// been shown: the inbox doorbell rings only an idle parent, and pi
 		// has no Stop hook to hand a busy one the turn when its run ends.
 		var pending []comms.Exported
+		owed := false // a record still wants a wake, rung now or in flight
 		for _, e := range news {
 			wakes := ledgerOnlyUrgent(e.Record) || (commsParentHarness(inst) == "pi" && piUnshownUrgentTurn(f, e.Record))
-			if _, inflight := f.InflightFor(e.Cursor); !inflight && wakes && f.WakeTriesFor(e.Cursor) < commsMaxWakeTries {
+			if !wakes || f.WakeTriesFor(e.Cursor) >= commsMaxWakeTries {
+				continue
+			}
+			owed = true
+			if _, inflight := f.InflightFor(e.Cursor); !inflight {
 				pending = append(pending, e)
 			}
+		}
+		if !owed {
+			f.RefusedSince = 0 // nothing left to ring: the run of refused wakes is over
 		}
 		defer func() {
 			f.NextDue = commsNextDue(f, pending)
@@ -707,6 +715,7 @@ func ackShownInPrompt(p comms.Pass, prompt, nonce string, acceptPreview bool) []
 	f := p.File
 	if nonce == "" && !comms.IsWakePrompt(prompt) {
 		f.AutoWakes, f.CapNoted = 0, false
+		f.RefusedSince = 0 // the parent's own turn ends a run of refused wakes too
 		return nil
 	}
 	// Only records a wake actually carried count, and only when the

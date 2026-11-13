@@ -268,7 +268,10 @@ func wakeSendOpt(o wakeOpts, parent *Instance, profile, line, nonce string, ids 
 // queued, or a refusal word after the frame was written) ends the run, and a
 // transient socket refusal (one that carries its reason) starts one if none is
 // running (a clock that stepped back past its start restarts it). Silence
-// (pushed) and a typed doorbell change nothing. The inbox doorbell notes its
+// (pushed) and a typed doorbell change nothing. The run also ends when the
+// bound settles it (ringPiWake), when a pass finds nothing left to ring, and
+// when a prompt of the parent's own resets the automatic wakes
+// (deliverToConsumer, ackShownInPrompt): it measures one episode of refusals. The inbox doorbell notes its
 // outcome here too, so an answered inbox wake gives the ledger a fresh bound;
 // settling the run as failed stays with the ledger (ringPiWake), which owns
 // the records.
@@ -585,6 +588,7 @@ func (d *TransitionDaemon) ringPiWake(r *comms.Reader, profile string, inst *Ins
 					if stopped == "" {
 						stopped = "refused"
 					}
+					p.File.RefusedSince = 0 // the run is settled; the next refusal starts a new one
 				} else if p.File.AutoWakes > 0 {
 					p.File.AutoWakes-- // a transient refusal never consumes the automatic wake cap
 				}
