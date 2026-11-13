@@ -49,6 +49,7 @@ func (i *Instance) recordRestartOutcome() {
 	i.restartTmuxRecordMu.Lock()
 	i.restartTmuxRecordErr = err
 	i.restartTmuxRecordStamps = stamps
+	i.launchRecordStamps = stamps // zero when the write failed
 	i.restartTmuxRecordMu.Unlock()
 	if err == nil {
 		i.launchUnrecorded.Store(false) // the outcome carried the launch decision
@@ -124,30 +125,50 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 
 // persistLaunchDecision records, once the pane has spawned, what its launch
 // was: the tool it launched (launched_tool), whether a pi's launch exported a
-// socket path in AGENTDECK_PI_SOCKET, and the tmux session it spawned in. Start and StartWithMessage are the launch
-// paths the CLI, the web and the TUI share, and none of them saves the instance
-// afterwards, so a start that changed the decision would otherwise leave the
-// old value in storage. They call it right after the spawn succeeds, so a
-// failure before it, or a spawn another process won, leaves storage as it was.
-// It is a targeted write of two keys. A new session the web, the TUI or a fork
-// starts before its first save matches no row: it is marked launchUnrecorded,
-// and that first save records the decision. A failure is logged and never
-// fails the launch.
+// socket path in AGENTDECK_PI_SOCKET, and the tmux session it spawned in.
+// Start and StartWithMessage are the launch paths the CLI, the web and the TUI
+// share, and not all of them save the instance afterwards, so a start that
+// changed the decision would otherwise leave the old value in storage. They
+// call it right after the spawn succeeds, so a failure before it, or a spawn
+// another process won, leaves storage as it was; the restart's respawn-pane
+// paths call it too. The write moves last_modified, and its stamps are kept for
+// LaunchRecordStamps.
+//
+// A new session the web, the TUI or a fork starts before its first save
+// matches no row: it is marked launchUnrecorded, and that first save records
+// the decision. A failure is logged and never fails the launch.
 func (i *Instance) persistLaunchDecision() {
 	i.noteLaunch()
 	name := ""
 	if i.tmuxSession != nil {
 		name = i.tmuxSession.TmuxName()
 	}
+	var stamps statedb.WriteStamps
 	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
-		return db.WriteLaunchDecision(i.ID, name, i.Tool, i.PiSocketExported)
+		var werr error
+		stamps, werr = db.WriteLaunchDecision(i.ID, name, i.Tool, i.PiSocketExported)
+		return werr
 	})
+	i.restartTmuxRecordMu.Lock()
+	i.launchRecordStamps = stamps // zero when the write failed
+	i.restartTmuxRecordMu.Unlock()
 	i.launchUnrecorded.Store(err != nil)
 	if err != nil && !errors.Is(err, errNoStateDB) && !errors.Is(err, statedb.ErrInstanceNotStored) {
 		sessionLog.Warn("launch_decision_persist_failed",
 			slog.String("instance_id", i.ID),
 			slog.String("error", err.Error()))
 	}
+}
+
+// LaunchRecordStamps returns the last_modified values the last launch's
+// targeted write (a start's, or a restart's outcome) replaced and wrote, or the
+// zero value if it recorded nothing. Like RestartRecordStamps, it lets a
+// process that launched and then saves tell its own bump from another
+// process's change.
+func (i *Instance) LaunchRecordStamps() statedb.WriteStamps {
+	i.restartTmuxRecordMu.Lock()
+	defer i.restartTmuxRecordMu.Unlock()
+	return i.launchRecordStamps
 }
 
 // noteLaunch records on the instance what the launch now spawning ran: its

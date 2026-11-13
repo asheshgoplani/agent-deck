@@ -70,7 +70,7 @@ func newPiLedgerE2EFor(t *testing.T, parentTool string) *piLedgerE2E {
 	}
 	db := storage.GetDB()
 	// The parent's launch, as Start records it.
-	if err := db.WriteLaunchDecision(parent.ID, parent.GetTmuxSession().TmuxName(), parentTool, parent.PiSocketExported); err != nil {
+	if _, err := db.WriteLaunchDecision(parent.ID, parent.GetTmuxSession().TmuxName(), parentTool, parent.PiSocketExported); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.RegisterInstance(false); err != nil { // a live TUI heartbeat: the daemon reads DB rows
@@ -459,7 +459,7 @@ func (e *piLedgerE2E) relaunch(exported bool) {
 	if err := storage.SaveWithGroups([]*session.Instance{e.parent, e.child}, nil); err != nil {
 		e.t.Fatal(err)
 	}
-	if err := storage.GetDB().WriteLaunchDecision(e.parent.ID, e.parent.GetTmuxSession().TmuxName(), e.parent.Tool, exported); err != nil {
+	if _, err := storage.GetDB().WriteLaunchDecision(e.parent.ID, e.parent.GetTmuxSession().TmuxName(), e.parent.Tool, exported); err != nil {
 		e.t.Fatal(err)
 	}
 	e.status(e.parent.ID, "waiting")

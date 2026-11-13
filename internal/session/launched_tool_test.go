@@ -32,7 +32,7 @@ func TestLaunchedTool_AFullSaveKeepsItAndOnlyALaunchWriteChangesIt(t *testing.T)
 	if got := storedLaunchedTool(t, storage, inst.ID); got != "" {
 		t.Fatalf("a row no launch wrote holds LaunchedTool = %q, want empty", got)
 	}
-	if err := storage.GetDB().WriteLaunchDecision(inst.ID, inst.tmuxSession.TmuxName(), "pi", true); err != nil {
+	if _, err := storage.GetDB().WriteLaunchDecision(inst.ID, inst.tmuxSession.TmuxName(), "pi", true); err != nil {
 		t.Fatal(err)
 	}
 	if got := storedLaunchedTool(t, storage, inst.ID); got != "pi" {

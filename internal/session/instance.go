@@ -703,6 +703,7 @@ type Instance struct {
 	restartTmuxRecordMu     sync.Mutex
 	restartTmuxRecordErr    error
 	restartTmuxRecordStamps statedb.WriteStamps
+	launchRecordStamps      statedb.WriteStamps // the last launch write's, for LaunchRecordStamps
 
 	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
 	// issue #1614). Not persisted; rebuilt from the live event stream.

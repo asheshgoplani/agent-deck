@@ -157,13 +157,18 @@ func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, toolDataExp
 // whether a pi's launch exported the wake socket, and the tmux session it
 // describes (see launchToolDataExpr); and that session's name in tmux_session,
 // in the same UPDATE, since a start whose name was taken spawns under a new one
-// (tmux.Session.Start) and no save follows a start. A start writes it after a
-// successful spawn; a restart folds it into its outcome write. An instance
-// with no row yet (started before its first save) returns ErrInstanceNotStored,
-// and its first save records the decision instead.
-func (s *StateDB) WriteLaunchDecision(id, tmuxSession, tool string, exported bool) error {
+// (tmux.Session.Start) and not every start is followed by a save. A start
+// writes it after a successful spawn; a restart folds it into its outcome
+// write, or writes it here on a respawn-pane path. An instance with no row yet
+// (started before its first save) returns ErrInstanceNotStored, and its first
+// save records the decision instead.
+//
+// Like the restart outcome, it moves last_modified, so a peer reloads the name,
+// and returns the stamps, so the launching process can tell the bump is its own
+// (Instance.LaunchRecordStamps).
+func (s *StateDB) WriteLaunchDecision(id, tmuxSession, tool string, exported bool) (WriteStamps, error) {
 	if tmuxSession == "" {
-		return fmt.Errorf("record launch decision for %q: the launch has no tmux session name", id)
+		return WriteStamps{}, fmt.Errorf("record launch decision for %q: the launch has no tmux session name", id)
 	}
 	var affected int64
 	if err := withBusyRetry(func() error {
@@ -175,10 +180,10 @@ func (s *StateDB) WriteLaunchDecision(id, tmuxSession, tool string, exported boo
 		affected, err = res.RowsAffected()
 		return err
 	}); err != nil {
-		return err
+		return WriteStamps{}, err
 	}
 	if affected == 0 {
-		return fmt.Errorf("record launch decision for %q: %w", id, ErrInstanceNotStored)
+		return WriteStamps{}, fmt.Errorf("record launch decision for %q: %w", id, ErrInstanceNotStored)
 	}
-	return nil
+	return s.touchStamp()
 }

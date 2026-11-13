@@ -139,7 +139,7 @@ func TestPiLaunchDecision_AFullSaveNeverWritesItsViewOverANewerLaunch(t *testing
 }
 
 // Forge (p5): a start whose tmux name is taken spawns under a new one
-// (tmux.Session.Start), and no save follows a start. The launch write records
+// (tmux.Session.Start), and not every start is followed by a save. The launch write records
 // the name it spawned under with the decision, so the daemon, which loads the
 // row, still trusts it.
 func TestPiLaunchDecision_AStartUnderATakenTmuxNameRecordsTheNameItSpawnedUnder(t *testing.T) {
@@ -188,4 +188,46 @@ func mustLoad(t *testing.T, storage *Storage) []*Instance {
 		t.Fatal(err)
 	}
 	return instances
+}
+
+// CodeRabbit (write_restart_outcome.go:170): the launch write changes
+// tmux_session, so it moves last_modified like the restart outcome does, or an
+// open TUI never reloads the name the start spawned under; and the launching
+// process can tell the bump is its own (LaunchRecordStamps), so its own save
+// does not read it as another process's change.
+func TestPiLaunchDecision_TheLaunchWriteIsAChangeOtherProcessesSeeAndThisOneOwns(t *testing.T) {
+	storage, inst := piStartFixture(t, "1.3.0", false)
+	before, err := storage.GetDB().LastModified()
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken := inst.tmuxSession.TmuxName()
+	blocker := tmux.NewSession("pi-stamp-blocker", t.TempDir())
+	blocker.Name, blocker.SocketName = taken, inst.tmuxSession.SocketName
+	if err := blocker.Start("sleep 300"); err != nil {
+		t.Fatalf("test setup: the blocker did not start: %v", err)
+	}
+	t.Cleanup(func() { _ = blocker.Kill() })
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if sess := inst.GetTmuxSession(); sess != nil {
+			_ = sess.Kill()
+		}
+		joinSpawnWatchers(t, inst)
+	})
+	if inst.tmuxSession.TmuxName() == taken {
+		t.Fatal("test setup: the start reused the taken name")
+	}
+	after, err := storage.GetDB().LastModified()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after == before {
+		t.Fatal("the launch wrote a new tmux_session without moving last_modified: an open TUI keeps the taken name")
+	}
+	if stamps := inst.LaunchRecordStamps(); !stamps.SoleWriterSince(before, after) {
+		t.Errorf("the launch write is not recognisable as this process's own: stamps %+v, before %d, current %d", stamps, before, after)
+	}
 }

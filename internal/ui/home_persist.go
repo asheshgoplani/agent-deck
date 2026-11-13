@@ -312,7 +312,9 @@ func (h *Home) adoptRestartRecord(sessionID string) {
 	if inst == nil {
 		return
 	}
-	h.adoptOwnWrite(inst.RestartRecordStamps(), "restart_record")
+	// The launch write is the restart's on every path: the recreate path's
+	// outcome write, or a respawn-pane path's launch decision write.
+	h.adoptOwnWrite(inst.LaunchRecordStamps(), "restart_record")
 }
 
 // adoptOwnWrite advances this TUI's freshness marker past a targeted write it
