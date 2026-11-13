@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -229,5 +230,69 @@ func TestPiLaunchDecision_TheLaunchWriteIsAChangeOtherProcessesSeeAndThisOneOwns
 	}
 	if stamps := inst.LaunchRecordStamps(); !stamps.SoleWriterSince(before, after) {
 		t.Errorf("the launch write is not recognisable as this process's own: stamps %+v, before %d, current %d", stamps, before, after)
+	}
+}
+
+// CodeRabbit (instance.go:1796): a launch whose targeted write fails is not
+// handed to a later full save. That save holds this process's view, and by then
+// another launch may have recorded its own decision under the same tmux name
+// (a respawn keeps it), which the snapshot merge cannot tell from the value
+// this process loaded. Only a launch that found no row is left to the first
+// save.
+func TestPiLaunchDecision_AFailedLaunchWriteIsNotCarriedByALaterFullSave(t *testing.T) {
+	storage, err := NewStorageWithProfile("_test_pi_bind_fail_" + randomString(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	prev := statedb.GetGlobal()
+	statedb.SetGlobal(storage.GetDB())
+	t.Cleanup(func() { statedb.SetGlobal(prev) })
+	seed := NewInstanceWithTool("pi-bind-fail", t.TempDir(), "pi")
+	seed.GroupPath = DefaultGroupPath
+	if err := storage.SaveWithGroups([]*Instance{seed}, NewGroupTree([]*Instance{seed})); err != nil {
+		t.Fatal(err)
+	}
+	name := seed.tmuxSession.TmuxName()
+	// An earlier launch without the socket, as its launch write records it.
+	if _, err := storage.GetDB().WriteLaunchDecision(seed.ID, name, "pi", false); err != nil {
+		t.Fatal(err)
+	}
+	var inst *Instance
+	loaded := mustLoad(t, storage)
+	for _, in := range loaded {
+		if in.ID == seed.ID {
+			inst = in
+		}
+	}
+	if inst == nil {
+		t.Fatal("instance missing from storage")
+	}
+
+	// This process launches with the socket and its write fails.
+	db := storage.GetDB().DB()
+	if _, err := db.Exec(`CREATE TRIGGER fail_launch_write BEFORE UPDATE OF tool_data ON instances
+		WHEN json_extract(NEW.tool_data, '$.pi_socket_exported') = 1 BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	inst.PiSocketExported = true
+	inst.persistLaunchDecision()
+	if _, err := db.Exec(`DROP TRIGGER fail_launch_write`); err != nil {
+		t.Fatal(err)
+	}
+	if storedPiSocketExported(t, storage, inst.ID) {
+		t.Fatal("test setup: the injected failure did not stop the launch write")
+	}
+	// Another process respawns the pane under the same name without the socket
+	// and records that: the row reads as it did when this process loaded it.
+	if _, err := storage.GetDB().WriteLaunchDecision(inst.ID, name, "pi", false); err != nil {
+		t.Fatal(err)
+	}
+	// This process saves in full.
+	if err := storage.SaveWithGroups(loaded, NewGroupTree(loaded)); err != nil {
+		t.Fatal(err)
+	}
+	if storedPiSocketExported(t, storage, inst.ID) {
+		t.Error("a full save wrote a failed launch's pi_socket_exported over the newer launch's decision: the pane without the socket is never typed into")
 	}
 }

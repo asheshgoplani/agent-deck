@@ -136,7 +136,11 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 //
 // A new session the web, the TUI or a fork starts before its first save
 // matches no row: it is marked launchUnrecorded, and that first save records
-// the decision. A failure is logged and never fails the launch.
+// the decision. Any other failure is logged, never fails the launch, and is
+// not handed to a later full save: that save carries this process's view, and
+// another launch may have recorded its own decision under the same tmux name by
+// then (a respawn keeps the name), which the snapshot merge cannot tell from
+// the value this process loaded. The row keeps the previous launch's record.
 func (i *Instance) persistLaunchDecision() {
 	i.noteLaunch()
 	name := ""
@@ -152,7 +156,7 @@ func (i *Instance) persistLaunchDecision() {
 	i.restartTmuxRecordMu.Lock()
 	i.launchRecordStamps = stamps // zero when the write failed
 	i.restartTmuxRecordMu.Unlock()
-	i.launchUnrecorded.Store(err != nil)
+	i.launchUnrecorded.Store(errors.Is(err, statedb.ErrInstanceNotStored) || errors.Is(err, errNoStateDB))
 	if err != nil && !errors.Is(err, errNoStateDB) && !errors.Is(err, statedb.ErrInstanceNotStored) {
 		sessionLog.Warn("launch_decision_persist_failed",
 			slog.String("instance_id", i.ID),
