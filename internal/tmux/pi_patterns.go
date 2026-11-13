@@ -121,11 +121,10 @@ func piComposerBoxVisible(content string) bool {
 			continue
 		}
 		for upper := lower - 1; upper >= 0 && lower-upper-1 <= 12; upper-- {
-			if isPiComposerBorder(lines[upper]) {
-				if lower-upper-1 >= 1 {
-					return true
-				}
-				break
+			// An adjacent rule (no line between) does not end the search:
+			// it can be a draft line that is itself a rule.
+			if isPiComposerBorder(lines[upper]) && lower-upper-1 >= 1 {
+				return true
 			}
 		}
 	}

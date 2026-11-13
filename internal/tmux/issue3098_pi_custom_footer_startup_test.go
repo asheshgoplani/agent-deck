@@ -202,6 +202,10 @@ func TestIssue3098_PiComposerBoxVisible(t *testing.T) {
 		{"box then footer and widgets", rule + "\n>\n" + rule + "\nw1\nw2\nw3\nw4\nw5\nw6\nw7", true},
 		{"trailing blank pane rows", pi3098PowerlineIdle + strings.Repeat("\n", 30), true},
 		{"heavy rules", strings.Repeat("━", 20) + "\n>\n" + strings.Repeat("━", 20), true},
+		// A draft line that is itself a rule sits right above the lower
+		// border, and the lower border is the 8th non-blank line from the
+		// bottom: the search must look past the adjacent rule.
+		{"draft ends in a rule, border at window edge", rule + "\n> hi\n" + rule + "\n" + rule + "\nw1\nw2\nw3\nw4\nw5\nw6\nw7", true},
 		{"empty", "", false},
 		{"stuck 1892", issue2361StuckPaneContent, false},
 		{"crash", pi3098CrashNoBox, false},
