@@ -537,3 +537,45 @@ func TestPiLedgerE2E_APiParentEditedToClaudeKeepsThePiRulesUntilItRestarts(t *te
 		t.Errorf("the record was shown again: %q", again)
 	}
 }
+
+// CodeRabbit (hook_handler.go:226, the restart window): a listed pi parent is
+// restarted as Claude, and its hooks run before the daemon's next poll moves the
+// marker. Its pane runs Claude now, and every pi left in the parent's session
+// serves no socket (the restart replaced the pane that served it), so none is
+// pane_host: a pi run start is given none of its records, its receipts are not
+// applied, and the Claude parent's prompt shows the record once.
+func TestPiLedgerE2E_APiParentRestartedAsClaudeAdmitsNoPiBeforeTheNextPoll(t *testing.T) {
+	e := newPiLedgerE2EFor(t, "pi")
+	e.runOnce()
+	e.pass()
+	e.edit("claude")
+	e.relaunch(false) // no poll follows yet
+	if en, ok := session.LoadCommsEnrollment(e.parent.ID); !ok || en.Tool != "pi" || !en.PiSocket {
+		t.Fatalf("test setup: marker %+v (found %v), want the pi's until the next poll", en, ok)
+	}
+
+	other := captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "split-run", "pi-split-sess", "before_agent_start", `,"prompt":"what changed?"`)
+	})
+	if strings.Contains(other, "Built and tested.") {
+		t.Errorf("a pi in the restarted parent's session was given its records before the poll: %q", other)
+	}
+	token := ""
+	if m := regexp.MustCompile(`<!-- agent-deck-delivery:([0-9A-Za-z]+) -->`).FindStringSubmatch(other); m != nil {
+		token = m[1]
+	}
+	e.hookAs(e.parent.ID, "split-run", "pi-split-sess", "turn_start", fmt.Sprintf(`,"injected_token":%q`, token))
+
+	dl, ok := session.LedgerPromptContext(e.parent.ID, "what is next?", "", false)
+	if !ok {
+		t.Fatal("enrolled parent fell back to the inbox path")
+	}
+	if !strings.Contains(dl.Text, "Built and tested.") || dl.Token != "" {
+		t.Errorf("the restarted Claude parent's prompt = %q with token %q, want the record and no receipt token", dl.Text, dl.Token)
+	}
+	dl.Done(true)
+	e.pass()
+	if again := e.prompt("and now?"); strings.Contains(again, "Built and tested.") {
+		t.Errorf("the record was shown again after the poll: %q", again)
+	}
+}
