@@ -326,7 +326,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		captured, captureErr := target.CapturePaneFresh()
 		paneNow := send.CaptureOutcome(captured, captureErr)
 		obs.Observe(paneNow)
-		opts.forgetOwnedChipIfEmptied(captured, captureErr)
+		opts.forgetOwnedChipIfEmptied(captured, captureErr, message)
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.ComposerHoldsUnsentMessage(captured, message, tmux.StripANSI)
@@ -468,7 +468,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		}
 		final, finalErr := target.CapturePaneFresh()
 		obs.Observe(send.CaptureOutcome(final, finalErr))
-		opts.forgetOwnedChipIfEmptied(final, finalErr)
+		opts.forgetOwnedChipIfEmptied(final, finalErr, message)
 		v := obs.Verdict(opts.maxRetries, verificationWindow(opts.maxRetries, opts.checkDelay))
 		switch v.Outcome {
 		case send.OutcomeConfirmed:
@@ -697,7 +697,7 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		if baseline.paneOK {
 			raw, captureErr := target.CapturePaneFresh()
 			obs.Observe(send.CaptureOutcome(raw, captureErr))
-			opts.forgetOwnedChipIfEmptied(raw, captureErr)
+			opts.forgetOwnedChipIfEmptied(raw, captureErr, message)
 			if obs.TurnStarted() {
 				return deliverySubmitted, nil
 			}

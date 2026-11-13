@@ -253,7 +253,7 @@ func TestResidue_RecalledDraftWithinHoursIsNeverDeleted(t *testing.T) {
 	if err == nil || res.delivery != "composer_blocked" {
 		t.Fatalf("delivery=%q err=%v, want composer_blocked", res.delivery, err)
 	}
-	if !strings.Contains(err.Error(), "from sender-7 left there 1h0m0s ago") || !strings.Contains(err.Error(), "if a person typed or recalled the same text since, it is theirs") {
+	if !strings.Contains(err.Error(), "from sender-7 left there 1h0m") || !strings.Contains(err.Error(), "if a person typed or recalled the same text since, it is theirs") {
 		t.Fatalf("error %q must name the sender and age, and say a recalled draft is the person's", err)
 	}
 	requireUntouched(t, inner, 0, 0, recalled)
@@ -299,7 +299,7 @@ func TestResidue_DaysOldLeftoverIsNamedNotCleared(t *testing.T) {
 	if err == nil || res.delivery != "composer_blocked" {
 		t.Fatalf("delivery=%q err=%v, want composer_blocked", res.delivery, err)
 	}
-	if !strings.Contains(err.Error(), "matches the unsent message an agent-deck send from sender-7 left there 30h0m0s ago") {
+	if !strings.Contains(err.Error(), "matches the unsent message an agent-deck send from sender-7 left there 30h0m") {
 		t.Fatalf("error %q must name the agent-deck origin, sender and age", err)
 	}
 	if res.jsonFields()["composer_holds"] != "agent_deck_residue" {

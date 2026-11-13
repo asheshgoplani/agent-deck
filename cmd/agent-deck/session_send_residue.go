@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -175,13 +176,36 @@ func reportIfStuck(target sendRetryTarget, message string, opts sendRetryOptions
 // post-Enter frame shows the input box empty: our chip left it (submitted
 // or queued), so a chip with the same label seen later is a new paste,
 // quite possibly a person's, and must never be reported as verified ours.
-func (o *sendRetryOptions) forgetOwnedChipIfEmptied(raw string, captureErr error) {
-	if o.ownedPasteChip == "" || captureErr != nil || o.composerBody == nil {
+// The same holds for plain text: the empty-before provenance is dropped too,
+// so text that comes back (a person recalls or retypes it) is never verified.
+// As in send.ObserveComposer, ownership is decided first: a body shaped like
+// Claude's idle placeholder that is a prefix of message is our text, not an
+// empty box.
+func (o *sendRetryOptions) forgetOwnedChipIfEmptied(raw string, captureErr error, message string) {
+	if (o.ownedPasteChip == "" && !o.composerEmptyBeforeSend) || captureErr != nil || o.composerBody == nil {
 		return
 	}
-	if body, ok := o.composerBody(raw, tmux.StripANSI); ok && send.FullBodyEmpty(body) {
-		o.ownedPasteChip = ""
+	body, ok := o.composerBody(raw, tmux.StripANSI)
+	if !ok {
+		return
 	}
+	draft := send.NormalizePromptText(body)
+	if draft == "" || (send.IsComposerPlaceholder(draft) && !strings.HasPrefix(send.NormalizePromptText(message), draft)) {
+		o.ownedPasteChip = ""
+		o.composerEmptyBeforeSend = false
+	}
+}
+
+// residueSenderFor is the sender a leftover record names. A --no-tag send
+// opted out of being attributed. A queue worker's child inherits the
+// worker's environment, not the queued message's sender, so its
+// AGENTDECK_INSTANCE_ID may name an unrelated session: it names no one
+// (the refusal then says "an unknown sender"), as the ledger does.
+func residueSenderFor(senderID string, noTag, queueWorker bool) string {
+	if noTag || queueWorker {
+		return ""
+	}
+	return senderID
 }
 
 // sendResidueStore keeps the per-target record of text a failed send left in

@@ -574,11 +574,9 @@ func handleSessionSend(profile string, args []string) {
 	// Both modes run the composer-draft guard (issue #1409) and submit
 	// verification with a machine-checkable delivery status (issue #1413).
 	tun := sendTuning(*noWait, *requireInputPrompt)
-	if !*noTag {
-		// Named as the origin if this send's text is ever left in the
-		// target's input box (see describeBlockedComposer).
-		tun.residueSender = senderID
-	}
+	// Named as the origin if this send's text is ever left in the target's
+	// input box (see describeBlockedComposer).
+	tun.residueSender = residueSenderFor(senderID, *noTag, *queueWorker)
 	if *queueWorker || busyAcceptsInput {
 		// A live Claude composer already exists. Startup preflight and the
 		// 30-check idle-turn probe add delay without proving this queued send.

@@ -70,3 +70,22 @@ func TestResidueLabel_VerifiedMatchSaysCheckBeforeClearing(t *testing.T) {
 		})
 	}
 }
+
+// A queue worker's child inherits the worker's AGENTDECK_INSTANCE_ID, which
+// is not the queued message's sender: a leftover must never name it.
+func TestResidueLabel_QueueWorkerNeverNamesInheritedSender(t *testing.T) {
+	cases := []struct {
+		name               string
+		noTag, queueWorker bool
+		want               string
+	}{
+		{"direct send names its sender", false, false, "sender-7"},
+		{"--no-tag names no one", true, false, ""},
+		{"queue worker child names no one", false, true, ""},
+	}
+	for _, c := range cases {
+		if got := residueSenderFor("sender-7", c.noTag, c.queueWorker); got != c.want {
+			t.Errorf("%s: residueSenderFor = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

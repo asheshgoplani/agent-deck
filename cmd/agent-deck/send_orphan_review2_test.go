@@ -286,3 +286,23 @@ func TestOrphanReview3_SameLabelChipAfterComposerEmptiedIsNeverDeleted(t *testin
 		})
 	}
 }
+
+// The plain-text twin of the chip case above: our message is submitted, a
+// post-Enter frame shows the input box empty, then a person recalls (Up
+// arrow) or retypes the same text. Whatever is reported, that text must not
+// be called verified as this send's own: it left the box and came back.
+func TestOrphanReview3_RecalledTextAfterComposerEmptiedIsNeverVerified(t *testing.T) {
+	for _, mode := range issue2077Modes() {
+		t.Run(mode.name, func(t *testing.T) {
+			pane := &sameLabelChipPane{orphanPaneBS: &orphanPaneBS{orphanPane: &orphanPane{}}, chip: orphanSingleLine}
+			res, err := orphanSend(t, pane, orphanSingleLine, mode.noWait)
+			fields := res.jsonFields()
+			if fields["composer_residue_verified"] == true {
+				t.Fatalf("a recalled draft that came back after the input box was seen empty was reported verified as this send's: delivery=%q fields=%v err=%v", res.delivery, fields, err)
+			}
+			if got := pane.composer(); got != orphanSingleLine {
+				t.Fatalf("the person's recalled draft was touched: composer = %q", got)
+			}
+		})
+	}
+}
