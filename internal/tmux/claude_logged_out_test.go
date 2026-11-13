@@ -80,6 +80,12 @@ func TestClaudeLoggedOut_NoFalsePositive(t *testing.T) {
 		"pasted log in a reply":            "❯ what happened\n\n● The log said:\n\n    ❯ count to 3\n    ⎿  Not logged in · Please run /login\n\n● So the user logged out.\n" + footer,
 		"different text under the prompt":  "❯ count to 3\n  ⎿  Not logged in elsewhere, ignore\n" + footer,
 		"under prompt but not at turn end": "❯ count to 3\n" + loggedOutLine + "\n\n● Sure: 1, 2, 3.\n" + footer,
+		// A pasted transcript echoed as a multi-line prompt while the turn runs.
+		"pasted into a submitted prompt": "❯ why does it say\n" + loggedOutLine + "\n  ✻ Sautéed for 0s · done 7:45 PM\n\n● Looking.\n\n✢ Thinking… (esc to interrupt)\n\n" +
+			strings.Repeat("─", 40) + "\n❯ \n" + strings.Repeat("─", 40) + "\n  ⏵⏵ auto mode on\n",
+		// An older logged-out turn, then a newer turn whose dialog has no prompt-glyph line.
+		"newer turn with no input box": "❯ count to 3\n" + loggedOutLine + "\n\n✻ Sautéed for 0s · done 7:45 PM\n\n" +
+			"❯ fix the build\n\n● Bash(make)\n\n Do you want to proceed?\n   Yes\n   No\n",
 	}
 	for name, pane := range cases {
 		t.Run(name, func(t *testing.T) {

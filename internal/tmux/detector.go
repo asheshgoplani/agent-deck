@@ -543,15 +543,19 @@ var claudeTurnSummaryRe = regexp.MustCompile(`^[✳✽✶✻✢]\s*\S+ for \d`)
 // Claude draws it behind "⎿", which scanClaudeBannerLines skips on purpose
 // (quoted tool output), so it needs its own, much narrower match. A false hit
 // parks a healthy session behind an auth hold, so every part must hold:
-//   - the bottom-most "❯" line is the input box (composer) and is skipped;
+//   - the bottom-most "❯" line is the input box (composer), must sit between
+//     two "──" rules, and is skipped;
 //     the next "❯" line up is the NEWEST submitted prompt, so older history
 //     never counts;
 //   - that prompt starts at column 0 and carries text, and the "⎿" line is
 //     directly under it with exactly two spaces of indent (the TUI indents
 //     anything quoted in a reply or code block deeper);
 //   - the text after "⎿" starts with the exact reply;
-//   - the next non-empty line is the closing turn summary or the input box
-//     rule, so the reply is the whole turn, not a quote followed by more output.
+//   - between the reply and the input box there is nothing but the closing
+//     turn summary (column 0) and the box rules, so the reply is the whole,
+//     newest turn: not a quote followed by more output, not a pasted transcript
+//     echoed in a running prompt, and not an older turn above a newer prompt
+//     that was mistaken for the input box.
 //
 // A reply under a "● Tool(...)" line has a "●" line above it, never the prompt.
 // When in doubt this returns false: a miss is cheaper than a false hold.
@@ -568,17 +572,20 @@ func hasClaudeSyntheticAuthReply(content string) bool {
 	if len(lines) > 30 {
 		lines = lines[len(lines)-30:]
 	}
-	seenComposer := false
+	composer := -1
 	for i := len(lines) - 1; i >= 0; i-- {
 		if isPrompt, hasText := isClaudePromptLine(lines[i].trim); !isPrompt {
 			continue
-		} else if !seenComposer {
-			seenComposer = true
+		} else if composer < 0 {
+			composer = i
 			continue
 		} else if !hasText || !strings.HasPrefix(lines[i].raw, "❯") {
 			return false
 		}
-		if i+2 >= len(lines) {
+		// The input box is drawn between two rules; a newer submitted prompt
+		// (seen when a dialog hides the box) is not.
+		if i+2 >= composer || composer+1 >= len(lines) ||
+			!strings.HasPrefix(lines[composer-1].raw, "──") || !strings.HasPrefix(lines[composer+1].raw, "──") {
 			return false
 		}
 		reply := lines[i+1]
@@ -588,8 +595,13 @@ func hasClaudeSyntheticAuthReply(content string) bool {
 		if !strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(reply.trim, "⎿")), claudeSyntheticAuthReplyPrefix) {
 			return false
 		}
-		next := lines[i+2].trim
-		return claudeTurnSummaryRe.MatchString(next) || strings.HasPrefix(next, "──")
+		for j := i + 2; j < composer; j++ {
+			if strings.HasPrefix(lines[j].raw, "──") || (j == i+2 && claudeTurnSummaryRe.MatchString(lines[j].raw)) {
+				continue
+			}
+			return false
+		}
+		return true
 	}
 	return false
 }
