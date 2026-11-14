@@ -1431,6 +1431,28 @@ func (i *Instance) applyVimModeFromConfig() {
 	i.tmuxSession.VimMode = cfg.Claude.GetVimMode()
 }
 
+// framePasteForTool reports whether a tool's input composer must receive the
+// message body as ONE framed (bracketed) paste even when it is a short
+// single-line message that the unframed `send-keys -l` transport could type
+// directly.
+//
+// Codex re-processes a typed burst character by character. While that
+// ingestion is still running its paste-burst detector treats an arriving Enter
+// as a newline inside the paste rather than a submit, and re-arms its 120ms
+// suppression window from that Enter — so the fixed pre-Enter delay left the
+// message sitting in the composer, unsent, and the Codex send path (which has
+// no automatic Enter retry) reported typed_not_submitted. Measured on
+// codex-cli 0.159.3 under tmux 3.4: a 513-byte single-line body sent with
+// `send-keys -l` was never submitted with Enter at 100ms or 200ms and
+// submitted at 500ms, while the identical body sent as a framed paste
+// submitted with Enter at 50ms. The frame gives the composer one paste event
+// to ingest, so the ordinary delay is enough.
+//
+// Every other tool returns false and keeps its transport unchanged.
+func framePasteForTool(tool string) bool {
+	return IsCodexCompatible(tool)
+}
+
 // preEnterDelayForTool returns the pause a tool's input composer needs between
 // the delivered message body and the submitting Enter, beyond the transport
 // default. Devin CLI's editor coalesces bytes arriving within ~100–150ms into
