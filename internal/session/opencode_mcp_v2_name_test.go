@@ -75,3 +75,107 @@ func TestOpenCodeV2ServerNamedLikeAKey(t *testing.T) {
 		}
 	}
 }
+
+// openCodeGlobalAttach and openCodeGlobalDetach follow `agent-deck mcp attach
+// --global` / `mcp detach --global` for an OpenCode session: read the current
+// global names through the reader, add or drop one, and hand the full list to
+// the same writer (WriteOpenCodeGlobalMCP). Detach has no separate code path.
+func openCodeGlobalAttach(t *testing.T, name string, v2 bool) {
+	t.Helper()
+	names := append(getOpenCodeMCPInfoUncached("").Global, name)
+	if err := WriteOpenCodeGlobalMCP(names, v2); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func openCodeGlobalDetach(t *testing.T, name string, v2 bool) {
+	t.Helper()
+	var names []string
+	found := false
+	for _, n := range getOpenCodeMCPInfoUncached("").Global {
+		if n == name {
+			found = true
+			continue
+		}
+		names = append(names, n)
+	}
+	if !found {
+		t.Fatalf("detach %q: not attached according to the reader", name)
+	}
+	if err := WriteOpenCodeGlobalMCP(names, v2); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Reviewer request on #3143: servers named "type" and "servers" in one V2
+// config, attach and detach, plus "type": null in the container and a V2
+// write over a legacy server named "servers". Each step checks the exact mcp
+// map and what the reader lists.
+func TestOpenCodeNamedServersAttachDetach(t *testing.T) {
+	const catJSON = `{"type": "remote", "url": "https://cat.invalid/mcp", "headers": {"Authorization": "Bearer cat"}}`
+	const typeAndServers = `"type": {"type": "remote", "url": "https://t.invalid/mcp", "headers": {"Authorization": "Bearer t"}},
+		"servers": {"type": "local", "command": ["srv"], "environment": {"K": "v"}},
+		"keep": {"type": "remote", "url": "https://keep.invalid/mcp", "headers": {"X-Keep": "1"}, "timeout": 3000}`
+	const typeNull = `"type": null,
+		"ok": {"type": "remote", "url": "https://ok.invalid/mcp", "headers": {"X-Ok": "1"}}`
+	const legacy = `"servers": {"type": "local", "command": ["legacy-srv"], "environment": {"L": "1"}},
+		"gh": {"type": "remote", "url": "https://gh.invalid/mcp", "headers": {"Authorization": "Bearer gh"}}`
+
+	cases := []struct {
+		name       string
+		seed       string // the mcp object
+		v2         bool
+		names      []string // reader's global names before attach
+		wantAttach string
+		wantDetach string
+	}{
+		{"v2 type and servers/v2", `{"servers": {` + typeAndServers + `}}`, true, []string{"keep", "servers", "type"},
+			`{"servers": {` + typeAndServers + `, "cat": ` + catJSON + `}}`, `{"servers": {` + typeAndServers + `}}`},
+		{"v2 type and servers/legacy-call", `{"servers": {` + typeAndServers + `}}`, false, []string{"keep", "servers", "type"},
+			`{"servers": {` + typeAndServers + `, "cat": ` + catJSON + `}}`, `{"servers": {` + typeAndServers + `}}`},
+		{"v2 type null/v2", `{"servers": {` + typeNull + `}}`, true, []string{"ok", "type"},
+			`{"servers": {` + typeNull + `, "cat": ` + catJSON + `}}`, `{"servers": {` + typeNull + `}}`},
+		{"v2 type null/legacy-call", `{"servers": {` + typeNull + `}}`, false, []string{"ok", "type"},
+			`{"servers": {` + typeNull + `, "cat": ` + catJSON + `}}`, `{"servers": {` + typeNull + `}}`},
+		// A V2 write over a legacy config moves the legacy entries, the one
+		// named "servers" included, into the V2 container (one level, not two).
+		{"legacy servers/v2", `{` + legacy + `}`, true, []string{"gh", "servers"},
+			`{"servers": {` + legacy + `, "cat": ` + catJSON + `}}`, `{"servers": {` + legacy + `}}`},
+		{"legacy servers/legacy-call", `{` + legacy + `}`, false, []string{"gh", "servers"},
+			`{` + legacy + `, "cat": ` + catJSON + `}`, `{` + legacy + `}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := setupOpenCodeMergeFixture(t)
+			if err := os.WriteFile(path, []byte(`{"model": "x/y", "mcp": `+tc.seed+`}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			check := func(step, want string, wantNames []string) {
+				t.Helper()
+				var wantMCP map[string]any
+				if err := json.Unmarshal([]byte(want), &wantMCP); err != nil {
+					t.Fatalf("bad want JSON: %v", err)
+				}
+				root, mcp := readOpenCodeMCPMap(t, path)
+				if root["model"] != "x/y" {
+					t.Fatalf("%s: non-mcp key lost: %v", step, root)
+				}
+				if !reflect.DeepEqual(mcp, wantMCP) {
+					t.Fatalf("%s: mcp map\n got: %v\nwant: %v", step, mcp, wantMCP)
+				}
+				got := getOpenCodeMCPInfoUncached("").Global
+				if !reflect.DeepEqual(got, wantNames) {
+					t.Fatalf("%s: reader lists %v, want %v", step, got, wantNames)
+				}
+			}
+			check("seed", tc.seed, tc.names)
+
+			openCodeGlobalAttach(t, "cat", tc.v2)
+			withCat := append([]string{"cat"}, tc.names...)
+			check("attach", tc.wantAttach, withCat)
+
+			openCodeGlobalDetach(t, "cat", tc.v2)
+			check("detach", tc.wantDetach, tc.names)
+		})
+	}
+}
