@@ -234,6 +234,28 @@ const scenarios = {
     return out;
   },
 
+  // A wake answered queued, and one whose client left before any reply, still
+  // count for the duplicate window once their run starts.
+  async queued_then_duplicate() {
+    const rt = makeRuntime({ noRunStart: true });
+    await rt.start();
+    release();
+    const queued = await ask(frame("N9a", LINE_AB));
+    rt.idle = true;
+    await rt.startRun({ messageType: "custom", message: { role: "custom", customType: "agent-deck-wake", content: LINE_AB, display: true, details: { nonce: "N9a", ids: IDS_AB } } });
+    rt.endRun();
+    const afterQueued = await ask(frame("N9b", LINE_AB));
+    const gone = await ask(frame("N9c", LINE_C), { timeoutMs: 100 });
+    await sleep(100);
+    rt.idle = true;
+    await rt.startRun({ messageType: "custom", message: { role: "custom", customType: "agent-deck-wake", content: LINE_C, display: true, details: { nonce: "N9c", ids: IDS_C } } });
+    rt.endRun();
+    const afterGone = await ask(frame("N9d", LINE_C));
+    const out = { queued: queued.reply, afterQueued: afterQueued.reply, gone: gone.reply, goneTimedOut: !!gone.timedOut, afterGone: afterGone.reply, sent: rt.sent.length };
+    await rt.stop();
+    return out;
+  },
+
   async duplicate_window() {
     const rt = makeRuntime();
     await rt.start();
@@ -596,6 +618,29 @@ const scenarios = {
     return out;
   },
 
+  // Three human runs, each injection with its own token: every run start
+  // carries the token of the injection just before it.
+  async two_runs_distinct() {
+    const rt = makeRuntime();
+    await rt.start();
+    release();
+    const out1 = path.join(DIR, "hook.out");
+    const tokenOut = (tok) => "context for the model\n<!-- agent-deck-delivery:" + tok + " -->\n";
+    fs.writeFileSync(out1, tokenOut("01J0DELIVERYTOKEN0000000T1"));
+    await rt.human("first prompt");
+    await rt.fire("agent_start");
+    rt.endRun();
+    fs.writeFileSync(out1, tokenOut("01J0DELIVERYTOKEN0000000T2"));
+    await rt.human("second prompt");
+    await rt.fire("agent_start");
+    rt.endRun();
+    fs.writeFileSync(out1, "plain context\n");
+    await rt.human("third prompt");
+    const out = { starts: hooksOf("before_agent_start") };
+    await rt.stop();
+    return out;
+  },
+
   // The run whose injection was dropped has no token to carry forward.
   async two_runs_dropped() {
     const rt = makeRuntime();
@@ -799,6 +844,25 @@ const scenarios = {
     const rebound = await ask(frame("N13b", LINE_C));
     await rt2.stop();
     return { opened, before, openClosed, afterStop, connectAfter: connectAfter.error || connectAfter.reply, rebound: rebound.reply, finalSock: stat(SOCK), leftovers: fs.readdirSync(path.dirname(SOCK)) };
+  },
+
+  // pi can shut a runtime down while its session_start is still binding.
+  async shutdown_during_start() {
+    const rt = makeRuntime();
+    const starting = rt.start(); // not awaited: the stop arrives mid-bind
+    await rt.stop("quit");
+    await starting;
+    await sleep(50);
+    const afterStop = stat(SOCK);
+    const connectAfter = await ask(frame("N13c", LINE_C), { timeoutMs: 1000 });
+    const listeners = process.getActiveResourcesInfo().filter((r) => r === "PipeServerWrap").length;
+    const leftovers = fs.existsSync(path.dirname(SOCK)) ? fs.readdirSync(path.dirname(SOCK)) : [];
+    const rt2 = makeRuntime();
+    await rt2.start();
+    release();
+    const rebound = await ask(frame("N13d", LINE_C));
+    await rt2.stop();
+    return { afterStop, connectAfter: connectAfter.error || connectAfter.reply, listeners, leftovers, rebound: rebound.reply };
   },
 
   async live_socket() {
@@ -1195,6 +1259,19 @@ func TestPiWakeExtension_SameIdsWithin90sIsDuplicate(t *testing.T) {
 	}
 }
 
+// The duplicate window starts at the run start, whether or not the doorbell
+// was still pending then: a wake answered queued, or whose client left before
+// any reply, has its ids counted when its run starts, so the same ids again
+// inside the window are a duplicate rather than a second run.
+func TestPiWakeExtension_QueuedOrAbandonedWakeStillOpensTheDuplicateWindow(t *testing.T) {
+	res, _ := runPiWake(t, "queued_then_duplicate", piWakeOpts{})
+	wantAt(t, res, "queued.state", "queued")
+	assertRefusal(t, res, "afterQueued", "N9b", "duplicate")
+	wantAt(t, res, "goneTimedOut", true)
+	assertRefusal(t, res, "afterGone", "N9d", "duplicate")
+	wantAt(t, res, "sent", 2) // neither duplicate was handed to pi
+}
+
 func TestPiWakeExtension_SameIdsAfter90sIsSent(t *testing.T) {
 	res, _ := runPiWake(t, "duplicate_after_window", piWakeOpts{})
 	wantAt(t, res, "first.state", "submitted")
@@ -1303,6 +1380,22 @@ func TestPiWakeExtension_ShutdownUnlinksAndReloadRebinds(t *testing.T) {
 	if n := lenAt(t, res, "leftovers"); n != 0 {
 		t.Errorf("the socket directory still holds %v after shutdown", get(t, res, "leftovers"))
 	}
+}
+
+// A shutdown that arrives while session_start is still binding waits for the
+// bind and tears it down: nothing is left serving the path after shutdown, so
+// the next runtime binds it.
+func TestPiWakeExtension_ShutdownDuringStartLeavesNoListener(t *testing.T) {
+	res, _ := runPiWake(t, "shutdown_during_start", piWakeOpts{})
+	if get(t, res, "afterStop") != nil {
+		t.Errorf("a socket is at the path after a shutdown that arrived mid-start: %v", get(t, res, "afterStop"))
+	}
+	wantAt(t, res, "connectAfter", "ENOENT")
+	wantAt(t, res, "listeners", 0)
+	if n := lenAt(t, res, "leftovers"); n != 0 {
+		t.Errorf("the socket directory still holds %v after shutdown", get(t, res, "leftovers"))
+	}
+	wantAt(t, res, "rebound.state", "submitted")
 }
 
 func TestPiWakeExtension_DoesNotStealALiveSocket(t *testing.T) {
@@ -1871,6 +1964,23 @@ func TestPiWakeExtension_NextRunStartCarriesThePriorInjectedToken(t *testing.T) 
 			t.Errorf("the receipt was sent on a third run start as well: %v", h)
 		}
 	}
+}
+
+// With a distinct token per injection, each run start carries the one just
+// before it, so a lastInjected that stopped updating after its first value
+// (sending the first token again, or none) fails here.
+func TestPiWakeExtension_EachRunStartCarriesTheTokenOfTheInjectionBeforeIt(t *testing.T) {
+	res, _ := runPiWake(t, "two_runs_distinct", piWakeOpts{})
+	if n := lenAt(t, res, "starts"); n != 3 {
+		t.Fatalf("%d before_agent_start hooks, want 3", n)
+	}
+	if h, ok := get(t, res, "starts.0").(map[string]any); ok {
+		if _, has := h["prior_injected_token"]; has {
+			t.Errorf("the first run start has nothing to acknowledge: %v", h)
+		}
+	}
+	wantAt(t, res, "starts.1.prior_injected_token", "01J0DELIVERYTOKEN0000000T1")
+	wantAt(t, res, "starts.2.prior_injected_token", "01J0DELIVERYTOKEN0000000T2")
 }
 
 // An injection that was dropped (the hook failed) leaves no token to carry.
