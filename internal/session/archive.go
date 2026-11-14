@@ -32,6 +32,21 @@ func (i *Instance) SetArchivedAtThreadSafe(t time.Time) {
 	i.archiveMu.Unlock()
 }
 
+// MarkStopped records a deliberate stop for a session whose pane is already
+// gone, so there is nothing for Kill to tear down. Archiving such a session
+// would otherwise keep whatever status the dead pane left behind (usually
+// error), and every status count would report the archive as a crash.
+//
+// Like Kill, it releases any auth hold: this is a deliberate stop, so a later
+// restart is a user act, not automation the hold should block.
+func (i *Instance) MarkStopped() {
+	i.mu.Lock()
+	i.Status = StatusStopped
+	i.stopRevision++
+	i.clearAuthHoldLocked()
+	i.mu.Unlock()
+}
+
 // FilterInstancesByArchive returns instances whose archive state matches archived.
 func FilterInstancesByArchive(instances []*Instance, archived bool) []*Instance {
 	if len(instances) == 0 {

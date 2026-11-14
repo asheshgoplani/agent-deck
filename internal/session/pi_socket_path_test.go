@@ -357,8 +357,9 @@ func TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn(t *testing.T) {
 	writeFakePi(t, bin, `echo 1.3.0`)
 	on := inst.buildPiCommand("pi")
 	want := "AGENTDECK_PI_SOCKET=" + expectedPiSocketPath(t, sessionProfileEnvValue(), inst.ID)
-	if !strings.Contains(on, want) {
-		t.Errorf("buildPiCommand with pi 1.3.0 = %q, want it to contain %q", on, want)
+	// Exactly one assignment: in sh a later AGENTDECK_PI_SOCKET= would win.
+	if !strings.Contains(on, want) || strings.Count(on, "AGENTDECK_PI_SOCKET=") != 1 {
+		t.Errorf("buildPiCommand with pi 1.3.0 = %q, want exactly one AGENTDECK_PI_SOCKET assignment, containing %q", on, want)
 	}
 	if recs := piSocketOffRecords(t, buf); len(recs) != 0 {
 		t.Errorf("an on launch logged %d off records", len(recs))
@@ -372,6 +373,26 @@ func TestBuildPiCommand_ExportsTheWakeSocketOnlyWhenOn(t *testing.T) {
 	}
 	if recs := piSocketOffRecords(t, buf); len(recs) != 1 {
 		t.Errorf("an off launch logged %d off records, want exactly 1:\n%s", len(recs), buf.String())
+	}
+}
+
+// A local pi launch sets AGENTDECK_PI_HOST_PID empty, with the socket on or
+// off, so the pi it starts is never a guest of the pane: a tmux server first
+// started inside a pi pane carries that pi's pid, and a later pane would
+// inherit it. The pi word itself follows the assignment.
+func TestBuildPiCommand_ALocalLaunchClearsThePaneHostMarker(t *testing.T) {
+	piSocketShortData(t)
+	installPiExtension(t)
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	for _, version := range []string{"1.3.0", "1.1.0"} {
+		writeFakePi(t, bin, "echo "+version)
+		inst := &Instance{ID: "inst-host-" + version, Tool: "pi", IdentityInjectionDisabled: true}
+		cmd := inst.buildPiCommand("pi")
+		at := strings.Index(cmd, "AGENTDECK_PI_HOST_PID= ")
+		if at < 0 || !strings.Contains(cmd[at:], " pi --continue") {
+			t.Errorf("pi %s launch = %q, want AGENTDECK_PI_HOST_PID= ahead of the pi it starts", version, cmd)
+		}
 	}
 }
 
@@ -582,6 +603,21 @@ func TestBuildPiCommand_ExtensionCheckHonoursTheCommandsPiCodingAgentDir(t *test
 			t.Errorf("buildPiCommand(%q) = %q (flag %v), want it to contain %q", command, got, inst.PiSocketExported, want)
 		}
 	})
+
+	// The shell expands a leading ~ in an assignment's value, so the pi of
+	// PI_CODING_AGENT_DIR=~/alt loads its extensions from $HOME/alt.
+	t.Run("the command's dir starts with ~/", func(t *testing.T) {
+		t.Setenv("PI_CODING_AGENT_DIR", t.TempDir()) // nothing installed here
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if _, err := InstallPiHooks(filepath.Join(home, "alt", "extensions")); err != nil {
+			t.Fatal(err)
+		}
+		command := "PI_CODING_AGENT_DIR=~/alt pi"
+		if got := inst.buildPiCommand(command); !strings.Contains(got, want) || !inst.PiSocketExported {
+			t.Errorf("buildPiCommand(%q) = %q (flag %v), want it to contain %q", command, got, inst.PiSocketExported, want)
+		}
+	})
 }
 
 // `pi-hooks status` resolves pi the way a launch does: the spawn-path prelude's
@@ -768,6 +804,61 @@ func TestBuildPiCommand_SSHAndSandboxedLaunchesNeverExportTheSocket(t *testing.T
 		}
 		if inst.PiSocketExported {
 			t.Errorf("%s launch recorded PiSocketExported = true", name)
+		}
+	}
+}
+
+// A command whose program is not named as pi resolves to that program, whose
+// --version is its own (node prints v24.x, which reads as above the floor). The
+// socket stays off with pi_command_not_pi in the off record, rather than being
+// exported on another program's version. Every fake here prints 9.9.9. A pi
+// under another name is probed as pi (also TestBuildPiCommand_ProbesPiOnThePanesPath).
+func TestBuildPiCommand_ACommandThatRunsPiThroughAnotherProgramIsNotProbed(t *testing.T) {
+	piSocketShortData(t)
+	installPiExtension(t)
+	proc := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", proc+":/usr/bin:/bin")
+	for _, name := range []string{"node", "node22", "npm", "npx", "bun", "bash", "mypi", "pipx", "pi-nightly", "pi2", "pi_dev"} {
+		if err := os.WriteFile(filepath.Join(proc, name), []byte("#!/bin/sh\necho 9.9.9\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	absNode := filepath.Join(proc, "node")
+	for _, tc := range []struct {
+		command string
+		probed  bool
+	}{
+		{"node /opt/pi/cli.js", false},
+		{absNode + " /opt/pi/cli.js", false},
+		{"env node /opt/pi/cli.js", false},
+		{"node22 cli.js", false},
+		{"npm exec pi", false},
+		{"npx pi", false},
+		{"bun x pi", false},
+		{"bash -c 'exec pi'", false},
+		{"mypi", false},
+		{"pipx run pi", false},
+		{"pi-nightly", true},
+		{"pi2 --model small", true},
+		{"env pi_dev", true},
+	} {
+		inst := &Instance{ID: "inst-wrapped", Tool: "pi", IdentityInjectionDisabled: true}
+		buf := captureSessionLogJSON(t)
+		got := inst.buildPiCommand(tc.command)
+		recs := piSocketOffRecords(t, buf)
+		if !tc.probed {
+			if exportsPiSocket(got) || inst.PiSocketExported {
+				t.Errorf("buildPiCommand(%q) = %q, PiSocketExported %v: the socket was exported on another program's version", tc.command, got, inst.PiSocketExported)
+			}
+			if len(recs) != 1 || recs[0]["reason"] != "pi_command_not_pi" || recs[0]["detail"] == "" {
+				t.Errorf("buildPiCommand(%q) off records = %v, want one pi_command_not_pi with a detail", tc.command, recs)
+			}
+			continue
+		}
+		want := "AGENTDECK_PI_SOCKET=" + expectedPiSocketPath(t, sessionProfileEnvValue(), inst.ID)
+		if !strings.Contains(got, want) || len(recs) != 0 {
+			t.Errorf("buildPiCommand(%q) = %q (off records %v), want it probed as pi and exporting %q", tc.command, got, recs, want)
 		}
 	}
 }

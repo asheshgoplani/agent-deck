@@ -106,7 +106,10 @@ type Record struct {
 	ReplyTo   string `json:"reply_to,omitempty"`
 	Via       string `json:"via,omitempty"`   // tmux | socket | ssh | telegram | hook
 	State     string `json:"state,omitempty"` // State* constants
-	Ref       string `json:"ref,omitempty"`   // id of the record this one is about
+	// AfterWrite marks a wake record typed after a socket frame was written
+	// and the extension refused it (notSent): for audit.
+	AfterWrite bool   `json:"after_write,omitempty"`
+	Ref        string `json:"ref,omitempty"` // id of the record this one is about
 	// Refs are the ids of every record a wake or a delivery carried.
 	Refs []string `json:"refs,omitempty"`
 

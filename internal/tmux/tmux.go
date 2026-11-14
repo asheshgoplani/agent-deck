@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -498,6 +499,12 @@ type Session struct {
 	// reconnected without a clock, so hasErrorBannerIndicator must not read a
 	// preserved startup-timeout banner as current (#2938).
 	startupArmed bool
+	// startupTimeoutHint is an optional paragraph the startup-timeout hold
+	// shows between its banner and the recovery command, naming what would
+	// have let agent-deck see the agent start (#3098). Set by the session
+	// layer before each spawn. Atomic rather than under mu so a spawn never
+	// waits on a status poll that holds mu.
+	startupTimeoutHint atomic.Pointer[string]
 	// afterStartupTimeoutClaim is a test seam for scheduling a competing pane
 	// generation after timeout recovery releases mu but before GetStatus decides
 	// which generation's status to return.

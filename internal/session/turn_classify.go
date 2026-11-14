@@ -83,6 +83,38 @@ func SendEnvelope(senderID string) string {
 	return sendEnvelopePrefix + strings.TrimSpace(senderID) + "]"
 }
 
+// pastedContentTag opens the wrapper Claude Code stores around a prompt that
+// arrived as a paste (a long `session send --message-file`, issue #3131).
+const pastedContentTag = "<pasted_content"
+
+// parseSendEnvelope reports whether a prompt starts with a send envelope and
+// returns the sender. The envelope must be the prompt's first non-empty line,
+// or the first non-empty line inside a LEADING <pasted_content …> wrapper. A
+// wrapper that is not at the start of the prompt, or whose first line is
+// something else, is not a send: a person who pastes text that merely
+// contains an envelope further down is still a human prompt.
+func parseSendEnvelope(text string) (ok bool, fromID string) {
+	text = strings.TrimSpace(text)
+	if rest, found := strings.CutPrefix(text, pastedContentTag); found {
+		if rest == "" || (rest[0] != '>' && rest[0] != ' ' && rest[0] != '\t') {
+			return false, ""
+		}
+		end := strings.IndexByte(rest, '>')
+		if end < 0 || strings.ContainsRune(rest[:end], '\n') {
+			return false, ""
+		}
+		text = strings.TrimSpace(rest[end+1:])
+	}
+	rest, found := strings.CutPrefix(text, sendEnvelopePrefix)
+	if !found {
+		return false, ""
+	}
+	if end := strings.IndexByte(rest, ']'); end > 0 {
+		return true, strings.TrimSpace(rest[:end])
+	}
+	return true, ""
+}
+
 // HasSendEnvelope reports whether message already starts with an envelope
 // (a forwarded or re-sent message), so it is never tagged twice.
 func HasSendEnvelope(message string) bool {
@@ -293,16 +325,13 @@ func transcriptTypedCommand(lines []string) bool {
 // classifyTrigger maps the user record that started a turn to a trigger kind.
 func classifyTrigger(rec transcriptTurnRecord) (trigger, fromID string) {
 	text := strings.TrimSpace(transcriptText(rec.Message.Content))
+	isSend, from := parseSendEnvelope(text)
 	switch {
 	case rec.TurnOrigin == "task_notification", rec.Origin.Kind == "task-notification",
 		strings.HasPrefix(text, "<task-notification>"):
 		return TurnTriggerTask, ""
-	case strings.HasPrefix(text, sendEnvelopePrefix):
-		rest := strings.TrimPrefix(text, sendEnvelopePrefix)
-		if end := strings.IndexByte(rest, ']'); end > 0 {
-			return TurnTriggerSend, strings.TrimSpace(rest[:end])
-		}
-		return TurnTriggerSend, ""
+	case isSend:
+		return TurnTriggerSend, from
 	case hasInboxWakePrefix(text), strings.HasPrefix(text, "Stop hook feedback:"):
 		return TurnTriggerInbox, ""
 	case rec.IsMeta, strings.HasPrefix(text, "<system-reminder>"), strings.HasPrefix(text, "<local-command"),

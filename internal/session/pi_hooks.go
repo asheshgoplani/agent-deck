@@ -21,6 +21,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
+	"github.com/asheshgoplani/agent-deck/internal/send"
 )
 
 // piHookExtensionSource is the pi extension agent-deck installs into pi's
@@ -41,8 +42,9 @@ const (
 	piHookExtensionMarker = "AGENTDECK PI HOOK EXTENSION"
 	// piHookExtensionVersion is bumped whenever the emitted event set or the
 	// payload shape changes, so `pi-hooks status` can report drift and
-	// `pi-hooks install` can upgrade in place.
-	piHookExtensionVersion = 5
+	// `pi-hooks install` can upgrade in place. v5 serves the wake socket; v6
+	// marks its payloads pane_guest or pane_host.
+	piHookExtensionVersion = 6
 )
 
 var piHookExtensionVersionRe = regexp.MustCompile(piHookExtensionMarker + ` v(\d+)`)
@@ -59,6 +61,10 @@ func PiHookExtensionVersion() int { return piHookExtensionVersion }
 func PiExtensionsDir() string {
 	return piExtensionsDirOf(os.Getenv("PI_CODING_AGENT_DIR"))
 }
+
+// PiExtensionsDirOf is PiExtensionsDir for a given PI_CODING_AGENT_DIR value
+// ("" for pi's default).
+func PiExtensionsDirOf(agentDir string) string { return piExtensionsDirOf(agentDir) }
 
 // piExtensionsDirOf is PiExtensionsDir for a given PI_CODING_AGENT_DIR value.
 func piExtensionsDirOf(agentDir string) string {
@@ -170,15 +176,17 @@ const (
 	piSocketFloor = "1.2.0"
 	// piVersionTimeout bounds `pi --version`; a wedged pi must not stall a launch.
 	piVersionTimeout = 2 * time.Second
-	// piMaxSockPath is the longest unix socket path macOS accepts (sun_path is
-	// 104 bytes including the NUL); Linux allows 107, so one limit is used. A
-	// longer path is refused at launch, so the extension never tries to bind it.
-	piMaxSockPath = 103
 )
 
 // piVersionOutputCap bounds what is read of `pi --version`: a version is a few
 // bytes, and a pi that floods stdout must not be buffered whole.
 const piVersionOutputCap = 4096
+
+// piProgramName is the basename a command's program must have to be probed as
+// pi: pi itself, or pi followed by a separator or a digit (pi-nightly, pi_dev,
+// pi2). Any other program (node cli.js, npm exec pi, bash -c 'exec pi', a
+// wrapper script) is not pi, and its own --version says nothing about pi's.
+var piProgramName = regexp.MustCompile(`^pi(?:[-_.0-9].*)?$`)
 
 // piVersionRe is x.y.z with an optional semver prerelease suffix.
 var piVersionRe = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?`)
@@ -205,7 +213,7 @@ type PiSocketInfo struct {
 	Version string
 	// Binary is the resolved pi executable on the launch PATH.
 	Binary string
-	// Reason is "" when on, else "pi_too_old", "pi_version_unknown",
+	// Reason is "" when on, else "pi_too_old", "pi_version_unknown", "pi_command_not_pi",
 	// "path_too_long" or "no_runtime_dir". A launch adds "extension_not_installed"
 	// and "extension_outdated".
 	Reason string
@@ -242,6 +250,14 @@ func piSocketProbe(profile, instanceID string, env []string, bin string, found b
 		info.Reason, info.Detail = "pi_version_unknown", "pi --version failed: pi not found on PATH"
 		return info
 	}
+	// Only a program named as pi is probed. A command that runs pi through
+	// another program resolves to that program, whose --version is its own
+	// (node's v24.x would read as above the floor), and its arguments are not
+	// run here, since they can do anything; the socket stays off.
+	if base := filepath.Base(bin); !piProgramName.MatchString(base) {
+		info.Reason, info.Detail = "pi_command_not_pi", fmt.Sprintf("the command runs %s, not pi; its --version is not probed", base)
+		return info
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), piVersionTimeout)
 	defer cancel()
 	// #nosec G204 -- the binary is the pi the launch resolves and the only arg is a fixed flag.
@@ -273,8 +289,8 @@ func piSocketProbe(profile, instanceID string, env []string, bin string, found b
 		info.Reason, info.Detail = "no_runtime_dir", err.Error()
 		return info
 	}
-	if len(path) > piMaxSockPath {
-		info.Reason, info.Detail = "path_too_long", fmt.Sprintf("path %d bytes, limit %d", len(path), piMaxSockPath)
+	if len(path) > send.MaxSockPath {
+		info.Reason, info.Detail = "path_too_long", fmt.Sprintf("path %d bytes, limit %d", len(path), send.MaxSockPath)
 		return info
 	}
 	info.Path = path
@@ -307,10 +323,7 @@ func piSocketEnvForLaunch(profile, instanceID string, env []string) (string, PiS
 // pi loads extensions from: env's PI_CODING_AGENT_DIR, which carries a
 // command's own leading assignment, else this process's.
 func piSocketLaunch(profile, instanceID string, env []string, bin string, found bool) (string, PiSocketInfo) {
-	extDir := PiExtensionsDir()
-	if agentDir, ok := envValueOf(env, "PI_CODING_AGENT_DIR"); ok {
-		extDir = piExtensionsDirOf(agentDir)
-	}
+	extDir := piExtensionsDirOf(piAgentDirForEnv(env))
 	var info PiSocketInfo
 	switch state, version := InspectPiHooks(extDir); state {
 	case PiHooksNotInstalled, PiHooksForeign:
@@ -324,7 +337,8 @@ func piSocketLaunch(profile, instanceID string, env []string, bin string, found 
 	if info.Path == "" {
 		sessionLog.Warn("pi_wake_socket off",
 			slog.String("version", info.Version),
-			slog.String("reason", info.Reason))
+			slog.String("reason", info.Reason),
+			slog.String("detail", info.Detail))
 		return "", info
 	}
 	return "AGENTDECK_PI_SOCKET=" + info.Path, info
@@ -335,7 +349,8 @@ func piSocketLaunch(profile, instanceID string, env []string, bin string, found 
 // when a local launch leaves it off (or "" for SSH and sandboxed ones). The pi
 // probed is the one the pane will run: the command's own word on the pane's
 // PATH and with the command's leading assignments, as openCodeLaunchBinary
-// resolves opencode.
+// resolves opencode. A local launch also sets AGENTDECK_PI_HOST_PID empty
+// (piHostPidReset), so the pi it starts is never a guest of the pane.
 func (i *Instance) piSocketLaunchPrefix(command string) string {
 	// The socket is for local launches: the extension of an SSH or sandboxed pi
 	// runs in another filesystem and process namespace, which the host daemon
@@ -355,10 +370,19 @@ func (i *Instance) piSocketLaunchPrefix(command string) string {
 		// Explicitly empty, so the pane does not inherit a value from the tmux
 		// server's environment (a server first started inside a socket-exported
 		// pi pane, as with CLAUDE_JOB_DIR in #2683); the extension reads empty as off.
-		return "AGENTDECK_PI_SOCKET= "
+		return piHostPidReset + "AGENTDECK_PI_SOCKET= "
 	}
-	return "AGENTDECK_PI_SOCKET=" + shellescape.Quote(info.Path) + " "
+	return piHostPidReset + "AGENTDECK_PI_SOCKET=" + shellescape.Quote(info.Path) + " "
 }
+
+// piHostPidReset empties AGENTDECK_PI_HOST_PID for a local pi launch. The
+// extension of the pi agent-deck launched writes its own pid there, and a pi
+// that inherits another pid is a guest of the pane: it serves no socket and is
+// given none of the ledger's context. A tmux server first started inside a pi
+// pane carries that pid in its environment, so without this a later pane's pi
+// would inherit it and be taken for a guest. SSH and sandboxed launches do not
+// take the local tmux server's environment.
+const piHostPidReset = "AGENTDECK_PI_HOST_PID= "
 
 // pathOf returns the PATH carried by env.
 func pathOf(env []string) string {
@@ -374,6 +398,33 @@ func envValueOf(env []string, key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// piAgentDirForEnv is the PI_CODING_AGENT_DIR a pi run with env loads its
+// extensions under: env's own assignment (the last one wins, and an empty one
+// means pi's default), else this process's. "" is pi's default, ~/.pi/agent.
+func piAgentDirForEnv(env []string) string {
+	if dir, ok := envValueOf(env, "PI_CODING_AGENT_DIR"); ok {
+		return strings.TrimSpace(dir)
+	}
+	return PiAgentDir()
+}
+
+// PiAgentDir is this process's PI_CODING_AGENT_DIR, "" for pi's default.
+func PiAgentDir() string {
+	return strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+}
+
+// PiLaunchAgentDir is the agent dir this session's pi loads its extensions
+// from: the command's own leading PI_CODING_AGENT_DIR, else this process's,
+// the dir piSocketLaunchPrefix checks the extension in (#3099 review).
+func (i *Instance) PiLaunchAgentDir() string {
+	command := strings.TrimSpace(i.Command)
+	if command == "" {
+		command = "pi"
+	}
+	_, _, _, assigns := i.launchBinary(command, "pi")
+	return piAgentDirForEnv(assigns)
 }
 
 // compareVersions compares two x.y.z[-prerelease] strings by semver precedence:
@@ -436,4 +487,49 @@ func isDigits(s string) bool {
 		}
 	}
 	return s != ""
+}
+
+// PiHooksInstallCommand is the command that installs the extension where a pi
+// with agentDir ("" for pi's default) loads it. Like the codex-hooks line's
+// CODEX_HOME, a set agent dir is spelled out so a shell without it does not
+// install into ~/.pi/agent instead. When the default dir is wanted but
+// agent-deck itself has a PI_CODING_AGENT_DIR (a session command that clears
+// it with an empty assignment, #3098), the empty assignment is spelled out
+// too: a plain install run from the same shell would write to that inherited
+// dir. agent-deck's environment stands in for the shell the command is run
+// from, the most likely one.
+func PiHooksInstallCommand(agentDir string) string {
+	if agentDir != "" {
+		return "PI_CODING_AGENT_DIR=" + shellescape.Quote(agentDir) + " agent-deck pi-hooks install"
+	}
+	if PiAgentDir() != "" {
+		return "PI_CODING_AGENT_DIR= agent-deck pi-hooks install"
+	}
+	return "agent-deck pi-hooks install"
+}
+
+// piStartupTimeoutHint is the startup-timeout hold's explanation for a pi
+// session spawned without the extension (#3098).
+func piStartupTimeoutHint(agentDir string) string {
+	return "The agent-deck pi extension is not installed, so pi's startup could only be detected from the screen.\n" +
+		"Install it with '" + PiHooksInstallCommand(agentDir) + "' before restarting."
+}
+
+// applyStartupTimeoutHint tells the startup watchdog why it may not see this
+// session start. Without the extension, pi's startup is judged only from the
+// pane, so a layout the pane patterns do not know (a footer extension, #3098)
+// can expire a healthy session; the extension's session_start ends startup
+// whatever the layout. The extension is looked for where this session's pi
+// loads it (PiLaunchAgentDir). Recomputed on every spawn, so installing the
+// extension and restarting clears it. Remote and sandboxed sessions keep their
+// extension elsewhere, so this host cannot tell and stays quiet.
+func (i *Instance) applyStartupTimeoutHint() {
+	hint := ""
+	if i.Tool == "pi" && !i.IsSSH() && !i.IsSandboxed() {
+		agentDir := i.PiLaunchAgentDir()
+		if state, _ := InspectPiHooks(piExtensionsDirOf(agentDir)); state == PiHooksNotInstalled {
+			hint = piStartupTimeoutHint(agentDir)
+		}
+	}
+	i.tmuxSession.SetStartupTimeoutHint(hint)
 }

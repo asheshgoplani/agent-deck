@@ -332,6 +332,9 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 		unknownReason = remoteViewersUnknownReason(versionState, Version)
 	}
 	b.WriteString(dimStyle.Render("Viewers: ") + viewersText(remoteViewers, remoteViewersKnown, unknownReason, time.Now()) + "\n")
+	if line := h.voicePreviewLine(h.voiceForRemote(item.RemoteName, rs.ID)); line != "" {
+		b.WriteString(voiceBadgeStyle(h.voiceState.Badge(h.voiceClock()).Tone, false).Render("🎙 "+line) + "\n")
+	}
 	// Account usage comes from the host stats already polled for the group
 	// header, so this adds no SSH round trip.
 	if line := h.remoteAccountsLine(item.RemoteName, rs.Account, time.Now()); line != "" {
@@ -967,6 +970,11 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	if selectedStatus != session.StatusStopped {
 		previewViewers, previewViewersKnown := selected.ViewersCached()
 		b.WriteString(infoStyle.Render(viewersLine(previewViewers, previewViewersKnown, time.Now())))
+		b.WriteString("\n")
+	}
+	// The voice mic talks to this session (voice_badge.go).
+	if line := h.voicePreviewLine(h.voiceForLocal(selected)); line != "" {
+		b.WriteString(voiceBadgeStyle(h.voiceState.Badge(h.voiceClock()).Tone, false).Render("🎙 " + line))
 		b.WriteString("\n")
 	}
 
@@ -2306,6 +2314,10 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	// this panel has to derive from the same tracked set or it overcounts
 	// and shows phantom rows for sessions the enumerable list doesn't have.
 	visibleSessions := session.VisibleInstances(group.Sessions)
+	// Count and list only the partition the list shows: an archived session's
+	// torn-down pane reads as stopped or error, which the active view never
+	// shows, and the archived view shows only archived rows.
+	visibleSessions = session.FilterInstancesByArchive(visibleSessions, h.statusFilter == FilterModeArchived)
 
 	// Session count
 	countStyle := lipgloss.NewStyle().

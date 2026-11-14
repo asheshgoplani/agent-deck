@@ -80,6 +80,9 @@ func hookEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("AGENTDECK_PROFILE", "_test")
+	// A test run from inside a session that set a hook generation would have
+	// every status write rejected: the fresh home has no generation file.
+	t.Setenv("AGENTDECK_HOOK_GENERATION", "")
 }
 
 func statusWritten(instance string) bool {
@@ -133,6 +136,9 @@ func TestHookHandler_DeadlineDoesNotFireOnAHandlerThatFinishes(t *testing.T) {
 func TestHookHandler_WithoutADeadlineTheLockStillBlocksUntilReleased(t *testing.T) {
 	hookEnv(t)
 	const instance = "pi-nodeadline-lock"
+	// Build the binary before the release timer starts: a cold build inside
+	// runHookHandlerBinary would use up the 900 ms hold.
+	channelsCLIBinary(t)
 	lock := holdStatusLock(t, instance)
 	// The release runs in a timer goroutine that reads lock.Fd(): join it before
 	// the cleanup closes the file.
@@ -157,15 +163,16 @@ func TestHookHandler_WithoutADeadlineTheLockStillBlocksUntilReleased(t *testing.
 // hook-handler's pi paths start no child processes, so a self-timeout (os.Exit)
 // has no descendants to orphan and needs no process-group kill. Read from the
 // code: the pi status events (session_start, turn_start, turn_end,
-// agent_settled, session_shutdown) go through spoolCommsFromHook, the status
+// agent_settled, session_shutdown) and before_agent_start go through
+// spoolTraceFromHook, spoolCommsFromHook, piBeforeAgentStart (before_agent_start
+// only, which returns before any status), the status
 // file write under the flock, applyClaudeTitleSync/applyClaudeCwdSync (a
 // storage read, and only a rename when Claude names the session, which pi does
 // not) and writeCostEvent: none of them has an exec.Command, os.StartProcess or
 // tmux call on these events (hook_handler.go, hook_events.go, hook_name_sync.go,
 // hook_cwd_sync.go, hook_recall.go). The test below is the dynamic check: every
 // tool a spawn could resolve on PATH is a recording shim, and none may run. It
-// cannot see a spawn by absolute path; extend it with before_agent_start once
-// that event has a hook-handler branch.
+// cannot see a spawn by absolute path.
 func TestHookHandler_PiStatusPathsSpawnNoChildProcesses(t *testing.T) {
 	hookEnv(t)
 	shims := t.TempDir()
@@ -182,6 +189,7 @@ func TestHookHandler_PiStatusPathsSpawnNoChildProcesses(t *testing.T) {
 		`{"hook_event_name":"turn_start","source":"pi","cwd":"/tmp"}`,
 		`{"hook_event_name":"turn_end","source":"pi","cwd":"/tmp"}`,
 		`{"hook_event_name":"agent_settled","source":"pi","cwd":"/tmp","session_id":"pi-sess","turn_id":"t1","last_assistant_message":"done","prompt":"p"}`,
+		`{"hook_event_name":"before_agent_start","source":"pi","cwd":"/tmp","prompt":"p"}`,
 		`{"hook_event_name":"session_shutdown","source":"pi","cwd":"/tmp"}`,
 	} {
 		cmd := exec.Command(bin, "hook-handler")

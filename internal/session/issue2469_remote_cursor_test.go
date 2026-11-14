@@ -331,6 +331,8 @@ func TestIssue2469PR3_IngestedUrgentRecordWakesOnce(t *testing.T) {
 	cursorTestHome(t)
 	var mu sync.Mutex
 	var sent []string
+	origWiring := remoteWakeWiring
+	t.Cleanup(func() { remoteWakeWiring = origWiring })
 	remoteWakeWiring = func() *wakeNudgeWiring {
 		return &wakeNudgeWiring{
 			nudger: NewWakeNudger(0),
@@ -344,15 +346,6 @@ func TestIssue2469PR3_IngestedUrgentRecordWakesOnce(t *testing.T) {
 			},
 		}
 	}
-	t.Cleanup(func() {
-		remoteWakeWiring = func() *wakeNudgeWiring {
-			w := defaultWakeNudgeWiring()
-			w.send = func(parent *Instance, profile, message string) error {
-				return sendWakeNudgeNoWait(profile, parent.ID, message)
-			}
-			return w
-		}
-	})
 	parent := NewInstance("conductor-wake", t.TempDir())
 	parent.ID = "conductor-wake"
 

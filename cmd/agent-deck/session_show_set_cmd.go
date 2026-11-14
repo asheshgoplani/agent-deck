@@ -155,6 +155,12 @@ func handleSessionShow(profile string, args []string) {
 		// what actually happened is "this build predates the field".
 		"hook_status":       hookStatus,
 		"hook_status_fresh": hookStatusFresh,
+		// Matches list --json. An archived session's pane is gone on purpose,
+		// so its "status" alone cannot tell an archive from a crash.
+		"archived": inst.IsArchived(),
+	}
+	if archivedAt := inst.ArchivedAtThreadSafe(); !archivedAt.IsZero() {
+		jsonData["archived_at"] = archivedAt
 	}
 	// Durable queued sends, the same entries as `session queue list --json`.
 	if *jsonOutput {
@@ -252,6 +258,11 @@ func handleSessionShow(profile string, args []string) {
 		if codexHooksConfig != "" {
 			jsonData["codex_hooks_config"] = codexHooksConfig
 		}
+	}
+	// Same for a pi session without the agent-deck extension (#3098).
+	piHooks := piHooksStateForInstance(inst)
+	if piHooks.State != "" {
+		jsonData["pi_hooks"] = piHooks
 	}
 
 	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
@@ -375,6 +386,9 @@ func handleSessionShow(profile string, args []string) {
 
 	if codexHooksState != "" {
 		sb.WriteString(fmt.Sprintf("Codex:   %s\n", codexHooksLine(codexHooksState, codexHooksConfig)))
+	}
+	if piHooks.State != "" {
+		sb.WriteString(fmt.Sprintf("pi:      %s\n", piHooksLine(piHooks)))
 	}
 
 	if inst.NoTransitionNotify {

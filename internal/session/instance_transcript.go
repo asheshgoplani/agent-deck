@@ -1088,6 +1088,28 @@ func ResolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 	return resolveClaudeTranscriptPath(configDir, projectPath, sessionID, additionalPaths...)
 }
 
+// claudeReaderConfigDirs lists the Claude config dirs the last-response
+// readers (getClaudeLastResponse, findLatestClaudeTranscriptOnDisk) may read,
+// in order: the instance's own dir (account/conductor/group), the same
+// resolution GetJSONLPath and LiveTranscriptPath use, then the process-wide
+// dir for transcripts written before a group/conductor dir change.
+//
+// A session on an account slot gets ONLY its own dir: a wrong transcript is
+// worse than none, so it must never be answered from the default dir or
+// another slot (the caller then falls back to the pane). Sessions without a
+// slot keep today's process-wide dir as a fallback.
+func (i *Instance) claudeReaderConfigDirs() []string {
+	own := GetClaudeConfigDirForInstance(i)
+	global := GetClaudeConfigDir()
+	if own == "" {
+		own = global
+	}
+	if i.Account != "" || global == "" || filepath.Clean(own) == filepath.Clean(global) {
+		return []string{own}
+	}
+	return []string{own, global}
+}
+
 // getClaudeLastResponse extracts the last assistant message from Claude's JSONL file
 func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 	// Require stored session ID - no fallback to file scanning
@@ -1101,7 +1123,15 @@ func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 		return nil, fmt.Errorf("instance %s runs on %s; its Claude transcript is not on this machine", i.ID, i.SSHHost)
 	}
 
-	sessionFile := resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
+	// A slot session whose transcript is missing must fail here (so the caller
+	// falls back) and never be answered from another dir; see
+	// claudeReaderConfigDirs.
+	sessionFile := ""
+	for _, dir := range i.claudeReaderConfigDirs() {
+		if sessionFile = resolveClaudeTranscriptPath(dir, i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir()); sessionFile != "" {
+			break
+		}
+	}
 	if sessionFile == "" {
 		return nil, fmt.Errorf("session file not found for claude_session_id %s", i.ClaudeSessionID)
 	}
@@ -1140,8 +1170,17 @@ func (i *Instance) findLatestClaudeTranscriptOnDisk() (string, *ResponseOutput) 
 	if !i.TranscriptIsResolvableLocally() {
 		return "", nil
 	}
+	for _, dir := range i.claudeReaderConfigDirs() {
+		if id, resp := i.findLatestClaudeTranscriptInDir(dir); resp != nil {
+			return id, resp
+		}
+	}
+	return "", nil
+}
 
-	configDir := GetClaudeConfigDir()
+// findLatestClaudeTranscriptInDir is the scan of findLatestClaudeTranscriptOnDisk
+// against one config dir.
+func (i *Instance) findLatestClaudeTranscriptInDir(configDir string) (string, *ResponseOutput) {
 
 	resolvedPath := i.ProjectPath
 	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {

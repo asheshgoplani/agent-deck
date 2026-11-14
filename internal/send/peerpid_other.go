@@ -4,8 +4,8 @@ package send
 
 import "errors"
 
-// No portable way to read the listener's pid here, so the peer check fails
-// closed and sends stay on tmux.
-func peerPIDOfFd(int) (int, error) {
-	return 0, errors.New("peer pid unsupported on this platform")
+// No portable way to read the listener's credentials here, so the peer check
+// fails closed and sends stay on tmux.
+func peerCredOfFd(int) (pid, uid int, err error) {
+	return 0, 0, errors.New("peer credentials unsupported on this platform")
 }
