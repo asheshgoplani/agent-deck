@@ -112,7 +112,7 @@ def decode_records(text):
 
 
 class Rig:
-    def __init__(self, output, root=None):
+    def __init__(self, output, root=None, consumers=None, pi_driver=False):
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.root = Path(root or tempfile.mkdtemp(prefix='comms-matrix-'))
@@ -133,7 +133,10 @@ class Rig:
         for name in ('config/agent-deck', 'data', 'cache', 'state', 'runtime', 'tmux', 'captures', 'work'):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.config = self.root / 'config/agent-deck/config.toml'
-        self.config.write_text('[comms]\nledger = true\n[tmux]\nsocket_name = ' + json.dumps(self.socket) + '\n')
+        # consumers lists the sessions the ledger serves by title or id; none by default.
+        listed = '' if consumers is None else 'consumers = ' + json.dumps(list(consumers)) + '\n'
+        self.config.write_text('[comms]\nledger = true\n' + listed + '[tmux]\nsocket_name = ' + json.dumps(self.socket) + '\n')
+        self.pi_driver = pi_driver  # the parent pane hosts the pi extension (see fake_harness.start_pi_driver)
         self.ports = {}
         self.hook_envs = {}
         self.parent = None
@@ -167,7 +170,8 @@ class Rig:
             raise RuntimeError(f'add returned no id: {result}')
         # Register cleanup before start, including partially failed starts.
         self.sessions.append(identity)
-        wrapper = f'export PATH={HERE}/bin:/usr/local/bin:/usr/bin:/bin COMMS_CAPTURE={self.root}/captures/{identity}.raw COMMS_PANE_STATE={state} COMMS_HTTP_RECEIPT={self.output}/http-{identity}.jsonl; {{command}}'
+        driver = ' COMMS_PI_DRIVER=1' if self.pi_driver and tool == 'pi' and not parent else ''
+        wrapper = f'export PATH={HERE}/bin:/usr/local/bin:/usr/bin:/bin COMMS_CAPTURE={self.root}/captures/{identity}.raw COMMS_PANE_STATE={state} COMMS_HTTP_RECEIPT={self.output}/http-{identity}.jsonl{driver}; {{command}}'
         self.cli('session', 'set', identity, 'wrapper', wrapper)
         self.cli('session', 'start', identity, timeout=30)
         capture = self.root / 'captures' / (identity + '.raw')
@@ -543,6 +547,18 @@ def main():
                         write_json(output / 'error.json', result)
                     results.append(result)
                     print(tool, location, tier, [(c['name'], c['status']) for c in result['checks']], flush=True)
+    if args.group in ('all', 'others'):
+        # PR-B: the pi consumer rows, beside PR-A's four pi cells above (which run unchanged).
+        from pi_consumer import pi_consumer_cell
+        for name, listed, tier in (('listed', True, 'urgent'), ('listed', True, 'info'), ('unlisted', False, 'urgent'), ('unlisted', False, 'info')):
+            output = Path(args.output) / ('pi-' + name + '-local-' + tier)
+            try:
+                result = pi_consumer_cell(output, listed, tier)
+            except Exception as error:
+                result = dict(tool='pi', tier=tier, location='local', listed=listed, checks=[dict(name='rig', status='FAIL', actual=str(error), target='successful probe')])
+                write_json(output / 'error.json', result)
+            results.append(result)
+            print('pi', name, 'local', tier, [(c['name'], c['status']) for c in result['checks']], flush=True)
     if args.group in ('all', 'failures'):
         from failures import run_failures
         results.extend(run_failures(Path(args.output) / 'failures'))

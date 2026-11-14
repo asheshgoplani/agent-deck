@@ -59,6 +59,14 @@ type Inflight struct {
 	// parent with no prompt-time injection; any other parent gets it whole
 	// in its context.
 	Preview bool `json:"preview,omitempty"`
+	// Nonce binds a wake attempt to the doorbell that carries it (a pi
+	// parent's socket frame id), so the reply and the run that doorbell
+	// starts each settle exactly their own attempt and no other.
+	Nonce string `json:"nonce,omitempty"`
+	// Token binds a pi prompt injection to the receipt the extension echoes
+	// when it really returned the context to pi (stdout alone proves nothing:
+	// the extension discards it on a timeout or a failed exit).
+	Token string `json:"token,omitempty"`
 }
 
 // InflightFor returns the attempt carrying cursor, if any.
@@ -85,6 +93,103 @@ func (f *ConsumerFile) Carry(records []Exported, via string, at int64) {
 		}
 		f.Inflight = append(kept, Inflight{Cursor: e.Cursor, ID: e.Record.ID, Via: via, State: ReceiptAttempted, Attempt: attempt, At: at})
 	}
+}
+
+// BindNonce stamps the wake attempts carrying these records with nonce.
+func (f *ConsumerFile) BindNonce(cursors []events.Cursor, nonce string) {
+	want := map[events.Cursor]bool{}
+	for _, c := range cursors {
+		want[c] = true
+	}
+	for i := range f.Inflight {
+		if want[f.Inflight[i].Cursor] && f.Inflight[i].Via == ViaWake {
+			f.Inflight[i].Nonce = nonce
+		}
+	}
+}
+
+// AcceptNonce moves the attempts a wake bound to nonce to transport_accepted.
+// An attempt another delivery replaced or settled no longer carries the nonce
+// and is left alone.
+func (f *ConsumerFile) AcceptNonce(nonce string) {
+	for i := range f.Inflight {
+		if in := &f.Inflight[i]; in.Via == ViaWake && in.Nonce == nonce && in.State == ReceiptAttempted {
+			in.State = ReceiptTransportAccepted
+		}
+	}
+}
+
+// ReleaseNonce drops the attempts a wake bound to nonce, returning their
+// records to pending, and returns their cursors.
+func (f *ConsumerFile) ReleaseNonce(nonce string) []events.Cursor {
+	return f.Settle(func(in Inflight) bool { return in.Via == ViaWake && in.Nonce == nonce })
+}
+
+// BindToken stamps the prompt attempts carrying these records with token.
+func (f *ConsumerFile) BindToken(cursors []events.Cursor, token string) {
+	want := map[events.Cursor]bool{}
+	for _, c := range cursors {
+		want[c] = true
+	}
+	for i := range f.Inflight {
+		if want[f.Inflight[i].Cursor] && f.Inflight[i].Via == ViaPrompt {
+			f.Inflight[i].Token = token
+		}
+	}
+}
+
+// AcceptToken moves the prompt attempts bound to token to transport_accepted:
+// the extension has said it injected that context. A token an attempt no longer
+// carries (a later injection replaced it) matches nothing.
+func (f *ConsumerFile) AcceptToken(token string) {
+	if token == "" {
+		return
+	}
+	for i := range f.Inflight {
+		if in := &f.Inflight[i]; in.Via == ViaPrompt && in.Token == token && in.State == ReceiptAttempted {
+			in.State = ReceiptTransportAccepted
+		}
+	}
+}
+
+// maxInjections bounds the injections remembered for a receipt.
+const maxInjections = 8
+
+// RecordInjection remembers what the injection with this token showed, in the
+// same write that binds the token to its attempts.
+func (f *ConsumerFile) RecordInjection(token string, at int64, keys, inbox []string) {
+	if token == "" || (len(keys) == 0 && len(inbox) == 0) {
+		return
+	}
+	if f.Injections == nil {
+		f.Injections = map[string]Injection{}
+	}
+	f.Injections[token] = Injection{At: at, Keys: keys, Inbox: inbox}
+	for len(f.Injections) > maxInjections {
+		oldest := ""
+		for t, in := range f.Injections {
+			if oldest == "" || in.At < f.Injections[oldest].At {
+				oldest = t
+			}
+		}
+		delete(f.Injections, oldest)
+	}
+}
+
+// TakeInjection removes and returns what the injection with this token showed
+// (false when it is unknown or already taken: a repeated receipt changes
+// nothing). Its turn keys are marked shown here.
+func (f *ConsumerFile) TakeInjection(token string) (Injection, bool) {
+	in, ok := f.Injections[token]
+	if !ok {
+		return Injection{}, false
+	}
+	delete(f.Injections, token)
+	if len(f.Injections) == 0 {
+		f.Injections = nil
+	}
+	f.NoteShown(in.Keys...)
+	return in, true
 }
 
 // MarkPreview flags the attempts for these records as previews.
@@ -204,11 +309,25 @@ func QuotedLine(r Record, names Names) string {
 	return head + ": «" + body + "»"
 }
 
+// LineDropsBody reports a record whose Line shows its Done summary in place
+// of a different body, so a line that carried it did not carry its body. The
+// two are compared as Line renders them (control characters stripped,
+// whitespace folded), so a body that renders as its summary is not dropped.
+func LineDropsBody(r Record) bool {
+	text := renderedBody(r.Text)
+	return r.Done != "" && r.Summary != "" && text != "" && text != renderedBody(r.Summary)
+}
+
+// renderedBody is a body as Line renders it.
+func renderedBody(s string) string {
+	return strings.Join(strings.Fields(stripControl(s)), " ")
+}
+
 // QuotedContextLine keeps both a Done summary and its body in hook context.
 // Use the same quoting and plain identifiers as wake lines, without dropping
 // the body when the matching inbox turn is retired.
 func QuotedContextLine(r Record, names Names) string {
-	if r.Done != "" && r.Summary != "" && strings.TrimSpace(r.Text) != "" && strings.TrimSpace(r.Text) != strings.TrimSpace(r.Summary) {
+	if LineDropsBody(r) {
 		r.Summary += "\n" + r.Text
 	}
 	return QuotedLine(r, names)

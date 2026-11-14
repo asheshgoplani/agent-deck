@@ -49,7 +49,11 @@ func (i *Instance) recordRestartOutcome() {
 	i.restartTmuxRecordMu.Lock()
 	i.restartTmuxRecordErr = err
 	i.restartTmuxRecordStamps = stamps
+	i.launchRecordStamps = stamps // zero when the write failed
 	i.restartTmuxRecordMu.Unlock()
+	if err == nil {
+		i.launchUnrecorded.Store(false) // the outcome carried the launch decision
+	}
 
 	if err != nil {
 		sessionLog.Warn("restart_outcome_persist_failed",
@@ -71,7 +75,10 @@ func (i *Instance) writeRestartOutcome() (statedb.WriteStamps, error) {
 	var stamps statedb.WriteStamps
 	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
 		var werr error
-		stamps, werr = db.WriteRestartOutcome(i.ID, name, string(i.Status), i.Tool)
+		// The launch decision (the tool launched, and a pi's socket) rides the
+		// same UPDATE as the outcome.
+		i.noteLaunch()
+		stamps, werr = db.WriteRestartOutcomeWithLaunch(i.ID, name, string(i.Status), i.Tool, i.PiSocketExported)
 		return werr
 	})
 	if errors.Is(err, errNoStateDB) {
@@ -114,4 +121,67 @@ func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
 		return statedb.WriteStamps{}
 	}
 	return i.restartTmuxRecordStamps
+}
+
+// persistLaunchDecision records, once the pane has spawned, what its launch
+// was: the tool it launched (launched_tool), whether a pi's launch exported a
+// socket path in AGENTDECK_PI_SOCKET, and the tmux session it spawned in.
+// Start and StartWithMessage are the launch paths the CLI, the web and the TUI
+// share, and not all of them save the instance afterwards, so a start that
+// changed the decision would otherwise leave the old value in storage. They
+// call it right after the spawn succeeds, so a failure before it, or a spawn
+// another process won, leaves storage as it was; the restart's respawn-pane
+// paths call it too. The write moves last_modified, and its stamps are kept for
+// LaunchRecordStamps.
+//
+// A new session the web, the TUI or a fork starts before its first save
+// matches no row: it is marked launchUnrecorded, and that first save records
+// the decision. Any other failure is logged, never fails the launch, and is
+// not handed to a later full save: that save carries this process's view, and
+// another launch may have recorded its own decision under the same tmux name by
+// then (a respawn keeps the name), which the snapshot merge cannot tell from
+// the value this process loaded. The row keeps the previous launch's record
+// (or, if only the last_modified bump failed, this launch's).
+func (i *Instance) persistLaunchDecision() {
+	i.noteLaunch()
+	name := ""
+	if i.tmuxSession != nil {
+		name = i.tmuxSession.TmuxName()
+	}
+	var stamps statedb.WriteStamps
+	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
+		var werr error
+		stamps, werr = db.WriteLaunchDecision(i.ID, name, i.Tool, i.PiSocketExported)
+		return werr
+	})
+	i.restartTmuxRecordMu.Lock()
+	i.launchRecordStamps = stamps // zero when the write failed
+	i.restartTmuxRecordMu.Unlock()
+	i.launchUnrecorded.Store(errors.Is(err, statedb.ErrInstanceNotStored) || errors.Is(err, errNoStateDB))
+	if err != nil && !errors.Is(err, errNoStateDB) && !errors.Is(err, statedb.ErrInstanceNotStored) {
+		sessionLog.Warn("launch_decision_persist_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("error", err.Error()))
+	}
+}
+
+// LaunchRecordStamps returns the last_modified values the last launch's
+// targeted write (a start's, or a restart's outcome) replaced and wrote, or the
+// zero value if it recorded nothing. Like RestartRecordStamps, it lets a
+// process that launched and then saves tell its own bump from another
+// process's change.
+func (i *Instance) LaunchRecordStamps() statedb.WriteStamps {
+	i.restartTmuxRecordMu.Lock()
+	defer i.restartTmuxRecordMu.Unlock()
+	return i.launchRecordStamps
+}
+
+// noteLaunch records on the instance what the launch now spawning ran: its
+// tool, and no wake socket unless it is a pi whose launch exported one (the
+// flag is left from an earlier pi launch otherwise).
+func (i *Instance) noteLaunch() {
+	i.LaunchedTool = i.Tool
+	if i.Tool != "pi" {
+		i.PiSocketExported = false
+	}
 }

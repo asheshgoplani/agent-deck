@@ -52,8 +52,10 @@ func runPiExtGuard(t *testing.T, dir, sock string) piExtGuardResult {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(nodePath, "--experimental-strip-types", "--no-warnings", driver)
+	// AGENTDECK_PI_HOST_PID is cleared, as runPiWake does: inherited from a pi
+	// pane, it would make the driver a guest that serves nothing.
 	cmd.Env = append(os.Environ(), "AGENTDECK_INSTANCE_ID=pi-guard-test", "PITEST_EXT="+ext,
-		"AGENTDECK_PI_SOCKET="+sock, "PATH=/nonexistent")
+		"AGENTDECK_PI_SOCKET="+sock, "AGENTDECK_PI_HOST_PID=", "PATH=/nonexistent")
 	done := make(chan struct{})
 	var out []byte
 	var err error
@@ -106,6 +108,17 @@ func TestPiWakeExtension_BeforeAgentStartIsRegisteredWithOrWithoutTheSocket(t *t
 	}
 	if off := runPiExtGuard(t, dir, ""); off.BeforeAgentStart != 1 || len(off.Listened) != 0 {
 		t.Errorf("without the socket: %d before_agent_start handlers, listened %v; want 1 and no listener", off.BeforeAgentStart, off.Listened)
+	}
+}
+
+// Review (#3024): run inside a pi pane, the caller's AGENTDECK_PI_HOST_PID would
+// make the driver a guest of that pane, so it would serve nothing and the
+// directory guards would pass with no bind to warn about.
+func TestPiWakeExtension_GuardHarnessIgnoresAnInheritedHostPid(t *testing.T) {
+	t.Setenv("AGENTDECK_PI_HOST_PID", "1")
+	dir := piExtGuardDir(t)
+	if on := runPiExtGuard(t, dir, filepath.Join(dir, "r", "pi", "0123456789ab.sock")); len(on.Listened) == 0 {
+		t.Errorf("with a host pid in the caller's environment the driver serves nothing (listened %v): it ran as a guest", on.Listened)
 	}
 }
 

@@ -572,6 +572,15 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	// receipt would be an unowned tree.
 	ownershipCommand := i.Command
 	defer func() { i.commitOwnershipAfterRestart(ownershipCommand) }()
+	// Every successful exit spawned a replacement, whose launch decision must be
+	// recorded: the respawn-pane fast paths return early, and only the recreate
+	// path below folds it into its outcome write.
+	launchRecorded := false
+	defer func() {
+		if err == nil && !launchRecorded {
+			i.persistLaunchDecision()
+		}
+	}()
 
 	// #1775: supersede the fast-death watcher from the PREVIOUS spawn here, at
 	// the single entry point, rather than deeper down. restart() has several
@@ -1198,6 +1207,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	// one fact about the restart. See restart_tmux_persist.go for why this is a
 	// targeted write and why a failure here is recorded rather than returned.
 	i.recordRestartOutcome()
+	launchRecorded, _ = i.RestartTmuxNameRecorded() // a failed outcome write leaves it to the deferred write
 
 	return nil
 }
