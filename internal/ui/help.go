@@ -592,7 +592,8 @@ func (h *HelpOverlay) View() string {
 	}
 	lines = append(lines, "")
 	lines = append(lines, separatorStyle.Render(strings.Repeat("─", separatorWidth)))
-	lines = append(lines, versionStyle.Render("Agent Deck v"+Version))
+	// dialogWidth minus border (2) and padding (4) is the row budget.
+	lines = append(lines, withBrandMark(versionStyle.Render("Agent Deck v"+Version), dialogWidth-6))
 
 	totalLines := len(lines)
 
