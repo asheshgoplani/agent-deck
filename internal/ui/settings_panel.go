@@ -718,6 +718,11 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 			changed = true
 		}
 
+	case SettingKimiPermissionMode:
+		n := len(kimiPermissionModes)
+		s.kimiPermissionMode = kimiPermissionModes[((kimiPermissionIndex(s.kimiPermissionMode)+delta)%n+n)%n]
+		changed = true
+
 	case SettingSearchTier:
 		newVal := s.searchTier + delta
 		if newVal >= 0 && newVal < len(tierNames) {
@@ -814,14 +819,6 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingHermesYoloMode:
 		s.hermesYoloMode = !s.hermesYoloMode
-		return true
-
-	case SettingKimiPermissionMode:
-		if s.kimiPermissionMode == session.KimiPermissionAskWhenNeeded {
-			s.kimiPermissionMode = session.KimiPermissionAlwaysAsk
-		} else {
-			s.kimiPermissionMode = session.KimiPermissionAskWhenNeeded
-		}
 		return true
 
 	case SettingCheckForUpdates:
@@ -1152,8 +1149,8 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString(gutter(SettingKimiDefaultModel) + labelStyle.Render(line) + "\n")
 
-	// YOLO mode checkbox
-	line = s.renderCheckbox("YOLO mode", s.kimiPermissionMode == session.KimiPermissionAskWhenNeeded) + " - Auto-approve routine work"
+	// Permission mode radio
+	line = "Permission mode: " + s.renderRadioGroup(kimiPermissionModeLabels, kimiPermissionIndex(s.kimiPermissionMode), s.cursor == int(SettingKimiPermissionMode))
 	if s.cursor == int(SettingKimiPermissionMode) {
 		line = highlightStyle.Render(line)
 	}

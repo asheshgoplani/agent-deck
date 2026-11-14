@@ -323,14 +323,14 @@ func TestSettingsPanel_KimiOptions(t *testing.T) {
 	panel.SetSize(100, 60)
 
 	view := panel.View()
-	for _, want := range []string{"KIMI", "Default model", "YOLO mode"} {
+	for _, want := range []string{"KIMI", "Default model", "Permission mode", "Never Ask"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Settings view missing %q: %q", want, view)
 		}
 	}
 
 	panel.cursor = int(SettingKimiPermissionMode)
-	panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
 	panel.cursor = int(SettingKimiDefaultModel)
 	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	for range len("configured-model") {
@@ -345,6 +345,26 @@ func TestSettingsPanel_KimiOptions(t *testing.T) {
 	}
 	if config.Kimi.PermissionMode != session.KimiPermissionAskWhenNeeded {
 		t.Fatal("Kimi.PermissionMode != ask-when-needed, want true")
+	}
+}
+
+func TestSettingsPanel_KimiPermissionCyclesThree(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{Kimi: session.KimiSettings{PermissionMode: session.KimiPermissionAlwaysAsk}})
+	panel.visible = true
+	panel.cursor = int(SettingKimiPermissionMode)
+
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := panel.GetConfig().Kimi.PermissionMode; got != session.KimiPermissionAskWhenNeeded {
+		t.Fatalf("after right = %q, want ask-when-needed", got)
+	}
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := panel.GetConfig().Kimi.PermissionMode; got != session.KimiPermissionNeverAsk {
+		t.Fatalf("after right = %q, want never-ask", got)
+	}
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := panel.GetConfig().Kimi.PermissionMode; got != session.KimiPermissionAlwaysAsk {
+		t.Fatalf("after right = %q, want always-ask", got)
 	}
 }
 

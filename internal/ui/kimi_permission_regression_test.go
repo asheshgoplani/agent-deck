@@ -38,6 +38,31 @@ func TestKimiYoloShortcutOnExistingSession(t *testing.T) {
 	}
 }
 
+func TestKimiYHotkeyTogglesYoloNotAuto(t *testing.T) {
+	setXDGTestHome(t)
+	h := NewHome()
+	inst := session.NewInstanceWithTool("kimi-test", t.TempDir(), "kimi")
+	h.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: inst}}
+	h.cursor = 0
+
+	// always-ask -> ask-when-needed
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if got := inst.GetKimiOptions().PermissionMode; got != session.KimiPermissionAskWhenNeeded {
+		t.Fatalf("y from always-ask = %q, want ask-when-needed", got)
+	}
+	// ask-when-needed -> always-ask
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if got := inst.GetKimiOptions().PermissionMode; got != session.KimiPermissionAlwaysAsk {
+		t.Fatalf("y from ask-when-needed = %q, want always-ask", got)
+	}
+	// never-ask -> always-ask (y never toggles TO never-ask)
+	_ = inst.SetKimiOptions(&session.KimiOptions{PermissionMode: session.KimiPermissionNeverAsk})
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if got := inst.GetKimiOptions().PermissionMode; got != session.KimiPermissionAlwaysAsk {
+		t.Fatalf("y from never-ask = %q, want always-ask", got)
+	}
+}
+
 func TestKimiYoloSettingPersistsAfterEscape(t *testing.T) {
 	home := setXDGTestHome(t)
 	writeXDGTestConfig(t, home, "[kimi]\npermission_mode = \"always-ask\"\n")
@@ -45,7 +70,7 @@ func TestKimiYoloSettingPersistsAfterEscape(t *testing.T) {
 	h.settingsPanel.Show()
 	h.settingsPanel.cursor = int(SettingKimiPermissionMode)
 
-	h.Update(tea.KeyMsg{Type: tea.KeySpace})
+	h.Update(tea.KeyMsg{Type: tea.KeyRight})
 	h.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
 	config, err := session.LoadUserConfig()

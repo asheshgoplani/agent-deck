@@ -1,10 +1,29 @@
 package ui
 
 import (
+	"strings"
+
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+var kimiPermissionModes = []string{
+	session.KimiPermissionAlwaysAsk,
+	session.KimiPermissionAskWhenNeeded,
+	session.KimiPermissionNeverAsk,
+}
+
+var kimiPermissionModeLabels = []string{"Always Ask", "Ask When Needed", "Never Ask"}
+
+func kimiPermissionIndex(mode string) int {
+	for i, m := range kimiPermissionModes {
+		if mode == m {
+			return i
+		}
+	}
+	return 0
+}
 
 type KimiOptionsPanel struct {
 	mode    string
@@ -35,29 +54,12 @@ func (p *KimiOptionsPanel) GetOptions() *session.KimiOptions {
 	return &session.KimiOptions{PermissionMode: p.mode}
 }
 
-func (p *KimiOptionsPanel) Focus() {
-	p.focused = true
-}
-
-func (p *KimiOptionsPanel) Blur() {
-	p.focused = false
-}
-
-func (p *KimiOptionsPanel) IsFocused() bool {
-	return p.focused
-}
-
-func (p *KimiOptionsPanel) AtTop() bool {
-	return true
-}
-
-func (p *KimiOptionsPanel) AtBottom() bool {
-	return true
-}
-
-func (p *KimiOptionsPanel) FocusLast() {
-	p.focused = true
-}
+func (p *KimiOptionsPanel) Focus()          { p.focused = true }
+func (p *KimiOptionsPanel) Blur()           { p.focused = false }
+func (p *KimiOptionsPanel) IsFocused() bool { return p.focused }
+func (p *KimiOptionsPanel) AtTop() bool     { return true }
+func (p *KimiOptionsPanel) AtBottom() bool  { return true }
+func (p *KimiOptionsPanel) FocusLast()      { p.focused = true }
 
 func (p *KimiOptionsPanel) FocusedLine() int {
 	if !p.focused {
@@ -72,12 +74,10 @@ func (p *KimiOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	switch key.String() {
-	case "left", "right", " ":
-		if p.mode == session.KimiPermissionAskWhenNeeded {
-			p.mode = session.KimiPermissionAlwaysAsk
-		} else {
-			p.mode = session.KimiPermissionAskWhenNeeded
-		}
+	case "left":
+		p.mode = kimiPermissionModes[(kimiPermissionIndex(p.mode)+2)%3]
+	case "right", " ":
+		p.mode = kimiPermissionModes[(kimiPermissionIndex(p.mode)+1)%3]
 	case "y":
 		p.mode = session.KimiPermissionAskWhenNeeded
 	}
@@ -89,15 +89,17 @@ func (p *KimiOptionsPanel) View() string {
 	activeStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
 
-	label := "  YOLO mode: "
-	if p.focused {
-		label = activeStyle.Render("▶ YOLO mode: ")
+	content := headerStyle.Render("─ Kimi Options ─") + "\n"
+	content += "  Permission mode: "
+	parts := make([]string, 0, len(kimiPermissionModeLabels))
+	for i, label := range kimiPermissionModeLabels {
+		if i == kimiPermissionIndex(p.mode) {
+			parts = append(parts, activeStyle.Render(">"+label))
+		} else {
+			parts = append(parts, dimStyle.Render(" "+label))
+		}
 	}
-	box := "[ ]"
-	if p.mode == session.KimiPermissionAskWhenNeeded {
-		box = "[x]"
-	}
-	content := headerStyle.Render("─ Kimi Options ─") + "\n" + label + box + "\n"
-	content += dimStyle.Render("    Auto-approve routine work; risky actions still ask (--yolo)") + "\n"
+	content += strings.Join(parts, "  ") + "\n"
+	content += dimStyle.Render("    --yolo: routine auto, risky asks; --auto: everything auto") + "\n"
 	return content
 }

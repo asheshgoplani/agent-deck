@@ -115,10 +115,10 @@ func TestNewDialog_KimiOptions(t *testing.T) {
 		t.Fatalf("GetLaunchModelID() = %q, want configured-model", got)
 	}
 	if d.GetKimiOptions().PermissionMode != session.KimiPermissionAskWhenNeeded {
-		t.Fatal("PermissionMode = false, want ask-when-needed")
+		t.Fatal("PermissionMode != ask-when-needed, want default from config")
 	}
 	view := d.View()
-	for _, want := range []string{"Model ID", "Kimi Options", "YOLO mode"} {
+	for _, want := range []string{"Model ID", "Kimi Options", "Never Ask"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Kimi new-session dialog missing %q: %q", want, view)
 		}
@@ -127,12 +127,12 @@ func TestNewDialog_KimiOptions(t *testing.T) {
 	d.focusIndex = d.indexOf(focusOptions)
 	d.updateFocus()
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
-	if d.GetKimiOptions().PermissionMode == session.KimiPermissionAskWhenNeeded {
-		t.Fatal("PermissionMode after Space = ask-when-needed, want always-ask")
+	if d.GetKimiOptions().PermissionMode != session.KimiPermissionNeverAsk {
+		t.Fatalf("after Space = %q, want never-ask", d.GetKimiOptions().PermissionMode)
 	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
-	if d.GetKimiOptions().PermissionMode != session.KimiPermissionAskWhenNeeded {
-		t.Fatal("PermissionMode after second Space != ask-when-needed, want true")
+	if d.GetKimiOptions().PermissionMode != session.KimiPermissionAlwaysAsk {
+		t.Fatalf("after second Space = %q, want always-ask", d.GetKimiOptions().PermissionMode)
 	}
 	d.modelInput.SetValue("session-model")
 	if got := d.GetLaunchModelID(); got != "session-model" {
