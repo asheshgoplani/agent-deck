@@ -1,8 +1,11 @@
 package session
 
 import (
+	"log/slog"
 	"reflect"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil/logassert"
 )
 
 // canonicalBuiltins is the canonical built-in set, in the precedence order that
@@ -269,5 +272,43 @@ func TestRegistry_IconAndColor(t *testing.T) {
 	}
 	if got := r.Color("unknown"); got != "" {
 		t.Errorf("Color(unknown) = %q, want empty", got)
+	}
+}
+
+// TestRegistry_ShadowWarningSkipsPatternOnlyOverrides pins the warning for
+// [tools.<builtin>] entries. Since #3114 MergeToolPatterns applies detection
+// pattern fields on top of a built-in's defaults, so an entry with only those
+// fields is not ignored and must not be reported as a shadow. Entries that set
+// anything else, or name a built-in without pattern defaults, still warn.
+func TestRegistry_ShadowWarningSkipsPatternOnlyOverrides(t *testing.T) {
+	const shadowMsg = "ignored custom tool: name shadows a built-in"
+	cases := []struct {
+		name string
+		tool string
+		def  ToolDef
+		warn bool
+	}{
+		{"pattern only on a built-in with defaults", "pi", ToolDef{BusyPatterns: []string{"Working"}}, false},
+		{"extras only", "claude", ToolDef{BusyPatternsExtra: []string{"thinking"}, SpinnerCharsExtra: []string{"*"}}, false},
+		{"command shadows the built-in", "claude", ToolDef{Command: "my-fork-of-claude"}, true},
+		{"patterns plus a command", "pi", ToolDef{Command: "my-pi", BusyPatterns: []string{"Working"}}, true},
+		{"built-in without pattern defaults", "hermes", ToolDef{BusyPatterns: []string{"busy"}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := logassert.NewCapture()
+			orig := registryLog
+			registryLog = slog.New(capture)
+			t.Cleanup(func() { registryLog = orig })
+
+			r := Init(map[string]ToolDef{tc.tool: tc.def})
+
+			if def := r.GetCustom(tc.tool); def != nil {
+				t.Errorf("GetCustom(%q) = %+v, want nil (built-in wins)", tc.tool, def)
+			}
+			if got := len(capture.WithMessage(shadowMsg)) > 0; got != tc.warn {
+				t.Errorf("shadow warning logged = %v, want %v", got, tc.warn)
+			}
+		})
 	}
 }

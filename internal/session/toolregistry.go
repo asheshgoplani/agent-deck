@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/shellwords"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // Registry is the unified, in-memory view of every tool agent-deck knows about:
@@ -86,7 +88,8 @@ func probeInstalled(command string) bool {
 
 // Init builds a Registry from the static built-ins plus the supplied custom
 // tools (typically config.Tools from LoadUserConfig). Custom entries whose name
-// shadows a built-in are dropped with a warning (precedence rule (a)).
+// shadows a built-in are dropped with a warning (precedence rule (a)), except
+// entries that only set detection patterns, which MergeToolPatterns applies.
 //
 // Init is the single explicit constructor — tests build registries directly via
 // Init(map[string]ToolDef{...}) rather than poking package globals. It builds an
@@ -120,6 +123,9 @@ func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool, hiddenTools
 			continue
 		}
 		if _, isBuiltin := r.builtins[name]; isBuiltin {
+			if patternOnlyOverride(name, def) {
+				continue
+			}
 			registryLog.Warn("ignored custom tool: name shadows a built-in",
 				"name", name,
 				"hint", "rename your custom tool and set compatible_with = \""+name+"\" instead")
@@ -139,6 +145,21 @@ func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool, hiddenTools
 		r.runInstalledProbe()
 	}
 	return r
+}
+
+// patternOnlyOverride reports whether a [tools.<builtin>] entry sets only the
+// detection pattern fields that MergeToolPatterns applies on top of the
+// built-in's own defaults. Such an entry is honored, not ignored, so it is not
+// reported as a shadow. A built-in without pattern defaults gets no merge and
+// still warns.
+func patternOnlyOverride(name string, def ToolDef) bool {
+	if tmux.DefaultRawPatterns(name) == nil {
+		return false
+	}
+	rest := def
+	rest.BusyPatterns, rest.PromptPatterns, rest.SpinnerChars = nil, nil, nil
+	rest.BusyPatternsExtra, rest.PromptPatternsExtra, rest.SpinnerCharsExtra = nil, nil, nil
+	return !reflect.DeepEqual(def, rest) && reflect.DeepEqual(rest, ToolDef{})
 }
 
 // runInstalledProbe resolves every registered tool's command against the host
