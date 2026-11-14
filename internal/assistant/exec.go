@@ -61,16 +61,20 @@ const maxCapture = 1 << 20
 type cappedBuffer struct {
 	buf   bytes.Buffer
 	limit int
+	// cut is set once a byte was dropped.
+	cut bool
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
-	if room := c.limit - c.buf.Len(); room > 0 {
-		if len(p) > room {
+	room := c.limit - c.buf.Len()
+	if len(p) > room {
+		c.cut = true
+		if room > 0 {
 			c.buf.Write(p[:room])
-		} else {
-			c.buf.Write(p)
 		}
+		return len(p), nil
 	}
+	c.buf.Write(p)
 	return len(p), nil
 }
 
@@ -98,6 +102,11 @@ func (b BinaryExecutor) Run(ctx context.Context, profile string, args []string, 
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = 5 * time.Second
 	err = cmd.Run()
+	if err == nil && stdout.cut {
+		// A cut-off prefix (an unterminated JSON array, half an answer) is
+		// never returned as a success.
+		return nil, fmt.Errorf("agent-deck %s printed more than %d bytes; the output was cut off", firstWord(args), maxCapture)
+	}
 	if err == nil {
 		return stdout.buf.Bytes(), nil
 	}
