@@ -112,7 +112,7 @@ jobs:
     name: Runtime health (100 sessions)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: golang:1.26.10
+    container: golang:1.26.11
     env:
       PERF_BUDGET_MULTIPLIER: '2.0'
     steps:

@@ -22,6 +22,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/voicestate"
 )
 
 func newNotesEditor() textarea.Model {
@@ -202,6 +203,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		agentsPanel:               NewAgentsPanel(),
 		deadLetterPanel:           NewDeadLetterPanel(),
 		triggersFeed:              stateDBTriggersFeed{},
+		voiceReader:               voicestate.NewReader(voicestate.DefaultDir()),
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,

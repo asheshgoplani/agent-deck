@@ -95,7 +95,7 @@ jobs:
       # job limit. tests/eval/session alone takes about 3m, hence 5m.
       - name: Run eval_smoke suite
         env:
-          GOTOOLCHAIN: go1.26.10
+          GOTOOLCHAIN: go1.26.11
         run: |
           go test -tags eval_smoke -race -count=1 -timeout 5m ./tests/eval/...
           go test -tags eval_smoke -race -count=1 -timeout 5m -run '^TestEval_' ./internal/ui/...

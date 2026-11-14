@@ -62,6 +62,10 @@ func PiExtensionsDir() string {
 	return piExtensionsDirOf(os.Getenv("PI_CODING_AGENT_DIR"))
 }
 
+// PiExtensionsDirOf is PiExtensionsDir for a given PI_CODING_AGENT_DIR value
+// ("" for pi's default).
+func PiExtensionsDirOf(agentDir string) string { return piExtensionsDirOf(agentDir) }
+
 // piExtensionsDirOf is PiExtensionsDir for a given PI_CODING_AGENT_DIR value.
 func piExtensionsDirOf(agentDir string) string {
 	if dir := strings.TrimSpace(agentDir); dir != "" {
@@ -319,10 +323,7 @@ func piSocketEnvForLaunch(profile, instanceID string, env []string) (string, PiS
 // pi loads extensions from: env's PI_CODING_AGENT_DIR, which carries a
 // command's own leading assignment, else this process's.
 func piSocketLaunch(profile, instanceID string, env []string, bin string, found bool) (string, PiSocketInfo) {
-	extDir := PiExtensionsDir()
-	if agentDir, ok := envValueOf(env, "PI_CODING_AGENT_DIR"); ok {
-		extDir = piExtensionsDirOf(agentDir)
-	}
+	extDir := piExtensionsDirOf(piAgentDirForEnv(env))
 	var info PiSocketInfo
 	switch state, version := InspectPiHooks(extDir); state {
 	case PiHooksNotInstalled, PiHooksForeign:
@@ -399,6 +400,33 @@ func envValueOf(env []string, key string) (string, bool) {
 	return "", false
 }
 
+// piAgentDirForEnv is the PI_CODING_AGENT_DIR a pi run with env loads its
+// extensions under: env's own assignment (the last one wins, and an empty one
+// means pi's default), else this process's. "" is pi's default, ~/.pi/agent.
+func piAgentDirForEnv(env []string) string {
+	if dir, ok := envValueOf(env, "PI_CODING_AGENT_DIR"); ok {
+		return strings.TrimSpace(dir)
+	}
+	return PiAgentDir()
+}
+
+// PiAgentDir is this process's PI_CODING_AGENT_DIR, "" for pi's default.
+func PiAgentDir() string {
+	return strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+}
+
+// PiLaunchAgentDir is the agent dir this session's pi loads its extensions
+// from: the command's own leading PI_CODING_AGENT_DIR, else this process's,
+// the dir piSocketLaunchPrefix checks the extension in (#3099 review).
+func (i *Instance) PiLaunchAgentDir() string {
+	command := strings.TrimSpace(i.Command)
+	if command == "" {
+		command = "pi"
+	}
+	_, _, _, assigns := i.launchBinary(command, "pi")
+	return piAgentDirForEnv(assigns)
+}
+
 // compareVersions compares two x.y.z[-prerelease] strings by semver precedence:
 // the triple numerically (1.10.0 > 1.2.0); a prerelease is below its own
 // release; prerelease identifiers compare left to right, numeric ones
@@ -459,4 +487,41 @@ func isDigits(s string) bool {
 		}
 	}
 	return s != ""
+}
+
+// PiHooksInstallCommand is the command that installs the extension where a pi
+// with agentDir ("" for pi's default) loads it. Like the codex-hooks line's
+// CODEX_HOME, a set agent dir is spelled out so a shell without it does not
+// install into ~/.pi/agent instead.
+func PiHooksInstallCommand(agentDir string) string {
+	if agentDir != "" {
+		return "PI_CODING_AGENT_DIR=" + shellescape.Quote(agentDir) + " agent-deck pi-hooks install"
+	}
+	return "agent-deck pi-hooks install"
+}
+
+// piStartupTimeoutHint is the startup-timeout hold's explanation for a pi
+// session spawned without the extension (#3098).
+func piStartupTimeoutHint(agentDir string) string {
+	return "The agent-deck pi extension is not installed, so pi's startup could only be detected from the screen.\n" +
+		"Install it with '" + PiHooksInstallCommand(agentDir) + "' before restarting."
+}
+
+// applyStartupTimeoutHint tells the startup watchdog why it may not see this
+// session start. Without the extension, pi's startup is judged only from the
+// pane, so a layout the pane patterns do not know (a footer extension, #3098)
+// can expire a healthy session; the extension's session_start ends startup
+// whatever the layout. The extension is looked for where this session's pi
+// loads it (PiLaunchAgentDir). Recomputed on every spawn, so installing the
+// extension and restarting clears it. Remote and sandboxed sessions keep their
+// extension elsewhere, so this host cannot tell and stays quiet.
+func (i *Instance) applyStartupTimeoutHint() {
+	hint := ""
+	if i.Tool == "pi" && !i.IsSSH() && !i.IsSandboxed() {
+		agentDir := i.PiLaunchAgentDir()
+		if state, _ := InspectPiHooks(piExtensionsDirOf(agentDir)); state == PiHooksNotInstalled {
+			hint = piStartupTimeoutHint(agentDir)
+		}
+	}
+	i.tmuxSession.SetStartupTimeoutHint(hint)
 }
