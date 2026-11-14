@@ -131,7 +131,7 @@ func (s *StateDB) touchStamp() (WriteStamps, error) {
 // can tell "recorded" from "silently dropped" (the instance was never saved, or
 // another process deleted it mid-restart).
 func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (WriteStamps, error) {
-	return s.writeRestartOutcome(id, tmuxSession, status, tool, "tool_data")
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, restartOutcomeSQL)
 }
 
 // WriteRestartOutcomeWithLaunch is WriteRestartOutcome that also records, in
@@ -140,11 +140,17 @@ func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (Wri
 // session the decision describes (launch_tmux_session). The launched tool is
 // what the pane runs, which a tool edit does not change until the next restart.
 func (s *StateDB) WriteRestartOutcomeWithLaunch(id, tmuxSession, status, tool string, exported bool) (WriteStamps, error) {
-	return s.writeRestartOutcome(id, tmuxSession, status, tool, launchToolDataExpr(exported), tool, tmuxSession)
+	query := restartOutcomeLaunchClearedSQL
+	if exported {
+		query = restartOutcomeLaunchExportedSQL
+	}
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, query, tool, tmuxSession)
 }
 
-// launchToolDataExpr records the launch decision; its two parameters are the
-// launched tool and the tmux session the launch spawned in.
+// The launch tool_data expressions record the launch decision; their two
+// parameters are the launched tool and the tmux session the launch spawned in.
+// The Exported form marks a pi's wake socket as exported, the Cleared form
+// removes that mark.
 //
 // The decision lives in tool_data extras, which every binary's full save
 // carries forward (MergeToolDataExtras), including a binary that launches the
@@ -154,28 +160,46 @@ func (s *StateDB) WriteRestartOutcomeWithLaunch(id, tmuxSession, status, tool st
 // name, so an older binary's restart reads as a launch with no record. (A
 // start reuses the stored name, so an older binary's start of a stopped pi is
 // not caught here; the bound on refused socket wakes makes that one visible.)
-func launchToolDataExpr(exported bool) string {
-	return `json_set(` + piSocketToolDataExpr(exported) + `, '$.launched_tool', ?, '$.launch_tmux_session', ?)`
-}
+//
+// All the statements below are constants, built at compile time from these
+// fragments, so no SQL text is assembled at run time.
+const (
+	piSocketExportedToolData = `json_set(COALESCE(tool_data, '{}'), '$.pi_socket_exported', json('true'))`
+	piSocketClearedToolData  = `json_remove(COALESCE(tool_data, '{}'), '$.pi_socket_exported')`
 
-// piSocketToolDataExpr is the tool_data expression that records the decision.
-func piSocketToolDataExpr(exported bool) string {
-	if exported {
-		return `json_set(COALESCE(tool_data, '{}'), '$.pi_socket_exported', json('true'))`
-	}
-	return `json_remove(COALESCE(tool_data, '{}'), '$.pi_socket_exported')`
-}
+	launchExportedToolData = `json_set(` + piSocketExportedToolData + `, '$.launched_tool', ?, '$.launch_tmux_session', ?)`
+	launchClearedToolData  = `json_set(` + piSocketClearedToolData + `, '$.launched_tool', ?, '$.launch_tmux_session', ?)`
+)
 
-func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, toolDataExpr string, exprArgs ...any) (WriteStamps, error) {
-	var affected int64
-	if err := withBusyRetry(func() error {
-		res, err := s.db.Exec(
-			`UPDATE instances
+// The restart outcome UPDATE, in its three forms: tool_data kept as is, or
+// rewritten with the launch decision (socket exported or not).
+const (
+	restartOutcomeSQLHead = `UPDATE instances
 			   SET tmux_session = ?, status = ?, tool = ?,
 			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
 			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END,
-			       tool_data = `+toolDataExpr+`
-			 WHERE id = ?`,
+			       tool_data = `
+	restartOutcomeSQLTail = `
+			 WHERE id = ?`
+
+	restartOutcomeSQL               = restartOutcomeSQLHead + `tool_data` + restartOutcomeSQLTail
+	restartOutcomeLaunchExportedSQL = restartOutcomeSQLHead + launchExportedToolData + restartOutcomeSQLTail
+	restartOutcomeLaunchClearedSQL  = restartOutcomeSQLHead + launchClearedToolData + restartOutcomeSQLTail
+)
+
+// The launch decision UPDATE (WriteLaunchDecision), socket exported or not.
+const (
+	launchDecisionExportedSQL = `UPDATE instances SET tmux_session = ?, tool_data = ` + launchExportedToolData + ` WHERE id = ?`
+	launchDecisionClearedSQL  = `UPDATE instances SET tmux_session = ?, tool_data = ` + launchClearedToolData + ` WHERE id = ?`
+)
+
+// writeRestartOutcome runs query, one of the restartOutcome*SQL constants;
+// exprArgs are the parameters of its tool_data expression.
+func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, query string, exprArgs ...any) (WriteStamps, error) {
+	var affected int64
+	if err := withBusyRetry(func() error {
+		res, err := s.db.Exec(
+			query,
 			append(append([]any{tmuxSession, status, tool, status, status}, exprArgs...), id)...,
 		)
 		if err != nil {
@@ -197,7 +221,7 @@ func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, toolDataExp
 // WriteLaunchDecision records the decision of the launch that just spawned its
 // pane in tmuxSession: in tool_data, the tool it launched (launched_tool),
 // whether a pi's launch exported the wake socket, and the tmux session it
-// describes (see launchToolDataExpr); and that session's name in tmux_session,
+// describes (see launchExportedToolData); and that session's name in tmux_session,
 // in the same UPDATE, since a start whose name was taken spawns under a new one
 // (tmux.Session.Start) and not every start is followed by a save. A start
 // writes it after a successful spawn; a restart folds it into its outcome
@@ -212,10 +236,13 @@ func (s *StateDB) WriteLaunchDecision(id, tmuxSession, tool string, exported boo
 	if tmuxSession == "" {
 		return WriteStamps{}, fmt.Errorf("record launch decision for %q: the launch has no tmux session name", id)
 	}
+	query := launchDecisionClearedSQL
+	if exported {
+		query = launchDecisionExportedSQL
+	}
 	var affected int64
 	if err := withBusyRetry(func() error {
-		res, err := s.db.Exec(`UPDATE instances SET tmux_session = ?, tool_data = `+launchToolDataExpr(exported)+` WHERE id = ?`,
-			tmuxSession, tool, tmuxSession, id)
+		res, err := s.db.Exec(query, tmuxSession, tool, tmuxSession, id)
 		if err != nil {
 			return err
 		}
