@@ -1443,7 +1443,16 @@ agent-deck codex-hooks status
 agent-deck codex-hooks uninstall
 ```
 
-Codex turn-level status uses its notify hook. Install it once per Codex home; if `CODEX_HOME` is set, use the same environment for installation and Codex sessions.
+Codex turn-level status uses its notify hook. Install it once per Codex home using
+the explicit creation flag or the manual command. CLI `add`
+and `launch` with `--install-codex-hooks` install it into the session's resolved Codex home only when `notify`
+is absent. For remote hosts, run the flagged command on the owning host. Existing notify
+settings are never replaced; SSH-wrapper and sandbox sessions are skipped.
+Installation errors warn on stderr without failing creation. For other creation
+paths and existing sessions, install it manually; if `CODEX_HOME` is set, use the
+same environment for installation and Codex sessions. Installation is explicit and persists independently of session creation, even if
+a later launch step fails. Ordinary creation does not reinstall a removed hook.
+Custom commands with ambiguous Codex homes require manual installation.
 
 ## tmux Hook Commands
 

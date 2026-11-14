@@ -49,6 +49,8 @@ Options:
     	Place the child in the parent session's group instead of the cwd-derived group (auto-applied for git worktree children; use this to force it for non-worktree paths)
   -inherit-telegram-env
     	Keep TELEGRAM_* env vars in the child (#1133); off by default to prevent duplicate plugin pollers
+  -install-codex-hooks
+    	Install a missing Codex notify hook in the shared Codex home; persists independently of this session
   -json
     	Output as JSON
   -location string

@@ -860,7 +860,12 @@ V1's per-session SSE port, with terminal fallback when service status is unavail
 Service-based forks must run on the target host; this local fork path does not
 call a local service on behalf of SSH or sandbox sessions.
 
-Codex status detection uses Codex's notify hook. Install and verify it once for each Codex home:
+Codex status detection uses Codex's notify hook. CLI `add`
+and `launch` with `--install-codex-hooks` install it when the session's Codex home has no `notify` setting.
+For remote hosts, run the flagged command on the owning host with the updated binary. Existing notify
+settings are preserved; SSH-wrapper and sandbox sessions are skipped. A failed
+installation warns on stderr without failing session creation. Other creation
+paths and existing sessions can install and verify it manually:
 
 ```bash
 agent-deck codex-hooks install

@@ -9,9 +9,9 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// A codex session made through `add` / `remote add` has no notify hook until
-// `codex-hooks install` is run in its CODEX_HOME, and until then its light is
-// content detection only. That state must be visible, not silent: `session
+// A codex session without a notify hook uses content detection only. Existing
+// sessions, custom notify settings and failed installs still need a visible
+// state, not silence: `session
 // show` and `doctor` say so, and a remote session's hook state is unknown
 // (its CODEX_HOME lives on the other host).
 
