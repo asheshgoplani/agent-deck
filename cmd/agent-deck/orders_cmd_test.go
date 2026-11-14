@@ -217,3 +217,32 @@ func TestHookHandler_HeartbeatTurnPermissionPromptIsDenied(t *testing.T) {
 		t.Fatalf("the owner's own turn must not be denied: %q", out)
 	}
 }
+
+// A pi launched from a heartbeat turn (a Bash tool call) inherits the
+// conductor's AGENTDECK_INSTANCE_ID, so its extension's session_start reaches
+// the same hook handler. It is pi's, not a Claude SessionStart: the
+// heartbeat turn stays unattended and its permission prompt is still denied.
+func TestHookHandler_NestedPiSessionStartKeepsTheTurnUnattended(t *testing.T) {
+	home := t.TempDir()
+	runConductorSetupCLI(t, home, "ops")
+	env := []string{"AGENTDECK_INSTANCE_ID=0a1b2c3d-1700000002", "AGENTDECK_TITLE=conductor-ops"}
+	hook := func(payload string) string {
+		t.Helper()
+		out, errOut, code := runAgentDeckEnv(t, home, payload, env, "hook-handler")
+		if code != 0 {
+			t.Fatalf("hook-handler exit %d: %s", code, errOut)
+		}
+		return out
+	}
+	hook(`{"hook_event_name":"UserPromptSubmit","session_id":"s3","prompt":"[HEARTBEAT] [ops] Status: 1 waiting, 0 running."}`)
+	hook(`{"hook_event_name":"session_start","source":"pi"}`)
+	out := hook(`{"hook_event_name":"PermissionRequest","session_id":"s3","tool_name":"Bash","tool_input":{"command":"gh pr merge 7"}}`)
+	if !strings.Contains(out, `"behavior":"deny"`) {
+		t.Fatalf("a nested pi's session_start cleared the heartbeat turn's origin; the permission prompt was not denied: %q", out)
+	}
+	// A Claude SessionStart still starts with no unattended turn.
+	hook(`{"hook_event_name":"SessionStart","session_id":"s3","source":"startup"}`)
+	if out := hook(`{"hook_event_name":"PermissionRequest","session_id":"s3","tool_name":"Bash","tool_input":{"command":"ls"}}`); strings.Contains(out, `"deny"`) {
+		t.Fatalf("after a Claude SessionStart the prompt must not be denied: %q", out)
+	}
+}

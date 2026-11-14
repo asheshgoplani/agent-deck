@@ -21,8 +21,18 @@ import (
 // Serialize fallback selection and claim publication, not authoritative probes.
 var codexBootstrapMu sync.Mutex
 
-// StatusUpdatePass carries no shared evidence on the red side.
-type StatusUpdatePass struct{}
+// StatusUpdatePass carries no shared Codex ownership evidence on the red side.
+// The remaining fields belong to other files (instance_status.go's per-pass
+// tmux listing, codex_process_snapshot.go's process table) and must match
+// codex_exclusion_cache.go so the red side compiles.
+type StatusUpdatePass struct {
+	mu      sync.Mutex
+	listed  map[string]passSessionListing
+	listing map[string]chan struct{}
+
+	procsOnce sync.Once
+	procs     processSnapshot
+}
 
 // UpdateStatus refreshes one instance.
 func (p *StatusUpdatePass) UpdateStatus(i *Instance) error {
