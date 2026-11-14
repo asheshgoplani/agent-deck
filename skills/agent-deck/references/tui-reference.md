@@ -252,7 +252,7 @@ completion content are never rendered.
 - Project path (required, supports `~/`)
 - Parent group (auto-selected)
 - Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, start query, and the account row (CLI: `--account`; hidden when no named accounts are configured; starts on `[claude].default_account`, labelled `(default)`, when one is set)
-- Kimi options (when Kimi is selected): a Permissions radio row — **Kimi default** (no flag; use Kimi's configured or saved mode), **Ask When Needed** (`--yolo`), or **Never Ask** (`--auto`) — defaulting from `[kimi].permission_mode`; the choice is per-session and does not rewrite the global default. The model field defaults from `[kimi].default_model`. Managed models show friendly names such as `K3.1 Pro`, `K3`, and `K2.8`; launching still passes the corresponding `kimi-code/...` alias to Kimi
+- Kimi options (when Kimi is selected): a YOLO mode checkbox — off uses Kimi's configured or saved mode, on adds `--yolo` (auto-approve routine work; risky actions still ask) — defaulting from `[kimi].yolo_mode`; the choice is per-session and does not rewrite the global default. The model field defaults from `[kimi].default_model`. Managed models show friendly names such as `K3.1 Pro`, `K3`, and `K2.8`; launching still passes the corresponding `kimi-code/...` alias to Kimi
 - `[ Create session ]` button (last row)
 
 **Controls:** `Enter` creates from any row with what is filled in | `Tab`/`Shift+Tab` and `↓`/`↑` move between rows (inside the Claude options row by row) | `↓`/`Space` open the model list, `Space`/`→` browse paths; while a list is open `Enter` picks | `Ctrl+S` creates too | `Esc` back out of a list, then cancel

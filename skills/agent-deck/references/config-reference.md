@@ -294,17 +294,17 @@ command = "kimi"
 config_dir = "~/.kimi-code"
 env_file = "~/.config/agent-deck/kimi.env"
 default_model = "kimi-code/kimi-for-coding"
-permission_mode = "" # "" = Kimi default; "yolo" = Ask When Needed; "auto" = Never Ask
+yolo_mode = false # Enable --yolo (auto-approve routine work; risky actions still ask)
 hooks_enabled = true
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `command` | string | `"kimi"` | Binary or invocation to launch. A noncanonical custom command is passed through without derived `--session`, `--model`, `--yolo`, or `--auto` flags, so wrappers retain control of their arguments. Standard agent-deck instance/profile/tool environment is still supplied for hooks. |
+| `command` | string | `"kimi"` | Binary or invocation to launch. A noncanonical custom command is passed through without derived `--session`, `--model`, or `--yolo` flags, so wrappers retain control of their arguments. Standard agent-deck instance/profile/tool environment is still supplied for hooks. |
 | `config_dir` | string | `""` | Explicit Kimi data root, exported as `KIMI_CODE_HOME`. Empty preserves the ambient `KIMI_CODE_HOME` or Kimi's own `~/.kimi-code` default. The root contains configuration, native sessions, and credentials; do not share it unintentionally. |
 | `env_file` | string | `""` | Environment file sourced for Kimi sessions only, after global `[shell].env_files`. It may contain credentials or routing variables; restrict its permissions and never commit secrets. See [Path Resolution](#path-resolution). |
 | `default_model` | string | `""` | Model alias passed as `--model` for fresh sessions only. Empty uses Kimi's configured default. Existing conversations resume without this flag. |
-| `permission_mode` | string | `""` | Permission override on fresh launch and resume. Empty uses Kimi's configured or saved mode. `"yolo"` adds `--yolo` (Ask When Needed): routine edits and commands run automatically, while risky actions, questions, and plan reviews can still ask. `"auto"` adds `--auto` (Never Ask): permission prompts and agent questions are handled automatically, while plan reviews still require confirmation. |
+| `yolo_mode` | bool | `false` | Adds `--yolo` on fresh launch and resume. Auto-approves routine work while risky actions still ask. Enable it only in trusted working directories. |
 | `hooks_enabled` | bool | `true` | Allows the one-time Kimi hook-consent prompt. Even when true, agent-deck does not change Kimi's `config.toml` before consent. False disables the automatic prompt; explicit `agent-deck kimi-hooks install` remains available. Uninstall durably suppresses future prompts until an explicit install opts in again. |
 
 Hook installation targets `config.toml` under the explicitly configured `config_dir`, else ambient `KIMI_CODE_HOME`, else `~/.kimi-code`. It preserves existing providers, models, credentials, permissions, and unrelated hooks. Use `agent-deck kimi-hooks install`, `status`, and `uninstall` to manage the entries explicitly. Restart/resume uses only the native session ID reported by the managed instance's own hooks; no newest-transcript fallback is used.

@@ -156,7 +156,7 @@ Agent Deck works with any terminal-based AI tool:
 | **OpenCode** | Status detection, organization |
 | **Codex** | Status detection, organization |
 | **Cursor** (terminal) | Status detection, organization |
-| **Kimi Code** (`kimi`) | Status detection (hook-driven with pane fallback), organization, launch, native session-ID persistence, restart/resume |
+| **Kimi Code** (`kimi`) | Status detection (hook-driven with pane fallback), organization, launch, native session-ID persistence, restart/resume, model catalog |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 ## Installation
