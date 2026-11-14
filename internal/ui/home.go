@@ -6722,17 +6722,23 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					toggled = true
 
 				case "kimi":
-					yoloMode := false
+					mode := session.KimiPermissionAlwaysAsk
 					opts := inst.GetKimiOptions()
-					if opts != nil {
-						yoloMode = opts.YoloMode
+					if opts != nil && opts.PermissionMode != "" {
+						mode = opts.PermissionMode
 					} else if userConfig, _ := session.LoadUserConfig(); userConfig != nil {
-						yoloMode = userConfig.Kimi.YoloMode
+						mode = session.NormalizeKimiPermissionMode(userConfig.Kimi.PermissionMode)
 					}
 					if opts == nil {
 						opts = &session.KimiOptions{}
 					}
-					opts.YoloMode = !yoloMode
+					switch mode {
+					case session.KimiPermissionAlwaysAsk:
+						opts.PermissionMode = session.KimiPermissionAskWhenNeeded
+					default:
+						// ask-when-needed or never-ask: "y" turns yolo off.
+						opts.PermissionMode = session.KimiPermissionAlwaysAsk
+					}
 					_ = inst.SetKimiOptions(opts)
 					toggled = true
 				}

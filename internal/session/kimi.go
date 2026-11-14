@@ -8,10 +8,38 @@ import (
 	"al.essio.dev/pkg/shellescape"
 )
 
+const (
+	// KimiPermissionAlwaysAsk is Kimi's default: every action asks first.
+	KimiPermissionAlwaysAsk = "always-ask"
+	// KimiPermissionAskWhenNeeded maps to --yolo: routine work runs, risky asks.
+	KimiPermissionAskWhenNeeded = "ask-when-needed"
+	// KimiPermissionNeverAsk maps to --auto: everything runs automatically.
+	KimiPermissionNeverAsk = "never-ask"
+)
+
+// NormalizeKimiPermissionMode maps an empty mode to Kimi's default.
+func NormalizeKimiPermissionMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return KimiPermissionAlwaysAsk
+	}
+	return mode
+}
+
+// ValidateKimiPermissionMode rejects modes that are not one of the three.
+func ValidateKimiPermissionMode(mode string) error {
+	switch NormalizeKimiPermissionMode(mode) {
+	case KimiPermissionAlwaysAsk, KimiPermissionAskWhenNeeded, KimiPermissionNeverAsk:
+		return nil
+	default:
+		return fmt.Errorf("invalid Kimi permission mode %q (valid: always-ask, ask-when-needed, never-ask)", mode)
+	}
+}
+
 // KimiOptions holds per-session launch options for Kimi Code CLI.
 type KimiOptions struct {
-	Model    string `json:"model,omitempty"`
-	YoloMode bool   `json:"yolo_mode,omitempty"`
+	Model          string `json:"model,omitempty"`
+	PermissionMode string `json:"permission_mode,omitempty"`
 }
 
 func (o *KimiOptions) ToolName() string { return "kimi" }
@@ -21,8 +49,11 @@ func (o *KimiOptions) ToArgs() []string {
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
-	if o.YoloMode {
+	switch NormalizeKimiPermissionMode(o.PermissionMode) {
+	case KimiPermissionAskWhenNeeded:
 		args = append(args, "--yolo")
+	case KimiPermissionNeverAsk:
+		args = append(args, "--auto")
 	}
 	return args
 }
@@ -31,7 +62,7 @@ func NewKimiOptions(config *UserConfig) *KimiOptions {
 	opts := &KimiOptions{}
 	if config != nil {
 		opts.Model = config.Kimi.DefaultModel
-		opts.YoloMode = config.Kimi.YoloMode
+		opts.PermissionMode = config.Kimi.PermissionMode
 	}
 	return opts
 }
@@ -93,15 +124,18 @@ func (i *Instance) buildKimiCommand(baseCommand string) string {
 			cmd += " --model " + shellescape.Quote(model)
 		}
 	}
-	yoloMode := false
+	mode := KimiPermissionAlwaysAsk
 	if config != nil {
-		yoloMode = config.Kimi.YoloMode
+		mode = NormalizeKimiPermissionMode(config.Kimi.PermissionMode)
 	}
-	if opts != nil {
-		yoloMode = opts.YoloMode
+	if opts != nil && strings.TrimSpace(opts.PermissionMode) != "" {
+		mode = opts.PermissionMode
 	}
-	if yoloMode {
+	switch mode {
+	case KimiPermissionAskWhenNeeded:
 		cmd += " --yolo"
+	case KimiPermissionNeverAsk:
+		cmd += " --auto"
 	}
 	return envPrefix + cmd
 }

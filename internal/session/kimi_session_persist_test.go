@@ -191,7 +191,7 @@ func TestKimiBindingColdStorageReloadAndResume(t *testing.T) {
 	if len(loaded) != 1 || loaded[0].KimiSessionID != "native-cold-id" || !loaded[0].kimiBoundAt.Equal(at) {
 		t.Fatalf("LoadWithGroups binding = %+v", loaded)
 	}
-	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "fresh-only", YoloMode: true}})
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "fresh-only", PermissionMode: "ask-when-needed"}})
 	defer restore()
 	command := loaded[0].buildKimiCommand("kimi")
 	if !strings.HasSuffix(command, "kimi --session native-cold-id --yolo") || strings.Contains(command, "--model") {

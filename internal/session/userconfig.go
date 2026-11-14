@@ -3326,9 +3326,9 @@ type KimiSettings struct {
 	EnvFile string `toml:"env_file,omitempty"`
 	// DefaultModel is passed with --model for fresh sessions only. Optional.
 	DefaultModel string `toml:"default_model,omitempty"`
-	// YoloMode enables the --yolo flag for fresh and resumed sessions
-	// (auto-approve routine work, still ask on risky actions). Default: false.
-	YoloMode bool `toml:"yolo_mode,omitempty"`
+	// PermissionMode is the default Kimi permission mode: "always-ask"
+	// (default, no flag), "ask-when-needed" (--yolo), or "never-ask" (--auto).
+	PermissionMode string `toml:"permission_mode,omitempty"`
 	// HooksEnabled controls automatic consent prompting for hook installation.
 	// Installed hooks continue to update status when this is false. Default: true.
 	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`

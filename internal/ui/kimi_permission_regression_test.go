@@ -18,8 +18,8 @@ func TestKimiYoloShortcutFromToolRow(t *testing.T) {
 
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 
-	if !d.GetKimiOptions().YoloMode {
-		t.Fatal("YoloMode = false, want true")
+	if d.GetKimiOptions().PermissionMode != session.KimiPermissionAskWhenNeeded {
+		t.Fatal("PermissionMode = false, want ask-when-needed")
 	}
 }
 
@@ -33,17 +33,17 @@ func TestKimiYoloShortcutOnExistingSession(t *testing.T) {
 	h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 
 	opts := inst.GetKimiOptions()
-	if opts == nil || !opts.YoloMode {
-		t.Fatalf("Kimi options = %+v, want yolo", opts)
+	if opts == nil || opts.PermissionMode != session.KimiPermissionAskWhenNeeded {
+		t.Fatalf("Kimi options = %+v, want ask-when-needed", opts)
 	}
 }
 
 func TestKimiYoloSettingPersistsAfterEscape(t *testing.T) {
 	home := setXDGTestHome(t)
-	writeXDGTestConfig(t, home, "[kimi]\nyolo_mode = false\n")
+	writeXDGTestConfig(t, home, "[kimi]\npermission_mode = \"always-ask\"\n")
 	h := NewHome()
 	h.settingsPanel.Show()
-	h.settingsPanel.cursor = int(SettingKimiYoloMode)
+	h.settingsPanel.cursor = int(SettingKimiPermissionMode)
 
 	h.Update(tea.KeyMsg{Type: tea.KeySpace})
 	h.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -52,8 +52,8 @@ func TestKimiYoloSettingPersistsAfterEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadUserConfig: %v", err)
 	}
-	if !config.Kimi.YoloMode {
-		t.Fatal("YoloMode = false, want true after closing Settings")
+	if config.Kimi.PermissionMode != session.KimiPermissionAskWhenNeeded {
+		t.Fatal("PermissionMode != ask-when-needed, want true after closing Settings")
 	}
 }
 

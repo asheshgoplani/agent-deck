@@ -7,26 +7,32 @@ import (
 )
 
 type KimiOptionsPanel struct {
-	yoloMode bool
-	focused  bool
+	mode    string
+	focused bool
 }
 
 func NewKimiOptionsPanel() *KimiOptionsPanel {
 	return &KimiOptionsPanel{}
 }
 
-func (p *KimiOptionsPanel) SetDefaults(yoloMode bool) {
-	p.yoloMode = yoloMode
+func (p *KimiOptionsPanel) SetDefaults(mode string) {
+	if mode == "" {
+		mode = session.KimiPermissionAlwaysAsk
+	}
+	p.mode = mode
 }
 
 func (p *KimiOptionsPanel) SetFromOptions(opts *session.KimiOptions) {
 	if opts != nil {
-		p.yoloMode = opts.YoloMode
+		p.mode = opts.PermissionMode
+		if p.mode == "" {
+			p.mode = session.KimiPermissionAlwaysAsk
+		}
 	}
 }
 
 func (p *KimiOptionsPanel) GetOptions() *session.KimiOptions {
-	return &session.KimiOptions{YoloMode: p.yoloMode}
+	return &session.KimiOptions{PermissionMode: p.mode}
 }
 
 func (p *KimiOptionsPanel) Focus() {
@@ -67,9 +73,13 @@ func (p *KimiOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 	}
 	switch key.String() {
 	case "left", "right", " ":
-		p.yoloMode = !p.yoloMode
+		if p.mode == session.KimiPermissionAskWhenNeeded {
+			p.mode = session.KimiPermissionAlwaysAsk
+		} else {
+			p.mode = session.KimiPermissionAskWhenNeeded
+		}
 	case "y":
-		p.yoloMode = true
+		p.mode = session.KimiPermissionAskWhenNeeded
 	}
 	return nil
 }
@@ -84,7 +94,7 @@ func (p *KimiOptionsPanel) View() string {
 		label = activeStyle.Render("▶ YOLO mode: ")
 	}
 	box := "[ ]"
-	if p.yoloMode {
+	if p.mode == session.KimiPermissionAskWhenNeeded {
 		box = "[x]"
 	}
 	content := headerStyle.Render("─ Kimi Options ─") + "\n" + label + box + "\n"

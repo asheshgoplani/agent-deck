@@ -27,7 +27,7 @@ const (
 	SettingCodexYoloMode
 	SettingHermesYoloMode
 	SettingKimiDefaultModel
-	SettingKimiYoloMode
+	SettingKimiPermissionMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
 	SettingAutoInstall
@@ -88,7 +88,7 @@ type SettingsPanel struct {
 	codexYoloMode       bool
 	hermesYoloMode      bool
 	kimiDefaultModel    string
-	kimiYoloMode        bool
+	kimiPermissionMode  string
 	checkForUpdates     bool
 	autoUpdate          bool
 	autoInstall         bool
@@ -324,7 +324,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 
 	// Kimi settings
 	s.kimiDefaultModel = config.Kimi.DefaultModel
-	s.kimiYoloMode = config.Kimi.YoloMode
+	s.kimiPermissionMode = config.Kimi.PermissionMode
 
 	// Update settings
 	s.checkForUpdates = config.Updates.GetCheckEnabled()
@@ -484,7 +484,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		config.Kimi = s.originalConfig.Kimi
 	}
 	config.Kimi.DefaultModel = s.kimiDefaultModel
-	config.Kimi.YoloMode = s.kimiYoloMode
+	config.Kimi.PermissionMode = s.kimiPermissionMode
 
 	// Update settings
 	checkForUpdates := s.checkForUpdates
@@ -816,8 +816,12 @@ func (s *SettingsPanel) toggleValue() bool {
 		s.hermesYoloMode = !s.hermesYoloMode
 		return true
 
-	case SettingKimiYoloMode:
-		s.kimiYoloMode = !s.kimiYoloMode
+	case SettingKimiPermissionMode:
+		if s.kimiPermissionMode == session.KimiPermissionAskWhenNeeded {
+			s.kimiPermissionMode = session.KimiPermissionAlwaysAsk
+		} else {
+			s.kimiPermissionMode = session.KimiPermissionAskWhenNeeded
+		}
 		return true
 
 	case SettingCheckForUpdates:
@@ -1149,11 +1153,11 @@ func (s *SettingsPanel) View() string {
 	content.WriteString(gutter(SettingKimiDefaultModel) + labelStyle.Render(line) + "\n")
 
 	// YOLO mode checkbox
-	line = s.renderCheckbox("YOLO mode", s.kimiYoloMode) + " - Auto-approve routine work"
-	if s.cursor == int(SettingKimiYoloMode) {
+	line = s.renderCheckbox("YOLO mode", s.kimiPermissionMode == session.KimiPermissionAskWhenNeeded) + " - Auto-approve routine work"
+	if s.cursor == int(SettingKimiPermissionMode) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString(gutter(SettingKimiYoloMode) + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingKimiPermissionMode) + labelStyle.Render(line) + "\n\n")
 
 	// UPDATES
 	content.WriteString(sectionStyle.Render("UPDATES"))
@@ -1475,7 +1479,7 @@ func (s *SettingsPanel) View() string {
 			19, // SettingCodexYoloMode
 			22, // SettingHermesYoloMode
 			26, // SettingKimiDefaultModel
-			27, // SettingKimiYoloMode
+			27, // SettingKimiPermissionMode
 			29, // SettingCheckForUpdates
 			30, // SettingAutoUpdate
 			31, // SettingAutoInstall

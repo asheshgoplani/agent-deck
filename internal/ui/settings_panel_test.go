@@ -316,8 +316,8 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 func TestSettingsPanel_KimiOptions(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.LoadConfig(&session.UserConfig{Kimi: session.KimiSettings{
-		DefaultModel: "configured-model",
-		YoloMode:     false,
+		DefaultModel:   "configured-model",
+		PermissionMode: "always-ask",
 	}})
 	panel.visible = true
 	panel.SetSize(100, 60)
@@ -329,7 +329,7 @@ func TestSettingsPanel_KimiOptions(t *testing.T) {
 		}
 	}
 
-	panel.cursor = int(SettingKimiYoloMode)
+	panel.cursor = int(SettingKimiPermissionMode)
 	panel.Update(tea.KeyMsg{Type: tea.KeySpace})
 	panel.cursor = int(SettingKimiDefaultModel)
 	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -343,20 +343,20 @@ func TestSettingsPanel_KimiOptions(t *testing.T) {
 	if config.Kimi.DefaultModel != "session-model" {
 		t.Fatalf("Kimi.DefaultModel = %q, want session-model", config.Kimi.DefaultModel)
 	}
-	if !config.Kimi.YoloMode {
-		t.Fatal("Kimi.YoloMode = false, want true")
+	if config.Kimi.PermissionMode != session.KimiPermissionAskWhenNeeded {
+		t.Fatal("Kimi.PermissionMode != ask-when-needed, want true")
 	}
 }
 
 func TestSettingsPanel_KimiOptionsPreserveUnexposedConfig(t *testing.T) {
 	hooksEnabled := false
 	original := &session.UserConfig{Kimi: session.KimiSettings{
-		Command:      "/opt/kimi --custom",
-		ConfigDir:    "/tmp/kimi-home",
-		EnvFile:      "/tmp/kimi.env",
-		DefaultModel: "configured-model",
-		YoloMode:     true,
-		HooksEnabled: &hooksEnabled,
+		Command:        "/opt/kimi --custom",
+		ConfigDir:      "/tmp/kimi-home",
+		EnvFile:        "/tmp/kimi.env",
+		DefaultModel:   "configured-model",
+		PermissionMode: "ask-when-needed",
+		HooksEnabled:   &hooksEnabled,
 	}}
 	panel := NewSettingsPanel()
 	panel.originalConfig = original

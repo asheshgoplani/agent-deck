@@ -46,14 +46,14 @@ command = "/opt/kimi --custom"
 config_dir = "/tmp/kimi home"
 env_file = "/tmp/kimi.env"
 default_model = "k2.5"
-yolo_mode = true
+permission_mode = "ask-when-needed"
 hooks_enabled = false
 `
 	if _, err := toml.Decode(doc, &cfg); err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
 	if cfg.Kimi.Command != "/opt/kimi --custom" || cfg.Kimi.ConfigDir != "/tmp/kimi home" ||
-		cfg.Kimi.EnvFile != "/tmp/kimi.env" || cfg.Kimi.DefaultModel != "k2.5" || !cfg.Kimi.YoloMode {
+		cfg.Kimi.EnvFile != "/tmp/kimi.env" || cfg.Kimi.DefaultModel != "k2.5" || cfg.Kimi.PermissionMode != "ask-when-needed" {
 		t.Fatalf("Kimi settings did not decode: %+v", cfg.Kimi)
 	}
 	if cfg.Kimi.GetHooksEnabled() {
@@ -67,8 +67,8 @@ hooks_enabled = false
 
 func TestBuildKimiCommandFresh(t *testing.T) {
 	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{
-		DefaultModel: "model with spaces",
-		YoloMode:     true,
+		DefaultModel:   "model with spaces",
+		PermissionMode: "ask-when-needed",
 	}})
 	defer restore()
 
@@ -121,7 +121,7 @@ func TestKimiLaunchModelOverride(t *testing.T) {
 }
 
 func TestBuildKimiCommandResume(t *testing.T) {
-	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "fresh-only", YoloMode: true}})
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "fresh-only", PermissionMode: "ask-when-needed"}})
 	defer restore()
 
 	sessionID := "id with spaces;$(touch /tmp/kimi-pwned)"
@@ -137,7 +137,7 @@ func TestBuildKimiCommandResume(t *testing.T) {
 }
 
 func TestBuildKimiCommandPassthrough(t *testing.T) {
-	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "unused", YoloMode: true}})
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{DefaultModel: "unused", PermissionMode: "ask-when-needed"}})
 	defer restore()
 
 	inst := &Instance{ID: "abc", Title: "dev", Tool: "kimi", KimiSessionID: "native-id"}
@@ -175,7 +175,7 @@ func TestBuildKimiCommandConfigDirAndEnvFile(t *testing.T) {
 }
 
 func TestBuildKimiCommandConfiguredCommand(t *testing.T) {
-	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{Command: "/opt/kimi --custom", DefaultModel: "k2.5", YoloMode: true}})
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{Command: "/opt/kimi --custom", DefaultModel: "k2.5", PermissionMode: "ask-when-needed"}})
 	defer restore()
 
 	inst := &Instance{Tool: "kimi", KimiSessionID: "native-id"}

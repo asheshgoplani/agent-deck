@@ -104,7 +104,7 @@ func TestNewDialog_ModelInputForCodex(t *testing.T) {
 
 func TestNewDialog_KimiOptions(t *testing.T) {
 	home := setXDGTestHome(t)
-	writeXDGTestConfig(t, home, "[kimi]\ndefault_model = \"configured-model\"\nyolo_mode = true\n")
+	writeXDGTestConfig(t, home, "[kimi]\ndefault_model = \"configured-model\"\npermission_mode = \"ask-when-needed\"\n")
 
 	d := NewNewDialog()
 	d.SetDefaultTool("kimi")
@@ -114,8 +114,8 @@ func TestNewDialog_KimiOptions(t *testing.T) {
 	if got := d.GetLaunchModelID(); got != "configured-model" {
 		t.Fatalf("GetLaunchModelID() = %q, want configured-model", got)
 	}
-	if !d.GetKimiOptions().YoloMode {
-		t.Fatal("YoloMode = false, want true")
+	if d.GetKimiOptions().PermissionMode != session.KimiPermissionAskWhenNeeded {
+		t.Fatal("PermissionMode = false, want ask-when-needed")
 	}
 	view := d.View()
 	for _, want := range []string{"Model ID", "Kimi Options", "YOLO mode"} {
@@ -127,12 +127,12 @@ func TestNewDialog_KimiOptions(t *testing.T) {
 	d.focusIndex = d.indexOf(focusOptions)
 	d.updateFocus()
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
-	if d.GetKimiOptions().YoloMode {
-		t.Fatal("YoloMode after Space = true, want false")
+	if d.GetKimiOptions().PermissionMode == session.KimiPermissionAskWhenNeeded {
+		t.Fatal("PermissionMode after Space = ask-when-needed, want always-ask")
 	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
-	if !d.GetKimiOptions().YoloMode {
-		t.Fatal("YoloMode after second Space = false, want true")
+	if d.GetKimiOptions().PermissionMode != session.KimiPermissionAskWhenNeeded {
+		t.Fatal("PermissionMode after second Space != ask-when-needed, want true")
 	}
 	d.modelInput.SetValue("session-model")
 	if got := d.GetLaunchModelID(); got != "session-model" {
