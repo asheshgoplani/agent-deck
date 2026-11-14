@@ -144,7 +144,7 @@ jobs:
 
   native-descriptors:
     name: Native macOS baseline red and head green
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     env:
       BASE_REVISION: 7d2302fb8a41c5fcab7a441d56729b4b6547885a

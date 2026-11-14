@@ -544,3 +544,30 @@ func TestRemoteCommandArgsSkillLifecycle(t *testing.T) {
 		}
 	}
 }
+
+// `session ownership inspect` is the read-only ownership receipt (#3108); only
+// that subcommand, with an id and --json, may travel to a remote.
+func TestRemoteCommandArgsSessionOwnershipInspect(t *testing.T) {
+	for _, args := range [][]string{
+		{"session", "ownership", "inspect", "abc"},
+		{"session", "ownership", "inspect", "abc", "--json"},
+		{"session", "ownership", "inspect", "--json", "abc"},
+	} {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"session", "ownership"},
+		{"session", "ownership", "reconcile", "abc", "--yes"},
+		{"session", "ownership", "abandon", "abc"},
+		{"session", "ownership", "status", "abc"},
+		{"session", "ownership", "inspect", "abc", "--yes"},
+		{"session", "ownership", "inspect"},
+	} {
+		if got, err := remoteCommandArgs(args); err == nil {
+			t.Fatalf("remoteCommandArgs(%v) = %v; must stay unsupported", args, got)
+		}
+	}
+}

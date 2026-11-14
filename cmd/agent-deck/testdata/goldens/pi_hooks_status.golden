@@ -1,5 +1,5 @@
 Status: NOT INSTALLED
 Run 'agent-deck pi-hooks install' to install.
 Extension: <SANDBOX_HOME>/.pi/agent/extensions/agent-deck.ts
-Pi: 1.3.0 (via <SANDBOX_HOME>/goldens-bin/pi --version)
+Pi: 1.3.0 (via <SANDBOX_HOME>/.local/bin/pi --version)
 Socket: off (extension not installed)
