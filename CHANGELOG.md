@@ -15,11 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixes
 
 - `session send` now sees the Codex 0.167 approval picker as a menu, so a send can no longer confirm it by accident (#3088).
+- A session on an account slot no longer picks up the newest conversation of the default Claude dir when its own session id is empty at start or restart.
 - A Claude session with two or more channels (for example telegram and discord) gets its messages again, and a commented-out `TELEGRAM_STATE_DIR` line no longer turns telegram on (#3091).
 - `list` stays fast on a busy machine: when reading the panes times out it no longer starts dozens of extra tmux calls (#3092).
 - `session archive` with an expected content version checks only this session's own Claude transcript, never a same-id file from another project (#3076; thanks @arnzchen).
 - With `[updates] check_enabled = false`, the TUI no longer checks for updates once at startup (#3077; thanks @ruiheng).
 - A restart that fails partway keeps the session attached to its running tmux session instead of a dead one (#3079; thanks @ruiheng).
+- `session output` now reads the reply of a session started on an account slot (`--account`) from the slot's own transcript, instead of falling back to the pane (thanks Sharjeel for the report).
 
 ### Under the hood
 

@@ -1,0 +1,3 @@
+# Matches the fake pi's custom footer without replacing the built-in pi patterns.
+[tools.pi]
+prompt_patterns_extra = ['re:(?m)^(?:~|/)[^\n|]+ \| [^\n|]+ \| ctx:(?:\?|\d+%)(?: \||$)']
