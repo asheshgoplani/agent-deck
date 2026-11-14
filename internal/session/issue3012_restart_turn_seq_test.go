@@ -129,6 +129,19 @@ func restartSeqCases() []struct {
 		// the transcript the instance resolves shows nothing new.
 		{c{"a turn the resolved transcript does not show", restartSeqAt, false, countIs(restartSeqAt + 2)}, false},
 		{c{"a turn still running (prompt submitted)", restartSeqAt, false, countIs(restartSeqAt + 1)}, false},
+		// The hook handler skipped the turn's events (a missing project dir,
+		// a lock it could not open): the count did not move, but the token's
+		// own transcript shows the turn, and that is news.
+		{c{"a turn the hooks missed, in the token's own transcript", restartSeqAt, false, func(t *testing.T, f *turnTestFixture) {
+			f.appendTurn(t, fxHuman("u2", "next task"), fxAssistantText("a2", "Done."))
+			f.turnSeq(t, restartSeqAt)
+		}}, false},
+		// The transcript only adds news on a complete record: a partial line
+		// is no evidence of a turn.
+		{c{"a partial line in the token's own transcript, count unchanged", restartSeqAt, false, func(t *testing.T, f *turnTestFixture) {
+			f.appendTurn(t, `{"type":"assistant","uuid":"a3","message":{"role":"assis`)
+			f.turnSeq(t, restartSeqAt)
+		}}, true},
 		// Fixed by step 3: the count went back (the prune removed the hook
 		// file and its sidecar): something happened.
 		{c{"the count went back", restartSeqAt, false, func(t *testing.T, f *turnTestFixture) { noHookFiles(t, f.child.ID) }}, false},
@@ -307,6 +320,47 @@ func TestIssue3012_PreStep3TurnSeqKeyKeepsTheTranscriptRule(t *testing.T) {
 			raw := map[string]any{"at": tok.At, "tool": "claude", "old_pid": tok.OldPID, "transcript": tok.Transcript, "offset": tok.Offset, "turn_seq": restartSeqAt}
 			writeRestartFile(f.child.ID, ".json", raw)
 			f.turnSeq(t, c.seq)
+			_, verdict, _ := f.d.judgeRestart(f.child.ID, f.child.GetJSONLPath(), "", func() string { return "" }, "waiting", time.Now())
+			if want := map[bool]restartVerdict{true: restartBoot, false: restartNews}[c.boot]; verdict != want {
+				t.Fatalf("verdict %v, want %v", verdict, want)
+			}
+		})
+	}
+}
+
+// The count is trusted only once a hook of the resumed process has fired
+// since the restart. A restart can start the new process under a config dir
+// with no agent-deck hooks (one-shot env, a regenerated worker scratch dir):
+// none ever fires, the count never moves, and its next reply must still be
+// news. Until a hook is seen, the transcript rule decides, as before #3012.
+// Here the resumed process writes its transcript where the daemon looks, not
+// where the restart recorded it.
+func TestIssue3012_RestartCountNeedsTheResumedHooks(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		history bool // the resumed process's SessionStart is in the hook event history
+		boot    bool
+	}{
+		{"no hook since the restart: the transcript rule, its reply is news", false, false},
+		// The control: with the resumed process's hooks proven and no turn,
+		// the count decides and the other path does not matter.
+		{"its SessionStart in the history, no turn: the count decides", true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			at := time.Now().Add(-10 * time.Second)
+			f, st, _ := setupRestartSeq(t, restartSeqCase{"", restartSeqAt, true, func(t *testing.T, f *turnTestFixture) {
+				if !c.history {
+					f.appendTurn(t, fxHuman("u2", "next task"), fxAssistantText("a2", "Done."))
+				}
+				f.turnSeq(t, restartSeqAt)
+			}}, at)
+			// The old process's SessionEnd is the last hook event.
+			st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: at.Truncate(time.Second)}
+			if c.history {
+				hookHistory(t, f.child.ID, "SessionEnd", "SessionStart")
+			} else {
+				noHookHistory(t, f.child.ID)
+			}
 			_, verdict, _ := f.d.judgeRestart(f.child.ID, f.child.GetJSONLPath(), "", func() string { return "" }, "waiting", time.Now())
 			if want := map[bool]restartVerdict{true: restartBoot, false: restartNews}[c.boot]; verdict != want {
 				t.Fatalf("verdict %v, want %v", verdict, want)

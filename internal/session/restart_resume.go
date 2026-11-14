@@ -194,11 +194,22 @@ func noteRestartToken(i *Instance, now time.Time) {
 // too. In each of those cases the token gets no count and is judged by the
 // transcript rule, as before #3012. A Stop already in the file cannot come
 // again for the same turn, and a turn edge after the token is a real turn,
-// which is news either way. One narrow case stays open: Claude compacting in
-// the middle of a turn writes a SessionStart, and a turn that then ends with no
-// tool call leaves it last in the file while its Stop is on the way. A restart
-// inside that window reads the late Stop as a turn: an extra line to the
-// parent, never a lost one.
+// which is news either way.
+//
+// Two narrow cases stay open, both an extra line to the parent, never a lost
+// one. Claude compacting in the middle of a turn writes a SessionStart, and a
+// turn that then ends with no tool call leaves it last in the file while its
+// Stop is on the way. And a blocked Stop (agent-deck's own, for a conductor
+// child with records pending, or any other Stop hook that blocks) is written
+// and counted before Claude carries on with the same turn: a continuation
+// with no tool call leaves that Stop last, with a matching count, while the
+// continuation's own Stop is on the way. A restart inside either window reads
+// the late Stop as a turn.
+//
+// A hook file with no count at all was written by a handler older than #3080,
+// which may still be the one Claude runs (a stale binary on the hook's path):
+// its turns would never move the count, so nothing is recorded and the
+// transcript rule judges the token.
 func restartSettledTurnSeq(id string) *uint64 {
 	hs := restartHookStatus(id)
 	if hs == nil {
@@ -210,7 +221,7 @@ func restartSettledTurnSeq(id string) *uint64 {
 		return nil
 	}
 	seq := readHookTurnSeq(id)
-	if seq != hs.TurnSeq {
+	if seq == 0 || seq != hs.TurnSeq {
 		return nil
 	}
 	return &seq
@@ -483,21 +494,85 @@ func restartTranscriptUnchanged(tok restartToken, transcript, signal string) boo
 }
 
 // restartTurnSeqUnchanged judges "no new turn since the restart" by child
-// id's turn_seq (#3012): judged is false for a token with none, which the
-// caller judges by its transcript or signal. The same count is no turn; a
-// higher one is a turn, a lower one the hook file and its sidecar recreated
-// (something happened), both news. The count does not depend on the transcript
-// path the daemon resolves, nor on the [health] event history.
-func restartTurnSeqUnchanged(id string, tok restartToken) (unchanged, judged bool) {
-	if tok.TurnSeq == nil {
+// id's turn_seq (#3012). The same count is no turn; a higher one is a turn, a
+// lower one the hook file and its sidecar recreated (something happened), both
+// news. The count does not depend on the transcript path the daemon resolves,
+// nor on the [health] event history.
+//
+// judged is false, and the caller judges by its transcript or signal as
+// before #3012, for a token with no count, and until the resumed process's
+// hooks are seen to fire (restartHooksSeen): the token proves they fired for
+// the old process, but the restart can start the new one under another config
+// dir (one-shot env, a regenerated worker scratch dir) whose turns would never
+// move the count.
+//
+// transcript is the transcript the caller resolves now. When it is the
+// token's own, a complete user or assistant record past the token's offset is
+// news even with the count unchanged (transcriptTurnSince): a turn whose hook
+// events the handler skipped (a missing project dir, a background worker, a
+// lock it could not open) must still reach the parent. That second opinion
+// only adds news, and a transcript on another path says nothing, so the path
+// mismatch the count fixes stays fixed.
+func restartTurnSeqUnchanged(id string, tok restartToken, transcript string) (unchanged, judged bool) {
+	if tok.TurnSeq == nil || !restartHooksSeen(id, tok) {
 		return false, false
 	}
-	return readHookTurnSeq(id) == *tok.TurnSeq, true
+	if readHookTurnSeq(id) != *tok.TurnSeq {
+		return false, true
+	}
+	if transcript != "" && transcript == tok.Transcript && transcriptTurnSince(tok.Transcript, tok.Offset) {
+		return false, true
+	}
+	return true, true
+}
+
+// restartHooksSeen reports whether a hook of the process the restart started
+// has fired since the token: the hook file holds an event since then other
+// than a SessionEnd (the old process's, as the kill fires it), or the hook
+// event history holds a SessionStart since then (the old SessionEnd can land
+// over it in the file). The fresh-start judge waits for the same proof
+// (freshStartHooksSeen).
+func restartHooksSeen(id string, tok restartToken) bool {
+	if hs := restartHookStatus(id); hs != nil && !hookSessionEnd(hs) && hookEventSince(hs, freshStartToken{At: tok.At}) {
+		return true
+	}
+	return restartSessionStartSince(id, tok.At)
+}
+
+// transcriptTurnSince reports whether the transcript at path holds a complete
+// user or assistant record past offset. Strict, unlike noTurnSince: a partial
+// or unparsable line, a file that shrank or grew past restartResumeMaxScan is
+// no evidence of a turn, as it may only add news.
+func transcriptTurnSince(path string, offset int64) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() < offset || info.Size()-offset > restartResumeMaxScan {
+		return false
+	}
+	buf := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
+		return false
+	}
+	lines := strings.Split(string(buf), "\n")
+	for _, line := range lines[:len(lines)-1] { // the last one has no newline yet
+		var rec struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(line)), &rec) == nil && (rec.Type == "user" || rec.Type == "assistant") {
+			return true
+		}
+	}
+	return false
 }
 
 // restartTurnUnchanged is "no new turn since the restart" for child id, the one
 // rule judgeRestart, restartBootUnseen, the timeout sweep and the notifier's
-// restartBootRecord share: turn_seq for a token that recorded it, else
+// restartBootRecord share: turn_seq for a token that recorded it, once the
+// resumed process's hooks are seen (restartTurnSeqUnchanged), else
 // restartTranscriptUnchanged with the child's hook file. A settles-capable pi
 // child's token holds its last run's key. The kill writes
 // nothing (pi writes no session_shutdown under respawn-pane -k), and the resumed
@@ -506,7 +581,7 @@ func restartTurnSeqUnchanged(id string, tok restartToken) (unchanged, judged boo
 // list it carries forward. The newest entry being the token's run is the
 // same "no new turn".
 func restartTurnUnchanged(id string, tok restartToken, transcript, signal string, hs *HookStatus) bool {
-	if unchanged, judged := restartTurnSeqUnchanged(id, tok); judged {
+	if unchanged, judged := restartTurnSeqUnchanged(id, tok, transcript); judged {
 		return unchanged
 	}
 	if restartTranscriptUnchanged(tok, transcript, signal) {
@@ -983,7 +1058,7 @@ func (d *TransitionDaemon) restartResumeEcho(inst *Instance, to string, ts time.
 	if !ok || ts.After(w.until) || ts.Before(w.tok.At) {
 		return false
 	}
-	if unchanged, judged := restartTurnSeqUnchanged(inst.ID, w.tok); judged {
+	if unchanged, judged := restartTurnSeqUnchanged(inst.ID, w.tok, inst.GetJSONLPath()); judged {
 		if !unchanged {
 			return false
 		}

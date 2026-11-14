@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -147,12 +146,16 @@ func TestIssue3012_RestartTokenWaitsForTheTurnToSettle(t *testing.T) {
 			f.turnSeqFile(t, 6)
 			st.hook = nil
 		}, "none"},
-		// No count anywhere yet (a hook file from before turn_seq): 0 is a
-		// count, recorded as one.
+		// No count at all: the file was written by a handler older than
+		// #3080, which may still be the one Claude runs and would never move
+		// the count. Nothing is recorded.
 		{"a settled hook file with no count", func(t *testing.T, f *turnTestFixture, st *pidStub) {
 			writeHookFileForTest(t, f.child.ID, `{"status":"waiting","event":"Stop","ts":1700000000}`)
 			st.hook = readHookStatusFile(f.child.ID)
-		}, "0"},
+		}, "none"},
+		{"a SessionStart at count 0", func(t *testing.T, f *turnTestFixture, st *pidStub) {
+			st.restartHookFile(t, f, "SessionStart", 0)
+		}, "none"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newTurnTestFixture(t)
@@ -163,12 +166,6 @@ func TestIssue3012_RestartTokenWaitsForTheTurnToSettle(t *testing.T) {
 			noteRestartToken(f.child, time.Now())
 			if got := seqString(restartTokenSeq(t, f)); got != c.want {
 				t.Fatalf("turn_seq %s, want %s", got, c.want)
-			}
-			if c.want == "0" {
-				path, _ := restartTokenPath(f.child.ID, ".json")
-				if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"settled_turn_seq":0`) {
-					t.Fatalf("a recorded 0 must be in the token, got %s", data)
-				}
 			}
 		})
 	}
