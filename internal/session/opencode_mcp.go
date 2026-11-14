@@ -38,11 +38,11 @@ func (c *opencodeConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if servers, ok := raw.MCP["servers"]; ok {
-		var entry map[string]json.RawMessage
+		var entry map[string]interface{}
 		if err := json.Unmarshal(servers, &entry); err != nil {
 			return err
 		}
-		if _, legacyServer := entry["type"]; !legacyServer {
+		if !isLegacyServerNamedServers(entry) {
 			return json.Unmarshal(servers, &c.MCP)
 		}
 	}
@@ -51,6 +51,18 @@ func (c *opencodeConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	return json.Unmarshal(payload, &c.MCP)
+}
+
+// isLegacyServerNamedServers reports whether the object at mcp.servers is a
+// legacy server literally named "servers" rather than the native V2 servers
+// container. A legacy server entry has a string "type" field. In the V2
+// container "type" can only be the name of a server, whose value is an object
+// (or null), so a non-string "type" is a V2 server named "type". A missing
+// "type" key means the V2 container on purpose. The reader (UnmarshalJSON) and
+// the writer (setOpenCodeMCPServers) both use this so they cannot disagree.
+func isLegacyServerNamedServers(servers map[string]interface{}) bool {
+	_, legacy := servers["type"].(string)
+	return legacy
 }
 
 // setOpenCodeMCPServers merges the managed servers into the mcp map. Only
@@ -63,9 +75,7 @@ func setOpenCodeMCPServers(config map[string]interface{}, servers map[string]ope
 	mcp, _ := config["mcp"].(map[string]interface{})
 	existingServers, _ := mcp["servers"].(map[string]interface{})
 	_, native := mcp["servers"]
-	if _, legacyServer := existingServers["type"]; legacyServer {
-		// A legacy server named "servers", not the V2 container (the reader
-		// in UnmarshalJSON makes the same distinction).
+	if isLegacyServerNamedServers(existingServers) {
 		native = false
 		existingServers = nil
 	}
