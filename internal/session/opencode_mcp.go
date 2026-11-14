@@ -42,7 +42,11 @@ func (c *opencodeConfig) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(servers, &entry); err != nil {
 			return err
 		}
-		if _, legacyServer := entry["type"]; !legacyServer {
+		// A legacy server named "servers" has a string "type" field; in the V2
+		// container "type" can only be a server name whose value is an object.
+		var legacyType interface{}
+		_ = json.Unmarshal(entry["type"], &legacyType)
+		if _, legacyServer := legacyType.(string); !legacyServer {
 			return json.Unmarshal(servers, &c.MCP)
 		}
 	}
@@ -63,9 +67,10 @@ func setOpenCodeMCPServers(config map[string]interface{}, servers map[string]ope
 	mcp, _ := config["mcp"].(map[string]interface{})
 	existingServers, _ := mcp["servers"].(map[string]interface{})
 	_, native := mcp["servers"]
-	if _, legacyServer := existingServers["type"]; legacyServer {
-		// A legacy server named "servers", not the V2 container (the reader
-		// in UnmarshalJSON makes the same distinction).
+	if _, legacyServer := existingServers["type"].(string); legacyServer {
+		// A legacy server named "servers", not the V2 container: its "type"
+		// is a string field, while a V2 server named "type" is an object (the
+		// reader in UnmarshalJSON makes the same distinction).
 		native = false
 		existingServers = nil
 	}
