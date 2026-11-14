@@ -118,6 +118,29 @@ func TestPiHooksStateForInstanceUsesTheCommandAgentDir(t *testing.T) {
 	}
 }
 
+// A pi command that clears agent-deck's PI_CODING_AGENT_DIR with an empty
+// assignment loads pi's default dir. A plain install run from a shell with the
+// inherited dir would write to that dir instead, so `session show` names the
+// empty assignment (#3098).
+func TestPiHooksStateForInstanceCommandClearsTheAgentDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, "inherited"))
+
+	inst := session.NewInstanceWithTool("pi-cmd-empty-dir", home, "pi")
+	inst.Command = "PI_CODING_AGENT_DIR= pi"
+	got := piHooksStateForInstance(inst)
+	if got.State != piHooksNotInstalled {
+		t.Fatalf("state = %q, want %q", got.State, piHooksNotInstalled)
+	}
+	if want := filepath.Join(home, ".pi", "agent", "extensions", "agent-deck.ts"); got.Extension != want {
+		t.Fatalf("extension path = %q, want %q (pi's default dir)", got.Extension, want)
+	}
+	if line, want := piHooksLine(got), "run 'PI_CODING_AGENT_DIR= agent-deck pi-hooks install'"; !strings.Contains(line, want) {
+		t.Fatalf("line = %q, want it to contain %q", line, want)
+	}
+}
+
 func TestPiHooksLine(t *testing.T) {
 	const ext = "/x/extensions/agent-deck.ts"
 	current := session.PiHookExtensionVersion()
