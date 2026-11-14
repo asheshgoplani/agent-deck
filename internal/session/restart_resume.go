@@ -28,7 +28,12 @@ import (
 //   - before the restart: the pane pid it kills, where the transcript ends
 //     (or, with no transcript, the turn signal: the Codex completion), and
 //     that the child was idle at its prompt. A child in the middle of a turn
-//     gets no token, so its parent hears that it stopped, as always.
+//     gets no token, so its parent hears that it stopped, as always. For a
+//     Claude child whose every turn bumps the instance's turn_seq (#3012,
+//     claudeTurnSeqObservable), the count too, once its hook file has
+//     settled (restartSettledTurnSeq): "no new turn" is then that count
+//     unchanged, whatever transcript the daemon resolves
+//     (restartTurnUnchanged). Without it, the transcript rule below.
 //   - after the restart: the pane pid of the new process (<id>.spawned.json,
 //     written only by the restart, so no read-modify-write can lose it).
 //
@@ -84,9 +89,15 @@ type restartToken struct {
 	Transcript string `json:"transcript,omitempty"`
 	Offset     int64  `json:"offset,omitempty"`
 	Signal     string `json:"signal,omitempty"`
-	// TurnSeq is the hook file's turn_seq at the restart (#3012): a turn
-	// since then shows as a higher one. Recorded only; no judge reads it yet.
-	TurnSeq uint64 `json:"turn_seq,omitempty"`
+	// TurnSeq is the instance's turn_seq at the restart (#3012): any other
+	// count since is a turn (a higher one) or the hook file recreated (a
+	// lower one), and either way something happened. Nil when the count
+	// cannot tell (restartSettledTurnSeq), and on a token an older binary
+	// wrote: the transcript rule judges those. Its own key, not the
+	// "turn_seq" older binaries wrote: they recorded the count for every
+	// child (hooks or not) and without waiting for a Stop on its way, and
+	// left a 0 out, so their count is not one the judge can trust.
+	TurnSeq *uint64 `json:"settled_turn_seq,omitempty"`
 
 	// NewPID is the pane pid of the resumed process and SpawnedAt when the
 	// restart recorded it, from the spawned file; 0 while the restart runs.
@@ -132,7 +143,14 @@ func noteRestartToken(i *Instance, now time.Time) {
 	if facts, ok := instanceTurnFacts(i); ok && (facts.Pending || facts.FinalTextPending) {
 		return
 	}
-	tok := restartToken{At: now, Reason: i.restartReason, Tool: i.Tool, OldPID: instancePanePID(i), TurnSeq: readHookTurnSeq(i.ID)}
+	tok := restartToken{At: now, Reason: i.restartReason, Tool: i.Tool, OldPID: instancePanePID(i)}
+	// The command the resume runs: the session's own custom one, as
+	// buildClaudeResumeCommand picks it, or the configured one.
+	if claudeTurnSeqObservable(i) && !i.resumeRunsCustomCommand() && freshStartObservable(GetClaudeCommandForInstance(i)) {
+		tok.TurnSeq = restartSettledTurnSeq(i.ID)
+	}
+	// The transcript end is recorded either way: it is the rule for a token
+	// with no turn_seq, and what an older daemon reading this token judges by.
 	if path := i.GetJSONLPath(); path != "" {
 		if info, err := os.Stat(path); err == nil {
 			tok.Transcript, tok.Offset = path, info.Size()
@@ -149,6 +167,66 @@ func noteRestartToken(i *Instance, now time.Time) {
 		}
 	}
 	writeRestartFile(i.ID, ".json", tok)
+}
+
+// restartSettledTurnSeq is child id's turn_seq for its restart token, or nil
+// when a turn edge may still be on its way.
+//
+// The race: the restart takes its token when the child reads idle at its
+// prompt and the transcript holds the turn's final text. Claude's Stop hook
+// runs as its own process and can land after that (it waits for the status
+// lock, and the light can read the prompt from the pane before it lands), and
+// the restart's kill does not stop a hook already running. A count taken
+// before that Stop bumps it would read the late Stop as a turn since the
+// restart, and the resumed boot would reach the parent as news (the #2792
+// symptom). The transcript rule never had this: the reply is already in the
+// file at the token.
+//
+// So the count is recorded only when the hook file shows the last turn closed:
+// its last event is a Stop (the turn's own, the last edge it bumps) or a
+// SessionStart (a fresh, resumed, cleared or compacted conversation, which no
+// turn has opened since; a prompt would have replaced it with
+// UserPromptSubmit), and the file's own count is the instance's count. Any
+// other last event (UserPromptSubmit, a tool event, a permission request) is a
+// turn whose Stop may still come; no hook file (the TUI removes it on
+// attach-return, or the hooks never fired) says nothing about one; and a
+// sidecar <id>.turnseq ahead of the file is the hook handler between its two
+// writes (it writes the sidecar first). The hook file is read before the
+// count: a turn edge landing in between makes them differ, so it is caught
+// too. In each of those cases the token gets no count and is judged by the
+// transcript rule, as before #3012. A Stop already in the file cannot come
+// again for the same turn, and a turn edge after the token is a real turn,
+// which is news either way.
+//
+// Two narrow cases stay open, both an extra line to the parent, never a lost
+// one. Claude compacting in the middle of a turn writes a SessionStart, and a
+// turn that then ends with no tool call leaves it last in the file while its
+// Stop is on the way. And a blocked Stop (agent-deck's own, for a conductor
+// child with records pending, or any other Stop hook that blocks) is written
+// and counted before Claude carries on with the same turn: a continuation
+// with no tool call leaves that Stop last, with a matching count, while the
+// continuation's own Stop is on the way. A restart inside either window reads
+// the late Stop as a turn.
+//
+// A hook file with no count at all was written by a handler older than #3080,
+// which may still be the one Claude runs (a stale binary on the hook's path):
+// its turns would never move the count, so nothing is recorded and the
+// transcript rule judges the token.
+func restartSettledTurnSeq(id string) *uint64 {
+	hs := restartHookStatus(id)
+	if hs == nil {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(hs.Event)) {
+	case "stop", "sessionstart":
+	default:
+		return nil
+	}
+	seq := readHookTurnSeq(id)
+	if seq == 0 || seq != hs.TurnSeq {
+		return nil
+	}
+	return &seq
 }
 
 // markRestartSpawned records the resumed process's pane pid after a restart.
@@ -393,7 +471,7 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 		}
 		return tok, restartNewError, "Restarted, but the resumed session reports an error."
 	case string(StatusWaiting), string(StatusIdle):
-		if newAlive && !newEnd && restartTurnUnchanged(tok, transcript, signal, hs) {
+		if newAlive && !newEnd && restartTurnUnchanged(id, tok, transcript, signal, hs) {
 			d.spendRestartToken(id)
 			return tok, restartBoot, ""
 		}
@@ -417,14 +495,107 @@ func restartTranscriptUnchanged(tok restartToken, transcript, signal string) boo
 	return signal != "" && signal == tok.Signal
 }
 
-// restartTurnUnchanged is restartTranscriptUnchanged with the child's hook file.
-// A settles-capable pi child's token holds its last run's key. The kill writes
+// restartTurnSeqUnchanged judges "no new turn since the restart" by child
+// id's turn_seq (#3012). The same count is no turn; a higher one is a turn, a
+// lower one the hook file and its sidecar recreated (something happened), both
+// news. The count does not depend on the transcript path the daemon resolves,
+// nor on the [health] event history.
+//
+// judged is false, and the caller judges by its transcript or signal as
+// before #3012, for a token with no count, and until the resumed process's
+// hooks are seen to fire (restartHooksSeen): the token proves they fired for
+// the old process, but the restart can start the new one under another config
+// dir (one-shot env, a regenerated worker scratch dir) whose turns would never
+// move the count.
+//
+// transcript is the transcript the caller resolves now. When it is the
+// token's own, a complete user or assistant record past the token's offset is
+// news even with the count unchanged (transcriptTurnSince): a turn whose hook
+// events the handler skipped (a missing project dir, a background worker, a
+// lock it could not open) must still reach the parent. That second opinion
+// only adds news, and a transcript on another path says nothing, so the path
+// mismatch the count fixes stays fixed.
+func restartTurnSeqUnchanged(id string, tok restartToken, transcript string) (unchanged, judged bool) {
+	if tok.TurnSeq == nil || !restartHooksSeen(id, tok) {
+		return false, false
+	}
+	if readHookTurnSeq(id) != *tok.TurnSeq {
+		return false, true
+	}
+	if transcript != "" && transcript == tok.Transcript && transcriptTurnSince(tok.Transcript, tok.Offset) {
+		return false, true
+	}
+	return true, true
+}
+
+// restartHooksSeen reports whether a hook of the process the restart started
+// has fired since the token: the hook file holds an event since then other
+// than a SessionEnd (the old process's, as the kill fires it), or the hook
+// event history holds a SessionStart since then (the old SessionEnd can land
+// over it in the file). The fresh-start judge waits for the same proof
+// (freshStartHooksSeen). A hook file that carries no count says the handler
+// writing it does not count turns, so nothing is proven: a counting handler
+// always writes at least the count the token took, which is never 0.
+func restartHooksSeen(id string, tok restartToken) bool {
+	hs := restartHookStatus(id)
+	if hs != nil && hs.TurnSeq == 0 {
+		// A hook file with no count since the token was written by a
+		// handler that does not count turns (older than #3080, as a
+		// config dir the restart switched to may still run): the count
+		// cannot see this process's turns.
+		return false
+	}
+	if hs != nil && !hookSessionEnd(hs) && hookEventSince(hs, freshStartToken{At: tok.At}) {
+		return true
+	}
+	return restartSessionStartSince(id, tok.At)
+}
+
+// transcriptTurnSince reports whether the transcript at path holds a complete
+// user or assistant record past offset. Strict, unlike noTurnSince: a partial
+// or unparsable line, a file that shrank or grew past restartResumeMaxScan is
+// no evidence of a turn, as it may only add news.
+func transcriptTurnSince(path string, offset int64) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() < offset || info.Size()-offset > restartResumeMaxScan {
+		return false
+	}
+	buf := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
+		return false
+	}
+	lines := strings.Split(string(buf), "\n")
+	for _, line := range lines[:len(lines)-1] { // the last one has no newline yet
+		var rec struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(line)), &rec) == nil && (rec.Type == "user" || rec.Type == "assistant") {
+			return true
+		}
+	}
+	return false
+}
+
+// restartTurnUnchanged is "no new turn since the restart" for child id, the one
+// rule judgeRestart, restartBootUnseen, the timeout sweep and the notifier's
+// restartBootRecord share: turn_seq for a token that recorded it, once the
+// resumed process's hooks are seen (restartTurnSeqUnchanged), else
+// restartTranscriptUnchanged with the child's hook file. A settles-capable pi
+// child's token holds its last run's key. The kill writes
 // nothing (pi writes no session_shutdown under respawn-pane -k), and the resumed
 // pi's session_start, the only lifecycle write, rebuilds the file with no run:
 // the flip carries no signal, and the file names the runs before it only in the
 // list it carries forward. The newest entry being the token's run is the
 // same "no new turn".
-func restartTurnUnchanged(tok restartToken, transcript, signal string, hs *HookStatus) bool {
+func restartTurnUnchanged(id string, tok restartToken, transcript, signal string, hs *HookStatus) bool {
+	if unchanged, judged := restartTurnSeqUnchanged(id, tok, transcript); judged {
+		return unchanged
+	}
 	if restartTranscriptUnchanged(tok, transcript, signal) {
 		return true
 	}
@@ -481,8 +652,9 @@ func piBackAtPrompt(tok restartToken, hs *HookStatus) bool {
 
 // restartBootRecord is the notifier's own check (#2792) for a producer that
 // reaches the inbox without emitTurn: the new process's arrival at its
-// prompt with an unchanged transcript is dropped and spends the token.
-// Errors and finished records are always delivered.
+// prompt with no new turn (restartTurnUnchanged; the transcript rule reads
+// the token's own transcript here, as it always has) is dropped and spends
+// the token. Errors and finished records are always delivered.
 func restartBootRecord(event TransitionNotificationEvent) bool {
 	if event.restartJudged || event.ChildSessionID == "" {
 		return false
@@ -496,7 +668,8 @@ func restartBootRecord(event TransitionNotificationEvent) bool {
 	if !ok || event.Timestamp.Before(tok.At) || !restartPIDAlive(tok.NewPID) {
 		return false
 	}
-	if !restartTranscriptUnchanged(tok, tok.Transcript, event.LastOutputHash) {
+	// No hook file: the pi carried-run rule is not this check's, as before.
+	if !restartTurnUnchanged(event.ChildSessionID, tok, tok.Transcript, event.LastOutputHash, nil) {
 		return false
 	}
 	clearRestartToken(event.ChildSessionID)
@@ -625,8 +798,8 @@ const restartBootSettle = 5 * time.Second
 
 // restartBootUnseen reports a token holder back at its prompt whose boot flip
 // was never seen (#2813): its new process alive for restartBootSettle, its own
-// SessionStart (pi: session_start) after the restart, no new SessionEnd and no new turn in the
-// transcript. The hook file keeps only the last event, and the old process's
+// SessionStart (pi: session_start) after the restart, no new SessionEnd and no new turn
+// (restartTurnUnchanged). The hook file keeps only the last event, and the old process's
 // SessionEnd can land after the new SessionStart (the kill fires it
 // asynchronously); then the file holds that old SessionEnd (judgeRestart's
 // oldEndBy rule), the light reads error from it, and the new SessionStart is
@@ -660,7 +833,7 @@ func restartBootUnseen(inst *Instance, tok restartToken, status string, now time
 	default:
 		return false
 	}
-	return restartTurnUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), hs)
+	return restartTurnUnchanged(inst.ID, tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), hs)
 }
 
 // restartSessionStartSince reports whether the hook event history
@@ -850,7 +1023,7 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 				continue // back at its prompt
 			case string(StatusRunning):
 				if hs := restartHookStatus(id); piBackAtPrompt(tok, hs) ||
-					!restartTurnUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), hs) {
+					!restartTurnUnchanged(id, tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), hs) {
 					continue // back, and already on a new turn
 				}
 			}
@@ -876,12 +1049,14 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 
 // restartResumeEcho reports whether an unclassified flip of inst to `to` at
 // ts is the resumed process at the prompt the unseen-boot info line (#2813)
-// already reported: the banner watch is live and the transcript gained no
-// user or assistant record since the restart. An error, a banner, a
-// permission or elicitation prompt, or anything after the watch expires is
-// still news. An observed flip on a transcript the resumed process never
-// wrote (it may be writing a new session file the instance does not resolve
-// yet, #2184) is news too: noTurnSince cannot see that turn.
+// already reported: the banner watch is live and no turn since the restart.
+// That is the judges' turn_seq rule for a token that recorded it
+// (restartTurnSeqUnchanged), which sees a turn in any session file. Otherwise
+// the transcript gained no user or assistant record since the restart, and
+// an observed flip on a transcript the resumed process never wrote (it may be
+// writing a new session file the instance does not resolve yet, #2184) is
+// news: noTurnSince cannot see that turn. An error, a banner, a permission or
+// elicitation prompt, or anything after the watch expires is still news.
 func (d *TransitionDaemon) restartResumeEcho(inst *Instance, to string, ts time.Time, observedFlip bool) bool {
 	switch normalizeStatusString(to) {
 	case string(StatusWaiting), string(StatusIdle):
@@ -895,14 +1070,12 @@ func (d *TransitionDaemon) restartResumeEcho(inst *Instance, to string, ts time.
 	if !ok || ts.After(w.until) || ts.Before(w.tok.At) {
 		return false
 	}
-	if w.tok.Transcript == "" || w.tok.Transcript != inst.GetJSONLPath() || !noTurnSince(w.tok.Transcript, w.tok.Offset) {
-		return false
-	}
-	if observedFlip {
-		info, err := os.Stat(w.tok.Transcript)
-		if err != nil || info.ModTime().Before(w.tok.At) {
+	if unchanged, judged := restartTurnSeqUnchanged(inst.ID, w.tok, inst.GetJSONLPath()); judged {
+		if !unchanged {
 			return false
 		}
+	} else if !restartTranscriptEcho(w.tok, inst.GetJSONLPath(), observedFlip) {
+		return false
 	}
 	// A permission request or elicitation dialog after the restart blocks the
 	// child on input; its parent must hear it.
@@ -911,6 +1084,23 @@ func (d *TransitionDaemon) restartResumeEcho(inst *Instance, to string, ts time.
 	}
 	sub := restartPaneSubstate(inst)
 	return sub != string(tmux.SubstateInteractiveMenu) && paneErrorText(sub) == ""
+}
+
+// restartTranscriptEcho is restartResumeEcho's rule for a token with no
+// turn_seq: the transcript the instance resolves is the token's, it gained no
+// user or assistant record since the restart, and, for an observed flip, the
+// resumed process wrote to it.
+func restartTranscriptEcho(tok restartToken, transcript string, observedFlip bool) bool {
+	if tok.Transcript == "" || tok.Transcript != transcript || !noTurnSince(tok.Transcript, tok.Offset) {
+		return false
+	}
+	if observedFlip {
+		info, err := os.Stat(tok.Transcript)
+		if err != nil || info.ModTime().Before(tok.At) {
+			return false
+		}
+	}
+	return true
 }
 
 // dropStaleBannerWatch forgets child id's banner watch once a newer restart

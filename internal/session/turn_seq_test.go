@@ -42,12 +42,14 @@ func TestIssue3012_ReadHookTurnSeq(t *testing.T) {
 
 func TestIssue3012_RestartTokenRecordsTurnSeq(t *testing.T) {
 	f := newTurnTestFixture(t)
-	stubRestartPIDs(t)
+	st := stubRestartPIDs(t)
+	installClaudeHooks(t, os.Getenv("HOME"))
 	f.finishedTurn(t)
 	writeHookFileForTest(t, f.child.ID, `{"status":"waiting","event":"Stop","ts":1700000000,"turn_seq":7}`)
+	st.hook = readHookStatusFile(f.child.ID)
 	noteRestartToken(f.child, time.Now())
 	tok, ok := readRestartToken(f.child.ID)
-	if !ok || tok.TurnSeq != 7 {
+	if !ok || tok.TurnSeq == nil || *tok.TurnSeq != 7 {
 		t.Fatalf("restart token %+v ok=%v, want turn_seq 7", tok, ok)
 	}
 }
