@@ -186,13 +186,26 @@ func sendWakeNudge(parent *Instance, profile, message string) error {
 	if strings.TrimSpace(message) == "" {
 		message = wakeNudgeMessage
 	}
+	guardPrompt := wakeNeedsInputPrompt(parent)
 	go func(profile, ref, message string) {
-		if err := sendWakeNudgeNoWait(profile, ref, message); err != nil {
+		if err := sendWakeNudgeCmd(profile, ref, message, guardPrompt); err != nil {
 			commsLog.Warn("wake_nudge_dispatch_failed",
 				slog.String("parent", ref), slog.String("error", err.Error()))
 		}
 	}(profile, parent.ID, message)
 	return nil
+}
+
+// wakeNeedsInputPrompt reports whether a wake into target is sent with
+// --require-input-prompt (issue #3131): every target that is not a
+// conductor. Those are ordinary sessions (a reply target, a parent woken by
+// a kickoff reply or [inbox] wake_parents), often the one a person is
+// working in, and the idle gate admits StatusWaiting, which also covers a
+// pane sitting at a permission dialog or a picker. The guard refuses an
+// open menu before any key is typed; the record still drains at the next
+// turn. Conductor wakes keep the send they always had.
+func wakeNeedsInputPrompt(target *Instance) bool {
+	return target != nil && !isConductorSession(target)
 }
 
 // fireDigestNudge wakes an idle parent once for info that waited past the
@@ -251,15 +264,31 @@ const MachineSendEnv = "AGENTDECK_SEND_MACHINE"
 // pane is wedged. The context deadline is a belt-and-suspenders backstop for the
 // case where even the subprocess itself hangs.
 func sendWakeNudgeNoWait(profile, ref, message string) error {
+	return sendWakeNudgeCmd(profile, ref, message, false)
+}
+
+// sendWakeNudgeCmd is sendWakeNudgeNoWait with the input-prompt guard
+// chosen by the caller (wakeNeedsInputPrompt).
+func sendWakeNudgeCmd(profile, ref, message string, guardPrompt bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wakeNudgeSendTimeout)
 	defer cancel()
-	bin := agentDeckBinaryPath()
+	return wakeNudgeExec(ctx, agentDeckBinaryPath(), wakeNudgeSendArgs(profile, ref, message, guardPrompt)...)
+}
+
+// wakeNudgeSendArgs is the argv of the wake send. It is always the guarded
+// `session send` pipeline: its composer-draft guard never types over text a
+// person left in the input box (it waits, then refuses). guardPrompt adds
+// --require-input-prompt, which also refuses an open menu (wakeNeedsInputPrompt).
+func wakeNudgeSendArgs(profile, ref, message string, guardPrompt bool) []string {
 	args := []string{}
 	if profile != "" {
 		args = append(args, "-p", profile)
 	}
 	// --no-tag: the daemon may have inherited a session's AGENTDECK_INSTANCE_ID;
 	// a wake line is never a send from that session.
-	args = append(args, "session", "send", ref, message, "--no-wait", "--no-tag", "-q")
-	return wakeNudgeExec(ctx, bin, args...)
+	args = append(args, "session", "send", ref, message, "--no-wait", "--no-tag")
+	if guardPrompt {
+		args = append(args, "--require-input-prompt")
+	}
+	return append(args, "-q")
 }

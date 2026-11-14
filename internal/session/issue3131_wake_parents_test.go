@@ -1,6 +1,12 @@
 package session
 
-import "testing"
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
 
 // Issue #3131: [inbox] wake_parents, the opt-in wake for any Claude parent.
 
@@ -83,5 +89,87 @@ func TestIssue3131_WakeParentsConfigMerge(t *testing.T) {
 	}
 	if (InboxConfig{}).GetWakeParents() {
 		t.Fatal("default is off")
+	}
+}
+
+// wakeExecSpy swaps wakeNudgeExec for a spy that reports each exec's args.
+func wakeExecSpy(t *testing.T) <-chan []string {
+	t.Helper()
+	orig := wakeNudgeExec
+	t.Cleanup(func() { wakeNudgeExec = orig })
+	ch := make(chan []string, 8)
+	wakeNudgeExec = func(_ context.Context, _ string, args ...string) error {
+		ch <- append([]string(nil), args...)
+		return nil
+	}
+	return ch
+}
+
+// Owner condition: a parent with typed text in its input box is never written
+// to. Both new wake paths must end in the guarded `session send` pipeline
+// (its composer-draft guard refuses rather than type over a draft), never a
+// raw keystroke route, and an ordinary parent's wake also refuses an open
+// menu (--require-input-prompt). This pins the production sender for both.
+func TestIssue3131_NewWakePathsUseTheGuardedSend(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cfg    *InboxConfig
+		prompt func(f *pr5Fixture) string
+	}{
+		{"kickoff reply", &InboxConfig{}, func(f *pr5Fixture) string { return SendEnvelope(f.parent.ID) + "\nkickoff task" }},
+		{"wake_parents", &InboxConfig{WakeParents: boolPtr(true)}, func(*pr5Fixture) string { return "continue with step 3" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPR5Fixture(t)
+			nonConductorParent(t, f)
+			inboxConfigOverride = tc.cfg
+			execs := wakeExecSpy(t)
+			f.d.notifier.wake.send = sendWakeNudge // the production sender
+
+			f.appendTurn(t, fxHuman("u0", tc.prompt(f)), fxAssistantText("a0", issue3131Done))
+			f.pollTurns(t)
+
+			var args []string
+			select {
+			case args = <-execs:
+			case <-time.After(5 * time.Second):
+				t.Fatal("no wake send was dispatched")
+			}
+			select {
+			case extra := <-execs:
+				t.Fatalf("exactly one wake send, got another: %q", extra)
+			case <-time.After(100 * time.Millisecond):
+			}
+			i := slices.Index(args, "session")
+			if i < 0 || len(args) < i+8 {
+				t.Fatalf("wake args = %q", args)
+			}
+			got := args[i:]
+			want := []string{"session", "send", f.parent.ID, got[3], "--no-wait", "--no-tag", "--require-input-prompt", "-q"}
+			if !slices.Equal(got, want) || !strings.HasPrefix(got[3], "[INBOX]") {
+				t.Fatalf("wake args = %q, want %q with an [INBOX] line", got, want)
+			}
+			for _, bad := range []string{"--force", "--queue", "--draft"} {
+				if slices.Contains(args, bad) {
+					t.Fatalf("wake args must not carry %s: %q", bad, args)
+				}
+			}
+		})
+	}
+}
+
+// The conductor wake keeps the send it always had: no --require-input-prompt.
+func TestIssue3131_ConductorWakeArgsUnchanged(t *testing.T) {
+	conductor := &Instance{ID: "c", Title: "conductor-ops", Tool: "claude"}
+	worker := &Instance{ID: "w", Title: "coordinator", Tool: "claude"}
+	if wakeNeedsInputPrompt(conductor) {
+		t.Fatal("a conductor wake must not change")
+	}
+	if !wakeNeedsInputPrompt(worker) {
+		t.Fatal("an ordinary session's wake refuses an open menu")
+	}
+	want := []string{"-p", "work", "session", "send", "c", "line", "--no-wait", "--no-tag", "-q"}
+	if got := wakeNudgeSendArgs("work", "c", "line", false); !slices.Equal(got, want) {
+		t.Fatalf("conductor wake args = %q, want %q", got, want)
 	}
 }

@@ -982,7 +982,7 @@ func wakeForRemoteRecords(parentID string, fresh []TransitionNotificationEvent, 
 var remoteWakeWiring = func() *wakeNudgeWiring {
 	w := defaultWakeNudgeWiring()
 	w.send = func(parent *Instance, profile, message string) error {
-		return sendWakeNudgeNoWait(profile, parent.ID, message)
+		return sendWakeNudgeCmd(profile, parent.ID, message, wakeNeedsInputPrompt(parent))
 	}
 	return w
 }

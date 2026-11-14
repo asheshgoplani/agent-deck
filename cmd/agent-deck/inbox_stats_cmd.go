@@ -114,7 +114,7 @@ func printInboxStats(w io.Writer, st session.InboxStats) {
 		fmt.Fprintf(w, "  ledger       shadowed_by_ledger=%d (already shown by the other path)\n", st.ShadowedByLedger)
 	}
 	if st.WakeupsGated > 0 {
-		fmt.Fprintf(w, "  gated        wakeups=%d (record could wake but no wake was sent: not a wake target, busy, debounced or send failed)\n", st.WakeupsGated)
+		fmt.Fprintf(w, "  gated        wakeups=%d (record could wake but no wake was dispatched: not a wake target, busy, debounced or dispatch failed)\n", st.WakeupsGated)
 	}
 	if st.WakeupsWithdrawn+st.RecordsWithdrawn > 0 {
 		fmt.Fprintf(w, "  withdrawn    wakeups=%d records=%d (result already read with session output)\n", st.WakeupsWithdrawn, st.RecordsWithdrawn)
