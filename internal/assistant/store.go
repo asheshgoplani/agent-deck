@@ -99,6 +99,9 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// writeFileAtomic writes store files; tests swap it to inject a failure.
+var writeFileAtomic = atomicfile.WriteFile
+
 var tokenEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // NewToken returns a fresh token: TokenPrefix + 32 random bytes in base32.
@@ -144,6 +147,13 @@ func (s *Store) reloadLocked() error {
 	return nil
 }
 
+// dropCacheLocked forgets the in-memory records after a failed save, so
+// the next call re-reads the file instead of trusting a change that never
+// reached disk (a failed revoke must not look done on retry).
+func (s *Store) dropCacheLocked() {
+	s.records, s.loaded, s.info = nil, false, nil
+}
+
 func (s *Store) saveLocked() error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("creating state dir: %w", err)
@@ -157,7 +167,7 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	if err := atomicfile.WriteFile(s.Path(), append(data, '\n'), 0o600); err != nil {
+	if err := writeFileAtomic(s.Path(), append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("writing assistant token store: %w", err)
 	}
 	// Force the next read to re-stat: two writes inside one mtime tick with
@@ -231,11 +241,12 @@ func (s *Store) Create(name, assistant string, scopes []Scope, profile string) (
 		return "", Record{}, fmt.Errorf("creating token dir: %w", err)
 	}
 	_ = os.Chmod(filepath.Dir(tokenPath), 0o700)
-	if err := atomicfile.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(tokenPath, []byte(token+"\n"), 0o600); err != nil {
 		return "", Record{}, fmt.Errorf("writing token file: %w", err)
 	}
 	s.records[name] = rec
 	if err := s.saveLocked(); err != nil {
+		s.dropCacheLocked()
 		return "", Record{}, err
 	}
 	return token, rec, nil
@@ -259,6 +270,7 @@ func (s *Store) Revoke(name string) (bool, error) {
 	}
 	delete(s.records, name)
 	if err := s.saveLocked(); err != nil {
+		s.dropCacheLocked()
 		return false, err
 	}
 	if err := os.Remove(s.TokenFile(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
