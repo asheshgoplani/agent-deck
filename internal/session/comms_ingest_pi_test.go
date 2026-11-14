@@ -135,3 +135,60 @@ func TestCommsIngest_PiTextRunAddsNoStatusRecordFromTheLedgerPath(t *testing.T) 
 		t.Fatalf("text run records: %+v", recs)
 	}
 }
+
+// Maintainer (#3024, comms_ingest.go:375): a Claude parent runs `pi -p` as a
+// tool, and that pi's turn end (not the parent's consumer, PiNotConsumer)
+// lands mid-turn. It is recorded, but the prompt the parent's turn started with
+// is the parent's: the pi's turn end neither takes it nor removes it, so the
+// parent's own turn end keeps its trigger and sender.
+func TestCommsIngest_ANonConsumerPiTurnEndLeavesTheParentsPrompt(t *testing.T) {
+	for name, marked := range map[string]bool{"marked not the consumer": true, "a pi under a Claude session": false} {
+		t.Run(name, func(t *testing.T) { testPiTurnEndLeavesTheParentsPrompt(t, marked) })
+	}
+}
+
+func testPiTurnEndLeavesTheParentsPrompt(t *testing.T, marked bool) {
+	f := newCommsFixture(t)
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "UserPromptSubmit", Edge: CommsEdgePromptStart, Instance: f.child.ID,
+		SessionID: f.child.ClaudeSessionID, Prompt: "[agent-deck from:" + f.parent.ID + "] run the tests"})
+	f.d.ingestCommsSpool("default", f.byID)
+
+	// The tool's pi, under the Claude child's AGENTDECK_INSTANCE_ID: its run
+	// start (a pi under a Claude session that is no listed parent is admitted
+	// by the hook), then its turn end.
+	if !marked {
+		spoolTurn(t, CommsSpoolEntry{Harness: "pi", Event: "before_agent_start", Edge: CommsEdgePromptStart, Instance: f.child.ID,
+			SessionID: "pi-tool-sess", Prompt: "summarize the diff"})
+		f.d.ingestCommsSpool("default", f.byID)
+	}
+	guest := CommsSpoolEntry{Harness: "pi", Event: "agent_settled", Instance: f.child.ID, SessionID: "pi-tool-sess",
+		TurnID: "entry-1", Text: "summary of the diff", Prompt: "summarize the diff", PiNotConsumer: marked}
+	spoolTurn(t, guest)
+	f.d.ingestCommsSpool("default", f.byID)
+
+	// The Claude turn ends; its Stop carries no prompt of its own.
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, SessionID: f.child.ClaudeSessionID,
+		Text: "Tests green."})
+	f.d.ingestCommsSpool("default", f.byID)
+
+	var parentTurn, piTurn *comms.Record
+	recs := f.ledgerRecords(t)
+	for i := range recs {
+		switch {
+		case recs[i].Kind == comms.KindTurn && recs[i].Text == "Tests green.":
+			parentTurn = &recs[i]
+		case recs[i].Kind == comms.KindTurn && recs[i].Text == "summary of the diff":
+			piTurn = &recs[i]
+		}
+	}
+	if piTurn == nil || parentTurn == nil {
+		t.Fatalf("want both turns recorded, got %+v", recs)
+	}
+	if piTurn.ReplyTo != "" {
+		t.Errorf("the tool's pi turn took the parent's sender: %+v", *piTurn)
+	}
+	if parentTurn.Trigger != TurnTriggerSend || parentTurn.ReplyTo != f.parent.ID {
+		t.Errorf("the parent's turn lost its trigger or sender to the tool's pi turn end: trigger %q reply_to %q, want %q and %q",
+			parentTurn.Trigger, parentTurn.ReplyTo, TurnTriggerSend, f.parent.ID)
+	}
+}

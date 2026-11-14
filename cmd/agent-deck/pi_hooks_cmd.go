@@ -51,7 +51,7 @@ func printPiHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "  install      Install or upgrade the agent-deck pi extension")
 	fmt.Fprintln(w, "  uninstall    Remove the agent-deck pi extension")
 	fmt.Fprintln(w, "  status       Show the extension install status, the pi version, whether")
-	fmt.Fprintln(w, "               the wake socket is on (or why not)")
+	fmt.Fprintln(w, "               the wake socket is on (or why not) and any stopped socket wakes")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Status options:")
 	fmt.Fprintln(w, "  -p, --profile <name>  Profile to check the socket path for (default: current)")
@@ -144,6 +144,11 @@ func handlePiHooksStatus(args []string) {
 		fmt.Printf("Socket: off (%s)\n", sock.Detail)
 	default:
 		fmt.Println("Socket: on")
+	}
+	// A permanent refusal stops socket wakes for a parent's records; its records
+	// still arrive at its next run start, but nothing else says why no doorbell rings.
+	for _, w := range session.PiSocketWakesStopped() {
+		fmt.Printf("Socket wakes stopped: %s (%s)\n", w.Reason, w.Parent)
 	}
 }
 

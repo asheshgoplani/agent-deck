@@ -85,3 +85,9 @@ func TestSessionFork_SandboxedPiForkNeverExportsTheSocket(t *testing.T) {
 		t.Error("a sandboxed fork recorded PiSocketExported = true: the daemon would never type its doorbell")
 	}
 }
+
+func TestSessionFork_SandboxedPiFork_RemoteSession(t *testing.T) {
+	t.Skip("RemoteSession out of scope: `agent-deck remote <name> session fork` runs this same handleSessionFork " +
+		"on the remote host, so the remote fork is this test there; no local code builds a remote session's launch, " +
+		"and an SSH pi never exports the socket (piSocketLaunchPrefix).")
+}

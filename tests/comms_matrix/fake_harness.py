@@ -80,6 +80,7 @@ def pane(capture, state, state_file=None, tool="claude"):
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stopped.set())
     Path(capture).parent.mkdir(parents=True, exist_ok=True)
+    driver = start_pi_driver(capture) if tool == "pi" and os.environ.get("COMMS_PI_DRIVER") else None
     try:
         if old is not None:
             tty.setraw(fd)
@@ -110,8 +111,32 @@ def pane(capture, state, state_file=None, tool="claude"):
                 sys.stdout.write(shown.replace("\x1b", "").replace("\r", "\r\n"))
                 sys.stdout.flush()
     finally:
+        if driver is not None:
+            driver.kill()
         if old is not None:
             termios.tcsetattr(fd, termios.TCSANOW, old)
+
+
+def start_pi_driver(capture):
+    """Host the production pi extension as a child of this pane (COMMS_PI_DRIVER).
+
+    The wake socket only answers a peer inside the pane's process tree, so the
+    extension must run here, not under the runner. Its stdin and stdout are two
+    FIFOs beside the capture, held open read-write on this side so neither end
+    ever sees EOF: the runner writes {event, payload} lines to <capture>.driver.in
+    and reads the driver's JSON lines from <capture>.driver.out.
+    """
+    fifo_in, fifo_out = capture + ".driver.in", capture + ".driver.out"
+    for path in (fifo_in, fifo_out):
+        # A restarted pane reuses the capture path: the last driver's FIFOs are still there.
+        if os.path.lexists(path):
+            os.unlink(path)
+        os.mkfifo(path, 0o600)
+    stdin = os.open(fifo_in, os.O_RDWR)
+    stdout = os.open(fifo_out, os.O_RDWR)
+    extension = Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi/agent"))) / "extensions/agent-deck.ts"
+    return subprocess.Popen(["node", str(HERE / "pi_driver.mjs"), str(extension)], stdin=stdin, stdout=stdout,
+                            stderr=open(capture + ".driver.err", "ab"))
 
 
 class EventServer(http.server.ThreadingHTTPServer):
