@@ -121,7 +121,7 @@ func (h *Home) renderHeaderSSHSegments(now time.Time) (full, compact string) {
 	return full, style.Render(renderSSHSummaryLine(sessions))
 }
 
-// countSessionStatuses counts sessions by status for the logo display
+// countSessionStatuses counts sessions by status for the header stats
 // Uses cache to avoid O(n) iteration on every View() call
 // Cache expires after 500ms to balance freshness with performance
 // PERFORMANCE: Increased from 100ms to 500ms - status changes are rare
@@ -664,9 +664,10 @@ func (h *Home) renderFrame() string {
 	// ═══════════════════════════════════════════════════════════════════
 	// HEADER BAR
 	// ═══════════════════════════════════════════════════════════════════
-	// Calculate real session status counts for logo and stats
+	// Calculate real session status counts for the stats segment
 	running, waiting, idle, stopped, errored := h.countSessionStatuses()
-	logo := RenderLogoCompact(running, waiting, idle)
+	// The agent-deck mark leads the header: "●●○ Agent Deck".
+	logo := RenderBrandMark()
 
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -1096,95 +1097,33 @@ func (h *Home) renderPanelTitle(title string, width int) string {
 	return titleStyle.Render(title) + "\n" + underline
 }
 
-// renderLoadingSplash creates a simple centered loading splash screen
-// Shows the three status indicators (running/waiting/idle) cycling
+// splashMark renders the agent-deck mark for a splash frame. The dots light
+// in turn (running, waiting, idle), then all together: the full mark.
+func splashMark(frame int) string {
+	switch (frame / 2) % 4 {
+	case 0:
+		return renderBrandMarkLit(true, false, false)
+	case 1:
+		return renderBrandMarkLit(false, true, false)
+	case 2:
+		return renderBrandMarkLit(false, false, true)
+	default:
+		return RenderBrandMark()
+	}
+}
+
+// renderLoadingSplash creates a simple centered loading splash screen:
+// the agent-deck mark and name ("●●○ Agent Deck"), its dots lighting in
+// turn while sessions load.
 func renderLoadingSplash(width, height int, frame int) string {
-	// Status indicator cycle: each status lights up in sequence
-	// Frame 0-1: Running (green ●)
-	// Frame 2-3: Waiting (yellow ◐)
-	// Frame 4-5: Idle (gray ○)
-	// Frame 6-7: All lit together
-
-	phase := (frame / 2) % 4
-
-	// Active status colors (match the actual TUI colors)
-	greenStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
-	yellowStyle := lipgloss.NewStyle().Foreground(ColorYellow).Bold(true)
-	grayStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
-
-	// Dim style for inactive indicators
-	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
-
-	// Text styles
 	titleStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
 	subtitleStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 
-	var content strings.Builder
-
+	subtitle := "Loading..."
 	if width >= 40 && height >= 10 {
-		// Full version - big status indicators in a row
-		var running, waiting, idle string
-
-		switch phase {
-		case 0: // Running highlighted
-			running = greenStyle.Render("●")
-			waiting = dimStyle.Render("◐")
-			idle = dimStyle.Render("○")
-		case 1: // Waiting highlighted
-			running = dimStyle.Render("●")
-			waiting = yellowStyle.Render("◐")
-			idle = dimStyle.Render("○")
-		case 2: // Idle highlighted
-			running = dimStyle.Render("●")
-			waiting = dimStyle.Render("◐")
-			idle = grayStyle.Render("○")
-		case 3: // All lit
-			running = greenStyle.Render("●")
-			waiting = yellowStyle.Render("◐")
-			idle = grayStyle.Render("○")
-		}
-
-		content.WriteString("\n")
-		content.WriteString("      " + running + "   " + waiting + "   " + idle + "      \n")
-		content.WriteString("\n")
-		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
-		content.WriteString("\n")
-		content.WriteString(subtitleStyle.Render("Loading sessions..."))
-	} else if width >= 25 && height >= 6 {
-		// Compact version
-		var indicators string
-		switch phase {
-		case 0:
-			indicators = greenStyle.Render("●") + " " + dimStyle.Render("◐") + " " + dimStyle.Render("○")
-		case 1:
-			indicators = dimStyle.Render("●") + " " + yellowStyle.Render("◐") + " " + dimStyle.Render("○")
-		case 2:
-			indicators = dimStyle.Render("●") + " " + dimStyle.Render("◐") + " " + grayStyle.Render("○")
-		case 3:
-			indicators = greenStyle.Render("●") + " " + yellowStyle.Render("◐") + " " + grayStyle.Render("○")
-		}
-		content.WriteString(indicators + "\n")
-		content.WriteString("\n")
-		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
-		content.WriteString(subtitleStyle.Render("Loading..."))
-	} else {
-		// Minimal
-		content.WriteString(greenStyle.Render("●") + " " + titleStyle.Render("Agent Deck") + "\n")
-		content.WriteString(subtitleStyle.Render("Loading..."))
+		subtitle = "Loading sessions..."
 	}
-
-	// Center the content
-	contentStyle := lipgloss.NewStyle().
-		Align(lipgloss.Center).
-		Width(width)
-
-	rendered := lipgloss.Place(
-		width, height,
-		lipgloss.Center, lipgloss.Center,
-		contentStyle.Render(content.String()),
-	)
-
-	return rendered
+	return renderSplash(width, height, splashMark(frame)+" "+titleStyle.Render("Agent Deck"), subtitleStyle.Render(subtitle))
 }
 
 // renderQuittingSplash renders a splash screen during application shutdown
@@ -1194,54 +1133,18 @@ func renderQuittingSplash(width, height int, frame int) string {
 
 // renderShutdownSplash draws the quit/restart splash with the given subtitle.
 func renderShutdownSplash(width, height int, frame int, subtitle string) string {
-	// Status indicator cycle (matches loading splash for consistency)
-	phase := (frame / 2) % 4
-
-	// Active status colors
-	greenStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
-	yellowStyle := lipgloss.NewStyle().Foreground(ColorYellow).Bold(true)
-	grayStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
-	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
-
-	// Text styles
 	titleStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
 	subtitleStyle := lipgloss.NewStyle().Foreground(ColorYellow)
+	return renderSplash(width, height, splashMark(frame)+" "+titleStyle.Render("Agent Deck"), subtitleStyle.Render(subtitle))
+}
 
-	var content strings.Builder
-
-	if width >= 40 && height >= 10 {
-		var running, waiting, idle string
-		switch phase {
-		case 0:
-			running = greenStyle.Render("●")
-			waiting = dimStyle.Render("◐")
-			idle = dimStyle.Render("○")
-		case 1:
-			running = dimStyle.Render("●")
-			waiting = yellowStyle.Render("◐")
-			idle = dimStyle.Render("○")
-		case 2:
-			running = dimStyle.Render("●")
-			waiting = dimStyle.Render("◐")
-			idle = grayStyle.Render("○")
-		case 3:
-			running = greenStyle.Render("●")
-			waiting = yellowStyle.Render("◐")
-			idle = grayStyle.Render("○")
-		}
-
-		content.WriteString("\n")
-		content.WriteString("      " + running + "   " + waiting + "   " + idle + "      \n")
-		content.WriteString("\n")
-		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
-		content.WriteString("\n")
-		content.WriteString(subtitleStyle.Render(subtitle))
-	} else {
-		// Compact/Minimal
-		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
-		content.WriteString(subtitleStyle.Render(subtitle))
+// renderSplash centres the brand line and a subtitle in width x height,
+// with a blank line between them when there is room.
+func renderSplash(width, height int, brand, subtitle string) string {
+	content := brand + "\n" + subtitle
+	if height >= 6 {
+		content = brand + "\n\n" + subtitle
 	}
-
 	contentStyle := lipgloss.NewStyle().
 		Align(lipgloss.Center).
 		Width(width)
@@ -1249,7 +1152,7 @@ func renderShutdownSplash(width, height int, frame int, subtitle string) string 
 	return lipgloss.Place(
 		width, height,
 		lipgloss.Center, lipgloss.Center,
-		contentStyle.Render(content.String()),
+		contentStyle.Render(content),
 	)
 }
 

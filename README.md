@@ -1,7 +1,7 @@
 <div align="center">
 
-<!-- Status Grid Logo -->
-<img src="site/logo.svg" alt="Agent Deck Logo" width="120">
+<!-- agent-deck mark: status dots on Calm Navy -->
+<img src="site/logo.svg" alt="Agent Deck Logo" width="96">
 
 # Agent Deck
 
