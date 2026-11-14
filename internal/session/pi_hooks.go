@@ -484,10 +484,18 @@ func isDigits(s string) bool {
 // PiHooksInstallCommand is the command that installs the extension where a pi
 // with agentDir ("" for pi's default) loads it. Like the codex-hooks line's
 // CODEX_HOME, a set agent dir is spelled out so a shell without it does not
-// install into ~/.pi/agent instead.
+// install into ~/.pi/agent instead. When the default dir is wanted but
+// agent-deck itself has a PI_CODING_AGENT_DIR (a session command that clears
+// it with an empty assignment, #3098), the empty assignment is spelled out
+// too: a plain install run from the same shell would write to that inherited
+// dir. agent-deck's environment stands in for the shell the command is run
+// from, the most likely one.
 func PiHooksInstallCommand(agentDir string) string {
 	if agentDir != "" {
 		return "PI_CODING_AGENT_DIR=" + shellescape.Quote(agentDir) + " agent-deck pi-hooks install"
+	}
+	if PiAgentDir() != "" {
+		return "PI_CODING_AGENT_DIR= agent-deck pi-hooks install"
 	}
 	return "agent-deck pi-hooks install"
 }

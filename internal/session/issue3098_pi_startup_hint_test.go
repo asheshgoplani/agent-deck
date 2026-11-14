@@ -24,6 +24,9 @@ func TestIssue3098_PiStartupTimeoutHint(t *testing.T) {
 		processDir bool
 		// commandDir gives the command a leading PI_CODING_AGENT_DIR of its own.
 		commandDir bool
+		// commandEmpty gives the command a leading empty PI_CODING_AGENT_DIR=,
+		// which makes pi use its default dir whatever agent-deck inherited.
+		commandEmpty bool
 		// ext is what is installed where: "", "current", "outdated" or
 		// "foreign" in the dir pi loads, or "current-elsewhere" in the default
 		// dir only (which a commandDir session does not load).
@@ -31,7 +34,8 @@ func TestIssue3098_PiStartupTimeoutHint(t *testing.T) {
 		ssh     bool
 		sandbox bool
 		// wantDir names the dir the hint's install command must carry:
-		// "process", "command" or "" (no PI_CODING_AGENT_DIR in the command).
+		// "process", "command", "empty" (an empty assignment) or "" (no
+		// PI_CODING_AGENT_DIR in the command).
 		wantHint bool
 		wantDir  string
 	}{
@@ -46,6 +50,11 @@ func TestIssue3098_PiStartupTimeoutHint(t *testing.T) {
 		{name: "command agent dir with the extension there", tool: "pi", commandDir: true, ext: "current"},
 		{name: "command agent dir, extension only in the default dir", tool: "pi", commandDir: true, ext: "current-elsewhere", wantHint: true, wantDir: "command"},
 		{name: "command agent dir overrides agent-deck's", tool: "pi", processDir: true, commandDir: true, wantHint: true, wantDir: "command"},
+		// The command clears agent-deck's agent dir: pi loads the default dir,
+		// and a plain install run from a shell with the inherited dir would
+		// write there instead, so the hint spells out the empty assignment.
+		{name: "command clears agent-deck's agent dir", tool: "pi", processDir: true, commandEmpty: true, wantHint: true, wantDir: "empty"},
+		{name: "command clears agent-deck's agent dir, extension in the default dir", tool: "pi", processDir: true, commandEmpty: true, ext: "current-elsewhere"},
 		// The extension lives on the other host or in the container, which
 		// this host cannot inspect.
 		{name: "remote pi", tool: "pi", ssh: true},
@@ -66,6 +75,10 @@ func TestIssue3098_PiStartupTimeoutHint(t *testing.T) {
 				commandDir = t.TempDir()
 				inst.Command = "PI_CODING_AGENT_DIR=" + commandDir + " pi"
 				loadedDir = filepath.Join(commandDir, "extensions")
+			}
+			if tc.commandEmpty {
+				inst.Command = "PI_CODING_AGENT_DIR= pi"
+				loadedDir = filepath.Join(home, ".pi", "agent", "extensions")
 			}
 			switch tc.ext {
 			case "current":
@@ -102,6 +115,12 @@ func TestIssue3098_PiStartupTimeoutHint(t *testing.T) {
 				want = "PI_CODING_AGENT_DIR=" + processDir + " " + want
 			case "command":
 				want = "PI_CODING_AGENT_DIR=" + commandDir + " " + want
+			case "empty":
+				want = "PI_CODING_AGENT_DIR= " + want
+			case "":
+				if strings.Contains(hint, "PI_CODING_AGENT_DIR") {
+					t.Fatalf("hint must not set PI_CODING_AGENT_DIR, got %q", hint)
+				}
 			}
 			if !strings.Contains(hint, "'"+want+"'") {
 				t.Fatalf("hint must name the install command %q, got %q", want, hint)
@@ -137,5 +156,28 @@ func writePiExtensionForTest(t *testing.T, extDir, content string) {
 	}
 	if err := os.WriteFile(PiHookExtensionPath(extDir), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// PiHooksInstallCommand names the agent dir the install must write to, as the
+// shell it is run from would otherwise pick another: a set dir is quoted, and
+// pi's default dir is an empty assignment when agent-deck itself inherited a
+// PI_CODING_AGENT_DIR (#3098).
+func TestIssue3098_PiHooksInstallCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name, processDir, agentDir, want string
+	}{
+		{"default dir, nothing inherited", "", "", "agent-deck pi-hooks install"},
+		{"default dir, blank inherited", "  ", "", "agent-deck pi-hooks install"},
+		{"default dir, dir inherited", "/inherited", "", "PI_CODING_AGENT_DIR= agent-deck pi-hooks install"},
+		{"set dir", "", "/custom dir/pi", "PI_CODING_AGENT_DIR='/custom dir/pi' agent-deck pi-hooks install"},
+		{"set dir, another inherited", "/inherited", "/custom", "PI_CODING_AGENT_DIR=/custom agent-deck pi-hooks install"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PI_CODING_AGENT_DIR", tc.processDir)
+			if got := PiHooksInstallCommand(tc.agentDir); got != tc.want {
+				t.Fatalf("PiHooksInstallCommand(%q) with PI_CODING_AGENT_DIR=%q = %q, want %q", tc.agentDir, tc.processDir, got, tc.want)
+			}
+		})
 	}
 }
