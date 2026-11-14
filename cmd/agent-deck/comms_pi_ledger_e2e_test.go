@@ -541,14 +541,38 @@ func TestPiLedgerE2E_APiParentEditedToClaudeKeepsThePiRulesUntilItRestarts(t *te
 // CodeRabbit (hook_handler.go:226, the restart window): a listed pi parent is
 // restarted as Claude, and its hooks run before the daemon's next poll moves the
 // marker. Its pane runs Claude now. A pi without pane_host (one in another pane
-// of the session) is given none of its records and its receipts are not
-// applied, and the Claude parent's prompt shows the record once. Not covered: a
-// pi that outlives its replaced pane without shutting down still serves the
-// socket and is pane_host until the next poll.
+// of the session) is given none of its records, and a receipt it sends is not
+// applied, even one naming a real pending injection (the serving pi's, from
+// before the restart): on turn_start (injected_token) and on its next run start
+// (prior_injected_token). Not covered: a pi that outlives its replaced pane
+// without shutting down still serves the socket and is pane_host until the
+// next poll.
 func TestPiLedgerE2E_APiParentRestartedAsClaudeAdmitsNoPiBeforeTheNextPoll(t *testing.T) {
 	e := newPiLedgerE2EFor(t, "pi")
 	e.runOnce()
 	e.pass()
+	// Before the restart, the serving pi's run start injects the record under a
+	// token whose receipt is still pending.
+	host := captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "parent-run", "pi-parent-sess", "before_agent_start", `,"prompt":"what is next?"`+piServes)
+	})
+	m := regexp.MustCompile(`<!-- agent-deck-delivery:([0-9A-Za-z]+) -->`).FindStringSubmatch(host)
+	if !strings.Contains(host, "Built and tested.") || m == nil {
+		t.Fatalf("test setup: the serving pi's run start lacks the record or its token: %q", host)
+	}
+	token := m[1]
+	en, ok := session.LoadCommsEnrollment(e.parent.ID)
+	if !ok {
+		t.Fatal("test setup: parent not enrolled")
+	}
+	before, _, err := comms.ReadConsumer(en.Dir, e.parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, pending := before.Injections[token]; !pending {
+		t.Fatalf("test setup: injection %s is not pending: %+v", token, before.Injections)
+	}
+
 	e.edit("claude")
 	e.relaunch(false) // no poll follows yet
 	if en, ok := session.LoadCommsEnrollment(e.parent.ID); !ok || en.Tool != "pi" || !en.PiSocket {
@@ -561,22 +585,28 @@ func TestPiLedgerE2E_APiParentRestartedAsClaudeAdmitsNoPiBeforeTheNextPoll(t *te
 	if strings.Contains(other, "Built and tested.") {
 		t.Errorf("a pi in the restarted parent's session was given its records before the poll: %q", other)
 	}
-	token := ""
-	if m := regexp.MustCompile(`<!-- agent-deck-delivery:([0-9A-Za-z]+) -->`).FindStringSubmatch(other); m != nil {
-		token = m[1]
-	}
+	// Its receipts name the serving pi's pending injection. turn_start's is only
+	// spooled for the daemon; the next run start's is applied at once.
 	e.hookAs(e.parent.ID, "split-run", "pi-split-sess", "turn_start", fmt.Sprintf(`,"injected_token":%q`, token))
-
-	dl, ok := session.LedgerPromptContext(e.parent.ID, "what is next?", "", false)
-	if !ok {
-		t.Fatal("enrolled parent fell back to the inbox path")
+	spooled, _ := session.ReadCommsSpool(e.parent.ID)
+	for _, entry := range spooled {
+		if entry.Edge == session.CommsEdgeInjected {
+			t.Errorf("a pi without pane_host spooled a receipt for the daemon to apply: %+v", entry)
+		}
 	}
-	if !strings.Contains(dl.Text, "Built and tested.") || dl.Token != "" {
-		t.Errorf("the restarted Claude parent's prompt = %q with token %q, want the record and no receipt token", dl.Text, dl.Token)
+	_ = captureStdout(t, func() {
+		e.hookAs(e.parent.ID, "split-run-2", "pi-split-sess", "before_agent_start",
+			fmt.Sprintf(`,"prompt":"and now?","prior_injected_token":%q`, token))
+	})
+	after, _, err := comms.ReadConsumer(en.Dir, e.parent.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	dl.Done(true)
-	e.pass()
-	if again := e.prompt("and now?"); strings.Contains(again, "Built and tested.") {
-		t.Errorf("the record was shown again after the poll: %q", again)
+	if _, pending := after.Injections[token]; !pending {
+		t.Errorf("a pi without pane_host applied the receipt of the serving pi's injection %s", token)
+	}
+	if after.Watermark != before.Watermark || len(after.Acked) != len(before.Acked) {
+		t.Errorf("a pi without pane_host acknowledged records: watermark %d -> %d, acked %v -> %v",
+			before.Watermark, after.Watermark, before.Acked, after.Acked)
 	}
 }
