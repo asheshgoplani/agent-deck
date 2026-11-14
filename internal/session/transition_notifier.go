@@ -322,11 +322,19 @@ func (n *TransitionNotifier) terminalDrop(event TransitionNotificationEvent, rea
 // Idempotent.
 func (n *TransitionNotifier) Close() {}
 
-// Flush is retained for API compatibility with the bounded-lifetime callers
-// (`notify-daemon --once`, graceful shutdown, deterministic tests). Issue #1225
-// made delivery a synchronous commit to the durable outbox, so there is nothing
-// in flight to wait for; Flush is a no-op.
-func (n *TransitionNotifier) Flush() {}
+// Flush serves the bounded-lifetime callers (`notify-daemon --once`, graceful
+// shutdown, deterministic tests). Issue #1225 made delivery a synchronous commit
+// to the durable outbox; what is still in flight is a pi parent's doorbell, whose
+// socket I/O and typed fallback run in this process, so a one-shot pass would
+// exit under them. Flush waits for the doorbells of this notifier's wiring (and
+// any dispatched without one), bounded. A Claude parent's wake needs no wait: its
+// typing is a child process that outlives the pass.
+func (n *TransitionNotifier) Flush() {
+	if n != nil && n.wake != nil {
+		n.wake.legs.Wait(wakeLegBound)
+	}
+	strayLegs.Wait(wakeLegBound)
+}
 
 func ShouldNotifyTransition(fromStatus, toStatus string) bool {
 	from := strings.ToLower(strings.TrimSpace(fromStatus))

@@ -21,6 +21,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
+	"github.com/asheshgoplani/agent-deck/internal/send"
 )
 
 // piHookExtensionSource is the pi extension agent-deck installs into pi's
@@ -41,8 +42,9 @@ const (
 	piHookExtensionMarker = "AGENTDECK PI HOOK EXTENSION"
 	// piHookExtensionVersion is bumped whenever the emitted event set or the
 	// payload shape changes, so `pi-hooks status` can report drift and
-	// `pi-hooks install` can upgrade in place.
-	piHookExtensionVersion = 5
+	// `pi-hooks install` can upgrade in place. v5 serves the wake socket; v6
+	// marks its payloads pane_guest or pane_host.
+	piHookExtensionVersion = 6
 )
 
 var piHookExtensionVersionRe = regexp.MustCompile(piHookExtensionMarker + ` v(\d+)`)
@@ -174,10 +176,6 @@ const (
 	piSocketFloor = "1.2.0"
 	// piVersionTimeout bounds `pi --version`; a wedged pi must not stall a launch.
 	piVersionTimeout = 2 * time.Second
-	// piMaxSockPath is the longest unix socket path macOS accepts (sun_path is
-	// 104 bytes including the NUL); Linux allows 107, so one limit is used. A
-	// longer path is refused at launch, so the extension never tries to bind it.
-	piMaxSockPath = 103
 )
 
 // piVersionOutputCap bounds what is read of `pi --version`: a version is a few
@@ -291,8 +289,8 @@ func piSocketProbe(profile, instanceID string, env []string, bin string, found b
 		info.Reason, info.Detail = "no_runtime_dir", err.Error()
 		return info
 	}
-	if len(path) > piMaxSockPath {
-		info.Reason, info.Detail = "path_too_long", fmt.Sprintf("path %d bytes, limit %d", len(path), piMaxSockPath)
+	if len(path) > send.MaxSockPath {
+		info.Reason, info.Detail = "path_too_long", fmt.Sprintf("path %d bytes, limit %d", len(path), send.MaxSockPath)
 		return info
 	}
 	info.Path = path
@@ -351,7 +349,8 @@ func piSocketLaunch(profile, instanceID string, env []string, bin string, found 
 // when a local launch leaves it off (or "" for SSH and sandboxed ones). The pi
 // probed is the one the pane will run: the command's own word on the pane's
 // PATH and with the command's leading assignments, as openCodeLaunchBinary
-// resolves opencode.
+// resolves opencode. A local launch also sets AGENTDECK_PI_HOST_PID empty
+// (piHostPidReset), so the pi it starts is never a guest of the pane.
 func (i *Instance) piSocketLaunchPrefix(command string) string {
 	// The socket is for local launches: the extension of an SSH or sandboxed pi
 	// runs in another filesystem and process namespace, which the host daemon
@@ -371,10 +370,19 @@ func (i *Instance) piSocketLaunchPrefix(command string) string {
 		// Explicitly empty, so the pane does not inherit a value from the tmux
 		// server's environment (a server first started inside a socket-exported
 		// pi pane, as with CLAUDE_JOB_DIR in #2683); the extension reads empty as off.
-		return "AGENTDECK_PI_SOCKET= "
+		return piHostPidReset + "AGENTDECK_PI_SOCKET= "
 	}
-	return "AGENTDECK_PI_SOCKET=" + shellescape.Quote(info.Path) + " "
+	return piHostPidReset + "AGENTDECK_PI_SOCKET=" + shellescape.Quote(info.Path) + " "
 }
+
+// piHostPidReset empties AGENTDECK_PI_HOST_PID for a local pi launch. The
+// extension of the pi agent-deck launched writes its own pid there, and a pi
+// that inherits another pid is a guest of the pane: it serves no socket and is
+// given none of the ledger's context. A tmux server first started inside a pi
+// pane carries that pid in its environment, so without this a later pane's pi
+// would inherit it and be taken for a guest. SSH and sandboxed launches do not
+// take the local tmux server's environment.
+const piHostPidReset = "AGENTDECK_PI_HOST_PID= "
 
 // pathOf returns the PATH carried by env.
 func pathOf(env []string) string {
@@ -484,10 +492,18 @@ func isDigits(s string) bool {
 // PiHooksInstallCommand is the command that installs the extension where a pi
 // with agentDir ("" for pi's default) loads it. Like the codex-hooks line's
 // CODEX_HOME, a set agent dir is spelled out so a shell without it does not
-// install into ~/.pi/agent instead.
+// install into ~/.pi/agent instead. When the default dir is wanted but
+// agent-deck itself has a PI_CODING_AGENT_DIR (a session command that clears
+// it with an empty assignment, #3098), the empty assignment is spelled out
+// too: a plain install run from the same shell would write to that inherited
+// dir. agent-deck's environment stands in for the shell the command is run
+// from, the most likely one.
 func PiHooksInstallCommand(agentDir string) string {
 	if agentDir != "" {
 		return "PI_CODING_AGENT_DIR=" + shellescape.Quote(agentDir) + " agent-deck pi-hooks install"
+	}
+	if PiAgentDir() != "" {
+		return "PI_CODING_AGENT_DIR= agent-deck pi-hooks install"
 	}
 	return "agent-deck pi-hooks install"
 }
