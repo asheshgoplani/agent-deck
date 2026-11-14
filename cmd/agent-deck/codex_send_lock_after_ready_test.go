@@ -272,3 +272,153 @@ func TestCodexSendBaselineReadsPastTheDefaultCeiling(t *testing.T) {
 		t.Fatalf("fence=%q waits=%d; want %q on the first pass", guard.fence.priorTurnGeneration, waits, want)
 	}
 }
+
+// A send that finds an earlier attempt's marker on the same running turn may
+// clear it only when that turn took up input after the attempt began. The
+// fence reads the turn with the 64 MiB acceptance budget, so the input check
+// must too: with the 8 MiB default it never reached a turn start 10 MiB back,
+// reported no input, and kept refusing every later send until an operator
+// removed the marker.
+func TestCodexSendReconcileReadsRunningTurnInputPastTheDefaultCeiling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	codexHome := filepath.Join(home, "codex")
+	t.Setenv("CODEX_HOME", codexHome)
+	const thread = "01a0cc41-3ddb-7170-98bc-27b021e69143"
+	path := filepath.Join(codexHome, "sessions", "2026", "11", "12", "rollout-2026-11-12T05-13-42-"+thread+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
+	userInput := func(at time.Time) string {
+		return `{"timestamp":"` + stamp(at) + `","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-long","item":{"type":"UserMessage","id":"item"}}}` + "\n"
+	}
+	start := time.Date(2026, 11, 12, 5, 13, 42, 0, time.UTC)
+	createdAt := start.Add(50 * time.Minute) // the earlier send's marker
+	// The running turn: its start and opening input, 10 MiB of output, then
+	// the earlier send's input taken into the same turn. No task_complete.
+	rollout := `{"timestamp":"` + stamp(start) + `","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-long"}}` + "\n" +
+		userInput(start.Add(time.Second)) +
+		strings.Repeat(strings.Repeat("x", 998)+"\n", 10500) +
+		userInput(createdAt.Add(2*time.Second))
+	if err := os.WriteFile(path, []byte(rollout), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &session.Instance{ID: "long-turn-reconcile", Tool: "codex", CodexSessionID: thread}
+	generation := thread + ":turn-long"
+	if took, err := inst.CodexTurnTookInputSince(generation, createdAt); err != nil || took {
+		t.Fatalf("fixture: default-budget check got %v, %v; want false (turn start beyond 8 MiB)", took, err)
+	}
+	marker, err := session.PrepareCodexSubmissionMarker(inst.ID, thread, generation, createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := marker.MarkTransportAmbiguous(createdAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	guard, err := acquireCodexAcceptanceGuard(inst, time.Second)
+	if err != nil {
+		t.Fatalf("marker whose input the running turn took was not cleared: %v", err)
+	}
+	defer guard.Release()
+	if guard.fence.priorTurnGeneration != generation {
+		t.Fatalf("fence=%q; want %q", guard.fence.priorTurnGeneration, generation)
+	}
+	if err := session.ClearCodexSubmissionMarker(marker); err == nil {
+		t.Fatal("marker is still on disk after the guard reconciled it")
+	}
+}
+
+// The budgeted input check still refuses when the running turn took no input
+// after the marker: reading further back must not turn a missing input into
+// evidence.
+func TestCodexSendReconcileStillRefusesWithoutLaterInputPastTheDefaultCeiling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	codexHome := filepath.Join(home, "codex")
+	t.Setenv("CODEX_HOME", codexHome)
+	const thread = "01a0cc41-3ddb-7170-98bc-27b021e69144"
+	path := filepath.Join(codexHome, "sessions", "2026", "11", "12", "rollout-2026-11-12T05-13-42-"+thread+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 11, 12, 5, 13, 42, 0, time.UTC)
+	createdAt := start.Add(50 * time.Minute)
+	rollout := `{"timestamp":"` + start.Format(time.RFC3339Nano) + `","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-long"}}` + "\n" +
+		`{"timestamp":"` + start.Add(time.Second).Format(time.RFC3339Nano) + `","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-long","item":{"type":"UserMessage","id":"item"}}}` + "\n" +
+		strings.Repeat(strings.Repeat("x", 998)+"\n", 10500)
+	if err := os.WriteFile(path, []byte(rollout), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inst := &session.Instance{ID: "long-turn-refuse", Tool: "codex", CodexSessionID: thread}
+	generation := thread + ":turn-long"
+	marker, err := session.PrepareCodexSubmissionMarker(inst.ID, thread, generation, createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guard, err := acquireCodexAcceptanceGuard(inst, time.Second); err == nil {
+		guard.Release()
+		t.Fatal("marker with no later input in the running turn was cleared")
+	}
+	if err := session.ClearCodexSubmissionMarker(marker); err != nil {
+		t.Fatalf("refused marker should stay on disk: %v", err)
+	}
+}
+
+// The receipt poll rereads the rollout only when it changed. Each read can
+// scan up to 64 MiB backward when the newest turn start is far from EOF, and
+// the poll used to repeat it every 50 ms for 2 s on an unchanged file.
+func TestCodexAcceptedTurnPollSkipsUnchangedRollout(t *testing.T) {
+	fence := codexAcceptanceFence{codexSessionID: "thread-poll", priorTurnGeneration: "thread-poll:t1", available: true}
+	inst := &session.Instance{ID: "poll", Tool: "codex", CodexSessionID: "thread-poll"}
+
+	reads := 0
+	receipt := pollAcceptedCodexTurn(inst, deliverySubmitted, time.Now(), fence,
+		func() string { return "v1" },
+		func() (string, error) { reads++; return "thread-poll:t1", nil })
+	if receipt != nil || reads != 1 {
+		t.Fatalf("unchanged rollout: receipt=%v reads=%d; want nil after one read", receipt, reads)
+	}
+
+	// A changed version is read again and yields the new turn.
+	reads, polls := 0, 0
+	receipt = pollAcceptedCodexTurn(inst, deliverySubmitted, time.Now(), fence,
+		func() string {
+			polls++
+			if polls < 3 {
+				return "v1"
+			}
+			return "v2"
+		},
+		func() (string, error) {
+			reads++
+			if polls < 3 {
+				return "thread-poll:t1", nil
+			}
+			return "thread-poll:t2", nil
+		})
+	if receipt == nil || receipt.TurnGeneration != "thread-poll:t2" || reads != 2 {
+		t.Fatalf("changed rollout: receipt=%v reads=%d; want t2 on the second read", receipt, reads)
+	}
+
+	// No version (nothing to compare) or a failed read always reads again.
+	for name, read := range map[string]func() (string, error){
+		"unversioned": func() (string, error) { return "thread-poll:t1", nil },
+		"failed read": func() (string, error) { return "", errors.New("rollout busy") },
+	} {
+		version := func() string { return "v1" }
+		if name == "unversioned" {
+			version = func() string { return "" }
+		}
+		reads = 0
+		_ = pollAcceptedCodexTurn(inst, deliverySubmitted, time.Now(), fence, version,
+			func() (string, error) { reads++; return read() })
+		if reads < 10 {
+			t.Fatalf("%s: read %d times in the poll window; want a read every poll", name, reads)
+		}
+	}
+}
