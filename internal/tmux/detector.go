@@ -522,7 +522,88 @@ var claudeBannerStructuralMarkers = []string{" · ", `{"type":"error"`}
 // hasClaudeErrorBanner scans the last 15 non-empty lines (same window as
 // hasClaudePrompt) for a banner-shaped error line.
 func hasClaudeErrorBanner(content string) bool {
-	return scanClaudeBannerLines(content, claudeErrorBannerSubstrings)
+	return scanClaudeBannerLines(content, claudeErrorBannerSubstrings) || hasClaudeSyntheticAuthReply(content)
+}
+
+// claudeSyntheticAuthReplyPrefix is the text Claude Code (2.1.322) draws as its
+// own reply to a message sent while logged out ("/logout" or no credentials).
+const claudeSyntheticAuthReplyPrefix = "Not logged in · Please run /login"
+
+// claudeTurnSummaryRe matches the "✻ <verb> for <n>s" line that closes a turn.
+var claudeTurnSummaryRe = regexp.MustCompile(`^[✳✽✶✻✢]\s*\S+ for \d`)
+
+// hasClaudeSyntheticAuthReply reports whether the pane tail shows Claude Code's
+// own logged-out reply:
+//
+//	❯ count to 3
+//	  ⎿  Not logged in · Please run /login
+//
+//	✻ Sautéed for 0s · done 7:45 PM
+//
+// Claude draws it behind "⎿", which scanClaudeBannerLines skips on purpose
+// (quoted tool output), so it needs its own, much narrower match. A false hit
+// parks a healthy session behind an auth hold, so every part must hold:
+//   - the bottom-most "❯" line is the input box (composer), must sit between
+//     two "──" rules, and is skipped;
+//     the next "❯" line up is the NEWEST submitted prompt, so older history
+//     never counts;
+//   - that prompt starts at column 0 and carries text, and the "⎿" line is
+//     directly under it with exactly two spaces of indent (the TUI indents
+//     anything quoted in a reply or code block deeper);
+//   - the text after "⎿" starts with the exact reply;
+//   - between the reply and the input box there is nothing but the closing
+//     turn summary (column 0) and the box rules, so the reply is the whole,
+//     newest turn: not a quote followed by more output, not a pasted transcript
+//     echoed in a running prompt, and not an older turn above a newer prompt
+//     that was mistaken for the input box.
+//
+// A reply under a "● Tool(...)" line has a "●" line above it, never the prompt.
+// When in doubt this returns false: a miss is cheaper than a false hold.
+func hasClaudeSyntheticAuthReply(content string) bool {
+	type pane struct{ raw, trim string }
+	var lines []pane
+	for _, r := range strings.Split(content, "\n") {
+		r = strings.TrimRight(strings.ReplaceAll(StripANSI(r), "\u00a0", " "), " \t\r")
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		lines = append(lines, pane{r, strings.TrimSpace(r)})
+	}
+	if len(lines) > 30 {
+		lines = lines[len(lines)-30:]
+	}
+	composer := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isPrompt, hasText := isClaudePromptLine(lines[i].trim); !isPrompt {
+			continue
+		} else if composer < 0 {
+			composer = i
+			continue
+		} else if !hasText || !strings.HasPrefix(lines[i].raw, "❯") {
+			return false
+		}
+		// The input box is drawn between two rules; a newer submitted prompt
+		// (seen when a dialog hides the box) is not.
+		if i+2 >= composer || composer+1 >= len(lines) ||
+			!strings.HasPrefix(lines[composer-1].raw, "──") || !strings.HasPrefix(lines[composer+1].raw, "──") {
+			return false
+		}
+		reply := lines[i+1]
+		if !strings.HasPrefix(reply.raw, "  ⎿") || strings.HasPrefix(reply.raw, "   ") {
+			return false
+		}
+		if !strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(reply.trim, "⎿")), claudeSyntheticAuthReplyPrefix) {
+			return false
+		}
+		for j := i + 2; j < composer; j++ {
+			if strings.HasPrefix(lines[j].raw, "──") || (j == i+2 && claudeTurnSummaryRe.MatchString(lines[j].raw)) {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // scanClaudeBannerLines reports whether any of the last 15 non-empty lines is a

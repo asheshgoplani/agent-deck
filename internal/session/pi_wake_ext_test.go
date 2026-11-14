@@ -167,6 +167,16 @@ const IDS_AB = ["01J0RECORD00000000000ABC123", "01J0RECORD00000000000DEF456"];
 const IDS_C = ["01J0RECORD00000000000GHI789"];
 IDS.set(LINE_AB, IDS_AB); IDS.set(LINE_AB2, IDS_AB); IDS.set(LINE_C, IDS_C);
 
+// runChild runs a scenario in a child process with env and returns its JSON.
+async function runChild(scenario, env) {
+  const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", process.argv[1], scenario],
+    { env, stdio: ["ignore", "pipe", "ignore"] });
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  await new Promise((r) => child.once("close", r));
+  return JSON.parse(out.trim());
+}
+
 const scenarios = {
   async private_socket() {
     fs.mkdirSync(path.dirname(SOCK), { recursive: true, mode: 0o755 });
@@ -530,6 +540,86 @@ const scenarios = {
     return out;
   },
 
+  async guest_of_the_pane() {
+    // The launched pi serves the socket. A second pi is a process it starts, with
+    // its environment, as pi's bash tool starts one ({...process.env}): a
+    // subagent's pi -p or a script inside the pane.
+    release();
+    const host = makeRuntime();
+    await host.start();
+    const hostPidEnv = process.env.AGENTDECK_PI_HOST_PID;
+    const before = stat(SOCK);
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", process.argv[1], "guest_child"],
+      { env: { ...process.env }, stdio: ["ignore", "pipe", "ignore"] });
+    let childOut = "";
+    child.stdout.on("data", (d) => { childOut += d; });
+    await new Promise((r) => child.once("close", r));
+    await host.human("host prompt");
+    const out = {
+      hostPid: String(process.pid), hostPidEnv, guest: JSON.parse(childOut.trim()),
+      // In the order hook-handler was called: the host's start, the guest's whole
+      // session, then the host's prompt.
+      hooks: hooks().map((h) => [h.hook_event_name, h.pane_guest === true]),
+      sameSocket: stat(SOCK).ino === before.ino,
+      hostStillServes: (await ask(frame("NG1", LINE_C))).reply,
+    };
+    await host.stop();
+    return out;
+  },
+
+  // The child of guest_of_the_pane: one run start and turn, then shutdown.
+  async guest_child() {
+    const rt = makeRuntime();
+    await rt.start();
+    await rt.human("guest prompt");
+    await rt.fire("turn_start");
+    await rt.stop();
+    return { pid: String(process.pid), hostPidEnv: process.env.AGENTDECK_PI_HOST_PID, listened: listened.slice(), warns: warns.slice() };
+  },
+
+  // Which payloads say pane_host: only those of the runtime whose socket is at
+  // the public path (Forge round 2 #1).
+  async pane_host() {
+    release();
+    const a = makeRuntime();
+    await a.start();
+    await a.human("launched prompt");
+    await a.fire("turn_start");
+    a.endRun();
+    // A restarted pi takes the path over; the earlier one, still shutting down,
+    // is no longer the host.
+    const b = makeRuntime();
+    await b.start();
+    await a.human("earlier pi prompt");
+    a.endRun();
+    await b.human("restarted prompt");
+    b.endRun();
+    await b.stop();
+    // A pi in another tmux pane or window of the session: it has the session's
+    // AGENTDECK_INSTANCE_ID, but neither the launch's socket nor a host pid.
+    const split = { ...process.env };
+    delete split.AGENTDECK_PI_SOCKET;
+    delete split.AGENTDECK_PI_HOST_PID;
+    const other = await runChild("plain_child", split);
+    // A launched pi whose bind fails: the socket's directory cannot be made.
+    const blocker = path.join(DIR, "not-a-dir");
+    fs.writeFileSync(blocker, "");
+    const failed = await runChild("plain_child", { ...process.env, AGENTDECK_PI_HOST_PID: "", AGENTDECK_PI_SOCKET: path.join(blocker, "pi", "w.sock") });
+    await a.stop();
+    return { other, failed,
+      hooks: hooks().map((h) => [h.hook_event_name, h.prompt ?? "", h.pane_host === true, h.pane_guest === true]) };
+  },
+
+  // One run start and turn, then shutdown, in a process of its own.
+  async plain_child() {
+    const rt = makeRuntime();
+    await rt.start();
+    await rt.human("child prompt");
+    await rt.fire("turn_start");
+    await rt.stop();
+    return { listened: listened.slice(), warns: warns.slice() };
+  },
+
   async concurrent_start() {
     // Two starters race for one path. Each binds privately and renames over the
     // public path, so the last one wins: one reachable listener, and the loser's
@@ -565,8 +655,8 @@ const scenarios = {
     return {};
   },
 
-  // A second starter, SIGKILLed at varying points of its start, never takes
-  // the live owner's public socket with it.
+  // A pi started inside the pane (it inherits the host's pid), SIGKILLed at
+  // varying points of its start, never takes the host's public socket with it.
   async killed_starter() {
     const owner = makeRuntime();
     await owner.start();
@@ -690,6 +780,59 @@ const scenarios = {
     return out;
   },
 
+  async failed_bind_cleanup_throws() {
+    // A bind whose rename fails, and whose removal of its private socket then
+    // throws too, with a shutdown arriving while it is under way.
+    const realRename = fs.renameSync, realRm = fs.rmSync;
+    fs.renameSync = function (from, to, ...rest) {
+      if (to === SOCK) throw new Error("rename refused");
+      return realRename.call(fs, from, to, ...rest);
+    };
+    fs.rmSync = function (p, ...rest) {
+      if (path.dirname(String(p)) === path.dirname(SOCK) && /^p[0-9]+-/.test(path.basename(String(p)))) throw new Error("rm refused");
+      return realRm.call(fs, p, ...rest);
+    };
+    const rt = makeRuntime();
+    let startErr = null, stopErr = null;
+    const started = rt.start().catch((e) => { startErr = String(e); });
+    const stopped = rt.stop().catch((e) => { stopErr = String(e); });
+    await Promise.all([started, stopped]);
+    fs.renameSync = realRename;
+    fs.rmSync = realRm;
+    return { startErr, stopErr, warns: warns.slice() };
+  },
+  async stop_race() {
+    // A successor renames its socket over the path just after the stopping
+    // owner checked that the path still holds its own (CodeRabbit, #3024).
+    const a = makeRuntime();
+    await a.start();
+    const aIno = stat(SOCK).ino;
+    let accepted = 0;
+    const b = net.createServer((c) => { accepted++; c.on("error", () => {}); c.end(); });
+    const bPriv = path.join(path.dirname(SOCK), "successor.sock");
+    await new Promise((r) => b.listen(bPriv, r));
+    const bIno = stat(bPriv).ino;
+    const realStat = fs.statSync;
+    let raced = false;
+    fs.statSync = function (p, ...rest) {
+      const st = realStat.call(fs, p, ...rest);
+      if (!raced && p === SOCK && rest[0] && rest[0].bigint) {
+        raced = true;
+        fs.renameSync(bPriv, SOCK);
+      }
+      return st;
+    };
+    try {
+      await a.stop();
+    } finally {
+      fs.statSync = realStat;
+    }
+    const after = stat(SOCK);
+    const probe = await new Promise((resolve) => { const c = net.connect(SOCK); c.on("connect", () => { c.destroy(); resolve(true); }); c.on("error", () => resolve(false)); });
+    const leftovers = fs.readdirSync(path.dirname(SOCK)).filter((n) => n !== path.basename(SOCK));
+    b.close();
+    return { raced, aIno, bIno, after, probe, accepted, leftovers };
+  },
   async foreign_unlink() {
     const a = makeRuntime();
     await a.start();
@@ -866,16 +1009,25 @@ const scenarios = {
   },
 
   async live_socket() {
+    // Something still accepts at the path, as an earlier pi of this session that
+    // is still shutting down after a restart does. The launched pi is the host
+    // all the same: it takes the path over and marks nothing.
     fs.mkdirSync(path.dirname(SOCK), { recursive: true, mode: 0o700 });
     let served = 0;
     const live = net.createServer((c) => { served++; c.on("error", () => {}); c.end(JSON.stringify({ id: "LIVE", state: "submitted" }) + "\n"); });
     await new Promise((r) => live.listen(SOCK, r));
     const inoBefore = stat(SOCK).ino;
+    release();
     const rt = makeRuntime();
     await rt.start();
     const res = await ask(frame("N14", LINE_C));
+    // Without a run start (the earlier listener answered), report what there is.
+    await until(() => hooksOf("before_agent_start").length >= 1, "the doorbell's run start").catch(() => {});
+    const out = { inoBefore, inoAfter: stat(SOCK)?.ino, reply: res.reply, served, sent: rt.sent.length,
+      hostPidEnv: process.env.AGENTDECK_PI_HOST_PID, pid: String(process.pid),
+      hooks: hooks().map((h) => [h.hook_event_name, h.pane_guest === true]), warns: warns.slice() };
     await rt.stop();
-    const out = { inoBefore, reply: res.reply, served, sent: rt.sent.length, sockAfterStop: stat(SOCK), warns };
+    out.sockAfterStop = stat(SOCK);
     live.close();
     return out;
   },
@@ -1030,6 +1182,9 @@ exit "${PITEST_HOOK_EXIT:-0}"
 		"PITEST_EXT="+ext, "PITEST_DIR="+dir, "PITEST_SOCK="+w.sock, "PITEST_GATE="+filepath.Join(dir, "gate"),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
+	// Empty, as a local launch sets it: a value inherited from the caller (a test
+	// run inside a pi pane) would make the driver a guest of that pane.
+	cmd.Env = append(cmd.Env, "AGENTDECK_PI_HOST_PID=")
 	if !opts.noSocketEnv {
 		cmd.Env = append(cmd.Env, "AGENTDECK_PI_SOCKET="+w.sock)
 	} else {
@@ -1149,21 +1304,27 @@ func assertRefusal(t *testing.T, res any, path, id, state string) {
 	mustBoolAt(t, res, path+".notSent", true)
 }
 
-func TestPiHookExtension_IsV5(t *testing.T) {
-	if got := PiHookExtensionVersion(); got != 5 {
-		t.Errorf("PiHookExtensionVersion() = %d, want 5", got)
+// v6 marks its payloads pane_guest or pane_host, which a socket-exported
+// parent's ledger edges now depend on.
+func TestPiHookExtension_IsV6(t *testing.T) {
+	if got := PiHookExtensionVersion(); got != 6 {
+		t.Errorf("PiHookExtensionVersion() = %d, want 6", got)
 	}
-	if !strings.Contains(PiHookExtensionSource(), "AGENTDECK PI HOOK EXTENSION v5") {
-		t.Error("the extension source does not carry the v5 marker")
+	if !strings.Contains(PiHookExtensionSource(), "AGENTDECK PI HOOK EXTENSION v6") {
+		t.Error("the extension source does not carry the v6 marker")
 	}
-	// A v4 file (run_id, no socket) is outdated: it cannot serve the socket.
-	dir := t.TempDir()
-	v4 := strings.Replace(PiHookExtensionSource(), "v5", "v4", 1)
-	if err := os.WriteFile(PiHookExtensionPath(dir), []byte(v4), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if state, ver := InspectPiHooks(dir); state != PiHooksOutdated || ver != 4 {
-		t.Errorf("a v4 file inspects as (%v, %d), want (PiHooksOutdated, 4): install must upgrade it in place", state, ver)
+	// A v5 file (the socket, no host marker) and a v4 file (run_id, no socket)
+	// are outdated: a launch with either exports no socket, and install must
+	// upgrade them in place.
+	for _, old := range []int{5, 4} {
+		dir := t.TempDir()
+		src := strings.Replace(PiHookExtensionSource(), "v6", "v"+strconv.Itoa(old), 1)
+		if err := os.WriteFile(PiHookExtensionPath(dir), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if state, ver := InspectPiHooks(dir); state != PiHooksOutdated || ver != old {
+			t.Errorf("a v%d file inspects as (%v, %d), want (PiHooksOutdated, %d)", old, state, ver, old)
+		}
 	}
 }
 
@@ -1398,19 +1559,28 @@ func TestPiWakeExtension_ShutdownDuringStartLeavesNoListener(t *testing.T) {
 	wantAt(t, res, "rebound.state", "submitted")
 }
 
-func TestPiWakeExtension_DoesNotStealALiveSocket(t *testing.T) {
+// A launched pi that finds something still accepting on its path (an earlier
+// pi of the session, still shutting down after a restart) is the host: it is
+// not marked a guest, and it takes the path over, so the daemon's wakes reach
+// it rather than the process on its way out.
+func TestPiWakeExtension_ALaunchedPiTakesOverALiveSocketAndIsNoGuest(t *testing.T) {
 	res, _ := runPiWake(t, "live_socket", piWakeOpts{})
-	// The live listener, not the extension, answered, and the extension sent
-	// nothing to pi. It warned once that it did not bind (the wording is not
-	// pinned, only that it says so, once).
-	if n := lenAt(t, res, "warns"); n != 1 {
-		t.Errorf("extension warned %d times about the live socket, want exactly once: %v", n, get(t, res, "warns"))
+	wantAt(t, res, "hooks", [][]any{{"session_start", false}, {"before_agent_start", false}})
+	wantAt(t, res, "hostPidEnv", get(t, res, "pid")) // it is the host, and says so to what it starts
+	wantAt(t, res, "reply.id", "N14")
+	wantAt(t, res, "reply.state", "submitted")
+	wantAt(t, res, "served", 0)
+	wantAt(t, res, "sent", 1)
+	if get(t, res, "inoAfter") == get(t, res, "inoBefore") {
+		t.Errorf("the path still holds the earlier listener's socket (ino %v)", get(t, res, "inoBefore"))
 	}
-	wantAt(t, res, "reply.id", "LIVE")
-	wantAt(t, res, "sent", 0)
-	// Shutdown leaves a socket it never bound alone.
-	isBool(t, res, "sockAfterStop.isSocket", true)
-	wantAt(t, res, "sockAfterStop.ino", get(t, res, "inoBefore"))
+	// The socket it took over is its own, so its shutdown removes it.
+	if s := get(t, res, "sockAfterStop"); s != nil {
+		t.Errorf("the socket survives the launched pi's shutdown: %v", s)
+	}
+	if n := lenAt(t, res, "warns"); n != 0 {
+		t.Errorf("warned %v", get(t, res, "warns"))
+	}
 }
 
 func TestPiWakeExtension_ReplacesAStaleSocket(t *testing.T) {
@@ -1569,6 +1739,68 @@ func TestPiWakeExtension_AnsweredClientsThatNeverCloseDoNotHoldConnectionSlots(t
 	assertRefusal(t, res, "ninth", "NH9", "busy")
 }
 
+// A pi started by the launched pi (a subagent's `pi -p`, a script in its pane)
+// inherits its environment, the host's pid in AGENTDECK_PI_HOST_PID included:
+// it serves nothing and every payload it sends is marked pane_guest, so
+// hook-handler gives it no ledger context and applies none of its receipts.
+// The launched pi's payloads are never marked, and it keeps the socket.
+func TestPiWakeExtension_AGuestOfThePaneMarksItsPayloads(t *testing.T) {
+	res, _ := runPiWake(t, "guest_of_the_pane", piWakeOpts{})
+	wantAt(t, res, "hostPidEnv", get(t, res, "hostPid"))
+	wantAt(t, res, "guest.hostPidEnv", get(t, res, "hostPid")) // inherited, not overwritten
+	if get(t, res, "guest.pid") == get(t, res, "hostPid") {
+		t.Fatal("the guest ran in the host's process")
+	}
+	if n := lenAt(t, res, "guest.listened"); n != 0 {
+		t.Errorf("the guest bound %v", get(t, res, "guest.listened"))
+	}
+	wantAt(t, res, "hooks", [][]any{
+		{"session_start", false},
+		{"session_start", true}, {"before_agent_start", true}, {"turn_start", true}, {"session_shutdown", true},
+		{"before_agent_start", false},
+	})
+	isBool(t, res, "sameSocket", true)
+	wantAt(t, res, "hostStillServes.state", "busy") // the host's run is still active
+	if n := lenAt(t, res, "guest.warns"); n != 0 {
+		t.Errorf("the guest warned %v", get(t, res, "guest.warns"))
+	}
+}
+
+// Forge round 2 #1: only the pi serving the socket marks its payloads
+// pane_host, and hook-handler takes a socket-exported parent's ledger edges
+// only from such a payload. The launched pi's are marked while its socket is
+// the one at the path; once a restarted pi renames its own over it, the
+// earlier pi's are not, and the restarted pi's are. A pi in another tmux pane
+// or window of the session (no socket, no host pid) and a launched pi whose
+// bind failed mark nothing: they are not guests, and not the host either.
+func TestPiWakeExtension_OnlyThePiServingTheSocketMarksItsPayloadsTheHost(t *testing.T) {
+	res, _ := runPiWake(t, "pane_host", piWakeOpts{})
+	plain := func(prompt string) [][]any {
+		return [][]any{{"session_start", "", false, false}, {"before_agent_start", prompt, false, false},
+			{"turn_start", "", false, false}, {"session_shutdown", "", false, false}}
+	}
+	want := [][]any{
+		{"session_start", "", true, false},
+		{"before_agent_start", "launched prompt", true, false},
+		{"turn_start", "", true, false},
+		{"session_start", "", true, false}, // the restarted pi
+		{"before_agent_start", "earlier pi prompt", false, false},
+		{"before_agent_start", "restarted prompt", true, false},
+		{"session_shutdown", "", false, false}, // stop unbinds before it reports
+	}
+	want = append(want, plain("child prompt")...)                    // the other pane
+	want = append(want, plain("child prompt")...)                    // the failed bind
+	want = append(want, []any{"session_shutdown", "", false, false}) // the earlier pi's own
+	wantAt(t, res, "hooks", want)
+	if n := lenAt(t, res, "other.listened"); n != 0 {
+		t.Errorf("a pi without the launch's socket bound %v", get(t, res, "other.listened"))
+	}
+	warned := fmt.Sprint(get(t, res, "failed.warns"))
+	if !strings.Contains(warned, "could not serve") || !strings.Contains(warned, "none of the ledger's records") {
+		t.Errorf("a pi whose bind failed warned %s, want what it will not get", warned)
+	}
+}
+
 func TestPiWakeExtension_HookStdoutCapCountsBytesAndTruncatesExactly(t *testing.T) {
 	// 2-byte characters: the 64 KiB cap lands on a character boundary, so exactly 65536 bytes survive.
 	res, _ := runPiWake(t, "inject_raw", piWakeOpts{hookOut: strings.Repeat("é", 40000)})
@@ -1642,6 +1874,35 @@ func TestPiWakeExtension_AStarterKilledMidStartLeavesTheLiveOwnersSocket(t *test
 // private path that is renamed to the public one, so close never names the
 // public path, and stop unlinks the public path only when its dev and ino are
 // ours.
+// Forge (p5): a bind that fails, and whose cleanup of its private socket then
+// fails too, only warns: neither session_start nor a shutdown that waits for the
+// bind throws into pi.
+func TestPiWakeExtension_AFailedBindsCleanupNeverThrowsIntoPi(t *testing.T) {
+	res, _ := runPiWake(t, "failed_bind_cleanup_throws", piWakeOpts{})
+	for _, k := range []string{"startErr", "stopErr"} {
+		if v := get(t, res, k); v != nil {
+			t.Errorf("%s: %v", k, v)
+		}
+	}
+	if w := fmt.Sprint(get(t, res, "warns")); !strings.Contains(w, "could not serve") {
+		t.Errorf("the failed bind did not warn: %s", w)
+	}
+}
+
+// CodeRabbit (agent-deck.ts:492): a stop that checks the path holds its own
+// socket and then removes it by name removes a successor's socket renamed over
+// the path in between; the successor then serves nothing until it restarts.
+// The successor's socket survives the race, and nothing is left beside it.
+func TestPiWakeExtension_AStopRacingASuccessorsTakeoverLeavesTheSuccessorsSocket(t *testing.T) {
+	res, _ := runPiWake(t, "stop_race", piWakeOpts{})
+	isBool(t, res, "raced", true)
+	wantAt(t, res, "after.ino", get(t, res, "bIno"))
+	isBool(t, res, "probe", true)
+	if n := lenAt(t, res, "leftovers"); n != 0 {
+		t.Errorf("the stop left %v beside the successor's socket", get(t, res, "leftovers"))
+	}
+}
+
 func TestPiWakeExtension_StopNeverUnlinksASocketItDoesNotOwn(t *testing.T) {
 	res, _ := runPiWake(t, "foreign_unlink", piWakeOpts{})
 	isBool(t, res, "first.isSocket", true)

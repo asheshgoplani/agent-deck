@@ -791,13 +791,24 @@ func (n *TransitionNotifier) wakeCommittedInbox(parent *Instance, event Transiti
 			slog.String("parent", parentID), slog.String("tier", event.Tier), slog.String("turn", event.TurnFingerprint))
 		return
 	}
-	_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsUrgent++ })
 	// Issue #1225 Tier-2: now that the record durably landed, wake an IDLE parent
 	// to drain it immediately instead of on its next ~14-min heartbeat. This is
 	// the event-driven trigger — fired the moment the completion is committed,
 	// not on a poll. Best-effort and non-fatal: a dropped nudge is harmless
 	// because this same record is still drained on the parent's next turn.
-	n.fireWakeNudge(parent, event)
+	//
+	// Issue #3131: count the wake only when a line was typed. A record the
+	// gate withholds (not a wake target, busy, debounced, send failed) is
+	// counted as gated, so `inbox stats` never reports a wake that did not
+	// happen.
+	if n.fireWakeNudge(parent, event) {
+		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsUrgent++ })
+		return
+	}
+	_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsGated++ })
+	commsLog.Debug("wake_nudge_gated",
+		slog.String("parent", parentID), slog.String("target_kind", event.TargetKind),
+		slog.Bool("wake_target", isWakeTarget(parent, event.TargetKind)), slog.String("turn", event.TurnFingerprint))
 }
 
 // pendingSameRecord reports whether the parent's inbox already holds this

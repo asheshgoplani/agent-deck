@@ -2314,6 +2314,10 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	// this panel has to derive from the same tracked set or it overcounts
 	// and shows phantom rows for sessions the enumerable list doesn't have.
 	visibleSessions := session.VisibleInstances(group.Sessions)
+	// Count and list only the partition the list shows: an archived session's
+	// torn-down pane reads as stopped or error, which the active view never
+	// shows, and the archived view shows only archived rows.
+	visibleSessions = session.FilterInstancesByArchive(visibleSessions, h.statusFilter == FilterModeArchived)
 
 	// Session count
 	countStyle := lipgloss.NewStyle().
