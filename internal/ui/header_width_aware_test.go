@@ -75,7 +75,7 @@ func TestAssembleHeaderLeft_DropsLowestPriorityFirst(t *testing.T) {
 // fix. The base segment must collapse to its compact "N sessions" form
 // instead, and the badge (and title) must never be dropped or truncated.
 func TestAssembleHeaderLeft_BaseStatsAloneOverflowsStillProtectsBadge(t *testing.T) {
-	logo := "⟨ ○ │ ○ │ ○ ⟩"
+	logo := BrandMarkText
 	title := "Agent Deck [work] [my-long-group-name]"
 	base := "● 12 running • ◐ 8 waiting • ○ 24 idle • ■ 6 stopped • ✕ 3 error"
 	baseCompact := "53 sessions"
