@@ -129,11 +129,13 @@ In a few short lines:
 ### Hermes Agent
 
 ```bash
-hermes mcp add agentdeck --command AGENT_DECK --args connect serve --token-file TOKEN_FILE   # --args must be last
+hermes mcp add agentdeck --command AGENT_DECK --args connect serve --token-file TOKEN_FILE && hermes config set mcp_servers.agentdeck.trust untrusted   # --args must be the last option of mcp add
 hermes mcp test agentdeck
 ```
 
 `hermes mcp add` asks one question ("Enable all 7 tools? [Y/n/select]"); without a terminal, pipe the answer: `printf 'y\n' | hermes mcp add ...`.
+It has no trust option, and Hermes runs every tool of a server without a `trust` key without asking, so always run the
+`hermes config set ... trust untrusted` part too: then Hermes asks before send_message, approve and launch_session.
 
 or in `~/.hermes/config.yaml`:
 

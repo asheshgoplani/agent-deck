@@ -2,7 +2,7 @@
 Token file: /home/me/.local/share/agent-deck/assistants/hermes.token (0600). Revoke: agent-deck connect revoke hermes
 
 --- 1. Config: run the command, or merge the YAML into ~/.hermes/config.yaml ---
-hermes mcp add agentdeck --command /usr/local/bin/agent-deck --args connect serve --token-file /home/me/.local/share/agent-deck/assistants/hermes.token
+hermes mcp add agentdeck --command /usr/local/bin/agent-deck --args connect serve --token-file /home/me/.local/share/agent-deck/assistants/hermes.token && hermes config set mcp_servers.agentdeck.trust untrusted
 
 # or merge into ~/.hermes/config.yaml:
 mcp_servers:

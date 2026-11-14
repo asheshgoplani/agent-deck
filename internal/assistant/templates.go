@@ -415,10 +415,14 @@ func snippetAny(c *Connection) string {
 
 // Hermes: verified with `hermes mcp add` / `hermes mcp test` (v0.23.0).
 // `--args` must be the last option. trust: untrusted makes Hermes ask
-// before any tool without readOnlyHint (send, approve, launch).
+// before any tool without readOnlyHint (send, approve, launch). `hermes mcp
+// add` has no trust option and Hermes treats a server without a trust key
+// as fully trusted, so the command line sets it with `hermes config set`
+// (mcp_servers takes any sub-key).
 func snippetHermes(c *Connection) string {
 	return "hermes mcp add " + ServerKey + " --command " + shellescape.Quote(c.MCPStdio.Command) + " --args " +
-		quoteArgs(c.MCPStdio.Args[0], c.MCPStdio.Args[1:]) + "\n\n" +
+		quoteArgs(c.MCPStdio.Args[0], c.MCPStdio.Args[1:]) +
+		" && hermes config set mcp_servers." + ServerKey + ".trust untrusted\n\n" +
 		"# or merge into ~/.hermes/config.yaml:\n" +
 		"mcp_servers:\n" +
 		"  " + ServerKey + ":\n" +
