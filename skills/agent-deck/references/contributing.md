@@ -146,6 +146,8 @@ The required headings, disclosure, intent, checklist and marker rules are in
   (#N) in the version's `### Fixes` (or `### Fixed`) bullet, e.g. `- Fork hung (#123, #456)`;
   that is how a reporter learns it is fixed. `agent-deck whats-new` and `feedback mine` read
   that section to show "Your report #N: fixed in vX".
+  Every user-visible change adds one plain line under `## [Unreleased]` in CHANGELOG.md at
+  landing; the release moves them under its version (`make changelog-release VERSION=X.Y.Z`).
 
 ## Never
 

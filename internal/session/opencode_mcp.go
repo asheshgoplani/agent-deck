@@ -20,6 +20,7 @@ type opencodeMCPServer struct {
 	Command     []string          `json:"command,omitempty"`
 	Environment map[string]string `json:"environment,omitempty"`
 	URL         string            `json:"url,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
 }
 
 // opencodeConfig is the top-level shape of opencode.json (local or global).
@@ -52,27 +53,99 @@ func (c *opencodeConfig) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(payload, &c.MCP)
 }
 
-// setOpenCodeMCPServers preserves native V2 MCP options such as timeouts.
+// setOpenCodeMCPServers merges the managed servers into the mcp map. Only
+// entries whose name is in the agent-deck catalog are replaced or removed;
+// every other entry (hand-configured servers) is left as is. For a managed
+// entry that already exists, keys agent-deck does not set (headers when none
+// are configured, timeout, enabled, ...) are kept. Native V2 options such as
+// timeouts are preserved too.
 func setOpenCodeMCPServers(config map[string]interface{}, servers map[string]opencodeMCPServer, v2 bool) {
 	mcp, _ := config["mcp"].(map[string]interface{})
-	if _, native := mcp["servers"]; v2 || native {
-		if mcp == nil {
-			mcp = make(map[string]interface{})
+	existingServers, _ := mcp["servers"].(map[string]interface{})
+	_, native := mcp["servers"]
+	if _, legacyServer := existingServers["type"]; legacyServer {
+		// A legacy server named "servers", not the V2 container (the reader
+		// in UnmarshalJSON makes the same distinction).
+		native = false
+		existingServers = nil
+	}
+	if !v2 && !native {
+		config["mcp"] = mergeOpenCodeServerMap(mcp, servers)
+		return
+	}
+	if mcp == nil {
+		mcp = make(map[string]interface{})
+	}
+	if !native {
+		// Moving to native V2: carry legacy direct entries into servers
+		// rather than dropping hand-configured ones.
+		existingServers = make(map[string]interface{})
+		for name, value := range mcp {
+			if server, ok := value.(map[string]interface{}); ok && server["type"] != nil {
+				existingServers[name] = value
+				delete(mcp, name)
+			}
 		}
-		if v2 && !native {
-			// A catalog rewrite replaces the legacy direct server map too;
-			// leaving those entries alongside servers is not native V2 config.
-			for name, value := range mcp {
-				if server, ok := value.(map[string]interface{}); ok && server["type"] != nil {
-					delete(mcp, name)
+	}
+	mcp["servers"] = mergeOpenCodeServerMap(existingServers, servers)
+	config["mcp"] = mcp
+}
+
+// mergeOpenCodeServerMap returns existing with the managed (catalog) names
+// replaced by the desired servers. Every existing entry whose name is in the
+// catalog is dropped unless it is in desired, so desired must be built from
+// the full set of agent-deck-managed names (a catalog-named entry left out of
+// it is removed). Entries not in the catalog are never touched. When a managed
+// entry keeps its type and target (same url for remote, same command for
+// local), keys agent-deck does not emit are kept; when its type or target
+// changes, only timeout and enabled carry over so stored headers, oauth or
+// environment are never sent to a different endpoint or command.
+func mergeOpenCodeServerMap(existing map[string]interface{}, desired map[string]opencodeMCPServer) map[string]interface{} {
+	managed := GetAvailableMCPs()
+	out := make(map[string]interface{}, len(existing)+len(desired))
+	for name, value := range existing {
+		if _, isManaged := managed[name]; !isManaged {
+			out[name] = value
+		}
+	}
+	for name, srv := range desired {
+		entry := map[string]interface{}{}
+		if prev, ok := existing[name].(map[string]interface{}); ok {
+			prevType, _ := prev["type"].(string)
+			sameType := prevType == "" || prevType == srv.Type
+			keepAll := sameType && sameOpenCodeTarget(prev, srv)
+			for k, v := range prev {
+				if keepAll || k == "timeout" || k == "enabled" {
+					entry[k] = v
 				}
 			}
 		}
-		mcp["servers"] = servers
-		config["mcp"] = mcp
-		return
+		if data, err := json.Marshal(srv); err == nil {
+			var fields map[string]interface{}
+			if json.Unmarshal(data, &fields) == nil {
+				for k, v := range fields {
+					entry[k] = v
+				}
+			}
+		}
+		out[name] = entry
 	}
-	config["mcp"] = servers
+	return out
+}
+
+// sameOpenCodeTarget reports whether prev points at the same endpoint (remote)
+// or command (local) as srv, so credentials stored on prev were meant for it.
+func sameOpenCodeTarget(prev map[string]interface{}, srv opencodeMCPServer) bool {
+	if srv.Type == "remote" {
+		url, _ := prev["url"].(string)
+		return url == srv.URL
+	}
+	prevCmd, err := json.Marshal(prev["command"])
+	if err != nil {
+		return false
+	}
+	cmd, err := json.Marshal(srv.Command)
+	return err == nil && string(prevCmd) == string(cmd)
 }
 
 // opencodeMCPConfigDirOverride allows tests to override ~/.config/opencode.
@@ -221,8 +294,9 @@ func buildOpenCodeMCPServers(enabledNames []string) map[string]opencodeMCPServer
 				}
 			}
 			servers[name] = opencodeMCPServer{
-				Type: "remote",
-				URL:  def.URL,
+				Type:    "remote",
+				URL:     def.URL,
+				Headers: def.Headers,
 			}
 			continue
 		}

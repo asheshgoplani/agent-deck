@@ -38,9 +38,12 @@ func TestConductorSharedTemplate_SessionsSkipsArchivedRows(t *testing.T) {
 
 			// The shared file the previous release wrote is recognised as
 			// generated and migrated, not left behind as user-edited.
-			before := strings.Replace(current, row, conductorSessionsRowBefore2972, 1)
+			// The Standing Orders section came later, so the pre-#2972 file
+			// is the generation after the pre-Standing-Orders one.
+			noOrders := renderConductorInstructionsTemplate(preStandingOrdersConductorInstructionsTemplate(conductorSharedClaudeMDTemplate), "", DefaultProfile, spec)
+			before := strings.Replace(noOrders, row, conductorSessionsRowBefore2972, 1)
 			gens := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-			if len(gens) == 0 || gens[0] != before {
+			if len(gens) < 2 || gens[1] != before {
 				t.Fatal("the pre-#2972 shared file is not the newest reconstructed generation")
 			}
 			path := filepath.Join(t.TempDir(), spec.InstructionsFileName)

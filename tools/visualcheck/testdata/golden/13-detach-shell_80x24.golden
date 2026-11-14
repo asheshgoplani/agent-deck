@@ -1,4 +1,4 @@
- ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                 <version>
+ ●●○ Agent Deck  11 sessions                                            <version>
   All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
@@ -19,6 +19,6 @@ SESSIONS                     │ PREVIEW
   ▾ remotes/lab (0) · host … │
                              │
                              │
-                             │
 ────────────────────────────────────────────────────────────────────────────────
 ⏎ Attach n/N New R Restart o Send │    ↑↓ Nav / Search S Settings ? Help q Quit
+⚠ restarted into <version> (was <version>) (auto-dismiss in <age>)

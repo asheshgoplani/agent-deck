@@ -1,7 +1,7 @@
 <div align="center">
 
-<!-- Status Grid Logo -->
-<img src="site/logo.svg" alt="Agent Deck Logo" width="120">
+<!-- agent-deck mark: status dots on Calm Navy -->
+<img src="site/logo.svg" alt="Agent Deck Logo" width="96">
 
 # Agent Deck
 
@@ -725,7 +725,7 @@ agent-deck session set-transition-notify worker on
 
 Suppression only affects dispatch — the parent link itself is unchanged. Deferred/retried events also honour the flag (guard is in `transition_notifier.dispatch` as well as both daemon entry points). A muted child's completion (`===AGENTDECK_DONE===`) is still recorded, so `agent-deck session children` shows it, and logged as `done_suppressed`; it is neither delivered to the parent nor exported.
 
-**Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
+**Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. The bridge reads a conductor reply by tier: `NEED:` / `[urgent]` lines go to Telegram and/or Slack at once, `[info]` lines are batched into a digest, and everything else (`[STATUS]`, `AUTO:`) stays local.
 
 **Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session with the session's `channels` field (`agent-deck add --channel plugin:telegram@claude-plugins-official`, or `session set <id> channels ...`; agent-deck passes it to Claude as `--channels`) and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `$XDG_CONFIG_HOME/agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/references/gotchas.md#telegram-conductor-topology-v1722).
 
@@ -760,6 +760,20 @@ Key constraints:
 - **Bot tokens** live in the per-conductor channel state directory at `<state-dir>/.env` (chmod 600). Never committed to git.
 
 Slack pairing follows the same one-bot-per-conductor pattern. See [docs/conductor/](docs/conductor/) for the full quickstart, including @BotFather steps, profile config, and verification commands.
+
+#### Standing orders
+
+Tell a conductor to watch something, and it is woken **only when that thing changes**. Orders live in `ORDERS.md` in the conductor's directory; one timer per host checks them every minute with a cheap shell command (no AI, no tokens). Same output as last time: nothing happens. Changed: the conductor gets one message with the old and new output, what to do, and what to ask you first.
+
+```bash
+agent-deck orders add watch-prs --every 30m \
+  --check "gh pr list --author @me --json number,statusCheckRollup -q '.[] | [.number, ([.statusCheckRollup[].conclusion] | unique)] | @json'" \
+  --do "land the PRs whose checks are all green; tell me in one line" \
+  --ask-first "merge"
+agent-deck orders list            # also: orders pause|resume|rm <name>
+```
+
+Each order has a daily wake cap (`max_wakes_per_day`, default 6), optional active hours and an expiry date. A conductor turn started by an order cannot add or change orders, and a permission prompt in that turn is denied and sent to you as a `NEED:`. `conductor setup` installs the timer (`--no-orders` skips it; `agent-deck orders install` adds it later). Example file: [examples/standing-orders/ORDERS.md](examples/standing-orders/ORDERS.md); details: [docs/orders.md](docs/orders.md).
 
 #### See also
 

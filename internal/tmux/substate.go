@@ -324,9 +324,12 @@ var menuYesNoChoiceRe = regexp.MustCompile(`^(yes|no)\b`)
 
 // codexInteractiveMenuMarkers are the footer strings codex renders under an
 // open picker (model switch on rate limit, approval choices). Captured from
-// a live codex session (audit E).
+// a live codex session (audit E). Codex 0.167's command approval picker ends
+// in "esc to cancel" instead (issue #3085); its "› 1. Yes, proceed (y)" row
+// otherwise reads as the "› " composer prompt.
 var codexInteractiveMenuMarkers = []string{
 	"Press enter to confirm or esc to go back",
+	"Press enter to confirm or esc to cancel",
 }
 
 // hasCodexInteractiveMenu reports whether a codex pane shows an open picker,

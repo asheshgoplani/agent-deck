@@ -16,6 +16,7 @@ type SessionListIn struct {
 	AllProfiles       bool   `json:"all_profiles,omitempty" doc:"List every profile"`
 	IncludeSuperseded bool   `json:"include_superseded,omitempty" doc:"Include archived source rows retained for cross-harness recovery"`
 	LiveStatus        bool   `json:"live_status,omitempty" doc:"Refresh status and fill the live fields (status, substate, viewers, model); single profile only"`
+	ExcludeArchived   bool   `json:"exclude_archived,omitempty" doc:"Skip archived sessions before any status work or encoding"`
 }
 
 // SessionListOut is the output of session.list.
@@ -58,7 +59,7 @@ type SessionRow struct {
 	Model             string         `json:"model,omitempty" doc:"live"`
 	ModelVersion      string         `json:"model_version,omitempty" doc:"live"`
 	Status            string         `json:"status"`
-	StatusSource      string         `json:"status_source,omitempty" doc:"cached for an absent historical row whose stored status was used; live after a status refresh"`
+	StatusSource      string         `json:"status_source,omitempty" doc:"cached for an absent historical row whose stored status was used; live after a status refresh; stale when the refresh could not capture the pane (batched capture timed out): status is the last observation or the default, substate last known or absent"`
 	Substate          string         `json:"substate,omitempty" doc:"live"`
 	ExitCode          *int           `json:"exit_code,omitempty" doc:"live"`
 	SubstateDetail    string         `json:"substate_detail,omitempty" doc:"live"`
@@ -114,13 +115,19 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 		instances = session.VisibleInstances(instances)
 	}
 	out := SessionListOut{Profile: storage.Profile(), Sessions: []SessionRow{}}
+	// all keeps archived rows for parent-path recovery; only listed rows get
+	// a status pass (#3089).
+	all := instances
+	if in.ExcludeArchived {
+		instances = session.FilterInstancesByArchive(instances, false)
+	}
 	if len(instances) == 0 {
 		return out, nil
 	}
 	transcripts := session.ListedTranscriptPaths(instances)
 	if !in.LiveStatus {
 		for _, inst := range instances {
-			out.Sessions = append(out.Sessions, staticSessionRow(inst, instances, out.Profile, transcripts))
+			out.Sessions = append(out.Sessions, staticSessionRow(inst, all, out.Profile, transcripts))
 		}
 		return out, nil
 	}
@@ -129,13 +136,19 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 	// status the TUI and /api/menu do (#610), and record the pass (#2331).
 	started := time.Now()
 	tmuxBefore := tmux.SubprocessStarts()
+	skipsBefore := tmux.CaptureBatchSkips()
 	refresh, cached := session.CLIStatusCandidates(instances)
 	session.RefreshInstancesForCLIStatus(refresh)
-	out.Sessions = liveSessionRows(ctx, out.Profile, instances, cached, transcripts)
+	out.Sessions = liveSessionRows(ctx, out.Profile, instances, all, cached, transcripts)
 	elapsed := time.Since(started)
 	tmuxCalls := tmux.SubprocessStarts() - tmuxBefore
 	health.RecordStatusPass(elapsed, len(instances), tmuxCalls)
-	out.Stats = &session.ListStats{StatusPassMS: elapsed.Milliseconds(), TmuxCalls: tmuxCalls, Sessions: len(instances)}
+	out.Stats = &session.ListStats{
+		StatusPassMS:    elapsed.Milliseconds(),
+		TmuxCalls:       tmuxCalls,
+		Sessions:        len(instances),
+		CapturesSkipped: tmux.CaptureBatchSkips() - skipsBefore,
+	}
 	return out, nil
 }
 
@@ -169,8 +182,9 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 }
 
 // liveSessionRows refreshes each session's status and fills every field.
-// Callers warm the status caches first.
-func liveSessionRows(ctx context.Context, profile string, instances []*session.Instance, cached map[*session.Instance]bool, transcripts map[*session.Instance]string) []SessionRow {
+// Callers warm the status caches first. all is the full row set parent paths
+// are recovered from; instances may be a subset of it.
+func liveSessionRows(ctx context.Context, profile string, instances, all []*session.Instance, cached map[*session.Instance]bool, transcripts map[*session.Instance]string) []SessionRow {
 	rows := make([]SessionRow, len(instances))
 	viewers := session.ViewersByTmuxSession(ctx, instances)
 	var pass session.StatusUpdatePass
@@ -187,11 +201,8 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		} else {
 			substate = string(inst.HistoricalSubstate())
 		}
-		row := staticSessionRow(inst, instances, profile, transcripts)
-		row.StatusSource = "live"
-		if cached[inst] {
-			row.StatusSource = "cached"
-		}
+		row := staticSessionRow(inst, all, profile, transcripts)
+		row.StatusSource = listedStatusSource(inst, cached[inst])
 		row.Substate = substate
 		row.ExitCode = inst.ExitCode()
 		row.SubstateDetail = inst.SubstateDetail()
@@ -221,6 +232,19 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 	return rows
 }
 
+// listedStatusSource is a live row's status_source: cached for an absent row
+// whose stored status was used, stale when its pane was capture-skipped
+// after a batched-capture timeout (#3089), live otherwise.
+func listedStatusSource(inst *session.Instance, cached bool) string {
+	if cached {
+		return "cached"
+	}
+	if sess := inst.GetTmuxSession(); sess != nil && sess.CaptureSkipped() {
+		return "stale"
+	}
+	return "live"
+}
+
 // listAllProfiles loads every profile's stored rows. A profile that fails to
 // open or load is skipped, as the CLI always did, but still counted.
 func listAllProfiles(in SessionListIn) (SessionListOut, error) {
@@ -241,10 +265,14 @@ func listAllProfiles(in SessionListIn) (SessionListOut, error) {
 		if !in.IncludeSuperseded {
 			instances = session.VisibleInstances(instances)
 		}
+		all := instances
+		if in.ExcludeArchived {
+			instances = session.FilterInstancesByArchive(instances, false)
+		}
 		transcripts := session.ListedTranscriptPaths(instances)
 		ps := ProfileSessions{Profile: name, Sessions: make([]SessionRow, 0, len(instances))}
 		for _, inst := range instances {
-			ps.Sessions = append(ps.Sessions, staticSessionRow(inst, instances, name, transcripts))
+			ps.Sessions = append(ps.Sessions, staticSessionRow(inst, all, name, transcripts))
 		}
 		out.Profiles = append(out.Profiles, ps)
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -65,6 +66,8 @@ type hookPayload struct {
 	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
 	Settles              json.RawMessage `json:"settles"`                // pi: the capability bit, sent with run_id by a v4+ extension (agent_settled itself is v3+)
 	RunID                json.RawMessage `json:"run_id"`                 // pi: the run token minted at agent_start
+	ToolName             json.RawMessage `json:"tool_name"`              // PermissionRequest / PreToolUse
+	ToolInput            json.RawMessage `json:"tool_input"`             // PermissionRequest / PreToolUse
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
 	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
@@ -360,6 +363,7 @@ func handleHookHandler() {
 
 // Capture ordering before reading stdin or doing any event-specific work.
 func handleHookHandlerReceivedAt(receivedAt time.Time) {
+	startHookDeadline()
 	instanceID := os.Getenv("AGENTDECK_INSTANCE_ID")
 	if instanceID == "" {
 		// No instance ID means this Claude session isn't managed by agent-deck.
@@ -420,6 +424,25 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// Comms Ledger: spool the text this event carries (Claude Stop and
 	// UserPromptSubmit, pi agent_settled).
 	spoolCommsFromHook(instanceID, payload)
+
+	// Turn origin (standing orders): a Claude prompt records whether an
+	// order or a heartbeat started this turn; the turn's Stop clears it,
+	// unless the Stop is blocked below and the same turn goes on.
+	stopBlocked := false
+	switch claudeTurnEdge(payload) {
+	case "prompt":
+		if err := session.RecordTurnOrigin(instanceID, rawString(payload.Prompt)); err != nil {
+			hookHandlerLog.Warn("turn_origin_write_failed", slog.String("error", err.Error()))
+		}
+	case "start":
+		session.ClearTurnOrigin(instanceID)
+	case "stop":
+		defer func() {
+			if !stopBlocked {
+				session.ClearTurnOrigin(instanceID)
+			}
+		}()
+	}
 
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)
@@ -500,8 +523,16 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// that exits with no decision falls through to Claude Code's default,
 	// which denies in UI-less contexts. Status-tracking behavior above is
 	// unchanged.
-	if normalizeHookEventKey(payload.HookEventName) == "permissionrequest" && parentIsDSP() {
-		fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+	//
+	// A turn started by a standing order or a heartbeat has nobody to answer
+	// the prompt: it is denied at once (before the DSP allow) and the owner
+	// gets a NEED, instead of the conductor waiting forever.
+	if normalizeHookEventKey(payload.HookEventName) == "permissionrequest" {
+		if origin := session.LoadTurnOrigin(instanceID); origin != "" {
+			denyUnattendedPermission(instanceID, origin, payload)
+		} else if parentIsDSP() {
+			fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+		}
 	}
 
 	// Conductor fleet snapshot: on the Claude turn-start edges (UserPromptSubmit,
@@ -574,6 +605,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 		if dl, ledgerOK := session.LedgerStopDecision(instanceID, resolveStopHookActive(payload)); ledgerOK {
 			printed := false
 			if dl.Blocked {
+				stopBlocked = true
 				if out, mErr := json.Marshal(dl.Decision); mErr == nil {
 					_, err := fmt.Println(string(out))
 					printed = err == nil
@@ -583,6 +615,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 			return
 		}
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
+			stopBlocked = true
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
 				// A Stop-hook block buys the parent another turn: a machine
@@ -880,7 +913,13 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 	if statusFile.Event == "PreToolUse" && statusFile.ReceivedAt != 0 && previous.ReceivedAt >= statusFile.ReceivedAt {
 		return false
 	}
-	statusFile.TurnSeq = previous.TurnSeq
+	// The count also lives in <id>.turnseq, which outlives the status file:
+	// the TUI removes <id>.json on every attach-return (ClearHookStatus), and
+	// a count that restarted there would read as "no turn" to a token taken
+	// at the same number.
+	turnSeqPath := filepath.Join(hooksDir, filepath.Base(instanceID)+session.HookTurnSeqSuffix)
+	sidecarSeq := readHookTurnSeqFile(turnSeqPath)
+	statusFile.TurnSeq = max(previous.TurnSeq, sidecarSeq)
 	if isTurnSeqEvent(statusFile.Event) {
 		statusFile.TurnSeq++
 	}
@@ -907,6 +946,20 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 		b, err := json.Marshal(control)
 		if err != nil || atomicHookWrite(controlPath, b) != nil {
 			return false
+		}
+	}
+
+	// The sidecar first, once the write is accepted: ahead of the status
+	// file is harmless (readers take the larger), behind it would let an
+	// attach-return take the count back. A count only the status file had
+	// (a step-1 file) is copied over on the next write of any event.
+	if statusFile.TurnSeq > sidecarSeq {
+		if err := atomicHookWrite(turnSeqPath, []byte(strconv.FormatUint(statusFile.TurnSeq, 10))); err != nil {
+			hookHandlerLog.Warn("hook_turn_seq_write_failed",
+				slog.String("path", turnSeqPath),
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 		}
 	}
 
@@ -952,6 +1005,20 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 	return true
 }
 
+// readHookTurnSeqFile is the count in <id>.turnseq, 0 when it is missing or
+// unreadable.
+func readHookTurnSeqFile(path string) uint64 {
+	data, err := readHookFileBounded(path)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // isTurnSeqEvent reports whether event is a turn edge that bumps turn_seq:
 // a submitted prompt or a Stop.
 func isTurnSeqEvent(event string) bool {
@@ -968,6 +1035,9 @@ const preToolLockRetry = 2 * time.Millisecond
 // A tool must never queue indefinitely behind a stalled lifecycle writer.
 // Contention beyond the budget leaves the last status intact and fails open.
 func lockHookStatus(lock *os.File, bounded bool) error {
+	if !bounded && !hookDeadline.IsZero() {
+		return lockHookStatusByDeadline(lock)
+	}
 	if !bounded {
 		return syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
 	}
@@ -981,15 +1051,46 @@ func lockHookStatus(lock *os.File, bounded bool) error {
 	}
 }
 
+// hookDeadlineEnv is set by the pi extension to the milliseconds this handler
+// may live. Its own timer in pi cannot be relied on: it dies with pi, and the
+// detached handler would then outlive it. The variable is absent on the Claude
+// path, which is unchanged.
+const hookDeadlineEnv = "AGENTDECK_HOOK_DEADLINE_MS"
+
+// hookDeadline is the moment a self-bounded handler gives up; zero otherwise.
+var hookDeadline time.Time
+
+// startHookDeadline arms a watchdog that ends the process, non-zero, at the
+// deadline named by hookDeadlineEnv. It does nothing when the variable is unset
+// or not a positive number.
+func startHookDeadline() {
+	ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv(hookDeadlineEnv)))
+	if err != nil || ms <= 0 {
+		return
+	}
+	hookDeadline = time.Now().Add(time.Duration(ms) * time.Millisecond)
+	time.AfterFunc(time.Until(hookDeadline), func() { os.Exit(1) })
+}
+
+// lockHookStatusByDeadline takes the status lock without blocking in the
+// kernel: it retries until the handler's deadline, then ends the process.
+func lockHookStatusByDeadline(lock *os.File) error {
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
+		}
+		if !time.Now().Before(hookDeadline) {
+			os.Exit(1)
+		}
+		time.Sleep(preToolLockRetry)
+	}
+}
+
 func readHookFileBounded(path string) ([]byte, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	f, _, err := session.OpenHookFileNoFollow(path)
 	if err != nil {
 		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path)
-	if f == nil {
-		_ = syscall.Close(fd)
-		return nil, errors.New("open hook file")
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, 64<<10))

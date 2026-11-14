@@ -135,7 +135,7 @@ func TestPreAcceptCodexTrust_PreservesSymlink(t *testing.T) {
 }
 
 func TestWriteGlobalMCP_PreservesSymlink(t *testing.T) {
-	configFile := filepath.Join(session.GetClaudeConfigDir(), ".claude.json")
+	configFile := session.MCPGlobalConfigPathForTool("claude")
 	realPath := symlinkedFile(t, configFile, "{}")
 
 	if err := session.WriteGlobalMCP(nil); err != nil {

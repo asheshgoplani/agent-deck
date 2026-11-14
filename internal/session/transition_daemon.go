@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1582,26 +1583,45 @@ func hookStatusFilePath(instanceID string) string {
 	return filepath.Join(hooksDir, instanceID+".json")
 }
 
-// readHookTurnSeq is the instance's turn_seq from its hook file (#3012), 0
-// when there is no file or it predates the field. Unlike readHookStatusFile it
-// does not check the launch generation: the count belongs to the instance, not
-// to one process, so a token taken before a respawn reads the same counter
+// HookTurnSeqSuffix names the file next to the hook file that holds the
+// instance's turn_seq as a decimal (#3012). The hook handler writes it on each
+// turn edge, under the status lock. It outlives <id>.json, which the TUI
+// removes on every attach-return (ClearHookStatus); only the prune of a
+// deleted session's artifacts removes it.
+const HookTurnSeqSuffix = ".turnseq"
+
+// readHookTurnSeq is the instance's turn_seq (#3012): the larger of the hook
+// file's and <id>.turnseq's, 0 when neither has one. Unlike readHookStatusFile
+// it does not check the launch generation: the count belongs to the instance,
+// not to one process, so a token taken before a respawn reads the same counter
 // the new process continues.
 func readHookTurnSeq(instanceID string) uint64 {
 	if strings.TrimSpace(instanceID) == "" {
 		return 0
 	}
-	data, err := readStatusFileNoFollow(hookStatusFilePath(instanceID))
-	if err != nil {
-		return 0
+	var seq uint64
+	if data, err := readStatusFileNoFollow(hookStatusFilePath(instanceID)); err == nil {
+		var raw struct {
+			TurnSeq uint64 `json:"turn_seq"`
+		}
+		if json.Unmarshal(data, &raw) == nil {
+			seq = raw.TurnSeq
+		}
 	}
-	var raw struct {
-		TurnSeq uint64 `json:"turn_seq"`
+	// A sandboxed handler writes it in the instance's scope, any other in
+	// the flat dir; a scope can outlive its sandbox, so read both.
+	hooksDir := GetHooksDir()
+	for _, path := range []string{
+		filepath.Join(hooksDir, instanceID+HookTurnSeqSuffix),
+		filepath.Join(hooksDir, "sandbox", instanceID, instanceID+HookTurnSeqSuffix),
+	} {
+		if data, err := readStatusFileNoFollow(path); err == nil {
+			if n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err == nil {
+				seq = max(seq, n)
+			}
+		}
 	}
-	if json.Unmarshal(data, &raw) != nil {
-		return 0
-	}
-	return raw.TurnSeq
+	return seq
 }
 
 func readHookStatusFile(instanceID string) *HookStatus {

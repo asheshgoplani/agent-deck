@@ -101,7 +101,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 
 	// Plugin channel flag - can be specified multiple times; requires -c claude.
 	// Mirrors handleAdd's --channel; both routes feed Instance.Channels which
-	// buildClaudeExtraFlags emits as --channels <csv> on every Start/Restart.
+	// buildClaudeExtraFlags emits as one --channels <entry> per channel on every Start/Restart.
 	var channelFlags []string
 	fs.Func("channel", "Plugin channel id (can specify multiple times); requires -c claude", func(s string) error {
 		channelFlags = append(channelFlags, s)

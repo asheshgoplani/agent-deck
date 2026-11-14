@@ -1,4 +1,4 @@
-// AGENTDECK PI HOOK EXTENSION v4
+// AGENTDECK PI HOOK EXTENSION v5
 //
 // Managed by `agent-deck pi-hooks install`. Local edits are overwritten on the
 // next install/upgrade, and `agent-deck pi-hooks uninstall` deletes this file.
@@ -8,7 +8,8 @@
 // Event mapping (agent-deck side, cmd/agent-deck/hook_handler.go):
 //
 //   session_start    -> waiting   (at the prompt)
-//   turn_start       -> running   (the agent is working)
+//   turn_start       -> running   (the agent is working; after an injection it
+//                                  also carries injected_token, the receipt)
 //   turn_end         -> waiting   (back at the prompt)
 //   session_shutdown -> dead      (the session runtime is being torn down)
 //
@@ -28,6 +29,28 @@
 // is kept until agent_settled, or until before_agent_start (once per prompt)
 // opens the next run on a pi without agent_settled.
 //
+// When AGENTDECK_PI_SOCKET names a path (set at launch for pi 1.2.0 and
+// later), the extension also serves a wake socket there for the daemon. One
+// connection carries one NDJSON frame {"v":1,"id":"<nonce>","line":"<text>",
+// "ids":["<record id>",...]} and gets one reply {"id":"<nonce>","state":...}:
+//
+//   submitted  pi started the run our doorbell asked for (before_agent_start
+//              carried the nonce)
+//   queued     handed to pi, no run start seen within 1.5 s of the frame
+//   busy, duplicate, bad_request
+//              refused, with ok:false and notSent:true; nothing was sent
+//
+// The socket is bound at a private path and renamed over the public one (last
+// starter wins), and removed only by the process whose socket it is. A
+// connection that has not delivered a frame 2 s after it connected is dropped,
+// and the line is held to 900 B with control characters stripped.
+//
+// An unparseable, unended or over-cap frame is destroyed with no reply. The
+// doorbell is a custom message (pi.sendMessage, triggerTurn), never typed
+// input, so it cannot collide with a draft in the editor. On before_agent_start
+// the extension asks hook-handler for context and returns its stdout as the
+// run's injected message; a doorbell's run also carries wake_nonce.
+//
 // It is a no-op outside agent-deck: without AGENTDECK_INSTANCE_ID in the
 // environment nothing is spawned and no handler is registered. pi awaits
 // extension handlers in order, and each emit is awaited too, so back-to-back
@@ -39,11 +62,40 @@
 // process wedges, so a stuck handler cannot hang pi indefinitely.
 
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import crypto from "node:crypto";
+import net from "node:net";
+import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const INSTANCE_ID = (process.env.AGENTDECK_INSTANCE_ID ?? "").trim();
+const SOCKET = (process.env.AGENTDECK_PI_SOCKET ?? "").trim();
 const EMIT_TIMEOUT_MS = 2000;
+// before_agent_start's answer becomes the run's injected context, so it gets
+// longer than a status emit: a slow handler must not silently drop it.
+const INJECT_TIMEOUT_MS = 10 * 1000;
+const WAKE_TYPE = "agent-deck-wake";
+const CONTEXT_TYPE = "agent-deck-context";
+// A frame is one short line; the daemon sends at most 900 B of line.
+const MAX_FRAME_BYTES = 4096;
+// The extension answers queued this long after the frame arrives, inside the
+// daemon's 2 s reply window.
+const QUEUED_AFTER_MS = 1500;
+// The same record ids are not sent twice inside the ledger's own window.
+const DUPLICATE_WINDOW_MS = 90 * 1000;
+// A listener that neither accepts nor refuses in this long is treated as alive,
+// so a wedged owner is never unlinked out from under itself.
+const PROBE_TIMEOUT_MS = 1000;
+const MAX_HOOK_OUTPUT_BYTES = 64 * 1024;
+// The wake line is at most 900 B from the daemon; the extension holds the same
+// limit, since anyone who can open the socket can start a model turn with it.
+const MAX_LINE_BYTES = 900;
+// A frame arrives in one write; a client that has not delivered one this long
+// after it connected, however it trickles, or that is not one of a few, is dropped.
+const CONN_DEADLINE_MS = 2000;
+const MAX_CONNECTIONS = 8;
+// Record ids kept for the duplicate window; the oldest go first.
+const MAX_SEEN_IDS = 4096;
 // hook-handler reads at most 1 MiB; the daemon keeps 16 KiB of a turn's text.
 const MAX_TEXT_BYTES = 16 * 1024;
 
@@ -65,7 +117,19 @@ function assistantText(message: any): string {
     .join("\n");
 }
 
-function emit(event: string, fields: Record<string, unknown> = {}): Promise<void> {
+// headBytes keeps the first max bytes of buf, never ending inside a character.
+function headBytes(buf: Buffer, max: number): Buffer {
+  if (buf.length <= max) return buf;
+  let end = max;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end);
+}
+
+// run delivers one event to hook-handler and resolves with its trimmed stdout
+// (null when it fails, exits non-zero, or wedges past timeoutMs). The child leads
+// its own process group so a timeout can kill it and anything it started: left
+// alive it could commit ledger changes after its answer was thrown away.
+function run(event: string, fields: Record<string, unknown> = {}, timeoutMs = EMIT_TIMEOUT_MS): Promise<string | null> {
   return new Promise((resolve) => {
     try {
       const payload = JSON.stringify({
@@ -75,25 +139,363 @@ function emit(event: string, fields: Record<string, unknown> = {}): Promise<void
         ...fields,
       });
       const child = spawn("agent-deck", ["hook-handler"], {
-        stdio: ["pipe", "ignore", "ignore"],
+        stdio: ["pipe", "pipe", "ignore"],
+        detached: true,
+        // hook-handler bounds itself by this, so it still ends if pi dies and
+        // takes the timer below with it; 500 ms shorter, so a hook that prints
+        // at its own bound is not discarded by ours.
+        env: { ...process.env, AGENTDECK_HOOK_DEADLINE_MS: String(timeoutMs - 500) },
       });
+      const chunks: Buffer[] = [];
+      let size = 0;
+      child.stdout.on("data", (chunk: Buffer) => {
+        // Keep a little past the cap so a cut can tell whether it lands inside a character.
+        const room = MAX_HOOK_OUTPUT_BYTES + 4 - size;
+        if (room > 0) chunks.push(chunk.subarray(0, room));
+        size += chunk.length;
+      });
+      const timer = setTimeout(() => {
+        try {
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+        resolve(null);
+      }, timeoutMs);
+      timer.unref();
+      const done = (out: string | null) => {
+        clearTimeout(timer);
+        resolve(out);
+      };
       // A missing binary surfaces as an "error" event, and a handler that
       // exited early surfaces as EPIPE on stdin. Swallow both: status reporting
-      // must never take the session down with it. The timeout guarantees emit
+      // must never take the session down with it. The timeout guarantees run
       // always settles even if the child wedges without exiting.
-      child.on("error", () => resolve());
-      child.on("close", () => resolve());
-      setTimeout(resolve, EMIT_TIMEOUT_MS).unref();
+      child.on("error", () => done(null));
+      child.on("close", (code) =>
+        done(code === 0 ? headBytes(Buffer.concat(chunks), MAX_HOOK_OUTPUT_BYTES).toString("utf8").trim() : null),
+      );
       child.stdin.on("error", () => {});
       child.stdin.end(payload);
     } catch {
-      resolve();
+      resolve(null);
     }
   });
 }
 
+function emit(event: string, fields: Record<string, unknown> = {}): Promise<void> {
+  return run(event, fields).then(() => {});
+}
+
+// isLive reports whether something is accepting connections at sockPath.
+function isLive(sockPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = net.connect(sockPath);
+    const done = (live: boolean) => {
+      clearTimeout(timer);
+      probe.destroy();
+      resolve(live);
+    };
+    const timer = setTimeout(() => done(true), PROBE_TIMEOUT_MS);
+    probe.on("connect", () => done(true));
+    probe.on("error", () => done(false));
+  });
+}
+
+// reply writes the one reply and then destroys the connection once it is
+// flushed. end() alone only half-closes: the socket stays open, and counted
+// against MAX_CONNECTIONS, until the client closes its side, so a client that
+// never does would hold a slot for the life of the pi session.
+function reply(conn: net.Socket, body: object): void {
+  try {
+    if (!conn.destroyed) conn.end(JSON.stringify(body) + "\n", () => conn.destroy());
+  } catch {
+    // The client went away; there is nobody left to tell.
+  }
+}
+
+type Wake = { nonce: string; ids: string[]; conn: net.Socket; timer: NodeJS.Timeout };
+
+// serveWakeSocket serves sockPath for the life of each pi session. The caller
+// wires start to session_start, stop to session_shutdown and rang to
+// before_agent_start: the matrix driver keeps one callback per event name, so
+// each event has exactly one pi.on. All state is per call so /reload, which
+// builds a fresh runtime, starts clean.
+function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
+  let server: net.Server | null = null;
+  let ctx: any;
+  const conns = new Set<net.Socket>();
+  // The one doorbell whose fate is not yet known.
+  let pending: Wake | null = null;
+  // Record ids this runtime has seen submitted, and when (monotonic clock, so a
+  // wall-clock jump neither ends a window early nor holds one open). Insertion
+  // order is time order, which is what pruning and eviction rely on.
+  const submitted = new Map<string, number>();
+  // The socket file this runtime bound, so stop removes only that one.
+  let owned: { dev: bigint; ino: bigint } | null = null;
+
+  const warn = (msg: string) => console.error("agent-deck: " + msg);
+
+  const refuse = (conn: net.Socket, id: string, state: string) =>
+    reply(conn, { id, ok: false, state, notSent: true });
+
+  // settle answers the pending doorbell; it clears the timer, so the timer and
+  // the run start cannot both answer.
+  // recordSubmitted notes ids whose run has started, for the duplicate window.
+  const recordSubmitted = (ids: string[]) => {
+    const now = performance.now();
+    for (const id of ids) {
+      submitted.delete(id);
+      submitted.set(id, now);
+    }
+    for (const id of submitted.keys()) {
+      if (submitted.size <= MAX_SEEN_IDS) break;
+      submitted.delete(id);
+    }
+  };
+
+  const settle = (wake: Wake, state: "submitted" | "queued") => {
+    pending = null;
+    clearTimeout(wake.timer);
+    if (state === "submitted") recordSubmitted(wake.ids);
+    reply(wake.conn, { id: wake.nonce, state });
+  };
+
+  const isDuplicate = (ids: string[]): boolean => {
+    const now = performance.now();
+    for (const [id, at] of submitted) {
+      if (now - at < DUPLICATE_WINDOW_MS) break;
+      submitted.delete(id);
+    }
+    return ids.every((id) => submitted.has(id));
+  };
+
+  const handle = (conn: net.Socket, text: string) => {
+    let req: any;
+    try {
+      req = JSON.parse(text);
+    } catch {
+      conn.destroy();
+      return;
+    }
+    // Without an id there is nothing to echo, so there is nobody to answer.
+    if (typeof req?.id !== "string" || req.id === "") {
+      conn.destroy();
+      return;
+    }
+    const id: string = req.id;
+    const ids = req.ids;
+    const usable =
+      req.v === 1 &&
+      typeof req.line === "string" &&
+      req.line !== "" &&
+      Array.isArray(ids) &&
+      ids.length > 0 &&
+      ids.every((x: unknown) => typeof x === "string" && x !== "");
+    if (!usable || Buffer.byteLength(req.line) > MAX_LINE_BYTES) return refuse(conn, id, "bad_request");
+    // C0 controls other than tab, DEL and the C1 controls never reach the model.
+    const line: string = req.line.replace(/[\x00-\x08\x0a-\x1f\x7f-\x9f]/g, "");
+    if (line === "") return refuse(conn, id, "bad_request");
+    // The extension re-checks idleness at delivery: the daemon's view can be stale.
+    if (pending || !ctx.isIdle()) return refuse(conn, id, "busy");
+    if (isDuplicate(ids)) return refuse(conn, id, "duplicate");
+
+    const wake: Wake = { nonce: id, ids, conn, timer: setTimeout(() => settle(wake, "queued"), QUEUED_AFTER_MS) };
+    wake.timer.unref();
+    pending = wake;
+    // Registered before the call: pi raises before_agent_start from inside it.
+    pi.sendMessage(
+      { customType: WAKE_TYPE, content: line, display: true, details: { nonce: id, ids } },
+      { triggerTurn: true },
+    );
+  };
+
+  const onConnection = (conn: net.Socket) => {
+    conns.add(conn);
+    conn.on("close", () => {
+      conns.delete(conn);
+      if (pending?.conn === conn) {
+        clearTimeout(pending.timer);
+        pending = null;
+      }
+    });
+    conn.on("error", () => {});
+    conn.setEncoding("utf8");
+    const deadline = setTimeout(() => conn.destroy(), CONN_DEADLINE_MS);
+    deadline.unref();
+    conn.on("close", () => clearTimeout(deadline));
+    let buf = "";
+    let taken = false;
+    conn.on("data", (chunk: string) => {
+      if (taken) return;
+      buf += chunk;
+      if (Buffer.byteLength(buf) > MAX_FRAME_BYTES) {
+        taken = true;
+        conn.destroy();
+        return;
+      }
+      const nl = buf.indexOf("\n");
+      if (nl < 0) return;
+      taken = true;
+      // The frame is in; the reply wait has its own timer.
+      clearTimeout(deadline);
+      try {
+        handle(conn, buf.slice(0, nl));
+      } catch {
+        conn.destroy();
+      }
+    });
+  };
+
+  // A starter binds at a private path in the socket's directory and renames it
+  // over the public one, so the public path never holds anything half-made and
+  // a stale file is replaced atomically. Two starters that both found it dead
+  // both rename, and the last wins: the other's listener is unreachable and
+  // inert, and its stop leaves the winner's socket alone because the dev/ino
+  // differ. The private name is never the public one, so the unlink Server.close
+  // does by name can only ever hit a file that is already gone. One window
+  // remains: stop checks dev/ino and then removes the path, and a new socket
+  // renamed in between is removed with it, so a second launch of the same
+  // instance inside that window degrades to typed wakes.
+  // The name carries the owner's pid and 8 random characters, so starters do
+  // not collide on it.
+  const privateName = () => "p" + process.pid + "-" + crypto.randomBytes(6).toString("hex").slice(0, 8);
+
+  // A starter killed between bind and rename leaves its private socket behind.
+  // Only a socket with that name shape and a dead pid is removed.
+  const sweepDead = (dir: string) => {
+    for (const name of fs.readdirSync(dir)) {
+      const m = /^p(\d+)-[0-9a-z]{8,}$/.exec(name);
+      if (!m) continue;
+      const file = path.join(dir, name);
+      try {
+        if (!fs.lstatSync(file).isSocket()) continue;
+        process.kill(Number(m[1]), 0);
+      } catch (e: any) {
+        if (e.code === "ESRCH") fs.rmSync(file, { force: true });
+      }
+    }
+  };
+
+  // The bind in progress, so a stop that arrives while it is awaited waits for
+  // it and then tears it down, instead of returning early and leaving a
+  // listener published after shutdown.
+  let starting: Promise<void> | null = null;
+
+  const start = (_event?: any, context?: any): Promise<void> => {
+    ctx = context;
+    if (server) return Promise.resolve();
+    if (!starting) starting = bind().finally(() => (starting = null));
+    return starting;
+  };
+
+  const bind = async () => {
+    let priv = "";
+    try {
+      const dir = path.dirname(sockPath);
+      // Only the launch's own layout, <runtime dir>/pi/<name>.sock, is served:
+      // any other value is a mistake whose directory must not be created or
+      // tightened (a stray ~/w.sock would chmod the home directory).
+      if (!path.isAbsolute(sockPath) || path.basename(dir) !== "pi") {
+        throw new Error("not an agent-deck socket path (want <runtime dir>/pi/<name>.sock)");
+      }
+      fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+      try {
+        fs.mkdirSync(dir, { mode: 0o700 });
+      } catch (e: any) {
+        if (e.code !== "EEXIST") throw e;
+      }
+      // chmod follows a symlink, so the directory is opened without following
+      // one, checked to be this user's, and tightened through that descriptor.
+      const dirFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+      try {
+        const st = fs.fstatSync(dirFd);
+        if (!st.isDirectory() || st.uid !== process.getuid?.()) throw new Error(dir + " is not a directory of this user");
+        fs.fchmodSync(dirFd, 0o700);
+      } finally {
+        fs.closeSync(dirFd);
+      }
+      // A live socket the probe finds is never replaced. Two starters that both
+      // get past the probe resolve as last-starter-wins (see above).
+      if (await isLive(sockPath)) {
+        warn("another process is serving " + sockPath + "; this pi session will not receive socket wakes");
+        return;
+      }
+      sweepDead(dir);
+      priv = path.join(dir, privateName());
+      const srv = net.createServer(onConnection);
+      srv.maxConnections = MAX_CONNECTIONS;
+      await new Promise<void>((resolve, reject) => {
+        srv.once("error", reject);
+        // The umask is process-wide; hold it only across the bind, which is
+        // synchronous, so the socket is created private without a chmod window.
+        const prev = process.umask(0o077);
+        try {
+          srv.listen(priv, resolve);
+        } catch (e) {
+          reject(e);
+        } finally {
+          process.umask(prev);
+        }
+      });
+      srv.on("error", () => {});
+      const st = fs.statSync(priv, { bigint: true });
+      try {
+        fs.renameSync(priv, sockPath);
+      } catch (e) {
+        srv.close();
+        throw e;
+      }
+      priv = "";
+      owned = { dev: st.dev, ino: st.ino };
+      server = srv;
+    } catch (e) {
+      if (priv) fs.rmSync(priv, { force: true });
+      warn("could not serve " + sockPath + ": " + String(e));
+    }
+  };
+
+  const stop = async () => {
+    if (starting) await starting;
+    const srv = server;
+    if (!srv) return;
+    server = null;
+    const mine = owned;
+    owned = null;
+    if (pending) clearTimeout(pending.timer);
+    pending = null;
+    try {
+      await new Promise<void>((resolve) => {
+        srv.close(() => resolve());
+        for (const c of conns) c.destroy();
+      });
+      // The public path is ours only while it still holds the socket we bound;
+      // gone before shutdown returns, so a /reload runtime can bind at once.
+      const st = fs.statSync(sockPath, { bigint: true });
+      if (mine && st.dev === mine.dev && st.ino === mine.ino) fs.rmSync(sockPath, { force: true });
+    } catch {
+      // Shutdown must never throw into pi, and a path that is gone is fine.
+    }
+  };
+
+  // The run a doorbell asked for has started: answer it now, before the caller
+  // awaits hook-handler. Its ids count for the duplicate window from here, read
+  // from the run's own message: a wake answered queued, or whose client went
+  // away, is no longer pending when its run starts.
+  const rang = (event?: any) => {
+    const isWake = event?.messageType === "custom" && event.message?.customType === WAKE_TYPE;
+    const details = isWake ? event.message?.details : undefined;
+    if (pending && pending.nonce === details?.nonce) settle(pending, "submitted");
+    const ids = details?.ids;
+    if (Array.isArray(ids) && ids.every((x: unknown) => typeof x === "string" && x !== "")) recordSubmitted(ids);
+  };
+
+  return { start, stop, rang };
+}
+
 export default function (pi: ExtensionAPI) {
   if (!INSTANCE_ID) return;
+  const wake = SOCKET ? serveWakeSocket(pi, SOCKET) : undefined;
 
   // The run's state. pi fires input before agent_start, so only the turn is
   // reset on agent_start; the input is consumed when the run settles.
@@ -104,22 +506,33 @@ export default function (pi: ExtensionAPI) {
   let runId = "";
   let runOpen = false;
   const runFields = () => ({ settles: true, run_id: runId || undefined });
+  // The delivery token of the context just injected, echoed on the next turn_start.
+  let injectedToken: string | undefined;
+  // The last token injected, and the last one already reported on a run start:
+  // the next before_agent_start carries it once (prior_injected_token), so the
+  // receipt reaches the ledger even if the daemon has not ingested the echo.
+  let lastInjected: string | undefined;
+  let lastReported: string | undefined;
 
   // Returning emit's promise (rather than firing and forgetting) is what makes
   // pi await delivery before it runs the next handler.
-  pi.on("session_start", () => emit("session_start"));
-  pi.on("before_agent_start", () => {
-    runOpen = false;
+  pi.on("session_start", async (event?: any, ctx?: any) => {
+    await wake?.start(event, ctx);
+    await emit("session_start");
   });
   pi.on("agent_start", () => {
-    if (!runOpen) runId = randomUUID();
+    if (!runOpen) runId = crypto.randomUUID();
     runOpen = true;
     lastTurn = undefined;
   });
   pi.on("input", (event?: any) => {
     if (typeof event?.text === "string") lastInput = event.text;
   });
-  pi.on("turn_start", () => emit("turn_start", runFields()));
+  pi.on("turn_start", () => {
+    const token = injectedToken;
+    injectedToken = undefined;
+    return emit("turn_start", { ...runFields(), injected_token: token });
+  });
   pi.on("turn_end", (event?: any) => {
     lastTurn = {
       entryId: typeof event?.messageEntryId === "string" ? event.messageEntryId : "",
@@ -153,5 +566,46 @@ export default function (pi: ExtensionAPI) {
       prompt: prompt || undefined,
     });
   });
-  pi.on("session_shutdown", () => emit("session_shutdown"));
+  pi.on("session_shutdown", async () => {
+    await wake?.stop();
+    await emit("session_shutdown");
+  });
+  // A doorbell is answered before hook-handler is awaited. A human prompt
+  // carries no nonce. Registered with or without the socket: a listed parent
+  // relaunched without one is drained through its run starts.
+  pi.on("before_agent_start", async (event?: any, ctx?: any) => {
+    // Once per prompt: the next agent_start opens a new run (see runOpen).
+    runOpen = false;
+    wake?.rang(event);
+    const isWake = event?.messageType === "custom" && event.message?.customType === WAKE_TYPE;
+    const prompt = isWake ? event.message.content : event?.messageType === "user" ? event.prompt : undefined;
+    if (typeof prompt !== "string") return;
+    let sessionId: string | undefined;
+    try {
+      sessionId = ctx?.sessionManager?.getSessionId();
+    } catch {}
+    const nonce = isWake ? event.message.details?.nonce : undefined;
+    const prior = lastInjected !== lastReported ? lastInjected : undefined;
+    lastReported = lastInjected;
+    const context = await run("before_agent_start", {
+      session_id: sessionId,
+      prompt,
+      wake_nonce: typeof nonce === "string" ? nonce : undefined,
+      prior_injected_token: prior,
+    }, INJECT_TIMEOUT_MS);
+    if (context === null) {
+      console.error("agent-deck: injection dropped: hook-handler failed or timed out; its records stay pending for the next run");
+      return;
+    }
+    // The hook's last line may be the delivery token: strip it and remember it,
+    // to echo once pi really has the context (its stdout alone proves nothing).
+    const m = /\n?<!-- agent-deck-delivery:([0-9A-Za-z]+) -->\s*$/.exec(context);
+    const text = (m ? context.slice(0, m.index) : context).trim();
+    if (!text) return;
+    if (m) {
+      injectedToken = m[1];
+      lastInjected = m[1];
+    }
+    return { message: { customType: CONTEXT_TYPE, content: text, display: false } };
+  });
 }

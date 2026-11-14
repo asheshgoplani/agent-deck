@@ -215,6 +215,7 @@ func handleConductorSetup(profile string, args []string) {
 	description := fs.String("description", "", "Description for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
 	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
+	noOrders := fs.Bool("no-orders", false, "Do not install this host's standing-orders timer (agent-deck orders)")
 	heartbeatIdleMinutes := fs.Int("heartbeat-idle-minutes", 0, "Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 	instructionsMD := fs.String("instructions-md", "", "Custom instructions file for this conductor (agent-specific, e.g., ~/docs/conductor-ops.md)")
 	sharedInstructionsMD := fs.String("shared-instructions-md", "", "Custom shared instructions file for all conductors of this agent")
@@ -247,6 +248,8 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("        Enable heartbeat for this conductor (default)")
 		fmt.Println("  -no-heartbeat")
 		fmt.Println("        Disable heartbeat for this conductor")
+		fmt.Println("  -no-orders")
+		fmt.Println("        Do not install this host's one-minute standing-orders timer (agent-deck orders)")
 		fmt.Println("  -heartbeat-idle-minutes int")
 		fmt.Println("        Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 		fmt.Println("  -no-clear-on-compact")
@@ -718,6 +721,16 @@ func handleConductorSetup(profile string, args []string) {
 		}
 	}
 
+	// Step 6b: Standing orders: one host-wide timer runs `orders tick --all`
+	// every minute; a conductor without ORDERS.md costs it one stat.
+	if !*noOrders {
+		if path, err := session.InstallOrdersDaemon(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: standing-orders timer not installed: %v\n", err)
+		} else if !*jsonOutput {
+			fmt.Printf("  [ok] Standing-orders timer installed (every 1 min): %s\n", path)
+		}
+	}
+
 	// Step 7: Install bridge (if Telegram, Slack, Discord, or Mattermost is configured)
 	var plistPath string
 	if telegramConfigured || slackConfigured || discordConfigured || mattermostConfigured {
@@ -941,6 +954,13 @@ func handleConductorTeardown(_ string, args []string) {
 			_ = session.UninstallBridgeDaemon()
 			if !*jsonOutput {
 				fmt.Println("[ok] Daemon stopped and removed")
+			}
+		}
+		if session.OrdersDaemonInstalled() {
+			if err := session.UninstallOrdersDaemon(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: standing-orders timer not removed: %v\n", err)
+			} else if !*jsonOutput {
+				fmt.Println("[ok] Standing-orders timer stopped and removed")
 			}
 		}
 		if session.IsTransitionNotifierDaemonRunning() {

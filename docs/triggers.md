@@ -44,6 +44,10 @@ for display.
 | `watcher:<name>`, `interval:<hook>`, `cron:<name>`, `launchd:<label>`, `systemd:<unit>`, `ssh:<name>` | same | your own senders |
 | any other name | `job:<name>` (or the enclosing unit's id, see above) | scripts and jobs |
 
+The standing-orders timer (`agent-deck orders`, [orders.md](orders.md)) runs
+`orders tick --all --source orders`, so its unit and every wake it sends are one
+row, `systemd:agent-deck-orders`.
+
 Session-to-session sends (`session:<id>`) and a person typing at a shell
 (`cli`) are recorded too, but they are messages, not triggers: they show only
 with `--all`.

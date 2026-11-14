@@ -573,8 +573,10 @@ func TestConductorHeartbeatScript_StatusParsingHandlesWhitespace(t *testing.T) {
 	if !strings.Contains(conductorHeartbeatScript, `session send "$SESSION"`) {
 		t.Fatal("heartbeat script should send heartbeat messages")
 	}
-	if !strings.Contains(conductorHeartbeatScript, "--no-wait -q") {
-		t.Fatal("heartbeat script should use non-blocking quiet send")
+	// --json, not -q: the script reads "skipped"/"muted" from the result so
+	// an undelivered heartbeat is never committed as delivered.
+	if !strings.Contains(conductorHeartbeatScript, "--json --no-wait") {
+		t.Fatal("heartbeat script should use a non-blocking JSON send")
 	}
 }
 
@@ -3416,7 +3418,7 @@ func TestSetupConductorWithAgent_PreAcceptsCodexTrust(t *testing.T) {
 
 // The heartbeat names itself in `agent-deck triggers` (issue #2702).
 func TestConductorHeartbeatScript_TagsSource(t *testing.T) {
-	if !strings.Contains(conductorHeartbeatScript, `--no-wait -q --source "heartbeat:{NAME}"`) {
+	if !strings.Contains(conductorHeartbeatScript, `--json --no-wait --source "heartbeat:{NAME}"`) {
 		t.Fatal("heartbeat send must pass --source heartbeat:<name>")
 	}
 	if script := renderConductorHeartbeatScript("ops", "default"); !strings.Contains(script, `--source "heartbeat:ops"`) {

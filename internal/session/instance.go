@@ -448,7 +448,7 @@ type Instance struct {
 
 	// Channels are Claude Code plugin-channel ids (e.g. "plugin:telegram@user/repo").
 	// When non-empty on a claude session, buildClaudeExtraFlags emits
-	// `--channels <csv>` so the session subscribes to inbound plugin messages.
+	// one `--channels <entry>` per channel so the session subscribes to inbound plugin messages.
 	// Without this flag the channel plugin runs as a plain MCP (tools only,
 	// no inbound delivery) which silently drops Telegram/Discord/Slack
 	// messages on conductor restart.
@@ -482,6 +482,11 @@ type Instance struct {
 	// the tool_data extras zone so a restart honours the choice. CLI flag:
 	// `--no-identity` on `agent-deck add` / `agent-deck launch`.
 	IdentityInjectionDisabled bool `json:"identity_injection_disabled,omitempty"`
+
+	// PiSocketExported records that the last launch of this pi exported
+	// a socket path in AGENTDECK_PI_SOCKET, so a v5 extension serves the
+	// socket. Only the launch sets it here; nothing reads or persists it yet.
+	PiSocketExported bool `json:"pi_socket_exported,omitempty"`
 
 	// ContextLevel is the per-session override of the harness context-level
 	// (issue #2260): "none", "primer", or "full". Empty means unset — falls
@@ -1391,6 +1396,7 @@ func (i *Instance) applyLaunchSettingsFromConfig() {
 	// local directory nothing reads. Every local session keeps the guards.
 	i.tmuxSession.WorkDirIsPlaceholder = i.IsSSH()
 	i.applyVimModeFromConfig()
+	i.applyStartupTimeoutHint()
 }
 
 // applyVimModeFromConfig copies [claude].vim_mode onto the tmux session so the

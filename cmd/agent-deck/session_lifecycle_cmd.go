@@ -545,7 +545,9 @@ func validateConditionalArchive(inst *session.Instance, peers []*session.Instanc
 	if inst.Status != session.StatusWaiting {
 		return fmt.Errorf("conditional archive requires a waiting terminal worker")
 	}
-	currentVersion := inst.ResponseContentVersion(peers)
+	// Exact resolution only (#3030): the loose GetJSONLPath may glob a same-id
+	// transcript from a neighbouring project or the process-wide config dir.
+	currentVersion := inst.ExactResponseContentVersion(peers)
 	if currentVersion == "" || currentVersion != version {
 		return fmt.Errorf("conditional archive refused: transcript changed or exact version unavailable")
 	}
@@ -560,7 +562,7 @@ func validateConditionalArchive(inst *session.Instance, peers []*session.Instanc
 			return fmt.Errorf("conditional archive refused: %w", err)
 		}
 	} else if session.IsClaudeCompatible(inst.Tool) {
-		path, err := inst.GetJSONLPathChecked(peers)
+		path, err := inst.ExactClaudeTranscriptPath(peers)
 		if err != nil {
 			return fmt.Errorf("conditional archive refused: cannot resolve exact Claude transcript: %w", err)
 		}

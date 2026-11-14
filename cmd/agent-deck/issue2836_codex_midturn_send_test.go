@@ -64,7 +64,7 @@ func TestIssue2836CodexSendTakenUpMidTurnReconciles(t *testing.T) {
 	if err := sender.Prepare(inst.ID, sentAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := sender.RecordTransportOutcome(deliveryNoEvidence, sentAt.Add(time.Second)); err != nil {
+	if err := sender.RecordTransportOutcome(deliveryNoEvidence, false, sentAt.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	sender.Release()

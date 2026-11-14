@@ -1,6 +1,16 @@
 package session
 
-import "github.com/asheshgoplani/agent-deck/internal/tmux"
+import (
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
+)
+
+// cliStatusRewarmAfter is how long the batched capture may take before the
+// session and pane-info caches warmed ahead of it are warmed again. It is half
+// the 2s session-cache TTL: a prime slower than this risks leaving the status
+// pass with expired caches (#3089).
+const cliStatusRewarmAfter = time.Second
 
 // RefreshInstancesForCLIStatus is the CLI analogue of
 // SessionDataService.refreshStatuses (internal/web) and
@@ -26,7 +36,17 @@ func RefreshInstancesForCLIStatus(instances []*Instance) {
 	// `capture-pane` process per session: GetStatus and Substate then read
 	// the primed frame. This is the O(sessions) subprocess cost of every
 	// `list --json` a remote poller runs.
+	primeStarted := time.Now()
 	primeCLIStatusCaptures(instances)
+	// On a loaded host the prime can outlast the caches warmed above (the
+	// session cache lives 2s; a timed-out batch waits 3s and more). Every row
+	// would then ask tmux on its own (has-session, list-panes,
+	// display-message: 58 live rows cost 164 tmux calls in #3089), so warm
+	// them once more instead.
+	if time.Since(primeStarted) > cliStatusRewarmAfter {
+		tmux.RefreshExistingSessions()
+		tmux.RefreshPaneInfoCache()
+	}
 
 	// Cold-load hook status files for every tool that emits lifecycle
 	// events. The CLI is a fresh OS process with no StatusFileWatcher

@@ -58,7 +58,7 @@ func TestBuildClaudeExtraFlags_AddDirMultiRepoPathIsShellQuoted(t *testing.T) {
 }
 
 // TestBuildClaudeExtraFlags_ChannelsValueIsShellQuoted covers the --channels
-// arm of F1: the joined channel CSV must be quoted.
+// arm of F1: every channel value must be quoted.
 func TestBuildClaudeExtraFlags_ChannelsValueIsShellQuoted(t *testing.T) {
 	channelsTestEnv(t)
 
@@ -67,10 +67,10 @@ func TestBuildClaudeExtraFlags_ChannelsValueIsShellQuoted(t *testing.T) {
 
 	flags := inst.buildClaudeExtraFlags(&ClaudeOptions{})
 
-	if strings.Contains(flags, "--channels plugin:telegram@a/b,$(id)") {
+	if strings.Contains(flags, "--channels $(id)") {
 		t.Fatalf("--channels value is interpolated RAW (shell injection F1); got:\n%s", flags)
 	}
-	if !strings.Contains(flags, "'plugin:telegram@a/b,$(id)'") {
+	if !strings.Contains(flags, "--channels '$(id)'") {
 		t.Fatalf("expected --channels value single-quoted, got:\n%s", flags)
 	}
 }

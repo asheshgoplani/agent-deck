@@ -573,7 +573,7 @@ func TestCodexAcceptanceGuardSerializesFenceAssignment(t *testing.T) {
 	if err := first.Prepare(inst.ID, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.RecordTransportOutcome(deliverySubmitted, time.Now()); err != nil {
+	if err := first.RecordTransportOutcome(deliverySubmitted, false, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -652,7 +652,7 @@ func TestCodexAcceptanceGuardReconcilesOrdinarySendBeforeStructuredRetry(t *test
 	if err := ordinary.Prepare(inst.ID, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := ordinary.RecordTransportOutcome(deliverySubmitted, time.Now()); err != nil {
+	if err := ordinary.RecordTransportOutcome(deliverySubmitted, false, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	ordinary.Release()
@@ -798,6 +798,7 @@ func TestCodexAcceptanceGuardClearsOnlyDefinitiveNonDelivery(t *testing.T) {
 	tests := []struct {
 		name     string
 		delivery string
+		untyped  bool
 		retained bool
 	}{
 		{name: "line too long", delivery: deliveryLineTooLong, retained: false},
@@ -805,6 +806,8 @@ func TestCodexAcceptanceGuardClearsOnlyDefinitiveNonDelivery(t *testing.T) {
 		{name: "submitted", delivery: deliverySubmitted, retained: true},
 		{name: "delivered", delivery: deliveryDelivered, retained: true},
 		{name: "menu open", delivery: deliveryMenuOpen, retained: true},
+		// #3085: the input-prompt guard refused the menu before typing.
+		{name: "menu open before typing", delivery: deliveryMenuOpen, untyped: true, retained: false},
 		{name: "pane gone", delivery: deliveryPaneGone, retained: true},
 		{name: "typed not submitted", delivery: deliveryTypedNotSubmitted, retained: true},
 		{name: "no evidence", delivery: deliveryNoEvidence, retained: true},
@@ -831,7 +834,7 @@ func TestCodexAcceptanceGuardClearsOnlyDefinitiveNonDelivery(t *testing.T) {
 				guard.Release()
 				t.Fatal(err)
 			}
-			if err := guard.RecordTransportOutcome(tt.delivery, time.Now()); err != nil {
+			if err := guard.RecordTransportOutcome(tt.delivery, tt.untyped, time.Now()); err != nil {
 				guard.Release()
 				t.Fatal(err)
 			}

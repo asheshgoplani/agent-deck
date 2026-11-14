@@ -364,7 +364,63 @@ func (i *Instance) responseVersionedFile(peers []*Instance) string {
 // parsed last response cannot have changed, so a poller can skip the read
 // (issue #2481). It costs one stat, never a parse.
 func (i *Instance) ResponseContentVersion(peers []*Instance) string {
-	path := i.responseVersionedFile(peers)
+	return transcriptContentVersion(i.responseVersionedFile(peers))
+}
+
+// ExactClaudeTranscriptPath resolves this instance's Claude transcript only at
+// the locations Claude derives from the instance's own config dir and its
+// working directories (#3030). Unlike GetJSONLPath it never globs other
+// project keys and never falls back to the process-wide config dir, so a
+// same-id file under a neighbouring project or another account cannot stand
+// in for this worker's conversation. When several project keys hold a copy,
+// the newest one wins, as in handoff. Live peers sharing the transcript are
+// refused with GetJSONLPathChecked's collision semantics.
+//
+// For a transcript at its normal location this is the same file GetJSONLPath
+// returns: GetJSONLPath tries exactly these candidates first.
+func (i *Instance) ExactClaudeTranscriptPath(peers []*Instance) (string, error) {
+	if !IsClaudeCompatible(i.Tool) {
+		return "", fmt.Errorf("instance %s is not a Claude session", i.ID)
+	}
+	if i.ClaudeSessionID == "" {
+		return "", fmt.Errorf("instance %s has no bound Claude session id", i.ID)
+	}
+	if !i.TranscriptIsResolvableLocally() {
+		return "", fmt.Errorf("transcript of instance %s is not on this host", i.ID)
+	}
+	if err := i.refuseCollidingTranscript(peers); err != nil {
+		return "", err
+	}
+	path := exactClaudeTranscriptPath(GetClaudeConfigDirForInstance(i), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
+	if path == "" {
+		return "", fmt.Errorf("%w for %s", errNoExactContextArtifact, i.ClaudeSessionID+".jsonl")
+	}
+	return path, nil
+}
+
+// ExactResponseContentVersion is ResponseContentVersion restricted to the
+// exact transcript: a Claude version comes only from ExactClaudeTranscriptPath,
+// and a Codex version from the exact rollout ResponseContentVersion already
+// uses. It returns "" when no exact file backs the response. For a transcript
+// at its normal location the two versions are equal, so a version handed out
+// by `session output --json` still matches (#3030).
+func (i *Instance) ExactResponseContentVersion(peers []*Instance) string {
+	switch {
+	case IsCodexCompatible(i.Tool):
+		return i.ResponseContentVersion(peers)
+	case IsClaudeCompatible(i.Tool):
+		path, err := i.ExactClaudeTranscriptPath(peers)
+		if err != nil {
+			return ""
+		}
+		return transcriptContentVersion(path)
+	}
+	return ""
+}
+
+// transcriptContentVersion is the opaque path/size/mtime version of one
+// regular file, or "" when path is empty or not a regular file.
+func transcriptContentVersion(path string) string {
 	if path == "" {
 		return ""
 	}
@@ -767,15 +823,24 @@ func (i *Instance) claudeTranscriptDir() string {
 // same transcript, corrupting routing. When there is no collision it delegates
 // to GetJSONLPath.
 func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
+	if err := i.refuseCollidingTranscript(peers); err != nil {
+		return "", err
+	}
+	return i.GetJSONLPath(), nil
+}
+
+// refuseCollidingTranscript is the collision refusal shared by
+// GetJSONLPathChecked and ExactClaudeTranscriptPath.
+func (i *Instance) refuseCollidingTranscript(peers []*Instance) error {
 	if i.ClaudeSessionIDCollidesWith(peers) {
 		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 			InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 			Source: "jsonl_resolve", OldID: i.ClaudeSessionID, Candidate: i.ClaudeSessionID,
 			Reason: "claude_session_id_collision_across_live_instances",
 		})
-		return "", fmt.Errorf("claude_session_id %q is shared by more than one live instance; refusing to resolve a colliding transcript path for instance %s", i.ClaudeSessionID, i.ID)
+		return fmt.Errorf("claude_session_id %q is shared by more than one live instance; refusing to resolve a colliding transcript path for instance %s", i.ClaudeSessionID, i.ID)
 	}
-	return i.GetJSONLPath(), nil
+	return nil
 }
 
 // resolveClaudeTranscriptPath returns the path to the Claude JSONL transcript for
@@ -982,6 +1047,28 @@ func ResolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 	return resolveClaudeTranscriptPath(configDir, projectPath, sessionID, additionalPaths...)
 }
 
+// claudeReaderConfigDirs lists the Claude config dirs the last-response
+// readers (getClaudeLastResponse, findLatestClaudeTranscriptOnDisk) may read,
+// in order: the instance's own dir (account/conductor/group), the same
+// resolution GetJSONLPath and LiveTranscriptPath use, then the process-wide
+// dir for transcripts written before a group/conductor dir change.
+//
+// A session on an account slot gets ONLY its own dir: a wrong transcript is
+// worse than none, so it must never be answered from the default dir or
+// another slot (the caller then falls back to the pane). Sessions without a
+// slot keep today's process-wide dir as a fallback.
+func (i *Instance) claudeReaderConfigDirs() []string {
+	own := GetClaudeConfigDirForInstance(i)
+	global := GetClaudeConfigDir()
+	if own == "" {
+		own = global
+	}
+	if i.Account != "" || global == "" || filepath.Clean(own) == filepath.Clean(global) {
+		return []string{own}
+	}
+	return []string{own, global}
+}
+
 // getClaudeLastResponse extracts the last assistant message from Claude's JSONL file
 func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 	// Require stored session ID - no fallback to file scanning
@@ -995,7 +1082,15 @@ func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 		return nil, fmt.Errorf("instance %s runs on %s; its Claude transcript is not on this machine", i.ID, i.SSHHost)
 	}
 
-	sessionFile := resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
+	// A slot session whose transcript is missing must fail here (so the caller
+	// falls back) and never be answered from another dir; see
+	// claudeReaderConfigDirs.
+	sessionFile := ""
+	for _, dir := range i.claudeReaderConfigDirs() {
+		if sessionFile = resolveClaudeTranscriptPath(dir, i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir()); sessionFile != "" {
+			break
+		}
+	}
 	if sessionFile == "" {
 		return nil, fmt.Errorf("session file not found for claude_session_id %s", i.ClaudeSessionID)
 	}
@@ -1034,8 +1129,17 @@ func (i *Instance) findLatestClaudeTranscriptOnDisk() (string, *ResponseOutput) 
 	if !i.TranscriptIsResolvableLocally() {
 		return "", nil
 	}
+	for _, dir := range i.claudeReaderConfigDirs() {
+		if id, resp := i.findLatestClaudeTranscriptInDir(dir); resp != nil {
+			return id, resp
+		}
+	}
+	return "", nil
+}
 
-	configDir := GetClaudeConfigDir()
+// findLatestClaudeTranscriptInDir is the scan of findLatestClaudeTranscriptOnDisk
+// against one config dir.
+func (i *Instance) findLatestClaudeTranscriptInDir(configDir string) (string, *ResponseOutput) {
 
 	resolvedPath := i.ProjectPath
 	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {

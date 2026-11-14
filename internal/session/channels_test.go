@@ -58,8 +58,8 @@ func setChannelsField(t *testing.T, inst *Instance, channels []string) {
 }
 
 // TestStartCommandAppendsChannels asserts that when a Claude session has
-// non-empty Channels, the built start command contains a "--channels <csv>"
-// flag. This is the contract that fixes the lost-Telegram-message bug:
+// non-empty Channels, the built start command contains a "--channels <entry>"
+// flag (one --channels value per channel). This is the contract that fixes the lost-Telegram-message bug:
 // without --channels on the claude binary, channel plugins run as plain
 // MCPs (tools only, no inbound delivery).
 //
@@ -81,7 +81,7 @@ func TestStartCommandAppendsChannels(t *testing.T) {
 	if !strings.Contains(cmd, "--channels") {
 		t.Fatalf("built claude command missing --channels flag, got:\n%s", cmd)
 	}
-	expected := "--channels plugin:telegram@user/repo,plugin:discord@user/repo"
+	expected := "--channels plugin:telegram@user/repo --channels plugin:discord@user/repo"
 	if !strings.Contains(cmd, expected) {
 		t.Errorf("expected built claude command to contain %q, got:\n%s", expected, cmd)
 	}
@@ -199,7 +199,7 @@ func TestResumeCommandAppendsChannels(t *testing.T) {
 			cmd,
 		)
 	}
-	expected := "--channels plugin:telegram@acme/bot,plugin:discord@acme/bot"
+	expected := "--channels plugin:telegram@acme/bot --channels plugin:discord@acme/bot"
 	if !strings.Contains(cmd, expected) {
 		t.Errorf(
 			"expected resume command to contain %q, got:\n%s",
