@@ -138,9 +138,11 @@ func tempHomeWithConfig(t *testing.T, contents string) string {
 // TestRemoteSessionsPlainJSONStaysBareArray pins the contract that existing
 // consumers (conductor scripts, skills) rely on when they pipe
 // `agent-deck remote sessions --json` through `jq '.[]'`: a per-remote fetch
-// failure must not turn the output into an object. The configured remote is
-// deliberately unreachable, so FetchSessions fails and exercises the "some
-// remotes errored" branch of the plain (non-envelope) --json path.
+// failure must not turn the output into an object. Since #3107 the process
+// exits non-zero and writes the error to stderr, while stdout stays a bare
+// array. The configured remote is deliberately unreachable, so FetchSessions
+// fails and exercises the "some remotes errored" branch of the plain
+// (non-envelope) --json path.
 //
 // walk defect #2: a zero-session result must marshal as `[]`, never `null`
 // — `jq '.[]'` and `for row in $(jq -c '.[]')` both choke on `null` (no
@@ -153,9 +155,11 @@ func TestRemoteSessionsPlainJSONStaysBareArray(t *testing.T) {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
 	home := tempHomeWithConfig(t, "[remotes.unreachable]\nhost = 'nobody@203.0.113.1'\n")
-	stdout, _, code := runAgentDeck(t, home, "remote", "sessions", "--json")
-	if code != 0 {
-		t.Fatalf("plain --json must not fail the process on a per-remote error: code=%d stdout=%q", code, stdout)
+	stdout, stderr, code := runAgentDeck(t, home, "remote", "sessions", "--json")
+	// #3107: an unreachable remote is "unknown", never "no sessions": the
+	// array stays valid on stdout, but the process fails and says why.
+	if code == 0 || strings.TrimSpace(stderr) == "" {
+		t.Fatalf("plain --json must report a per-remote error: code=%d stderr=%q stdout=%q", code, stderr, stdout)
 	}
 
 	if trimmed := strings.TrimSpace(stdout); !strings.HasPrefix(trimmed, "[") {
