@@ -1396,6 +1396,7 @@ func (i *Instance) applyLaunchSettingsFromConfig() {
 	// local directory nothing reads. Every local session keeps the guards.
 	i.tmuxSession.WorkDirIsPlaceholder = i.IsSSH()
 	i.applyVimModeFromConfig()
+	i.applyStartupTimeoutHint()
 }
 
 // applyVimModeFromConfig copies [claude].vim_mode onto the tmux session so the
