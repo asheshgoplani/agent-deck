@@ -60,3 +60,31 @@ func TestWakeLineAlwaysCarriesItsMostUrgentRecord(t *testing.T) {
 		t.Fatalf("quotes unbalanced: %q", line)
 	}
 }
+
+// Forge round 4 #2: a body differs from its Done summary only when it renders
+// differently: whitespace runs and control characters do not count, so such a
+// body is neither treated as dropped nor repeated in the hook's context.
+func TestLineDropsBody_ComparesTheRenderedForms(t *testing.T) {
+	base := Record{ID: "01J0000000000000000ABCDEG", Kind: KindTurn, From: "c2", Done: "ok"}
+	for _, c := range []struct {
+		text, summary string
+		drops         bool
+	}{
+		{"shipped it", "shipped", true},
+		{"a   b", "a b", false},
+		{"a\tb\n", " a b", false},
+		{"a\x07b", "ab", false},
+		{"", "shipped", false},
+	} {
+		r := base
+		r.Text, r.Summary = c.text, c.summary
+		if got := LineDropsBody(r); got != c.drops {
+			t.Errorf("LineDropsBody(text %q, summary %q) = %v, want %v", c.text, c.summary, got, c.drops)
+		}
+		if !c.drops {
+			if ctx := QuotedContextLine(r, Names{}); strings.Count(ctx, strings.Join(strings.Fields(c.summary), " ")) > 1 {
+				t.Errorf("context for text %q, summary %q repeats it: %q", c.text, c.summary, ctx)
+			}
+		}
+	}
+}

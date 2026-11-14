@@ -160,6 +160,69 @@ class PiDriverSequenceTests(unittest.TestCase):
         self.assertEqual([(c['name'], c['seen'], c['text']) for c in calls], [('turn_end', 1, 'one')])
 
 
+WAKE_EXTENSION = """
+export default function (pi) {
+  let startedBy = null;
+  pi.on('session_start', async (event, ctx) => {
+    pi.sendMessage({ name: 'env', socket: process.env.AGENTDECK_PI_SOCKET ?? null, idleAtStart: ctx.isIdle() });
+  });
+  pi.on('input', async (event, ctx) => {
+    // A doorbell, as the real extension sends it: a custom message that asks for a turn.
+    pi.sendMessage({ customType: 'agent-deck-wake', content: 'ring', display: true, details: { nonce: 'N1' } }, { triggerTurn: true });
+    pi.sendMessage({ name: 'idle-after-ring', idle: ctx.isIdle() });
+  });
+  pi.on('before_agent_start', async (event, ctx) => {
+    startedBy = event.messageType;
+    pi.sendMessage({ name: 'start', messageType: event.messageType, customType: event.message?.customType ?? null, idle: ctx.isIdle() });
+    if (event.messageType === 'custom') return { message: { customType: 'ctx', content: 'context for ' + event.message.content, display: false } };
+  });
+  pi.on('turn_start', async () => { pi.sendMessage({ name: 'turn_start', startedBy }); });
+  pi.on('agent_settled', async (event, ctx) => { pi.sendMessage({ name: 'settled', idle: ctx.isIdle() }); });
+}
+"""
+
+
+@unittest.skipUnless(node_can_strip_types(), 'node >= 22.13 required')
+class PiDriverWakeModelTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.extension = Path(tmp.name) / 'wake.ts'
+        self.extension.write_text(WAKE_EXTENSION)
+
+    def drive(self, steps, **env):
+        import os
+        return subprocess.run(['node', str(HERE / 'pi_driver.mjs'), str(self.extension)], input=ndjson(steps),
+                              capture_output=True, text=True, timeout=15, env=dict(os.environ, **env))
+
+    def lines(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return [json.loads(l) for l in result.stdout.splitlines() if l.strip()]
+
+    def test_the_socket_env_reaches_the_extension_untouched_and_ctx_is_idle(self):
+        out = self.lines(self.drive([{'event': 'session_start', 'payload': {'session_id': 's'}}], AGENTDECK_PI_SOCKET='/tmp/x.sock'))
+        env = [l['message'] for l in out if l.get('api') == 'sendMessage'][0]
+        self.assertEqual((env['socket'], env['idleAtStart']), ('/tmp/x.sock', True))
+
+    def test_a_custom_message_with_triggerturn_starts_the_run_it_asks_for(self):
+        out = self.lines(self.drive([{'event': 'input', 'payload': {'text': 'hi', 'session_id': 's'}}, {'pause': True}]))
+        sent = [l['message'] for l in out if l.get('api') == 'sendMessage']
+        self.assertEqual(sent[1], {'name': 'idle-after-ring', 'idle': False}, 'pi is busy from the moment it takes the doorbell')
+        start = next(m for m in sent if m.get('name') == 'start')
+        self.assertEqual((start['messageType'], start['customType'], start['idle']), ('custom', 'agent-deck-wake', False))
+        # What before_agent_start returned is printed, so a caller sees the injected context.
+        returned = [l for l in out if l.get('api') == 'before_agent_start']
+        self.assertEqual([r['returned']['content'] for r in returned], ['context for ring'])
+        self.assertEqual(next(m for m in sent if m.get('name') == 'turn_start')['startedBy'], 'custom')
+        self.assertIn({'api': 'run_done'}, out)
+        self.assertTrue(next(m for m in sent if m.get('name') == 'settled')['idle'] is False)
+
+    def test_a_before_agent_start_step_prints_what_it_returned_or_null(self):
+        steps = [{'event': 'before_agent_start', 'payload': {'messageType': 'user', 'prompt': 'p', 'session_id': 's'}}]
+        out = self.lines(self.drive(steps))
+        self.assertEqual([l['returned'] for l in out if l.get('api') == 'before_agent_start'], [None])
+
+
 class PiFixtureTests(unittest.TestCase):
     def test_v2_turn_end_fixture_carries_the_identity_and_outcome_the_extension_reads(self):
         fixture = json.loads((HERE / 'fixtures' / 'pi_turnend_v2.json').read_text())
@@ -216,6 +279,65 @@ class DriverReadDeadlineTests(unittest.TestCase):
         process = self.spawn('import sys, time; print(\'{"paused": true}\', flush=True); time.sleep(60)')
         self.assertEqual(read_json_line(process, 10), {'paused': True})
         self.assertIsNone(process.poll(), 'a successful read leaves the driver running')
+
+
+class FifoDriverReadTests(unittest.TestCase):
+    """The pane-hosted pi driver (pi_consumer.FifoDriver) goes through the same read_json_line."""
+
+    def fifo_pair(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = os.path.join(tmp.name, 'parent.raw')
+        for suffix in ('.driver.in', '.driver.out'):
+            os.mkfifo(base + suffix, 0o600)
+        # The pane's side: both FIFOs held open read-write, as start_pi_driver does.
+        held = [os.open(base + suffix, os.O_RDWR) for suffix in ('.driver.in', '.driver.out')]
+        self.addCleanup(lambda: [os.close(fd) for fd in held])
+        Path(base + '.driver.err').write_text('pane driver diagnostics\n')
+        from pi_consumer import FifoDriver
+        driver = FifoDriver(base)
+        self.addCleanup(driver.kill)
+        return driver, held[1]
+
+    def test_lines_are_read_in_order_across_calls(self):
+        driver, out = self.fifo_pair()
+        os.write(out, b'{"api": "a"}\n{"api": "b"}\n')
+        self.assertEqual([read_json_line(driver, 5)['api'], read_json_line(driver, 5)['api']], ['a', 'b'])
+
+    def test_a_silent_pane_driver_fails_at_the_deadline_with_its_stderr(self):
+        driver, _ = self.fifo_pair()
+        started = time.monotonic()
+        with self.assertRaises(RuntimeError) as caught:
+            read_json_line(driver, 0.5)
+        self.assertLess(time.monotonic() - started, 10, 'the failure path must not block on the open FIFO')
+        self.assertIn('silent for 0.5s', str(caught.exception))
+        self.assertIn('pane driver diagnostics', str(caught.exception))
+
+
+class PiDriverRestartTests(unittest.TestCase):
+    """A restarted pi pane reuses its capture path, so its driver's FIFOs are already there."""
+
+    def test_a_restarted_pane_starts_its_driver_over_the_fifos_the_last_one_left(self):
+        import fake_harness
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        capture = os.path.join(tmp.name, 'parent.raw')
+        held = []
+        real_open = os.open
+
+        def opened(path, flags, *a):
+            fd = real_open(path, flags, *a)
+            held.append(fd)
+            return fd
+        self.addCleanup(lambda: [os.close(fd) for fd in held])
+        with mock.patch.object(fake_harness.subprocess, 'Popen') as popen, mock.patch.object(fake_harness.os, 'open', opened):
+            fake_harness.start_pi_driver(capture)
+            first = os.stat(capture + '.driver.in').st_ino
+            fake_harness.start_pi_driver(capture)  # the restarted pane
+        self.assertEqual(popen.call_count, 2)
+        for suffix in ('.driver.in', '.driver.out'):
+            self.assertTrue(Path(capture + suffix).is_fifo(), suffix)
+        self.assertNotEqual(os.stat(capture + '.driver.in').st_ino, first, 'the restarted driver reads a fresh FIFO')
 
 
 class DriverFailurePathTests(unittest.TestCase):

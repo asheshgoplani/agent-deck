@@ -82,6 +82,10 @@ var excludedCommands = []excludedCommand{
 	{"telegram-doctor", "contacts the Telegram API (network)"},
 	{"feedback", "sends telemetry/feedback to a remote endpoint"},
 	{"debug-dump", "captures live PIDs/goroutine state into a ring-buffer dump; not byte-stable by design"},
+	{"connect hermes", "creates (or rotates) an assistant token in the store; `connect <assistant>` for every kind is covered by internal/assistant tests"},
+	{"connect serve", "long-running MCP stdio server; covered by internal/assistant round-trip tests"},
+	{"connect test", "spawns `connect serve` (or calls a live web server)"},
+	{"connect revoke", "mutates the assistant token store"},
 	{"recall", "unbounded scan of real Claude conversation transcripts on the host, outside the sandbox"},
 	{"session context", "walks the real host CLAUDE.md/AGENTS.md memory hierarchy outside the sandbox (see session_context_golden_test.go)"},
 	{"session start", "starts a real tmux process; covered instead by the storage-bytes goldens (deliverable 2)"},
@@ -244,6 +248,11 @@ func safeSpecs() []goldenSpec {
 		{"triggers_all_json", []string{"-p", goldensProfile, "triggers", "--all", "--json"}, 0},
 		{"triggers_fires_json", []string{"-p", goldensProfile, "triggers", "fires", "systemd:agentdeck-overnight", "--json"}, 0},
 
+		// A fresh sandbox has no assistant tokens and no audit log.
+		{"connect_list", []string{"connect", "list"}, 0},
+		{"connect_list_json", []string{"connect", "list", "--json"}, 0},
+		{"connect_audit_json", []string{"connect", "audit", "--json"}, 0},
+
 		{"completion_bash", []string{"completion", "bash"}, 0},
 		{"completion_zsh", []string{"completion", "zsh"}, 0},
 		{"completion_fish", []string{"completion", "fish"}, 0},
@@ -265,7 +274,7 @@ func helpSpecs() []goldenSpec {
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
 		"uninstall", "completion", "costs", "config", "inbox", "feedback", "whats-new",
 		"watcher", "openclaw", "system", "mcp-proxy", "hooks", "hook-handler", "codex-notify",
-		"notify-daemon", "run-task", "open", "switch", "file", "browser", "triggers",
+		"notify-daemon", "run-task", "open", "switch", "file", "browser", "triggers", "connect",
 	}
 
 	subcommands := []string{
@@ -304,6 +313,7 @@ func helpSpecs() []goldenSpec {
 		"usage statusline", "recall timeline", "recall follow",
 		"events follow", "events publish",
 		"triggers list", "triggers scan", "triggers mute", "triggers unmute", "triggers run", "triggers fires",
+		"connect list", "connect revoke", "connect audit", "connect serve", "connect test",
 	}
 
 	all := append(append([]string{}, topLevel...), subcommands...)
@@ -479,13 +489,18 @@ func goldensSandbox(t *testing.T) (home string, env []string) {
 	return home, env
 }
 
-// hermeticGoldensPi puts a fake `pi` that prints 1.3.0 first on the binary's
-// PATH. `pi-hooks status` runs `pi --version`, so without it the golden carries
-// whatever pi the host has (a different version, or none), and a machine with
-// pi installed fails a golden that CI, without it, passes.
+// hermeticGoldensPi puts a fake `pi` that prints 1.3.0 where `pi-hooks status`
+// finds it first. Status runs `pi --version` through PiStatusEnv, which puts
+// the spawn-path directories missing from PATH ahead of PATH (on macOS that
+// includes /opt/homebrew/bin), so a fake that is only first on PATH can still
+// lose to a host pi. The fake lives in the sandbox's ~/.local/bin, the first
+// of those directories, and stays off PATH so the prelude always puts it in
+// front. Without it the golden carries whatever pi the host has (a different
+// version, or none), and a machine with pi installed fails a golden that CI,
+// without it, passes.
 func hermeticGoldensPi(t *testing.T, env []string, home string) []string {
 	t.Helper()
-	bin := filepath.Join(home, "goldens-bin")
+	bin := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatalf("creating the goldens bin directory: %v", err)
 	}
@@ -498,7 +513,13 @@ func hermeticGoldensPi(t *testing.T, env []string, home string) []string {
 			path = v
 		}
 	}
-	return append(filterEnv(env, "PATH"), "PATH="+bin+string(os.PathListSeparator)+path)
+	var kept []string
+	for _, dir := range filepath.SplitList(path) {
+		if filepath.Clean(dir) != bin {
+			kept = append(kept, dir)
+		}
+	}
+	return append(filterEnv(env, "PATH"), "PATH="+strings.Join(kept, string(os.PathListSeparator)))
 }
 
 // hermeticGoldensTmux points the subprocess at a private TMUX_TMPDIR whose

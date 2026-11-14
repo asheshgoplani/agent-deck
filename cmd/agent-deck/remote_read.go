@@ -251,3 +251,26 @@ func remoteUnsupportedAnswer(name string, args []string) []byte {
 	}
 	return []byte(msg + "\n")
 }
+
+// validateRemoteOwnershipArgs admits `ownership inspect <id> [--json]` only.
+// The remote also accepts status/show aliases, reconcile and abandon; none of
+// those are forwarded.
+func validateRemoteOwnershipArgs(args []string) error {
+	if len(args) < 2 || args[0] != "inspect" {
+		return fmt.Errorf("unsupported remote command: session ownership forwards 'inspect <id> [--json]' only")
+	}
+	ids := 0
+	for _, a := range args[1:] {
+		switch {
+		case a == "--json" || a == "-json":
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unsupported remote command: session ownership inspect forwards --json only, not %q", a)
+		default:
+			ids++
+		}
+	}
+	if ids != 1 {
+		return fmt.Errorf("session ownership inspect needs exactly one session id")
+	}
+	return nil
+}

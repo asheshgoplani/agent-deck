@@ -497,18 +497,21 @@ func handleSessionArchive(profile string, args []string) {
 	// Codex is the exception: launch left its identity unpersisted, and the
 	// live process is the only evidence of it, so bind it with the targeted
 	// Codex write before the kill destroys that evidence (#2400).
-	killed := false
+	//
+	// A pane that is already gone still gets a stopped status: archiving is a
+	// deliberate stop, and a dead pane usually left error behind.
 	if inst.Exists() {
 		adoptLiveCodexIdentity(storage, inst)
 		if err := inst.Kill(); err != nil {
 			out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
-		killed = true
+	} else {
+		inst.MarkStopped()
 	}
 
 	inst.SetArchivedAtThreadSafe(time.Now().UTC())
-	if err := persistArchivedCLI(storage, inst, killed); err != nil {
+	if err := persistArchivedCLI(storage, inst, true); err != nil {
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
@@ -650,11 +653,12 @@ func handleSessionUnarchive(profile string, args []string) {
 // and reloads under concurrent writers (a running TUI), which would silently
 // revert the archive. This mirrors home.go's persistArchived.
 //
-// persistStatus is true only when archive killed a live session: Kill() sets
-// Status=stopped in memory but writes nothing to the DB, so without this the
-// row keeps its pre-kill running/idle status and a later load misclassifies the
-// stopped session. PersistInstanceStatusesTx is the same targeted, abort-safe
-// primitive revive uses (single status column, no whole-row clobber).
+// persistStatus is true for archive: Kill() (or MarkStopped, for a pane that
+// was already gone) sets Status=stopped in memory but writes nothing to the
+// DB, so without this the row keeps its pre-archive running/idle/error status
+// and a later load misclassifies the stopped session. PersistInstanceStatusesTx
+// is the same targeted, abort-safe primitive revive uses (single status column,
+// no whole-row clobber).
 func persistArchivedCLI(storage *session.Storage, inst *session.Instance, persistStatus bool) error {
 	db := storage.GetDB()
 	if db == nil {

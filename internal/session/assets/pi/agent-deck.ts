@@ -1,4 +1,4 @@
-// AGENTDECK PI HOOK EXTENSION v5
+// AGENTDECK PI HOOK EXTENSION v6
 //
 // Managed by `agent-deck pi-hooks install`. Local edits are overwritten on the
 // next install/upgrade, and `agent-deck pi-hooks uninstall` deletes this file.
@@ -51,6 +51,26 @@
 // the extension asks hook-handler for context and returns its stdout as the
 // run's injected message; a doorbell's run also carries wake_nonce.
 //
+// Only the pi agent-deck launched in the pane serves the socket, and only the
+// pi that serves it takes the ledger's context. Its extension puts its own pid
+// in AGENTDECK_PI_HOST_PID in process.env, which everything that pi starts
+// inherits (pi's bash tool spawns with process.env), so a pi started inside
+// the pane (a subagent's `pi -p`, a script) finds another pid there: it is a
+// guest of the pane, serves nothing, and marks every payload pane_guest. A
+// local launch sets the variable empty, so a launched or restarted pi is never
+// a guest. It is a pid, not a flag, because /reload re-evaluates this file in
+// the same process, which must still find itself the host.
+//
+// While the socket at AGENTDECK_PI_SOCKET is the one this runtime bound, every
+// payload also carries pane_host. For a parent whose launch exported the
+// socket, hook-handler gives context, applies receipts and spools run starts
+// only for a payload so marked. A pi that is not a guest but serves nothing is
+// not the host either: one in another tmux pane or window of the session (it
+// has the session's AGENTDECK_INSTANCE_ID but not the launch's socket), an
+// older pi whose path a restarted one took over, or a launched pi whose bind
+// failed. Its run starts are given none of the parent's records; they wait for
+// the pi that serves.
+//
 // It is a no-op outside agent-deck: without AGENTDECK_INSTANCE_ID in the
 // environment nothing is spawned and no handler is registered. pi awaits
 // extension handlers in order, and each emit is awaited too, so back-to-back
@@ -70,6 +90,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const INSTANCE_ID = (process.env.AGENTDECK_INSTANCE_ID ?? "").trim();
 const SOCKET = (process.env.AGENTDECK_PI_SOCKET ?? "").trim();
+const HOST_PID_ENV = "AGENTDECK_PI_HOST_PID";
 const EMIT_TIMEOUT_MS = 2000;
 // before_agent_start's answer becomes the run's injected context, so it gets
 // longer than a status emit: a slow handler must not silently drop it.
@@ -83,9 +104,6 @@ const MAX_FRAME_BYTES = 4096;
 const QUEUED_AFTER_MS = 1500;
 // The same record ids are not sent twice inside the ledger's own window.
 const DUPLICATE_WINDOW_MS = 90 * 1000;
-// A listener that neither accepts nor refuses in this long is treated as alive,
-// so a wedged owner is never unlinked out from under itself.
-const PROBE_TIMEOUT_MS = 1000;
 const MAX_HOOK_OUTPUT_BYTES = 64 * 1024;
 // The wake line is at most 900 B from the daemon; the extension holds the same
 // limit, since anyone who can open the socket can start a model turn with it.
@@ -187,21 +205,6 @@ function emit(event: string, fields: Record<string, unknown> = {}): Promise<void
   return run(event, fields).then(() => {});
 }
 
-// isLive reports whether something is accepting connections at sockPath.
-function isLive(sockPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = net.connect(sockPath);
-    const done = (live: boolean) => {
-      clearTimeout(timer);
-      probe.destroy();
-      resolve(live);
-    };
-    const timer = setTimeout(() => done(true), PROBE_TIMEOUT_MS);
-    probe.on("connect", () => done(true));
-    probe.on("error", () => done(false));
-  });
-}
-
 // reply writes the one reply and then destroys the connection once it is
 // flushed. end() alone only half-closes: the socket stays open, and counted
 // against MAX_CONNECTIONS, until the client closes its side, so a client that
@@ -241,20 +244,23 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
 
   // settle answers the pending doorbell; it clears the timer, so the timer and
   // the run start cannot both answer.
+  // recordSubmitted notes ids whose run has started, for the duplicate window.
+  const recordSubmitted = (ids: string[]) => {
+    const now = performance.now();
+    for (const id of ids) {
+      submitted.delete(id);
+      submitted.set(id, now);
+    }
+    for (const id of submitted.keys()) {
+      if (submitted.size <= MAX_SEEN_IDS) break;
+      submitted.delete(id);
+    }
+  };
+
   const settle = (wake: Wake, state: "submitted" | "queued") => {
     pending = null;
     clearTimeout(wake.timer);
-    if (state === "submitted") {
-      const now = performance.now();
-      for (const id of wake.ids) {
-        submitted.delete(id);
-        submitted.set(id, now);
-      }
-      for (const id of submitted.keys()) {
-        if (submitted.size <= MAX_SEEN_IDS) break;
-        submitted.delete(id);
-      }
-    }
+    if (state === "submitted") recordSubmitted(wake.ids);
     reply(wake.conn, { id: wake.nonce, state });
   };
 
@@ -346,14 +352,17 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
 
   // A starter binds at a private path in the socket's directory and renames it
   // over the public one, so the public path never holds anything half-made and
-  // a stale file is replaced atomically. Two starters that both found it dead
-  // both rename, and the last wins: the other's listener is unreachable and
-  // inert, and its stop leaves the winner's socket alone because the dev/ino
-  // differ. The private name is never the public one, so the unlink Server.close
-  // does by name can only ever hit a file that is already gone. One window
-  // remains: stop checks dev/ino and then removes the path, and a new socket
-  // renamed in between is removed with it, so a second launch of the same
-  // instance inside that window degrades to typed wakes.
+  // whatever was there is replaced atomically. Only the launched pi starts (a
+  // guest of the pane never serves), so a socket already at the path is a
+  // predecessor's: an earlier pi of this session that died, or one still
+  // shutting down after a restart. The launched pi takes the path over, and
+  // the predecessor's listener is left unreachable and inert. Two starters
+  // both rename, and the last wins; the other's stop leaves the winner's socket
+  // alone because the dev/ino differ. The private name is never the public
+  // one, so the unlink Server.close does by name can only ever hit a file that
+  // is already gone. A stop never removes the public path by name after
+  // checking it, which would also remove a socket renamed over it in between
+  // (unpublish).
   // The name carries the owner's pid and 8 random characters, so starters do
   // not collide on it.
   const privateName = () => "p" + process.pid + "-" + crypto.randomBytes(6).toString("hex").slice(0, 8);
@@ -374,19 +383,43 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
     }
   };
 
-  const start = async (_event?: any, context?: any) => {
+  // The bind in progress, so a stop that arrives while it is awaited waits for
+  // it and then tears it down, instead of returning early and leaving a
+  // listener published after shutdown.
+  let starting: Promise<void> | null = null;
+
+  const start = (_event?: any, context?: any): Promise<void> => {
     ctx = context;
-    if (server) return;
+    if (server) return Promise.resolve();
+    if (!starting) starting = bind().finally(() => (starting = null));
+    return starting;
+  };
+
+  const bind = async () => {
     let priv = "";
     try {
       const dir = path.dirname(sockPath);
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      fs.chmodSync(dir, 0o700);
-      // A live socket the probe finds is never replaced. Two starters that both
-      // get past the probe resolve as last-starter-wins (see above).
-      if (await isLive(sockPath)) {
-        warn("another process is serving " + sockPath + "; this pi session will not receive socket wakes");
-        return;
+      // Only the launch's own layout, <runtime dir>/pi/<name>.sock, is served:
+      // any other value is a mistake whose directory must not be created or
+      // tightened (a stray ~/w.sock would chmod the home directory).
+      if (!path.isAbsolute(sockPath) || path.basename(dir) !== "pi") {
+        throw new Error("not an agent-deck socket path (want <runtime dir>/pi/<name>.sock)");
+      }
+      fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+      try {
+        fs.mkdirSync(dir, { mode: 0o700 });
+      } catch (e: any) {
+        if (e.code !== "EEXIST") throw e;
+      }
+      // chmod follows a symlink, so the directory is opened without following
+      // one, checked to be this user's, and tightened through that descriptor.
+      const dirFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+      try {
+        const st = fs.fstatSync(dirFd);
+        if (!st.isDirectory() || st.uid !== process.getuid?.()) throw new Error(dir + " is not a directory of this user");
+        fs.fchmodSync(dirFd, 0o700);
+      } finally {
+        fs.closeSync(dirFd);
       }
       sweepDead(dir);
       priv = path.join(dir, privateName());
@@ -417,12 +450,68 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
       owned = { dev: st.dev, ino: st.ino };
       server = srv;
     } catch (e) {
-      if (priv) fs.rmSync(priv, { force: true });
-      warn("could not serve " + sockPath + ": " + String(e));
+      try {
+        if (priv) fs.rmSync(priv, { force: true });
+      } catch {
+        // Left for the next start's sweep; the warning below still goes out.
+      }
+      warn("could not serve " + sockPath + ": " + String(e) +
+        "; until this pi restarts it gets no socket wakes and none of the ledger's records (agent-deck msg read shows them)");
+    }
+  };
+
+  // serving reports whether the socket at the public path is the one this
+  // runtime bound: not before start, not after stop, and not once a later
+  // starter has renamed its own over it.
+  const serving = (): boolean => {
+    if (!server || !owned) return false;
+    try {
+      const st = fs.statSync(sockPath, { bigint: true });
+      return st.dev === owned.dev && st.ino === owned.ino;
+    } catch {
+      return false;
+    }
+  };
+
+  // unpublish removes the public path when it holds the socket this runtime
+  // bound. Checking it and then removing it by name would also remove a
+  // successor's socket renamed over the path in between, which would then serve
+  // nothing until it restarted. So the path is moved aside first, which is
+  // atomic, and what was moved is checked: ours is removed, and a successor's
+  // is linked back (a link never replaces, so a still newer socket at the path
+  // is left alone). The successor's path is empty only for that instant. What
+  // was moved is removed only once it is known to be ours or back at the path
+  // (or beaten by a newer one): if the check or the link fails otherwise, it is
+  // left where it is rather than deleted. A stop killed inside the window, or a
+  // link that failed so, leaves the successor's socket under the moved-aside
+  // name, which a later start's sweep removes once this pid is gone, so that
+  // successor serves nothing until it restarts.
+  const unpublish = (mine: { dev: bigint; ino: bigint }) => {
+    const st = fs.statSync(sockPath, { bigint: true });
+    if (st.dev !== mine.dev || st.ino !== mine.ino) return;
+    const aside = path.join(path.dirname(sockPath), privateName());
+    fs.renameSync(sockPath, aside);
+    let done = false;
+    try {
+      const moved = fs.statSync(aside, { bigint: true });
+      if (moved.dev === mine.dev && moved.ino === mine.ino) {
+        done = true;
+      } else {
+        try {
+          fs.linkSync(aside, sockPath);
+          done = true;
+        } catch (e: any) {
+          done = e?.code === "EEXIST"; // a newer socket at the path wins
+        }
+      }
+    } finally {
+      if (done) fs.rmSync(aside, { force: true });
     }
   };
 
   const stop = async () => {
+    // Shutdown must never throw into pi, whatever became of the bind it waits for.
+    if (starting) await starting.catch(() => {});
     const srv = server;
     if (!srv) return;
     server = null;
@@ -437,26 +526,35 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
       });
       // The public path is ours only while it still holds the socket we bound;
       // gone before shutdown returns, so a /reload runtime can bind at once.
-      const st = fs.statSync(sockPath, { bigint: true });
-      if (mine && st.dev === mine.dev && st.ino === mine.ino) fs.rmSync(sockPath, { force: true });
+      if (mine) unpublish(mine);
     } catch {
       // Shutdown must never throw into pi, and a path that is gone is fine.
     }
   };
 
   // The run a doorbell asked for has started: answer it now, before the caller
-  // awaits hook-handler.
+  // awaits hook-handler. Its ids count for the duplicate window from here, read
+  // from the run's own message: a wake answered queued, or whose client went
+  // away, is no longer pending when its run starts.
   const rang = (event?: any) => {
-    const nonce = event?.messageType === "custom" ? event.message?.details?.nonce : undefined;
-    if (pending && pending.nonce === nonce) settle(pending, "submitted");
+    const isWake = event?.messageType === "custom" && event.message?.customType === WAKE_TYPE;
+    const details = isWake ? event.message?.details : undefined;
+    if (pending && pending.nonce === details?.nonce) settle(pending, "submitted");
+    const ids = details?.ids;
+    if (Array.isArray(ids) && ids.every((x: unknown) => typeof x === "string" && x !== "")) recordSubmitted(ids);
   };
 
-  return { start, stop, rang };
+  return { start, stop, rang, serving };
 }
 
 export default function (pi: ExtensionAPI) {
   if (!INSTANCE_ID) return;
-  const wake = SOCKET ? serveWakeSocket(pi, SOCKET) : undefined;
+  // A guest of the pane inherited another pi's pid (see the header). The host
+  // writes its own, for everything it starts to inherit.
+  const host = (process.env[HOST_PID_ENV] ?? "").trim();
+  const guest = host !== "" && host !== String(process.pid);
+  if (!guest) process.env[HOST_PID_ENV] = String(process.pid);
+  const wake = SOCKET && !guest ? serveWakeSocket(pi, SOCKET) : undefined;
 
   // The run's state. pi fires input before agent_start, so only the turn is
   // reset on agent_start; the input is consumed when the run settles.
@@ -474,12 +572,16 @@ export default function (pi: ExtensionAPI) {
   // receipt reaches the ledger even if the daemon has not ingested the echo.
   let lastInjected: string | undefined;
   let lastReported: string | undefined;
+  // Every payload of a guest of the pane says so, and so does every payload of
+  // the pi serving the socket (see the header).
+  const mark = (fields: Record<string, unknown> = {}) =>
+    guest ? { ...fields, pane_guest: true } : wake?.serving() ? { ...fields, pane_host: true } : fields;
 
   // Returning emit's promise (rather than firing and forgetting) is what makes
   // pi await delivery before it runs the next handler.
   pi.on("session_start", async (event?: any, ctx?: any) => {
     await wake?.start(event, ctx);
-    await emit("session_start");
+    await emit("session_start", mark());
   });
   pi.on("agent_start", () => {
     if (!runOpen) runId = crypto.randomUUID();
@@ -492,7 +594,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_start", () => {
     const token = injectedToken;
     injectedToken = undefined;
-    return emit("turn_start", { ...runFields(), injected_token: token });
+    return emit("turn_start", mark({ ...runFields(), injected_token: token }));
   });
   pi.on("turn_end", (event?: any) => {
     lastTurn = {
@@ -501,7 +603,7 @@ export default function (pi: ExtensionAPI) {
       outcome: String(event?.outcome ?? ""),
       stopReason: String(event?.message?.stopReason ?? ""),
     };
-    return emit("turn_end", runFields());
+    return emit("turn_end", mark(runFields()));
   });
   pi.on("agent_settled", (event?: any, ctx?: any) => {
     const turn = lastTurn;
@@ -519,20 +621,21 @@ export default function (pi: ExtensionAPI) {
     // and aborted shows the abort itself.
     const answered = turn?.outcome === "completed" && turn.stopReason !== "toolUse" && event?.aborted !== true;
     const reported = answered ? turn.text.trim() : "";
-    return emit("agent_settled", {
+    return emit("agent_settled", mark({
       ...fields,
       session_id: sessionId,
       turn_id: turn?.entryId || undefined,
       last_assistant_message: reported ? tailBytes(reported, MAX_TEXT_BYTES) : undefined,
       prompt: prompt || undefined,
-    });
+    }));
   });
   pi.on("session_shutdown", async () => {
     await wake?.stop();
-    await emit("session_shutdown");
+    await emit("session_shutdown", mark());
   });
   // A doorbell is answered before hook-handler is awaited. A human prompt
-  // carries no nonce.
+  // carries no nonce. Registered with or without the socket: a listed parent
+  // relaunched without one is drained through its run starts.
   pi.on("before_agent_start", async (event?: any, ctx?: any) => {
     // Once per prompt: the next agent_start opens a new run (see runOpen).
     runOpen = false;
@@ -547,12 +650,12 @@ export default function (pi: ExtensionAPI) {
     const nonce = isWake ? event.message.details?.nonce : undefined;
     const prior = lastInjected !== lastReported ? lastInjected : undefined;
     lastReported = lastInjected;
-    const context = await run("before_agent_start", {
+    const context = await run("before_agent_start", mark({
       session_id: sessionId,
       prompt,
       wake_nonce: typeof nonce === "string" ? nonce : undefined,
       prior_injected_token: prior,
-    }, INJECT_TIMEOUT_MS);
+    }), INJECT_TIMEOUT_MS);
     if (context === null) {
       console.error("agent-deck: injection dropped: hook-handler failed or timed out; its records stay pending for the next run");
       return;

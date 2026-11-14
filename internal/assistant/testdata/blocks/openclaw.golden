@@ -1,0 +1,51 @@
+=== agent-deck connect: OpenClaw (name "openclaw", scopes read) ===
+Token file: /home/me/.local/share/agent-deck/assistants/openclaw.token (0600). Revoke: agent-deck connect revoke openclaw
+
+--- 1. Config: run the command, or merge the JSON into ~/.openclaw/openclaw.json ---
+openclaw mcp set agentdeck '{"command":"/usr/local/bin/agent-deck","args":["connect","serve","--token-file","/home/me/.local/share/agent-deck/assistants/openclaw.token"]}'
+
+# or merge into ~/.openclaw/openclaw.json:
+{
+  "mcp": {
+    "servers": {
+      "agentdeck": {
+        "command": "/usr/local/bin/agent-deck",
+        "args": [
+          "connect",
+          "serve",
+          "--token-file",
+          "/home/me/.local/share/agent-deck/assistants/openclaw.token"
+        ]
+      }
+    }
+  }
+}
+
+--- 2. Test ---
+openclaw mcp probe
+agent-deck connect test --name openclaw
+
+--- 3. Guide: save the ready skill https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/docs/assistants/skills/openclaw/SKILL.md as ~/.openclaw/workspace/skills/agent-deck/SKILL.md, or keep this text ---
+You are connected to agent-deck on my machine as "openclaw" with scopes: read.
+agent-deck is a terminal session manager for AI coding agents (Claude Code, Codex, Gemini, OpenCode and others): each session is one agent working in its own terminal. Through the agent-deck tools you can see those sessions and, when allowed, drive them.
+
+Tools (MCP server "agentdeck"; the HTTP API at http://127.0.0.1:8420/api/assistant/v1 mirrors them):
+- whoami: your name, scopes and limits
+- list_sessions {group?, status?}: all sessions with id, title, tool, status, group, path (read)
+- session_status {session}: one session's details (read)
+- read_output {session}: the last answer of that session's agent (read)
+- send_message {session, message}: type a message into a session (send)
+- approve {session, choice?}: answer a visible approval prompt (approve)
+- launch_session {path, title, tool?, message?}: start a new session (launch)
+
+Rules:
+1. Call list_sessions first and refer to sessions by id.
+2. Read before acting: check session_status or read_output before you send or approve anything.
+3. ASK THE USER and wait for a clear yes before send_message, approve or launch_session; show the exact text you will send.
+4. Never stop, delete, restart or kill sessions. There is no tool for it; do not use a shell or any other way to do it.
+5. Never read, print or change credentials, tokens or agent-deck's own files (~/.agent-deck, ~/.local/share/agent-deck).
+6. If a tool answers "scope missing", do not work around it: tell the user the exact command from the answer (for example: agent-deck connect openclaw --scopes read,send).
+7. Keep reports short: one line per session (title, status, what it is waiting for).
+
+To allow more, run: agent-deck connect openclaw --scopes read,send,approve,launch (pick only the scopes you need; this rotates the token, stdio configs pick the new one up from the token file, HTTP configs need the new token)
+=== end ===

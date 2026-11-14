@@ -263,3 +263,42 @@ func newRestartSaveHome(t *testing.T, profile string) (*Home, *session.Storage) 
 	home.forceSaveInstances()
 	return home, storage
 }
+
+// CodeRabbit (write_restart_outcome.go:170): a fresh restart records its new
+// tmux name through the launch write (Start's), not the restart outcome, and
+// that write moves last_modified so other processes reload the name. The save
+// that follows must still read it as this TUI's own write.
+func TestRestartMsg_AFreshRestartsOwnLaunchWriteIsNotTreatedAsExternal(t *testing.T) {
+	skipIfNoTmuxBinaryUI(t)
+
+	home, storage := newRestartSaveHome(t, "_restartsavefresh")
+	target := home.instances[1]
+	before, err := storage.GetDB().LastModified()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := target.RestartFresh(); err != nil {
+		t.Fatalf("RestartFresh: %v", err)
+	}
+	t.Cleanup(func() {
+		if sess := target.GetTmuxSession(); sess != nil {
+			_ = sess.Kill()
+		}
+	})
+	if after, err := storage.GetDB().LastModified(); err != nil || after == before {
+		t.Fatalf("test setup: the fresh restart's launch write did not move last_modified (%d -> %d, %v)", before, after, err)
+	}
+
+	target.Notes = "fresh-restart-mutation"
+	model, _ := home.Update(sessionRestartedMsg{sessionID: target.ID})
+	if _, ok := model.(*Home); !ok {
+		t.Fatalf("Update returned %T, want *Home", model)
+	}
+	if got := storedNotes(t, storage, target.ID); got != "fresh-restart-mutation" {
+		t.Errorf("stored notes = %q, want %q: the TUI aborted its save on its own launch write", got, "fresh-restart-mutation")
+	}
+	if got := storedTmuxName(t, storage, target.ID); got != target.GetTmuxSession().Name {
+		t.Errorf("stored tmux name = %q, want %q", got, target.GetTmuxSession().Name)
+	}
+}

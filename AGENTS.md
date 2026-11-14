@@ -46,7 +46,7 @@ reproduce in a container as [the repro workflow](skills/agent-deck/references/re
 
 ## Build and check exactly as CI does
 
-- Go 1.26.10 (from `go.mod`; the Makefile sets `GOTOOLCHAIN=go1.26.10`).
+- Go 1.26.11 (from `go.mod`; the Makefile sets `GOTOOLCHAIN=go1.26.11`).
 - Build `go build ./...` (or `make build`: runs `make css` first, downloads Tailwind to
   `~/.local/bin`). Then `gofmt -l .` prints nothing (worktree dirs aside) and `go vet ./...`
   passes, as the lefthook pre-commit hook checks. All safe on a host.

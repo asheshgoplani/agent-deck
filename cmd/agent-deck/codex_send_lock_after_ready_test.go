@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,5 +226,49 @@ func TestCodexAcceptanceWhenReadyNoWaitAcquiresOnce(t *testing.T) {
 		})
 	if readyErr != nil || !errors.Is(guardErr, session.ErrCodexAcceptanceLockTimeout) || calls != 1 {
 		t.Fatalf("--no-wait must keep the single bounded lock attempt: readyErr=%v guardErr=%v calls=%d", readyErr, guardErr, calls)
+	}
+}
+
+// The readiness baseline and the fence must read the turn generation with the
+// same budget. A turn that has been emitting output for a long time pushes its
+// own turn start past the 8 MiB default ceiling; the default reader then gave
+// a "" baseline while the 64 MiB fence read the real turn, so every pass
+// looked like a turn that began after the baseline and an idle target refused
+// the send at the deadline.
+func TestCodexSendBaselineReadsPastTheDefaultCeiling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	codexHome := filepath.Join(home, "codex")
+	t.Setenv("CODEX_HOME", codexHome)
+	const thread = "01a0cc41-3ddb-7170-98bc-27b021e69142"
+	path := filepath.Join(codexHome, "sessions", "2026", "11", "12", "rollout-2026-11-12T05-13-42-"+thread+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The newest (only) turn start, then 10 MiB of output before EOF.
+	rollout := `{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-long"}}` + "\n" +
+		strings.Repeat(strings.Repeat("x", 998)+"\n", 10500) +
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-long"}}` + "\n"
+	if err := os.WriteFile(path, []byte(rollout), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &session.Instance{ID: "long-turn-baseline", Tool: "codex", CodexSessionID: thread}
+	if narrow, err := inst.LatestCodexTurnGeneration(); err != nil || narrow != "" {
+		t.Fatalf("fixture: default reader got %q, %v; want \"\" (turn start beyond 8 MiB)", narrow, err)
+	}
+
+	waits := 0
+	guard, readyErr, guardErr := acquireCodexAcceptanceForSend(inst, time.Now().Add(2*time.Second), time.Second,
+		func(time.Duration) error { waits++; return nil })
+	if guard != nil {
+		defer guard.Release()
+	}
+	if readyErr != nil || guardErr != nil {
+		t.Fatalf("idle target with a long last turn refused: readyErr=%v guardErr=%v (waits=%d)", readyErr, guardErr, waits)
+	}
+	if want := thread + ":turn-long"; guard.fence.priorTurnGeneration != want || waits != 1 {
+		t.Fatalf("fence=%q waits=%d; want %q on the first pass", guard.fence.priorTurnGeneration, waits, want)
 	}
 }

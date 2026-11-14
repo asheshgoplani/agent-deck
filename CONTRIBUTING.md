@@ -109,7 +109,7 @@ Tell us **which model** in the PR's AI-disclosure section (`claude-opus-4-x`, `g
 
 ### Prerequisites
 
-- Go 1.26.10
+- Go 1.26.11
 - tmux
 - Make
 

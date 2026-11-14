@@ -12,7 +12,7 @@ GOLANGCI_LINT_VERSION=v2.14.0
 TAILWIND_BIN=$(HOME)/.local/bin/tailwindcss
 
 # Keep local and CI builds on the version required by go.mod.
-export GOTOOLCHAIN=go1.26.10
+export GOTOOLCHAIN=go1.26.11
 
 # Build the binary (requires compiled CSS via `make css`)
 build: css
@@ -63,7 +63,7 @@ css: tools
 	@echo "==> Brute-force globbing diff (Pitfall #1 gate)"
 	@trap 'rm -f ./internal/web/static/.brute-tw.src.css' EXIT INT TERM; \
 	cp ./internal/web/static/styles.src.css ./internal/web/static/.brute-tw.src.css; \
-	printf '\n/* --- brute-force additional @source (Pitfall #1 gate) --- */\n@source "./**/*.{js,mjs,html}";\n@source not "./vendor/**";\n@source not "./chart.umd.min.js";\n@source not "./sw.js";\n' \
+	printf '\n/* --- brute-force additional @source (Pitfall #1 gate) --- */\n@source "./**/*.{js,mjs,html}";\n@source not "./vendor/**";\n@source not "./chart.umd.min.js";\n@source not "./sw.js";\n@source not "./connect.html";\n@source not "./connect.js";\n' \
 		>> ./internal/web/static/.brute-tw.src.css; \
 	$(TAILWIND_BIN) -i ./internal/web/static/.brute-tw.src.css \
 		-o /tmp/agent-deck-tw-brute.css \
@@ -272,12 +272,12 @@ dist-local:
 	go run ./tools/dist-local -version "$(DIST_VERSION)" -output "$(DIST_OUTPUT)"
 
 # Functional checks run in Docker locally. Native execution is CI-only.
-FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.26.10
+FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.26.11
 FUNCCHECK_BINARY ?=
 FUNCCHECK_MODE ?= docker
 .PHONY: check-functional funccheck-image
 funccheck-image:
-	@printf '%s\n' 'FROM golang:1.26.10-bookworm' \
+	@printf '%s\n' 'FROM golang:1.26.11-bookworm' \
 		'RUN apt-get update -qq && apt-get install -y --no-install-recommends tmux git' \
 		'WORKDIR /deps' 'COPY go.mod go.sum ./' \
 		'RUN go mod download && chmod -R a+rX /go/pkg/mod' \

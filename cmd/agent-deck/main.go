@@ -40,6 +40,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	"github.com/asheshgoplani/agent-deck/internal/termbg"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -704,6 +705,9 @@ func main() {
 		case "recall":
 			handleRecall(profile, args[1:])
 			return
+		case "connect":
+			handleConnect(profile, args[1:])
+			return
 		case "usage":
 			handleUsage(profile, args[1:])
 			return
@@ -959,6 +963,13 @@ func main() {
 		// Same rows and words as the TUI quick check page (check_text.go).
 		fmt.Fprint(os.Stderr, outerTmuxRefusalText(tmuxVersionLine(), Version))
 		exitCLI(1)
+	}
+
+	// Ask the terminal for its background colour now, before the TUI owns
+	// the terminal. Only the TUI renders adaptive colours; every other
+	// command skips the query (#3105, see internal/termbg).
+	if !webHeadless {
+		termbg.DetectForTUI()
 	}
 
 	// Startup reviver scan (v1.7.8, REPORT-D). Fire-and-forget — rebuilds
@@ -1656,7 +1667,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -4798,6 +4809,7 @@ func printHelp() {
 	fmt.Println("  usage            Show remaining provider subscription quota")
 	fmt.Println("  recall           Search every Claude conversation on this machine (docs/recall.md)")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
+	fmt.Println("  connect          Connect an assistant bot (Hermes, Claude, ChatGPT, Telegram...) with a scoped token")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  provider         List and test sandbox providers (remote add --provider)")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")

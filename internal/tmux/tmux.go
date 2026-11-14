@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -498,6 +499,12 @@ type Session struct {
 	// reconnected without a clock, so hasErrorBannerIndicator must not read a
 	// preserved startup-timeout banner as current (#2938).
 	startupArmed bool
+	// startupTimeoutHint is an optional paragraph the startup-timeout hold
+	// shows between its banner and the recovery command, naming what would
+	// have let agent-deck see the agent start (#3098). Set by the session
+	// layer before each spawn. Atomic rather than under mu so a spawn never
+	// waits on a status poll that holds mu.
+	startupTimeoutHint atomic.Pointer[string]
 	// afterStartupTimeoutClaim is a test seam for scheduling a competing pane
 	// generation after timeout recovery releases mu but before GetStatus decides
 	// which generation's status to return.
@@ -675,6 +682,15 @@ type Session struct {
 	// tool by the session layer via SetPreEnterDelay.
 	preEnterDelay time.Duration
 
+	// framePastes routes EVERY body through the framed (bracketed-paste)
+	// transport, including a short single-line body that `send-keys -l` would
+	// otherwise type directly. A composer that re-processes a typed burst
+	// character by character is still ingesting it when the submitting Enter
+	// lands, and such a composer treats that Enter as a newline inside the
+	// paste rather than as a submit. Zero value keeps the historical
+	// transport. Set per tool by the session layer via SetFramePastes.
+	framePastes bool
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -794,6 +810,37 @@ func (s *Session) effectivePreEnterDelay() time.Duration {
 		return s.preEnterDelay
 	}
 	return preEnterDelayDefault
+}
+
+// SetFramePastes forces the framed (bracketed-paste) transport for message
+// bodies that would otherwise go out as an unframed `send-keys -l` burst,
+// including short single-line messages.
+//
+// The unframed transport gives a TUI composer one character event per byte.
+// A composer that repaints per character (Codex) is still consuming that burst
+// when the submitting Enter arrives: its paste-burst detector classifies the
+// burst as a paste, turns the Enter into a newline inside the paste, and
+// re-arms its 120ms suppression window from that moment. The message then sits
+// in the composer, unsent, and a later Enter only re-arms the window again.
+// With the frame (tmux `paste-buffer -p`), the composer receives ONE paste
+// event, ingests it whole, and clears its suppression window, so the ordinary
+// pre-Enter delay is enough.
+//
+// Measured on codex-cli 0.159.3 under tmux 3.4 with a 513-byte single-line
+// body: unframed + Enter at 100ms and 200ms was never submitted and 500ms
+// submitted; the identical body framed + Enter at 50ms submitted every time.
+// Zero value (the default) keeps each tool's historical transport.
+func (s *Session) SetFramePastes(frame bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.framePastes = frame
+}
+
+// framesPastesForSend reports the SetFramePastes choice.
+func (s *Session) framesPastesForSend() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.framePastes
 }
 
 // SetInjectStatusLine controls whether ConfigureStatusBar modifies tmux settings.
