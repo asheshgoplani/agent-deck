@@ -129,6 +129,34 @@ func TestRemoteCreationExplicitFalseAndLineBreakTransport(t *testing.T) {
 	}
 }
 
+func TestRemoteCreationKimiPermissionMode(t *testing.T) {
+	args, err := remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: KimiPermissionNeverAsk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(args, " "), "--auto") {
+		t.Fatalf("never-ask lost --auto: %v", args)
+	}
+
+	args, err = remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: KimiPermissionAskWhenNeeded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(args, " "), "--yolo") {
+		t.Fatalf("ask-when-needed lost --yolo: %v", args)
+	}
+
+	args, err = remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--auto", "--yolo"} {
+		if strings.Contains(strings.Join(args, " "), flag) {
+			t.Fatalf("empty mode should not add %s: %v", flag, args)
+		}
+	}
+}
+
 func TestRemoteCreationQueryResumeRefusedBeforeFetch(t *testing.T) {
 	for _, opts := range []RemoteAddOptions{
 		{Tool: "claude", StartQuery: "query", ClaudeOptions: &ClaudeOptions{SessionMode: "resume"}},

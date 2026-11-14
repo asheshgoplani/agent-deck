@@ -253,6 +253,17 @@ func TestRemoteDialog_CodexYolo_Forwarded(t *testing.T) {
 	}
 }
 
+func TestRemoteDialog_KimiPermissionMode_Forwarded(t *testing.T) {
+	h, capture := openRemoteDialogAndTypeName(t, "myserver", "kimi", "kimi-task")
+	h.newDialog.kimiOptions.SetDefaults(session.KimiPermissionNeverAsk)
+
+	submitRemoteDialog(t, h)
+
+	if capture.opts.Tool != "kimi" || capture.opts.KimiPermissionMode != session.KimiPermissionNeverAsk {
+		t.Fatalf("opts = %+v, want kimi with never-ask", capture.opts)
+	}
+}
+
 // Fields the remote `add` cannot express are refused with a visible message
 // instead of being dropped.
 func TestRemoteDialog_CreationParityFields_Forwarded(t *testing.T) {
@@ -565,14 +576,14 @@ func TestRemoteDialog_RemoteHostHeader_KeepsDefaultGroup(t *testing.T) {
 
 func remoteDialogTestCatalog() *session.RemoteCreationCatalog {
 	fields := []session.RemoteCreationField{}
-	for _, name := range []string{"json", "quick", "sandbox", "yolo", "create-dir", "no-wait", "no-parent", "skip-permissions", "auto-mode", "chrome", "teammate-mode", "continue", "resume"} {
+	for _, name := range []string{"json", "quick", "sandbox", "yolo", "auto", "create-dir", "no-wait", "no-parent", "skip-permissions", "auto-mode", "chrome", "teammate-mode", "continue", "resume"} {
 		fields = append(fields, session.RemoteCreationField{Name: name})
 	}
 	for _, name := range []string{"t", "g", "c", "account", "model", "mcp", "resume-session", "extra-arg", "w", "startup-query", "additional-path", "effort", "parent"} {
 		fields = append(fields, session.RemoteCreationField{Name: name, TakesValue: true})
 	}
 	catalog := &session.RemoteCreationCatalog{Version: 1, DefaultTool: "", Commands: map[string][]session.RemoteCreationField{"add": fields, "launch": fields}}
-	for _, name := range []string{"", "claude", "codex", "gemini", "hermes", "opencode"} {
+	for _, name := range []string{"", "claude", "codex", "gemini", "hermes", "opencode", "kimi"} {
 		catalog.Tools = append(catalog.Tools, session.RemoteCreationTool{Name: name, Kind: name})
 	}
 	return catalog

@@ -1843,6 +1843,8 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 		opts.Yolo = d.IsGeminiYoloMode()
 	case command == "hermes":
 		opts.Yolo = d.GetHermesYoloMode()
+	case command == "kimi":
+		opts.KimiPermissionMode = d.GetKimiOptions().PermissionMode
 	}
 	if d.toolKind(command) == "codex" || command == "gemini" || command == "hermes" {
 		value := opts.Yolo
