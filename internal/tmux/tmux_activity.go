@@ -250,7 +250,11 @@ func (s *Session) expireStartupHandover() bool {
 	if strings.TrimSpace(restartTarget) == "" {
 		restartTarget = s.TmuxName()
 	}
-	message := fmt.Sprintf("Session startup timed out before the agent became interactive.\n\nRecovery: agent-deck session restart %s\n", shellescape.Quote(restartTarget))
+	message := "Session startup timed out before the agent became interactive.\n\n"
+	if hint := s.StartupTimeoutHint(); hint != "" {
+		message += hint + "\n\n"
+	}
+	message += fmt.Sprintf("Recovery: agent-deck session restart %s\n", shellescape.Quote(restartTarget))
 	// A tmux pane command normally inherits the pane's controlling terminal on
 	// stdin, which is what stty requires. Name /dev/tty explicitly so this does
 	// not silently depend on stdin surviving a wrapper change. If the pane has
@@ -439,4 +443,18 @@ func (s *Session) isSustainedActivity() bool {
 		slog.Bool("sustained", isSustained),
 	)
 	return isSustained
+}
+
+// SetStartupTimeoutHint sets the paragraph the startup-timeout hold shows
+// between its banner and the recovery command; "" shows none.
+func (s *Session) SetStartupTimeoutHint(hint string) {
+	s.startupTimeoutHint.Store(&hint)
+}
+
+// StartupTimeoutHint returns the hint set by SetStartupTimeoutHint.
+func (s *Session) StartupTimeoutHint() string {
+	if hint := s.startupTimeoutHint.Load(); hint != nil {
+		return *hint
+	}
+	return ""
 }
