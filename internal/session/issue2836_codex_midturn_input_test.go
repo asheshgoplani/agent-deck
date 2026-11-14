@@ -234,3 +234,29 @@ func TestIssue2836MarkerWithoutTurnNeverAsksForInput(t *testing.T) {
 		t.Fatalf("marker without a turn reconciled: accepted=%q err=%v", accepted, err)
 	}
 }
+
+// A caller that found the running turn with a wider ceiling reads its inputs
+// with the same ceiling and reaches the turn start.
+func TestIssue2836CodexTurnTookInputWithinWiderBudget(t *testing.T) {
+	start := time.Date(2026, 10, 21, 18, 0, 39, 0, time.UTC)
+	since := start.Add(time.Second)
+	var b strings.Builder
+	b.WriteString(issue2836TurnStart("turn-t", start) + "\n")
+	b.WriteString(issue2836UserItem("turn-t", start.Add(250*time.Millisecond)) + "\n")
+	padding := `{"type":"event_msg","payload":{"type":"agent_message","message":"` + strings.Repeat("x", 1024) + `"}}` + "\n"
+	for int64(b.Len()) <= codexTurnGenerationScanMaxBytes {
+		b.WriteString(padding)
+	}
+	b.WriteString(issue2836UserItem("turn-t", since.Add(time.Second)) + "\n")
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := codexTurnTookInputSinceFromRolloutWithin(path, "turn-t", since, 2*codexTurnGenerationScanMaxBytes)
+	if err != nil || !got {
+		t.Fatalf("wider budget: took = %v, err = %v; want true", got, err)
+	}
+	if got, err := codexTurnTookInputSinceFromRolloutWithin(path, "turn-t", since.Add(time.Hour), 2*codexTurnGenerationScanMaxBytes); err != nil || got {
+		t.Fatalf("wider budget, no input after since: took = %v, err = %v; want false", got, err)
+	}
+}

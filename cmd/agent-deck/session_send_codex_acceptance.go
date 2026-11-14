@@ -263,7 +263,7 @@ func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) 
 		return nil, errCodexGenerationUnavailable
 	}
 	if _, err := session.ReconcileCodexSubmissionMarker(
-		inst.ID, inst.CodexSessionID, fence.priorTurnGeneration, inst.CodexTurnTookInputSince,
+		inst.ID, inst.CodexSessionID, fence.priorTurnGeneration, codexAcceptanceTookInputSince(inst),
 	); err != nil {
 		lock.Release()
 		return nil, err
@@ -375,6 +375,18 @@ func codexAcceptanceGeneration(inst *session.Instance) (string, error) {
 		return "", fmt.Errorf("no Codex instance")
 	}
 	return inst.LatestCodexTurnGenerationWithBudget(codexAcceptanceGenerationScanBytes)
+}
+
+// codexAcceptanceTookInputSince is the running-turn input check the
+// acceptance path hands to ReconcileCodexSubmissionMarker. It scans with the
+// same budget as codexAcceptanceGeneration: the fence can name a running turn
+// whose start is beyond the 8 MiB default ceiling, and the default-budget
+// check then never reaches that start, reports no input, and keeps refusing
+// the send until an operator removes the marker by hand.
+func codexAcceptanceTookInputSince(inst *session.Instance) func(string, time.Time) (bool, error) {
+	return func(generation string, since time.Time) (bool, error) {
+		return inst.CodexTurnTookInputSinceWithBudget(generation, since, codexAcceptanceGenerationScanBytes)
+	}
 }
 
 func validateCodexAcceptanceFence(inst *session.Instance, fence codexAcceptanceFence) error {
@@ -506,12 +518,45 @@ func waitForAcceptedCodexTurn(
 	if delivery != deliverySubmitted || !fence.available {
 		return nil
 	}
+	rolloutVersion := func() string {
+		if inst == nil {
+			return ""
+		}
+		return inst.ResponseContentVersion(nil)
+	}
+	return pollAcceptedCodexTurn(inst, delivery, acceptedAt, fence, rolloutVersion,
+		func() (string, error) { return codexAcceptanceGeneration(inst) })
+}
+
+// pollAcceptedCodexTurn polls generation until it names a turn newer than the
+// fence or codexAcceptedTurnPollTimeout passes. A rollout whose newest turn
+// start is far back costs a wide backward scan (up to
+// codexAcceptanceGenerationScanBytes) on every read, so a poll is skipped
+// while rolloutVersion (path, size and mtime of the append-only rollout) is
+// unchanged since the last read: the newest turn start cannot have moved. The
+// version is taken before the read, so a write racing the read only changes
+// the next version and forces one more read; it never hides a new turn. An
+// unavailable version ("") or a failed read always reads again.
+func pollAcceptedCodexTurn(
+	inst *session.Instance,
+	delivery string,
+	acceptedAt time.Time,
+	fence codexAcceptanceFence,
+	rolloutVersion func() string,
+	generation func() (string, error),
+) *codexAcceptedTurnReceipt {
 	deadline := time.Now().Add(codexAcceptedTurnPollTimeout)
+	readAt := ""
 	for {
-		generation, err := codexAcceptanceGeneration(inst)
-		if err == nil {
-			if receipt := newCodexAcceptedTurnReceipt(inst, delivery, acceptedAt, fence, generation); receipt != nil {
-				return receipt
+		version := rolloutVersion()
+		if version == "" || version != readAt {
+			readAt = ""
+			current, err := generation()
+			if err == nil {
+				if receipt := newCodexAcceptedTurnReceipt(inst, delivery, acceptedAt, fence, current); receipt != nil {
+					return receipt
+				}
+				readAt = version
 			}
 		}
 		if !time.Now().Before(deadline) {
