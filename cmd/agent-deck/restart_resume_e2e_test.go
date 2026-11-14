@@ -28,7 +28,9 @@ import (
 // hooks, which it skips when .fake-nohooks exists in the project. With
 // .fake-quick-start it resumes straight to its prompt, as real Claude does.
 // With .fake-late-transcript the transcript is first written by the first
-// prompt, as a fresh Claude does (#2954).
+// prompt, as a fresh Claude does (#2954). While .fake-hold-start exists the
+// resumed process holds its SessionStart back (up to 60 s), so a test can read
+// what the restart left before the daemon judges the boot.
 const restartFakeClaude = `#!/bin/sh
 sid=nosid
 while [ $# -gt 0 ]; do
@@ -74,7 +76,7 @@ elif [ -e "$cwd/.fake-quick-start" ]; then # real Claude: straight back to its p
     (n=0; until grep -q SessionEnd "$cwd/.fake/hooks-fired" || [ $n -ge 100 ]; do sleep 0.1; n=$((n+1)); done; hook SessionStart) &
   fi
 else
-  (sleep 4; hook SessionStart) &
+  (sleep 4; n=0; while [ -e "$cwd/.fake-hold-start" ] && [ $n -lt 600 ]; do sleep 0.1; n=$((n+1)); done; hook SessionStart) &
 fi
 python3 -I "$cwd/.fake/claude"
 `
@@ -431,12 +433,17 @@ func TestRestartE2E_TurnSeqPath(t *testing.T) {
 				writeFile(t, copyTo, string(data), 0o600)
 			}
 			writeFile(t, filepath.Join(child.project, ".fake-phase"), "idle", 0o600)
+			// The resumed process holds its SessionStart until the token is
+			// read: until then the daemon cannot judge the boot and spend it.
+			hold := filepath.Join(child.project, ".fake-hold-start")
+			writeFile(t, hold, "", 0o600)
 			if out, errOut, code := e.run("", env, "session", "restart", "--force", child.id); code != 0 {
 				t.Fatalf("restart: exit %d\n%s\n%s", code, out, errOut)
 			}
-			// The token, before the resumed process's SessionStart (4 s
-			// later) lets the daemon judge the boot.
 			tok := restartTokenFile(t, e, child.id)
+			if err := os.Remove(hold); err != nil {
+				t.Fatal(err)
+			}
 			if !strings.Contains(tok, `"settled_turn_seq":`) {
 				t.Fatalf("the token must record the settled turn_seq, got %s", tok)
 			}
