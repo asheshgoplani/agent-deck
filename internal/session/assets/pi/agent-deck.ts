@@ -241,20 +241,23 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
 
   // settle answers the pending doorbell; it clears the timer, so the timer and
   // the run start cannot both answer.
+  // recordSubmitted notes ids whose run has started, for the duplicate window.
+  const recordSubmitted = (ids: string[]) => {
+    const now = performance.now();
+    for (const id of ids) {
+      submitted.delete(id);
+      submitted.set(id, now);
+    }
+    for (const id of submitted.keys()) {
+      if (submitted.size <= MAX_SEEN_IDS) break;
+      submitted.delete(id);
+    }
+  };
+
   const settle = (wake: Wake, state: "submitted" | "queued") => {
     pending = null;
     clearTimeout(wake.timer);
-    if (state === "submitted") {
-      const now = performance.now();
-      for (const id of wake.ids) {
-        submitted.delete(id);
-        submitted.set(id, now);
-      }
-      for (const id of submitted.keys()) {
-        if (submitted.size <= MAX_SEEN_IDS) break;
-        submitted.delete(id);
-      }
-    }
+    if (state === "submitted") recordSubmitted(wake.ids);
     reply(wake.conn, { id: wake.nonce, state });
   };
 
@@ -374,14 +377,44 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
     }
   };
 
-  const start = async (_event?: any, context?: any) => {
+  // The bind in progress, so a stop that arrives while it is awaited waits for
+  // it and then tears it down, instead of returning early and leaving a
+  // listener published after shutdown.
+  let starting: Promise<void> | null = null;
+
+  const start = (_event?: any, context?: any): Promise<void> => {
     ctx = context;
-    if (server) return;
+    if (server) return Promise.resolve();
+    if (!starting) starting = bind().finally(() => (starting = null));
+    return starting;
+  };
+
+  const bind = async () => {
     let priv = "";
     try {
       const dir = path.dirname(sockPath);
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      fs.chmodSync(dir, 0o700);
+      // Only the launch's own layout, <runtime dir>/pi/<name>.sock, is served:
+      // any other value is a mistake whose directory must not be created or
+      // tightened (a stray ~/w.sock would chmod the home directory).
+      if (!path.isAbsolute(sockPath) || path.basename(dir) !== "pi") {
+        throw new Error("not an agent-deck socket path (want <runtime dir>/pi/<name>.sock)");
+      }
+      fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+      try {
+        fs.mkdirSync(dir, { mode: 0o700 });
+      } catch (e: any) {
+        if (e.code !== "EEXIST") throw e;
+      }
+      // chmod follows a symlink, so the directory is opened without following
+      // one, checked to be this user's, and tightened through that descriptor.
+      const dirFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+      try {
+        const st = fs.fstatSync(dirFd);
+        if (!st.isDirectory() || st.uid !== process.getuid?.()) throw new Error(dir + " is not a directory of this user");
+        fs.fchmodSync(dirFd, 0o700);
+      } finally {
+        fs.closeSync(dirFd);
+      }
       // A live socket the probe finds is never replaced. Two starters that both
       // get past the probe resolve as last-starter-wins (see above).
       if (await isLive(sockPath)) {
@@ -423,6 +456,7 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   };
 
   const stop = async () => {
+    if (starting) await starting;
     const srv = server;
     if (!srv) return;
     server = null;
@@ -445,10 +479,15 @@ function serveWakeSocket(pi: ExtensionAPI, sockPath: string) {
   };
 
   // The run a doorbell asked for has started: answer it now, before the caller
-  // awaits hook-handler.
+  // awaits hook-handler. Its ids count for the duplicate window from here, read
+  // from the run's own message: a wake answered queued, or whose client went
+  // away, is no longer pending when its run starts.
   const rang = (event?: any) => {
-    const nonce = event?.messageType === "custom" ? event.message?.details?.nonce : undefined;
-    if (pending && pending.nonce === nonce) settle(pending, "submitted");
+    const isWake = event?.messageType === "custom" && event.message?.customType === WAKE_TYPE;
+    const details = isWake ? event.message?.details : undefined;
+    if (pending && pending.nonce === details?.nonce) settle(pending, "submitted");
+    const ids = details?.ids;
+    if (Array.isArray(ids) && ids.every((x: unknown) => typeof x === "string" && x !== "")) recordSubmitted(ids);
   };
 
   return { start, stop, rang };
@@ -532,7 +571,8 @@ export default function (pi: ExtensionAPI) {
     await emit("session_shutdown");
   });
   // A doorbell is answered before hook-handler is awaited. A human prompt
-  // carries no nonce.
+  // carries no nonce. Registered with or without the socket: a listed parent
+  // relaunched without one is drained through its run starts.
   pi.on("before_agent_start", async (event?: any, ctx?: any) => {
     // Once per prompt: the next agent_start opens a new run (see runOpen).
     runOpen = false;

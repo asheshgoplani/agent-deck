@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -173,7 +174,7 @@ func TestExecuteSend_SlowRepaintAfterSuggestionSubmitsExactlyOnce(t *testing.T) 
 func TestSendInitialKeysChecked_OtherTextStillWithholdsEnter(t *testing.T) {
 	const msg = "AUTOMATED_GHOST_PROBE_MESSAGE"
 	mock := &mockSendRetryTarget{panes: []string{ghostPane("❯ something the operator typed")}}
-	err := sendInitialKeysChecked(mock, msg, 0, true)
+	err := send.TypeAndSubmit(mock, msg, 0, true)
 	if err == nil || !strings.Contains(err.Error(), "other text") {
 		t.Fatalf("want Enter withheld at foreign text, got %v", err)
 	}

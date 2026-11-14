@@ -13,9 +13,12 @@ import (
 // claudeTurnEdge returns "prompt" for a Claude UserPromptSubmit, "stop" for
 // a Claude Stop, "start" for a SessionStart (a fresh or resumed session
 // starts with no unattended turn) and "" for anything else (Codex and Cursor events carry a
-// turn_id or conversation_id and are not Claude turns).
+// turn_id or conversation_id and are not Claude turns). A pi event is not a
+// Claude turn either: a pi started inside a Claude turn inherits its
+// AGENTDECK_INSTANCE_ID, and its session_start must not clear that turn's
+// origin.
 func claudeTurnEdge(p hookPayload) string {
-	if rawString(p.TurnID) != "" || p.ConversationID != "" {
+	if rawString(p.TurnID) != "" || p.ConversationID != "" || p.Source == "pi" {
 		return ""
 	}
 	switch normalizeHookEventKey(p.HookEventName) {
