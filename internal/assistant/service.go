@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
+
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -99,17 +101,14 @@ func (s *Service) Authenticate(token string) (Record, error) {
 // plus want. Running it rotates the token.
 func RaiseScopeCommand(rec Record, want Scope) string {
 	scopes := withScope(rec.Scopes, want)
-	cmd := "agent-deck"
-	if rec.Profile != "" && rec.Profile != "default" {
-		cmd += " -p " + rec.Profile
-	}
+	cmd := deckCommand(rec.Profile)
 	kind := rec.Assistant
 	if kind == "" {
 		kind = rec.Name
 	}
-	cmd += " connect " + kind
+	cmd += " connect " + shellescape.Quote(kind)
 	if rec.Name != kind {
-		cmd += " --name " + rec.Name
+		cmd += " --name " + shellescape.Quote(rec.Name)
 	}
 	return cmd + " --scopes " + ScopeList(scopes)
 }

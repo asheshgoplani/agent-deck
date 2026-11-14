@@ -271,7 +271,7 @@ func raiseScopeHint(rec Record) string {
 // deckCommand is "agent-deck" plus -p for a non-default profile.
 func deckCommand(profile string) string {
 	if profile != "" && profile != "default" {
-		return "agent-deck -p " + profile
+		return "agent-deck -p " + shellescape.Quote(profile)
 	}
 	return "agent-deck"
 }
