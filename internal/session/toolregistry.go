@@ -88,8 +88,10 @@ func probeInstalled(command string) bool {
 
 // Init builds a Registry from the static built-ins plus the supplied custom
 // tools (typically config.Tools from LoadUserConfig). Custom entries whose name
-// shadows a built-in are dropped with a warning (precedence rule (a)), except
-// entries that only set detection patterns, which MergeToolPatterns applies.
+// shadows a built-in are dropped with a warning (precedence rule (a)). Their
+// detection pattern fields are still applied by MergeToolPatterns, so an entry
+// that sets only those is accepted silently, and one that also sets other
+// fields warns that only the patterns are used.
 //
 // Init is the single explicit constructor — tests build registries directly via
 // Init(map[string]ToolDef{...}) rather than poking package globals. It builds an
@@ -123,12 +125,19 @@ func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool, hiddenTools
 			continue
 		}
 		if _, isBuiltin := r.builtins[name]; isBuiltin {
-			if patternOnlyOverride(name, def) {
-				continue
+			applied, ignored := builtinOverrideFields(name, def)
+			switch {
+			case applied && !ignored:
+				// Honored as is, nothing to report.
+			case applied:
+				registryLog.Warn("custom tool for a built-in: only its detection patterns are used, other fields are ignored",
+					"name", name,
+					"hint", "keep only the pattern fields here, and move the rest to a renamed custom tool with compatible_with = \""+name+"\"")
+			default:
+				registryLog.Warn("ignored custom tool: name shadows a built-in",
+					"name", name,
+					"hint", "rename your custom tool and set compatible_with = \""+name+"\" instead")
 			}
-			registryLog.Warn("ignored custom tool: name shadows a built-in",
-				"name", name,
-				"hint", "rename your custom tool and set compatible_with = \""+name+"\" instead")
 			continue
 		}
 		r.custom[name] = def
@@ -147,19 +156,19 @@ func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool, hiddenTools
 	return r
 }
 
-// patternOnlyOverride reports whether a [tools.<builtin>] entry sets only the
-// detection pattern fields that MergeToolPatterns applies on top of the
-// built-in's own defaults. Such an entry is honored, not ignored, so it is not
-// reported as a shadow. A built-in without pattern defaults gets no merge and
-// still warns.
-func patternOnlyOverride(name string, def ToolDef) bool {
-	if tmux.DefaultRawPatterns(name) == nil {
-		return false
-	}
+// builtinOverrideFields splits a [tools.<builtin>] entry into what is used and
+// what is not. applied is true when the entry sets detection pattern fields and
+// the built-in has pattern defaults, which is when MergeToolPatterns applies
+// them. ignored is true when the entry sets any other field, which the built-in
+// never takes. A built-in without pattern defaults gets no merge, so its pattern
+// fields count as neither.
+func builtinOverrideFields(name string, def ToolDef) (applied, ignored bool) {
 	rest := def
 	rest.BusyPatterns, rest.PromptPatterns, rest.SpinnerChars = nil, nil, nil
 	rest.BusyPatternsExtra, rest.PromptPatternsExtra, rest.SpinnerCharsExtra = nil, nil, nil
-	return !reflect.DeepEqual(def, rest) && reflect.DeepEqual(rest, ToolDef{})
+	applied = tmux.DefaultRawPatterns(name) != nil && !reflect.DeepEqual(def, rest)
+	ignored = !reflect.DeepEqual(rest, ToolDef{})
+	return applied, ignored
 }
 
 // runInstalledProbe resolves every registered tool's command against the host

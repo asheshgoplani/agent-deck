@@ -281,18 +281,23 @@ func TestRegistry_IconAndColor(t *testing.T) {
 // fields is not ignored and must not be reported as a shadow. Entries that set
 // anything else, or name a built-in without pattern defaults, still warn.
 func TestRegistry_ShadowWarningSkipsPatternOnlyOverrides(t *testing.T) {
-	const shadowMsg = "ignored custom tool: name shadows a built-in"
+	const (
+		shadowMsg  = "ignored custom tool: name shadows a built-in"
+		partialMsg = "custom tool for a built-in: only its detection patterns are used, other fields are ignored"
+	)
 	cases := []struct {
 		name string
 		tool string
 		def  ToolDef
-		warn bool
+		want string // expected warning, "" for none
 	}{
-		{"pattern only on a built-in with defaults", "pi", ToolDef{BusyPatterns: []string{"Working"}}, false},
-		{"extras only", "claude", ToolDef{BusyPatternsExtra: []string{"thinking"}, SpinnerCharsExtra: []string{"*"}}, false},
-		{"command shadows the built-in", "claude", ToolDef{Command: "my-fork-of-claude"}, true},
-		{"patterns plus a command", "pi", ToolDef{Command: "my-pi", BusyPatterns: []string{"Working"}}, true},
-		{"built-in without pattern defaults", "hermes", ToolDef{BusyPatterns: []string{"busy"}}, true},
+		{"pattern only on a built-in with defaults", "pi", ToolDef{BusyPatterns: []string{"Working"}}, ""},
+		{"extras only", "claude", ToolDef{BusyPatternsExtra: []string{"thinking"}, SpinnerCharsExtra: []string{"*"}}, ""},
+		{"command shadows the built-in", "claude", ToolDef{Command: "my-fork-of-claude"}, shadowMsg},
+		{"patterns plus a command", "pi", ToolDef{Command: "my-pi", BusyPatterns: []string{"Working"}}, partialMsg},
+		{"extras plus an icon", "claude", ToolDef{Icon: "C", PromptPatternsExtra: []string{"> "}}, partialMsg},
+		{"built-in without pattern defaults", "hermes", ToolDef{BusyPatterns: []string{"busy"}}, shadowMsg},
+		{"built-in without pattern defaults, patterns plus a command", "hermes", ToolDef{Command: "my-hermes", BusyPatterns: []string{"busy"}}, shadowMsg},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -306,8 +311,10 @@ func TestRegistry_ShadowWarningSkipsPatternOnlyOverrides(t *testing.T) {
 			if def := r.GetCustom(tc.tool); def != nil {
 				t.Errorf("GetCustom(%q) = %+v, want nil (built-in wins)", tc.tool, def)
 			}
-			if got := len(capture.WithMessage(shadowMsg)) > 0; got != tc.warn {
-				t.Errorf("shadow warning logged = %v, want %v", got, tc.warn)
+			for _, msg := range []string{shadowMsg, partialMsg} {
+				if got, want := len(capture.WithMessage(msg)) > 0, msg == tc.want; got != want {
+					t.Errorf("warning %q logged = %v, want %v", msg, got, want)
+				}
 			}
 		})
 	}
