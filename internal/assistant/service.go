@@ -61,7 +61,8 @@ type Service struct {
 	Exec   Executor
 	Limits Limits
 	// ReadOnly refuses every write tool (send, approve, launch), whatever
-	// the token's scopes. `agent-deck web --read-only` sets it.
+	// the token's scopes. The web server sets it for --read-only and for
+	// [web].mutations_enabled = false.
 	ReadOnly bool
 	// Version is reported in MCP initialize.
 	Version string

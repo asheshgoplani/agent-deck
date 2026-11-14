@@ -28,7 +28,10 @@ func (s *Server) SetAssistantService(svc *assistant.Service, command string) {
 		s.assistant = nil
 		return
 	}
-	if s.cfg.ReadOnly {
+	// A server that refuses owner writes ([web].mutations_enabled = false or
+	// --read-only) must not let an assistant token write either, whatever
+	// scopes the token was minted with from the CLI.
+	if s.cfg.ReadOnly || !s.cfg.WebMutations {
 		svc.ReadOnly = true
 	}
 	s.assistant = &assistantWiring{svc: svc, http: assistant.NewHTTPHandler(svc), command: command}
