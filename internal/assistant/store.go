@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // TokenPrefix starts every assistant token, so one is recognisable on sight
@@ -48,7 +49,9 @@ type storeFile struct {
 
 // Store keeps token records in <state dir>/assistants.json (0600). Readers
 // re-read the file whenever its mtime or size changes, so a revoke from the
-// CLI takes effect on the next call of a running server.
+// CLI takes effect on the next call of a running server. Writes run under a
+// cross-process lock (lockForWrite), so two processes never undo each
+// other's change.
 type Store struct {
 	dir string
 
@@ -166,6 +169,30 @@ func (s *Store) saveLocked() error {
 	return nil
 }
 
+// storeLockWait bounds how long a write waits for another process holding
+// the store lock.
+const storeLockWait = 10 * time.Second
+
+// lockForWrite takes the cross-process lock that every reload-change-save
+// of the records file runs under (a running web server answering /connect
+// and an `agent-deck connect` / `connect revoke` from the CLI are separate
+// processes, each with its own Store). It uses the repo's one config-file
+// lock (a flock on assistants.json.lock plus an in-process mutex). Lock
+// order is always this lock, then s.mu; readers take only s.mu, because
+// writers replace the file by rename.
+func (s *Store) lockForWrite() (*session.ConfigFileLock, error) {
+	// Create the state dir 0700 before the lock helper would create it
+	// with a looser mode.
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating state dir: %w", err)
+	}
+	lock, err := session.AcquireConfigFileLockTimeout(s.Path(), storeLockWait)
+	if err != nil {
+		return nil, fmt.Errorf("locking assistant token store: %w", err)
+	}
+	return lock, nil
+}
+
 // Create makes a new token for name, replacing (rotating) any existing one.
 // It writes the raw token to TokenFile(name) (0600, directory 0700) and
 // returns it; only its hash is stored.
@@ -189,6 +216,11 @@ func (s *Store) Create(name, assistant string, scopes []Scope, profile string) (
 		CreatedAt:   time.Now().UTC().Truncate(time.Second),
 	}
 
+	lock, err := s.lockForWrite()
+	if err != nil {
+		return "", Record{}, err
+	}
+	defer lock.Release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
@@ -212,6 +244,11 @@ func (s *Store) Create(name, assistant string, scopes []Scope, profile string) (
 // Revoke deletes the record for name and its token file. It reports whether
 // a record existed. A running server refuses the token on its next call.
 func (s *Store) Revoke(name string) (bool, error) {
+	lock, err := s.lockForWrite()
+	if err != nil {
+		return false, err
+	}
+	defer lock.Release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
