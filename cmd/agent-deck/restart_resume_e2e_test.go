@@ -397,3 +397,84 @@ func TestRestartE2E_IdleRestartWithoutBusyFrameSendsInfoLine(t *testing.T) {
 		})
 	}
 }
+
+// Issue #3012 step 3: with agent-deck's Claude hooks installed in the child's
+// config dir, the restart token records the settled turn_seq and the judge
+// reads it. The fake fires its hooks through the real hook handler, which
+// keeps the count. In the second case the restart runs with CLAUDE_CONFIG_DIR
+// set in its shell, so it records another transcript path than the daemon
+// resolves: the transcript rule would call the boot news (the old reply
+// again), and only the count gives the one info line.
+func TestRestartE2E_TurnSeqPath(t *testing.T) {
+	t.Parallel()
+	for _, otherPath := range []bool{false, true} {
+		t.Run(map[bool]string{false: "same transcript path", true: "restart resolves another transcript path"}[otherPath], func(t *testing.T) {
+			t.Parallel()
+			e := newRestartEnv(t)
+			e.mustRun("hooks", "install")
+			parent, child := setupIdleChild(t, e)
+			var env []string
+			if otherPath {
+				other := filepath.Join(e.root, "claude-b")
+				env = []string{"CLAUDE_CONFIG_DIR=" + other}
+				if _, errOut, code := e.run("", env, "hooks", "install"); code != 0 {
+					t.Fatalf("hooks install in %s: %s", other, errOut)
+				}
+				data, err := os.ReadFile(child.transcript)
+				if err != nil {
+					t.Fatal(err)
+				}
+				copyTo := filepath.Join(other, "projects", filepath.Base(filepath.Dir(child.transcript)), filepath.Base(child.transcript))
+				if err := os.MkdirAll(filepath.Dir(copyTo), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, copyTo, string(data), 0o600)
+			}
+			writeFile(t, filepath.Join(child.project, ".fake-phase"), "idle", 0o600)
+			if out, errOut, code := e.run("", env, "session", "restart", "--force", child.id); code != 0 {
+				t.Fatalf("restart: exit %d\n%s\n%s", code, out, errOut)
+			}
+			// The token, before the resumed process's SessionStart (4 s
+			// later) lets the daemon judge the boot.
+			tok := restartTokenFile(t, e, child.id)
+			if !strings.Contains(tok, `"settled_turn_seq":`) {
+				t.Fatalf("the token must record the settled turn_seq, got %s", tok)
+			}
+			if otherPath && !strings.Contains(tok, "claude-b") {
+				t.Fatalf("precondition: the restart records the other transcript path, got %s", tok)
+			}
+			e.waitPane(child, "child back at its prompt", func(p string) bool { return strings.Contains(p, "All four steps ran.") })
+			issue2530WaitFor(t, 10*time.Second, "SessionEnd and SessionStart from the restart", func() bool {
+				b, _ := os.ReadFile(filepath.Join(child.project, ".fake", "hooks-fired"))
+				return strings.Count(string(b), "SessionStart") >= 2 && strings.Contains(string(b), "SessionEnd")
+			})
+			time.Sleep(8 * time.Second) // several daemon passes after the boot
+			recs := e.pendingFrom(parent.id, child.id)
+			if len(recs) != 1 || recs[0]["tier"] != "info" || recs[0]["to_status"] == "error" ||
+				!strings.Contains(recordText(recs[0]), "conversation resumed, no new turn") {
+				t.Fatalf("an idle restart judged by turn_seq is exactly the one info line, got %d: %v", len(recs), recs)
+			}
+		})
+	}
+}
+
+// restartTokenFile is child id's restart token as written, from the isolated
+// data dir.
+func restartTokenFile(t *testing.T, e *deliveryEnv, id string) string {
+	t.Helper()
+	var found string
+	_ = filepath.WalkDir(e.root, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && filepath.Base(path) == id+".json" && filepath.Base(filepath.Dir(path)) == "restart-resume" {
+			found = path
+		}
+		return nil
+	})
+	if found == "" {
+		t.Fatalf("no restart token for %s under %s", id, e.root)
+	}
+	data, err := os.ReadFile(found)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
