@@ -122,7 +122,7 @@ agent-deck list [--json] [--all] [--no-archived]
 agent-deck ls  # Alias
 ```
 
-`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`.
+`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
 
 A live `list --json` captures every live pane with one tmux call per socket. When that call times out (a host too loaded to answer it), the listing does not fall back to one `capture-pane` per session: those rows carry `"status_source": "stale"`: status is the last one observed in this process (the default for a fresh process), `substate` is the last one seen or absent, and `--stats` reports how many panes were skipped as `captures_skipped` (absent when none).
 
@@ -371,7 +371,7 @@ Auto-detects current session if no ID provided.
 - `opencode_session_id`: the native OpenCode conversation id, present for OpenCode sessions only (an empty string until one is known or set with `session set <id> opencode-session-id <ses_...>`)
 - Attached MCPs (local, global, project)
 - tmux session name
-- `archived` (always present) and `archived_at` (only when archived), as in `list --json`. Archiving records `stopped`, including for a session whose pane was already gone, and like `session stop` it releases a 401 auth hold, so restarting the session after `session unarchive` does not need `--force`.
+- `archived` (always present, as in `list --json`) and `archived_at` (only when archived). `list --json` differs here: it always carries `archived_at`, set to the zero time `0001-01-01T00:00:00Z` for a session that is not archived, so read `archived` rather than the presence of `archived_at`. Archiving records `stopped`, including for a session whose pane was already gone, and like `session stop` it releases a 401 auth hold, so restarting the session after `session unarchive` does not need `--force`.
 - `substate` / `substate_detail` (omitted when none). Substate `background-work` (Claude) means the foreground turn ended but a Workflow, background agents, shells or a Monitor are still in flight: status is `running`, `substate_detail` reads e.g. `workflow comms-followon-round3 3/5 · 18m32s`, and a `background_work` object carries the structure:
 
 | Field | Meaning |
@@ -1113,6 +1113,8 @@ agent-deck skill source rm <name>
 agent-deck group list [--json] [-q]
 agent-deck group show <name> [--resolved] [--json]   # --resolved adds the effective claude config
 ```
+
+`group list` counts each group's sessions together with its subgroups'. Like `status`, it leaves archived sessions out of every count: the per-group session count and status counts and the total (`session_count`, `status` and `total_sessions` in `--json`). A group whose sessions are all archived is still listed, with a count of 0, as an empty group is.
 
 ### group create
 

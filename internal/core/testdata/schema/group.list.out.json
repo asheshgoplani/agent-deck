@@ -40,7 +40,7 @@
           "type": "string"
         },
         "session_count": {
-          "description": "Sessions in this group and its subgroups",
+          "description": "Sessions in this group and its subgroups, archived ones left out",
           "type": "integer"
         },
         "status": {
