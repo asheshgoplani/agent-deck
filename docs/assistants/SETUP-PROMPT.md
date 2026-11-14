@@ -227,6 +227,10 @@ request (it is not stored). No public address possible? Use plain HTTP from your
 
 ### Slack / Telegram bots and other HTTP clients
 
+Scopes limit what the bot can do through these routes; they are not a sandbox. A web server started without an owner token
+answers its owner API to any local caller, with no token at all, so run the server the bot talks to with an owner token:
+`agent-deck web --no-tui --token-file OWNER_TOKEN_FILE`. Tell the user this before you connect an HTTP bot.
+
 Put `AGENTDECK_URL` (for example `http://127.0.0.1:8420`) and `AGENTDECK_ASSISTANT_TOKEN` in the bot's environment and call:
 
 | Call | Scope |

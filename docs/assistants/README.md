@@ -4,6 +4,11 @@ Let an outside assistant (Hermes, OpenClaw, Claude, Codex, Grok, a Slack or Tele
 agent-deck sessions and, only if you allow it, drive them. Every way in ends in the same thing: one scoped token and the same
 seven tools. **Read-only by default.**
 
+What scopes protect: they limit what the assistant can do through the agent-deck tools and routes. They are not a sandbox.
+An assistant on the same machine that can run shell commands can run `agent-deck` itself, and one that can reach a web
+server started without an owner token can call the owner API with no token at all. If you connect an HTTP bot, start the
+server with an owner token: `agent-deck web --no-tui --token-file OWNER_TOKEN_FILE`.
+
 ## Three ways in
 
 1. **Paste one line into your assistant** (recommended). It checks agent-deck, connects itself read-only, writes its own
@@ -67,7 +72,7 @@ itself is in `assistants/<name>.token` (0600) in the agent-deck data directory.
 
 | Assistant | `connect` kind | How it connects | Config | Guide / skill |
 |---|---|---|---|---|
-| Hermes Agent | `hermes` | stdio MCP | `hermes mcp add` or `~/.hermes/config.yaml` | [skills/hermes/SKILL.md](skills/hermes/SKILL.md) to `~/.hermes/skills/agent-deck/` |
+| Hermes Agent | `hermes` | stdio MCP | `hermes mcp add` then `hermes config set mcp_servers.agentdeck.trust untrusted`, or `~/.hermes/config.yaml` | [skills/hermes/SKILL.md](skills/hermes/SKILL.md) to `~/.hermes/skills/agent-deck/` |
 | OpenClaw | `openclaw` | stdio MCP | `openclaw mcp set` or `~/.openclaw/openclaw.json` | [skills/openclaw/SKILL.md](skills/openclaw/SKILL.md) to `~/.openclaw/workspace/skills/agent-deck/` |
 | Claude Code | `claude` | stdio MCP | `claude mcp add -s user` | [skills/claude/SKILL.md](skills/claude/SKILL.md) to `~/.claude/skills/agent-deck/` |
 | Claude Desktop | `claude` | stdio MCP | `claude_desktop_config.json` | project instructions |
