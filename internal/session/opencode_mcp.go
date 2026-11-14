@@ -96,9 +96,10 @@ func setOpenCodeMCPServers(config map[string]interface{}, servers map[string]ope
 // catalog is dropped unless it is in desired, so desired must be built from
 // the full set of agent-deck-managed names (a catalog-named entry left out of
 // it is removed). Entries not in the catalog are never touched. When a managed
-// entry keeps its type, keys agent-deck does not emit are kept; when its type
-// changes (remote <-> local), only timeout and enabled carry over so stale
-// url, headers, command or environment cannot survive.
+// entry keeps its type and target (same url for remote, same command for
+// local), keys agent-deck does not emit are kept; when its type or target
+// changes, only timeout and enabled carry over so stored headers, oauth or
+// environment are never sent to a different endpoint or command.
 func mergeOpenCodeServerMap(existing map[string]interface{}, desired map[string]opencodeMCPServer) map[string]interface{} {
 	managed := GetAvailableMCPs()
 	out := make(map[string]interface{}, len(existing)+len(desired))
@@ -112,8 +113,9 @@ func mergeOpenCodeServerMap(existing map[string]interface{}, desired map[string]
 		if prev, ok := existing[name].(map[string]interface{}); ok {
 			prevType, _ := prev["type"].(string)
 			sameType := prevType == "" || prevType == srv.Type
+			keepAll := sameType && sameOpenCodeTarget(prev, srv)
 			for k, v := range prev {
-				if sameType || k == "timeout" || k == "enabled" {
+				if keepAll || k == "timeout" || k == "enabled" {
 					entry[k] = v
 				}
 			}
@@ -129,6 +131,21 @@ func mergeOpenCodeServerMap(existing map[string]interface{}, desired map[string]
 		out[name] = entry
 	}
 	return out
+}
+
+// sameOpenCodeTarget reports whether prev points at the same endpoint (remote)
+// or command (local) as srv, so credentials stored on prev were meant for it.
+func sameOpenCodeTarget(prev map[string]interface{}, srv opencodeMCPServer) bool {
+	if srv.Type == "remote" {
+		url, _ := prev["url"].(string)
+		return url == srv.URL
+	}
+	prevCmd, err := json.Marshal(prev["command"])
+	if err != nil {
+		return false
+	}
+	cmd, err := json.Marshal(srv.Command)
+	return err == nil && string(prevCmd) == string(cmd)
 }
 
 // opencodeMCPConfigDirOverride allows tests to override ~/.config/opencode.

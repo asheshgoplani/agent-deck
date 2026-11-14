@@ -103,8 +103,9 @@ func TestWriteOpenCodeGlobalMCP_AttachCarriesConfiguredHeaders(t *testing.T) {
 
 func TestWriteOpenCodeGlobalMCP_AttachKeepsExistingHeadersWhenNoneConfigured(t *testing.T) {
 	path := setupOpenCodeMergeFixture(t)
+	// Same URL as the seed entry: hand-added headers belong to this endpoint.
 	cfg := &UserConfig{MCPs: map[string]MCPDef{
-		"cat": {URL: "https://cat.invalid/mcp", Transport: "http"},
+		"cat": {URL: "https://old.invalid/mcp", Transport: "http"},
 	}}
 	t.Cleanup(resetUserConfigCache(t, cfg))
 	if err := WriteOpenCodeGlobalMCP([]string{"cat"}); err != nil {
@@ -202,5 +203,75 @@ func TestWriteOpenCodeGlobalMCP_LegacyServerNamedServers(t *testing.T) {
 	}
 	if _, ok := cfg.MCP["cat"]; !ok {
 		t.Fatalf("reader does not see the attached entry: %v", cfg.MCP)
+	}
+}
+
+// A stored secret is only valid for the endpoint or command it was written
+// for. When the catalog moves a managed entry to a different URL (remote) or
+// command (local), the old headers, oauth and environment must not follow it.
+func TestWriteOpenCodeGlobalMCP_TargetChangeDropsStoredCredentials(t *testing.T) {
+	path := setupOpenCodeMergeFixture(t)
+	seed := `{"mcp": {
+  "cat": {"type": "remote", "url": "https://old.invalid/mcp", "headers": {"Authorization": "Bearer old"}, "oauth": {"clientSecret": "s"}, "timeout": 5000, "enabled": true},
+  "dog": {"type": "local", "command": ["old-bin"], "environment": {"TOKEN": "old"}, "timeout": 7000}
+}}`
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &UserConfig{MCPs: map[string]MCPDef{
+		"cat": {URL: "https://new.invalid/mcp", Transport: "http"},
+		"dog": {Command: "new-bin"},
+	}}
+	t.Cleanup(resetUserConfigCache(t, cfg))
+	if err := WriteOpenCodeGlobalMCP([]string{"cat", "dog"}); err != nil {
+		t.Fatal(err)
+	}
+	_, mcp := readOpenCodeMCPMap(t, path)
+	cat, _ := mcp["cat"].(map[string]any)
+	if cat["url"] != "https://new.invalid/mcp" {
+		t.Fatalf("url not updated: %v", cat)
+	}
+	for _, stale := range []string{"headers", "oauth"} {
+		if _, ok := cat[stale]; ok {
+			t.Fatalf("stored %q carried to a different url: %v", stale, cat)
+		}
+	}
+	if cat["timeout"] != float64(5000) || cat["enabled"] != true {
+		t.Fatalf("timeout/enabled should carry over: %v", cat)
+	}
+	dog, _ := mcp["dog"].(map[string]any)
+	if _, ok := dog["environment"]; ok {
+		t.Fatalf("stored environment carried to a different command: %v", dog)
+	}
+	if dog["timeout"] != float64(7000) {
+		t.Fatalf("timeout should carry over: %v", dog)
+	}
+}
+
+func TestWriteOpenCodeGlobalMCP_SameTargetKeepsUserKeys(t *testing.T) {
+	path := setupOpenCodeMergeFixture(t)
+	seed := `{"mcp": {
+  "cat": {"type": "remote", "url": "https://cat.invalid/mcp", "headers": {"Authorization": "Bearer mine"}, "oauth": {"clientId": "c"}},
+  "dog": {"type": "local", "command": ["echo", "woof"], "environment": {"TOKEN": "mine"}}
+}}`
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &UserConfig{MCPs: map[string]MCPDef{
+		"cat": {URL: "https://cat.invalid/mcp", Transport: "http"},
+		"dog": {Command: "echo", Args: []string{"woof"}},
+	}}
+	t.Cleanup(resetUserConfigCache(t, cfg))
+	if err := WriteOpenCodeGlobalMCP([]string{"cat", "dog"}); err != nil {
+		t.Fatal(err)
+	}
+	_, mcp := readOpenCodeMCPMap(t, path)
+	cat, _ := mcp["cat"].(map[string]any)
+	if h, _ := cat["headers"].(map[string]any); h["Authorization"] != "Bearer mine" || cat["oauth"] == nil {
+		t.Fatalf("user keys dropped for unchanged url: %v", cat)
+	}
+	dog, _ := mcp["dog"].(map[string]any)
+	if env, _ := dog["environment"].(map[string]any); env["TOKEN"] != "mine" {
+		t.Fatalf("user environment dropped for unchanged command: %v", dog)
 	}
 }
