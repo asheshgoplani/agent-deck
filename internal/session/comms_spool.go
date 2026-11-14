@@ -111,8 +111,8 @@ type CommsSpoolEntry struct {
 	InjectedToken string `json:"injected_token,omitempty"`
 	// PiNotConsumer marks a pi turn end from a pi that may not take the
 	// parent's ledger consumer edges (a guest of the pane, a pi in another pane
-	// of the session): its prompt acknowledges nothing and is not the parent's
-	// own turn.
+	// of the session): its prompt acknowledges nothing, and it is not the
+	// parent's own turn (commsTurnNotTheInstances).
 	PiNotConsumer bool `json:"pi_not_consumer,omitempty"`
 	// Refs are the record ids a wake carried.
 	Refs []string `json:"refs,omitempty"`

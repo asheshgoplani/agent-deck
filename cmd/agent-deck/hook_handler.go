@@ -193,9 +193,10 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 	if edge == session.CommsEdgeInjected {
 		entry.InjectedToken = strings.TrimSpace(rawString(p.InjectedToken))
 	}
-	if harness == "pi" && edge == session.CommsEdgeTurnEnd && prompt != "" {
+	if harness == "pi" && edge == session.CommsEdgeTurnEnd {
 		// The turn is still recorded; only the parent's consumer acknowledges
-		// with its prompt (CodeRabbit, #3024).
+		// with its prompt (CodeRabbit, #3024), and only its turn ends the
+		// prompt the parent's own turn started with.
 		entry.PiNotConsumer = !piLedgerConsumer(instanceID, p)
 	}
 	if err := session.WriteCommsSpool(entry); err != nil {
