@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Refused calls (scope missing, unknown tool) spend from the read budget, so
@@ -23,6 +24,34 @@ func TestRefusedCallsAreRateLimited(t *testing.T) {
 	}
 	if r := svc.Call(context.Background(), rec, "nope", nil, TransportAPI); r.Err == nil || r.Err.Code != CodeRateLimited {
 		t.Fatalf("3rd refused call: %+v, want rate_limited", r)
+	}
+
+	// A token that keeps calling after its budget is spent must not grow
+	// the audit log by one line per call.
+	for i := 0; i < 500; i++ {
+		if r := svc.Call(context.Background(), rec, ToolWhoami, nil, TransportAPI); r.Err == nil || r.Err.Code != CodeRateLimited {
+			t.Fatalf("exhausted call %d: %+v, want rate_limited", i, r)
+		}
+	}
+	entries, err := ReadAudit(svc.Store.AuditPath(), "bot", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > 3 {
+		t.Fatalf("audit has %d lines after 501 rate-limited calls, want at most 3 (2 refusals + 1 rate-limit line)", len(entries))
+	}
+	// When the window rolls, one line records how many were not logged.
+	svc.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	if r := svc.Call(context.Background(), rec, ToolWhoami, nil, TransportAPI); r.Err == nil || r.Err.Code != CodeRateLimited {
+		t.Fatalf("call in the next window: %+v, want rate_limited", r)
+	}
+	entries, err = ReadAudit(svc.Store.AuditPath(), "bot", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := entries[len(entries)-1]
+	if len(entries) != 4 || last.Reason != CodeRateLimited || last.Suppressed != 500 {
+		t.Fatalf("after the window rolled: %d lines, last %+v; want 4 lines, the last rate_limited with suppressed=500", len(entries), last)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
@@ -72,7 +73,23 @@ type Service struct {
 	limiter *rateLimiter
 	audit   *auditLog
 	now     func() time.Time
+
+	// limitedMu guards limited: per token name, the open window of
+	// rate-limited refusals (see auditRateLimited).
+	limitedMu sync.Mutex
+	limited   map[string]*limitedWindow
 }
+
+// limitedWindow is one minute of rate-limited refusals for a token: the
+// first is logged, the rest are only counted.
+type limitedWindow struct {
+	start      time.Time
+	suppressed int
+}
+
+// rateLimitedAuditWindow is how long rate-limited refusals of one token
+// share a single audit line.
+const rateLimitedAuditWindow = time.Minute
 
 // NewService builds a Service over store with DefaultLimits.
 func NewService(store *Store, exec Executor, version string) *Service {
@@ -87,6 +104,7 @@ func NewServiceWithLimits(store *Store, exec Executor, version string, limits Li
 		Limits:  limits,
 		Version: version,
 		limiter: newRateLimiter(limits),
+		limited: map[string]*limitedWindow{},
 		audit:   &auditLog{path: store.AuditPath()},
 		now:     time.Now,
 	}
@@ -132,7 +150,9 @@ func (s *Service) Call(ctx context.Context, rec Record, name string, rawArgs jso
 		if ok && tool.Write {
 			limit = s.Limits.WritePerMinute
 		}
-		return deny(CodeRateLimited, fmt.Sprintf("rate limit reached (%d calls per minute); wait and retry", limit), "")
+		entry.Allowed, entry.Reason = false, CodeRateLimited
+		s.auditRateLimited(entry)
+		return Result{Err: &CallError{Code: CodeRateLimited, Message: fmt.Sprintf("rate limit reached (%d calls per minute); wait and retry", limit)}}
 	}
 	if !ok {
 		return deny(CodeUnknownTool, fmt.Sprintf("unknown tool %q", name), "")
@@ -179,7 +199,51 @@ func (s *Service) Call(ctx context.Context, rec Record, name string, rawArgs jso
 	return Result{Data: data}
 }
 
+// auditRateLimited logs a rate-limited refusal without letting a token
+// that keeps calling grow the audit log by one line per call: the first
+// refusal of each window is written (carrying how many the previous window
+// did not log), later ones in the window are only counted. The map holds
+// one entry per token name, so it is bounded by the store.
+func (s *Service) auditRateLimited(e AuditEntry) {
+	s.limitedMu.Lock()
+	if s.limited == nil {
+		s.limited = map[string]*limitedWindow{}
+	}
+	w := s.limited[e.Name]
+	if w != nil && e.TS.Sub(w.start) < rateLimitedAuditWindow {
+		w.suppressed++
+		s.limitedMu.Unlock()
+		return
+	}
+	if w != nil {
+		e.Suppressed = w.suppressed
+	}
+	s.limited[e.Name] = &limitedWindow{start: e.TS}
+	s.limitedMu.Unlock()
+	s.writeAudit(e)
+}
+
+// flushRateLimited writes the count of refusals not yet logged for name,
+// before another audit line for that token, and closes its window.
+func (s *Service) flushRateLimited(name string, ts time.Time) {
+	s.limitedMu.Lock()
+	w := s.limited[name]
+	delete(s.limited, name)
+	s.limitedMu.Unlock()
+	if w == nil || w.suppressed == 0 {
+		return
+	}
+	s.writeAuditLine(AuditEntry{TS: ts, Name: name, Allowed: false, Reason: CodeRateLimited, Suppressed: w.suppressed})
+}
+
 func (s *Service) writeAudit(e AuditEntry) {
+	if e.Reason != CodeRateLimited {
+		s.flushRateLimited(e.Name, e.TS)
+	}
+	s.writeAuditLine(e)
+}
+
+func (s *Service) writeAuditLine(e AuditEntry) {
 	if err := s.audit.write(e); err != nil {
 		assistantLog.Warn("assistant_audit_write_failed", slog.String("error", err.Error()))
 	}

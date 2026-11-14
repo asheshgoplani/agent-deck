@@ -68,6 +68,9 @@ type AuditEntry struct {
 	Allowed   bool      `json:"allowed"`
 	Reason    string    `json:"reason,omitempty"`
 	Transport string    `json:"transport"`
+	// Suppressed counts rate-limited calls of this token that were not
+	// logged one by one since its previous rate_limited line.
+	Suppressed int `json:"suppressed,omitempty"`
 }
 
 // auditLog appends AuditEntry lines to a 0600 JSONL file.

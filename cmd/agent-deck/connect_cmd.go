@@ -307,6 +307,9 @@ func handleConnectAudit(args []string) {
 		res := "ok"
 		if !e.Allowed {
 			res = "denied: " + e.Reason
+			if e.Suppressed > 0 {
+				res += fmt.Sprintf(" (+%d more not logged)", e.Suppressed)
+			}
 		} else if e.Reason != "" {
 			res = e.Reason
 		}
