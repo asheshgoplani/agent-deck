@@ -186,6 +186,9 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		age, known := h.remoteRowAgeLocked(name)
 		stale := known && age >= remoteRowStaleAge
 		for _, rs := range sessions {
+			if rs.Archived {
+				continue
+			}
 			switch statusBucket(session.Status(rs.Status)) {
 			case session.StatusRunning:
 				if stale {

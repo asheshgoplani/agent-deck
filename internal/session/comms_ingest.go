@@ -228,13 +228,30 @@ func (d *TransitionDaemon) ingestCommsSpool(profile string, byID map[string]*Ins
 func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, inst *Instance, byID map[string]*Instance, e CommsSpoolEntry) bool {
 	switch e.Edge {
 	case CommsEdgePromptStart:
+		if commsTurnNotTheInstances(inst, e) {
+			// A pi run inside the instance's own turn (a Claude session running
+			// `pi -p`): its prompt is not the instance's, so it neither replaces
+			// the saved one nor acknowledges anything. Its turn end carries it.
+			RemoveCommsSpoolEntry(e)
+			return true
+		}
 		if prev, ok := d.commsPrompts[inst.ID]; ok && prev.path != e.path {
 			RemoveCommsSpoolEntry(prev)
 		}
 		d.commsPrompts[inst.ID] = e
 		// An enrolled parent's prompt confirms the records a wake line
 		// showed it (how a Codex parent's wake is acknowledged).
-		d.commsAckPrompt(l, inst, e.Prompt)
+		d.commsAckPrompt(l, inst, e.Prompt, e.WakeNonce)
+		return true
+	case CommsEdgeInjected:
+		// pi's receipt: the extension returned the context named by this token.
+		if commsDeliversTo(inst.ID) {
+			if err := finalizeInjection(l.Reader(), inst.ID, e.InjectedToken); err != nil {
+				commsLog.Warn("comms_injection_receipt_failed", slog.String("parent", inst.ID), slog.String("error", err.Error()))
+				return false
+			}
+		}
+		RemoveCommsSpoolEntry(e)
 		return true
 	case CommsEdgeStatus:
 		return d.commitCommsStatus(l, profile, inst, e)
@@ -250,9 +267,11 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 
 	// The prompt that started this turn, when the harness reported it with
 	// the turn (codex-notify): for an enrolled parent it confirms the records
-	// a wake line showed it.
-	if e.Prompt != "" {
-		d.commsAckPrompt(l, inst, e.Prompt)
+	// a wake line showed it. A pi that is not the parent's consumer (a guest of
+	// the pane, a pi in another pane) confirms nothing, and its prompt is not
+	// the parent's own turn.
+	if e.Prompt != "" && !e.PiNotConsumer {
+		d.commsAckPrompt(l, inst, e.Prompt, "")
 	}
 	rec := comms.Record{
 		Kind:    comms.KindTurn,
@@ -263,11 +282,19 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		TSignal: e.TSignal,
 	}
 	cfg := ResolveInboxConfigForInstance(parentInstanceFor(inst, byID))
+	// The prompt this instance's own turn started with. A pi that is not its
+	// consumer (a guest of the pane, a pi a Claude parent runs as a tool) is
+	// running inside that turn: the prompt is not its own, and its turn end
+	// neither takes it nor removes it below.
+	notOwn := commsTurnNotTheInstances(inst, e)
 	prompt := d.commsPrompts[inst.ID]
+	if notOwn {
+		prompt = CommsSpoolEntry{}
+	}
 	facts, classified := commsTurnFacts(inst, e, prompt)
 	owed := commsOwedNone
 	owedFrom := strings.TrimSpace(facts.FromID)
-	if IsClaudeCompatible(inst.Tool) {
+	if IsClaudeCompatible(inst.Tool) && !notOwn {
 		facts.FromID, owed = commsHeldSendReplyTo(inst, facts, classified)
 	}
 	if !cfg.GetQuestionWakes() {
@@ -357,11 +384,26 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	// it consumed can go. A later turn with no new prompt edge is unknown,
 	// not a repeat of the old trigger.
 	RemoveCommsSpoolEntry(e)
+	if notOwn {
+		return true // the instance's own turn is still running on its prompt
+	}
 	if prompt.path != "" {
 		RemoveCommsSpoolEntry(prompt)
 	}
 	delete(d.commsPrompts, inst.ID)
 	return true
+}
+
+// commsTurnNotTheInstances reports a pi edge that is not inst's own turn:
+// one from a pi that may not take its consumer edges (PiNotConsumer: a guest of
+// the pane, a pi in another pane), or a pi run under an instance whose launched
+// harness is not pi (a Claude session running `pi -p` as a tool inherits its
+// AGENTDECK_INSTANCE_ID). Its prompt start does not replace the prompt the
+// instance's own turn started with; its turn end is recorded, but that prompt
+// is not its trigger, it settles no owed sender, and it does not end the
+// instance's prompt.
+func commsTurnNotTheInstances(inst *Instance, e CommsSpoolEntry) bool {
+	return e.Harness == "pi" && (e.PiNotConsumer || commsParentHarness(inst) != "pi")
 }
 
 // commsOwed says what committing a Claude turn does to the sender the
@@ -422,7 +464,7 @@ func commsHeldSendReplyTo(inst *Instance, facts TurnFacts, classified bool) (str
 // which keeps the end of any ordinary reply).
 func commsTurnFacts(inst *Instance, e CommsSpoolEntry, prompt CommsSpoolEntry) (TurnFacts, bool) {
 	text := strings.TrimSpace(e.Text)
-	if IsClaudeCompatible(inst.Tool) {
+	if IsClaudeCompatible(inst.Tool) && e.Harness != "pi" { // a pi run's turn is not in the Claude transcript
 		path := e.TranscriptPath
 		if path == "" {
 			path = inst.GetJSONLPath()
@@ -557,7 +599,7 @@ func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, in
 // duplicate. A wake is addressed to the parent it woke (To) and comes from
 // agent-deck itself; a call comes from the session that ran it.
 func commitCommsMeasure(l *comms.Ledger, profile string, inst *Instance, e CommsSpoolEntry) bool {
-	rec := comms.Record{Profile: profile, TSignal: e.TSignal, Ref: e.Ref, Via: e.Via}
+	rec := comms.Record{Profile: profile, TSignal: e.TSignal, Ref: e.Ref, Via: e.Via, Err: e.Err, AfterWrite: e.AfterWrite, Refs: e.Refs}
 	switch e.Edge {
 	case CommsEdgeWake:
 		rec.Kind, rec.From, rec.To = comms.KindWake, "agent-deck", []string{inst.ID}
@@ -565,6 +607,9 @@ func commitCommsMeasure(l *comms.Ledger, profile string, inst *Instance, e Comms
 		rec.State = comms.StateTyped
 		if e.Via == "stop" {
 			rec.State = comms.StateInjected
+		}
+		if e.State != "" {
+			rec.State = e.State // the pi send leg's outcome (landed, queued, pushed)
 		}
 	default:
 		rec.Kind, rec.From, rec.State = comms.KindCall, inst.ID, e.Event

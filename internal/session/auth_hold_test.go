@@ -689,3 +689,32 @@ func TestWriteAuthHoldRecord_NarrowsLegacyDirPerms(t *testing.T) {
 		t.Fatalf("legacy dir perm = %#o, want narrowed to no group/other bits", got)
 	}
 }
+
+// TestMarkStopped_ReleasesAuthHold asserts that archiving a session whose pane
+// is already gone (MarkStopped, not Kill) releases an auth hold the same way a
+// deliberate Kill does. Without it, a session that hit a 401, lost its pane and
+// was then archived would stay held, and the user's own restart after unarchive
+// would be refused without --force.
+func TestMarkStopped_ReleasesAuthHold(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-mark-stopped")
+	inst.noteAuthHoldLocked(AuthHoldReasonDeath, "API Error: 401 · Please run /login")
+	inst.authHeld = true
+	if held, _ := inst.IsAuthHeld(); !held {
+		t.Fatal("precondition: an errored session with a hold record must be held")
+	}
+
+	inst.MarkStopped()
+
+	if inst.Status != StatusStopped {
+		t.Fatalf("status = %q, want %q", inst.Status, StatusStopped)
+	}
+	if held, _ := inst.IsAuthHeld(); held {
+		t.Fatal("a deliberate stop of a dead pane must release the auth hold")
+	}
+	if inst.AuthHold() != nil {
+		t.Fatal("the sidecar must be removed")
+	}
+	if inst.AuthHeldCached() {
+		t.Fatal("the in-memory mirror must be cleared")
+	}
+}

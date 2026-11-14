@@ -1862,12 +1862,12 @@ func (s *StateDB) WriteToolDataExtra(id, key string, value json.RawMessage) erro
 
 // touchWithRetry stamps metadata.last_modified, retrying on SQLITE_BUSY.
 //
-// Touch() is a plain Exec, so under a concurrent writer it fails where the
-// retry-wrapped row UPDATE beside it would have succeeded — leaving the row
-// changed but the change unannounced. Every targeted writer that stamps its
-// own signal must retry the stamp as hard as it retried the write.
+// Every targeted writer that stamps its own signal must retry the stamp as hard
+// as it retried the write, or a concurrent writer leaves the row changed but
+// the change unannounced. Touch goes through touchStamp, which already retries
+// its transaction (withBusyRetry), so this is Touch itself.
 func (s *StateDB) touchWithRetry() error {
-	return withBusyRetry(func() error { return s.Touch() })
+	return s.Touch()
 }
 
 // SetAcknowledged sets or clears the acknowledged flag for an instance.
@@ -2316,8 +2316,13 @@ func (s *StateDB) TakeMeta(key string) (string, error) {
 // --- Change Detection (replaces fsnotify) ---
 
 // Touch updates a metadata timestamp that other instances can poll to detect changes.
+//
+// It goes through touchStamp, so every bump of last_modified is serialized with
+// the others and moves forward from the stamp it replaces: a Touch whose clock
+// read was delayed cannot write a stamp older than one already committed.
 func (s *StateDB) Touch() error {
-	return s.SetMeta("last_modified", fmt.Sprintf("%d", time.Now().UnixNano()))
+	_, err := s.touchStamp()
+	return err
 }
 
 // LastModified returns the last_modified timestamp from metadata.

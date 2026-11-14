@@ -105,3 +105,10 @@ func TestCompleteFork_AFailedPiRebuildRollsTheWorktreeBack(t *testing.T) {
 			rec.calls, rec.repoRoot, rec.wtPath, rec.branch, opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
 	}
 }
+
+func TestCompleteFork_SandboxedPiFork_RemoteSession(t *testing.T) {
+	t.Skip("RemoteSession does not use the local TUI fork path: f on a remote row runs the remote's own " +
+		"`session fork --json <id>` (SSHRunner.ForkSession), which takes no sandbox option, and F on a remote row " +
+		"opens no fork dialog (TestRemoteFork_ShiftFExplainsInsteadOfDialog). The remote host's agent-deck builds and " +
+		"records that launch, covered there by TestSessionFork_SandboxedPiForkNeverExportsTheSocket's CLI path.")
+}
