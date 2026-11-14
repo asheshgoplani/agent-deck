@@ -319,7 +319,7 @@ func handleMCPAttached(profile string, args []string) {
 		hasAny = true
 		configPath := inst.MCPGlobalConfigPath()
 		if configPath == "" {
-			configPath = filepath.Join(session.GetClaudeConfigDir(), ".claude.json")
+			configPath = session.MCPGlobalConfigPathForTool("claude")
 		}
 		fmt.Printf("GLOBAL (%s):\n", FormatPath(configPath))
 		for _, name := range globalMCPs {

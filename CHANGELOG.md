@@ -11,20 +11,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-deck list --no-archived` leaves archived sessions out, a cheaper poll when you only want live ones (#3092).
 - pi: the agent-deck extension v5 can be woken through a local socket instead of typed input, and `pi-hooks status` shows your pi version and whether the socket is on (#3078; thanks @fpmx3bp).
+- The session row that holds the voice mic now shows a mic badge with its state (listening, speaking, muted and so on), for local sessions and sessions under a remote. A collapsed group holding it shows the mic too (#3102).
+- `agent-deck remote <name> session ownership inspect <id> --json` now works, so you can ask a remote whether a session is still owned. It only reads, and `reconcile` and `abandon` are still not forwarded (#3111; thanks @jordanhubbard).
 
 ### Fixes
 
 - `session send` now sees the Codex 0.167 approval picker as a menu, so a send can no longer confirm it by accident (#3088).
+- A session on an account slot no longer picks up the newest conversation of the default Claude dir when its own session id is empty at start or restart.
 - A Claude session with two or more channels (for example telegram and discord) gets its messages again, and a commented-out `TELEGRAM_STATE_DIR` line no longer turns telegram on (#3091).
 - `list` stays fast on a busy machine: when reading the panes times out it no longer starts dozens of extra tmux calls (#3092).
 - `session archive` with an expected content version checks only this session's own Claude transcript, never a same-id file from another project (#3076; thanks @arnzchen).
 - With `[updates] check_enabled = false`, the TUI no longer checks for updates once at startup (#3077; thanks @ruiheng).
 - A restart that fails partway keeps the session attached to its running tmux session instead of a dead one (#3079; thanks @ruiheng).
+- `session output` now reads the reply of a session started on an account slot (`--account`) from the slot's own transcript, instead of falling back to the pane (thanks Sharjeel for the report).
+- `session send` that holds back Enter now tells you what it left typed in the target's input box. Before, that leftover text made every later send to the session fail until someone cleared it (#3123; thanks Sharjeel for the report).
+- `mcp attach --global` for a Claude session now writes `~/.claude.json` when no config dir is set, the file Claude Code reads, so the server loads. `mcp attached` shows the right path too (#3110; thanks @zach-marto).
+- `mcp attach --global` and detach for an OpenCode session keep the servers you set up by hand and the headers of an attached HTTP server, instead of replacing the whole `mcp` list (#3109; thanks @zach-marto).
+- `agent-deck remote sessions` now prints the error and exits 1 when a remote cannot be reached, so "host down" no longer looks like "no sessions" (#3112; thanks @jordanhubbard, and @aron-intframe for a patch sketch).
+- `session attach` and other commands outside the TUI no longer wait about 5 seconds on a terminal that does not answer the background colour query, and keys typed in that time are kept (#3113; thanks @jordanhubbard).
+- A pi session with a footer extension (such as `pi-powerline-footer`) is no longer killed by the startup timeout while it sits idle at its prompt (#3100; thanks @tessneau for the report).
+- `doctor`, `session show` and the startup timeout message now say when a pi session has no agent-deck pi extension, which is what prevents that timeout (#3099; thanks @tessneau).
+- Your `[tools.pi]`, `[tools.claude]` and other built-in tool settings for `busy_patterns`, `prompt_patterns` and `spinner_chars` (and the `_extra` forms) now take effect. Before, they were ignored (#3114; thanks @ckjeter).
+- The footer error and notice lines in the TUI, such as "closed 'x'. R to restart", now show on a full screen instead of being cut off (#3120; thanks @tessneau).
+- A pi session started inside a standing order or heartbeat turn no longer clears that turn's origin, so permission prompts in it are still denied and an order turn cannot change orders (#3118; thanks @fpmx3bp).
+- A failed pi wake now names the pi wake socket, and the pi wake peer check is stricter. Review follow-ups to the pi wake work (#3117; thanks @fpmx3bp).
+- A tagged `session send` that reaches Claude Code as a pasted prompt is now recognised, so the reply goes back to the sender. `inbox stats` counts only wakeups that were really sent (#3132; thanks @tarekrached for the report).
 
 ### Under the hood
 
 - The "has this child had a turn since it started" check now reads the hook turn count, which is simpler and more reliable (#3084; thanks @tarekrached).
 - The weekly screenshot test has a new settings drawer baseline (#3087).
+- CI: the native macOS job runs on macos-15 because GitHub retired macos-14, the nightly runtime health check builds again, and a Go dependency group is updated (#3121, #3129, #3101).
+- The MCP proxy backpressure tests now fill the buffers until the kernel blocks, so they pass on hosts with large socket buffers (#3130).
 
 ## [1.16.38] - 2026-11-07
 
