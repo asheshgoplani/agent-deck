@@ -144,7 +144,9 @@ func noteRestartToken(i *Instance, now time.Time) {
 		return
 	}
 	tok := restartToken{At: now, Reason: i.restartReason, Tool: i.Tool, OldPID: instancePanePID(i)}
-	if claudeTurnSeqObservable(i) && freshStartObservable(GetClaudeCommandForInstance(i)) {
+	// The command the resume runs: the session's own custom one, as
+	// buildClaudeResumeCommand picks it, or the configured one.
+	if claudeTurnSeqObservable(i) && !i.resumeRunsCustomCommand() && freshStartObservable(GetClaudeCommandForInstance(i)) {
 		tok.TurnSeq = restartSettledTurnSeq(i.ID)
 	}
 	// The transcript end is recorded either way: it is the rule for a token
@@ -531,9 +533,19 @@ func restartTurnSeqUnchanged(id string, tok restartToken, transcript string) (un
 // than a SessionEnd (the old process's, as the kill fires it), or the hook
 // event history holds a SessionStart since then (the old SessionEnd can land
 // over it in the file). The fresh-start judge waits for the same proof
-// (freshStartHooksSeen).
+// (freshStartHooksSeen). A hook file that carries no count says the handler
+// writing it does not count turns, so nothing is proven: a counting handler
+// always writes at least the count the token took, which is never 0.
 func restartHooksSeen(id string, tok restartToken) bool {
-	if hs := restartHookStatus(id); hs != nil && !hookSessionEnd(hs) && hookEventSince(hs, freshStartToken{At: tok.At}) {
+	hs := restartHookStatus(id)
+	if hs != nil && hs.TurnSeq == 0 {
+		// A hook file with no count since the token was written by a
+		// handler that does not count turns (older than #3080, as a
+		// config dir the restart switched to may still run): the count
+		// cannot see this process's turns.
+		return false
+	}
+	if hs != nil && !hookSessionEnd(hs) && hookEventSince(hs, freshStartToken{At: tok.At}) {
 		return true
 	}
 	return restartSessionStartSince(id, tok.At)

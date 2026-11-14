@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,10 +145,12 @@ func restartSeqCases() []struct {
 		}}, true},
 		// Fixed by step 3: the count went back (the prune removed the hook
 		// file and its sidecar): something happened.
-		{c{"the count went back", restartSeqAt, false, func(t *testing.T, f *turnTestFixture) { noHookFiles(t, f.child.ID) }}, false},
+		{c{"the count went back", restartSeqAt, false, func(t *testing.T, f *turnTestFixture) {
+			noHookFiles(t, f.child.ID)
+			f.turnSeq(t, 2)
+		}}, false},
 		// Fixed by step 3: a recorded 0 is a count, not an older binary's
 		// token.
-		{c{"recorded 0, no turn, another transcript", 0, true, func(t *testing.T, f *turnTestFixture) { noHookFiles(t, f.child.ID) }}, true},
 		{c{"recorded 0, then a turn", 0, false, countIs(2)}, false},
 		// An older binary's token: the count is not read, the transcript
 		// rule decides as before.
@@ -174,6 +177,11 @@ func setupRestartSeq(t *testing.T, c restartSeqCase, at time.Time) (*turnTestFix
 	f.restartWithRawToken(t, st, at, transcript, c.seq)
 	f.appendTurn(t, fxResumeMeta())
 	c.after(t, f)
+	// The resumed process's hook carries the count, as a counting handler
+	// does (max of the file and the sidecar).
+	if st.hook != nil {
+		st.hook.TurnSeq = readHookTurnSeq(f.child.ID)
+	}
 	return f, st, n
 }
 
@@ -228,7 +236,7 @@ func TestIssue3012_RestartBootUnseenByTurnSeq(t *testing.T) {
 		t.Run("old SessionEnd landed after the new SessionStart, history "+map[bool]string{true: "on", false: "off"}[history], func(t *testing.T) {
 			at := time.Now().Add(-10 * time.Second)
 			f, st, _ := setupRestartSeq(t, restartSeqCase{"", restartSeqAt, false, func(t *testing.T, f *turnTestFixture) { f.turnSeq(t, restartSeqAt) }}, at)
-			st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: at.Truncate(time.Second)}
+			st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: at.Truncate(time.Second), TurnSeq: restartSeqAt}
 			if history {
 				hookHistory(t, f.child.ID, "SessionStart")
 			} else {
@@ -355,7 +363,7 @@ func TestIssue3012_RestartCountNeedsTheResumedHooks(t *testing.T) {
 				f.turnSeq(t, restartSeqAt)
 			}}, at)
 			// The old process's SessionEnd is the last hook event.
-			st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: at.Truncate(time.Second)}
+			st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: at.Truncate(time.Second), TurnSeq: restartSeqAt}
 			if c.history {
 				hookHistory(t, f.child.ID, "SessionEnd", "SessionStart")
 			} else {
@@ -366,5 +374,27 @@ func TestIssue3012_RestartCountNeedsTheResumedHooks(t *testing.T) {
 				t.Fatalf("verdict %v, want %v", verdict, want)
 			}
 		})
+	}
+}
+
+// The count is not trusted when the resumed process's hook file carries no
+// count: its handler does not count turns (older than #3080), as one in a
+// config dir the restart switched to can be. The sidecar keeps the old count,
+// so the count would never move. The transcript rule decides: its reply, on
+// another path than the token's, is news.
+func TestIssue3012_RestartHookFileWithoutACountKeepsTheTranscriptRule(t *testing.T) {
+	at := time.Now().Add(-10 * time.Second)
+	f, st, _ := setupRestartSeq(t, restartSeqCase{"", restartSeqAt, true, func(t *testing.T, f *turnTestFixture) {
+		f.appendTurn(t, fxHuman("u2", "next task"), fxAssistantText("a2", "Done."))
+		f.turnSeqFile(t, restartSeqAt)
+		writeHookFileForTest(t, f.child.ID, fmt.Sprintf(`{"status":"waiting","event":"Stop","ts":%d}`, time.Now().Unix()))
+	}}, at)
+	st.hook = readHookStatusFile(f.child.ID)
+	if st.hook == nil || st.hook.TurnSeq != 0 || readHookTurnSeq(f.child.ID) != restartSeqAt {
+		t.Fatalf("precondition: a hook file with no count and the sidecar at %d, got %+v", restartSeqAt, st.hook)
+	}
+	_, verdict, _ := f.d.judgeRestart(f.child.ID, f.child.GetJSONLPath(), "", func() string { return "" }, "waiting", time.Now())
+	if verdict != restartNews {
+		t.Fatalf("verdict %v, want news", verdict)
 	}
 }

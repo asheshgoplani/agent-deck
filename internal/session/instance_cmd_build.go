@@ -1469,6 +1469,17 @@ func (i *Instance) buildCopilotCommand(baseCommand string) string {
 	return envPrefix + GetToolCommand("copilot")
 }
 
+// resumeRunsCustomCommand reports whether a resuming restart runs the
+// session's own custom command (launch -c, a gateway wrapper) in place of the
+// configured Claude command: a Command other than "claude" that is not a
+// fork's baked command (buildClaudeResumeCommand). The restart token asks it
+// too: such a command may pick a config dir the hooks are not in.
+func (i *Instance) resumeRunsCustomCommand() bool {
+	return i.Command != "" && i.Command != "claude" &&
+		!commandHasToken(i.Command, "--fork-session") &&
+		!commandHasToken(i.Command, "--session-id")
+}
+
 // buildClaudeResumeCommand builds the claude resume command with proper config options
 // Respects: CLAUDE_CONFIG_DIR, dangerous_mode, and [shell].env_files + init_script
 // CLAUDE_SESSION_ID is set via host-side SetEnvironment (called by SyncSessionIDsToTmux after restart)
@@ -1508,9 +1519,7 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// because the string starts with `exec cd`. Same shape as the #1830
 	// finding, one path over.
 	claudeCmd := GetClaudeCommandForInstance(i)
-	customCommand := i.Command != "" && i.Command != "claude" &&
-		!commandHasToken(i.Command, "--fork-session") &&
-		!commandHasToken(i.Command, "--session-id")
+	customCommand := i.resumeRunsCustomCommand()
 	if customCommand {
 		claudeCmd = i.Command
 	}

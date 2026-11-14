@@ -79,6 +79,11 @@ func TestIssue3012_RestartTokenTurnSeqGate(t *testing.T) {
 			writeConfigTOML(t, home, "[claude]\ncommand = \"CLAUDE_CONFIG_DIR=/elsewhere claude\"\n")
 		}, "none"},
 		{"SSH", func(t *testing.T, home string, f *turnTestFixture) { f.child.SSHHost = "build-box" }, noToken},
+		// The resume runs the session's own command, not the configured one
+		// (buildClaudeResumeCommand): it may pick its own config dir.
+		{"the session's own custom command", func(t *testing.T, home string, f *turnTestFixture) {
+			f.child.Command = "cdw"
+		}, "none"},
 		{"behind its own wrapper", func(t *testing.T, home string, f *turnTestFixture) {
 			f.child.Wrapper = "ssh build-box {command}"
 		}, "none"},
@@ -208,6 +213,7 @@ func TestIssue3012_InFlightStopAtTheRestartIsNotATurn(t *testing.T) {
 			}
 			f.appendTurn(t, fxResumeMeta())
 			st.newHook("waiting", "SessionStart", at)
+			st.hook.TurnSeq = 6 // the resumed process's hook carries the count
 			f.bootSeen()
 			f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
 			added := f.inboxRecords(t)[n:]
