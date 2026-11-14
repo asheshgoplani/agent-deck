@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // TestCodexComposerFallbackAllowed: the composer fallback never bypasses the
@@ -11,6 +13,7 @@ import (
 // structured --json --wait, and only covers a provably missing identity.
 func TestCodexComposerFallbackAllowed(t *testing.T) {
 	contested := []error{
+		session.ErrCodexTurnScanBoundExceeded,
 		errors.New("unresolved Codex submission for 019a; refusing a second send"),
 		errors.New("Codex submission marker ownership does not match this instance"),
 		errors.New("live Codex session identity is already owned by another session"),

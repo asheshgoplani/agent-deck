@@ -3084,7 +3084,7 @@ func (i *Instance) HasUpdated() bool {
 // causing an unbounded historical read.
 const (
 	codexTurnGenerationInitialScanBytes = int64(64 << 10)
-	codexTurnGenerationScanMaxBytes     = int64(8 << 20)
+	codexTurnGenerationScanMaxBytes     = int64(32 << 20)
 )
 
 // Exists checks if the tmux session still exists

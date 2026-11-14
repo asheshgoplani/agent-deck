@@ -101,11 +101,17 @@ func (i *Instance) codexRolloutTail() ([]string, error) {
 	return TranscriptTailLines(path, 50)
 }
 
+// ErrCodexTurnScanBoundExceeded is returned when the backward scan of a Codex
+// rollout reaches codexTurnGenerationScanMaxBytes with earlier records still
+// unread, failing closed before transport rather than assuming no turn ran.
+var ErrCodexTurnScanBoundExceeded = errors.New("codex rollout tail exceeds scan window without durable turn start")
+
 // scanCodexRolloutBackward offers the rollout's records to visit, newest
 // first, until visit reports it is done. The byte window widens up to
 // codexTurnGenerationScanMaxBytes; each wider pass starts again from the
 // newest record, so newVisit returns a fresh visitor for every pass. It
-// reports whether a visitor finished.
+// reports whether a visitor finished, or returns ErrCodexTurnScanBoundExceeded
+// if the cap is reached while earlier records remain unread (offset > 0).
 func scanCodexRolloutBackward(path string, newVisit func() func(codexRolloutRecord) bool) (bool, error) {
 	f, err := os.Open(path) // #nosec G304 -- codexRolloutPath resolves one exact, non-symlink rollout
 	if err != nil {
@@ -167,8 +173,11 @@ func scanCodexRolloutBackward(path string, newVisit func() func(codexRolloutReco
 			}
 		}
 
-		if offset == 0 || scanBytes == codexTurnGenerationScanMaxBytes {
+		if offset == 0 {
 			return false, nil
+		}
+		if scanBytes == codexTurnGenerationScanMaxBytes {
+			return false, ErrCodexTurnScanBoundExceeded
 		}
 		scanBytes = min(size, min(scanBytes*2, codexTurnGenerationScanMaxBytes))
 	}
@@ -214,8 +223,9 @@ func codexUserInputEncoding(record codexRolloutRecord) string {
 // the input that opened it (issue #2836). Codex starts no turn for input sent
 // while a turn runs; the running turn records it as one more user input. The
 // earliest input of each encoding in the turn is its opening input. Only
-// record types, turn ids and timestamps are read. A turn start beyond the
-// scan window, or a newer turn, reports false.
+// record types, turn ids and timestamps are read. A turn start beyond
+// codexTurnGenerationScanMaxBytes with unread data remaining (offset > 0)
+// returns (false, ErrCodexTurnScanBoundExceeded) rather than silently reporting false.
 func codexTurnTookInputSinceFromRollout(path, turnID string, since time.Time) (bool, error) {
 	took := false
 	_, err := scanCodexRolloutBackward(path, func() func(codexRolloutRecord) bool {
@@ -285,7 +295,9 @@ func parseCodexLastAssistantMessage(lines []string, sessionID string) (*Response
 //
 // A thread the pane's live Codex process owns but has not yet written a
 // rollout for (fresh composer, no turn started) has no turn generation yet, so
-// it reports "" without error, like an empty rollout.
+// it reports "" without error, like an empty rollout. A rollout whose latest
+// turn start lies beyond codexTurnGenerationScanMaxBytes with unread data
+// remaining returns ("", ErrCodexTurnScanBoundExceeded).
 func (i *Instance) LatestCodexTurnGeneration() (string, error) {
 	path, err := i.codexRolloutPath()
 	if errors.Is(err, errNoExactContextArtifact) && i.LiveCodexThreadID() == i.CodexSessionID {

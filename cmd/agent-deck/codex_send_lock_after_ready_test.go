@@ -199,19 +199,37 @@ func TestCodexAcceptanceWhenReadyContentionThenReadinessTimeoutRefuses(t *testin
 // A generation that cannot be read refuses before the wait, as it did when the
 // fence was captured first, instead of surfacing as a readiness timeout.
 func TestCodexAcceptanceWhenReadyUnavailableGenerationRefusesBeforeWaiting(t *testing.T) {
-	_, readyErr, guardErr := acquireCodexAcceptanceWhenReady(time.Now().Add(time.Minute), time.Second,
-		func(time.Duration) error {
-			t.Fatal("waited for a target whose rollout generation is unavailable")
-			return nil
-		},
-		func() (string, error) { return "", errors.New("no rollout") },
-		func(time.Duration) (*codexAcceptanceGuard, error) {
-			t.Fatal("took the lock without a generation")
-			return nil, nil
-		})
-	if readyErr != nil || !errors.Is(guardErr, errCodexGenerationUnavailable) {
-		t.Fatalf("readyErr=%v guardErr=%v", readyErr, guardErr)
-	}
+	t.Run("arbitrary rollout read failure maps to unavailable", func(t *testing.T) {
+		_, readyErr, guardErr := acquireCodexAcceptanceWhenReady(time.Now().Add(time.Minute), time.Second,
+			func(time.Duration) error {
+				t.Fatal("waited for a target whose rollout generation is unavailable")
+				return nil
+			},
+			func() (string, error) { return "", errors.New("no rollout") },
+			func(time.Duration) (*codexAcceptanceGuard, error) {
+				t.Fatal("took the lock without a generation")
+				return nil, nil
+			})
+		if readyErr != nil || !errors.Is(guardErr, errCodexGenerationUnavailable) {
+			t.Fatalf("readyErr=%v guardErr=%v", readyErr, guardErr)
+		}
+	})
+
+	t.Run("scan bound exceeded propagates distinctly", func(t *testing.T) {
+		_, readyErr, guardErr := acquireCodexAcceptanceWhenReady(time.Now().Add(time.Minute), time.Second,
+			func(time.Duration) error {
+				t.Fatal("waited for a target whose rollout tail exceeds scan bound")
+				return nil
+			},
+			func() (string, error) { return "", session.ErrCodexTurnScanBoundExceeded },
+			func(time.Duration) (*codexAcceptanceGuard, error) {
+				t.Fatal("took the lock when scan bound was exceeded")
+				return nil, nil
+			})
+		if readyErr != nil || !errors.Is(guardErr, session.ErrCodexTurnScanBoundExceeded) {
+			t.Fatalf("readyErr=%v guardErr=%v, want ErrCodexTurnScanBoundExceeded", readyErr, guardErr)
+		}
+	})
 }
 
 func TestCodexAcceptanceWhenReadyNoWaitAcquiresOnce(t *testing.T) {

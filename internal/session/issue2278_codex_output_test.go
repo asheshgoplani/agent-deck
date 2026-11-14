@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -353,11 +354,84 @@ func TestLatestCodexTurnGenerationScansBoundedTail(t *testing.T) {
 		}, "\n") + "\n"
 		inst := writeRollout(t, "thread-outside", starts+strings.Repeat(" ", int(codexTurnGenerationScanMaxBytes)+1))
 		generation, err := inst.LatestCodexTurnGeneration()
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, ErrCodexTurnScanBoundExceeded) {
+			t.Fatalf("err = %v, want ErrCodexTurnScanBoundExceeded", err)
 		}
 		if generation != "" {
 			t.Fatalf("generation = %q, want no stale generation beyond scan bound", generation)
+		}
+	})
+
+	t.Run("empty and short startless rollouts report empty generation without scan error", func(t *testing.T) {
+		// Empty rollout (0 bytes)
+		instEmpty := writeRollout(t, "thread-empty", "")
+		genEmpty, err := instEmpty.LatestCodexTurnGeneration()
+		if err != nil {
+			t.Fatalf("empty rollout err = %v, want nil", err)
+		}
+		if genEmpty != "" {
+			t.Fatalf("empty rollout gen = %q, want empty", genEmpty)
+		}
+
+		// Short rollout (10 KiB) fully scanned with no start records
+		instShort := writeRollout(t, "thread-short", strings.Repeat(`{"type":"event_msg","payload":{"type":"agent_message"}}`+"\n", 160))
+		genShort, err := instShort.LatestCodexTurnGeneration()
+		if err != nil {
+			t.Fatalf("short startless rollout err = %v, want nil", err)
+		}
+		if genShort != "" {
+			t.Fatalf("short startless rollout gen = %q, want empty", genShort)
+		}
+	})
+
+	t.Run("long tail within 32 MiB resolves turn and reconciles marker", func(t *testing.T) {
+		isolateCodexSubmissionMarkers(t)
+
+		// Case 1A: 12 MiB rollout with start at 2 MiB (10 MiB from EOF, > old 8 MiB bound)
+		start1A := `{"type":"event_msg","payload":{"type":"task_started","turn_id":"01a1db42-a118-79b2-aa25-94bedf4ad928"}}` + "\n"
+		padding1A := strings.Repeat("x", 1024)
+		padLine1A := `{"type":"event_msg","payload":{"type":"agent_message","message":"` + padding1A + `"}}` + "\n"
+		// 10 MiB padding after start
+		tailLen := 10 << 20
+		tailLinesCount := tailLen / len(padLine1A)
+		tailPadding := strings.Repeat(padLine1A, tailLinesCount)
+		headPadding := strings.Repeat(" ", (2<<20)-len(start1A))
+		inst1A := writeRollout(t, "thread-12mb", headPadding+start1A+tailPadding)
+
+		gen1A, err := inst1A.LatestCodexTurnGeneration()
+		if err != nil {
+			t.Fatalf("12 MiB rollout err = %v, want nil", err)
+		}
+		want1A := "thread-12mb:01a1db42-a118-79b2-aa25-94bedf4ad928"
+		if gen1A != want1A {
+			t.Fatalf("gen = %q, want %q", gen1A, want1A)
+		}
+
+		// Prepare an older marker and verify reconciliation clears it
+		if _, err := PrepareCodexSubmissionMarker(
+			"inst-12mb", "thread-12mb", "thread-12mb:turn-older",
+			time.Now().Add(-time.Hour),
+		); err != nil {
+			t.Fatal(err)
+		}
+		cleared1A, err := ReconcileCodexSubmissionMarker("inst-12mb", "thread-12mb", gen1A, nil)
+		if err != nil {
+			t.Fatalf("reconcile 12 MiB marker: %v", err)
+		}
+		if cleared1A != gen1A {
+			t.Fatalf("cleared = %q, want %q", cleared1A, gen1A)
+		}
+
+		// Case 1B: Start placed 5 MiB from EOF in a large file
+		start1B := `{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-case1b"}}` + "\n"
+		tailPadding1B := strings.Repeat(padLine1A, (5<<20)/len(padLine1A))
+		inst1B := writeRollout(t, "thread-40mb", strings.Repeat(" ", 35<<20)+start1B+tailPadding1B)
+		gen1B, err := inst1B.LatestCodexTurnGeneration()
+		if err != nil {
+			t.Fatalf("40 MiB rollout err = %v, want nil", err)
+		}
+		if gen1B != "thread-40mb:turn-case1b" {
+			t.Fatalf("gen = %q, want thread-40mb:turn-case1b", gen1B)
 		}
 	})
 }

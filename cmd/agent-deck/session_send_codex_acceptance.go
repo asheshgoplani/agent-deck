@@ -37,6 +37,7 @@ type codexAcceptanceFence struct {
 	codexSessionID      string
 	priorTurnGeneration string
 	available           bool
+	scanErr             error
 }
 
 // codexAcceptedTurnReceipt is returned only after Codex submission is
@@ -254,6 +255,9 @@ func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) 
 	fence := captureCodexAcceptanceFence(inst)
 	if !fence.available {
 		lock.Release()
+		if fence.scanErr != nil {
+			return nil, fence.scanErr
+		}
 		return nil, errCodexGenerationUnavailable
 	}
 	if _, err := session.ReconcileCodexSubmissionMarker(
@@ -300,6 +304,9 @@ func acquireCodexAcceptanceWhenReady(
 	for {
 		baseline, err := generation()
 		if err != nil {
+			if errors.Is(err, session.ErrCodexTurnScanBoundExceeded) {
+				return nil, nil, err
+			}
 			return nil, nil, errCodexGenerationUnavailable
 		}
 		if err := waitReady(max(time.Until(deadline), time.Millisecond)); err != nil {
@@ -387,7 +394,11 @@ func captureCodexAcceptanceFence(inst *session.Instance) codexAcceptanceFence {
 	}
 	generation, err := inst.LatestCodexTurnGeneration()
 	if err != nil {
-		return codexAcceptanceFence{}
+		fence := codexAcceptanceFence{}
+		if errors.Is(err, session.ErrCodexTurnScanBoundExceeded) {
+			fence.scanErr = err
+		}
+		return fence
 	}
 	return codexAcceptanceFence{
 		codexSessionID:      inst.CodexSessionID,

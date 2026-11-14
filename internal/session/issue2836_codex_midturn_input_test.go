@@ -160,8 +160,8 @@ func TestIssue2836CodexTurnTookInputFailsClosedPastScanWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := codexTurnTookInputSinceFromRollout(path, "turn-t", since)
-	if err != nil || got {
-		t.Fatalf("turn start past the scan window: took = %v, err = %v; want false", got, err)
+	if !errors.Is(err, ErrCodexTurnScanBoundExceeded) || got {
+		t.Fatalf("turn start past the scan window: took = %v, err = %v; want false, ErrCodexTurnScanBoundExceeded", got, err)
 	}
 }
 
