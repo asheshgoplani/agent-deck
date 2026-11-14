@@ -155,8 +155,13 @@
     return [$('kind').value, $('name').value.trim(), selectedScopes().join(',')].join('|')
   }
 
+  // makeBlock creates a token for the form as it is now. The block is
+  // remembered under the form key captured here, before the request, so a
+  // tick cleared while the request is pending can never be paired with the
+  // broader block that comes back.
   function makeBlock() {
     var statusEl = $('status')
+    var key = formKey()
     setStatus(statusEl, 'Creating token...')
     $('copy').disabled = true
     return api('/api/connect/tokens', {
@@ -167,7 +172,7 @@
     }).then(function (conn) {
       lastToken = conn.token
       lastBlock = conn.block
-      lastKey = formKey()
+      lastKey = key
       var pre = $('block')
       pre.textContent = conn.block
       pre.hidden = false
@@ -192,6 +197,12 @@
       return
     }
     makeBlock().then(function () {
+      if (lastKey !== formKey()) {
+        // The ticks changed while the token was being made: this block
+        // does not match them, so it is not copied.
+        setStatus($('status'), 'The ticks changed while the token was being made. Press Copy again for a block with the current ticks.', 'bad')
+        return
+      }
       copyText(lastBlock, $('status'))
     }).catch(function (err) {
       setStatus($('status'), err.message, 'bad')
