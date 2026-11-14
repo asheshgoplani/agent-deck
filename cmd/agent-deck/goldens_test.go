@@ -479,13 +479,18 @@ func goldensSandbox(t *testing.T) (home string, env []string) {
 	return home, env
 }
 
-// hermeticGoldensPi puts a fake `pi` that prints 1.3.0 first on the binary's
-// PATH. `pi-hooks status` runs `pi --version`, so without it the golden carries
-// whatever pi the host has (a different version, or none), and a machine with
-// pi installed fails a golden that CI, without it, passes.
+// hermeticGoldensPi puts a fake `pi` that prints 1.3.0 where `pi-hooks status`
+// finds it first. Status runs `pi --version` through PiStatusEnv, which puts
+// the spawn-path directories missing from PATH ahead of PATH (on macOS that
+// includes /opt/homebrew/bin), so a fake that is only first on PATH can still
+// lose to a host pi. The fake lives in the sandbox's ~/.local/bin, the first
+// of those directories, and stays off PATH so the prelude always puts it in
+// front. Without it the golden carries whatever pi the host has (a different
+// version, or none), and a machine with pi installed fails a golden that CI,
+// without it, passes.
 func hermeticGoldensPi(t *testing.T, env []string, home string) []string {
 	t.Helper()
-	bin := filepath.Join(home, "goldens-bin")
+	bin := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatalf("creating the goldens bin directory: %v", err)
 	}
@@ -498,7 +503,13 @@ func hermeticGoldensPi(t *testing.T, env []string, home string) []string {
 			path = v
 		}
 	}
-	return append(filterEnv(env, "PATH"), "PATH="+bin+string(os.PathListSeparator)+path)
+	var kept []string
+	for _, dir := range filepath.SplitList(path) {
+		if filepath.Clean(dir) != bin {
+			kept = append(kept, dir)
+		}
+	}
+	return append(filterEnv(env, "PATH"), "PATH="+strings.Join(kept, string(os.PathListSeparator)))
 }
 
 // hermeticGoldensTmux points the subprocess at a private TMUX_TMPDIR whose

@@ -180,6 +180,12 @@ const (
 // bytes, and a pi that floods stdout must not be buffered whole.
 const piVersionOutputCap = 4096
 
+// piProgramName is the basename a command's program must have to be probed as
+// pi: pi itself, or pi followed by a separator or a digit (pi-nightly, pi_dev,
+// pi2). Any other program (node cli.js, npm exec pi, bash -c 'exec pi', a
+// wrapper script) is not pi, and its own --version says nothing about pi's.
+var piProgramName = regexp.MustCompile(`^pi(?:[-_.0-9].*)?$`)
+
 // piVersionRe is x.y.z with an optional semver prerelease suffix.
 var piVersionRe = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?`)
 
@@ -205,7 +211,7 @@ type PiSocketInfo struct {
 	Version string
 	// Binary is the resolved pi executable on the launch PATH.
 	Binary string
-	// Reason is "" when on, else "pi_too_old", "pi_version_unknown",
+	// Reason is "" when on, else "pi_too_old", "pi_version_unknown", "pi_command_not_pi",
 	// "path_too_long" or "no_runtime_dir". A launch adds "extension_not_installed"
 	// and "extension_outdated".
 	Reason string
@@ -240,6 +246,14 @@ func piSocketProbe(profile, instanceID string, env []string, bin string, found b
 	info := PiSocketInfo{Binary: bin}
 	if !found {
 		info.Reason, info.Detail = "pi_version_unknown", "pi --version failed: pi not found on PATH"
+		return info
+	}
+	// Only a program named as pi is probed. A command that runs pi through
+	// another program resolves to that program, whose --version is its own
+	// (node's v24.x would read as above the floor), and its arguments are not
+	// run here, since they can do anything; the socket stays off.
+	if base := filepath.Base(bin); !piProgramName.MatchString(base) {
+		info.Reason, info.Detail = "pi_command_not_pi", fmt.Sprintf("the command runs %s, not pi; its --version is not probed", base)
 		return info
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), piVersionTimeout)
@@ -324,7 +338,8 @@ func piSocketLaunch(profile, instanceID string, env []string, bin string, found 
 	if info.Path == "" {
 		sessionLog.Warn("pi_wake_socket off",
 			slog.String("version", info.Version),
-			slog.String("reason", info.Reason))
+			slog.String("reason", info.Reason),
+			slog.String("detail", info.Detail))
 		return "", info
 	}
 	return "AGENTDECK_PI_SOCKET=" + info.Path, info
