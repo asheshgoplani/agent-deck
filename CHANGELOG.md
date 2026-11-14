@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session archive` with an expected content version checks only this session's own Claude transcript, never a same-id file from another project (#3076; thanks @arnzchen).
 - With `[updates] check_enabled = false`, the TUI no longer checks for updates once at startup (#3077; thanks @ruiheng).
 - A restart that fails partway keeps the session attached to its running tmux session instead of a dead one (#3079; thanks @ruiheng).
+- `session output` now reads the reply of a session started on an account slot (`--account`) from the slot's own transcript, instead of falling back to the pane (thanks Sharjeel for the report).
 
 ### Under the hood
 
