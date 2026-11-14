@@ -63,7 +63,7 @@ css: tools
 	@echo "==> Brute-force globbing diff (Pitfall #1 gate)"
 	@trap 'rm -f ./internal/web/static/.brute-tw.src.css' EXIT INT TERM; \
 	cp ./internal/web/static/styles.src.css ./internal/web/static/.brute-tw.src.css; \
-	printf '\n/* --- brute-force additional @source (Pitfall #1 gate) --- */\n@source "./**/*.{js,mjs,html}";\n@source not "./vendor/**";\n@source not "./chart.umd.min.js";\n@source not "./sw.js";\n' \
+	printf '\n/* --- brute-force additional @source (Pitfall #1 gate) --- */\n@source "./**/*.{js,mjs,html}";\n@source not "./vendor/**";\n@source not "./chart.umd.min.js";\n@source not "./sw.js";\n@source not "./connect.html";\n@source not "./connect.js";\n' \
 		>> ./internal/web/static/.brute-tw.src.css; \
 	$(TAILWIND_BIN) -i ./internal/web/static/.brute-tw.src.css \
 		-o /tmp/agent-deck-tw-brute.css \

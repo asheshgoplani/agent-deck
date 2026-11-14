@@ -287,6 +287,11 @@ type InboxConfig struct {
 	QuestionWakes *bool `toml:"question_wakes,omitempty"`
 	// JournalKeep bounds each child's turn journal (default 256 lines).
 	JournalKeep int `toml:"journal_keep,omitzero"`
+	// WakeParents lets a record whose tier is in wake_on wake an idle
+	// Claude-compatible parent that is not a conductor (issue #3131).
+	// Default false: only a conductor, or a parent whose own tagged send the
+	// child answered, is woken. The info digest stays conductor-only.
+	WakeParents *bool `toml:"wake_parents,omitempty"`
 }
 
 // merged returns c with any non-zero field of o applied on top.
@@ -308,6 +313,9 @@ func (c InboxConfig) merged(o *InboxConfig) InboxConfig {
 	}
 	if o.JournalKeep > 0 {
 		c.JournalKeep = o.JournalKeep
+	}
+	if o.WakeParents != nil {
+		c.WakeParents = o.WakeParents
 	}
 	return c
 }
@@ -350,6 +358,12 @@ func (c InboxConfig) GetInfoDigestMinutes() int {
 // GetQuestionWakes returns whether questions are urgent (default true).
 func (c InboxConfig) GetQuestionWakes() bool {
 	return c.QuestionWakes == nil || *c.QuestionWakes
+}
+
+// GetWakeParents reports whether an idle non-conductor Claude parent is
+// woken for a record that wakes (default false).
+func (c InboxConfig) GetWakeParents() bool {
+	return c.WakeParents != nil && *c.WakeParents
 }
 
 // GetJournalKeep returns the journal cap (default 256).
