@@ -8,25 +8,10 @@ import (
 	"al.essio.dev/pkg/shellescape"
 )
 
-const (
-	KimiPermissionDefault = ""
-	KimiPermissionYolo    = "yolo"
-	KimiPermissionAuto    = "auto"
-)
-
-func ValidateKimiPermissionMode(mode string) error {
-	switch mode {
-	case KimiPermissionDefault, KimiPermissionYolo, KimiPermissionAuto:
-		return nil
-	default:
-		return fmt.Errorf("invalid Kimi permission mode %q (valid values: yolo, auto, or empty for Kimi default)", mode)
-	}
-}
-
 // KimiOptions holds per-session launch options for Kimi Code CLI.
 type KimiOptions struct {
-	Model          string `json:"model,omitempty"`
-	PermissionMode string `json:"permission_mode,omitempty"`
+	Model    string `json:"model,omitempty"`
+	YoloMode bool   `json:"yolo_mode,omitempty"`
 }
 
 func (o *KimiOptions) ToolName() string { return "kimi" }
@@ -36,11 +21,8 @@ func (o *KimiOptions) ToArgs() []string {
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
-	switch o.PermissionMode {
-	case KimiPermissionYolo:
+	if o.YoloMode {
 		args = append(args, "--yolo")
-	case KimiPermissionAuto:
-		args = append(args, "--auto")
 	}
 	return args
 }
@@ -49,7 +31,7 @@ func NewKimiOptions(config *UserConfig) *KimiOptions {
 	opts := &KimiOptions{}
 	if config != nil {
 		opts.Model = config.Kimi.DefaultModel
-		opts.PermissionMode = config.Kimi.PermissionMode
+		opts.YoloMode = config.Kimi.YoloMode
 	}
 	return opts
 }
@@ -111,18 +93,15 @@ func (i *Instance) buildKimiCommand(baseCommand string) string {
 			cmd += " --model " + shellescape.Quote(model)
 		}
 	}
-	permissionMode := KimiPermissionDefault
+	yoloMode := false
 	if config != nil {
-		permissionMode = config.Kimi.PermissionMode
+		yoloMode = config.Kimi.YoloMode
 	}
 	if opts != nil {
-		permissionMode = opts.PermissionMode
+		yoloMode = opts.YoloMode
 	}
-	switch permissionMode {
-	case KimiPermissionYolo:
+	if yoloMode {
 		cmd += " --yolo"
-	case KimiPermissionAuto:
-		cmd += " --auto"
 	}
 	return envPrefix + cmd
 }

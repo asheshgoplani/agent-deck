@@ -147,7 +147,6 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
-	permissionMode := fs.String("permission-mode", "", "Kimi permission mode: yolo or auto (empty = Kimi default)")
 	claudeFlags := registerClaudeOptionFlags(fs)
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as
@@ -295,7 +294,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	}
 	createNewBranch := *newBranch || *newBranchLong
 
-	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode, *permissionMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
 		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
@@ -708,10 +707,6 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		newInstance.Sandbox = session.NewSandboxConfig(*sandboxImage)
 	}
 	if err := applyCLIYoloOverride(newInstance, *yoloMode, cliFlagWasSet(fs, "yolo")); err != nil {
-		out.Error(err.Error(), ErrCodeInvalidOperation)
-		exitCLI(1)
-	}
-	if err := applyCLIKimiPermissionMode(newInstance, *permissionMode, cliFlagWasSet(fs, "permission-mode")); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}

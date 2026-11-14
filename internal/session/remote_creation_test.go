@@ -129,27 +129,6 @@ func TestRemoteCreationExplicitFalseAndLineBreakTransport(t *testing.T) {
 	}
 }
 
-func TestRemoteCreationKimiPermissionModeTransport(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		opts RemoteAddOptions
-		want string
-	}{
-		{name: "auto", opts: RemoteAddOptions{Tool: "kimi", PermissionMode: "auto", PermissionModeSet: true}, want: "--permission-mode=auto"},
-		{name: "explicit default", opts: RemoteAddOptions{Tool: "kimi", PermissionModeSet: true}, want: "--permission-mode="},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			args, err := remoteAddArgs(tt.opts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !containsString(args, tt.want) {
-				t.Fatalf("remote args = %v, want %q", args, tt.want)
-			}
-		})
-	}
-}
-
 func TestRemoteCreationQueryResumeRefusedBeforeFetch(t *testing.T) {
 	for _, opts := range []RemoteAddOptions{
 		{Tool: "claude", StartQuery: "query", ClaudeOptions: &ClaudeOptions{SessionMode: "resume"}},

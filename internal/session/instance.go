@@ -3268,9 +3268,6 @@ func (i *Instance) SetKimiOptions(opts *KimiOptions) error {
 		i.ToolOptionsJSON = nil
 		return nil
 	}
-	if err := ValidateKimiPermissionMode(opts.PermissionMode); err != nil {
-		return err
-	}
 	data, err := MarshalToolOptions(opts)
 	if err != nil {
 		return err

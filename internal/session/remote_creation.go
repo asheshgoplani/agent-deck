@@ -14,16 +14,16 @@ import (
 // deliberately excluded. Unknown protocol versions fail closed.
 type RemoteCreationCatalog struct {
 	// Legacy is controller-only state, never part of the catalog protocol.
-	Legacy             bool                             `json:"-"`
-	Defaults           map[string]bool                  `json:"defaults"`
-	Version            int                              `json:"version"`
-	Commands           map[string][]RemoteCreationField `json:"commands"`
-	Tools              []RemoteCreationTool             `json:"tools"`
-	DefaultTool        string                           `json:"default_tool"`
-	KimiPermissionMode string                           `json:"kimi_permission_mode,omitempty"`
-	Accounts           []string                         `json:"accounts"`
-	MCPs               []string                         `json:"mcps"`
-	Conductors         []RemoteCreationConductor        `json:"conductors"`
+	Legacy       bool                             `json:"-"`
+	Defaults     map[string]bool                  `json:"defaults"`
+	Version      int                              `json:"version"`
+	Commands     map[string][]RemoteCreationField `json:"commands"`
+	Tools        []RemoteCreationTool             `json:"tools"`
+	DefaultTool  string                           `json:"default_tool"`
+	KimiYoloMode bool                             `json:"kimi_yolo_mode,omitempty"`
+	Accounts     []string                         `json:"accounts"`
+	MCPs         []string                         `json:"mcps"`
+	Conductors   []RemoteCreationConductor        `json:"conductors"`
 }
 
 type RemoteCreationField struct {

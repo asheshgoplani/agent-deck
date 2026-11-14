@@ -33,37 +33,6 @@ func TestApplyCLIYoloOverride(t *testing.T) {
 		}
 	})
 
-	t.Run("auto for kimi sets override", func(t *testing.T) {
-		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
-		if err := applyCLIKimiPermissionMode(inst, "auto", true); err != nil {
-			t.Fatalf("applyCLIKimiPermissionMode() error = %v", err)
-		}
-		opts := inst.GetKimiOptions()
-		if opts == nil || opts.PermissionMode != session.KimiPermissionAuto {
-			t.Fatalf("KimiOptions.PermissionMode = %q, want auto", opts.PermissionMode)
-		}
-	})
-
-	t.Run("kimi default clears override", func(t *testing.T) {
-		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
-		if err := inst.SetKimiOptions(&session.KimiOptions{PermissionMode: session.KimiPermissionAuto}); err != nil {
-			t.Fatal(err)
-		}
-		if err := applyCLIKimiPermissionMode(inst, "", true); err != nil {
-			t.Fatalf("applyCLIKimiPermissionMode() error = %v", err)
-		}
-		if got := inst.GetKimiOptions().PermissionMode; got != session.KimiPermissionDefault {
-			t.Fatalf("PermissionMode = %q, want Kimi default", got)
-		}
-	})
-
-	t.Run("invalid kimi mode is rejected", func(t *testing.T) {
-		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
-		if err := applyCLIKimiPermissionMode(inst, "manual", true); err == nil {
-			t.Fatal("invalid permission mode was accepted")
-		}
-	})
-
 	t.Run("generic yolo no longer accepts kimi", func(t *testing.T) {
 		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
 		if err := applyCLIYoloOverride(inst, true); err == nil {

@@ -67,8 +67,6 @@ Options:
     	Parent session (short)
   -parent string
     	Parent session (creates sub-session, inherits group)
-  -permission-mode string
-    	Kimi permission mode: yolo or auto (empty = Kimi default)
   -plugin value
     	Catalog plugin to enable for this session (can specify multiple times); requires -c claude; configure in [plugins.<name>] in <SANDBOX_HOME>/.config/agent-deck/config.toml
   -q	Minimal output (short)

@@ -316,22 +316,21 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 func TestSettingsPanel_KimiOptions(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.LoadConfig(&session.UserConfig{Kimi: session.KimiSettings{
-		DefaultModel:   "configured-model",
-		PermissionMode: session.KimiPermissionAuto,
+		DefaultModel: "configured-model",
+		YoloMode:     false,
 	}})
 	panel.visible = true
 	panel.SetSize(100, 60)
 
 	view := panel.View()
-	for _, want := range []string{"KIMI", "Default model", "Permissions", "Kimi default", "Ask When Needed", "Never Ask"} {
+	for _, want := range []string{"KIMI", "Default model", "YOLO mode"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Settings view missing %q: %q", want, view)
 		}
 	}
 
-	panel.cursor = int(SettingKimiPermissionMode)
+	panel.cursor = int(SettingKimiYoloMode)
 	panel.Update(tea.KeyMsg{Type: tea.KeySpace})
-	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
 	panel.cursor = int(SettingKimiDefaultModel)
 	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	for range len("configured-model") {
@@ -344,20 +343,20 @@ func TestSettingsPanel_KimiOptions(t *testing.T) {
 	if config.Kimi.DefaultModel != "session-model" {
 		t.Fatalf("Kimi.DefaultModel = %q, want session-model", config.Kimi.DefaultModel)
 	}
-	if config.Kimi.PermissionMode != session.KimiPermissionYolo {
-		t.Fatalf("Kimi.PermissionMode = %q, want yolo", config.Kimi.PermissionMode)
+	if !config.Kimi.YoloMode {
+		t.Fatal("Kimi.YoloMode = false, want true")
 	}
 }
 
 func TestSettingsPanel_KimiOptionsPreserveUnexposedConfig(t *testing.T) {
 	hooksEnabled := false
 	original := &session.UserConfig{Kimi: session.KimiSettings{
-		Command:        "/opt/kimi --custom",
-		ConfigDir:      "/tmp/kimi-home",
-		EnvFile:        "/tmp/kimi.env",
-		DefaultModel:   "configured-model",
-		PermissionMode: session.KimiPermissionAuto,
-		HooksEnabled:   &hooksEnabled,
+		Command:      "/opt/kimi --custom",
+		ConfigDir:    "/tmp/kimi-home",
+		EnvFile:      "/tmp/kimi.env",
+		DefaultModel: "configured-model",
+		YoloMode:     true,
+		HooksEnabled: &hooksEnabled,
 	}}
 	panel := NewSettingsPanel()
 	panel.originalConfig = original

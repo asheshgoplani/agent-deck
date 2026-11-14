@@ -106,26 +106,20 @@ func TestKimiDetectionDoesNotWriteConfigBeforeConsent(t *testing.T) {
 	}
 }
 
-func TestPendingHookPromptsAreSequencedClaudeThenHermesThenKimi(t *testing.T) {
+func TestPendingHookPromptsAreSequencedHermesThenKimi(t *testing.T) {
 	home := &Home{
 		confirmDialog:            NewConfirmDialog(),
-		pendingHooksPrompt:       true,
 		pendingHermesHooksPrompt: true,
 		pendingKimiHooksPrompt:   true,
 	}
 	home.showPendingHooksPrompt()
-	if got := home.confirmDialog.GetConfirmType(); got != ConfirmInstallHooks {
-		t.Fatalf("first prompt = %v, want Claude hooks", got)
-	}
-	home.pendingHooksPrompt = false
-	home.showPendingHooksPrompt()
 	if got := home.confirmDialog.GetConfirmType(); got != ConfirmInstallHermesHooks {
-		t.Fatalf("second prompt = %v, want Hermes hooks", got)
+		t.Fatalf("first prompt = %v, want Hermes hooks", got)
 	}
 	home.pendingHermesHooksPrompt = false
 	home.showPendingHooksPrompt()
 	if got := home.confirmDialog.GetConfirmType(); got != ConfirmInstallKimiHooks {
-		t.Fatalf("third prompt = %v, want Kimi hooks", got)
+		t.Fatalf("second prompt = %v, want Kimi hooks", got)
 	}
 }
 

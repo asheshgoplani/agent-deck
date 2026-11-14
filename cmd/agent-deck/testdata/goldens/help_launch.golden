@@ -85,8 +85,6 @@ Options:
     	Parent session (short)
   -parent string
     	Parent session (creates sub-session; group is cwd-derived by default — auto-inherits the parent's group for git worktree children or with --inherit-group)
-  -permission-mode string
-    	Kimi permission mode: yolo or auto (empty = Kimi default)
   -plugin value
     	Catalog plugin to enable for this session (can specify multiple times); requires -c claude
   -q	Minimal output (short)

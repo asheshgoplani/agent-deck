@@ -397,25 +397,25 @@ func isBareFieldLabel(line string) bool {
 
 // dialogSnapshot captures form state so the recent picker can restore on cancel.
 type dialogSnapshot struct {
-	name               string
-	path               string
-	commandCursor      int
-	commandInput       string
-	modelInput         string
-	reasoningEffort    string
-	sandboxEnabled     bool
-	worktreeEnabled    bool
-	worktreeToggled    bool
-	branch             string
-	branchAutoSet      bool
-	claudeOptions      *session.ClaudeOptions
-	geminiYolo         bool
-	codexYolo          bool
-	hermesYolo         bool
-	kimiPermissionMode string
-	multiRepoEnabled   bool
-	multiRepoPaths     []string
-	conductorCursor    int
+	name             string
+	path             string
+	commandCursor    int
+	commandInput     string
+	modelInput       string
+	reasoningEffort  string
+	sandboxEnabled   bool
+	worktreeEnabled  bool
+	worktreeToggled  bool
+	branch           string
+	branchAutoSet    bool
+	claudeOptions    *session.ClaudeOptions
+	geminiYolo       bool
+	codexYolo        bool
+	hermesYolo       bool
+	kimiYoloMode     bool
+	multiRepoEnabled bool
+	multiRepoPaths   []string
+	conductorCursor  int
 }
 
 // displayCommandPreset returns the visible label for a built-in preset slot.
@@ -662,13 +662,13 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
-	d.kimiOptions.SetDefaults(session.KimiPermissionDefault)
+	d.kimiOptions.SetDefaults(false)
 	d.ompOptions.SetDefaults(nil)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
 		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
 		d.hermesOptions.SetDefaults(userConfig.Hermes.YoloMode)
-		d.kimiOptions.SetDefaults(userConfig.Kimi.PermissionMode)
+		d.kimiOptions.SetDefaults(userConfig.Kimi.YoloMode)
 		d.ompOptions.SetDefaults(session.NewOMPOptions(userConfig))
 		d.claudeOptions.SetDefaults(userConfig)
 		// #2895: start on [claude].default_account instead of inherit. Each
@@ -1011,25 +1011,25 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 	}
 
 	return &dialogSnapshot{
-		name:               d.nameInput.Value(),
-		path:               d.pathInput.Value(),
-		commandCursor:      d.commandCursor,
-		commandInput:       d.commandInput.Value(),
-		modelInput:         d.modelInput.Value(),
-		reasoningEffort:    d.reasoningEffort,
-		sandboxEnabled:     d.sandboxEnabled,
-		worktreeEnabled:    d.worktreeEnabled,
-		worktreeToggled:    d.worktreeToggled,
-		branch:             d.branchInput.Value(),
-		branchAutoSet:      d.branchAutoSet,
-		claudeOptions:      claudeOpts,
-		geminiYolo:         d.geminiOptions.GetYoloMode(),
-		codexYolo:          d.codexOptions.GetYoloMode(),
-		hermesYolo:         d.hermesOptions.GetYoloMode(),
-		kimiPermissionMode: d.kimiOptions.GetOptions().PermissionMode,
-		multiRepoEnabled:   d.multiRepoEnabled,
-		multiRepoPaths:     append([]string{}, d.multiRepoPaths...),
-		conductorCursor:    d.conductorCursor,
+		name:             d.nameInput.Value(),
+		path:             d.pathInput.Value(),
+		commandCursor:    d.commandCursor,
+		commandInput:     d.commandInput.Value(),
+		modelInput:       d.modelInput.Value(),
+		reasoningEffort:  d.reasoningEffort,
+		sandboxEnabled:   d.sandboxEnabled,
+		worktreeEnabled:  d.worktreeEnabled,
+		worktreeToggled:  d.worktreeToggled,
+		branch:           d.branchInput.Value(),
+		branchAutoSet:    d.branchAutoSet,
+		claudeOptions:    claudeOpts,
+		geminiYolo:       d.geminiOptions.GetYoloMode(),
+		codexYolo:        d.codexOptions.GetYoloMode(),
+		hermesYolo:       d.hermesOptions.GetYoloMode(),
+		kimiYoloMode:     d.kimiOptions.GetOptions().YoloMode,
+		multiRepoEnabled: d.multiRepoEnabled,
+		multiRepoPaths:   append([]string{}, d.multiRepoPaths...),
+		conductorCursor:  d.conductorCursor,
 	}
 }
 
@@ -1052,7 +1052,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.geminiOptions.SetDefaults(s.geminiYolo)
 	d.codexOptions.SetDefaults(s.codexYolo)
 	d.hermesOptions.SetDefaults(s.hermesYolo)
-	d.kimiOptions.SetDefaults(s.kimiPermissionMode)
+	d.kimiOptions.SetDefaults(s.kimiYoloMode)
 	d.multiRepoEnabled = s.multiRepoEnabled
 	d.multiRepoPaths = append([]string{}, s.multiRepoPaths...)
 	d.multiRepoPathCursor = 0
@@ -1701,7 +1701,7 @@ func (d *NewDialog) ResetRemoteDefaults() {
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
-	d.kimiOptions.SetDefaults(session.KimiPermissionDefault)
+	d.kimiOptions.SetDefaults(false)
 	d.rebuildFocusTargets()
 }
 
@@ -1843,9 +1843,6 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 		opts.Yolo = d.IsGeminiYoloMode()
 	case command == "hermes":
 		opts.Yolo = d.GetHermesYoloMode()
-	case command == "kimi":
-		opts.PermissionMode = d.GetKimiOptions().PermissionMode
-		opts.PermissionModeSet = true
 	}
 	if d.toolKind(command) == "codex" || command == "gemini" || command == "hermes" {
 		value := opts.Yolo
@@ -4327,7 +4324,7 @@ func (d *NewDialog) SetRemoteCreationCatalog(catalog *session.RemoteCreationCata
 	d.codexOptions.SetDefaults(catalog.Defaults["codex_yolo"])
 	d.geminiOptions.SetDefaults(catalog.Defaults["gemini_yolo"])
 	d.hermesOptions.SetDefaults(catalog.Defaults["hermes_yolo"])
-	d.kimiOptions.SetDefaults(catalog.KimiPermissionMode)
+	d.kimiOptions.SetDefaults(catalog.KimiYoloMode)
 	d.presetCommands = nil
 	if catalog.Legacy {
 		d.presetCommands = buildPresetCommands()

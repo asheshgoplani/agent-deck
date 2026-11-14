@@ -104,7 +104,7 @@ func TestNewDialog_ModelInputForCodex(t *testing.T) {
 
 func TestNewDialog_KimiOptions(t *testing.T) {
 	home := setXDGTestHome(t)
-	writeXDGTestConfig(t, home, "[kimi]\ndefault_model = \"configured-model\"\npermission_mode = \"auto\"\n")
+	writeXDGTestConfig(t, home, "[kimi]\ndefault_model = \"configured-model\"\nyolo_mode = true\n")
 
 	d := NewNewDialog()
 	d.SetDefaultTool("kimi")
@@ -114,11 +114,11 @@ func TestNewDialog_KimiOptions(t *testing.T) {
 	if got := d.GetLaunchModelID(); got != "configured-model" {
 		t.Fatalf("GetLaunchModelID() = %q, want configured-model", got)
 	}
-	if got := d.GetKimiOptions().PermissionMode; got != session.KimiPermissionAuto {
-		t.Fatalf("PermissionMode = %q, want auto", got)
+	if !d.GetKimiOptions().YoloMode {
+		t.Fatal("YoloMode = false, want true")
 	}
 	view := d.View()
-	for _, want := range []string{"Model ID", "Kimi Options", "Permissions", "Kimi default", "Ask When Needed", "Never Ask"} {
+	for _, want := range []string{"Model ID", "Kimi Options", "YOLO mode"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Kimi new-session dialog missing %q: %q", want, view)
 		}
@@ -126,11 +126,13 @@ func TestNewDialog_KimiOptions(t *testing.T) {
 
 	d.focusIndex = d.indexOf(focusOptions)
 	d.updateFocus()
-	for _, want := range []string{session.KimiPermissionDefault, session.KimiPermissionYolo, session.KimiPermissionAuto} {
-		d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
-		if got := d.GetKimiOptions().PermissionMode; got != want {
-			t.Fatalf("PermissionMode after Space = %q, want %q", got, want)
-		}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if d.GetKimiOptions().YoloMode {
+		t.Fatal("YoloMode after Space = true, want false")
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !d.GetKimiOptions().YoloMode {
+		t.Fatal("YoloMode after second Space = false, want true")
 	}
 	d.modelInput.SetValue("session-model")
 	if got := d.GetLaunchModelID(); got != "session-model" {

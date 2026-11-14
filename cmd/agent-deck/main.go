@@ -2119,7 +2119,6 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
-	permissionMode := fs.String("permission-mode", "", "Kimi permission mode: yolo or auto (empty = Kimi default)")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
 	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
@@ -2270,7 +2269,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		exitCLI(1)
 	}
 
-	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, *permissionMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
 		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
@@ -2833,10 +2832,6 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	}
 
 	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode, cliFlagWasSet(fs, "yolo", "gemini-yolo")); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		exitCLI(1)
-	}
-	if err := applyCLIKimiPermissionMode(newInstance, *permissionMode, cliFlagWasSet(fs, "permission-mode")); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		exitCLI(1)
 	}

@@ -28,7 +28,7 @@
                                                                    │                                                                │
                                                                    │  KIMI                                                          │
                                                                    │    Default model: Kimi default                                 │
-                                                                   │    Permissions: >Kimi default   Ask When Needed   Never Ask    │
+                                                                   │    [ ] YOLO mode - Auto-approve routine work                   │
                                                                    │                                                                │
                                                                    │  UPDATES                                                       │
                                                                    │    [x] Check for updates on startup                            │

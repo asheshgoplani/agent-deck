@@ -57,9 +57,9 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	merged.Codex.YoloMode = panel.Codex.YoloMode
 	merged.Hermes.YoloMode = panel.Hermes.YoloMode
 
-	// ── Kimi (panel manages DefaultModel and PermissionMode) ────────────
+	// ── Kimi (panel manages DefaultModel and YoloMode) ────────────
 	merged.Kimi.DefaultModel = panel.Kimi.DefaultModel
-	merged.Kimi.PermissionMode = panel.Kimi.PermissionMode
+	merged.Kimi.YoloMode = panel.Kimi.YoloMode
 
 	// ── Updates (panel manages CheckEnabled, AutoUpdate, AutoInstall,
 	// AutoRestart) ─────────────────────────────────────────────────────
