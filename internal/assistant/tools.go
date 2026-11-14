@@ -150,6 +150,18 @@ func decodeArgs(raw json.RawMessage) (toolArgs, error) {
 	return a, nil
 }
 
+// onlyKnown refuses an argument the tool's input schema does not list, so
+// a misspelled key ("toool") is an error instead of a silent default.
+func (a toolArgs) onlyKnown(tool Tool) error {
+	props, _ := tool.InputSchema["properties"].(map[string]any)
+	for k := range a {
+		if _, ok := props[k]; !ok {
+			return fmt.Errorf("unknown argument %q for %s", k, tool.Name)
+		}
+	}
+	return nil
+}
+
 func (a toolArgs) str(key string) (string, error) {
 	v, ok := a[key]
 	if !ok || v == nil {

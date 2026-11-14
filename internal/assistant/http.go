@@ -3,9 +3,11 @@ package assistant
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -251,8 +253,10 @@ func (h *HTTPHandler) serveAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": map[string]any{"text": res.Text}})
 }
 
-// decodeBody reads a JSON object body into args, keeping only allowed keys.
-// An empty body is an empty object.
+// decodeBody reads a JSON object body into args. A key outside allowed is
+// refused (a misspelled key must not fall back to a default), and so is a
+// body that is not an object (null included). An empty body is an empty
+// object.
 func decodeBody(w http.ResponseWriter, r *http.Request, args map[string]any, allowed ...string) bool {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil || len(body) > maxBodyBytes {
@@ -263,14 +267,16 @@ func decodeBody(w http.ResponseWriter, r *http.Request, args map[string]any, all
 		return true
 	}
 	var in map[string]any
-	if err := json.Unmarshal(body, &in); err != nil {
+	if err := json.Unmarshal(body, &in); err != nil || in == nil {
 		writeErr(w, http.StatusBadRequest, &CallError{Code: CodeInvalid, Message: "body must be a JSON object"})
 		return false
 	}
-	for _, k := range allowed {
-		if v, ok := in[k]; ok {
-			args[k] = v
+	for k, v := range in {
+		if !slices.Contains(allowed, k) {
+			writeErr(w, http.StatusBadRequest, &CallError{Code: CodeInvalid, Message: fmt.Sprintf("unknown field %q; this route takes %s", k, strings.Join(allowed, ", "))})
+			return false
 		}
+		args[k] = v
 	}
 	return true
 }

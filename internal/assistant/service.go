@@ -156,6 +156,12 @@ func (s *Service) Call(ctx context.Context, rec Record, name string, rawArgs jso
 		return deny(CodeReadOnly, "this agent-deck server is read-only; "+tool.Name+" is disabled", "")
 	}
 
+	// After the scope and read-only checks, so a refused call reports why
+	// it is refused rather than a stray argument.
+	if err := args.onlyKnown(tool); err != nil {
+		return deny(CodeInvalid, err.Error(), "")
+	}
+
 	data, _, err := s.runTool(ctx, rec, tool, args)
 	if err != nil {
 		var inv invalidArgs
