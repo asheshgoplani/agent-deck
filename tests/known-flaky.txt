@@ -20,7 +20,9 @@ internal/session TestEnsureClaudeConfigDirEnv_SetsHostSideEnv
 cmd/agent-deck TestSwitchSettle_FakeClaudePane_DecoyAboveLiveMenuUntouched
 
 # Disclosed flake in the v1.16.37 and v1.16.38 release gates. The test reads the
-# process-wide tmux.SubprocessStarts() counter, so a tmux command started by another
-# test in the same binary during the pass counts against its "at most 2" budget.
-# Label only; the real fix is to scope the counter to the pass. Remove when that lands.
+# process-wide tmux.SubprocessStarts() counter, so any tmux command that completes in
+# the same test binary during the pass (a goroutine left over from an earlier test)
+# counts against its "at most 2" budget. Label only; the real fix is to scope the
+# counter to the pass (its siblings in dead_row_probe_test.go read it the same way).
+# Remove when that lands.
 internal/session TestStatusUpdatePass_DeadRowsStartNoTmuxPerRow
