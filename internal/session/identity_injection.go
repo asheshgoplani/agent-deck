@@ -435,7 +435,7 @@ func (i *Instance) BuildIdentityPrompt() string {
 		b.WriteString("Questions and progress do not reach your parent either. To ask it something, use `agent-deck session send <parent-id> \"...\"` with the parent session id above.\n")
 	} else {
 		b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
-		b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
+		b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that makes the record urgent. An urgent record wakes an idle parent that is a conductor, that sent you the message you are answering, or that set `[inbox] wake_parents`; any other parent reads it on its next turn. Anything else you print is delivered as progress on its next turn.\n")
 	}
 	if i.fanoutHintApplies() {
 		b.WriteString("\n## Working style\n")

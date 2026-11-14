@@ -1157,6 +1157,7 @@ max_text_bytes = 600        # child text carried on a record (hard max 2048)
 info_digest_minutes = 15    # how long info may wait before a digest wakes an idle parent (0 = never)
 question_wakes = true       # a trailing "?" / NEED: / QUESTION: line is urgent
 journal_keep = 256          # per-child turn journal length (runtime/turn-journal/<child>.jsonl)
+wake_parents = false        # also wake an idle Claude parent that is not a conductor
 
 [conductors.myconductor.inbox]   # per-conductor override, same keys
 wake_on = ["urgent", "info"]     # restores a wake per recorded turn for this conductor
@@ -1164,10 +1165,11 @@ wake_on = ["urgent", "info"]     # restores a wake per recorded turn for this co
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `wake_on` | []string | `["urgent"]` | Tiers that type a wake into an idle parent the moment a record lands. Records with no tier (older producers) always wake. `info` records never wake on their own: they stay in the durable inbox and are delivered on the parent's next Stop-hook drain or heartbeat. |
+| `wake_on` | []string | `["urgent"]` | Tiers that type a wake into an idle parent the moment a record lands. Who is a wake target: a conductor; a Claude parent whose own tagged `session send` (or `launch` kickoff) the child answered; and, with `wake_parents = true`, any Claude parent. Any other parent reads its records on its next turn. Records with no tier (older producers) always wake. `info` records never wake on their own: they stay in the durable inbox and are delivered on the parent's next Stop-hook drain or heartbeat. |
 | `max_text_bytes` | int | `600` | Bytes of the child's final assistant text carried on a record (`text`); clipped on a rune boundary with `…`. Hard ceiling 2048. |
 | `info_digest_minutes` | int | `15` | Reserved for the info digest: an idle parent with info waiting longer than this gets one digest wake. `0` disables the digest. |
 | `question_wakes` | bool | `true` | Treat a parent-facing question (last line ends with `?`, or a `NEED:`/`QUESTION:`/`ASK:` line) as urgent. |
+| `wake_parents` | bool | `false` | Lets a record whose tier is in `wake_on` wake an idle Claude-compatible parent that is not a conductor (#3131): for ordinary sessions that orchestrate children (a coordinator that launches workers and ends its turn to wait). Same gate as a conductor wake: the parent must be idle (re-probed), wakes to one parent within 500 ms collapse to one, and a wake never types over text a person left in the parent's input box (it waits, then skips the wake and leaves the text alone; the record still arrives on the next turn). The info digest stays conductor-only. Off by default because a wake starts a turn (and costs tokens) in a session a person may be using. Set it in `[inbox]`; a per-conductor block does not apply to non-conductors. |
 | `journal_keep` | int | `256` | Lines kept per child in the turn journal (`agent-deck inbox stats` reads the counters, the journal is the per-turn history). |
 
 Measure the effect with `agent-deck inbox stats self` (or `--all`): records by tier, turns suppressed as noise or duplicates, wakeups fired and withheld, bytes injected.
@@ -1197,7 +1199,7 @@ tag_sends = true   # prefix agent-originated sends with [agent-deck from:<id>]
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `tag_sends` | bool | `true` | A `session send` from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one `[agent-deck from:<sender-id>]` line, so the receiver's reply is classified as a send and, when the sender is not the receiver's parent, committed to the sender's inbox as an urgent `reply` record that wakes it (also when the receiver has no parent). `false` turns tagging off for every send (`--no-tag` does it per send). Human shells, senders that are not Claude-compatible sessions, `--draft`, bare slash commands, heartbeats, sends to oneself and non-Claude targets are never tagged. |
+| `tag_sends` | bool | `true` | A `session send` from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one `[agent-deck from:<sender-id>]` line, so the receiver's reply is classified as a send and, when the sender is not the receiver's parent, committed to the sender's inbox as an urgent `reply` record that wakes it (also when the receiver has no parent). `false` turns tagging off for every send (`--no-tag` does it per send). The same tag goes on a `launch` initial message when the calling session is the child's linked parent (#3131; `launch --no-tag` per launch), so the child's first turn answers the parent. Human shells, senders that are not Claude-compatible sessions, `--draft`, bare slash commands, heartbeats, sends to oneself and non-Claude targets are never tagged. |
 
 ## [costs.budgets] and [costs.run_budget]
 

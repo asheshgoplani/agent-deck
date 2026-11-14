@@ -207,6 +207,16 @@ type hookStatusFile struct {
 	// process's SessionStart never loses it, and it does not depend on the
 	// [health] event history. A file written before it existed reads as 0.
 	TurnSeq uint64 `json:"turn_seq,omitempty"`
+	// PromptFromID is the sender named by the envelope of the last
+	// UserPromptSubmit, and PromptTurnSeq the turn_seq that prompt edge
+	// wrote (issue #3131). A prompt with no envelope clears both; every other
+	// write carries them forward. The daemon attributes a turn whose prompt
+	// is outside the transcript tail window to PromptFromID only when
+	// turn_seq == PromptTurnSeq+1, i.e. the one edge since is that turn's
+	// Stop. Like turn_seq they are lost when the TUI removes the file on
+	// attach-return, which only leaves such a turn unknown, as before.
+	PromptFromID  string `json:"prompt_from_id,omitempty"`
+	PromptTurnSeq uint64 `json:"prompt_turn_seq,omitempty"`
 	// Settles is the writer's capability bit (a v4+ extension: it sends
 	// agent_settled keyed by run; v3 sends agent_settled without the bit) and
 	// PiRunID the run token the extension minted at agent_start, both from the
@@ -489,7 +499,13 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	if payload.Source == "pi" {
 		pi = piRunInfo{Settles: rawBool(payload.Settles), RunID: strings.TrimSpace(rawString(payload.RunID)), Source: true}
 	}
-	writeHookStatusFull(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt, pi)
+	// Issue #3131: the prompt's sender, recorded at prompt time so a turn
+	// that outgrows the daemon's transcript tail window is still attributed.
+	promptFrom := ""
+	if claudeTurnEdge(payload) == "prompt" {
+		promptFrom = session.PromptSender(rawString(payload.Prompt))
+	}
+	writeHookStatusFull(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt, pi, promptFrom)
 	if payload.HookEventName == "PreToolUse" {
 		// This high-frequency edge only publishes activity. Lifecycle hooks
 		// still own metadata reconciliation, costs, and Recall indexing.
@@ -693,7 +709,7 @@ func writeHookStatusReceivedAt(instanceID, status, sessionID, event, cwd string,
 // writeHookStatusReceivedAtPlatform also records the payload's platform
 // (Hermes extra.platform), used to keep delegate events from binding.
 func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time) {
-	writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform, scan, receivedAt, piRunInfo{})
+	writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform, scan, receivedAt, piRunInfo{}, "")
 }
 
 // piRunInfo is what a pi extension's turn_start and turn_end say about their
@@ -710,7 +726,9 @@ func rawBool(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &b) == nil && b
 }
 
-func writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time, pi piRunInfo) {
+// promptFrom is the sender of a tagged Claude prompt (UserPromptSubmit
+// only; "" otherwise).
+func writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time, pi piRunInfo, promptFrom string) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -737,6 +755,8 @@ func writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform str
 		Settles:   pi.Settles,
 		PiRunID:   pi.RunID,
 		piSource:  pi.Source,
+
+		PromptFromID: strings.TrimSpace(promptFrom),
 	}
 	if os.Getenv("AGENTDECK_TOOL") == "hermes" && session.HermesHookRecordsOwnSession(event, platform, sessionID) {
 		statusFile.hermesOwnedSessionID = sessionID
@@ -922,6 +942,14 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 	statusFile.TurnSeq = max(previous.TurnSeq, sidecarSeq)
 	if isTurnSeqEvent(statusFile.Event) {
 		statusFile.TurnSeq++
+	}
+	if normalizeHookEventKey(statusFile.Event) == "userpromptsubmit" {
+		statusFile.PromptTurnSeq = 0
+		if statusFile.PromptFromID != "" {
+			statusFile.PromptTurnSeq = statusFile.TurnSeq
+		}
+	} else {
+		statusFile.PromptFromID, statusFile.PromptTurnSeq = previous.PromptFromID, previous.PromptTurnSeq
 	}
 	var hermesCwdRoots []string
 	if generation != "" {

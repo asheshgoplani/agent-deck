@@ -82,6 +82,10 @@ Useful flags:
   instead of the auto-detected one. One step, no follow-up needed. **Prefer the
   long form** — see the `-p` pitfall in Notes.
 - `--no-assert-done` — skip the completion-sentinel instruction.
+- `--no-tag` — do not start the message with the `[agent-deck from:<your id>]`
+  envelope. By default a launch from inside your session tags it, so the child's
+  first turn counts as a reply to you and its completion wakes you when you are
+  idle, even if you are not a conductor.
 - `--no-parent` — launch a standalone top-level session you supervise directly,
   not nested under you (you lose completion routing). **Set `-g` explicitly** for
   these — see "Independent (un-parented) sessions" below.
