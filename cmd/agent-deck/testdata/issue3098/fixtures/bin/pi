@@ -1,0 +1,10 @@
+#!/bin/sh
+case "${1:-}" in
+  --version) echo 1.5.2; exit 0 ;;
+  --help) echo 'pi fixture: --continue --session-dir --append-system-prompt'; exit 0 ;;
+esac
+stty -echo
+printf 'Pi fixture\n────────────────────\n\n────────────────────\n~/project | fixture-model | ctx:0%% | in:0 out:0 | $0.00\n'
+while IFS= read -r message; do
+  printf '\nACCEPTED_READY_PROBE\n────────────────────\n\n────────────────────\n~/project | fixture-model | ctx:0%% | in:0 out:0 | $0.00\n'
+done

@@ -483,8 +483,7 @@ func writeJSONObjectConfig(path string, cfg map[string]interface{}) error {
 // WriteGlobalMCP adds or removes MCPs from Claude's global config
 // This modifies ~/.claude-work/.claude.json → mcpServers
 func writeGlobalMCPLocked(enabledNames []string) error {
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 
 	// Read existing config (preserve other fields like projects, settings, etc.)
 	// A parse failure aborts the mutation: degrading to an empty map here and
@@ -523,8 +522,18 @@ func writeGlobalMCPLocked(enabledNames []string) error {
 // WriteGlobalMCPAndClearProjectMCPs.
 // ---------------------------------------------------------------------------
 
+// claudeConfigFilePath returns the file Claude Code reads user-scope MCP
+// servers from. With no explicit config dir (CLAUDE_CONFIG_DIR unset, no
+// config_dir configured) Claude reads ~/.claude.json, not ~/.claude/.claude.json
+// (#3103). With an explicit dir it is $DIR/.claude.json.
 func claudeConfigFilePath() string {
-	return filepath.Join(GetClaudeConfigDir(), ".claude.json")
+	dir, source := resolveClaudeConfigDir(resolveOpts{})
+	if source == "default" {
+		if p := GetUserMCPRootPath(); p != "" {
+			return p
+		}
+	}
+	return filepath.Join(dir, ".claude.json")
 }
 
 // WriteGlobalMCP adds or removes MCPs from Claude's global config
@@ -595,8 +604,7 @@ func WriteGlobalMCPAndClearProjectMCPs(projectPath string, enabledNames []string
 
 // GetGlobalMCPNames returns the names of MCPs currently in Claude's global config
 func GetGlobalMCPNames() []string {
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -620,8 +628,7 @@ func GetGlobalMCPNames() []string {
 
 // GetProjectMCPNames returns MCPs from projects[path].mcpServers in Claude's config
 func GetProjectMCPNames(projectPath string) []string {
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -706,8 +713,7 @@ func writeProjectMCPLocked(projectPath string, enabledNames []string) error {
 	if projectPath == "" {
 		return fmt.Errorf("project MCP write: empty project path")
 	}
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 
 	// A parse failure aborts the mutation: degrading to an empty map here and
 	// writing it back would delete the user's entire Claude configuration.

@@ -257,6 +257,7 @@ func printRemoteUsage() {
 	fmt.Println("  session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),")
 	fmt.Println("  recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,")
 	fmt.Println("  session queue list/release/cancel (queue entry IDs; --json supported),")
+	fmt.Println("  session ownership inspect <id> [--json] (read-only receipt),")
 	fmt.Println("  triggers (read-only list: --session/--kind/--health/--all/--json),")
 	fmt.Println("  events publish forwards the Mac app's replies only (macapp.open.ack, macapp.browser.response,")
 	fmt.Println("  macapp.app.focus) with --data-file - on stdin, at most 2 MiB.")
@@ -874,6 +875,11 @@ func handleRemoteSessions(args []string) {
 		if !addRemoteSessionFetch(&output, name, rc.Host, sessions, err) {
 			if !jsonOutput {
 				fmt.Printf("  [%s] Error: %v\n", name, err)
+			} else if !envelope {
+				// #3107: the bare array has no room for errors. Keep stdout a
+				// valid array and say it on stderr, so `[]` is never read as
+				// "reachable, no sessions".
+				fmt.Fprintf(os.Stderr, "[%s] Error: %v\n", name, err)
 			}
 			continue
 		}
@@ -890,7 +896,10 @@ func handleRemoteSessions(args []string) {
 	case jsonOutput:
 		writeRemoteSessionsArray(output.Sessions)
 	}
-	if envelope && len(output.Errors) != 0 {
+	// #3107: an unreachable remote is "unknown", never "no sessions", so any
+	// failed remote fails the command in every output mode. Stdout still
+	// carries the sessions that were reachable.
+	if len(output.Errors) != 0 {
 		exitCLI(1)
 	}
 }

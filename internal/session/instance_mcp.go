@@ -40,7 +40,7 @@ func MCPGlobalConfigPathForTool(toolName string) string {
 	case IsCodexCompatible(toolName):
 		return filepath.Join(GetCodexConfigDir(), "config.toml")
 	case IsClaudeCompatible(toolName):
-		return filepath.Join(GetClaudeConfigDir(), ".claude.json")
+		return claudeConfigFilePath()
 	case toolName == "gemini":
 		return filepath.Join(GetGeminiConfigDir(), "settings.json")
 	case toolName == "cursor":
