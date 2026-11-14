@@ -47,3 +47,16 @@ func TestCodexHooksCommandsRespectConfigLock(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexHooksUninstallWithoutConfigSkipsLock(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex")
+	env := []string{"CODEX_HOME=" + codexHome}
+	stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "codex-hooks", "uninstall")
+	if code != 0 || !strings.Contains(stdout, "No agent-deck Codex hook found") {
+		t.Fatalf("uninstall without config: %d %s %s", code, stdout, stderr)
+	}
+	if _, err := os.Stat(codexHome); !os.IsNotExist(err) {
+		t.Fatalf("no-op uninstall created the codex dir: %v", err)
+	}
+}

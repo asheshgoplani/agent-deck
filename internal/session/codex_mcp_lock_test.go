@@ -18,6 +18,9 @@ func TestCodexMCPWaitsForConfigWriter(t *testing.T) {
 	defer lock.Release()
 	done := make(chan error, 1)
 	go func() { done <- WriteCodexMCPConfig(home, nil) }()
+	// Negative-timing check: the writer must still be blocked after 100ms.
+	// A slow machine can only make this pass more easily, never fail it
+	// spuriously, because "early" means the lock was ignored.
 	var early bool
 	select {
 	case err = <-done:
