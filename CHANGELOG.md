@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- The assistant docs and the config reference now say that `[web].mutations_enabled = false` makes assistant tokens read-only only on `agent-deck web`; `agent-deck connect serve` (stdio) is limited by the token's scopes.
+
 ## [1.16.39] - 2026-11-15
 
 ### Highlights
