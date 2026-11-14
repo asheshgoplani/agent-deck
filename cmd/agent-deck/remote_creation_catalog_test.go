@@ -141,10 +141,10 @@ func TestCreationArgumentNormalization(t *testing.T) {
 func TestCreationOptionPreflightRejectsBeforeEffects(t *testing.T) {
 	fs := flag.NewFlagSet("creation", flag.ContinueOnError)
 	flags := registerClaudeOptionFlags(fs)
-	if err := validateCreationOptions("shell", "", "", "", false, flags, []string{"missing"}, nil, nil, nil); err == nil {
+	if err := validateCreationOptions("shell", "", "", "", false, false, flags, []string{"missing"}, nil, nil, nil); err == nil {
 		t.Fatal("unsupported MCP accepted")
 	}
-	if err := validateCreationOptions("codex", "", "", "invalid", false, flags, nil, nil, nil, nil); err == nil {
+	if err := validateCreationOptions("codex", "", "", "invalid", false, false, flags, nil, nil, nil, nil); err == nil {
 		t.Fatal("invalid effort accepted")
 	}
 }

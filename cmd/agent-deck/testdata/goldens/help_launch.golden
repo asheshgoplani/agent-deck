@@ -14,6 +14,8 @@ Options:
     	Additional project directory on this host (repeatable)
   -assert-done
     	Append a completion-sentinel instruction to the message (default on for -c claude)
+  -auto
+    	Kimi: start in Never Ask mode (auto-approve everything; --auto)
   -auto-mode
     	Claude: --permission-mode auto for this session (persisted; requires -c claude)
   -b	Create new branch (use with --worktree)
@@ -125,7 +127,7 @@ Options:
   -wrapper string
     	Wrapper command (use {command} to include tool command; auto-generated when --cmd includes extra flags; a known claude/codex subcommand in --cmd runs as-is with no wrapper instead)
   -yolo
-    	Enable YOLO mode for Gemini, Codex or Hermes sessions
+    	Enable YOLO mode for Gemini, Codex or Hermes; Kimi: Ask When Needed
 
 Examples:
   agent-deck launch . -c claude

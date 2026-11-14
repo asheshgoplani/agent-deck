@@ -2118,8 +2118,9 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
+	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes; Kimi: Ask When Needed")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
+	autoMode := fs.Bool("auto", false, "Kimi: start in Never Ask mode (auto-approve everything; --auto)")
 	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
 	// Socket isolation (v1.7.50+, issue #687). Overrides the installation-
@@ -2269,7 +2270,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		exitCLI(1)
 	}
 
-	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, *autoMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
 		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
@@ -2832,6 +2833,10 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	}
 
 	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode, cliFlagWasSet(fs, "yolo", "gemini-yolo")); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		exitCLI(1)
+	}
+	if err := applyCLIKimiPermissionFlags(newInstance, *yoloMode || *geminiYoloMode, *autoMode, cliFlagWasSet(fs, "yolo", "gemini-yolo"), cliFlagWasSet(fs, "auto")); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		exitCLI(1)
 	}

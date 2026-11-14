@@ -270,7 +270,7 @@ func applyCreationExtras(inst *session.Instance, query string, additional []stri
 
 // validateCreationOptions performs only reads and in-memory option application.
 // Run it before mkdir, group reconciliation, worktree setup or registry writes.
-func validateCreationOptions(tool, account, model, effort string, yolo bool, flags *claudeOptionFlags, mcps, plugins, channels, extraArgs []string) error {
+func validateCreationOptions(tool, account, model, effort string, yolo, auto bool, flags *claudeOptionFlags, mcps, plugins, channels, extraArgs []string) error {
 	if tool == "" {
 		tool = session.GetDefaultTool()
 	}
@@ -285,6 +285,9 @@ func validateCreationOptions(tool, account, model, effort string, yolo bool, fla
 		return err
 	}
 	if err := applyCLIYoloOverride(inst, yolo, cliFlagWasSet(flags.fs, "yolo", "gemini-yolo")); err != nil {
+		return err
+	}
+	if err := applyCLIKimiPermissionFlags(inst, yolo, auto, cliFlagWasSet(flags.fs, "yolo", "gemini-yolo"), cliFlagWasSet(flags.fs, "auto")); err != nil {
 		return err
 	}
 	if err := applyCLIClaudeOptionFlags(inst, flags); err != nil {
