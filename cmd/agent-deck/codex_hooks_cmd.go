@@ -522,74 +522,26 @@ func printCodexHooksUsage(w io.Writer) {
 
 func handleCodexHooksInstall() {
 	configPath := getCodexConfigPath()
-	lock, err := session.AcquireConfigFileLockTimeout(configPath, time.Second)
+	result, err := installCodexHooks(configPath, codexHooksInstallOrUpgrade)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error locking codex config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		exitCLI(1)
+		return
 	}
-	defer lock.Release()
-	content, err := readFileOrEmpty(configPath)
-	if err != nil {
-		// Never treat an unreadable config as empty: the write below would replace it.
-		fmt.Fprintf(os.Stderr, "Error reading codex config: %v\n", err)
-		exitCLI(1)
-	}
-
-	block := codexNotifyMarkerBegin + "\n" +
-		codexNotifyLine + "\n" +
-		codexNotifyMarkerEnd + "\n"
-
-	if strings.Contains(content, codexNotifyMarkerBegin) {
-		begin := strings.Index(content, codexNotifyMarkerBegin)
-		endRel := strings.Index(content[begin:], codexNotifyMarkerEnd)
-		if endRel != -1 {
-			// Below a [table], notify would be a key of that table. Moving the
-			// block would reorder the user's file, so ask them to.
-			if codexTableHeaderRe.MatchString(content[:begin]) {
-				fmt.Fprintf(os.Stderr, "Error: the agent-deck notify block in %s sits below a [table], where notify belongs to that table.\n", configPath)
-				fmt.Fprintln(os.Stderr, "Move the block above every table, or remove it and rerun 'agent-deck codex-hooks install'.")
-				exitCLI(1)
-			}
-			// Replace the block where it stands; every other byte stays as it was.
-			end := begin + endRel + len(codexNotifyMarkerEnd)
-			replacement := strings.TrimSuffix(block, "\n")
-			if strings.HasPrefix(content[end:], "\r\n") {
-				replacement = strings.ReplaceAll(replacement, "\n", "\r\n")
-			}
-			updated := content[:begin] + replacement + content[end:]
-			writeCodexConfig(configPath, updated)
-			fmt.Println("Codex notify hook upgraded successfully.")
-			fmt.Printf("Config: %s\n", configPath)
-			return
-		}
-	}
-
-	if updated, removed := removeLegacyCodexNotifyTable(content); removed {
-		updated = prependCodexNotifyBlock(block, strings.TrimSpace(updated))
-		writeCodexConfig(configPath, updated)
+	switch result.Outcome {
+	case codexHooksOutcomeUpgraded:
 		fmt.Println("Codex notify hook upgraded successfully.")
-		fmt.Printf("Config: %s\n", configPath)
-		return
-	}
-
-	if codexNotifyExactRe.MatchString(content) {
+	case codexHooksOutcomeAlreadyInstalled:
 		fmt.Println("Codex notify hook is already installed.")
-		fmt.Printf("Config: %s\n", configPath)
-		return
-	}
-
-	if codexNotifyKeyRe.MatchString(content) || codexNotifyTableRe.MatchString(content) {
+	case codexHooksOutcomeSkipped:
 		fmt.Fprintf(os.Stderr, "Error: existing notify setting found in %s\n", configPath)
 		fmt.Fprintln(os.Stderr, "Please merge manually by setting:")
 		fmt.Fprintln(os.Stderr, `  notify = ["agent-deck", "codex-notify"]`)
 		exitCLI(1)
+		return
+	default:
+		fmt.Println("Codex notify hook installed successfully.")
 	}
-
-	newContent := prependCodexNotifyBlock(block, content)
-
-	writeCodexConfig(configPath, newContent)
-
-	fmt.Println("Codex notify hook installed successfully.")
 	fmt.Printf("Config: %s\n", configPath)
 }
 
@@ -660,9 +612,9 @@ func handleCodexHooksStatus() {
 }
 
 // Codex notify-hook state of one CODEX_HOME, as `session show` / `doctor`
-// report it. Nothing in `add` / `remote add` installs the hook, so a codex
-// session's light is content detection only until `codex-hooks install` is
-// run for its CODEX_HOME; that has to be said, not left blank. Unknown is a
+// report it. Opt-in creation fills an absent notify setting for local CLI sessions,
+// but existing custom settings and failed installs can still leave a session
+// using content detection only; that has to be said, not left blank. Unknown is a
 // first-class answer: a remote session's CODEX_HOME is on the other host.
 const (
 	codexHooksInstalled    = "installed"

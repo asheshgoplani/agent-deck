@@ -2040,6 +2040,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	noIdentity := fs.Bool("no-identity", false, "Do not inject the agent-deck session identity block into the harness (global default: [launch] inject_identity)")
 	quickCreate := fs.Bool("quick", false, "Create a quick session with a machine-generated handle; TUI shows Claude's live task description when available")
 	quickCreateShort := fs.Bool("Q", false, "Create a quick session (short)")
+	installCodexHooks := fs.Bool("install-codex-hooks", false, "Install a missing Codex notify hook in the shared Codex home; persists independently of this session")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -2871,6 +2872,12 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	// The (title, location) pair is now taken in the state db; everything below
 	// is per-session setup that no other registration can race with.
 	releaseRegistration()
+
+	if *installCodexHooks {
+		if err := installMissingCodexHooks(newInstance); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Codex hooks: %v\n", err)
+		}
+	}
 
 	autoHints := map[string]string{}
 	if parentInstance != nil {
