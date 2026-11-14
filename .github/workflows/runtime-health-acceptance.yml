@@ -9,6 +9,10 @@ on:
       - 'scripts/runtime-health/**'
       - '.github/workflows/runtime-health-acceptance.yml'
   workflow_dispatch:
+  # Nightly backstop (post-tag CI queue): the PR trigger above stays
+  # path-filtered; this run covers changes that reach this code from
+  # outside those paths.
+  schedule: [{ cron: '50 3 * * *' }]
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

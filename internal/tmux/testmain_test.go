@@ -165,7 +165,7 @@ func bootstrapTmuxServer() func() {
 		return func() {}
 	}
 	start := func() bool {
-		cmd := exec.Command("tmux", "new-session", "-d", "-s", bootstrapSessionName, "sh", "-c", "sleep 3600")
+		cmd := exec.Command("tmux", "new-session", "-d", "-s", bootstrapSessionName, "sh", "-c", bootstrapHoldCommand(os.Getpid()))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "bootstrapTmuxServer(tmux): new-session failed: %v (%s)\n", err, strings.TrimSpace(string(out)))
 			return false
@@ -186,6 +186,17 @@ func bootstrapTmuxServer() func() {
 	return func() {
 		_ = exec.Command("tmux", "kill-server").Run()
 	}
+}
+
+// bootstrapHoldCommand returns the shell script run inside the bootstrap tmux
+// session. It polls the test binary's PID and exits once that process is gone,
+// so the bootstrap lives exactly as long as the test binary: a fixed
+// `sleep 3600` expired after one hour and broke later tests in long runs
+// (-race -count=N, slow packages). The normal teardown still kill-servers the
+// isolated socket; the PID watch is the backstop if the binary dies without
+// running it, so no idle session is left behind either way.
+func bootstrapHoldCommand(pid int) string {
+	return fmt.Sprintf("while kill -0 %d 2>/dev/null; do sleep 5; done", pid)
 }
 
 // TestTmuxBootstrap_ServerIsRunning pins that TestMain's bootstrap ran and
@@ -214,4 +225,17 @@ func TestTmuxBootstrap_ServerIsRunning(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("tmux bootstrap not ready within 10s: %v", lastErr)
+}
+
+// TestBootstrapHoldCommand_TiedToTestBinary pins that the bootstrap session's
+// lifetime follows the test binary's PID rather than a fixed sleep.
+func TestBootstrapHoldCommand_TiedToTestBinary(t *testing.T) {
+	pid := os.Getpid()
+	got := bootstrapHoldCommand(pid)
+	if strings.Contains(got, "sleep 3600") {
+		t.Fatalf("bootstrap command still uses a fixed one-hour sleep: %q", got)
+	}
+	if !strings.Contains(got, fmt.Sprintf("kill -0 %d", pid)) {
+		t.Fatalf("bootstrap command does not watch the test process pid %d: %q", pid, got)
+	}
 }

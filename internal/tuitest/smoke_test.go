@@ -22,7 +22,7 @@ func skipIfNoTmuxServer(t *testing.T) {
 }
 
 // pinnedToolchain returns the toolchain pinned by go.mod's go directive
-// (for example "go1.26.9") and its release line (for example "go1.26"), so the
+// (for example "go1.26.10") and its release line (for example "go1.26"), so the
 // smoke tests follow the pin instead of repeating it.
 func pinnedToolchain(t *testing.T) (exact, line string) {
 	t.Helper()

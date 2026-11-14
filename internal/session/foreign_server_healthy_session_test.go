@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // Review of fix/guard-error-hidden round 1, 2026-09-23: treating "no default
@@ -20,6 +22,7 @@ import (
 // and each case changes only what the TUI can see of the default server.
 
 func TestForeignTmuxServer_UnlistableDefaultServerWritesNothingForHealthySession(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	skipIfNoTmuxBinary(t)
 	bin := foreignTUIBinary(t)
 	realTmpdir := os.Getenv("TMUX_TMPDIR")

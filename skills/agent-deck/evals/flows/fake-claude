@@ -1,0 +1,82 @@
+#!/bin/sh
+# Fake `claude` for the agent-flow evals. Never a model: a line-driven local
+# process that writes the transcript and fires the hooks a real Claude Code
+# client would, so agent-deck derives status, output, completions and the inbox
+# from the same ingress it reads in production.
+#
+# It acts only on lines that carry an EVAL_* token (so the launch identity
+# block and the --assert-done instruction, which quote the sentinel, are read
+# but never answered). Tokens:
+#   EVAL_ECHO_<word>  reply "echo EVAL_ECHO_<word>"
+#   EVAL_DONE_OK      reply with a valid status=ok sentinel
+#   EVAL_DONE_FAIL    reply with a valid status=fail sentinel
+#   EVAL_DONE_BAD     reply with the marker but an invalid status (not a completion)
+#   EVAL_DONE_RETRY   reply with a fail sentinel, then an ok one (last one wins)
+#   EVAL_BUSY         record the prompt, stay "running" (no Stop hook)
+set -eu
+case "${1:-}" in --version) printf '2.1.0 (agent-flow eval fake)\n'; exit 0 ;; esac
+case " $* " in *" -p "*|*" --print "*) echo 'fake-claude: headless model runs are forbidden' >&2; exit 91 ;; esac
+sid=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --session-id) shift; sid="$1" ;;
+    --resume) shift; [ -n "$sid" ] || sid="$1" ;;
+  esac
+  shift
+done
+[ -n "$sid" ] || sid=$(cat /proc/sys/kernel/random/uuid)
+project_key=$(printf '%s' "$PWD" | tr '/.' '--')
+dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$project_key"
+mkdir -p "$dir"
+transcript="$dir/$sid.jsonl"
+: "${AGENT_FLOW_BINARY:?AGENT_FLOW_BINARY must name the agent-deck under test}"
+
+json_str() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk 'BEGIN{ORS=""} NR>1{print "\\n"} {print}'; }
+hook() {
+  printf '{"hook_event_name":"%s","session_id":"%s","cwd":"%s","transcript_path":"%s"}\n' \
+    "$1" "$sid" "$PWD" "$transcript" | "$AGENT_FLOW_BINARY" hook-handler >/dev/null 2>&1 || true
+}
+user() { printf '{"type":"user","sessionId":"%s","message":{"role":"user","content":"%s"}}\n' "$sid" "$(json_str "$1")" >>"$transcript"; }
+assistant() {
+  printf '{"type":"assistant","sessionId":"%s","message":{"role":"assistant","content":[{"type":"text","text":"%s"}]}}\n' \
+    "$sid" "$(json_str "$1")" >>"$transcript"
+}
+
+# Draw like Claude Code: text at the top, a framed composer on the last rows
+# (agent-deck's readiness and composer checks read the bottom of the pane).
+rule='────────────────────────────────────────'
+draw() { # draw <text> [busy]
+  rows=$(stty size 2>/dev/null | cut -d' ' -f1); [ -n "$rows" ] && [ "$rows" -gt 6 ] || rows=24
+  printf '\033[2J\033[H%s\n' "$1"
+  [ -n "${2:-}" ] && printf '\033[%d;1H✻ Working… (esc to interrupt)' "$((rows - 3))"
+  printf '\033[%d;1H%s\n❯ \n%s\033[%d;3H' "$((rows - 2))" "$rule" "$rule" "$((rows - 1))"
+}
+
+user "fake session start"
+hook SessionStart
+hook Stop
+stty -echo 2>/dev/null || true
+draw 'Claude Code (agent-flow eval fake)'
+while IFS= read -r line; do
+  token=$(printf '%s\n' "$line" | grep -o 'EVAL_[A-Za-z0-9_]*' | head -n 1 || true)
+  [ -n "$token" ] || continue
+  user "$token"
+  hook UserPromptSubmit
+  draw "fake received: $token" busy
+  [ "$token" = EVAL_BUSY ] && continue
+  sleep 1
+  case "$token" in
+    EVAL_DONE_OK) reply="did the work
+===AGENTDECK_DONE=== status=ok summary=eval child finished ok" ;;
+    EVAL_DONE_FAIL) reply="could not do the work
+===AGENTDECK_DONE=== status=fail summary=eval child failed on purpose" ;;
+    EVAL_DONE_BAD) reply="===AGENTDECK_DONE=== status=maybe summary=not a valid status" ;;
+    EVAL_DONE_RETRY) reply="===AGENTDECK_DONE=== status=fail summary=first attempt failed
+retried
+===AGENTDECK_DONE=== status=ok summary=retry succeeded" ;;
+    *) reply="echo $token" ;;
+  esac
+  assistant "$reply"
+  draw "$reply"
+  hook Stop
+done

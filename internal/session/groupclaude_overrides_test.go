@@ -121,7 +121,7 @@ env = { AGENT_ROLE = "lilu", LILU_ONLY = "1" }
 
 	t.Run("child group key wins, parent-only key persists", func(t *testing.T) {
 		inst := NewInstanceWithGroupAndTool("s1", "/tmp/p", "personal/sub", "claude")
-		cmd := inst.buildEnvSourceCommand()
+		cmd := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 		if !strings.Contains(cmd, "export AGENT_ROLE='child'") {
 			t.Errorf("nearest group must win per key:\n%s", cmd)
 		}
@@ -132,7 +132,7 @@ env = { AGENT_ROLE = "lilu", LILU_ONLY = "1" }
 
 	t.Run("conductor env wins over group env per key", func(t *testing.T) {
 		inst := NewInstanceWithGroupAndTool("conductor-lilu", "/tmp/p", "personal/sub", "claude")
-		cmd := inst.buildEnvSourceCommand()
+		cmd := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 		for _, want := range []string{"export AGENT_ROLE='lilu'", "export LILU_ONLY='1'", "export SHARED='from-parent'"} {
 			if !strings.Contains(cmd, want) {
 				t.Errorf("missing %q in:\n%s", want, cmd)
@@ -142,7 +142,7 @@ env = { AGENT_ROLE = "lilu", LILU_ONLY = "1" }
 
 	t.Run("non-claude tools get no claude inline env", func(t *testing.T) {
 		inst := NewInstanceWithGroupAndTool("s2", "/tmp/p", "personal/sub", "codex")
-		cmd := inst.buildEnvSourceCommand()
+		cmd := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 		if strings.Contains(cmd, "AGENT_ROLE") {
 			t.Errorf("[groups.X.claude].env must not leak into codex spawns:\n%s", cmd)
 		}
@@ -162,9 +162,9 @@ env = { AGENT_ROLE = "inline-wins" }
 	}
 
 	inst := NewInstanceWithGroupAndTool("s1", "/tmp/p", "personal", "claude")
-	cmd := inst.buildEnvSourceCommand()
+	cmd := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 
-	sourceIdx := strings.Index(cmd, `source "`+envPath+`"`)
+	sourceIdx := strings.Index(cmd, "source "+shellQuote(envPath))
 	exportIdx := strings.Index(cmd, "export AGENT_ROLE='inline-wins'")
 	if sourceIdx == -1 || exportIdx == -1 {
 		t.Fatalf("missing env_file source (%d) or inline export (%d) in:\n%s", sourceIdx, exportIdx, cmd)
@@ -181,7 +181,7 @@ env = { AGENT_ROLE = "configured" }
 `)
 	inst := NewInstanceWithGroupAndTool("s1", "/tmp/p", "personal", "claude")
 	inst.restartEnv = map[string]string{"AGENT_ROLE": "restart"}
-	cmd := inst.buildEnvSourceCommand()
+	cmd := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 
 	configuredIdx := strings.Index(cmd, "export AGENT_ROLE='configured'")
 	restartIdx := strings.Index(cmd, "export AGENT_ROLE='restart'")
@@ -199,7 +199,7 @@ func TestGroupClaude_InlineEnvSkipsInvalidKeysAndEscapesQuotes(t *testing.T) {
 env = { "BAD-KEY" = "x", GOOD = "it's" }
 `)
 	inst := NewInstanceWithGroupAndTool("s1", "/tmp/p", "work", "claude")
-	cmd := inst.buildEnvSourceCommand()
+	cmd := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 	if strings.Contains(cmd, "BAD-KEY") {
 		t.Errorf("invalid env var name must be skipped:\n%s", cmd)
 	}

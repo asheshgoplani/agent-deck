@@ -1,0 +1,9 @@
+Session startup timed out before the agent became interactive.
+
+Recovery: agent-deck session restart my-pi
+
+────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────
+~/tmp
+0.0%/1.0M (auto)                  (provider) vendor/model-id • max

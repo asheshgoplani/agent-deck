@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -562,6 +563,71 @@ func TestAWatermarkPastTheEndResumesAtTheEnd(t *testing.T) {
 	// least once).
 	if len(got) != 2 || got[0] != first || got[1] != next {
 		t.Fatalf("records at or below the end after a restore must be delivered: %v", got)
+	}
+}
+
+// The cursor the delivery pass judged resumes with the rest: a restored log
+// reuses the cursors past the resume point, and a judged cursor left above
+// them would let the delivery pass skip the new records.
+func TestARestoredLogLowersTheJudgedCursorToTheResumePoint(t *testing.T) {
+	l, r, dir := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "x"})
+	if err := writeConsumer(dir, ConsumerFile{ConsumerState: ConsumerState{Consumer: "X", Store: l.Store().ID, Epoch: l.Store().Epoch, Generation: 1, Watermark: 50},
+		Through: 50, Judged: 50, Updated: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	var gap *GapNote
+	if _, err := r.Do("X", func(p Pass) ([]events.Cursor, error) { gap = p.Gap; return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "restored" {
+		t.Fatalf("restored: %+v", gap)
+	}
+	f, found, err := ReadConsumer(dir, "X")
+	if err != nil || !found {
+		t.Fatalf("consumer file: found %v, %v", found, err)
+	}
+	if f.Judged > gap.Resumed {
+		t.Errorf("judged %d stayed above the resume point %d", f.Judged, gap.Resumed)
+	}
+}
+
+// Issue 3026 item 1: the restored branch cuts Acked back to the resume
+// point; the delivery state above it (attempts in flight, failed wake
+// counts) belongs to records that may be gone, so a new record reusing one
+// of those cursors must not inherit it (a wake-tries count at the cap
+// would silence its wake).
+func TestARestoredLogDropsDeliveryStateAboveTheResumePoint(t *testing.T) {
+	l, r, dir := openPair(t)
+	first := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "x"})
+	stale := first + 1
+	key := strconv.FormatUint(uint64(stale), 10)
+	if err := writeConsumer(dir, ConsumerFile{ConsumerState: ConsumerState{Consumer: "X", Store: l.Store().ID, Epoch: l.Store().Epoch, Generation: 1, Watermark: 50},
+		Through: 50, Updated: time.Now().UnixMilli(),
+		Inflight:  []Inflight{{Cursor: stale, ID: "old-record", Via: ViaWake, State: ReceiptAttempted, Attempt: 2, At: time.Now().UnixMilli()}},
+		WakeTries: map[string]int{key: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	next := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "after the restore"})
+	if next != stale {
+		t.Fatalf("setup: the new record should reuse cursor %d, got %d", stale, next)
+	}
+	var gap *GapNote
+	var inflight bool
+	var tries int
+	if _, err := r.Do("X", func(p Pass) ([]events.Cursor, error) {
+		gap = p.Gap
+		_, inflight = p.File.InflightFor(next)
+		tries = p.File.WakeTriesFor(next)
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "restored" {
+		t.Fatalf("restored: %+v", gap)
+	}
+	if inflight || tries != 0 {
+		t.Fatalf("a new record at cursor %d inherited the old one's delivery state: inflight=%v wake tries=%d", next, inflight, tries)
 	}
 }
 

@@ -314,7 +314,7 @@ func TestConductorConfig_EnvFileSourced(t *testing.T) {
 env_file = "%s"
 `, envrcPath))
 
-	wantSource := `source "` + envrcPath + `"`
+	wantSource := "source " + shellQuote(envrcPath)
 
 	// Normal-claude spawn path
 	instNormal := NewInstanceWithGroupAndTool("conductor-foo", tmpHome, "conductor", "claude")

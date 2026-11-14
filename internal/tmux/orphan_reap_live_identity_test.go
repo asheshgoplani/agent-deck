@@ -257,6 +257,7 @@ func reparentedControlClient(t *testing.T, socket, session string, verbArgs ...s
 // isControlClientOrphan happens to protect a same-parent test process — only
 // isLiveTmuxClientOrServer stands between this pid and a kill verdict.
 func TestIsLiveTmuxClientOrServer_ChainedAliasRepro(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	socket := orphanLiveTestSocket(t)
 	const session = "agentdeck_1832_repro"
 	startOrphanLiveSession(t, socket, session)
@@ -284,6 +285,7 @@ func TestIsLiveTmuxClientOrServer_ChainedAliasRepro(t *testing.T) {
 // anticipate every such prefix across tmux versions; the server-identity
 // query does not need to.
 func TestIsLiveTmuxClientOrServer_AbbreviatedAttach(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	socket := orphanLiveTestSocket(t)
 	const session = "agentdeck_1832_abbrev"
 	startOrphanLiveSession(t, socket, session)
@@ -305,6 +307,7 @@ func TestIsLiveTmuxClientOrServer_AbbreviatedAttach(t *testing.T) {
 // catch, kept so a future edit cannot silently regress the common case while
 // fixing the alias/abbreviation gap.
 func TestIsLiveTmuxClientOrServer_FullVerbAttach(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	socket := orphanLiveTestSocket(t)
 	const session = "agentdeck_1832_fullverb"
 	startOrphanLiveSession(t, socket, session)
@@ -327,6 +330,7 @@ func TestIsLiveTmuxClientOrServer_FullVerbAttach(t *testing.T) {
 // by asking the server for its own identity rather than inferring role from
 // argv at all.
 func TestIsLiveTmuxClientOrServer_ServerItself(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	socket := orphanLiveTestSocket(t)
 	const session = "agentdeck_1832_serverpid"
 	startOrphanLiveSession(t, socket, session)
@@ -363,6 +367,7 @@ func TestIsLiveTmuxClientOrServer_ServerItself(t *testing.T) {
 // classifier must refuse. Holding the queue also prevents a fast query from
 // exiting before the stop signal is observed.
 func TestIsLiveTmuxClientOrServer_OneShotClient_NotLive(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	socket := orphanLiveTestSocket(t)
 	const session = "agentdeck_1832_oneshot"
 	startOrphanLiveSession(t, socket, session)

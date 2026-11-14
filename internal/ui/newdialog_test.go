@@ -61,15 +61,18 @@ func TestNewDialog_SetSize_syncsPathInputWidth(t *testing.T) {
 	d := NewNewDialog()
 
 	d.SetSize(120, 40)
-	// Preferred outer width 84 → text fields 84 − 12 = 72.
-	if got := d.pathInput.Width; got != 72 {
-		t.Fatalf("wide terminal: pathInput.Width = %d, want 72", got)
+	// Preferred outer width 84 → text fields 84 − 12 = 72; Path carries its
+	// label on the same line (ASK-211), 7 columns more than the old indent,
+	// and one cell for the field bar's cursor cell (round 2).
+	if got := d.pathInput.Width; got != 64 {
+		t.Fatalf("wide terminal: pathInput.Width = %d, want 64", got)
 	}
 
 	d.SetSize(55, 40)
-	// Outer shrinks to terminal−10 (45), above min 44 → inputs 45 − 12 = 33.
-	if got := d.pathInput.Width; got != 33 {
-		t.Fatalf("narrow terminal: pathInput.Width = %d, want 33", got)
+	// Outer shrinks to terminal−10 (45), above min 44 → inputs 45 − 12 = 33,
+	// less the inline label and the cursor cell: 25.
+	if got := d.pathInput.Width; got != 25 {
+		t.Fatalf("narrow terminal: pathInput.Width = %d, want 25", got)
 	}
 }
 
@@ -322,9 +325,10 @@ func TestNewDialog_ModelDropdown_TabAndShiftTabMoveFocus(t *testing.T) {
 	d.focusIndex = d.indexOf(focusModel)
 	d.updateFocus()
 
+	// ASK-211: Path sits between Agent and the model row.
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if d.currentTarget() != focusCommand {
-		t.Fatalf("currentTarget after shift+tab from model field = %v, want focusCommand", d.currentTarget())
+	if d.currentTarget() != focusPath {
+		t.Fatalf("currentTarget after shift+tab from model field = %v, want focusPath", d.currentTarget())
 	}
 
 	d.focusIndex = d.indexOf(focusModel)
@@ -338,8 +342,8 @@ func TestNewDialog_ModelDropdown_TabAndShiftTabMoveFocus(t *testing.T) {
 	if d.IsModelSuggestionsActive() {
 		t.Fatal("shift+tab should close the model dropdown")
 	}
-	if d.currentTarget() != focusCommand {
-		t.Fatalf("currentTarget after shift+tab from model dropdown = %v, want focusCommand", d.currentTarget())
+	if d.currentTarget() != focusPath {
+		t.Fatalf("currentTarget after shift+tab from model dropdown = %v, want focusPath", d.currentTarget())
 	}
 
 	for d.currentTarget() != focusName {
@@ -1320,7 +1324,8 @@ func TestNewDialog_ShortcutsBlockedDuringTextInput(t *testing.T) {
 // type name -> Enter (advances to Tool) -> (tool already right) -> Ctrl+S.
 func TestNewDialog_FocusOrder_HotPathNameToolPath(t *testing.T) {
 	d := NewNewDialog()
-	d.Show() // default: shell selected (no model field), multi-repo off.
+	d.Show()              // default: shell selected (no model field), multi-repo off.
+	d.toggleMoreOptions() // ASK-211: the folded rows, opened
 
 	if len(d.focusTargets) < 3 {
 		t.Fatalf("focusTargets too short: %v", d.focusTargets)
@@ -1346,7 +1351,8 @@ func TestNewDialog_FocusOrder_HotPathNameToolPath(t *testing.T) {
 	}
 }
 
-// With a reasoning-capable tool, Model and Reasoning sit between Tool and Path.
+// ASK-211: Name, Agent and Path come first (one line each, Path visible at
+// 80x24); Model and Reasoning follow Path.
 func TestNewDialog_FocusOrder_ModelAndReasoningBetweenToolAndPath(t *testing.T) {
 	d := NewNewDialog()
 	d.SetDefaultTool("claude")
@@ -1362,8 +1368,8 @@ func TestNewDialog_FocusOrder_ModelAndReasoningBetweenToolAndPath(t *testing.T) 
 	if reasoningIdx < 0 {
 		t.Fatal("focusReasoningEffort should be present for Claude")
 	}
-	if !(cmdIdx < modelIdx && modelIdx < reasoningIdx && reasoningIdx < pathIdx) {
-		t.Fatalf("want Tool(%d) < Model(%d) < Reasoning(%d) < Path(%d)", cmdIdx, modelIdx, reasoningIdx, pathIdx)
+	if !(cmdIdx < pathIdx && pathIdx < modelIdx && modelIdx < reasoningIdx) {
+		t.Fatalf("want Tool(%d) < Path(%d) < Model(%d) < Reasoning(%d)", cmdIdx, pathIdx, modelIdx, reasoningIdx)
 	}
 }
 
@@ -1430,6 +1436,7 @@ func TestNewDialog_View_ShowsWorktreeCheckbox(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.SetSize(80, 40)
 	dialog.Show()
+	dialog.toggleMoreOptions()                       // ASK-211: behind "More options"
 	dialog.focusIndex = dialog.indexOf(focusCommand) // Command field
 
 	view := dialog.View()
@@ -1468,6 +1475,7 @@ func TestNewDialog_View_HidesBranchInputWhenDisabled(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.SetSize(80, 40)
 	dialog.Show()
+	dialog.toggleMoreOptions() // ASK-211: behind "More options"
 	dialog.worktreeEnabled = false
 
 	view := dialog.View()
@@ -1561,6 +1569,7 @@ func TestNewDialog_WorktreeCheckbox_SpaceToggle(t *testing.T) {
 	dialog.sandboxEnabled = false
 	dialog.inheritedSettings = nil
 	dialog.rebuildFocusTargets()
+	dialog.toggleMoreOptions()                        // ASK-211: behind "More options"
 	dialog.focusIndex = dialog.indexOf(focusWorktree) // Worktree checkbox
 
 	// Space toggles worktree on.
@@ -1588,6 +1597,7 @@ func TestNewDialog_SandboxCheckbox_SpaceToggle(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.Show()
 	dialog.sandboxEnabled = false                    // Ensure known initial state.
+	dialog.toggleMoreOptions()                       // ASK-211: behind "More options"
 	dialog.focusIndex = dialog.indexOf(focusSandbox) // Sandbox checkbox
 
 	// Space toggles sandbox on.
@@ -1611,6 +1621,7 @@ func TestNewDialog_CheckboxesFocusIndependently(t *testing.T) {
 	dialog.SetSize(80, 40)
 	dialog.Show()
 
+	dialog.toggleMoreOptions() // ASK-211: behind "More options"
 	// Focus on worktree checkbox — only it should highlight.
 	dialog.focusIndex = dialog.indexOf(focusWorktree)
 	view := dialog.View()
@@ -1749,14 +1760,18 @@ func TestNewDialog_AutoBranch_NameEditedToUnsanitizable_ClearsStaleBranch(t *tes
 	}
 }
 
+// With Name and Path both empty there is no name to derive a branch from.
+// (#2913: with a path, an empty name's branch comes from the derived name;
+// see TestNewSession2913_WorktreeWithEmptyNameFillsBranch.)
 func TestNewDialog_ToggleWorktree_EmptyName_NoBranch(t *testing.T) {
 	d := NewNewDialog()
-	// Name is empty
+	// Name and Path are empty
+	d.pathInput.SetValue("")
 
 	d.ToggleWorktree()
 
 	if d.branchInput.Value() != "" {
-		t.Errorf("branch should be empty when name is empty, got %q", d.branchInput.Value())
+		t.Errorf("branch should be empty when name and path are empty, got %q", d.branchInput.Value())
 	}
 }
 
@@ -2868,18 +2883,23 @@ func TestNewDialog_TabFromNameStillAdvances(t *testing.T) {
 	}
 }
 
-// --- Default behavior (UX top-3 #1: Enter-advances is now the DEFAULT) ---
+// --- Enter-advances walk (default from UX top-3 #1 until ASK-110; now opt-in) ---
 
-// DEFAULT (Enter-advances ON): Enter on the Name field is handled locally and
-// advances focus instead of submitting — typing a name + Enter no longer
-// silently creates a session with all defaults. This is the behavior flip.
-func TestNewDialog_DefaultEnterOnNameAdvances(t *testing.T) {
+// The default is Enter-creates since ASK-110 (no config →
+// newSessionEnterAdvancesFromConfig returns false); pinned here so the flip is
+// load-bearing.
+func TestNewDialog_DefaultEnterCreates(t *testing.T) {
 	d := NewNewDialog()
-	// enterAdvances now defaults to true (no config → newSessionEnterAdvancesFromConfig
-	// returns true). Assert it explicitly so the new default is load-bearing here.
-	if !d.enterAdvances {
-		t.Fatal("enterAdvances default = false, want true (Enter-advances is now the default)")
+	if d.enterAdvances {
+		t.Fatal("enterAdvances default = true, want false (Enter creates by default since ASK-110)")
 	}
+}
+
+// OPT-IN (Enter-advances ON): Enter on the Name field is handled locally and
+// advances focus instead of submitting.
+func TestNewDialog_OptInEnterOnNameAdvances(t *testing.T) {
+	d := NewNewDialog()
+	d.enterAdvances = true // simulate [ui].new_session_enter_advances = true
 	d.SetSize(100, 50)
 	d.Show()
 
@@ -2888,12 +2908,12 @@ func TestNewDialog_DefaultEnterOnNameAdvances(t *testing.T) {
 	}
 	// shouldHandleEnterLocally must be true on Name so the dialog advances focus.
 	if !d.shouldHandleEnterLocally() {
-		t.Fatal("default mode: shouldHandleEnterLocally on Name = false, want true (Enter must advance, not submit)")
+		t.Fatal("opt-in mode: shouldHandleEnterLocally on Name = false, want true (Enter must advance, not submit)")
 	}
 	before := d.currentTarget()
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if d.currentTarget() == before {
-		t.Fatalf("default mode: Enter on Name did not advance focus (still %v)", before)
+		t.Fatalf("opt-in mode: Enter on Name did not advance focus (still %v)", before)
 	}
 }
 
@@ -2918,12 +2938,10 @@ func TestNewDialog_OptOutEnterOnNameSubmits(t *testing.T) {
 	}
 }
 
-// DEFAULT (Enter-advances ON): Enter on the Branch field advances focus.
-func TestNewDialog_DefaultEnterOnBranchAdvances(t *testing.T) {
+// OPT-IN (Enter-advances ON): Enter on the Branch field advances focus.
+func TestNewDialog_OptInEnterOnBranchAdvances(t *testing.T) {
 	d := NewNewDialog()
-	if !d.enterAdvances {
-		t.Fatal("enterAdvances default = false, want true")
-	}
+	d.enterAdvances = true // simulate [ui].new_session_enter_advances = true
 	d.SetSize(100, 50)
 	d.Show()
 	d.nameInput.SetValue("demo")
@@ -2937,12 +2955,12 @@ func TestNewDialog_DefaultEnterOnBranchAdvances(t *testing.T) {
 	d.updateFocus()
 
 	if !d.shouldHandleEnterLocally() {
-		t.Fatal("default mode: shouldHandleEnterLocally on Branch = false, want true (Enter must advance)")
+		t.Fatal("opt-in mode: shouldHandleEnterLocally on Branch = false, want true (Enter must advance)")
 	}
 	before := d.currentTarget()
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if d.currentTarget() == before {
-		t.Fatalf("default mode: Enter on Branch did not advance focus (still %v)", before)
+		t.Fatalf("opt-in mode: Enter on Branch did not advance focus (still %v)", before)
 	}
 }
 

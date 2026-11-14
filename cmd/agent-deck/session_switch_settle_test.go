@@ -82,7 +82,8 @@ func TestSettleExitCode(t *testing.T) {
 }
 
 // settleFakeClaudeScript is a stand-in Claude on a real tmux pane. Mode "trust"
-// draws the folder-trust dialog for $1 and waits for one key; mode
+// draws the folder-trust dialog for $1 and waits for one key ("trust-slow"
+// first holds a half-drawn dialog for a second, as a loaded host does); mode
 // "closed" draws a ready composer with a CONNECTION_CLOSED plugin the first
 // time and a clean one after a restart. Every key it reads is logged.
 const settleFakeClaudeScript = `#!/bin/bash
@@ -95,9 +96,15 @@ trust() { # $1 = cursor row: 0 "No, exit" (the default), 1 "Yes"
   if [ "$1" = 0 ]; then printf ' ❯ No, exit\n   Yes, I trust this folder\n'; else printf '   No, exit\n ❯ Yes, I trust this folder\n'; fi
   printf '\n Enter to confirm · Esc to cancel\n'
 }
+half() { # the dialog as a slow repaint leaves it: title and first row only
+  clear
+  printf '%s\n Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one\n you trust? (Like your own code, a well-known open source project)\n\n ❯ No, exit\n' "────────────────────────────────────────" "$shown"
+}
 readkey() { IFS= read -rsn1 k; if [ "$k" = $'\e' ]; then IFS= read -rsn2 rest; k="ESC$rest"; fi; echo "key:[$k]" >> "$log"; }
-if [ "$mode" = trust ]; then
-  cur=0; trust $cur
+if [ "$mode" = trust ] || [ "$mode" = trust-slow ]; then
+  cur=0
+  if [ "$mode" = trust-slow ]; then half; sleep 1; fi
+  trust $cur
   while readkey; do
     case "$k" in
       "ESC[B") cur=1; trust $cur ;;
@@ -192,6 +199,25 @@ func TestSwitchSettle_FakeClaudePane_OwnTrustPromptAnswered(t *testing.T) {
 	}
 	if len(kicks) != 1 {
 		t.Fatalf("kicks = %d", len(kicks))
+	}
+}
+
+// #2893: the trust dialog drawn in two steps. Settle samples the half-drawn
+// frame first; it must look again and answer the full dialog, not stop.
+func TestSwitchSettle_FakeClaudePane_TrustPromptDrawnInTwoSteps(t *testing.T) {
+	project := t.TempDir()
+	p := startSettleFakePane(t, "swfb-trust-slow", "trust-slow", project)
+	var kicks []string
+	report, err := session.SettleSwitch(p.deps(t, &kicks), fakePaneOpts(project))
+	if err != nil {
+		pane, _ := p.sess.CapturePaneFresh()
+		t.Fatalf("settle: %v\nreceipt: %s\npane:\n%s", err, report.Receipt(), pane)
+	}
+	if !report.Ready || strings.Join(report.Answered, ",") != "trust-own-path" {
+		t.Fatalf("receipt: %s", report.Receipt())
+	}
+	if got := p.keys(); got != "key:[ESC[B]\nkey:[]" {
+		t.Fatalf("keys read by the fake claude = %q, want Down then Enter", got)
 	}
 }
 

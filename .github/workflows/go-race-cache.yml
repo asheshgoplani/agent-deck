@@ -1,0 +1,123 @@
+# Warm Go build cache for the race-enabled test shards in go-test.yml.
+#
+# Why: the shards used setup-go's built-in cache, keyed on go.sum only. Every
+# Go job in the repo (govulncheck, golangci, native-ssh, the 7 shards) races
+# to save that one key and the first job to finish wins. On main that is
+# govulncheck (~1 min), so the 326 MB cache every shard restores held the
+# module cache plus govulncheck's own build, but no -race test build at all.
+# Every shard then compiled the whole race-enabled tree from scratch,
+# 75-125 s before the first test binary started.
+#
+# This workflow builds every test binary with -race on main (the binaries are
+# never run: -exec /bin/true) and saves the build cache plus the module cache
+# under a key the shards restore READ-ONLY (actions/cache/restore). PR runs can
+# read caches saved on main, so PR shards get it too.
+#
+# Keeping the cache small: one save per 6-hour UTC bucket and go.sum hash, not
+# per commit, so the repo's 10 GB cache budget is not churned by every merge.
+# A later commit within the bucket only recompiles the packages it changed and
+# their dependents; the standard library, the race runtime and every
+# third-party package stay cached.
+#
+# The key here and the restore key in go-test.yml (shard job, "Restore race
+# build cache") must stay in lockstep: same prefix, same parts.
+
+name: Go race build cache
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/go-race-cache.yml'
+  # Refresh daily so the entry stays recently used and is not the first one
+  # evicted when the repo nears its cache limit.
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+# Never cancel a half-finished warm-up; a newer push just queues behind it.
+concurrency:
+  group: go-race-cache
+  cancel-in-progress: false
+
+env:
+  AGENTDECK_SKIP_UPDATE_CHECK: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    name: Warm race build cache
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Cache key
+        id: key
+        run: |
+          bucket="$(date -u +%Y%m%d)-$(( 10#$(date -u +%H) / 6 ))"
+          echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
+          echo "bucket: $bucket"
+
+      # This bucket is already saved: stop without downloading it.
+      - name: Look up this bucket's cache
+        id: lookup
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ steps.key.outputs.bucket }}
+          lookup-only: true
+
+      # Start from the newest older bucket so only the delta compiles.
+      - name: Restore the newest older cache
+        id: restore
+        if: steps.lookup.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ steps.key.outputs.bucket }}
+          restore-keys: |
+            go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+            go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+      # Same build flags as the shards (-race, default vet), so the compile and
+      # vet actions are the ones the shards look up. -exec /bin/true links each
+      # test binary but never runs it; -count=1 keeps test results out of the
+      # cache, so the shards never reuse a test RESULT, only compiled code.
+      - name: Build every test binary with -race
+        if: steps.lookup.outputs.cache-hit != 'true'
+        run: |
+          go install gotest.tools/gotestsum@v1.13.0
+          go mod download
+          time go test -race -count=1 -exec /bin/true ./... > /dev/null
+          du -sh "$(go env GOCACHE)" "$(go env GOMODCACHE)"
+
+      - name: Save race build cache
+        if: steps.lookup.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.restore.outputs.cache-primary-key }}

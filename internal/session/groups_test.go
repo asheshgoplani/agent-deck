@@ -2356,16 +2356,18 @@ func TestFlatten_OrphanSubSessionsDeterministic(t *testing.T) {
 	}
 }
 
-// When orphaned sub-sessions share the same Order, the sort must still be
-// deterministic: without an ID tie-break, SliceStable would preserve the
-// randomized map-iteration order of subSessionsByParent and the rows could
-// drift between renders. They must emit in ID order.
+// When orphaned sub-sessions share the same Order, their rows must still be
+// deterministic. They used to be collected from the randomized
+// subSessionsByParent map and appended after every other top-level row, so
+// they needed an explicit tie-break. Since #2995 they are drawn in place, as
+// top-level rows at their group.Sessions position, so they emit in the
+// group's (stable-sorted) session order, the same order MoveSessionUp/Down
+// work on.
 func TestFlatten_OrphanSubSessionsDeterministic_TiedOrder(t *testing.T) {
 	t.Cleanup(func() { SetGroupSortMode("creation") })
 	SetGroupSortMode("creation")
 
-	// All orphans share Order 0 and live in distinct parent buckets, so the only
-	// stable discriminator is ID.
+	// All orphans share Order 0 and live in distinct parent buckets.
 	mk := func(id, parent string) *Instance {
 		return &Instance{ID: id, Title: id, GroupPath: "g", Order: 0, ParentSessionID: parent}
 	}
@@ -2387,10 +2389,13 @@ func TestFlatten_OrphanSubSessionsDeterministic_TiedOrder(t *testing.T) {
 		return got
 	}
 
-	want := []string{"s0", "s1", "s2"} // ID order, independent of input/map order
+	var want []string
+	for _, s := range tree.Groups["g"].Sessions {
+		want = append(want, s.ID)
+	}
 	for i := 0; i < 50; i++ {
 		if got := collect(); !equalStrings(got, want) {
-			t.Fatalf("tied-Order orphans not deterministic: iter %d got %v, want %v", i, got, want)
+			t.Fatalf("tied-Order orphans not deterministic: iter %d got %v, want group order %v", i, got, want)
 		}
 	}
 }
@@ -2741,8 +2746,10 @@ func TestFlattenWithParentFolds(t *testing.T) {
 		{ID: "p1", Title: "parent-1", GroupPath: "group-a"},
 		{ID: "c1", Title: "child-1", GroupPath: "group-a", ParentSessionID: "p1"},
 		{ID: "c2", Title: "child-2", GroupPath: "group-a", ParentSessionID: "p1"},
-		{ID: "o1", Title: "orphan", GroupPath: "group-b", ParentSessionID: "elsewhere"},
+		// The orphan comes after "plain" in the slice: since #2995 an orphan
+		// is drawn in place among the top-level rows, not appended last.
 		{ID: "s1", Title: "plain", GroupPath: "group-b"},
+		{ID: "o1", Title: "orphan", GroupPath: "group-b", ParentSessionID: "elsewhere"},
 	}
 
 	tree := NewGroupTree(instances)

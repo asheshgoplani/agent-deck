@@ -38,8 +38,9 @@ const (
 
 // Client connects to the OpenClaw gateway via WebSocket JSON-RPC.
 type Client struct {
-	url      string
-	password string
+	url           string
+	password      string
+	allowInsecure bool
 
 	conn      *websocket.Conn
 	connMu    sync.Mutex
@@ -63,11 +64,11 @@ type GatewayEvent struct {
 }
 
 // NewClient creates a new OpenClaw gateway client.
-func NewClient(url, password string) *Client {
+func NewClient(url, password string, opts ...ClientOption) *Client {
 	if url == "" {
 		url = DefaultGatewayURL
 	}
-	return &Client{
+	c := &Client{
 		url:           url,
 		password:      password,
 		events:        make(chan *GatewayEvent, 256),
@@ -76,10 +77,17 @@ func NewClient(url, password string) *Client {
 		autoReconnect: false,
 		backoff:       initialBackoff,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Connect establishes the WebSocket connection and completes the challenge/response handshake.
 func (c *Client) Connect(ctx context.Context) error {
+	if err := CheckGatewayURL(c.url, c.allowInsecure); err != nil {
+		return err
+	}
 	dialer := websocket.DefaultDialer
 	conn, _, err := dialer.DialContext(ctx, c.url, nil)
 	if err != nil {

@@ -1091,7 +1091,9 @@ func TestSettingsPanel_Tmux_GetConfigPreservesHiddenFields(t *testing.T) {
 
 func TestSettingsPanel_PreviewSettings_ViewContains(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.SetSize(80, 50)
+	// Tall enough for the PREVIEW section to sit inside the unscrolled
+	// window (the Claude "Default account" row, #2895, added a line above it).
+	panel.SetSize(80, 60)
 	panel.Show()
 
 	view := panel.View()

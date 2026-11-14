@@ -1,0 +1,1010 @@
+#!/usr/bin/env bash
+# Example agent-deck sandbox provider: one small Azure Linux VM per sandbox.
+#
+# Protocol 1 (see docs/PLUG-IN-ANY-MACHINE.md):
+#   argv:   provider <create|list|status|destroy>
+#   stdin:  one JSON request object
+#   stdout: one JSON response object (exit 0)
+#   errors: message on stderr, non-zero exit
+#
+# Needs: az (Azure CLI), ssh, ssh-keygen, python3 (JSON only); curl only for
+# ssh_source = auto. Runs on Linux and macOS (bash 3.2 is enough).
+#
+# Every sandbox lives in ONE resource group you name (resource_group). Each
+# resource it makes (VM, OS disk, NIC, public IP, NSG, VNet) carries the tags
+#   agent-deck-provider=azure-vm  agent-deck-sandbox=<sandbox id>
+# plus the request's agent-deck/* labels (agent-deck-remote, -profile,
+# -create-id). list and status show only VMs with both tags; destroy deletes
+# only resources with both tags and checks the tags again right before each
+# delete. A VM with the sandbox's name but without the tags is refused.
+#
+# Config file (required, it names the resource group; "key = value" lines,
+# # comments; parsed, never sourced): AGENTDECK_AZURE_CONFIG, default
+# ${XDG_CONFIG_HOME:-$HOME/.config}/agent-deck/azure-vm.conf. Keys:
+#   resource_group    = agent-deck-sandboxes    required, must exist
+#   location          = westeurope              default: the group's location
+#   vm_size           = Standard_B2s            default Standard_B2s
+#   image             = Canonical:ubuntu-24_04-lts:server:latest   (default)
+#   os_disk_gb        = 30                      default 30
+#   ssh_user          = dev                     default dev
+#   ssh_source        = auto | <CIDR or IP>     who may reach port 22 (default
+#                                               auto: your public IPv4, /32)
+#   public_ip_url     = https://api.ipify.org   used by ssh_source = auto
+#   ready_timeout     = 600                     seconds from start until the VM
+#                                               must be ready (default 600)
+#   claude_version    = stable                  stable, latest or x.y.z
+#   subscription      = <subscription id>       default: az's current one
+#   sp_app_id         = <app id>                service principal login; unset:
+#   sp_tenant         = <tenant id>             use your own `az login`
+#   sp_secret_file    = /abs/path               0600 file holding the SP secret
+#   project_git       = https://github.com/you/repo.git   clone into ~/<name>
+#   project_dir       = /abs/local/folder                 or copy this folder in
+#   project_name      = name                    default: from the URL or folder,
+#                                               else "demo" (built-in demo project)
+#   claude_token_file = /abs/path               CLAUDE_CODE_OAUTH_TOKEN file
+#                                               (claude setup-token), 0600
+#   agent_deck_binary = /abs/path/agent-deck    linux amd64 binary copied in
+#   sp_created, sp_secret_pending = true        written by `agent-deck provider
+#                                               connect azure`; ignored here
+# Each key can also come from env AGENTDECK_AZURE_<KEY IN CAPITALS> (env
+# wins). The SP secret can come from env AGENTDECK_AZURE_SP_SECRET instead of
+# sp_secret_file.
+#
+# Secrets. The SP secret goes to `az login --service-principal --password @-`
+# on stdin (azure-cli reads an argument value that is "@-" from stdin), so it
+# is never in any argv. The login lives in a private AZURE_CONFIG_DIR inside
+# this run's own 0700 temp dir, removed when the run ends, so your own az
+# profile is not touched and no token is left behind. The Claude token is
+# copied in after boot over ssh, on stdin; it is never in cloud-init
+# custom-data, tags, argv or a log. Nothing secret is printed.
+#
+# Local state: per sandbox a 0700 dir <state>/<id>.XXXXXXXX (mktemp) with a
+# fresh ed25519 key (0600), the VM's host key and a "placement" record of
+# the resource group and subscription it was made in. <state> is
+# AGENTDECK_AZURE_STATE_DIR, default
+# ${XDG_STATE_HOME:-$HOME/.local/state}/agent-deck/azure-vm.
+set -euo pipefail
+umask 077
+
+PROVIDER=azure-vm
+TAG_PROVIDER="agent-deck-provider=$PROVIDER"
+self="$0"
+if resolved="$(readlink -f "$0" 2>/dev/null)"; then
+	self="$resolved"
+fi
+HERE="$(cd "$(dirname "$self")" && pwd -P)"
+
+die() {
+	printf 'azure-vm provider: %s\n' "$*" >&2
+	exit 1
+}
+
+say() {
+	printf 'azure-vm provider: %s\n' "$*" >&2
+}
+
+need() {
+	command -v "$1" >/dev/null 2>&1 || die "$1 not found in PATH"
+}
+
+# All JSON, config and file checks happen here. python3 -I: isolated mode,
+# ignores the cwd and PYTHON* env.
+PY='
+import base64, glob, ipaddress, json, os, re, stat, sys
+
+PROVIDER = "azure-vm"
+ID_RE = re.compile(r"^adk-[0-9a-f]{10}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+LABEL_RE = re.compile(r"^agent-deck/([a-z0-9][a-z0-9-]{0,40})$")
+RESERVED = ("provider", "sandbox", "ssh-user")
+
+def die(msg, code=1):
+    sys.stderr.write("azure-vm provider: " + msg + "\n")
+    sys.exit(code)
+
+def printable(v):
+    return isinstance(v, str) and len(v) <= 256 and all(c.isprintable() for c in v)
+
+def tag_value(v):
+    # Azure tag values: up to 256 chars. Keep a safe subset; never a leading
+    # "@" (az would read a file) or "-" (az would see an option).
+    v = re.sub(r"[^A-Za-z0-9._-]", "_", v)[:128]
+    v = v.lstrip("@-_.")
+    return v or "x"
+
+def read_json_stdin(what):
+    try:
+        return json.load(sys.stdin)
+    except ValueError as e:
+        die("cannot parse %s: %s" % (what, e))
+
+# ---- request ----
+def cmd_request(action):
+    raw = sys.stdin.read(1 << 20)
+    try:
+        req = json.loads(raw)
+    except ValueError as e:
+        die("request is not valid JSON: %s" % e)
+    if not isinstance(req, dict):
+        die("request must be a JSON object")
+    if req.get("protocol") != 1:
+        die("request speaks protocol %r, this provider speaks 1" % (req.get("protocol"),))
+    if req.get("action") != action:
+        die("request action %r does not match argv action %r" % (req.get("action"), action))
+    if action in ("status", "destroy"):
+        sid = req.get("id")
+        if not isinstance(sid, str) or not ID_RE.match(sid):
+            die("not an azure-vm sandbox id: %r" % (sid,))
+        print(sid)
+    elif action == "create":
+        labels = req.get("labels") or {}
+        if not isinstance(labels, dict) or len(labels) > 30:
+            die("labels must be an object with at most 30 entries")
+        name = req.get("name") or ""
+        if not printable(name):
+            die("invalid name")
+        tags = {}
+        for k, v in sorted(labels.items()):
+            m = LABEL_RE.match(k) if isinstance(k, str) else None
+            if not m or not printable(v):
+                continue
+            if m.group(1) in RESERVED:
+                continue
+            tags["agent-deck-" + m.group(1)] = tag_value(v)
+            if len(tags) >= 10:
+                break
+        if name and "agent-deck-remote" not in tags:
+            tags["agent-deck-remote"] = tag_value(name)
+        for k, v in sorted(tags.items()):
+            print("%s=%s" % (k, v))
+
+# ---- config ----
+CONF = {
+    "resource_group": r"^[A-Za-z0-9_()-][A-Za-z0-9._()-]{0,89}$",
+    "location": r"^[a-z0-9]{1,40}$",
+    "vm_size": r"^[A-Za-z0-9_]{1,64}$",
+    "image": r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
+    "os_disk_gb": r"^[0-9]{2,4}$",
+    "ssh_user": r"^[a-z_][a-z0-9_-]{0,31}$",
+    "ssh_source": r"^[0-9A-Fa-f.:/]{1,64}$|^auto$",
+    "public_ip_url": r"^https://[^\s]{1,200}$",
+    "ready_timeout": r"^[0-9]{2,5}$",
+    "claude_version": r"^(stable|latest|[0-9]+\.[0-9]+\.[0-9]+)$",
+    "subscription": r"^[0-9a-fA-F-]{36}$",
+    "sp_app_id": r"^[0-9a-fA-F-]{36}$",
+    "sp_tenant": r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$",
+    "sp_secret_file": None,
+    # bookkeeping of `agent-deck provider connect azure`; the provider ignores them
+    "sp_created": r"^(true|false)$",
+    "sp_secret_pending": r"^(true|false)$",
+    "project_git": r"^(https://|http://|ssh://|git@)[^\s]+$",
+    "project_dir": None,
+    "project_name": r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+    "claude_token_file": None,
+    "agent_deck_binary": None,
+}
+DEFAULTS = {
+    "vm_size": "Standard_B2s",
+    "image": "Canonical:ubuntu-24_04-lts:server:latest",
+    "os_disk_gb": "30",
+    "ssh_user": "dev",
+    "ssh_source": "auto",
+    "public_ip_url": "https://api.ipify.org",
+    "ready_timeout": "600",
+    "claude_version": "stable",
+}
+
+def cmd_config(path):
+    conf = {}
+    if not path or not os.path.exists(path):
+        die("config file %s not found; it must name resource_group (see the README)" % path)
+    try:
+        with open(path) as f:
+            lines = f.read(1 << 16).splitlines()
+    except OSError as e:
+        die("cannot read config %s: %s" % (path, e.strerror))
+    for n, raw in enumerate(lines, 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            die("config %s line %d: expected key = value" % (path, n))
+        k, v = (x.strip() for x in line.split("=", 1))
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("\"", chr(39)):
+            v = v[1:-1]
+        if k not in CONF:
+            die("config %s line %d: unknown key %r" % (path, n, k))
+        conf[k] = v
+    for k in CONF:
+        env = os.environ.get("AGENTDECK_AZURE_" + k.upper())
+        if env:
+            conf[k] = env
+    for k, v in DEFAULTS.items():
+        conf.setdefault(k, v)
+        if not conf[k]:
+            conf[k] = v
+    for k, rx in CONF.items():
+        v = conf.get(k, "")
+        if any(c in v for c in "\n\r\0"):
+            die("config value for %s has a line break" % k)
+        if v and rx and not re.match(rx, v):
+            die("invalid %s %r" % (k, v))
+        if v.startswith("@") or v.startswith("-"):
+            die("invalid %s (must not start with @ or -)" % k)
+    if not conf.get("resource_group"):
+        die("config %s: resource_group is required" % path)
+    if conf["resource_group"].endswith("."):
+        die("invalid resource_group (must not end with a period)")
+    if conf["ssh_user"] in ("root", "admin", "administrator", "azureuser1", "guest", "test", "user"):
+        die("ssh_user %r is reserved on Azure; pick another" % conf["ssh_user"])
+    gb = int(conf["os_disk_gb"])
+    if gb < 30 or gb > 1024:
+        die("os_disk_gb must be 30 to 1024")
+    if int(conf["ready_timeout"]) < 60:
+        die("ready_timeout must be at least 60 seconds")
+    if conf.get("sp_app_id") and not conf.get("sp_tenant"):
+        die("sp_app_id is set but sp_tenant is not")
+    if conf.get("ssh_source", "auto") != "auto":
+        conf["ssh_source"] = norm_cidr(conf["ssh_source"])
+    git, pdir = conf.get("project_git", ""), conf.get("project_dir", "")
+    if git and pdir:
+        die("set project_git or project_dir, not both")
+    for k in ("project_dir", "sp_secret_file", "claude_token_file", "agent_deck_binary"):
+        if conf.get(k):
+            conf[k] = os.path.expanduser(conf[k])
+            if not os.path.isabs(conf[k]):
+                die("%s must be an absolute path" % k)
+    if pdir and not os.path.isdir(conf["project_dir"]):
+        die("project_dir must be an existing folder")
+    adb = conf.get("agent_deck_binary", "")
+    if adb and (not os.path.isfile(adb) or not os.access(adb, os.X_OK)):
+        die("agent_deck_binary must be an executable file")
+    if not conf.get("project_name"):
+        src = git or conf.get("project_dir", "")
+        conf["project_name"] = re.sub(r"\.git$", "", src.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]) if src else "demo"
+        if not NAME_RE.match(conf["project_name"]):
+            die("cannot derive a project_name; set project_name")
+    for k in CONF:
+        print("%s=%s" % (k, conf.get(k, "")))
+
+def norm_cidr(v):
+    try:
+        net = ipaddress.ip_network(v, strict=False)
+    except ValueError:
+        die("ssh_source %r is not an IP or CIDR" % v)
+    if net.version == 4 and net.prefixlen < 8 or net.version == 6 and net.prefixlen < 32:
+        die("ssh_source %s is too wide; ssh must not be open to the internet" % net)
+    if net.is_multicast or net.is_unspecified:
+        die("ssh_source %s is not a usable address" % net)
+    return str(net)
+
+def cmd_cidr(v):
+    print(norm_cidr(v.strip()))
+
+def cmd_secretfile(path, what):
+    # A regular file (not a symlink) you own, mode 0600 or 0400, not empty.
+    # Never reads it.
+    try:
+        st = os.lstat(path)
+    except OSError:
+        die("%s %s does not exist" % (what, path))
+    if not stat.S_ISREG(st.st_mode):
+        die("%s %s must be a regular file, not a symlink" % (what, path))
+    if st.st_uid != os.getuid():
+        die("%s %s must be owned by you" % (what, path))
+    mode = stat.S_IMODE(st.st_mode)
+    if mode not in (0o600, 0o400):
+        die("%s %s has mode %o; it must be 0600 or 0400" % (what, path, mode))
+    if st.st_size == 0:
+        die("%s %s is empty" % (what, path))
+
+TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=-]{20,4096}$")
+
+def cmd_tokenfile(path, mode):
+    # The Claude token file must hold exactly one line: the token, bare or
+    # as CLAUDE_CODE_OAUTH_TOKEN=... (export allowed). Its content is never
+    # printed: every error says "not shown". mode "emit" writes the one
+    # setup line claude_token=<token> to stdout (a pipe to ssh, not a log).
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(8192)
+    except OSError:
+        die("cannot read claude_token_file %s" % path)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        die("claude_token_file %s is not text (content not shown)" % path)
+    if text.endswith("\r\n"):
+        text = text[:-2]
+    elif text.endswith("\n"):
+        text = text[:-1]
+    if "\n" in text or "\r" in text:
+        die("claude_token_file %s must hold exactly one line, the token (no comments or blank lines; content not shown)" % path)
+    tok = text.strip()
+    if tok.startswith("export "):
+        tok = tok[len("export "):].strip()
+    if tok.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
+        tok = tok[len("CLAUDE_CODE_OAUTH_TOKEN="):]
+    if not TOKEN_RE.match(tok):
+        die("claude_token_file %s does not hold a token (content not shown)" % path)
+    if mode == "emit":
+        sys.stdout.write("claude_token=" + tok + "\n")
+
+# ---- cloud-init ----
+def cmd_cloudinit(here, user, version):
+    def b64(p):
+        with open(p, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    out = ["#cloud-config", "write_files:"]
+    def wf(path, data, perm):
+        out.extend(["  - path: " + path, "    permissions: \"" + perm + "\"",
+                    "    encoding: b64", "    content: " + data])
+    wf("/usr/local/lib/agent-deck/sandbox-init.sh", b64(os.path.join(here, "sandbox-init.sh")), "0755")
+    wf("/usr/local/bin/agent-deck-sandbox-setup", b64(os.path.join(here, "sandbox-setup.sh")), "0755")
+    demo = os.path.join(here, "demo-project")
+    for name in sorted(os.listdir(demo)):
+        p = os.path.join(demo, name)
+        if os.path.isfile(p) and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", name):
+            perm = "0755" if os.access(p, os.X_OK) else "0644"
+            wf("/opt/agent-deck-sandbox/demo-project/" + name, b64(p), perm)
+    out.append("runcmd:")
+    out.append("  - [chmod, -R, a+rX, /opt/agent-deck-sandbox]")
+    out.append("  - [bash, /usr/local/lib/agent-deck/sandbox-init.sh, %s, %s]" % (user, version))
+    print("\n".join(out))
+
+# ---- az output ----
+def tags_of(r):
+    t = r.get("tags") if isinstance(r, dict) else None
+    return t if isinstance(t, dict) else {}
+
+def ours(r, sid=None):
+    t = tags_of(r)
+    if t.get("agent-deck-provider") != PROVIDER:
+        return False
+    s = t.get("agent-deck-sandbox", "")
+    if not ID_RE.match(s):
+        return False
+    if sid is not None and s != sid:
+        return False
+    return True
+
+def keydir_for(sid):
+    root = os.environ.get("STATE_ROOT", "")
+    if not root:
+        return ""
+    for d in sorted(glob.glob(os.path.join(root, sid + ".*"))):
+        try:
+            st = os.lstat(d)
+        except OSError:
+            continue
+        if stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid():
+            return d
+    return ""
+
+def first_ip(s):
+    for part in (s or "").split(","):
+        part = part.strip()
+        try:
+            ipaddress.ip_address(part)
+            return part
+        except ValueError:
+            pass
+    return ""
+
+def state_of(vm):
+    p = (vm.get("powerState") or "").lower()
+    if p == "vm running":
+        return "running"
+    if p in ("vm starting", "vm creating"):
+        return "starting"
+    if p in ("vm stopped", "vm deallocated", "vm stopping", "vm deallocating"):
+        return "stopped"
+    return "unknown"
+
+def sandbox(vm):
+    t = tags_of(vm)
+    sid = vm.get("name", "")
+    host = first_ip(vm.get("publicIps")) or first_ip(vm.get("privateIps")) or "unknown.invalid"
+    labels = {"provider": PROVIDER}
+    for k, v in t.items():
+        # Only keys a request label could have made (LABEL_RE): a tag added
+        # by hand with any other key would make agent-deck reject the reply.
+        m = LABEL_RE.match("agent-deck/" + k[len("agent-deck-"):]) if k.startswith("agent-deck-") else None
+        if m and m.group(1) not in RESERVED and printable(v):
+            labels["agent-deck/" + m.group(1)] = v
+    kd = keydir_for(sid)
+    key = os.path.join(kd, "id_ed25519") if kd else ""
+    if key and os.path.isfile(key) and not os.path.islink(key):
+        auth = {"type": "key", "key_path": key}
+    else:
+        auth = {"type": "agent"}
+        labels["key-missing"] = "true"
+    user = t.get("agent-deck-ssh-user", "")
+    if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", user):
+        user = "dev"
+    sb = {"id": sid, "host": host, "port": 22, "user": user, "auth": auth,
+          "labels": labels, "state": state_of(vm)}
+    if kd:
+        try:
+            with open(os.path.join(kd, "host_key.pub")) as f:
+                hk = f.read().split()
+            if len(hk) >= 2:
+                sb["host_keys"] = [hk[0] + " " + hk[1]]
+        except OSError:
+            pass
+    return sb
+
+def cmd_vmone(sid):
+    vm = read_json_stdin("az vm show output")
+    if not isinstance(vm, dict) or vm.get("name") != sid or not ours(vm, sid):
+        die("refusing %s: not an agent-deck azure-vm sandbox (missing tags)" % sid, 3)
+    print(json.dumps({"protocol": 1, "sandbox": sandbox(vm)}))
+
+def cmd_vmlist():
+    vms = read_json_stdin("az vm list output")
+    if not isinstance(vms, list):
+        die("az vm list did not return a list")
+    out = [sandbox(v) for v in vms if isinstance(v, dict) and ours(v, v.get("name"))]
+    print(json.dumps({"protocol": 1, "sandboxes": out}))
+
+def cmd_vmfield(field):
+    vm = read_json_stdin("az vm show output")
+    if field == "ip":
+        ip = first_ip(vm.get("publicIps"))
+        if not ip:
+            die("the VM has no public IP")
+        print(ip)
+    elif field == "osdisk":
+        d = (((vm.get("storageProfile") or {}).get("osDisk") or {}).get("managedDisk") or {}).get("id") or ""
+        if not d.startswith("/subscriptions/"):
+            die("the VM has no managed OS disk id")
+        print(d)
+
+def cmd_location():
+    g = read_json_stdin("az group show output")
+    loc = g.get("location", "") if isinstance(g, dict) else ""
+    if not re.match(r"^[a-z0-9]{1,40}$", loc):
+        die("resource group has no usable location")
+    print(loc)
+
+ORDER = ["microsoft.compute/virtualmachines", "microsoft.network/networkinterfaces",
+         "microsoft.network/publicipaddresses", "microsoft.network/networksecuritygroups",
+         "microsoft.network/virtualnetworks", "microsoft.compute/disks"]
+
+def cmd_destroyplan(sid):
+    res = read_json_stdin("az resource list output")
+    if not isinstance(res, list):
+        die("az resource list did not return a list")
+    plan, skipped = [], []
+    for r in res:
+        if not isinstance(r, dict):
+            continue
+        name, typ, rid = r.get("name", ""), (r.get("type") or "").lower(), r.get("id", "")
+        mine = ours(r, sid)
+        if typ == ORDER[0] and name == sid and not mine:
+            die("refusing to destroy %s: a VM with that name exists but does not carry the agent-deck-provider=azure-vm and agent-deck-sandbox=%s tags" % (sid, sid), 4)
+        if mine:
+            if not rid.startswith("/subscriptions/"):
+                die("resource %s has no usable id" % name)
+            plan.append((ORDER.index(typ) if typ in ORDER else len(ORDER), rid))
+        elif name == sid or name.startswith(sid + "-"):
+            skipped.append(name)
+    for n in skipped:
+        sys.stderr.write("azure-vm provider: left alone (not tagged as this sandbox): %s\n" % n)
+    for _, rid in sorted(plan, key=lambda x: x[0]):
+        print(rid)
+
+def cmd_tagok(sid):
+    r = read_json_stdin("az resource show output")
+    sys.exit(0 if isinstance(r, dict) and ours(r, sid) else 5)
+
+def cmd_ready():
+    out = read_json_stdin("az vm run-command output")
+    msg = ""
+    for v in (out.get("value") or []) if isinstance(out, dict) else []:
+        msg += str(v.get("message", "")) + "\n"
+    ready = "ready=yes" in msg.split()
+    hk = ""
+    for line in msg.splitlines():
+        p = line.strip().split()
+        if len(p) >= 2 and p[0] == "ssh-ed25519" and re.match(r"^[A-Za-z0-9+/]+={0,3}$", p[1]):
+            hk = p[0] + " " + p[1]
+            break
+    print("ready=%s" % ("yes" if ready else "no"))
+    print("hostkey=%s" % hk)
+
+cmd, args = sys.argv[1], sys.argv[2:]
+{"request": cmd_request, "config": cmd_config, "cidr": cmd_cidr,
+ "secretfile": cmd_secretfile, "tokenfile": cmd_tokenfile, "cloudinit": cmd_cloudinit, "vmone": cmd_vmone,
+ "vmlist": cmd_vmlist, "vmfield": cmd_vmfield, "location": cmd_location,
+ "destroyplan": cmd_destroyplan, "tagok": cmd_tagok, "ready": cmd_ready}[cmd](*args)
+'
+
+py() {
+	STATE_ROOT="${STATE_ROOT:-}" python3 -I -c "$PY" "$@"
+}
+
+valid_id() {
+	[[ "$1" =~ ^adk-[0-9a-f]{10}$ ]]
+}
+
+# load_config: the provider config into C_* globals.
+load_config() {
+	local file="${AGENTDECK_AZURE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-deck/azure-vm.conf}" out line k v
+	out="$(py config "$file")" || exit 1
+	while IFS= read -r line; do
+		k="${line%%=*}"
+		v="${line#*=}"
+		case "$k" in
+		resource_group) C_RG="$v" ;;
+		location) C_LOCATION="$v" ;;
+		vm_size) C_SIZE="$v" ;;
+		image) C_IMAGE="$v" ;;
+		os_disk_gb) C_DISK_GB="$v" ;;
+		ssh_user) C_USER="$v" ;;
+		ssh_source) C_SOURCE="$v" ;;
+		public_ip_url) C_IP_URL="$v" ;;
+		ready_timeout) C_READY="$v" ;;
+		claude_version) C_CLAUDE_VERSION="$v" ;;
+		subscription) C_SUB="$v" ;;
+		sp_app_id) C_SP_APP="$v" ;;
+		sp_tenant) C_SP_TENANT="$v" ;;
+		sp_secret_file) C_SP_SECRET_FILE="$v" ;;
+		project_git) C_GIT="$v" ;;
+		project_dir) C_DIR="$v" ;;
+		project_name) C_NAME="$v" ;;
+		claude_token_file) C_TOKEN_FILE="$v" ;;
+		agent_deck_binary) C_AGENT_DECK="$v" ;;
+		esac
+	done <<<"$out"
+	STATE_ROOT="${AGENTDECK_AZURE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-deck/azure-vm}"
+	export STATE_ROOT
+}
+
+# make_work: this run's private 0700 temp dir (az login, custom-data,
+# az output). Removed on exit.
+make_work() {
+	local root="${TMPDIR:-/tmp}"
+	root="${root%/}"
+	[ -n "$root" ] || root=/tmp
+	WORK="$(mktemp -d "$root/agent-deck-azure-run-XXXXXXXX")" || die "cannot make temp dir"
+	chmod 0700 "$WORK"
+}
+
+remove_work() {
+	[ -n "${WORK:-}" ] && [ -d "$WORK" ] && [ ! -L "$WORK" ] || return 0
+	case "$(basename -- "$WORK")" in
+	agent-deck-azure-run-*) rm -rf -- "$WORK" ;;
+	esac
+}
+
+# az_login: with sp_app_id set, log the service principal in to a private
+# AZURE_CONFIG_DIR in $WORK; the secret goes on stdin ("@-"), never argv.
+# Without it, use the az login you already have.
+az_login() {
+	if [ -z "${C_SP_APP:-}" ]; then
+		return 0
+	fi
+	AZURE_CONFIG_DIR="$WORK/az"
+	export AZURE_CONFIG_DIR
+	mkdir -m 0700 "$AZURE_CONFIG_DIR"
+	if [ -n "${C_SP_SECRET_FILE:-}" ]; then
+		py secretfile "$C_SP_SECRET_FILE" sp_secret_file
+		az login --service-principal --username "$C_SP_APP" --tenant "$C_SP_TENANT" \
+			--password @- --output none --only-show-errors <"$C_SP_SECRET_FILE" >&2 ||
+			die "az login with the service principal failed"
+	elif [ -n "${AGENTDECK_AZURE_SP_SECRET:-}" ]; then
+		# printf is a shell builtin: the secret is in no process's argv.
+		printf '%s' "$AGENTDECK_AZURE_SP_SECRET" |
+			az login --service-principal --username "$C_SP_APP" --tenant "$C_SP_TENANT" \
+				--password @- --output none --only-show-errors >&2 ||
+			die "az login with the service principal failed"
+	else
+		die "sp_app_id is set but neither sp_secret_file nor AGENTDECK_AZURE_SP_SECRET is"
+	fi
+}
+
+# azc: az with the configured subscription. Never passes a secret.
+azc() {
+	if [ -n "${C_SUB:-}" ]; then
+		az "$@" --subscription "$C_SUB" --only-show-errors
+	else
+		az "$@" --only-show-errors
+	fi
+}
+
+# effective_sub: the subscription az works in: the configured one, else
+# az's current one.
+effective_sub() {
+	local sub
+	if [ -n "${C_SUB:-}" ]; then
+		printf '%s' "$C_SUB"
+		return 0
+	fi
+	sub="$(az account show --query id --output tsv --only-show-errors)" ||
+		die "az account show failed; set subscription in the config"
+	sub="$(printf '%s' "$sub" | tr -d '\r\n')"
+	[[ "$sub" =~ ^[0-9a-fA-F-]{36}$ ]] || die "az account show returned no usable subscription id"
+	printf '%s' "$sub"
+}
+
+# with_deadline <seconds> cmd...: run cmd, killed after <seconds> when
+# timeout (or gtimeout on macOS) exists.
+with_deadline() {
+	local s="$1"
+	shift
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$s" "$@"
+	elif command -v gtimeout >/dev/null 2>&1; then
+		gtimeout "$s" "$@"
+	else
+		"$@"
+	fi
+}
+
+remaining() {
+	local left=$((DEADLINE - $(date +%s)))
+	[ "$left" -gt 0 ] || die "the VM was not ready within ready_timeout (${C_READY}s)"
+	printf '%s' "$left"
+}
+
+# destroy_resources <id>: delete every resource tagged as this sandbox, VM
+# first. Each delete is preceded by a fresh read of that resource's tags.
+destroy_resources() {
+	local id="$1" plan rid rc
+	azc resource list --resource-group "$C_RG" --output json >"$WORK/resources.json" ||
+		die "az resource list failed"
+	rc=0
+	plan="$(py destroyplan "$id" <"$WORK/resources.json")" || rc=$?
+	[ "$rc" -eq 0 ] || exit "$rc"
+	DESTROY_PLANNED=0
+	[ -z "$plan" ] || DESTROY_PLANNED="$(printf '%s\n' "$plan" | wc -l | tr -d ' ')"
+	# One id per line, read whole (never word-split or glob-expanded), on
+	# fd 3 so az cannot eat the list from stdin.
+	while IFS= read -r rid <&3; do
+		[ -n "$rid" ] || continue
+		if ! azc resource show --ids "$rid" --output json >"$WORK/one.json" 2>"$WORK/one.err"; then
+			if grep -qiE 'not ?found|ResourceNotFound|could not be found' "$WORK/one.err"; then
+				continue # already gone, for example deleted with its VM
+			fi
+			sed 's/^/az: /' "$WORK/one.err" >&2
+			die "az resource show failed for $rid"
+		fi
+		py tagok "$id" <"$WORK/one.json" ||
+			die "refusing to delete $rid: it no longer carries this sandbox's tags"
+		if ! azc resource delete --ids "$rid" --output none 2>"$WORK/one.err"; then
+			grep -qiE 'not ?found|ResourceNotFound|could not be found' "$WORK/one.err" && continue
+			sed 's/^/az: /' "$WORK/one.err" >&2
+			die "az resource delete failed for $rid"
+		fi
+	done 3<<<"$plan"
+}
+
+# remove_keydir <dir>: delete only a key dir this provider made.
+remove_keydir() {
+	local dir="$1" f
+	[ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || return 0
+	case "$(basename -- "$dir")" in
+	adk-??????????.*) ;;
+	*) return 0 ;;
+	esac
+	for f in id_ed25519 id_ed25519.pub host_key.pub known_hosts placement; do
+		rm -f -- "$dir/$f"
+	done
+	rmdir -- "$dir" 2>/dev/null || true
+}
+
+keydir_of() {
+	local d
+	for d in "$STATE_ROOT/$1".*; do
+		if [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ]; then
+			printf '%s' "$d"
+			return 0
+		fi
+	done
+	return 0
+}
+
+on_exit() {
+	local rc=$?
+	trap - EXIT INT TERM
+	if [ "$rc" -ne 0 ] && [ -n "${CREATE_ID:-}" ]; then
+		say "create failed; removing everything tagged agent-deck-sandbox=$CREATE_ID"
+		if (destroy_resources "$CREATE_ID"); then
+			say "rollback done: nothing was left behind"
+		else
+			say "rollback failed: resources tagged agent-deck-sandbox=$CREATE_ID may remain in resource group $C_RG; delete them by hand"
+		fi
+		remove_keydir "${CREATE_KEYDIR:-}"
+	fi
+	remove_work
+	exit "$rc"
+}
+
+# create_hint <az stderr file>: one plain hint line for the create failures
+# a new subscription hits. Only config values and a namespace name are
+# printed, never anything secret.
+create_hint() {
+	local f="$1" alt ns
+	if grep -q -e RequestDisallowedByAzure -e 'not accepting new customers' "$f"; then
+		alt=swedencentral
+		[ "$C_LOCATION" = swedencentral ] && alt=northeurope
+		say "hint: region $C_LOCATION is not taking new customers; set location = $alt (or run agent-deck provider connect azure)"
+	elif grep -q SkuNotAvailable "$f"; then
+		say "hint: $C_SIZE is not offered in $C_LOCATION; set vm_size = Standard_B2als_v2 or see az vm list-skus -l $C_LOCATION --size $(printf '%s' "$C_SIZE" | sed -E 's/^([Ss]tandard_[A-Za-z]+[0-9]+).*/\1/')"
+	elif grep -q MissingSubscriptionRegistration "$f"; then
+		ns="$(sed -n "s/.*namespace '\([A-Za-z.]*\)'.*/\1/p" "$f" | head -n 1)"
+		say "hint: the subscription owner must run az provider register --namespace ${ns:-<namespace>} (agent-deck provider connect azure does this)"
+	fi
+	return 0
+}
+
+# az_create <what failed> <az args...>: one create call of do_create. az's
+# stderr is shown as it is; on failure a hint may follow, then the exit
+# rolls back.
+az_create() {
+	local what="$1" rc=0
+	shift
+	azc "$@" 2>"$WORK/az.err" || rc=$?
+	cat "$WORK/az.err" >&2
+	[ "$rc" -eq 0 ] && return 0
+	say "$what"
+	create_hint "$WORK/az.err"
+	exit 1
+}
+
+ssh_vm() {
+	local strict=yes
+	[ -s "$CREATE_KEYDIR/known_hosts" ] || strict=accept-new
+	ssh -F /dev/null -i "$CREATE_KEYDIR/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes \
+		-o ConnectTimeout=10 -o LogLevel=ERROR \
+		-o UserKnownHostsFile="$CREATE_KEYDIR/known_hosts" -o StrictHostKeyChecking="$strict" \
+		-p 22 -- "$C_USER@$VM_IP" "$@"
+}
+
+# setup_input: the setup script's stdin. The token goes from its file into
+# the pipe as one checked claude_token= line; it is never in a shell
+# variable, argv or a log.
+setup_input() {
+	printf 'project_name=%s\n' "$C_NAME"
+	if [ -n "$C_DIR" ]; then
+		printf 'project_copied=1\n'
+	elif [ -n "$C_GIT" ]; then
+		printf 'project_git=%s\n' "$C_GIT"
+	fi
+	if [ -n "$C_TOKEN_FILE" ]; then
+		py tokenfile "$C_TOKEN_FILE" emit
+	fi
+}
+
+resolve_source() {
+	if [ "$C_SOURCE" != auto ]; then
+		SOURCE="$C_SOURCE"
+		return 0
+	fi
+	need curl
+	local ip
+	ip="$(curl -fsS --max-time 10 -- "$C_IP_URL" | head -c 64)" ||
+		die "ssh_source = auto: cannot learn your public IP from $C_IP_URL; set ssh_source to your IP or CIDR"
+	SOURCE="$(py cidr "$ip")" || die "ssh_source = auto: $C_IP_URL did not return an IP"
+}
+
+do_create() {
+	local req="$1" tagline rid ready_out hostkey ready_ok
+	CREATE_ID=""
+	CREATE_KEYDIR=""
+	need ssh
+	need ssh-keygen
+	need od
+	load_config
+	if [ -n "$C_TOKEN_FILE" ]; then
+		py secretfile "$C_TOKEN_FILE" claude_token_file
+		py tokenfile "$C_TOKEN_FILE" check
+	fi
+	DEADLINE=$(($(date +%s) + C_READY))
+
+	local tag_lines
+	tag_lines="$(printf '%s' "$req" | py request create)"
+	TAGS=("$TAG_PROVIDER")
+	while IFS= read -r tagline; do
+		[ -n "$tagline" ] && TAGS+=("$tagline")
+	done <<<"$tag_lines"
+
+	resolve_source
+	make_work
+	trap on_exit EXIT
+	trap 'exit 130' INT TERM
+
+	local id
+	id="adk-$(od -An -N5 -tx1 /dev/urandom | tr -d ' \n')"
+	valid_id "$id" || die "cannot make a sandbox id"
+	TAGS+=("agent-deck-sandbox=$id" "agent-deck-ssh-user=$C_USER")
+
+	mkdir -p -m 0700 "$STATE_ROOT"
+	CREATE_KEYDIR="$(mktemp -d "$STATE_ROOT/$id.XXXXXXXX")" || die "cannot make key dir"
+	chmod 0700 "$CREATE_KEYDIR"
+	ssh-keygen -q -t ed25519 -N '' -C "agent-deck-$id" -f "$CREATE_KEYDIR/id_ed25519" </dev/null >/dev/null ||
+		die "ssh-keygen failed"
+	chmod 0600 "$CREATE_KEYDIR/id_ed25519" "$CREATE_KEYDIR/id_ed25519.pub"
+
+	py cloudinit "$HERE" "$C_USER" "$C_CLAUDE_VERSION" >"$WORK/custom-data.yaml"
+
+	az_login
+	if [ -z "$C_LOCATION" ]; then
+		azc group show --name "$C_RG" --output json >"$WORK/group.json" ||
+			die "resource group $C_RG not found or not readable"
+		C_LOCATION="$(py location <"$WORK/group.json")"
+	fi
+
+	# Where this sandbox lives, so destroy can tell a changed config from a
+	# sandbox that is gone.
+	printf 'resource_group=%s\nsubscription=%s\n' "$C_RG" "$(effective_sub)" >"$CREATE_KEYDIR/placement"
+	chmod 0600 "$CREATE_KEYDIR/placement"
+
+	# From here on every resource carries our tags, so a failure rolls back
+	# exactly what this run made.
+	CREATE_ID="$id"
+	say "creating $id in $C_RG ($C_LOCATION, $C_SIZE), ssh from $SOURCE"
+	az_create "creating the network security group failed" \
+		network nsg create --resource-group "$C_RG" --name "$id-nsg" --location "$C_LOCATION" \
+		--tags "${TAGS[@]}" --output none
+	az_create "creating the ssh rule failed" \
+		network nsg rule create --resource-group "$C_RG" --nsg-name "$id-nsg" --name allow-ssh-agent-deck \
+		--priority 100 --direction Inbound --access Allow --protocol Tcp \
+		--source-address-prefixes "$SOURCE" --source-port-ranges '*' --destination-port-ranges 22 \
+		--output none
+	az_create "creating the virtual network failed" \
+		network vnet create --resource-group "$C_RG" --name "$id-vnet" --location "$C_LOCATION" \
+		--address-prefixes 10.77.0.0/24 --subnet-name default --subnet-prefixes 10.77.0.0/24 \
+		--tags "${TAGS[@]}" --output none
+	az_create "creating the public IP failed" \
+		network public-ip create --resource-group "$C_RG" --name "$id-ip" --location "$C_LOCATION" \
+		--sku Standard --allocation-method Static --tags "${TAGS[@]}" --output none
+	az_create "creating the network interface failed" \
+		network nic create --resource-group "$C_RG" --name "$id-nic" --location "$C_LOCATION" \
+		--vnet-name "$id-vnet" --subnet default --public-ip-address "$id-ip" \
+		--network-security-group "$id-nsg" --tags "${TAGS[@]}" --output none
+	az_create "creating the VM failed" \
+		vm create --resource-group "$C_RG" --name "$id" --location "$C_LOCATION" \
+		--nics "$id-nic" --image "$C_IMAGE" --size "$C_SIZE" \
+		--admin-username "$C_USER" --authentication-type ssh \
+		--ssh-key-values "$CREATE_KEYDIR/id_ed25519.pub" \
+		--os-disk-name "$id-osdisk" --os-disk-size-gb "$C_DISK_GB" --storage-sku StandardSSD_LRS \
+		--os-disk-delete-option Delete \
+		--custom-data "$WORK/custom-data.yaml" --tags "${TAGS[@]}" --output none
+
+	azc vm show --show-details --resource-group "$C_RG" --name "$id" --output json >"$WORK/vm.json" ||
+		die "az vm show failed"
+	# The OS disk is made by the VM and does not inherit its tags.
+	rid="$(py vmfield osdisk <"$WORK/vm.json")"
+	azc resource tag --ids "$rid" --tags "${TAGS[@]}" --output none || die "tagging the OS disk failed"
+	VM_IP="$(py vmfield ip <"$WORK/vm.json")"
+
+	# Wait for cloud-init through Azure's own control plane, and read the
+	# VM's host key there, so ssh can pin it instead of trusting first use.
+	say "waiting for cloud-init on $id (installs Claude Code; a few minutes)"
+	with_deadline "$(remaining)" az vm run-command invoke --resource-group "$C_RG" --name "$id" \
+		${C_SUB:+--subscription "$C_SUB"} --only-show-errors \
+		--command-id RunShellScript --scripts \
+		'cloud-init status --wait >/dev/null 2>&1; [ -f /var/lib/agent-deck-sandbox-ready ] && echo ready=yes; cat /etc/ssh/ssh_host_ed25519_key.pub' \
+		--output json >"$WORK/ready.json" || die "waiting for cloud-init on the VM failed or timed out"
+	ready_out="$(py ready <"$WORK/ready.json")"
+	ready_ok="$(printf '%s\n' "$ready_out" | sed -n 's/^ready=//p')"
+	hostkey="$(printf '%s\n' "$ready_out" | sed -n 's/^hostkey=//p')"
+	[ "$ready_ok" = yes ] ||
+		die "cloud-init did not finish the sandbox setup; see /var/log/cloud-init-output.log on the VM"
+	if [ -n "$hostkey" ]; then
+		printf '%s\n' "$hostkey" >"$CREATE_KEYDIR/host_key.pub"
+		printf '%s %s\n' "$VM_IP" "$hostkey" >"$CREATE_KEYDIR/known_hosts"
+		chmod 0600 "$CREATE_KEYDIR/host_key.pub" "$CREATE_KEYDIR/known_hosts"
+	else
+		say "no host key from the VM; ssh will trust it on first use"
+	fi
+
+	say "waiting for ssh on $VM_IP"
+	# ssh_vm has ConnectTimeout=10, so each try is bounded.
+	until ssh_vm true </dev/null >/dev/null 2>"$WORK/ssh.err"; do
+		remaining >/dev/null
+		sleep 5
+	done
+
+	if [ -n "$C_AGENT_DECK" ]; then
+		ssh_vm 'cat >"$HOME/.local/bin/agent-deck" && chmod 0755 "$HOME/.local/bin/agent-deck"' \
+			<"$C_AGENT_DECK" >&2 || die "cannot copy agent_deck_binary to the VM"
+	fi
+	if [ -n "$C_DIR" ]; then
+		tar -C "$C_DIR" -cf - . | ssh_vm "mkdir -p \"\$HOME/$C_NAME\" && tar -C \"\$HOME/$C_NAME\" -xf -" >&2 ||
+			die "cannot copy project_dir to the VM"
+	fi
+	setup_input | ssh_vm /usr/local/bin/agent-deck-sandbox-setup >&2 ||
+		die "sandbox setup on the VM failed (see above)"
+
+	azc vm show --show-details --resource-group "$C_RG" --name "$id" --output json >"$WORK/vm.json" ||
+		die "az vm show failed"
+	py vmone "$id" <"$WORK/vm.json"
+	CREATE_ID=""
+}
+
+do_list() {
+	load_config
+	make_work
+	trap on_exit EXIT
+	az_login
+	azc vm list --show-details --resource-group "$C_RG" --output json >"$WORK/vms.json" ||
+		die "az vm list failed"
+	py vmlist <"$WORK/vms.json"
+}
+
+do_status() {
+	local id="$1"
+	load_config
+	make_work
+	trap on_exit EXIT
+	az_login
+	if ! azc vm show --show-details --resource-group "$C_RG" --name "$id" --output json \
+		>"$WORK/vm.json" 2>"$WORK/err"; then
+		grep -qiE 'not ?found|ResourceNotFound|could not be found' "$WORK/err" && die "no such sandbox: $id"
+		sed 's/^/az: /' "$WORK/err" >&2
+		die "az vm show failed"
+	fi
+	py vmone "$id" <"$WORK/vm.json"
+}
+
+# placement_of <keydir> <key>: a value from the key dir's placement record.
+placement_of() {
+	[ -f "$1/placement" ] && [ ! -L "$1/placement" ] || return 0
+	sed -n "s/^$2=//p" "$1/placement" | head -n 1
+}
+
+do_destroy() {
+	local id="$1" keydir sub made_rg made_sub
+	load_config
+	make_work
+	trap on_exit EXIT
+	az_login
+	keydir="$(keydir_of "$id")"
+	sub="$(effective_sub)"
+	if [ -n "$keydir" ] && [ -f "$keydir/placement" ]; then
+		made_rg="$(placement_of "$keydir" resource_group)"
+		made_sub="$(placement_of "$keydir" subscription)"
+		if [ "$made_rg" != "$C_RG" ] || [ "$made_sub" != "$sub" ]; then
+			die "not destroying $id: it was made in resource group $made_rg, subscription $made_sub, but the config now points at resource group $C_RG, subscription $sub. Nothing was deleted and its ssh key stays in $keydir; the VM may still be running (and billed) there. Set resource_group and subscription back (or az account set --subscription $made_sub) and run destroy again."
+		fi
+	fi
+	destroy_resources "$id"
+	if [ "$DESTROY_PLANNED" -eq 0 ] && [ -n "$keydir" ] && [ ! -f "$keydir/placement" ]; then
+		die "not finishing destroy of $id: nothing tagged agent-deck-sandbox=$id is in resource group $C_RG, subscription $sub, but its ssh key is still in $keydir, so it may live elsewhere (still running and billed). Check where it was made: if resource_group or subscription changed, set it back and run destroy again; if you deleted the VM yourself, remove $keydir and run destroy again. Nothing was deleted."
+	fi
+	remove_keydir "$keydir"
+	printf '{"protocol":1,"ok":true}\n'
+}
+
+main() {
+	local action="${1:-}" req id
+	case "$action" in
+	create | list | status | destroy) ;;
+	"") die "usage: provider <create|list|status|destroy> < request.json" ;;
+	*) die "unknown action: $action" ;;
+	esac
+	need python3
+	req="$(head -c 1048576)"
+	case "$action" in
+	create)
+		need az
+		do_create "$req"
+		;;
+	list)
+		printf '%s' "$req" | py request list
+		need az
+		do_list
+		;;
+	status | destroy)
+		id="$(printf '%s' "$req" | py request "$action")"
+		valid_id "$id" || die "not an azure-vm sandbox id"
+		need az
+		"do_$action" "$id"
+		;;
+	esac
+}
+
+main "$@"

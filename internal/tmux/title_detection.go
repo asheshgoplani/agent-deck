@@ -127,7 +127,7 @@ func RefreshCachedWindows(sess *Session) error {
 	if windowCacheData == nil {
 		windowCacheData = make(map[string][]WindowInfo)
 	}
-	cached := windowCacheData[sess.Name]
+	cached := windowCacheData[sess.TmuxName()]
 	prevActivity := make(map[string]int64, len(cached))
 	for _, w := range cached {
 		prevActivity[w.ID] = w.Activity
@@ -135,7 +135,7 @@ func RefreshCachedWindows(sess *Session) error {
 	for i := range wins {
 		wins[i].Activity = prevActivity[wins[i].ID]
 	}
-	windowCacheData[sess.Name] = wins
+	windowCacheData[sess.TmuxName()] = wins
 	return nil
 }
 

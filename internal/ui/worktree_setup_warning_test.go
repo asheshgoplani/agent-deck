@@ -15,7 +15,7 @@ import (
 
 // formatSetupWarning must produce a single bounded, sanitized footer line so a
 // failed worktree setup script can't flood or corrupt the height-constrained,
-// auto-dismissing footer. The full output stays in the log, not here.
+// auto-dismissing footer. A longer tail of the output stays in the log, not here.
 func TestFormatSetupWarning(t *testing.T) {
 	const prefix = "worktree setup script failed: "
 

@@ -143,9 +143,8 @@ func CheckExecutable(exe string) error {
 
 // ExecSelf replaces the current process with exe, keeping os.Args. env is
 // the environment for the new image; nil means the current one unchanged.
-// It only returns on failure (or on platforms without exec, see
-// execself_windows.go). Callers must have released everything the new
-// process needs first: the terminal, listeners, file locks.
+// It only returns on failure. Callers must have released everything the
+// new process needs first: the terminal, listeners, file locks.
 func ExecSelf(exe string, env []string) error {
 	if err := CheckExecutable(exe); err != nil {
 		return err

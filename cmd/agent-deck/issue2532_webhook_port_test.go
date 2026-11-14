@@ -100,7 +100,13 @@ func TestIssue2532_WebhookCreatePortReachesEngine(t *testing.T) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	var lastErr error
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		resp, err := client.Post(url, "text/plain", strings.NewReader("issue 2532"))
+		// create generated a secret, so the request must carry it.
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader("issue 2532"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Webhook-Token", source["secret"])
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
 			continue

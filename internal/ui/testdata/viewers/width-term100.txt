@@ -1,2 +1,2 @@
 terminal_width=100 list_width=35
-   └─ ● a genuinely long ses… 👁️ 2
+   └─ ● a genuinely long sess… ◉ 2

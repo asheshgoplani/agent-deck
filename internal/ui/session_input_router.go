@@ -305,6 +305,20 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 			r.mu.Lock()
 			r.reading = false
 			r.discardBufferedTailLocked()
+			// Idle on the dashboard: release a held escape string whose
+			// window has passed, typed with Option-as-Meta (#2974).
+			if !r.active && r.normal.heldDue() {
+				r.dashboardBytes = append(r.dashboardBytes, r.normal.consume(nil, false)...)
+				if len(r.dashboardBytes) > 0 && completeDashboardRunes(r.dashboardBytes) {
+					translated := r.dashboardBytes
+					r.dashboardBytes = nil
+					r.armDashboardBarrierLocked(translated)
+					copied := copy(p, translated)
+					r.pending = append(r.pending, translated[copied:]...)
+					r.mu.Unlock()
+					return copied, nil
+				}
+			}
 			r.mu.Unlock()
 			return 0, nil
 		}

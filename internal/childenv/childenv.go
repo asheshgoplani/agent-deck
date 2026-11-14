@@ -89,3 +89,30 @@ func WithoutClaudeJobDir() []string {
 func ForLaunch(childConfigDir string) []string {
 	return FilterEnv(os.Environ(), childConfigDir)
 }
+
+// SelfReexecFilter returns env for agent-deck re-executing itself to finish
+// the caller's own command in a detached child (#2897): env with
+// CLAUDE_JOB_DIR (#2683) and every variable named in drop removed. It keeps
+// TELEGRAM_* and CLAUDE_CONFIG_DIR on purpose: the child is the same command,
+// not a worker, and must see what its parent saw. The input is not mutated.
+func SelfReexecFilter(env []string, drop ...string) []string {
+	out := make([]string, 0, len(env))
+next:
+	for _, kv := range env {
+		if strings.HasPrefix(kv, claudeJobDirPrefix) {
+			continue
+		}
+		for _, name := range drop {
+			if strings.HasPrefix(kv, name+"=") {
+				continue next
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// ForSelfReexec is SelfReexecFilter applied to the current environment.
+func ForSelfReexec(drop ...string) []string {
+	return SelfReexecFilter(os.Environ(), drop...)
+}

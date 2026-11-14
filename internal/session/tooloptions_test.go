@@ -332,15 +332,18 @@ func TestNewClaudeOptions_AllowDangerousMode(t *testing.T) {
 }
 
 func TestNewClaudeOptions_DefaultDangerousMode(t *testing.T) {
-	// With nil DangerousMode (default=true), SkipPermissions should be true
+	// nil DangerousMode follows the install kind (FX-8): true on an install
+	// from before the safe defaults, false on a new one.
 	config := &UserConfig{
 		Claude: ClaudeSettings{},
 	}
-
-	opts := NewClaudeOptions(config)
-
-	if !opts.SkipPermissions {
-		t.Error("expected SkipPermissions=true when dangerous_mode is nil (default=true)")
+	for kind, want := range map[string]bool{InstallKindExisting: true, InstallKindNew: false} {
+		restore := SetInstallKindForTest(kind)
+		opts := NewClaudeOptions(config)
+		restore()
+		if opts.SkipPermissions != want {
+			t.Errorf("%s install: SkipPermissions = %v with dangerous_mode nil, want %v", kind, opts.SkipPermissions, want)
+		}
 	}
 }
 

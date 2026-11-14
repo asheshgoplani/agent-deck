@@ -1,0 +1,92 @@
+[
+  {
+    "currentValue": "0",
+    "limit": "2500",
+    "localName": "Availability Sets",
+    "name": {
+      "localizedValue": "Availability Sets",
+      "value": "availabilitySets"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Total Regional vCPUs",
+    "name": {
+      "localizedValue": "Total Regional vCPUs",
+      "value": "cores"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "25000",
+    "localName": "Virtual Machines",
+    "name": {
+      "localizedValue": "Virtual Machines",
+      "value": "virtualMachines"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Standard BS Family vCPUs",
+    "name": {
+      "localizedValue": "Standard BS Family vCPUs",
+      "value": "standardBSFamily"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Standard Basv2 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard Basv2 Family vCPUs",
+      "value": "standardBasv2Family"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Standard Bsv2 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard Bsv2 Family vCPUs",
+      "value": "standardBsv2Family"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Standard DASv5 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard DASv5 Family vCPUs",
+      "value": "standardDASv5Family"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Standard DSv5 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard DSv5 Family vCPUs",
+      "value": "standardDSv5Family"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "0",
+    "localName": "Standard NCASv3_T4 Family vCPUs",
+    "name": {
+      "localizedValue": "Standard NCASv3_T4 Family vCPUs",
+      "value": "Standard NCASv3_T4 Family"
+    }
+  },
+  {
+    "currentValue": "0",
+    "limit": "10",
+    "localName": "Total Regional Spot vCPUs",
+    "name": {
+      "localizedValue": "Total Regional Spot vCPUs",
+      "value": "lowPriorityCores"
+    }
+  }
+]

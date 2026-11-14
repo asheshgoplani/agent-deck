@@ -204,6 +204,9 @@ or `ｌｏｃａｌｈｏｓｔ`, the ideographic full stop in `127。0。0。1`
 percent-escapes) and refuses a host that does not map; it also refuses
 numeric host forms like `2130706433`. It does no DNS, so it never replaces
 the app's check. A local Mac session may still open its own dev server.
+The refusal says what works instead: a page the box serves can be opened as
+its file (`agent-deck open <file>`), which the app bundles over its own
+connection to the box (see docs/macapp-open.md, "Remote page folders").
 
 `read` returns text and element refs only and masks password input values.
 There is no cookie, storage or script op, and `type` into a password field is

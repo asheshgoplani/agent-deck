@@ -1,4 +1,4 @@
- ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                <version>
+ ●●○ Agent Deck  11 sessions                                           <version>
   All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
  ⬆ <version> installed, press ctrl+t to restart agent-deck
 SESSIONS                     │ PREVIEW
@@ -6,7 +6,7 @@ SESSIONS                     │ PREVIEW
 1·▾ alpha (7) ● 1 ◐ 1        │ claude-waiting  ◐ waiting
    ├─ ■ opencode-idle        │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle          │ ⏱ <age>
-  ▶├─ ◐ claude-waiting       │ 👁️ no viewers
+  ▶├─ ◐ claude-waiting       │ ◉ no viewers
    └─ ■ claude-stopped       │  claude   alpha
     ▾ backend (3) ● 1        │ ────────────────── Claude ──────────────────
      ├─ ✕ codex-idle         │ Status:  ● Connected

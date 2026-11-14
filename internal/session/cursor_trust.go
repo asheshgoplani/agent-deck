@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 )
 
 // cursorSandboxHome and cursorSandboxWorkDir match internal/docker/config.go
@@ -128,16 +129,18 @@ func cursorTrustEntryJSON(workspacePath string) ([]byte, string, error) {
 
 // writeCursorTrustFileExclusive creates the trust file with O_EXCL so concurrent
 // seeders do not overwrite each other. An existing file is left unchanged.
-func writeCursorTrustFileExclusive(trustPath string, content []byte) error {
+// It reports whether this call created the file.
+func writeCursorTrustFileExclusive(trustPath string, content []byte) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(trustPath), 0o755); err != nil {
-		return fmt.Errorf("mkdir parent of %s: %w", trustPath, err)
+		return false, fmt.Errorf("mkdir parent of %s: %w", trustPath, err)
 	}
 	// #nosec G304 -- trustPath is confined under cursorConfigDir/projects by
 	// validateCursorTrustPathContained before this write is attempted.
-	if err := writeFileIfAbsent(trustPath, content, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", trustPath, err)
+	created, err := createFileIfAbsent(trustPath, content, 0o644)
+	if err != nil {
+		return false, fmt.Errorf("write %s: %w", trustPath, err)
 	}
-	return nil
+	return created, nil
 }
 
 // PreAcceptCursorTrust seeds ~/.cursor/projects/<key>/.workspace-trusted for
@@ -152,7 +155,7 @@ func writeCursorTrustFileExclusive(trustPath string, content []byte) error {
 // If the trust file already exists it is left unchanged. Malformed existing
 // trust files are not overwritten.
 func PreAcceptCursorTrust(cursorConfigDir, workspacePath string) error {
-	trustPath, _, err := cursorWorkspaceTrustPath(cursorConfigDir, workspacePath)
+	trustPath, absWorkspace, err := cursorWorkspaceTrustPath(cursorConfigDir, workspacePath)
 	if err != nil {
 		return err
 	}
@@ -160,7 +163,26 @@ func PreAcceptCursorTrust(cursorConfigDir, workspacePath string) error {
 	if err != nil {
 		return err
 	}
-	return writeCursorTrustFileExclusive(trustPath, content)
+	created, err := writeCursorTrustFileExclusive(trustPath, content)
+	if err == nil && created {
+		logFolderTrustGranted("cursor", absWorkspace, "config", trustPath)
+	}
+	return err
+}
+
+// cursorTrustGrantedMarker is printed by the remote trust script only when it
+// created the trust file, so the caller can log a new grant.
+const cursorTrustGrantedMarker = "agent-deck-cursor-trust-granted"
+
+// hasCursorTrustGrantedMarker reports whether stdout contains the grant marker
+// as a whole line, so incidental output (banners, stderr) cannot fake a grant.
+func hasCursorTrustGrantedMarker(stdout []byte) bool {
+	for _, line := range strings.Split(string(stdout), "\n") {
+		if strings.TrimSpace(line) == cursorTrustGrantedMarker {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCursorTrustRemoteShellScript returns a POSIX shell script that writes
@@ -181,16 +203,17 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 echo %s | base64 -d > "$tmp"
 if ln "$tmp" "$path" 2>/dev/null; then
   rm -f "$tmp"
+  echo %s
 elif [ ! -e "$path" ] && [ ! -L "$path" ]; then
   exit 1
 fi
-`, pathSetup, shellQuote(b64))
+`, pathSetup, shellQuote(b64), cursorTrustGrantedMarker)
 }
 
 // runCursorTrustRemoteScript executes a trust-seeding shell script on a remote
 // host over SSH. The script is passed on stdin to avoid embedding it in argv.
-func runCursorTrustRemoteScript(host, script string) error {
-	_ = os.MkdirAll(sshControlDir, 0o700)
+func runCursorTrustRemoteScript(host, script string) (bool, error) {
+	_ = sshcontrol.Dir()
 	args := append(sessionSSHConnOpts(), host, "sh", "-s")
 	ctx, cancel := context.WithTimeout(context.Background(), cursorTrustCommandTimeout)
 	defer cancel()
@@ -198,34 +221,37 @@ func runCursorTrustRemoteScript(host, script string) error {
 	// locally from a slugified key and base64 JSON, delivered via stdin.
 	cmd := newSSHCommand(ctx, args...)
 	cmd.Stdin = strings.NewReader(script)
-	var combined bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &combined, &combined
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := runSSHCommand(cmd); err != nil {
-		out := combined.Bytes()
+		out := append(stdout.Bytes(), stderr.Bytes()...)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("ssh cursor trust seed: %w: %s", ctxErr, strings.TrimSpace(string(out)))
+			return false, fmt.Errorf("ssh cursor trust seed: %w: %s", ctxErr, strings.TrimSpace(string(out)))
 		}
-		return fmt.Errorf("ssh cursor trust seed: %w: %s", err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("ssh cursor trust seed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return hasCursorTrustGrantedMarker(stdout.Bytes()), nil
 }
 
 // runCursorTrustContainerScript executes a trust-seeding shell script inside a
 // managed sandbox container. The script is passed on stdin to docker exec.
-func runCursorTrustContainerScript(containerName, script string) error {
+func runCursorTrustContainerScript(containerName, script string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cursorTrustCommandTimeout)
 	defer cancel()
 	// #nosec G204 -- containerName is restricted to agent-deck-managed names;
 	// script is generated locally and delivered via stdin.
 	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", containerName, "sh", "-s")
 	cmd.Stdin = strings.NewReader(script)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		out := append(stdout.Bytes(), stderr.Bytes()...)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("docker exec cursor trust seed: %w: %s", ctxErr, strings.TrimSpace(string(out)))
+			return false, fmt.Errorf("docker exec cursor trust seed: %w: %s", ctxErr, strings.TrimSpace(string(out)))
 		}
-		return fmt.Errorf("docker exec cursor trust seed: %w: %s", err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("docker exec cursor trust seed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return hasCursorTrustGrantedMarker(stdout.Bytes()), nil
 }
 
 // PreAcceptCursorTrustSSH seeds Cursor workspace trust on a POSIX remote host
@@ -244,7 +270,11 @@ func PreAcceptCursorTrustSSH(host, workspacePath string) error {
 	}
 	pathSetup := fmt.Sprintf("key=%s\npath=\"$HOME/.cursor/projects/$key/.workspace-trusted\"", shellQuote(key))
 	script := buildCursorTrustRemoteShellScript(pathSetup, content)
-	return runCursorTrustRemoteScript(host, script)
+	granted, err := runCursorTrustRemoteScript(host, script)
+	if err == nil && granted {
+		logFolderTrustGranted("cursor", absWorkspace, "host", host)
+	}
+	return err
 }
 
 // PreAcceptCursorTrustInContainer seeds Cursor workspace trust inside a sandbox
@@ -270,14 +300,18 @@ func PreAcceptCursorTrustInContainer(containerName, workspacePath string) error 
 	trustPath := path.Join(cursorSandboxHome, ".cursor", "projects", key, ".workspace-trusted")
 	pathSetup := fmt.Sprintf("path=%s", shellQuote(trustPath))
 	script := buildCursorTrustRemoteShellScript(pathSetup, content)
-	return runCursorTrustContainerScript(containerName, script)
+	granted, err := runCursorTrustContainerScript(containerName, script)
+	if err == nil && granted {
+		logFolderTrustGranted("cursor", absWorkspace, "container", containerName)
+	}
+	return err
 }
 
 // sessionSSHConnOpts returns SSH connection options shared with SSHRunner paths.
 func sessionSSHConnOpts() []string {
 	return []string{
 		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
+		"-o", "ControlPath=" + sshcontrol.ControlPath(),
 		"-o", "ControlPersist=600",
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",

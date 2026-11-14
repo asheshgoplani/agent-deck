@@ -66,6 +66,18 @@ func (o ViewModeOptions) countsAsActive(s Status) bool {
 	return isActiveStatus(s) || (o.ActiveIncludesIdle && s == StatusIdle)
 }
 
+// CountsAsActive is countsAsActive for callers outside this package that
+// partition rows the session tree does not hold, such as a remote's rows
+// (#2947).
+func (o ViewModeOptions) CountsAsActive(s Status) bool {
+	return o.countsAsActive(s)
+}
+
+// DividerLabel is the caption of the divider row this mode inserts.
+func (m GroupViewMode) DividerLabel(opts ViewModeOptions) string {
+	return m.dividerLabel(opts)
+}
+
 // ActiveTopBottomLabel names what sits below the active-on-top divider. It is
 // the divider caption's lead word and the suffix on a group header repeated
 // in the bottom section.

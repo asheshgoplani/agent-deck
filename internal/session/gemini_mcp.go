@@ -51,14 +51,22 @@ func GetGeminiMCPInfo(projectPath string) *MCPInfo {
 func WriteGeminiMCPSettings(enabledNames []string) error {
 	configFile := filepath.Join(GetGeminiConfigDir(), "settings.json")
 
-	// Read existing config (preserve other fields like security)
-	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
-		}
-	} else {
-		rawConfig = make(map[string]interface{})
+	lock, err := AcquireConfigFileLock(configFile)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	// Read existing config (preserve other fields like security). A read or
+	// parse failure aborts: writing an empty map back would wipe the user's
+	// Gemini settings (settings.json may hold comments Go cannot parse).
+	rawConfig, err := readJSONObjectConfig(configFile)
+	if err != nil {
+		return err
+	}
+	existing, err := objectFieldForUpdate(rawConfig, "mcpServers", configFile+" mcpServers")
+	if err != nil {
+		return err
 	}
 
 	// Get available MCPs from agent-deck config.toml
@@ -95,7 +103,17 @@ func WriteGeminiMCPSettings(enabledNames []string) error {
 		}
 	}
 
-	rawConfig["mcpServers"] = mcpServers
+	// Keep servers the user added outside the agent-deck catalog (#146).
+	merged := make(map[string]interface{}, len(existing)+len(mcpServers))
+	for name, cfg := range existing {
+		if _, managed := availableMCPs[name]; !managed {
+			merged[name] = cfg
+		}
+	}
+	for name, cfg := range mcpServers {
+		merged[name] = cfg
+	}
+	rawConfig["mcpServers"] = merged
 
 	// Write atomically
 	newData, err := json.MarshalIndent(rawConfig, "", "  ")

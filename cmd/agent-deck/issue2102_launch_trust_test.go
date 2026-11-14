@@ -14,17 +14,20 @@ import (
 // dies on the "do you trust the files in this folder?" prompt, no tmux
 // session is created, and no log is written. PreAcceptClaudeTrust already
 // solves this for conductor dirs (#1359) and worktree parents (#1149), but
-// nothing on the ordinary `launch` path called it. preAcceptLaunchTrust is
+// nothing on the ordinary `launch` path called it. session.PreAcceptLaunchTrust is
 // the launch-path caller that closes that gap.
 func TestIssue2102_PreAcceptLaunchTrustSeedsUnopenedDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	// An install from before the FX-8 safe defaults (auto_trust_folders on);
+	// the new-install side is in internal/session/folder_trust_policy_test.go.
+	defer session.SetInstallKindForTest(session.InstallKindExisting)()
 
 	projectDir := t.TempDir()
 	inst := &session.Instance{Tool: "claude", ProjectPath: projectDir}
 
-	preAcceptLaunchTrust(inst)
+	session.PreAcceptLaunchTrust(inst)
 
 	assertLaunchTrustSeeded(t, filepath.Join(home, ".claude.json"), projectDir)
 }
@@ -64,7 +67,7 @@ func TestIssue2102_PreAcceptLaunchTrustSkipsNonClaudeTool(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	inst := &session.Instance{Tool: "shell", ProjectPath: t.TempDir()}
-	preAcceptLaunchTrust(inst)
+	session.PreAcceptLaunchTrust(inst)
 
 	if _, err := os.Stat(filepath.Join(home, ".claude.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected no ~/.claude.json to be written for a non-claude tool, stat err = %v", err)
@@ -103,7 +106,7 @@ func TestIssue2673_PreAcceptLaunchTrustSeedsAccountConfigRoot(t *testing.T) {
 		t.Fatalf("test setup: account config dir = %q, want %q", got, slotDir)
 	}
 
-	preAcceptLaunchTrust(inst)
+	session.PreAcceptLaunchTrust(inst)
 
 	assertLaunchTrustSeeded(t, filepath.Join(slotDir, ".claude.json"), projectDir)
 	// The home root keeps its seed too (unchanged #2102 behavior).

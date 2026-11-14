@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -174,6 +175,7 @@ const a5PaneEmptyPrompt = "⏺ Done. The dev server is still up on :5173 if you 
 // / background-work while the launch is inside the hold, both waiting past
 // it.
 func TestBackgroundShellHold_LostAndDeliveredStopHookAgree(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	for _, tc := range []struct {
 		name    string

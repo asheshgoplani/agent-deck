@@ -4,10 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 )
 
 func setupSessionXDGPathEnv(t *testing.T) (home string, xdgConfigHome string, xdgDataHome string) {
 	t.Helper()
+	// A guard violation fails this test instead of aborting the package (#2801).
+	sandboxguard.Report(t)
 
 	ClearUserConfigCache()
 	t.Cleanup(ClearUserConfigCache)

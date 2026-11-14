@@ -1,12 +1,15 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/comms"
 )
 
 func TestCommsSpoolWriteReadOrderAndRemove(t *testing.T) {
@@ -213,5 +216,70 @@ func TestCommsSpoolRejectsSymlinksOversizedAndMalformedEntries(t *testing.T) {
 	}
 	if info, err := os.Stat(entries[0].path); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("spool file mode %v", info.Mode().Perm())
+	}
+}
+
+// Two producers (two hook-handler processes) that spool in the same
+// millisecond mint ULIDs whose random parts sort either way (#2823). Each
+// pair below is named so the later write sorts FIRST by name; the read order
+// must still be the write order, within a turn and across a turn boundary.
+func TestCommsSpoolSameMillisecondReadsInWriteOrder(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := commsSpoolInstanceDir("same-ms")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ms := time.Now().UnixMilli()
+	at := func(d int64) string { return comms.NewID(time.UnixMilli(ms + d))[:10] } // the 48-bit time field
+	ns := ms * int64(time.Millisecond)
+	for _, f := range []struct {
+		name, edge, text string
+		tSignal, tWrite  int64
+	}{
+		// One turn: its prompt, then its end.
+		{at(0) + "ZZZZZZZZZZZZZZZZ", CommsEdgePromptStart, "1", ms, ns + 100},
+		{at(0) + "0000000000000000", CommsEdgeTurnEnd, "2", ms, ns + 200},
+		// A turn boundary: one turn's end, then the next turn's prompt.
+		{at(1) + "ZZZZZZZZZZZZZZZZ", CommsEdgeTurnEnd, "3", ms + 1, ns + 1_000_100},
+		{at(1) + "0000000000000000", CommsEdgePromptStart, "4", ms + 1, ns + 1_000_200},
+		// An older producer wrote no write time: the name order stands.
+		{at(2) + "1000000000000000", CommsEdgeTurnEnd, "6", ms + 2, 0},
+		{at(2) + "0000000000000000", CommsEdgePromptStart, "5", ms + 2, 0},
+	} {
+		// Raw JSON, as a producer of either version puts it on disk.
+		e := map[string]any{"harness": "claude", "instance": "same-ms", "edge": f.edge, "text": f.text, "t_signal": f.tSignal}
+		if f.tWrite != 0 {
+			e["t_write"] = f.tWrite
+		}
+		data, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f.name+".json"), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := ReadCommsSpool("same-ms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Text)
+	}
+	if strings.Join(got, ",") != "1,2,3,4,5,6" {
+		t.Fatalf("read order %v, want 1..6", got)
+	}
+}
+
+func TestCommsSpoolWriteStampsWriteTime(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	before := time.Now().UnixNano()
+	if err := WriteCommsSpool(CommsSpoolEntry{Harness: "claude", Edge: CommsEdgePromptStart, Instance: "stamp", Prompt: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := ReadCommsSpool("stamp")
+	if len(got) != 1 || got[0].TWrite < before || got[0].TWrite > time.Now().UnixNano() {
+		t.Fatalf("write time not stamped: %+v", got)
 	}
 }

@@ -1,0 +1,19 @@
+ Run the checks again and tell me if anything changed.
+
+
+ bash
+ go test ./internal/report/...
+ ok   example.com/proj/internal/report  0.412s
+
+
+── ⠴ Working ────────────────────────────────────────────────────────────
+
+
+ Nothing changed: the report tests still pass and the working tree is clean.
+ The earlier failure was the stale cache; it does not come back.
+
+────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────
+~/work/proj (main)
+↑48k ↓1.9k R310k CH97.1% $0.212 (sub) 6.4%/272k (auto)

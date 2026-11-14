@@ -25,6 +25,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/triggers"
 )
 
@@ -262,9 +263,9 @@ func helpSpecs() []goldenSpec {
 		"hermes-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "group",
 		"worktree", "usage", "recall", "web", "remote", "conductor", "agents", "agent",
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
-		"uninstall", "completion", "costs", "config", "inbox", "feedback",
+		"uninstall", "completion", "costs", "config", "inbox", "feedback", "whats-new",
 		"watcher", "openclaw", "system", "mcp-proxy", "hooks", "hook-handler", "codex-notify",
-		"notify-daemon", "run-task", "open", "file", "browser", "triggers",
+		"notify-daemon", "run-task", "open", "switch", "file", "browser", "triggers",
 	}
 
 	subcommands := []string{
@@ -287,6 +288,7 @@ func helpSpecs() []goldenSpec {
 		"remote rename", "remote update",
 		"worktree list", "worktree info", "worktree cleanup",
 		"config show",
+		"feedback mine", "feedback fixed", "feedback agent-consent",
 		"profile list", "profile create", "profile delete", "profile default",
 		"inbox drain", "inbox export", "inbox writer-status", "inbox dead-letter",
 		"inbox dead-letter list", "inbox dead-letter show", "inbox dead-letter retry", "inbox dead-letter purge",
@@ -401,6 +403,9 @@ var (
 
 func goldensBinary(t *testing.T) string {
 	t.Helper()
+	// Skip before the Once: a skip inside it would leave it done with no
+	// binary linked for the next caller.
+	testutil.SkipShort(t, "runs the real agent-deck binary end to end")
 	goldensBinOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "ad-goldens-bin-")
 		if err != nil {
@@ -452,6 +457,9 @@ func (b *buildFailure) Error() string { return b.err.Error() + "\n" + b.output }
 // env slice to run the binary with.
 func goldensSandbox(t *testing.T) (home string, env []string) {
 	t.Helper()
+	// The goldens record what the binary reports against a private, known-empty
+	// tmux server, so they need the tmux binary (absent in some distro build sandboxes).
+	testutil.RequireTmux(t)
 	home = t.TempDir()
 
 	t.Setenv("HOME", home)
@@ -467,7 +475,41 @@ func goldensSandbox(t *testing.T) (home string, env []string) {
 
 	env = os.Environ()
 	env = hermeticGoldensTmux(t, env)
+	env = hermeticGoldensPi(t, env, home)
 	return home, env
+}
+
+// hermeticGoldensPi puts a fake `pi` that prints 1.3.0 where `pi-hooks status`
+// finds it first. Status runs `pi --version` through PiStatusEnv, which puts
+// the spawn-path directories missing from PATH ahead of PATH (on macOS that
+// includes /opt/homebrew/bin), so a fake that is only first on PATH can still
+// lose to a host pi. The fake lives in the sandbox's ~/.local/bin, the first
+// of those directories, and stays off PATH so the prelude always puts it in
+// front. Without it the golden carries whatever pi the host has (a different
+// version, or none), and a machine with pi installed fails a golden that CI,
+// without it, passes.
+func hermeticGoldensPi(t *testing.T, env []string, home string) []string {
+	t.Helper()
+	bin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("creating the goldens bin directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "pi"), []byte("#!/bin/sh\necho 1.3.0\n"), 0o755); err != nil {
+		t.Fatalf("writing the fake pi: %v", err)
+	}
+	path := ""
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			path = v
+		}
+	}
+	var kept []string
+	for _, dir := range filepath.SplitList(path) {
+		if filepath.Clean(dir) != bin {
+			kept = append(kept, dir)
+		}
+	}
+	return append(filterEnv(env, "PATH"), "PATH="+strings.Join(kept, string(os.PathListSeparator)))
 }
 
 // hermeticGoldensTmux points the subprocess at a private TMUX_TMPDIR whose

@@ -43,12 +43,19 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 4. Model-unavailable no-op → `error`; tool error banner → `error`.
 5. Open Claude menu at the tail with no live busy cue near it → not busy.
 6. Busy indicator (tool patterns over the last 25 lines, spinner scan, 6 s
-   spinner grace) → `active`.
+   spinner grace) → `active`. A spinner frame followed by more braille is a
+   cell of a drawing (the Codex home-screen logo, #3037), not a spinner.
 7. Claude background work in flight → `active` (issue #2473): a workflow row
    short of its last step (`○ name ▰▰▱ 3/5 · 18m32s`; a finished row stays at
    n/n), `Waiting for N background agents / dynamic workflows to finish` as
    the last turn line above the input box (an older one further up is
-   history). A shell counter on the footer (`· 1 shell ·`) does not promote
+   history). Claude Code can leave that line on screen after the work is
+   gone, so the instance layer vetoes it when the transcript proves the work
+   done: the last turn's pending count of that kind (`pendingBackgroundAgentCount`
+   or `pendingWorkflowCount`, omitted when zero) is zero once the terminal
+   notifications since are taken off, and no launch of that kind came after
+   it. A positive count is never vetoed, and a tail that never shows the field
+   proves nothing. A shell counter on the footer (`· 1 shell ·`) does not promote
    the frame (A5): Claude Code never reaps a long-lived `run_in_background`
    shell (a dev server, a `tail -f`), so the counter can outlive the work by
    hours and only the instance layer, with the transcript, may keep a shell
@@ -170,6 +177,17 @@ still reports a successful start, whatever its exit code).
 | notify daemon, TUI alive | reads the TUI's `status` column | 1–3 s | — |
 | notify daemon, no TUI | reloads Instances per pass, probes tmux; carries the previous pass's verdict and pending flip (`livePrior`) so the one-sample hold works | 1–3 s | `status` column on change |
 | `list --json`, `session show`, remote agent probe | one fresh pass, hooks cold-loaded, pane read; a persisted `running` is not treated as an observation | per call | nothing |
+
+A fresh pass reads every live pane through one batched capture per tmux
+socket. If that batch times out, the pass does not capture each pane on its
+own (that multiplied the load: 5 tmux calls became 164 on a loaded host,
+#3089). The panes it did not reach answer with their last frame or a capture
+timeout, so status keeps its last observed value (the default in a fresh
+process) and substate is the last known one or absent. Their rows carry
+`status_source: "stale"` and `list --json --stats` counts them as
+`captures_skipped`. A batch
+that outlasts the session-cache TTL also re-warms the session and pane-info
+caches once, so the rows do not each ask tmux again.
 
 ## Remote sessions
 

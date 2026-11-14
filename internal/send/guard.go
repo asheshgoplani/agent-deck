@@ -13,10 +13,25 @@ import (
 //
 // Treating these as operator drafts would make every automated send hold and
 // Ctrl+C an actually-empty composer (issue #1409).
+//
+// While a turn runs with input queued behind it, Claude shows its own hint in
+// the empty composer instead:
+//
+//	❯ Press up to edit queued messages
+//
+// That is Claude's acknowledgement of earlier queued input, not a draft;
+// reading it as one refused every further send to a busy target (ASK-95).
 func IsComposerPlaceholder(text string) bool {
 	t := strings.TrimSpace(text)
+	if strings.EqualFold(t, ClaudeQueuedHint) {
+		return true
+	}
 	return strings.HasPrefix(t, `Try "`) && strings.HasSuffix(t, `"`)
 }
+
+// ClaudeQueuedHint is the composer placeholder Claude Code renders while it
+// holds input behind the running turn.
+const ClaudeQueuedHint = "Press up to edit queued messages"
 
 // ComposerDraft returns the normalized operator draft sitting in the visible
 // composer, and whether a composer is visible at all.
@@ -49,6 +64,17 @@ func ComposerDraft(raw string, strip func(string) string) (draft string, compose
 		return "", true
 	}
 	return body, true
+}
+
+// ComposerShowsQueuedHint reports whether the visible composer shows Claude's
+// queued-messages hint: it holds no draft, but input is waiting behind the
+// turn. Same raw/strip contract as ComposerDraft.
+func ComposerShowsQueuedHint(raw string, strip func(string) string) bool {
+	if strip == nil {
+		strip = func(s string) string { return s }
+	}
+	body, ok := CurrentComposerPrompt(strip(raw))
+	return ok && strings.EqualFold(NormalizePromptText(body), ClaudeQueuedHint)
 }
 
 // ComposerHasDraft reports whether the visible composer holds operator input.
@@ -86,6 +112,10 @@ type ComposerGuardOptions struct {
 	// TUI, with ComposerDraft's contract. nil means ComposerDraft (Claude);
 	// Codex targets pass CodexComposerDraft (issue #2536).
 	Draft ComposerDraftReader
+	// FullBody, when non-nil, reads the composer's whole body; it decides
+	// ComposerGuardResult.ComposerEmpty (a draft reader may stop at the
+	// first paragraph). nil means ComposerEmpty follows Draft.
+	FullBody ComposerFullBodyReader
 }
 
 // ComposerDraftReader extracts the operator draft from a raw (ANSI-bearing)
@@ -120,6 +150,14 @@ type ComposerGuardResult struct {
 	// that the composer now holds that message rather than the suggestion
 	// (TypedComposerCheck).
 	SuggestionShown bool
+	// ComposerEmpty is true when the guard's last successful capture showed
+	// a VISIBLE composer holding no draft (a prompt suggestion or Claude's
+	// placeholder counts as empty), read through ComposerGuardOptions.FullBody
+	// when set. It is the provenance ObserveComposer needs before it may
+	// call a leftover verified (text in the input box after the send that
+	// matches what we typed is then ours), and it expires the leftover
+	// record. False for an unscopable pane.
+	ComposerEmpty bool
 }
 
 // saveReconfirmDelay is the settle time before the save-step re-capture. A
@@ -179,7 +217,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 			return ComposerGuardResult{Held: time.Since(start), Refused: true}
 		}
 		if composerProvenanceFree(raw, strip, read) {
-			return clearComposerResult(start, raw)
+			return clearComposerResult(start, raw, strip, read, opts.FullBody)
 		}
 		if !time.Now().Before(deadline) {
 			break
@@ -198,12 +236,23 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 	time.Sleep(saveReconfirmDelay)
 	raw, err := t.CapturePaneFresh()
 	if err == nil && composerProvenanceFree(raw, strip, read) {
-		return clearComposerResult(start, raw)
+		return clearComposerResult(start, raw, strip, read, opts.FullBody)
 	}
 	return ComposerGuardResult{Held: time.Since(start), Refused: true}
 }
 
 // clearComposerResult is GuardComposerDraft's go-ahead for the capture raw.
-func clearComposerResult(start time.Time, raw string) ComposerGuardResult {
-	return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true, SuggestionShown: ComposerBodyIsSuggestion(raw)}
+func clearComposerResult(start time.Time, raw string, strip func(string) string, read ComposerDraftReader, full ComposerFullBodyReader) ComposerGuardResult {
+	draft, visible := read(raw, strip)
+	empty := visible && draft == ""
+	if full != nil {
+		body, ok := full(raw, strip)
+		empty = ok && FullBodyEmpty(body)
+	}
+	return ComposerGuardResult{
+		Held:                    time.Since(start),
+		ComposerPasteMarkerFree: true,
+		SuggestionShown:         ComposerBodyIsSuggestion(raw),
+		ComposerEmpty:           empty,
+	}
 }

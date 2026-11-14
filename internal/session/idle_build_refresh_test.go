@@ -178,6 +178,7 @@ func TestIdleBuildRefresh_NeverRestartsBusyOrHeldSessions(t *testing.T) {
 		{"background work substate", "waiting", nil, idleRefreshPaneView{Substate: SubstateBackgroundWork, Raw: idleClaudeComposer}},
 		{"background work in flight", "waiting", nil, idleRefreshPaneView{Substate: SubstateIdleAtEmptyPrompt, BackgroundInFlight: true, Raw: idleClaudeComposer}},
 		{"composer draft", "waiting", nil, idlePane(draftClaudeComposer)},
+		{"queued input", "waiting", nil, idlePane(strings.Replace(draftClaudeComposer, "half-typed operator text", "Press up to edit queued messages", 1))},
 		{"dialog open", "waiting", nil, idlePane(strings.Replace(idleClaudeComposer, "  ? for shortcuts", "  Enter to confirm · Esc to cancel", 1))},
 		{"background shells in footer", "waiting", nil, idlePane(strings.Replace(idleClaudeComposer, "  ? for shortcuts", "  ⏵⏵ bypass permissions on · 2 shells · ← for agents", 1))},
 		{"no composer", "waiting", nil, idlePane("some output\n")},

@@ -79,17 +79,16 @@ func cliSessionStart(profile string, args []string) {
 			printEnvelope(res)
 			return
 		}
-		out.Success(
-			fmt.Sprintf("Queued session: %s (group at cap %d)", started.Title, started.MaxConcurrent),
-			map[string]interface{}{
-				"success":        true,
-				"id":             started.ID,
-				"title":          started.Title,
-				"status":         "queued",
-				"group":          started.Group,
-				"max_concurrent": started.MaxConcurrent,
-			},
-		)
+		data := map[string]interface{}{
+			"success":        true,
+			"id":             started.ID,
+			"title":          started.Title,
+			"status":         "queued",
+			"group":          started.Group,
+			"max_concurrent": started.MaxConcurrent,
+		}
+		noteUnarchived(out, started.Unarchived, started.Title, data)
+		out.Success(fmt.Sprintf("Queued session: %s (group at cap %d)", started.Title, started.MaxConcurrent), data)
 		return
 	}
 
@@ -133,6 +132,7 @@ func cliSessionStart(profile string, args []string) {
 	if started.ClaudeSessionID != "" {
 		jsonData["claude_session_id"] = started.ClaudeSessionID
 	}
+	noteUnarchived(out, started.Unarchived, started.Title, jsonData)
 	if started.Message != "" {
 		jsonData["message"] = started.Message
 		jsonData["message_pending"] = false
@@ -201,8 +201,8 @@ func cliSessionRestart(profile string, args []string) {
 	force := fs.Bool("force", false, "Restart even if the session is already healthy and fresh (bypasses issue #30 guard)")
 	all := fs.Bool("all", false, "Restart all active sessions")
 	ifIdle := fs.Bool("if-idle", false, "Restart only if the session is idle at an empty prompt, checked under the send lock (skipped otherwise); a conductor gets no recovery turn")
-	envFlags := make(envVarFlags)
-	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
+	envFlags := newEnvVarFlags()
+	fs.Var(envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session restart [id|title] [options]")
@@ -223,6 +223,10 @@ func cliSessionRestart(profile string, args []string) {
 		fmt.Println("boots run at once, skips auth-held sessions, and STOPS early if several")
 		fmt.Println("restarts in a row die on authentication (reported as auth_tripped).")
 		fmt.Println()
+		fmt.Println("When run inside a session it restarts (including with --all), this command hands")
+		fmt.Println("the work to a detached agent-deck before the pane ends.")
+		fmt.Println("The receipt names the detached process's pid and log file.")
+		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
 		fmt.Println()
@@ -236,17 +240,24 @@ func cliSessionRestart(profile string, args []string) {
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
+	exitOnEnvFlagError(fs, envFlags)
 
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(jsonOutput.enabled(), quietMode)
 	human := !jsonOutput.enabled()
+
+	// #2897: from inside the target, the restart ends this process; hand it
+	// to a detached child.
+	if handOffSelfRestart(out, profile, args, fs.Arg(0), *all) {
+		return
+	}
 
 	res := runCore(profile, &jsonOutput, core.IDSessionRestart, core.SessionRestartIn{
 		Profile: profile,
 		Session: fs.Arg(0),
 		All:     *all,
 		Force:   *force,
-		Env:     envFlags,
+		Env:     envFlags.Map(),
 		IfIdle:  *ifIdle,
 	}, func(ev core.Event) {
 		if !human {
@@ -300,6 +311,7 @@ func cliSessionRestart(profile string, args []string) {
 		if restarted.Warning != "" {
 			data["warning"] = restarted.Warning
 		}
+		noteUnarchived(out, restarted.Unarchived, restarted.Title, data)
 		out.Success(fmt.Sprintf("Restarted session: %s", restarted.Title), data)
 	}
 	res.Finish()

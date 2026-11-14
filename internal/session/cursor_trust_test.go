@@ -118,10 +118,10 @@ func TestWriteCursorTrustFileExclusive_ExistingFile(t *testing.T) {
 	trustPath := filepath.Join(dir, "projects", "key", ".workspace-trusted")
 	content := []byte("original\n")
 
-	if err := writeCursorTrustFileExclusive(trustPath, content); err != nil {
+	if _, err := writeCursorTrustFileExclusive(trustPath, content); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := writeCursorTrustFileExclusive(trustPath, []byte("overwrite\n")); err != nil {
+	if _, err := writeCursorTrustFileExclusive(trustPath, []byte("overwrite\n")); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 	got, err := os.ReadFile(trustPath)
@@ -147,7 +147,7 @@ func TestWriteCursorTrustFileExclusive_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = writeCursorTrustFileExclusive(trustPath, content)
+			_, _ = writeCursorTrustFileExclusive(trustPath, content)
 		}()
 	}
 	wg.Wait()
@@ -164,6 +164,9 @@ func TestWriteCursorTrustFileExclusive_Concurrent(t *testing.T) {
 func TestInstance_preAcceptCursorWorkspaceTrust_Local(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	// An install from before the FX-8 safe defaults (auto_trust_folders on);
+	// the new-install side is in folder_trust_policy_test.go.
+	defer SetInstallKindForTest(InstallKindExisting)()
 	workspace := filepath.Join(tmpHome, "proj")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)

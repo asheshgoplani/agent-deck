@@ -89,7 +89,7 @@ func WriteCompletionRecord(rec CompletionRecord) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(rec, "", "  ")
@@ -97,7 +97,7 @@ func WriteCompletionRecord(rec CompletionRecord) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -133,6 +133,17 @@ func CompletionRecordExists(profile, childID string) bool {
 
 // LoadCompletionRecords returns every record for the given profile.
 func LoadCompletionRecords(profile string) ([]CompletionRecord, error) {
+	byProfile, err := loadCompletionRecordsByProfile()
+	if err != nil {
+		return nil, err
+	}
+	return byProfile[profile], nil
+}
+
+// loadCompletionRecordsByProfile reads the completions directory once and
+// groups its records by profile, so a daemon pass over many profiles parses
+// each record once instead of once per profile (ASK-229).
+func loadCompletionRecordsByProfile() (map[string][]CompletionRecord, error) {
 	dir, err := completionsDir()
 	if err != nil {
 		return nil, err
@@ -144,7 +155,7 @@ func LoadCompletionRecords(profile string) ([]CompletionRecord, error) {
 		}
 		return nil, err
 	}
-	var out []CompletionRecord
+	var out map[string][]CompletionRecord
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -157,10 +168,10 @@ func LoadCompletionRecords(profile string) ([]CompletionRecord, error) {
 		if err := json.Unmarshal(data, &rec); err != nil {
 			continue
 		}
-		if rec.Profile != profile {
-			continue
+		if out == nil {
+			out = map[string][]CompletionRecord{}
 		}
-		out = append(out, rec)
+		out[rec.Profile] = append(out[rec.Profile], rec)
 	}
 	return out, nil
 }

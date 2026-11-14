@@ -1,6 +1,6 @@
 focused-session  ◐ waiting
 📁 /tmp/focused
 ⏱ just now
-👁️ no viewers
+◉ no viewers
  claude   tmp 
 ─────────────────────────────────────── Claude ───────────────────────────────────────

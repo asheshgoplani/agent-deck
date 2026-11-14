@@ -69,6 +69,10 @@ func (s *Server) handleGroupsCollection(w http.ResponseWriter, r *http.Request) 
 		}
 		groupPath, err := s.mutator.CreateGroup(req.Name, req.ParentPath)
 		if err != nil {
+			if isGroupNotFound(err) {
+				writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+				return
+			}
 			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
 			return
 		}

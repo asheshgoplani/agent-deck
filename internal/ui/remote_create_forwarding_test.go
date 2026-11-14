@@ -779,3 +779,31 @@ func TestRemoteDialog_ExplicitShellOverridesCatalogDefault(t *testing.T) {
 		t.Fatalf("shell selection lost: %+v", capture.opts)
 	}
 }
+
+// #2895: this machine's [claude].default_account never travels to a remote.
+// The remote dialog starts on inherit even when the server offers a slot of
+// the same name, no pill claims to be the default, and nothing is forwarded.
+func TestRemoteDialog_LocalDefaultAccountNeverTravels(t *testing.T) {
+	const localConfig = "[claude]\ndefault_account = \"shared\"\n\n[profiles.shared.claude]\nconfig_dir = \"~/.claude-shared\"\n"
+
+	h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), localConfig, "claude", "acct-task")
+	if cfg, _ := session.LoadUserConfig(); cfg == nil || cfg.Claude.DefaultAccount != "shared" {
+		t.Fatal("precondition: this machine's config must set default_account = shared")
+	}
+	model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"shared", "srv"}, gen: h.remoteAccountsGen}.catalogMessage())
+	h = model.(*Home)
+	if !h.newDialog.claudeOptions.hasAccountRow() {
+		t.Fatal("precondition: the remote's slots must populate the account row")
+	}
+	if got := h.newDialog.GetClaudeAccount(); got != "" {
+		t.Fatalf("remote dialog starts on %q, want inherit: the local default must not travel", got)
+	}
+	if view := stripAnsi(h.newDialog.claudeOptions.View()); strings.Contains(view, "(default)") {
+		t.Fatalf("a remote slot must not carry the local default label:\n%s", view)
+	}
+
+	submitRemoteDialog(t, h)
+	if capture.opts.Account != "" {
+		t.Fatalf("forwarded account = %q, want none", capture.opts.Account)
+	}
+}

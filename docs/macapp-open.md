@@ -73,6 +73,14 @@ agent-deck file bundle /absolute/report --session session-id > report.tar
 
 This writes an uncompressed tar to stdout. A directory argument exports that
 directory; a file exports its parent directory, preserving relative asset paths.
+When a file's folder is over the cap, the export keeps the page, every file it
+loads (`src`, `srcset`, `poster`, `data`, `href` except `<a>` and `<area>`
+links, and `url()` / `@import` in its CSS, followed through frames and
+stylesheets) and then as many
+other files of the folder as still fit, smallest first. A screenshots folder
+that only another page uses no longer stops the page from opening. If the page
+and its referenced files alone exceed the cap, or a directory argument does,
+the error gives the archive size and names the five biggest files.
 The page's basename is the cache entry point for a file argument. For a directory
 opened by `open`, the entry point is `index.html`. The archive names are relative
 and never contain a leading slash or `..` traversal. The app must extract into an
@@ -90,8 +98,9 @@ export; this is a read-only transfer, not a filesystem snapshot.
 runs with the SSH user's normal file permissions and does not open the session
 catalog, create files, update metadata, or emit telemetry. It also works when the
 catalog is unavailable. No temporary archive is written on the source host.
-Use a dedicated report folder: file export includes all sibling assets, subject
-to the same size and file-type restrictions.
+Use a dedicated report folder: file export includes sibling assets, subject
+to the same size and file-type restrictions. A symlink or special file anywhere
+in the folder still refuses the export, referenced or not.
 
 ## Remote hosts
 

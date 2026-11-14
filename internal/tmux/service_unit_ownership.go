@@ -378,7 +378,7 @@ func (s *Session) ServiceUnitOwnership() ServiceUnitOwnership {
 	if s == nil {
 		return ServiceUnitOwnership{}
 	}
-	own := ServiceUnitOwnership{SessionName: s.Name, SocketName: s.SocketName}
+	own := ServiceUnitOwnership{SessionName: s.TmuxName(), SocketName: s.SocketName}
 	pid := s.ServerPID() // exact Session.SocketName probe; no name matching.
 	if pid <= 0 {
 		return own
@@ -407,7 +407,7 @@ func (s *Session) ServiceUnitOwnership() ServiceUnitOwnership {
 // when it cannot be determined (server gone, wedged, or probe timeout).
 // Bounded like every other read-only probe in this package.
 func (s *Session) ServerPID() int {
-	out, err := s.runBoundedOutput("display-message", "-t", s.Name, "-p", "#{pid}")
+	out, err := s.runBoundedOutput("display-message", "-t", s.TmuxName(), "-p", "#{pid}")
 	if err != nil {
 		return 0
 	}

@@ -18,11 +18,14 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Default: key absent → Enter advances (true). This is the behavior flip.
-func TestNewSessionEnterAdvances_DefaultsOnWhenUnset(t *testing.T) {
+// Default: key absent → Enter creates (false). ASK-110 (owner, 2026-10-22:
+// "it is hard; we have to go to the end to do it") flipped the default back:
+// Enter creates from any row with the defaults filled in and an empty name
+// taken from the folder; the walk stays one config line away.
+func TestNewSessionEnterAdvances_DefaultsOffWhenUnset(t *testing.T) {
 	var ui UISettings // zero value: key never set in config.toml.
-	if !ui.GetNewSessionEnterAdvances() {
-		t.Fatalf("GetNewSessionEnterAdvances() on unset config = false, want true (Enter-advances is now the default)")
+	if ui.GetNewSessionEnterAdvances() {
+		t.Fatalf("GetNewSessionEnterAdvances() on unset config = true, want false (Enter creates by default since ASK-110)")
 	}
 }
 

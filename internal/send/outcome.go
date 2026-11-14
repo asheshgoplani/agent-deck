@@ -421,9 +421,6 @@ func composerHoldsWrappedBody(content, message string) bool {
 // holding this send's body (the verification loop's own unsent-marker check).
 func (o *Observer) NoteComposerHeld() { o.held = true }
 
-// ComposerHeld reports whether the composer was ever observed holding the body.
-func (o *Observer) ComposerHeld() bool { return o.held }
-
 // NoteTurnStarted records a positive submission signal from outside the pane.
 func (o *Observer) NoteTurnStarted() { o.ev.TurnStarted = true }
 

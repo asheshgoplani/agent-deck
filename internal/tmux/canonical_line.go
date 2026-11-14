@@ -188,7 +188,7 @@ func longestLineBytes(content string) int {
 // discipline cannot be read at all the bool is false and the caller must fall
 // back to the universal floor rather than inventing a capacity.
 func (s *Session) PaneLineCapacity() (int, bool) {
-	ld, err := s.paneLineDiscipline(s.Name)
+	ld, err := s.paneLineDiscipline(s.TmuxName())
 	if err != nil {
 		return 0, false
 	}

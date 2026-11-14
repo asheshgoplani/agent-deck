@@ -107,8 +107,8 @@ func UntrackedTmuxSessions(instances []*Instance) ([]UntrackedTmuxSession, error
 
 	tracked := make(map[string]bool)
 	for _, inst := range VisibleInstances(instances) {
-		if ts := inst.GetTmuxSession(); ts != nil && ts.Name != "" {
-			tracked[ts.Name] = true
+		if ts := inst.GetTmuxSession(); ts != nil && ts.TmuxName() != "" {
+			tracked[ts.TmuxName()] = true
 		}
 	}
 

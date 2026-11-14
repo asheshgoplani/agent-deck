@@ -31,33 +31,6 @@ func Dir() (string, error) {
 	return agentpaths.EffectiveDataPath(dirName, dirName)
 }
 
-// DefinitionDir returns the directory for one named definition.
-func DefinitionDir(name string) (string, error) {
-	if err := validName(name); err != nil {
-		return "", err
-	}
-	root, err := Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, name), nil
-}
-
-// validName keeps a generated definition name from escaping the registry.
-func validName(name string) error {
-	trimmed := strings.TrimSpace(name)
-	if trimmed == "" {
-		return errors.New("agents: empty definition name")
-	}
-	if trimmed != filepath.Clean(trimmed) || !filepath.IsLocal(trimmed) {
-		return fmt.Errorf("agents: unsafe definition name %q", name)
-	}
-	if strings.ContainsAny(trimmed, `/\`) {
-		return fmt.Errorf("agents: definition name %q must not contain a path separator", name)
-	}
-	return nil
-}
-
 // Definition is a loaded post plus its role, as found on disk.
 type Definition struct {
 	// Name is the registry directory name.
@@ -146,23 +119,6 @@ func LoadAll() ([]*Definition, error) {
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs, nil
-}
-
-// Exists reports whether the registry directory is present. A zero-config user
-// has no registry, and every new surface keys off this.
-func Exists() (bool, error) {
-	root, err := Dir()
-	if err != nil {
-		return false, err
-	}
-	info, err := os.Stat(root)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	return info.IsDir(), nil
 }
 
 // Write persists a definition directory: agent.yaml, role/role.yaml, the

@@ -584,6 +584,70 @@ func TestListBranchCandidates(t *testing.T) {
 	}
 }
 
+// A remote HEAD symref (set by clone or `git remote set-head`) is not a
+// branch: %(refname:short) shortens refs/remotes/origin/HEAD to "origin",
+// which must not show up in the branch picker.
+func TestListBranchCandidates_SkipsRemoteHEADSymref(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	if err := os.MkdirAll(remoteDir, 0o755); err != nil {
+		t.Fatalf("failed to create remote dir: %v", err)
+	}
+	runGit(t, remoteDir, "init", "--bare")
+	runGit(t, dir, "remote", "add", "origin", remoteDir)
+	runGit(t, dir, "push", "-u", "origin", "main")
+	runGit(t, dir, "checkout", "-b", "feature/remote-only")
+	runGit(t, dir, "push", "-u", "origin", "feature/remote-only")
+	runGit(t, dir, "checkout", "main")
+	runGit(t, dir, "branch", "-D", "feature/remote-only")
+	runGit(t, dir, "remote", "set-head", "origin", "main")
+
+	branches, err := ListBranchCandidates(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, fake := range []string{"origin", "origin/HEAD"} {
+		if containsString(branches, fake) {
+			t.Fatalf("remote HEAD symref listed as branch %q: %v", fake, branches)
+		}
+	}
+	if !containsString(branches, "main") {
+		t.Fatalf("expected local branch in candidates: %v", branches)
+	}
+	if !containsString(branches, "origin/main") {
+		t.Fatalf("expected origin/main in candidates: %v", branches)
+	}
+	if !containsString(branches, "origin/feature/remote-only") {
+		t.Fatalf("expected origin remote-only branch in candidates: %v", branches)
+	}
+}
+
+// git 2.43 output of remoteBranchRefFormat after `git remote set-head origin
+// main` (git 2.39 prints "origin/HEAD" instead of "origin" in the first column).
+func TestParseRemoteBranchRefs_SkipsHEADSymrefShortenedToRemote(t *testing.T) {
+	output := "origin\trefs/remotes/origin/main\norigin/feature/x\t\norigin/main\t\n"
+
+	got := parseRemoteBranchRefs("origin", output)
+
+	want := []string{"origin/feature/x", "origin/main"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("parseRemoteBranchRefs = %v, want %v", got, want)
+	}
+}
+
+func TestParseRemoteBranchRefs_SkipsHEADSymrefGit239(t *testing.T) {
+	output := "origin/HEAD\trefs/remotes/origin/main\norigin/main\t\n"
+
+	got := parseRemoteBranchRefs("origin", output)
+
+	if strings.Join(got, ",") != "origin/main" {
+		t.Fatalf("parseRemoteBranchRefs = %v, want [origin/main]", got)
+	}
+}
+
 func containsString(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {

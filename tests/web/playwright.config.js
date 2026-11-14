@@ -67,6 +67,17 @@ export default defineConfig({
       name: 'chromium-phone',
       use: { ...devices['Desktop Chrome'], viewport: { width: 393, height: 851 } },
     },
+    // Opt-in iPhone engine check (#2680): real WebKit with the iPhone 15
+    // descriptor (touch, isMobile, iOS UA). Off by default because CI installs
+    // chromium only; run with AGENT_DECK_WEBKIT=1 after
+    // `npx playwright install webkit`. Limited to the phone specs.
+    ...(process.env.AGENT_DECK_WEBKIT
+      ? [{
+          name: 'webkit-iphone',
+          use: { ...devices['iPhone 15'] },
+          testMatch: /mobile[\w-]*\.spec\.js$/,
+        }]
+      : []),
   ],
   // The web server is booted by helpers/server.js inside the global setup,
   // so no `webServer:` block here.

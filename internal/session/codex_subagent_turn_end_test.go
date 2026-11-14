@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // rc feedback 2026-09-23 (1.16.17-rc1): a Codex 0.155 session working for
@@ -54,6 +56,7 @@ func seedCodexMainAndSubagent(t *testing.T, codexHome string) (mainSID, subSID s
 // fresh CLI process must stay running; a turn-complete from the pane's own
 // thread still reads waiting, so the gate is limited to foreign threads.
 func TestCodexSubagentTurnEnd_RealWorkingFrameStaysRunning(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	frame := piCorpusFrame(t, "codex-local-macapp-v4-working-queued-inputs_af58e2b8")
 	for _, c := range []struct {
 		name     string

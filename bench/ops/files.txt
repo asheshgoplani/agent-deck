@@ -1,0 +1,8 @@
+# Benchmark files bench/ops/run.sh copies from this checkout into the
+# worktree of the ref under test (paths relative to the repo root).
+cmd/agent-deck/opbench_cli_test.go
+internal/ui/opbench_tui_test.go
+internal/web/opbench_web_test.go
+internal/session/opbench_storage_test.go
+# "pkg <dir>": also benchmark this package when the ref has it (not copied).
+pkg internal/optiming

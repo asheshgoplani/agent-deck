@@ -1,4 +1,7 @@
                                                                                                     
+                                                                                                    
+                                                                                                    
+                                                                                                    
        ╭────────────────────────────────────────────────────────────────────────────────────╮       
        │                                                                                    │       
        │                                                                                    │       
@@ -6,13 +9,13 @@
        │                                                                                    │       
        │      in group: default                                                             │       
        │                                                                                    │       
-       │      Name:                                                                         │       
-       │      > demo                                                                        │       
+       │      Name:  > demo                                                                 │       
        │                                                                                    │       
-       │      Command:                                                                      │       
-       │        shell     claude     gemini     opencode     opencode2     codex            │       
-       │        pi     copilot     crush     muse     cursor agent     hermes               │       
-       │        deepseek     omp                                                            │       
+       │      Agent:   shell     claude     gemini     opencode     opencode2               │       
+       │               codex     pi     copilot     crush     muse     cursor agent         │       
+       │               hermes     deepseek     omp                                          │       
+       │                                                                                    │       
+       │      Path:  > /home/user/project                                                   │       
        │                                                                                    │       
        │    ▶ Model ID:                                                                     │       
        │      > tool default (↓ to browse)                                                  │       
@@ -20,19 +23,13 @@
        │    │ ▶ ✎ Type custom model ID…                      │                              │       
        │    │   claude-opus-5-5                              │                              │       
        │    │   claude-opus-5                                │                              │       
-       │    │   claude-sonnet-5                              │                              │       
+       │    │   claude-sonnet-5                              │repo                          │       
        │    │   claude-fable-5-1                             │                              │       
        │    │   claude-fable-5                               │                              │       
        │    │   claude-sonnet-4-6                            │                              │       
        │    │   ↓ 4 more below                               │                              │       
        │    │  ↑/↓ navigate │ Space/Enter select │ Esc back  │                              │       
        │    ╰────────────────────────────────────────────────╯                              │       
-       │                                                                                    │       
-       │    ─ Claude Options ─                                                              │       
-       │      Session: (•) New  ( ) Continue  ( ) Resume                                    │       
-       │      [ ] Skip permissions                                                          │       
-       │      [ ] Auto mode                                                                 │       
-       │      [ ] Chrome mode                                                               │       
        │      [ ] Teammate mode                                                             │       
        │        Extra args: > e.g. --agent reviewer                                         │       
        │        Start query: > initial prompt (not split on spaces)                         │       
@@ -46,5 +43,8 @@
        │                                                                                    │       
        │                                                                                    │       
        ╰────────────────────────────────────────────────────────────────────────────────────╯       
+                                                                                                    
+                                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     

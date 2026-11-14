@@ -6,6 +6,8 @@ import "strings"
 // generated template. Installers compare its fully rendered form byte-for-byte
 // before migrating, so any user customization is preserved.
 func previousConductorInstructionsTemplate(template string) string {
+	template = preStandingOrdersConductorInstructionsTemplate(template)
+	template = preArchivedSessionsConductorInstructionsTemplate(template)
 	template = preHarnessControlConductorInstructionsTemplate(template)
 	template = prePlainReadConductorInstructionsTemplate(template)
 	template = preNoOpNoticeRuleConductorInstructionsTemplate(template)
@@ -129,6 +131,24 @@ func preHumanTierConductorInstructionsTemplate(template string) string {
 	return strings.Replace(template, conductorHeartbeatReplyDoc, conductorHeartbeatReplyDocV0, 1)
 }
 
+// conductorSessionsQuickCommandRow is the `/sessions` quick-command row.
+// Issue #2972 added the archived-skip clause: `list --json` keeps archived
+// sessions with "archived": true, and the bridge's sessions command leaves
+// them out (#2945). conductorSessionsQuickCommandRowV0 is the row every
+// release up to v1.16.34 shipped.
+const (
+	conductorSessionsQuickCommandRow   = "| `/sessions` | Run `agent-deck -p <PROFILE> list --json` and list active sessions with status; skip rows with `\"archived\": true` |\n"
+	conductorSessionsQuickCommandRowV0 = "| `/sessions` | Run `agent-deck -p <PROFILE> list --json` and list active sessions with status |\n"
+)
+
+// preArchivedSessionsConductorInstructionsTemplate reconstructs the template
+// as it was before #2972, so a conductor written then is recognised as
+// generated and migrated. Per-name templates carry no Quick Commands table,
+// so this is a no-op there.
+func preArchivedSessionsConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template, conductorSessionsQuickCommandRow, conductorSessionsQuickCommandRowV0, 1)
+}
+
 // conductorHarnessControlQuickCommandRow is the `/cmd` quick-command row the
 // session command change added to the shared template's Quick Commands table.
 // v1.16.25 through v1.16.29 shipped the template without it.
@@ -141,6 +161,26 @@ const conductorHarnessControlQuickCommandRow = "| `/cmd <session> <slash command
 // no-op there.
 func preHarnessControlConductorInstructionsTemplate(template string) string {
 	return strings.Replace(template, conductorHarnessControlQuickCommandRow, "", 1)
+}
+
+// conductorStandingOrdersSection documents `agent-deck orders` (ORDERS.md)
+// in the shared template. It follows the heartbeat reply format, so a
+// conductor learns that time-based watching does not belong in heartbeat
+// rules (the heartbeat only fires when a child is waiting or errored).
+const conductorStandingOrdersSection = "\n\n## Standing Orders\n\n" +
+	"Time-based watching (\"check X every N, tell me when it changes\") lives in `ORDERS.md` in your conductor directory, not in heartbeat rules: a heartbeat only fires when a child is waiting or errored. When the user says \"watch X\" or \"stop watching X\", run:\n\n" +
+	"```bash\n" +
+	"agent-deck -p <PROFILE> orders add <name> --every 15m --check '<cheap shell command>' --do '<what to do when it changes>' --ask-first 'merge, push'\n" +
+	"agent-deck -p <PROFILE> orders list        # also: orders pause|resume|rm <name>\n" +
+	"```\n\n" +
+	"A timer runs each due check every minute with no AI. You are woken only when its output changes, by a message starting `[ORDER <name>]` with the old and new output, the `do:` text and the ask-first list. In that turn: if the change needs nothing, reply exactly `NO_REPLY`; ask the user (a `NEED:` line or `agent-deck ask`) before anything on the ask-first list, since nobody is watching and a permission prompt is denied; never add, change or remove orders (the CLI refuses from an order-started turn)."
+
+// preStandingOrdersConductorInstructionsTemplate reconstructs the template
+// from before the Standing Orders section, so a conductor written then is
+// recognised as generated and migrated. Per-name templates never carried
+// it, so this is a no-op there.
+func preStandingOrdersConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template, conductorStandingOrdersSection, "", 1)
 }
 
 // conductorHeartbeatReplyDoc is the tail of the heartbeat reply-format
@@ -170,7 +210,17 @@ const (
 // those releases is treated as user-edited and left alone.
 func conductorInstructionsGenerations(template string) []string {
 	var gens []string
-	// Newest first: main before the /cmd quick command, then the release
+	// Newest first: the release before the Standing Orders section.
+	if noOrders := preStandingOrdersConductorInstructionsTemplate(template); noOrders != template {
+		gens = append(gens, noOrders)
+		template = noOrders
+	}
+	// Then the release before the #2972 archived-skip clause.
+	if noArchived := preArchivedSessionsConductorInstructionsTemplate(template); noArchived != template {
+		gens = append(gens, noArchived)
+		template = noArchived
+	}
+	// Then main before the /cmd quick command, then the release
 	// with the no-op notice rule whose conductor reads still used -q, then
 	// what v1.16.25-v1.16.29 shipped (current minus all three). Every older
 	// generation is reconstructed from the latter.
@@ -313,7 +363,7 @@ or:
 
 AUTO: frontend - told it to use the existing auth middleware
 NEED: api-fix - asking whether to run integration tests against staging or prod
-` + conductorHeartbeatReplyDoc + `
+` + conductorHeartbeatReplyDoc + conductorStandingOrdersSection + `
 
 ## State Management
 
@@ -389,8 +439,7 @@ You may receive these special commands (from remote channels or the CLI):
 | Command | What to Do |
 |---------|------------|
 | ` + "`" + `/status` + "`" + ` | Run ` + "`" + `agent-deck -p <PROFILE> status --json` + "`" + ` and format a brief summary |
-| ` + "`" + `/sessions` + "`" + ` | Run ` + "`" + `agent-deck -p <PROFILE> list --json` + "`" + ` and list active sessions with status |
-| ` + "`" + `/check <name>` + "`" + ` | Run ` + "`" + conductorPlainCheckCmd + "`" + ` and summarize what it's doing |
+` + conductorSessionsQuickCommandRow + `| ` + "`" + `/check <name>` + "`" + ` | Run ` + "`" + conductorPlainCheckCmd + "`" + ` and summarize what it's doing |
 | ` + "`" + `/send <name> <msg>` + "`" + ` | Forward the message to that session via ` + "`" + `agent-deck -p <PROFILE> session send` + "`" + ` |
 ` + conductorHarnessControlQuickCommandRow + `| ` + "`" + `/help` + "`" + ` | List available commands |
 

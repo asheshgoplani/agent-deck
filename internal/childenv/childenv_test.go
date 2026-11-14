@@ -72,3 +72,17 @@ func TestWithoutClaudeJobDir(t *testing.T) {
 	}
 	assert.Contains(t, out, "TELEGRAM_KEEP=1", "tmux env keeps every other var")
 }
+
+// #2897: the detached self re-exec keeps the caller's env (it finishes the
+// caller's own command) minus the bg job marker and the named variables.
+func TestSelfReexecFilter(t *testing.T) {
+	in := []string{"PATH=/bin", "CLAUDE_CONFIG_DIR=/c", "TELEGRAM_X=1", "CLAUDE_JOB_DIR=/j", "AGENTDECK_INSTANCE_ID=abc", "AGENTDECK_INSTANCE_IDX=keep"}
+	got := SelfReexecFilter(in, "AGENTDECK_INSTANCE_ID")
+	want := []string{"PATH=/bin", "CLAUDE_CONFIG_DIR=/c", "TELEGRAM_X=1", "AGENTDECK_INSTANCE_IDX=keep"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("SelfReexecFilter = %q, want %q", got, want)
+	}
+	if len(in) != 6 || in[3] != "CLAUDE_JOB_DIR=/j" {
+		t.Fatalf("input mutated: %q", in)
+	}
+}

@@ -58,3 +58,23 @@ func TestCountByStatusMatchesListTotal(t *testing.T) {
 		t.Fatalf("counts = %+v, want total=2 (source excluded)", counts)
 	}
 }
+
+// A normally archived session (no supersession) must not be counted by
+// `status`: a conductor archives finished workers whose tmux process is still
+// up, and they used to keep showing as idle/waiting in `status`, `status -q`
+// and `status --json`.
+func TestCountByStatusExcludesArchived(t *testing.T) {
+	live := &session.Instance{ID: "live", Status: session.StatusRunning}
+	archivedWaiting := &session.Instance{ID: "archived-waiting", Status: session.StatusWaiting, ArchivedAt: time.Now()}
+	archivedIdle := &session.Instance{ID: "archived-idle", Status: session.StatusIdle, ArchivedAt: time.Now()}
+
+	counts := countByStatus([]*session.Instance{live, archivedWaiting, archivedIdle})
+	if counts.total != 1 || counts.waiting != 0 || counts.idle != 0 {
+		t.Fatalf("counts = %+v, want total=1 waiting=0 idle=0 (archived sessions excluded)", counts)
+	}
+
+	got := statusInstances([]*session.Instance{live, archivedWaiting, archivedIdle})
+	if len(got) != 1 || got[0].ID != "live" {
+		t.Fatalf("status session set = %v, want only %q", got, live.ID)
+	}
+}

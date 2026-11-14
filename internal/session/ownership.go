@@ -621,11 +621,9 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 	// caller that removes that dir (a test's t.TempDir cleanup) must be able to
 	// wait it out rather than race it ("directory not empty").
 	prober, logger := ownershipProber, sessionLog
-	i.spawnWatchers.Add(1)
-	go func() {
-		defer i.spawnWatchers.Done()
+	i.goSpawnWatcher(func() {
 		i.attributeOwnedTree(receipt, store, prober, logger, gen, wake)
-	}()
+	})
 }
 
 // probePanePIDForClaim reads the pane's initial pid, retrying a few times so a

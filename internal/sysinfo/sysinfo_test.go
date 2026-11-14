@@ -131,6 +131,37 @@ func TestParseNetDev_Empty(t *testing.T) {
 	}
 }
 
+// TestParseNetstatDarwin_BlankAddress uses a realistic macOS `netstat -ibn`
+// sample. Link rows of utun/gif/stf interfaces have no Address, so a
+// left-indexed split shifts every later column: Opkts was summed as rx bytes
+// and Coll as tx bytes.
+func TestParseNetstatDarwin_BlankAddress(t *testing.T) {
+	content := `Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
+lo0        16384 <Link#1>                        204718     0   61846917   204718     0   61846917     0
+lo0        16384 127           127.0.0.1         204718     -   61846917   204718     -   61846917     -
+lo0        16384 ::1/128     ::1                 204718     -   61846917   204718     -   61846917     -
+gif0*      1280  <Link#2>                             0     0          0        0     0          0     0
+stf0*      1280  <Link#3>                             0     0          0        0     0          0     0
+en0        1500  <Link#6>    a4:83:e7:12:34:56  9876543     0 8000000000  5432109     0  900000000     0
+en0        1500  fe80::1c4d: fe80:6::1c4d:2a3b: 9876543     - 8000000000  5432109     - 900000000     -
+en0        1500  192.168.1     192.168.1.10     9876543     - 8000000000  5432109     - 900000000     -
+utun0      1380  <Link#15>                          120     0      45000      340     0      67000     0
+utun0      1380  fe80::a1b2: fe80:f::a1b2:c3d4:     120     -      45000      340     -      67000     -
+`
+	rx, tx := parseNetstatDarwin(content)
+
+	// Should skip lo0, count each interface once: en0 + utun0 (+ idle gif0/stf0).
+	expectedRx := uint64(8000000000 + 45000)
+	expectedTx := uint64(900000000 + 67000)
+
+	if rx != expectedRx {
+		t.Errorf("rx = %d, want %d", rx, expectedRx)
+	}
+	if tx != expectedTx {
+		t.Errorf("tx = %d, want %d", tx, expectedTx)
+	}
+}
+
 // --- Format tests ---
 
 func TestFormatBytes(t *testing.T) {

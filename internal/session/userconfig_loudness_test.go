@@ -70,7 +70,7 @@ env_file = "~/.agent-deck/groups/missing.env"
 	if strings.Contains(cmd, "agent-deck: warning: env_file not found:") {
 		t.Errorf("warning must clear once the env_file exists:\n%s", cmd)
 	}
-	if !strings.Contains(cmd, `source "`+envPath+`"`) {
+	if !strings.Contains(cmd, "source "+shellQuote(envPath)) {
 		t.Errorf("env_file must still be sourced:\n%s", cmd)
 	}
 }

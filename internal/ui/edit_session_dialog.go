@@ -129,6 +129,11 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 				label: "Extra args (restart, claude) — space-separated",
 				kind:  editFieldText,
 				input: mkInput("--model opus --verbose", 512, strings.Join(inst.ExtraArgs, " "))},
+			// ASK-119: live; empty uses [sessions] wait_timeout.
+			editField{key: session.FieldWaitTimeout,
+				label: "Wait timer (claude) — 5m, off, empty = config",
+				kind:  editFieldText,
+				input: mkInput("e.g. 5m", 16, inst.WaitTimeout)},
 		)
 		// Plugins (RFC docs/rfc/PLUGIN_ATTACH.md §4.8). v1 ships a CSV
 		// text input matching the ExtraArgs shape; full multi-checkbox
@@ -417,6 +422,8 @@ func fieldInitialValue(inst *session.Instance, field string) string {
 		return string(inst.Pin)
 	case session.FieldAccount:
 		return inst.Account
+	case session.FieldWaitTimeout:
+		return inst.WaitTimeout
 	}
 	return ""
 }

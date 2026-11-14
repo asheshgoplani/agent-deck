@@ -33,6 +33,10 @@
       "description": "tmux session name",
       "type": "string"
     },
+    "unarchived": {
+      "description": "The session was archived and the start unarchived it",
+      "type": "boolean"
+    },
     "warning": {
       "description": "Recovery was not sent or submission is uncertain",
       "type": "string"

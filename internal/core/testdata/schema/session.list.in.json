@@ -8,6 +8,10 @@
       "description": "List every profile",
       "type": "boolean"
     },
+    "exclude_archived": {
+      "description": "Skip archived sessions before any status work or encoding",
+      "type": "boolean"
+    },
     "include_superseded": {
       "description": "Include archived source rows retained for cross-harness recovery",
       "type": "boolean"

@@ -55,6 +55,8 @@ func TestMenuNeedsPickerEvidenceMatrix(t *testing.T) {
 		{"permission dialog", "claude", "│ Do you want to proceed?\n❯ Yes\n  No, and tell Claude what to do differently", true},
 		{"permission dialog with allow choices", "claude", "│ Bash command\n│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. Yes, and don't ask again\n│   3. No, and tell Claude what to do differently (esc)\n", true},
 		{"Codex update prompt", "codex", "Update available\n❯ Update now\n  Later\nPress enter to confirm or esc to go back", true},
+		// Codex 0.167 approval picker (#3085): its "› 1." row is not a prompt.
+		{"Codex 0.167 approval", "codex", "  Would you like to run the following command?\n\n  $ touch /etc/probe\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `touch /etc/probe` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel\n", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

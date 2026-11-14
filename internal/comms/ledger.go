@@ -370,6 +370,45 @@ func (l *Ledger) raiseFlags(r Record, cursor events.Cursor) {
 	}
 }
 
+// Flag returns the pending flag this ledger last raised for consumer, found
+// false when it raised none since open. It is what the flag file says when
+// the file's last write succeeded, and newer when that write failed: the
+// process that commits can trust it where the file is only best effort.
+func (l *Ledger) Flag(consumer string) (PendingFlag, bool) {
+	if l == nil {
+		return PendingFlag{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fl, ok := l.flags[consumer]
+	return fl, ok
+}
+
+// RenewFlag rewrites a consumer's pending flag file left from an older
+// epoch once a pass has judged its records through judged, so the next
+// pass is not a scan per poll until a record addressed to it arrives. The
+// new flag is at or above this ledger's own (a flag set too high costs one
+// scan, never a record). A flag of this epoch, or none, is left alone.
+func (l *Ledger) RenewFlag(consumer string, judged events.Cursor) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	file, ok := ReadFlag(l.dir, consumer)
+	if !ok || file.Epoch == l.store.Epoch {
+		return
+	}
+	fl := l.flags[consumer]
+	if fl.Epoch != l.store.Epoch {
+		fl = PendingFlag{}
+	}
+	fl.Last, fl.Epoch = max(fl.Last, judged), l.store.Epoch
+	if writeFlag(l.dir, consumer, fl) == nil {
+		l.flags[consumer] = fl
+	}
+}
+
 // repairFlags rebuilds pending flags from the dedup window at open, so a
 // flag lost between a crash and its rewrite is seen again. Only Last is a
 // flag's business; a flag already newer is kept.

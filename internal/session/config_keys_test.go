@@ -51,6 +51,22 @@ func TestConfigKeysRoundTrip(t *testing.T) {
 	if k, ok := LookupConfigKey("ui.theme"); !ok || k.Key != "theme" {
 		t.Fatalf("alias ui.theme: %+v %v", k, ok)
 	}
+
+	// #2895: `config set claude.default_account work` writes the [claude]
+	// key the New Session dialog and `add`/`launch` read, and "" clears it.
+	k, ok := LookupConfigKey("claude.default_account")
+	if !ok {
+		t.Fatal("claude.default_account is not a config key")
+	}
+	cfg := &UserConfig{}
+	k.Set(cfg, "work")
+	if cfg.Claude.DefaultAccount != "work" || k.Get(cfg) != "work" {
+		t.Fatalf("claude.default_account set work: field %q, get %v", cfg.Claude.DefaultAccount, k.Get(cfg))
+	}
+	k.Set(cfg, "")
+	if cfg.Claude.DefaultAccount != "" {
+		t.Fatalf("claude.default_account set \"\": field %q, want cleared", cfg.Claude.DefaultAccount)
+	}
 }
 
 // TestConfigKeysConsent: only macapp.plugins needs consent, and only to turn

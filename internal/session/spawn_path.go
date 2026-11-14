@@ -173,6 +173,13 @@ const sshSpawnPathTest = `[ -d "$__d" ] && [ -O "$__d" ]`
 // spawnPathDirs resolves the dirs this process would add for a local spawn:
 // the candidates that exist and are missing from the process PATH.
 func (i *Instance) spawnPathDirs() []string {
+	return localSpawnPathDirs()
+}
+
+// localSpawnPathDirs is spawnPathDirs without an instance: the dirs a local
+// pane puts in front of the process PATH. ToolInstalled searches them too,
+// so the New Session form agrees with where the pane looks.
+func localSpawnPathDirs() []string {
 	exe := ""
 	if p, err := os.Executable(); err == nil {
 		// Only a real agent-deck binary's directory counts; a `go test`

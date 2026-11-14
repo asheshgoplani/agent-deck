@@ -10,7 +10,9 @@ package ui
 // and launched the session on the spot. Tab also skipped every Claude Options
 // row after the first.
 //
-// These tests pin the new contract: in Enter-advances mode (the default) Enter
+// These tests pin the walk contract, which is opt-in since ASK-110
+// ([ui] new_session_enter_advances = true; the default is Enter-creates, see
+// newsession_quick_flow_test.go): in Enter-advances mode Enter
 // means "next" on every row, ↓/Space open the model list, Tab/Enter/↓ walk the
 // tool options rows one at a time, and only the trailing "[ Create session ]"
 // button (or Ctrl+S anywhere) submits.
@@ -28,6 +30,7 @@ func flowDialog(t *testing.T, tool string) *NewDialog {
 	d.SetDefaultTool(tool)
 	d.SetSize(120, 60)
 	d.Show()
+	d.enterAdvances = true // the opt-in walk these tests pin
 	d.nameInput.SetValue("demo")
 	d.pathInput.SetValue(t.TempDir())
 	return d
@@ -36,6 +39,11 @@ func flowDialog(t *testing.T, tool string) *NewDialog {
 func flowFocus(t *testing.T, d *NewDialog, target focusTarget) {
 	t.Helper()
 	idx := d.indexOf(target)
+	if idx < 0 && !d.moreOptions {
+		// ASK-211: worktree, Docker and multi-repo sit behind "More options".
+		d.toggleMoreOptions()
+		idx = d.indexOf(target)
+	}
 	if idx < 0 {
 		t.Fatalf("focus target %v is not in the form", target)
 	}
@@ -75,6 +83,7 @@ func TestNewSessionFlow_EnterAfterTypeCustomAdvances(t *testing.T) {
 	h.newDialog.SetDefaultTool("claude")
 	h.newDialog.SetSize(120, 60)
 	h.newDialog.Show()
+	h.newDialog.enterAdvances = true // opt-in walk
 	h.newDialog.nameInput.SetValue("demo")
 	h.newDialog.pathInput.SetValue(t.TempDir())
 	h.newDialog.focusIndex = h.newDialog.indexOf(focusModel)
@@ -148,6 +157,7 @@ func TestNewSessionFlow_HomeEnterOnEffortDoesNotCreate(t *testing.T) {
 	h.newDialog.SetDefaultTool("claude")
 	h.newDialog.SetSize(120, 60)
 	h.newDialog.Show()
+	h.newDialog.enterAdvances = true // opt-in walk
 	h.newDialog.nameInput.SetValue("demo")
 	h.newDialog.pathInput.SetValue(t.TempDir())
 	h.newDialog.focusIndex = h.newDialog.indexOf(focusReasoningEffort)
@@ -157,8 +167,10 @@ func TestNewSessionFlow_HomeEnterOnEffortDoesNotCreate(t *testing.T) {
 	if !h.newDialog.IsVisible() {
 		t.Fatal("Enter on Reasoning effort created the session (dialog closed)")
 	}
-	if h.newDialog.currentTarget() != focusPath {
-		t.Fatalf("focus after Enter on Reasoning effort = %v, want focusPath", h.newDialog.currentTarget())
+	// ASK-211: Path moved up next to Agent; after the model rows comes the
+	// "More options" toggle.
+	if h.newDialog.currentTarget() != focusMore {
+		t.Fatalf("focus after Enter on Reasoning effort = %v, want focusMore", h.newDialog.currentTarget())
 	}
 }
 
@@ -174,8 +186,9 @@ func TestNewSessionFlow_EnterOnPrefilledPathAdvances(t *testing.T) {
 	if d.IsSuggestionsActive() {
 		t.Fatal("Enter on the pre-filled path opened browse instead of advancing")
 	}
-	if d.currentTarget() != focusWorktree {
-		t.Fatalf("focus after Enter on Path = %v, want focusWorktree", d.currentTarget())
+	// ASK-211: the model row follows Path now.
+	if d.currentTarget() != focusModel {
+		t.Fatalf("focus after Enter on Path = %v, want focusModel", d.currentTarget())
 	}
 }
 

@@ -7,6 +7,7 @@ Run commands: agent-deck remote <name> <command> [arguments]
   session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),
   recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,
   session queue list/release/cancel (queue entry IDs; --json supported),
+  session ownership inspect <id> [--json] (read-only receipt),
   triggers (read-only list: --session/--kind/--health/--all/--json),
   events publish forwards the Mac app's replies only (macapp.open.ack, macapp.browser.response,
   macapp.app.focus) with --data-file - on stdin, at most 2 MiB.
@@ -18,7 +19,10 @@ Run commands: agent-deck remote <name> <command> [arguments]
 
 Commands:
   add <name> <user@host>    Add a remote agent-deck instance
+  add --provider <name> [--name x]
+                            Create a provider sandbox and register it as a remote
   remove <name>             Remove a remote
+  destroy <name> [--yes]    Stop a sandbox remote's sessions, destroy it, remove it
   list                      List configured remotes
   sessions [name] [--json] [--with-errors|--json-envelope]
                             Fetch sessions from remote(s); --json is a bare array,
@@ -34,6 +38,8 @@ Commands:
 Examples:
   agent-deck remote add dev user@dev-box
   agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck
+  agent-deck remote add --provider docker --name sb1
+  agent-deck remote destroy sb1 --yes
   agent-deck remote list
   agent-deck remote sessions dev --json
   agent-deck remote dev recall timeline SESSION --json --tail 100

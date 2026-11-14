@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -273,10 +274,13 @@ func TestIssue2792_NewProcessErrorsAreNews(t *testing.T) {
 			st.hook = nil
 			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
 		},
-		// a second error while the new process lives: only one exit is ours
+		// a second error while the new process lives: only one exit is ours.
+		// The same old SessionEnd seen again is that exit (STALEERR1019); an
+		// error after the new process wrote its own hook is not.
 		"second error": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
 			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
-			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(time.Second), observed)
+			st.newHook("waiting", "SessionStart", time.Now())
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(3*time.Second), observed)
 		},
 	}
 	for name, run := range cases {
@@ -605,5 +609,121 @@ func TestIssue2792_OldSessionEndAfterTheSpawnRecordIsHeld(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Issue #2813: a real resumed Claude goes straight back to its prompt, so the
+// daemon never sees a running -> waiting flip. The sweep finds the token holder
+// back at its prompt (new process alive, its own SessionStart after the spawn,
+// no new turn, no error banner) and, once the spawn is restartBootSettle old,
+// sends the info line without waiting for the boot timeout. The old process's
+// SessionEnd can land after the new SessionStart and overwrite it in the hook
+// file; the SessionStart is then proven from the hook event history. Anything
+// short of that stays silent.
+func TestIssue2813_UnseenBootGetsTheInfoLine(t *testing.T) {
+	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1h")
+	type fx struct {
+		f      *turnTestFixture
+		st     *pidStub
+		at     time.Time
+		status string
+		after  time.Duration
+	}
+	history := func(t *testing.T, x *fx, events ...string) {
+		t.Helper()
+		var b strings.Builder
+		for i, ev := range events {
+			fmt.Fprintf(&b, "{\"at\":%q,\"event\":%q,\"status\":\"waiting\",\"pid\":%d}\n", x.at.Add(time.Duration(i+1)*100*time.Millisecond).UTC().Format(time.RFC3339Nano), ev, 500+i)
+		}
+		path := filepath.Join(filepath.Dir(hookStatusFilePath(x.f.child.ID)), x.f.child.ID+".events.jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldEndLast := func(t *testing.T, x *fx) { // the old SessionEnd landed after the new SessionStart
+		x.st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: x.at.Truncate(time.Second)}
+		x.status = "error"
+	}
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, x *fx)
+		want  bool
+	}{
+		{"back at its prompt", func(t *testing.T, x *fx) {}, true},
+		{"old SessionEnd after the new SessionStart", func(t *testing.T, x *fx) {
+			oldEndLast(t, x)
+			history(t, x, "SessionStart", "SessionEnd")
+		}, true},
+		{"old SessionEnd last, no SessionStart in the history", func(t *testing.T, x *fx) {
+			oldEndLast(t, x)
+			history(t, x, "SessionEnd")
+		}, false},
+		{"old SessionEnd last, no history", func(t *testing.T, x *fx) { oldEndLast(t, x) }, false},
+		{"the new process's own SessionEnd", func(t *testing.T, x *fx) {
+			x.st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: x.at.Add(3 * time.Second).Truncate(time.Second)}
+			x.status = "error"
+			history(t, x, "SessionStart", "SessionEnd")
+		}, false},
+		{"too soon after the spawn", func(t *testing.T, x *fx) { x.after = time.Second }, false},
+		{"no SessionStart yet", func(t *testing.T, x *fx) {
+			x.st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: x.at.Truncate(time.Second)}
+		}, false},
+		{"SessionStart from before the restart", func(t *testing.T, x *fx) {
+			x.st.hook = &HookStatus{Status: "waiting", Event: "SessionStart", UpdatedAt: x.at.Add(-time.Hour)}
+		}, false},
+		{"new process dead", func(t *testing.T, x *fx) { x.st.alive[x.st.pane] = false }, false},
+		{"new turn in the transcript", func(t *testing.T, x *fx) {
+			x.f.appendTurn(t, fxHuman("u2", "next task"))
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newTurnTestFixture(t)
+			st := stubRestartPIDs(t)
+			n := f.finishedTurn(t)
+			sends := *f.sends
+			f.child.SetRestartReason(RestartReasonIdleBuildRefresh)
+			at := time.Now()
+			st.restart(f, at)
+			f.d.noteRestartBuild(f.child.ID, "/opt/claude/versions/2.1.303")
+			st.newHook("waiting", "SessionStart", at)
+			f.appendTurn(t, fxResumeMeta())
+			x := &fx{f: f, st: st, at: at, status: "waiting", after: 6 * time.Second} // past restartBootSettle
+			c.setup(t, x)
+			statuses := map[string]string{f.child.ID: x.status, f.parent.ID: "waiting"}
+			f.d.sweepRestartTokens("default", f.byID, statuses, at.Add(x.after))
+			f.d.sweepRestartTokens("default", f.byID, statuses, at.Add(x.after+time.Second)) // once only
+
+			var lines []TransitionNotificationEvent
+			for _, r := range f.inboxRecords(t)[n:] {
+				if r.IsUrgent() {
+					t.Fatalf("an idle restart is never urgent: %+v", r)
+				}
+				if strings.Contains(r.Text, "conversation resumed") {
+					lines = append(lines, r)
+				}
+			}
+			_, left := readRestartToken(f.child.ID)
+			if c.want {
+				if len(lines) != 1 || lines[0].IsUrgent() || lines[0].ToStatus == string(StatusError) || !strings.Contains(lines[0].Text, "Refreshed onto claude 2.1.303 while idle") {
+					t.Fatalf("want exactly the one refresh info line, got %+v", f.inboxRecords(t)[n:])
+				}
+				if left {
+					t.Fatalf("the info line spends the token")
+				}
+				if *f.sends != sends {
+					t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
+				}
+				return
+			}
+			if len(lines) != 0 {
+				t.Fatalf("not provably a clean resume, no info line: %+v", lines)
+			}
+			if !left {
+				t.Fatalf("no info line and before the boot timeout: the token is kept")
+			}
+		})
 	}
 }

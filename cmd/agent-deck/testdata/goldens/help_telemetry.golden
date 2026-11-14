@@ -27,6 +27,10 @@ Kill switches (win over stored consent, re-read on every run):
   [telemetry] level = "basic"         record only app.start, usage.daily and env.snapshot
   [telemetry] endpoint = URL          receiver base URL (default https://eu.i.posthog.com; re-asks consent)
   [telemetry] posthog_key / AGENTDECK_POSTHOG_KEY   PostHog key, only for builds without a compiled-in one
+  [telemetry] org_id = "<slug>"       opaque company id, sent as "org" (managed file wins)
+  [telemetry] crash_dsn = URL         crash/error reports to this Sentry DSN (default off)
+  AGENTDECK_MANAGED_CONFIG=PATH       managed file set by a company: org_id, crash_dsn,
+                                      telemetry_level off|basic|full (a ceiling, never grants)
 
 When data is sent:
   Only from the interactive TUI, never on the day you said yes, then at most

@@ -646,3 +646,146 @@ func TestHandleCodexNotify_SubagentTurnCompleteKeepsMainStatus(t *testing.T) {
 		t.Fatalf("main completion = %+v (err %v), want waiting for %s", hook, err, mainSID)
 	}
 }
+
+func TestCodexHooksInstall_ReplacesBlockInPlaceAndKeepsMode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := getCodexConfigPath()
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	user := "# my settings\n\nmodel = \"gpt-5\"\n"
+	tables := "\n\n[profiles.work]\n  model = \"o3\"  # trailing comment\n\n\n"
+	oldBlock := codexNotifyMarkerBegin + "\n[notify]\nprogram = [\"agent-deck\", \"codex-notify\"]\n" + codexNotifyMarkerEnd
+	if err := os.WriteFile(configPath, []byte(user+oldBlock+tables), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	handleCodexHooksInstall()
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newBlock := codexNotifyMarkerBegin + "\n" + codexNotifyLine + "\n" + codexNotifyMarkerEnd
+	if got, want := string(content), user+newBlock+tables; got != want {
+		t.Fatalf("config not kept byte for byte\ngot:  %q\nwant: %q", got, want)
+	}
+	if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v (err %v), want 0600 kept", info.Mode().Perm(), err)
+	}
+
+	handleCodexHooksUninstall()
+
+	content, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(content), user+strings.TrimPrefix(tables, "\n"); got != want {
+		t.Fatalf("uninstall changed bytes outside the block\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestCodexHooksInstall_UnreadableConfigIsNotOverwritten(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a write-only file")
+	}
+	t.Setenv("HOME", t.TempDir())
+	configPath := getCodexConfigPath()
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("model = \"gpt-5\"\n"), 0o200); err != nil {
+		t.Fatal(err)
+	}
+	expectCodexHooksExit(t, handleCodexHooksInstall)
+
+	if err := os.Chmod(configPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if content, _ := os.ReadFile(configPath); string(content) != "model = \"gpt-5\"\n" {
+		t.Fatalf("unreadable config was overwritten: %q", content)
+	}
+}
+
+func TestCodexHooksInstall_ReadOnlyConfigIsNotReplaced(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only file")
+	}
+	t.Setenv("HOME", t.TempDir())
+	configPath := getCodexConfigPath()
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("model = \"gpt-5\"\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	expectCodexHooksExit(t, handleCodexHooksInstall)
+
+	if content, _ := os.ReadFile(configPath); string(content) != "model = \"gpt-5\"\n" {
+		t.Fatalf("read-only config was replaced: %q", content)
+	}
+}
+
+func TestCodexHooksUninstall_KeepsLineEndings(t *testing.T) {
+	block := codexNotifyMarkerBegin + "\r\n" + codexNotifyLine + "\r\n" + codexNotifyMarkerEnd
+	for name, tc := range map[string]struct{ before, after string }{
+		"crlf":             {"a = 1\r\n" + block + "\r\nb = 2\r\n", "a = 1\r\nb = 2\r\n"},
+		"no final newline": {"a = 1\n" + strings.ReplaceAll(block, "\r\n", "\n"), "a = 1\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			configPath := getCodexConfigPath()
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, []byte(tc.before), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			handleCodexHooksInstall()
+			if content, _ := os.ReadFile(configPath); string(content) != tc.before {
+				t.Fatalf("install changed a current block: %q", content)
+			}
+			handleCodexHooksUninstall()
+			if content, _ := os.ReadFile(configPath); string(content) != tc.after {
+				t.Fatalf("got %q, want %q", content, tc.after)
+			}
+		})
+	}
+}
+
+func TestCodexHooksInstall_BlockBelowTableIsRefused(t *testing.T) {
+	for _, header := range []string{`[profiles."work"]  # mine`, `[profiles."qa,west"]`, `[[ hooks . 'a=]b' ]]`} {
+		t.Run(header, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			configPath := getCodexConfigPath()
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			before := "model = \"gpt-5\"\n\n" + header + "\nmodel = \"o3\"\n" +
+				codexNotifyMarkerBegin + "\n[notify]\nprogram = [\"agent-deck\", \"codex-notify\"]\n" + codexNotifyMarkerEnd + "\n"
+			if err := os.WriteFile(configPath, []byte(before), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			expectCodexHooksExit(t, handleCodexHooksInstall)
+
+			if content, _ := os.ReadFile(configPath); string(content) != before {
+				t.Fatalf("config changed although install refused: %q", content)
+			}
+		})
+	}
+}
+
+// expectCodexHooksExit runs fn and requires it to exit 1 through exitCLI.
+func expectCodexHooksExit(t *testing.T, fn func()) {
+	t.Helper()
+	cliExitHook = func(code int) { panic(code) }
+	defer func() {
+		cliExitHook = nil
+		if r := recover(); r != 1 {
+			t.Fatalf("exit = %v, want 1", r)
+		}
+	}()
+	fn()
+}

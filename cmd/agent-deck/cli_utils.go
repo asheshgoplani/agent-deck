@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
@@ -31,6 +32,27 @@ func resolveCLIAccountSlot(explicitAccount, resolvedTool, resolvedCommand string
 		SubcommandPassthrough: passthrough,
 	}
 	return account, candidate.ValidateAccount()
+}
+
+// defaultCLIAccountSlot applies [claude].default_account (#2895) to a new
+// session created without --account or AGENTDECK_ACCOUNT, the same default
+// the TUI's New Session dialog preselects. Claude sessions only; a group or
+// parent conductor config_dir, or a slot no longer configured, leaves the
+// session on inherit (session.DefaultAccountForNewSession). So does an
+// ambient CLAUDE_CONFIG_DIR: a Claude session exports its account's dir, and
+// a child it creates keeps that account, as before the default existed.
+func defaultCLIAccountSlot(inst *session.Instance, parent *session.Instance) string {
+	if inst == nil || !session.IsClaudeCompatible(inst.Tool) {
+		return ""
+	}
+	if session.AmbientClaudeConfigDir() != "" {
+		return ""
+	}
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		return ""
+	}
+	return session.DefaultAccountForNewSession(cfg, inst.GroupPath, parent)
 }
 
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
@@ -59,11 +81,20 @@ const tmuxProbeTimeout = 3 * time.Second
 func tmuxProbeBounded(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxProbeTimeout)
 	defer cancel()
-	// #nosec G204 -- "tmux" is a fixed binary and args are passed as an argv
-	// slice, never through a shell; callers supply only internal tmux probes.
-	cmd := exec.CommandContext(ctx, "tmux", tmuxutf8.Prepend(args)...)
+	// These probes reach the server named by $TMUX, so they run that socket's
+	// binary ([tmux.binaries]); a tmux client only talks to a server of its
+	// own version.
+	// #nosec G204 -- "tmux" or the user's configured path, and args are passed
+	// as an argv slice, never through a shell; callers supply only internal tmux probes.
+	cmd := exec.CommandContext(ctx, tmuxBinaryForEnv(), tmuxutf8.Prepend(args)...)
 	cmd.WaitDelay = 2 * time.Second
 	return cmd.Output()
+}
+
+// tmuxBinaryForEnv returns the tmux binary for the server $TMUX names.
+func tmuxBinaryForEnv() string {
+	socketPath, _, _ := strings.Cut(os.Getenv("TMUX"), ",")
+	return tmux.BinaryForSocketPath(socketPath)
 }
 
 // guardedValueFlags are the flags checkFlagValueNotFlag will police: those whose
@@ -164,9 +195,11 @@ func normalizeArgs(fs *flag.FlagSet, args []string) []string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 
-		// "--" terminates flag processing
+		// "--" terminates flag processing. It is kept in front of the
+		// positionals so fs.Parse also stops there, and a positional that
+		// starts with "-" (a chat message, say) stays a positional.
 		if arg == "--" {
-			positional = append(positional, args[i+1:]...)
+			positional = append(append([]string{"--"}, positional...), args[i+1:]...)
 			break
 		}
 
@@ -879,24 +912,13 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
 }
 
-// GetCurrentSessionID detects the current agent-deck session from tmux environment
-// Returns session ID or empty string if not in an agent-deck session
+// GetCurrentSessionID returns the last part of the calling agent-deck tmux
+// session name, or "" outside one. That part is a random suffix, not the
+// session ID: use it only as an "inside agent-deck" signal, and resolve the
+// session itself with instanceOwningTmuxName.
 func GetCurrentSessionID() string {
-	// Check if we're in tmux
-	if os.Getenv("TMUX") == "" {
-		return ""
-	}
-
-	// Get current tmux session name (bounded — see tmuxProbeTimeout)
-	output, err := tmuxProbeBounded("display-message", "-p", "#S")
-	if err != nil {
-		return ""
-	}
-
-	sessionName := strings.TrimSpace(string(output))
-
-	// Parse agent-deck session name: agentdeck_<title>_<id>
-	if !strings.HasPrefix(sessionName, "agentdeck_") {
+	sessionName := currentAgentDeckTmuxName()
+	if sessionName == "" {
 		return ""
 	}
 
@@ -910,18 +932,61 @@ func GetCurrentSessionID() string {
 	return parts[len(parts)-1]
 }
 
-// ResolveSessionOrCurrent resolves a session by identifier, or uses current session if empty
-func ResolveSessionOrCurrent(identifier string, instances []*session.Instance) (*session.Instance, string, string) {
-	if identifier == "" {
-		// Try to detect current session
-		currentID := GetCurrentSessionID()
-		if currentID == "" {
-			return nil, "no session specified and not inside an agent-deck session", ErrCodeNotFound
-		}
-		identifier = currentID
+// currentAgentDeckTmuxName returns the calling tmux session's name when it is
+// an agent-deck one (agentdeck_<title>_<suffix>), else "".
+func currentAgentDeckTmuxName() string {
+	// Check if we're in tmux
+	if os.Getenv("TMUX") == "" {
+		return ""
 	}
 
-	return ResolveSession(identifier, instances)
+	// Get current tmux session name (bounded — see tmuxProbeTimeout)
+	output, err := tmuxProbeBounded("display-message", "-p", "#S")
+	if err != nil {
+		return ""
+	}
+
+	sessionName := strings.TrimSpace(string(output))
+	if !strings.HasPrefix(sessionName, "agentdeck_") {
+		return ""
+	}
+	return sessionName
+}
+
+// ResolveSessionOrCurrent resolves a session by identifier, or uses current session if empty.
+// The current session is $AGENTDECK_INSTANCE_ID, else the instance that owns the
+// calling tmux session. The tmux name ends in a random suffix, not the session
+// ID, so it is matched whole rather than parsed.
+func ResolveSessionOrCurrent(identifier string, instances []*session.Instance) (*session.Instance, string, string) {
+	if identifier != "" {
+		return ResolveSession(identifier, instances)
+	}
+	if id := strings.TrimSpace(os.Getenv("AGENTDECK_INSTANCE_ID")); id != "" {
+		return ResolveSession(id, instances)
+	}
+	name := currentAgentDeckTmuxName()
+	if name == "" {
+		return nil, "no session specified and not inside an agent-deck session", ErrCodeNotFound
+	}
+	if inst := instanceOwningTmuxName(name, instances); inst != nil {
+		return inst, "", ""
+	}
+	return nil, fmt.Sprintf("no session owns the current tmux session %q", name), ErrCodeNotFound
+}
+
+// instanceOwningTmuxName returns the instance whose tmux session is named
+// exactly name, or nil. The name ends in a random suffix, not the session ID,
+// so callers that only know the tmux name must match it whole.
+func instanceOwningTmuxName(name string, instances []*session.Instance) *session.Instance {
+	if name == "" {
+		return nil
+	}
+	for _, inst := range instances {
+		if ts := inst.GetTmuxSession(); ts != nil && ts.Name == name {
+			return inst
+		}
+	}
+	return nil
 }
 
 // StatusSymbol returns the symbol for a status
@@ -953,6 +1018,8 @@ func StatusString(status session.Status) string {
 		return "idle"
 	case session.StatusError:
 		return "error"
+	case session.StatusStarting:
+		return "starting"
 	case session.StatusStopped:
 		return "stopped"
 	case session.StatusQueued:
@@ -1013,14 +1080,26 @@ func TruncateID(id string) string {
 	return id
 }
 
-// FormatPath shortens a path by replacing home directory with ~
+// FormatPath shortens a path by replacing home directory with ~.
+// Only HOME itself or paths under HOME/ are shortened: with HOME=/home/ash,
+// /home/ashesh/repo must not become ~esh/repo.
 func FormatPath(path string) string {
 	home, err := os.UserHomeDir()
-	if err != nil {
+	if err != nil || home == "" {
 		return path
 	}
-	if strings.HasPrefix(path, home) {
+	if path == home || strings.HasPrefix(path, home+string(os.PathSeparator)) {
 		return "~" + path[len(home):]
 	}
 	return path
+}
+
+// mcpProxySocketArg returns the socket path of `agent-deck mcp-proxy
+// <socket-path>` (args[0] is the subcommand). ok is false when the path is
+// missing, so a short argument list never reaches the index.
+func mcpProxySocketArg(args []string) (string, bool) {
+	if len(args) >= 2 {
+		return args[1], true
+	}
+	return "", false
 }

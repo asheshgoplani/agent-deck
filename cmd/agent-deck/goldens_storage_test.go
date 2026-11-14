@@ -30,9 +30,7 @@ import (
 // dumped as canonical JSON (id-ordered) and scrubbed the same way as the CLI
 // goldens (testdata/goldens/README.md).
 func TestStorageBytesGoldens(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Fatalf("tmux is required for storage goldens: %v", err)
-	}
+	testutil.RequireTmux(t)
 	bin := goldensBinary(t)
 	home, env := goldensSandbox(t)
 

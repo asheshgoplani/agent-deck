@@ -8,7 +8,11 @@
 #  3. typed bytes go into the composer draft and are redrawn there; b'\r' submits and CLEARS the draft;
 #  4. idle submit appends a main-chain user record (what session.TurnAdvanced looks for);
 #     busy submit queues: queue-operation enqueue, composer shows 'Press up to edit queued messages',
-#     then after 1s remove(absorbed_mid_turn) + queued_command attachment (unchanged mailbox receipt).
+#     then after 1s remove(absorbed_mid_turn) + queued_command attachment (unchanged mailbox receipt);
+#     a control file with "hold_queue": true keeps queued input (and the hint) until the turn ends, like a long turn;
+#  5. "stall_queue": true is Claude's stalled queue (ASK-200): the turn has ended, yet a submit is still queued
+#     behind the hint and never absorbed; an Enter on the empty composer submits the whole queue as one prompt
+#     ("stall_queue_deaf": true ignores that Enter too).
 import datetime, json, os, re, select, sys, termios, time, uuid
 here = os.path.dirname(os.path.abspath(__file__))
 path = json.load(open(os.path.join(here, 'fake-running.json')))[os.path.realpath(os.getcwd())]
@@ -23,6 +27,10 @@ attrs[6][termios.VMIN], attrs[6][termios.VTIME] = 1, 0
 termios.tcsetattr(0, termios.TCSANOW, attrs)
 sys.stdout.write('\033[?2004h'); sys.stdout.flush()  # Claude enables bracketed paste
 phase, phase_id, draft, queued, pending, submits = None, None, '', [], [], 0
+hold_queue = False
+stall_queue = stall_queue_deaf = False
+late = os.path.exists('.fake-late-transcript')  # like a fresh Claude: no transcript before the first prompt
+held = []  # .fake-hold-submit: a prompt taken at the prompt reaches the transcript once the file is gone
 started = time.monotonic()
 rendered_rows = 0
 def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -39,6 +47,7 @@ def screen():
     else:
         head = ['⏺ All four steps ran.', '', '✻ Sautéed for 45s · done 10:44 AM', '']
     body = draft if draft else ('Press up to edit queued messages' if queued else '')
+    if stall_queue: head = head + ['  ' + q for q in queued]  # Claude lists queued prompts above the composer
     return head + [div, '❯ ' + body, div, '  ⏵⏵ bypass permissions on (shift+tab to cycle)']
 def render():
     global rendered_rows
@@ -59,15 +68,26 @@ def submit(text):
     global submits
     submits += 1
     rid = request_id()
-    if phase in ('busy', 'stream'):
+    if phase in ('busy', 'stream') or stall_queue:
         enq = {'type': 'queue-operation', 'operation': 'enqueue', 'timestamp': now(), 'content': text, 'sessionId': session_id}
         append(enq); queued.append(text); pending.append((time.monotonic() + 1.0, rid, enq))
     else:
         rec = {'type': 'user', 'uuid': str(uuid.uuid4()), 'timestamp': now(), 'sessionId': session_id,
                'message': {'role': 'user', 'content': text}}
+        if os.path.exists('.fake-hold-submit'):
+            held.append(rec)
+            with open(os.path.join(here, 'held'), 'a') as out: out.write(text + '\n')
+            return
         append(rec)
         if rid and rid in text: receipt(rid, [rec], 'turn')
+def flush_queue():
+    global submits
+    submits += 1
+    rec = {'type': 'user', 'uuid': str(uuid.uuid4()), 'timestamp': now(), 'sessionId': session_id,
+           'message': {'role': 'user', 'content': ''.join(queued)}}
+    append(rec); queued.clear(); pending.clear()
 def absorb():
+    if stall_queue or (hold_queue and phase in ('busy', 'stream')): return
     for item in list(pending):
         due, rid, enq = item
         if time.monotonic() < due: continue
@@ -82,18 +102,25 @@ def absorb():
         if rid and rid in enq['content']: receipt(rid, [enq, removed, att], 'queued')
         pending.remove(item); queued.remove(enq['content']); render()
 def poll_phase():
-    global phase, phase_id
+    global phase, phase_id, hold_queue, stall_queue, stall_queue_deaf
     try: c = json.load(open(control_path))
     except (OSError, ValueError): return
+    # A held prompt released before this control file was written lands before its phase's record
+    # (only once the control file reads: an unreadable one returns above and releases nothing).
+    if held and not os.path.exists('.fake-hold-submit'): append(*held); held.clear()
+    hold_queue = bool(c.get('hold_queue'))
+    stall_queue = bool(c.get('stall_queue'))
+    stall_queue_deaf = bool(c.get('stall_queue_deaf'))
     if (c.get('id'), c.get('phase')) != (phase_id, phase):
         phase_id, phase = c.get('id'), c.get('phase')
         # booting: a resumed Claude starting up, busy on screen with no new turn in the transcript
-        append({'type': 'system', 'subtype': 'turn_duration', 'uuid': 'fixture-idle-' + str(phase_id), 'timestamp': now(), 'durationMs': 1000}
+        rec = ({'type': 'system', 'subtype': 'turn_duration', 'uuid': 'fixture-idle-' + str(phase_id), 'timestamp': now(), 'durationMs': 1000}
                if phase == 'idle' else
                {'type': 'system', 'subtype': 'informational', 'uuid': 'fixture-boot-' + str(phase_id), 'timestamp': now()}
                if phase in ('booting', 'banner') else
                {'type': 'user', 'uuid': 'fixture-busy-' + str(phase_id), 'timestamp': now(),
                 'message': {'role': 'user', 'content': 'Owned fixture work before queued input.'}})
+        if not (late and rec['type'] != 'user' and not os.path.exists(path)): append(rec)
         render()
     tmp = state_path + '.tmp'
     with open(tmp, 'w') as out: json.dump({'id': phase_id, 'phase': phase, 'busy_bytes': 0, 'submits': submits, 'draft': draft}, out)
@@ -110,6 +137,7 @@ while True:
     for ch in chunk.decode('utf-8', errors='replace'):
         if ch == '\r':
             if draft.strip(): submit(draft)
+            elif stall_queue and queued and not stall_queue_deaf: flush_queue()
             draft = ''; changed = True
         elif ch == '\n': draft += '\n'; changed = True   # Claude: LF (ctrl+J) inserts a newline, it does not submit
         elif ch in '\x7f\b': draft = draft[:-1]; changed = True

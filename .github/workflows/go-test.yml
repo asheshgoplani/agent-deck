@@ -8,14 +8,10 @@
 # time at the release gate. That happened four times: it broke the
 # v1.9.49 / v1.9.50 / v1.9.51 / v1.9.53 releases.
 #
-# This workflow closes that gap by running the EXACT proven release-gate test
-# step (release.yml "Run tests") on every PR, so full-suite-only regressions
-# fail at PR time instead of blocking a release.
-#
-# Steel-thread parity: the toolchain setup, the zoxide dependency, the
-# PERF_BUDGET_MULTIPLIER env, and the gotestsum invocation are copied verbatim
-# from .github/workflows/release.yml. Keep them in lockstep — if the release
-# gate's test step changes, mirror it here.
+# This workflow closes that gap by running the full suite on every PR, so
+# full-suite-only regressions fail at PR time instead of blocking a release.
+# release.yml calls this same workflow as its test gate, so PRs and releases
+# run one suite and there is nothing to keep in lockstep.
 
 name: Go tests
 
@@ -25,6 +21,13 @@ on:
   # docs-only PRs, blocking their merge forever. The job instead short-circuits
   # cheaply when the diff touches nothing Go-related.
   pull_request:
+  # release.yml runs these same shards as its test gate.
+  workflow_call:
+    inputs:
+      shards_only:
+        description: Run only the shards and their gate; skip the comms matrix and native SSH jobs, which PRs don't require.
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -41,6 +44,11 @@ on:
       - 'tests/comms_matrix/**'
       - '.github/workflows/comms-matrix.yml'
       - 'sandbox/Dockerfile'
+      - '.github/scripts/version-only-diff.sh'
+      - 'tests/ci/version-only-diff.test.sh'
+      - '.github/workflows/release.yml'
+      - 'scripts/ci/release-test-reuse.sh'
+      - 'tests/ci/release-test-reuse-version-only.test.sh'
 
 # One in-flight run per PR (or per branch on push). Rapid follow-up pushes
 # cancel the stale run instead of stacking 20-minute jobs.
@@ -64,9 +72,13 @@ jobs:
     # Advisory for the first week; promote only after clean real-PR runs.
     # advisory: true keeps a failing rig leg from turning the whole Go tests
     # run red; the leg reports a warning in its summary instead.
+    # Off the PR critical path (post-tag CI queue): on a PR the four rig
+    # legs run only when the rig itself changes (changes.outputs.comms);
+    # every Go push to main still runs them, and comms-matrix.yml runs
+    # nightly on its own schedule.
     name: Comms matrix advisory
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.comms == 'true' && !inputs.shards_only
     uses: ./.github/workflows/comms-matrix.yml
     with:
       advisory: true
@@ -75,12 +87,29 @@ jobs:
   # full race suite for a README tweak is waste. Decide once here; the shards,
   # the gate, the comms matrix and the native SSH jobs read the answer. The
   # pattern mirrors the push paths list above.
+  #
+  # It also spots a version-only release PR (ASK-161, #2929): the diff
+  # touches only CHANGELOG.md and the single `var Version = "X.Y.Z"` line of
+  # cmd/agent-deck/main.go (parsed from the patch), and the PR's base sha
+  # already has a successful push "Go tests" run on main in which every
+  # shard passed. The PR tree is then that green tree plus one string
+  # constant, so the shards are skipped and the "Version-only release check"
+  # job (build, vet, version and release tests) gates it instead. Anything
+  # else, or any API error, means version_only=false and the full shards.
+  # The tag sha's own push run below still runs the whole suite.
   changes:
     name: Detect Go-relevant changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # actions: read lets the read-only GITHUB_TOKEN look up the base sha's
+    # push run. No secret is used, so fork PRs take the same path.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       go: ${{ steps.gochanges.outputs.go }}
+      comms: ${{ steps.commschanges.outputs.comms }}
+      version_only: ${{ steps.versiononly.outputs.version_only }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -93,46 +122,115 @@ jobs:
             echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           base="${{ github.event.pull_request.base.sha }}"
-          if git diff --name-only "$base"...HEAD | grep -qE '(\.go$|^go\.mod$|^go\.sum$|^\.github/workflows/go-test\.yml$|^scripts/ci-shared-state-proof\.sh$|^scripts/ci-test-summary\.py$|^tests/known-flaky\.txt$|^tests/ci/ci-test-summary\.test\.sh$|^scripts/ci-native-ssh\.sh$|^tests/comms_matrix/|^\.github/workflows/comms-matrix\.yml$|^sandbox/Dockerfile$)'; then
+          if git diff --name-only "$base"...HEAD | grep -qE '(\.go$|^go\.mod$|^go\.sum$|^\.github/workflows/go-test\.yml$|^scripts/ci-shared-state-proof\.sh$|^scripts/ci-test-summary\.py$|^tests/known-flaky\.txt$|^tests/ci/ci-test-summary\.test\.sh$|^scripts/ci-native-ssh\.sh$|^tests/comms_matrix/|^\.github/workflows/comms-matrix\.yml$|^sandbox/Dockerfile$|^\.github/scripts/version-only-diff\.sh$|^tests/ci/version-only-diff\.test\.sh$|^scripts/ci/release-test-reuse\.sh$|^tests/ci/release-test-reuse-version-only\.test\.sh$|^\.github/workflows/release\.yml$)'; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
             echo "go=false" >> "$GITHUB_OUTPUT"
             echo "No Go-relevant changes; passing the gate without running the suite."
           fi
+      # The advisory comms matrix runs on a PR only when the rig changes.
+      # On push to main it follows the Go answer above.
+      - name: Detect comms rig changes
+        id: commschanges
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "comms=${{ steps.gochanges.outputs.go }}" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha }}"
+          if git diff --name-only "$base"...HEAD | grep -qE '(^tests/comms_matrix/|^\.github/workflows/comms-matrix\.yml$|^sandbox/Dockerfile$)'; then
+            echo "comms=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "comms=false" >> "$GITHUB_OUTPUT"
+            echo "Comms rig unchanged; the advisory comms matrix runs on main and nightly."
+          fi
+      # The detector's own cases (a few throwaway git repos, under a second).
+      # A broken detector fails this job, and with it the gate. This tests
+      # the PR's copy of the script; the decision below uses the base's copy.
+      - name: Self-test the version-only detector
+        if: github.event_name == 'pull_request' && steps.gochanges.outputs.go == 'true'
+        run: bash tests/ci/version-only-diff.test.sh
+      - name: Detect a version-only release PR on a green base
+        id: versiononly
+        if: github.event_name == 'pull_request' && steps.gochanges.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # HEAD is the PR merge commit (base + PR), so base..HEAD is exactly
+          # what this run would test on top of the base tree.
+          result=false
+          # The detector comes from the BASE sha, never the PR tree, so a PR
+          # that edits the script cannot vote itself into the short path.
+          # A base without the script (its first landing) means no.
+          detect="$RUNNER_TEMP/version-only-diff.sh"
+          if ! git show "$BASE_SHA:.github/scripts/version-only-diff.sh" > "$detect" 2>/dev/null; then
+            echo "Base $BASE_SHA has no .github/scripts/version-only-diff.sh; running the full shards."
+            echo "version_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if version=$(bash "$detect" diff "$BASE_SHA" HEAD); then
+            echo "Version-only diff: $version"
+            if gh api "repos/$REPO/actions/workflows/go-test.yml/runs?head_sha=$BASE_SHA&event=push&branch=main&per_page=20" > "$RUNNER_TEMP/runs.json" \
+              && run_id=$(bash "$detect" pick-run "$RUNNER_TEMP/runs.json" "$BASE_SHA" "$REPO") \
+              && gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" > "$RUNNER_TEMP/jobs.json" \
+              && shards=$(bash "$detect" shards-green "$RUNNER_TEMP/jobs.json"); then
+              result=true
+              echo "Base $BASE_SHA passed the full suite in https://github.com/$REPO/actions/runs/$run_id ($shards); skipping the shards."
+              echo "Version-only release PR: base run https://github.com/$REPO/actions/runs/$run_id ($shards); shards skipped." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "version_only=$result" >> "$GITHUB_OUTPUT"
 
   # The suite, split by package group across runners (#2169). `go test`
   # already runs every package in its own process, so a split changes
   # nothing about what each package sees; it only lets the heavy groups
   # (cmd, session, ui) run side by side instead of one after another.
-  # Every shard uses the exact release-gate invocation (same gotestsum
-  # flags, -race, 20m per-package timeout, PERF_BUDGET_MULTIPLIER).
+  # Every shard uses the same invocation (gotestsum flags, -race, 20m
+  # per-package timeout, PERF_BUDGET_MULTIPLIER).
   shard:
     name: Test shard (${{ matrix.shard.name }})
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go == 'true' && needs.changes.outputs.version_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # cmd/agent-deck alone takes ~9 min, so it is cut three ways by test
-        # name; the other groups fit one runner each.
+        # Shards are cut so the slowest one sets the gate, not one big
+        # package: cmd/agent-deck and internal/session are single packages
+        # whose tests run one after another (~9 and ~14 min of test time),
+        # and REST's longest package (internal/issuereport) runs ~8 min on
+        # its own. Those groups are cut by test name. In each group the
+        # named shards take -run ranges and the last shard takes -skip of
+        # all of them, so a test whose name fits no range still runs there.
+        # tests/ci/go-test-shards.test.sh proves every test lands in exactly
+        # one shard. Ranges come from the per-test times in the gotestsum
+        # JSON of green main runs; re-cut when a shard drifts past the rest.
         shard:
           - name: cmd-a
             packages: ./cmd/...
-            run: '^Test[A-F]'
+            run: '^Test[A-I]'
           - name: cmd-b
             packages: ./cmd/...
-            run: '^Test[G-R]'
-          - name: cmd-c
-            packages: ./cmd/...
-            run: '^Test[S-Z_a-z0-9]'
-          - name: session
+            skip: '^Test[A-I]'
+          - name: session-a
             packages: ./internal/session/...
+            run: '^Test[A-C]'
+          - name: session-b
+            packages: ./internal/session/...
+            run: '^Test[D-I]'
+          - name: session-c
+            packages: ./internal/session/...
+            skip: '^Test[A-I]'
           - name: ui-web
             packages: ./internal/ui/... ./internal/web/... ./tests/...
-          - name: rest
+          - name: rest-a
             packages: REST
+            run: '^Test[A-R]'
+          - name: rest-b
+            packages: REST
+            skip: '^Test[A-R]'
           # The shared-state ordering proof (scripts/ci-shared-state-proof.sh)
           # runs beside the shards instead of after them.
           - name: proof
@@ -143,13 +241,33 @@ jobs:
         with:
           fetch-depth: 0
 
+      # setup-go's own cache is off here: its single go.sum key is saved by
+      # whichever Go job finishes first (govulncheck on main), so it never held
+      # a -race test build, and every PR shard tried to save a copy of it.
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+          cache: false
+
+      # Read-only restore of the -race build cache that go-race-cache.yml
+      # saves on main (newest bucket first). Shards never save, so the seven
+      # shards no longer race for one key and PR runs add nothing to the
+      # repo's cache budget. Keep the key parts in lockstep with that file.
+      - name: Restore race build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+          restore-keys: |
+            go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+            go-race-v1-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
       # tmux + zoxide back the session and quick-open picker tests that the
-      # suite exercises for real; mirror release.yml.
+      # suite exercises for real.
       - name: Install tmux and zoxide
         timeout-minutes: 5
         run: |
@@ -158,11 +276,17 @@ jobs:
           tmux -V
           zoxide --version
 
+      # The shard test checks that the matrix runs every Go test exactly once
+      # (no name-range gap, no overlap, no package the REST filter drops).
+      # The REST filter is anchored on whole path segments: an unanchored
+      # /internal/session also dropped internal/sessionref and
+      # internal/sessionstatus, so no shard ran their tests.
       - name: Resolve packages
         id: pkgs
         run: |
+          bash tests/ci/go-test-shards.test.sh
           if [ "${{ matrix.shard.packages }}" = "REST" ]; then
-            pkgs=$(go list ./... | grep -vE '/cmd/|/internal/session|/internal/ui|/internal/web|/tests/' | tr '\n' ' ')
+            pkgs=$(go list ./... | grep -vE '/(cmd|internal/session|internal/ui|internal/web|tests)(/|$)' | tr '\n' ' ')
           elif [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
             pkgs="PROOF"
           else
@@ -175,14 +299,18 @@ jobs:
         timeout-minutes: 30
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
+          SHARD_PACKAGES: ${{ steps.pkgs.outputs.packages }}
+          SHARD_RUN: ${{ matrix.shard.run }}
+          SHARD_SKIP: ${{ matrix.shard.skip }}
         run: |
           go install gotest.tools/gotestsum@v1.13.0
           if [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
             bash scripts/ci-shared-state-proof.sh
-          elif [ -n "${{ matrix.shard.run }}" ]; then
-            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m -run '${{ matrix.shard.run }}'
           else
-            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m
+            args=(-race -timeout 20m)
+            if [ -n "$SHARD_RUN" ]; then args+=(-run "$SHARD_RUN"); fi
+            if [ -n "$SHARD_SKIP" ]; then args+=(-skip "$SHARD_SKIP"); fi
+            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="$SHARD_PACKAGES" -- "${args[@]}"
           fi
 
       # Name the failing tests in the job summary (#2133) so a red shard says
@@ -205,23 +333,82 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Version-only release PRs (see the changes job): the base tree already
+  # passed every shard, so this checks what the diff can break: the binary
+  # builds and vets, reports the new Version, the changelog has its heading,
+  # and the version, release-readiness, update-path and toolchain-pin tests
+  # pass.
+  version-only:
+    name: Version-only release check
+    needs: changes
+    if: needs.changes.outputs.version_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build, vet and check the version
+        run: |
+          go build -o "$RUNNER_TEMP/agent-deck" ./cmd/agent-deck
+          go vet ./cmd/agent-deck ./scripts
+          want=$(sed -n 's/^var Version = "\([0-9][0-9.]*\)".*/\1/p' cmd/agent-deck/main.go)
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/cache"
+          got=$(HOME="$RUNNER_TEMP/home" XDG_CACHE_HOME="$RUNNER_TEMP/cache" "$RUNNER_TEMP/agent-deck" version </dev/null)
+          echo "main.go: $want; binary: $got"
+          [ "$got" = "Agent Deck v$want" ] || { echo "binary reports '$got', want 'Agent Deck v$want'"; exit 1; }
+          grep -F "## [$want]" CHANGELOG.md >/dev/null || { echo "CHANGELOG.md has no '## [$want]' heading"; exit 1; }
+
+      - name: Run the version and release tests
+        timeout-minutes: 10
+        env:
+          PERF_BUDGET_MULTIPLIER: '2.0'
+        run: |
+          go install gotest.tools/gotestsum@v1.13.0
+          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="./cmd/agent-deck ./scripts" -- -race -timeout 20m -run '^(TestVersionOutput_|TestParseAgentDeckVersion|TestRemoteVersionJSON_|TestReleaseReadiness_|TestGotestsumVersionAgreement|TestGolangciLintVersionAgreement)'
+          # The update path test builds the new Version and an older one and
+          # runs the manual and auto-install paths against a fake release.
+          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output-update.json --packages="./internal/releasetests" -- -race -timeout 20m -run '^TestReleaseReadiness_UpdatePath$'
+
   # The single required context the main ruleset names. It passes when the
-  # diff is not Go-relevant or every Go shard passed. It fails (and never
-  # skips) otherwise, so a docs-only PR still reports. The comms matrix is
-  # advisory and deliberately does not feed this gate.
+  # diff is not Go-relevant, when a version-only release PR passed its
+  # version check, or when every Go shard passed. It fails (and never
+  # skips) otherwise, so a docs-only PR still reports. It also fails when
+  # the changes job itself did not succeed, so a broken detector never
+  # reads as "not Go-relevant". The comms matrix is advisory and
+  # deliberately does not feed this gate.
   full-test-suite:
     name: Full test suite (PR gate)
-    needs: [changes, shard]
+    needs: [changes, shard, version-only]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Gate on shard results
         run: |
+          echo "changes: ${{ needs.changes.result }}"
           echo "go-relevant: ${{ needs.changes.outputs.go }}"
+          echo "version-only: ${{ needs.changes.outputs.version_only }} (${{ needs.version-only.result }})"
           echo "shards: ${{ needs.shard.result }}"
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "Change detection did not succeed."; exit 1
+          fi
           if [ "${{ needs.changes.outputs.go }}" != "true" ]; then
             echo "No Go-relevant changes; gate passes."; exit 0
+          fi
+          if [ "${{ needs.changes.outputs.version_only }}" = "true" ]; then
+            if [ "${{ needs.version-only.result }}" = "success" ]; then
+              echo "Version-only release PR on a green base; version check passed."; exit 0
+            fi
+            echo "Version-only release check failed or was cancelled."; exit 1
           fi
           if [ "${{ needs.shard.result }}" = "success" ]; then
             echo "All shards passed."; exit 0
@@ -232,7 +419,7 @@ jobs:
   native-ssh:
     name: Required native SSH acceptance
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go == 'true' && !inputs.shards_only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -271,7 +458,7 @@ jobs:
   native-ssh-macos:
     name: Required macOS native SSH acceptance
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.go == 'true' && !inputs.shards_only
     runs-on: macos-latest
     timeout-minutes: 25
     env:

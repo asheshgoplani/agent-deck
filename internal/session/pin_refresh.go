@@ -94,7 +94,7 @@ func RefreshStalePluginPins(mcpFile string, profileDirs []string) (int, error) {
 	}
 	// A fixed "<file>.tmp" name would follow a symlink planted at that name;
 	// atomicfile uses a fresh temp file and keeps the write inside the project.
-	if err := atomicfile.WriteFileWithin(filepath.Dir(mcpFile), mcpFile, newData, 0o644); err != nil {
+	if err := atomicfile.WriteFileWithin(filepath.Dir(mcpFile), mcpFile, newData, 0o600); err != nil {
 		return 0, fmt.Errorf("save refreshed .mcp.json: %w", err)
 	}
 	return refreshed, nil

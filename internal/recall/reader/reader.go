@@ -269,13 +269,3 @@ func (b *Budget) Consumed() int64 {
 func Registry() []Reader {
 	return []Reader{Claude{}, Codex{}, Pi{}, Gemini{}, OpenCode{}, Hermes{}}
 }
-
-// ByHarness returns the registered reader for a harness name, or nil.
-func ByHarness(name string) Reader {
-	for _, rd := range Registry() {
-		if rd.Harness() == name {
-			return rd
-		}
-	}
-	return nil
-}

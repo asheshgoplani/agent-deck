@@ -18,7 +18,9 @@ Commands:
 
 Examples (one per adapter type):
 
-  # Generic HTTP webhook listening on port 9000
+  # Generic HTTP webhook on 127.0.0.1:9000. Requests must be signed with a
+  # secret: generated and stored in its watcher.toml unless given by
+  # $WEBHOOK_SECRET or --secret-file (chmod 600):
   agent-deck watcher create webhook --name my-webhook --port 9000
 
   # GitHub repository webhook with HMAC-SHA256 verification
@@ -26,11 +28,16 @@ Examples (one per adapter type):
   GITHUB_WEBHOOK_SECRET=... agent-deck watcher create github --name gh-alerts
   agent-deck watcher create github --name gh-alerts --secret-file ~/.gh-webhook-secret
 
-  # ntfy.sh push-notification topic
-  agent-deck watcher create ntfy --name phone-alerts --topic my-private-topic
+  # ntfy push-notification topic. On the public https://ntfy.sh anyone who
+  # knows the topic can read and post to it, so use a random topic:
+  agent-deck watcher create ntfy --name phone-alerts --random-topic
+  # or an access-protected topic on your own ntfy server (token from the
+  # environment or a chmod-600 file, never a CLI arg):
+  NTFY_TOKEN=... agent-deck watcher create ntfy --name phone-alerts \
+      --server https://ntfy.example.com --topic phone-alerts
 
   # Slack-bridged via ntfy topic (see skill for Cloudflare Worker setup)
-  agent-deck watcher create slack --name team-slack --topic my-slack-topic
+  agent-deck watcher create slack --name team-slack --random-topic
 
 After creating, activate and inspect:
   agent-deck watcher start <name>

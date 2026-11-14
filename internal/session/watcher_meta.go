@@ -51,7 +51,7 @@ func SaveWatcherMeta(meta *WatcherMeta) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create watcher dir: %w", err)
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
@@ -60,7 +60,7 @@ func SaveWatcherMeta(meta *WatcherMeta) error {
 	}
 	finalPath := filepath.Join(dir, "meta.json")
 	tmpPath := finalPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write watcher meta.json.tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {

@@ -17,13 +17,13 @@ import (
 // preview. Unknown is a first-class state: the cache is cold, tmux could not
 // be asked, or a remote is too old to report viewers.
 
-// viewersEye is the badge glyph. The VS16 form (U+1F441 U+FE0F) is measured
-// at 2 cells by the width library and rendered at 2 by the terminals the
-// deck runs in; the bare U+1F441 is measured at 1 and rendered at 2 by some,
-// which would push the row's trailing badges off the pane.
-const viewersEye = "👁️"
+// viewersEye uses the text-only FISHEYE symbol (U+25C9). The eye emoji plus
+// VS16 measures 2 cells in the layout but only 1 in terminals that advance
+// per code point, moving the session divider one column left. This symbol
+// occupies 1 cell under both conventions, like the other status markers.
+const viewersEye = "◉"
 
-// viewersBadge is the row badge: " 👁️ 2" for two attached terminals, nothing
+// viewersBadge is the row badge: " ◉ 2" for two attached terminals, nothing
 // when nobody is attached or the count is unknown (a row has no room to say
 // why).
 func viewersBadge(viewers []tmux.Viewer, known bool) string {
@@ -44,7 +44,7 @@ func renderViewersBadge(viewers []tmux.Viewer, known bool, selected bool) string
 // fitViewersBadge renders the row badge within budget cells (a negative
 // budget means unbounded) and returns it with its width. Like the account
 // badge, it takes part in the row's width budget (#2201): when the full
-// " 👁️ N" does not fit it shortens to the eye alone, then drops, so the
+// " ◉ N" does not fit it shortens to the eye alone, then drops, so the
 // title never pays for it.
 func fitViewersBadge(viewers []tmux.Viewer, known bool, selected bool, budget int) (string, int) {
 	badge := viewersBadge(viewers, known)
@@ -82,9 +82,9 @@ func viewersText(viewers []tmux.Viewer, known bool, unknownReason string, now ti
 
 // viewersLine is the preview panel line under the activity time:
 //
-//	👁️ viewers: ashesh (200x60, active 5s ago) · yasir (120x40, 3m ago)
-//	👁️ no viewers
-//	👁️ viewers unknown
+//	◉ viewers: ashesh (200x60, active 5s ago) · yasir (120x40, 3m ago)
+//	◉ no viewers
+//	◉ viewers unknown
 func viewersLine(viewers []tmux.Viewer, known bool, now time.Time) string {
 	switch {
 	case !known:

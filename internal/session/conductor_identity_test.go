@@ -58,7 +58,7 @@ func assertConductorSettingsKept(t *testing.T, inst *Instance, tmpHome string) {
 		t.Errorf("getConductorEnv for title %q lost meta.json env_file %s; got %q", inst.Title, metaEnv, got)
 	}
 
-	envCmd := inst.buildEnvSourceCommand()
+	envCmd := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 	if !strings.Contains(envCmd, metaEnv) {
 		t.Errorf("buildEnvSourceCommand for title %q lost meta.json env_file %s; got %q", inst.Title, metaEnv, envCmd)
 	}

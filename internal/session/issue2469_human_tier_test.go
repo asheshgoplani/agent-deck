@@ -234,11 +234,19 @@ func TestIssue2469_IdentityCarriesSentinel(t *testing.T) {
 	if !claude.IdentityCarriesSentinel() {
 		t.Fatal("claude at the default (full) context level carries the sentinel section")
 	}
+	// ASK-105: sandboxed and SSH sessions carry the block inline too.
+	for name, inst := range map[string]*Instance{
+		"sandboxed": {ID: "c5", Title: "w", Tool: "claude", Sandbox: NewSandboxConfig("")},
+		"ssh":       {ID: "c6", Title: "w", Tool: "claude", SSHHost: "box"},
+	} {
+		if !inst.IdentityCarriesSentinel() {
+			t.Fatalf("%s: claude at the full level carries the sentinel section", name)
+		}
+	}
 	for name, inst := range map[string]*Instance{
 		"no-identity": {ID: "c2", Title: "w", Tool: "claude", IdentityInjectionDisabled: true},
 		"primer":      {ID: "c3", Title: "w", Tool: "claude", ContextLevel: ContextLevelPrimer},
 		"shell":       {ID: "c4", Title: "w", Tool: "shell"},
-		"sandboxed":   {ID: "c5", Title: "w", Tool: "claude", Sandbox: NewSandboxConfig("")},
 	} {
 		if inst.IdentityCarriesSentinel() {
 			t.Fatalf("%s: must not claim the sentinel section", name)

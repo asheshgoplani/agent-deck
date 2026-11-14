@@ -61,15 +61,14 @@ func (d *EditPathsDialog) Show(inst *session.Instance, pathSuggestions []string)
 		}
 	}
 	// Collapse home dir to ~ for readability
-	home, _ := os.UserHomeDir()
 	for i, p := range realPaths {
-		if home != "" && strings.HasPrefix(p, home) {
-			realPaths[i] = "~" + p[len(home):]
-		}
+		realPaths[i] = collapseHome(p)
 	}
 
 	d.paths = realPaths
-	d.originalPaths = append([]string{}, realPaths...)
+	// Snapshot in the same canonical (resolved, absolute) form that
+	// HasChanged compares against, not the "~/..." display form.
+	d.originalPaths = d.cleanedPaths()
 	d.pathCursor = 0
 	d.editing = false
 	d.pathInput.Blur()
@@ -77,6 +76,22 @@ func (d *EditPathsDialog) Show(inst *session.Instance, pathSuggestions []string)
 	d.pathSuggestions = nil
 	d.pathSuggestionCursor = 0
 	d.suggestionNavigated = false
+}
+
+// collapseHome shortens a path under $HOME to "~/..." for display. It only
+// matches at a path boundary, so HOME=/home/ash leaves /home/ashesh alone.
+func collapseHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if strings.HasPrefix(p, home+string(os.PathSeparator)) {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 func (d *EditPathsDialog) Hide() {
@@ -153,11 +168,7 @@ func (d *EditPathsDialog) Validate() string {
 	}
 	for _, p := range cleaned {
 		if info, err := os.Stat(p); err != nil || !info.IsDir() {
-			short := p
-			if home, hErr := os.UserHomeDir(); hErr == nil {
-				short = strings.Replace(p, home, "~", 1)
-			}
-			return fmt.Sprintf("Path not found: %s", short)
+			return fmt.Sprintf("Path not found: %s", collapseHome(p))
 		}
 	}
 	return ""
@@ -287,9 +298,7 @@ func (d *EditPathsDialog) Update(msg tea.Msg) (*EditPathsDialog, tea.Cmd) {
 			if p := strings.TrimSpace(d.paths[i]); p != "" {
 				defaultPath = filepath.Dir(session.ExpandPath(p))
 				if defaultPath != "" && defaultPath != "." {
-					if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(defaultPath, home) {
-						defaultPath = "~" + defaultPath[len(home):]
-					}
+					defaultPath = collapseHome(defaultPath)
 					defaultPath += string(os.PathSeparator)
 				} else {
 					defaultPath = ""

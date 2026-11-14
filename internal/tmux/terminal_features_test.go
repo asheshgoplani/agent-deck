@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // tmuxDefaultFeatures is the array a stock tmux server reports before anyone
@@ -496,6 +498,7 @@ exec %q "$@"
 // on such a server, deliberately: a missing enhancement on a server we cannot
 // read is a degraded feature; a rewrite from a guess is data loss.
 func TestTerminalFeatures_UnreadableServerNeverGrows(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	socket, session := startPrivateTmuxServer(t)
 	baseline := readTerminalFeatures(socket)
 	require.True(t, baseline.known)

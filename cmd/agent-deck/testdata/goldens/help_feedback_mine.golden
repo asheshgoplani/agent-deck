@@ -1,0 +1,5 @@
+Usage: agent-deck feedback mine [--json]
+
+List the issues filed (or confirmed as duplicates) from this machine, the
+version each was filed on, the release that fixed it and your answer to
+"Is it fixed for you?". Nothing is sent; the list lives in reports.json.

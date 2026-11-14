@@ -49,6 +49,11 @@ type CostEventWatcher struct {
 	eventCh chan RawCostEvent
 	ctx     context.Context
 	cancel  context.CancelFunc
+
+	// sendMu guards closed and every send on eventCh, so a debounce timer
+	// that fires after Start returned cannot send on the closed channel.
+	sendMu sync.Mutex
+	closed bool
 }
 
 // NewCostEventWatcher creates a watcher for the given directory.
@@ -84,10 +89,18 @@ func (w *CostEventWatcher) EventCh() <-chan RawCostEvent {
 
 // Start begins watching for file events. Blocks until stopped.
 func (w *CostEventWatcher) Start() {
-	defer close(w.eventCh)
 	var mu sync.Mutex
 	pending := make(map[string]struct{})
 	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+		w.sendMu.Lock()
+		w.closed = true
+		close(w.eventCh)
+		w.sendMu.Unlock()
+	}()
 
 	processPending := func() {
 		mu.Lock()
@@ -148,6 +161,11 @@ func (w *CostEventWatcher) processFile(path string) {
 		return
 	}
 
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+	if w.closed {
+		return // shutting down: leave the file for the next run
+	}
 	select {
 	case w.eventCh <- ev:
 		os.Remove(path) // only delete after successful send

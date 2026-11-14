@@ -133,7 +133,9 @@ func TurnFingerprint(e TransitionNotificationEvent) string {
 		if hash := strings.TrimSpace(e.LastOutputHash); hash != "" {
 			signal += "|" + hash
 		}
-	case e.OutputHashStale:
+	case e.OutputHashStale && !strings.HasPrefix(strings.TrimSpace(e.LastOutputHash), "pi-run:"):
+		// A pi-run signal names its run for good: the hash TTL never turns it into
+		// a timestamp, or an aborted run's identity would depend on one.
 		signal = "flip|" + flip + "|" + emitInstantSignal(e.Timestamp)
 	case strings.TrimSpace(e.LastOutputHash) != "":
 		signal = "turn|" + strings.TrimSpace(e.LastOutputHash)
@@ -182,7 +184,7 @@ func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (s
 	}
 
 	path := InboxPathFor(parentSessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return event, inboxCommitAdded, err
 	}
 	fileLock, err := AcquireConfigFileLock(path)
@@ -435,7 +437,7 @@ func (s *DeadLetterSink) writeMissedOnce(event TransitionNotificationEvent) {
 	if reason == "" {
 		reason = deadLetterReasonUnresolvable
 	}
-	if err := os.MkdirAll(filepath.Dir(s.missedPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.missedPath), 0o700); err != nil {
 		commsLog.Warn("dead_letter_missed_log_mkdir_failed",
 			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
@@ -466,7 +468,7 @@ func (s *DeadLetterSink) writeMissedOnce(event TransitionNotificationEvent) {
 // across daemon processes. appended is true only for a newly installed record.
 func writeDeadLetter(event TransitionNotificationEvent) (appended bool, err error) {
 	path := DeadLetterPathFor(event.ChildSessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return false, err
 	}
 	fileLock, err := AcquireConfigFileLock(path)
@@ -488,7 +490,7 @@ func writeDeadLetter(event TransitionNotificationEvent) (appended bool, err erro
 	if err != nil {
 		return false, err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return false, err
 	}
@@ -789,13 +791,24 @@ func (n *TransitionNotifier) wakeCommittedInbox(parent *Instance, event Transiti
 			slog.String("parent", parentID), slog.String("tier", event.Tier), slog.String("turn", event.TurnFingerprint))
 		return
 	}
-	_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsUrgent++ })
 	// Issue #1225 Tier-2: now that the record durably landed, wake an IDLE parent
 	// to drain it immediately instead of on its next ~14-min heartbeat. This is
 	// the event-driven trigger — fired the moment the completion is committed,
 	// not on a poll. Best-effort and non-fatal: a dropped nudge is harmless
 	// because this same record is still drained on the parent's next turn.
-	n.fireWakeNudge(parent, event)
+	//
+	// Issue #3131: count the wake only when a line was typed. A record the
+	// gate withholds (not a wake target, busy, debounced, send failed) is
+	// counted as gated, so `inbox stats` never reports a wake that did not
+	// happen.
+	if n.fireWakeNudge(parent, event) {
+		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsUrgent++ })
+		return
+	}
+	_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsGated++ })
+	commsLog.Debug("wake_nudge_gated",
+		slog.String("parent", parentID), slog.String("target_kind", event.TargetKind),
+		slog.Bool("wake_target", isWakeTarget(parent, event.TargetKind)), slog.String("turn", event.TurnFingerprint))
 }
 
 // pendingSameRecord reports whether the parent's inbox already holds this

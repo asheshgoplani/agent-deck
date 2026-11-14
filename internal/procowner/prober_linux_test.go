@@ -236,3 +236,31 @@ func TestLinuxProber_CommandsReadsArgvAndParent(t *testing.T) {
 	assert.Equal(t, ProcCommand{PPID: 1, Args: []string{"/usr/local/bin/opencode", "serve", "--service"}}, table[4242])
 	assert.True(t, isOpenCodeSharedService(table[4242].Args))
 }
+
+// Issue #2921: reading /proc/<pid>/stat of a process that exits between the
+// open and the read fails with ESRCH, not ENOENT. That is the kernel saying the
+// task behind the entry is gone, so it is death, not an unreadable identity:
+// classifying it as unknown made a restart racing its own old process's exit
+// refuse with "identity unreadable ... read /proc/<pid>/stat: no such process".
+// A real permission error stays unknown.
+func TestLinuxProber_StatReadESRCHIsDeath(t *testing.T) {
+	restore := readProcFile
+	t.Cleanup(func() { readProcFile = restore })
+
+	readProcFile = func(name string) ([]byte, error) {
+		return nil, &os.PathError{Op: "read", Path: name, Err: syscall.ESRCH}
+	}
+	_, err := LinuxProber{}.Inspect(4242)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrNoProcess), "ESRCH on read must be ErrNoProcess, got %v", err)
+	assert.False(t, errors.Is(err, ErrUnreadable))
+	assert.Equal(t, StateGone, VerifyMember(LinuxProber{}, Member{PID: 4242, StartID: "1"}).State)
+
+	readProcFile = func(name string) ([]byte, error) {
+		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.EACCES}
+	}
+	_, err = LinuxProber{}.Inspect(4242)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrUnreadable))
+	assert.False(t, errors.Is(err, ErrNoProcess))
+}

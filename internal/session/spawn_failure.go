@@ -312,11 +312,9 @@ func (i *Instance) startFastDeathWatcher(command string, gen uint64, wake <-chan
 	lifecycleLogPath := GetSessionIDLifecycleLogPath()
 	failureDir := spawnFailureDir()
 	exitReceiptPath := i.trackedCommandExitReceiptPath()
-	i.spawnWatchers.Add(1)
-	go func() {
-		defer i.spawnWatchers.Done()
+	i.goSpawnWatcher(func() {
 		i.watchForFastDeath(command, gen, wake, sess, id, tool, logger, lifecycleLogPath, failureDir, probeTool, probeMarker, exitReceiptPath)
-	}()
+	})
 }
 
 // waitForFastDeathWatchers blocks until every goroutine a spawn started and
@@ -471,19 +469,21 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 		// part that must be ordered against teardown, not the diagnostics.
 		if writeErr != nil {
 			logger.Warn("spawn_failure_record_write_failed",
-				slog.String("instance_id", logging.SanitizeValue(id)),
-				slog.String("error", logging.SanitizeValue(writeErr.Error())))
+				slog.String("instance_id", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(id), "\n", ""), "\r", "")),
+				slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(writeErr.Error()), "\n", ""), "\r", "")))
 		}
 		// Every value here is session-supplied: the tool and command come from
 		// user config, and dying_output is raw captured pane content — newlines
 		// and control characters in it would otherwise forge log records
-		// (CodeQL go/log-injection).
+		// (CodeQL go/log-injection). Secrets are redacted first (env values,
+		// then credential-shaped options); the outer ReplaceAll pair is the
+		// line-break strip in the form CodeQL models.
 		logger.Error("spawn_died_fast",
-			slog.String("instance_id", logging.SanitizeValue(id)),
-			slog.String("tool", logging.SanitizeValue(tool)),
-			slog.String("command", logging.SanitizeValue(redactSpawnFailureDiagnostic(command))),
+			slog.String("instance_id", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(id), "\n", ""), "\r", "")),
+			slog.String("tool", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(tool), "\n", ""), "\r", "")),
+			slog.String("command", strings.ReplaceAll(strings.ReplaceAll(logging.RedactCommandEnv(redactSpawnFailureDiagnostic(command)), "\n", ""), "\r", "")),
 			slog.Int64("elapsed_ms", elapsed),
-			slog.String("dying_output", logging.SanitizeValue(redactSpawnFailureDiagnostic(lastSnapshot))))
+			slog.String("dying_output", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(redactSpawnFailureDiagnostic(lastSnapshot)), "\n", ""), "\r", "")))
 		return
 	}
 }

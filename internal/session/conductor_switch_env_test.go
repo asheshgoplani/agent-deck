@@ -99,7 +99,7 @@ TELEGRAM_STATE_DIR = "/srv/state/ops/telegram"
 
 	switchConductorTo(t, inst, "beta")
 
-	env := inst.buildEnvSourceCommand()
+	env := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 	if !strings.Contains(env, "export TELEGRAM_STATE_DIR='/srv/state/ops/telegram'") {
 		t.Errorf("after the switch the conductor env TELEGRAM_STATE_DIR is missing; prelude = %q", env)
 	}
@@ -129,7 +129,7 @@ TELEGRAM_STATE_DIR = "/srv/state/ops/telegram"
 	if got := worker.ResolveConductorName(); got != "" {
 		t.Fatalf("unflagged worker in the conductor dir resolved to conductor %q", got)
 	}
-	env := worker.buildEnvSourceCommand()
+	env := expandLaunchEnvSources(worker.buildEnvSourceCommand())
 	if strings.Contains(env, "/srv/state/ops/telegram") || !strings.Contains(env, "unset TELEGRAM_STATE_DIR") {
 		t.Errorf("worker must not get the conductor's telegram env and must be stripped; prelude = %q", env)
 	}
@@ -178,7 +178,7 @@ func TestConductorSwitch_ChannelStateFollowsConductor(t *testing.T) {
 	if target, _ := os.Readlink(anchor); target != realPath(t, oldState) {
 		t.Errorf("link target = %q, want %q", target, oldState)
 	}
-	env := inst.buildEnvSourceCommand()
+	env := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 	if !strings.Contains(env, "export TELEGRAM_STATE_DIR='"+anchor+"'") {
 		t.Errorf("switched conductor is not pointed at its telegram state; prelude = %q", env)
 	}
@@ -220,7 +220,7 @@ func TestConductorSwitch_ChannelStateFollowsConductor(t *testing.T) {
 	// pointer: single consumer.
 	plain := NewInstanceWithGroupAndTool("plain", t.TempDir(), "team/ops", "claude")
 	plain.Account = "beta"
-	if penv := plain.buildEnvSourceCommand(); strings.Contains(penv, anchor) || !strings.Contains(penv, "unset TELEGRAM_STATE_DIR") {
+	if penv := expandLaunchEnvSources(plain.buildEnvSourceCommand()); strings.Contains(penv, anchor) || !strings.Contains(penv, "unset TELEGRAM_STATE_DIR") {
 		t.Errorf("plain session on the new account must not reach the bot state; prelude = %q", penv)
 	}
 }
@@ -234,7 +234,7 @@ func TestConductorSwitch_ConductorDirStateIsUsedOnStart(t *testing.T) {
 	condDir, _ := ConductorNameDir("ops")
 	writeChannelState(t, filepath.Join(condDir, "telegram"))
 
-	env := inst.buildEnvSourceCommand()
+	env := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 	if !strings.Contains(env, "export TELEGRAM_STATE_DIR='"+filepath.Join(condDir, "telegram")+"'") {
 		t.Errorf("conductor not pointed at conductor/ops/telegram; prelude = %q", env)
 	}
@@ -252,7 +252,7 @@ TELEGRAM_STATE_DIR = "/srv/state/ops/telegram"
 	if _, err := os.Lstat(filepath.Join(condDir, "telegram")); !os.IsNotExist(err) {
 		t.Errorf("configured state dir: no link may be made; lstat err = %v", err)
 	}
-	env := inst.buildEnvSourceCommand()
+	env := expandLaunchEnvSources(inst.buildEnvSourceCommand())
 	if strings.Count(env, "TELEGRAM_STATE_DIR=") != 1 {
 		t.Errorf("only the configured TELEGRAM_STATE_DIR may be exported; prelude = %q", env)
 	}
@@ -309,7 +309,7 @@ func TestConductorSwitch_ConductorStateWinsOverAccountState(t *testing.T) {
 	if target, err := os.Readlink(anchor); err != nil || target != realPath(t, oldState) {
 		t.Fatalf("anchor = %q, %v; want link -> %s", target, err, oldState)
 	}
-	if env := inst.buildEnvSourceCommand(); !strings.Contains(env, "export TELEGRAM_STATE_DIR='"+anchor+"'") {
+	if env := expandLaunchEnvSources(inst.buildEnvSourceCommand()); !strings.Contains(env, "export TELEGRAM_STATE_DIR='"+anchor+"'") {
 		t.Errorf("conductor would read the new account's bot state; prelude = %q", env)
 	}
 }
@@ -355,7 +355,7 @@ TELEGRAM_STATE_DIR = "/srv/state/team-ops/telegram"
 	if inst.storedConductorName() != "team-ops" {
 		t.Errorf("adopted %q, want team-ops", inst.storedConductorName())
 	}
-	if env := inst.buildEnvSourceCommand(); !strings.Contains(env, "export TELEGRAM_STATE_DIR='/srv/state/team-ops/telegram'") {
+	if env := expandLaunchEnvSources(inst.buildEnvSourceCommand()); !strings.Contains(env, "export TELEGRAM_STATE_DIR='/srv/state/team-ops/telegram'") {
 		t.Errorf("conductor in its alias dir lost its env; prelude = %q", env)
 	}
 }
@@ -373,7 +373,7 @@ func TestConductorSwitch_DiscordIsReportedNotPointed(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(condDir, "discord")); !os.IsNotExist(err) {
 		t.Errorf("discord state anchored although it is never exported; lstat err = %v", err)
 	}
-	if env := inst.buildEnvSourceCommand(); strings.Contains(env, "DISCORD_STATE_DIR") {
+	if env := expandLaunchEnvSources(inst.buildEnvSourceCommand()); strings.Contains(env, "DISCORD_STATE_DIR") {
 		t.Errorf("DISCORD_STATE_DIR exported automatically; prelude = %q", env)
 	}
 	if !strings.Contains(strings.Join(result.Warnings, "\n"), "DISCORD_STATE_DIR") {
@@ -399,7 +399,7 @@ func TestConductorSwitch_DanglingAnchorFailsClosedAndWarns(t *testing.T) {
 	}
 	condDir, _ := ConductorNameDir("ops")
 	anchor := filepath.Join(condDir, "telegram")
-	if env := inst.buildEnvSourceCommand(); !strings.Contains(env, "export TELEGRAM_STATE_DIR='"+anchor+"'") {
+	if env := expandLaunchEnvSources(inst.buildEnvSourceCommand()); !strings.Contains(env, "export TELEGRAM_STATE_DIR='"+anchor+"'") {
 		t.Errorf("dangling anchor: conductor falls back to the account's bot state; prelude = %q", env)
 	}
 	if w := inst.ChannelStateWarnings(); len(w) != 1 || !strings.Contains(w[0], anchor) {

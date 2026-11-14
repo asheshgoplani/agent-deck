@@ -36,7 +36,7 @@ type StatusEventWatcher struct {
 // Call Start() in a goroutine, then read from EventCh().
 func NewStatusEventWatcher(filterInstanceID string) (*StatusEventWatcher, error) {
 	eventsDir := GetEventsDir()
-	if err := os.MkdirAll(eventsDir, 0755); err != nil {
+	if err := os.MkdirAll(eventsDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create events dir: %w", err)
 	}
 

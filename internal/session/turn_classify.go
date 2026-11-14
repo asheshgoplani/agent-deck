@@ -83,6 +83,38 @@ func SendEnvelope(senderID string) string {
 	return sendEnvelopePrefix + strings.TrimSpace(senderID) + "]"
 }
 
+// pastedContentTag opens the wrapper Claude Code stores around a prompt that
+// arrived as a paste (a long `session send --message-file`, issue #3131).
+const pastedContentTag = "<pasted_content"
+
+// parseSendEnvelope reports whether a prompt starts with a send envelope and
+// returns the sender. The envelope must be the prompt's first non-empty line,
+// or the first non-empty line inside a LEADING <pasted_content …> wrapper. A
+// wrapper that is not at the start of the prompt, or whose first line is
+// something else, is not a send: a person who pastes text that merely
+// contains an envelope further down is still a human prompt.
+func parseSendEnvelope(text string) (ok bool, fromID string) {
+	text = strings.TrimSpace(text)
+	if rest, found := strings.CutPrefix(text, pastedContentTag); found {
+		if rest == "" || (rest[0] != '>' && rest[0] != ' ' && rest[0] != '\t') {
+			return false, ""
+		}
+		end := strings.IndexByte(rest, '>')
+		if end < 0 || strings.ContainsRune(rest[:end], '\n') {
+			return false, ""
+		}
+		text = strings.TrimSpace(rest[end+1:])
+	}
+	rest, found := strings.CutPrefix(text, sendEnvelopePrefix)
+	if !found {
+		return false, ""
+	}
+	if end := strings.IndexByte(rest, ']'); end > 0 {
+		return true, strings.TrimSpace(rest[:end])
+	}
+	return true, ""
+}
+
 // HasSendEnvelope reports whether message already starts with an envelope
 // (a forwarded or re-sent message), so it is never tagged twice.
 func HasSendEnvelope(message string) bool {
@@ -116,6 +148,11 @@ type TurnFacts struct {
 	// Pending means the Stop hook outran the transcript flush: the newest
 	// main-chain record is a user record with no assistant reply yet.
 	Pending bool
+	// Compaction means nothing but a context compaction follows the last
+	// turn (Claude Code's idle auto-compaction: a compact_boundary and an
+	// isCompactSummary user record, no prompt, no reply). It is not a turn
+	// and carries nothing for the parent.
+	Compaction bool
 	// FinalTextPending means a tool call or tool result is newer than the
 	// assistant text found (text X, then a tool call, then the final text Y
 	// not yet flushed, #1186): Text and UUID name interim text, not the
@@ -148,10 +185,12 @@ func (f TurnFacts) Signal() string {
 // for builds that omit them.
 type transcriptTurnRecord struct {
 	Type        string          `json:"type"`
+	Subtype     string          `json:"subtype"`
 	UUID        string          `json:"uuid"`
 	Timestamp   json.RawMessage `json:"timestamp"` // decoded leniently: a non-string value never drops the record
 	IsSidechain bool            `json:"isSidechain"`
 	IsMeta      bool            `json:"isMeta"`
+	IsCompact   bool            `json:"isCompactSummary"`
 	TurnOrigin  string          `json:"turnOrigin"`
 	Origin      struct {
 		Kind string `json:"kind"`
@@ -185,19 +224,9 @@ func contentHasBlock(content json.RawMessage, blockType string) bool {
 	return false
 }
 
-// ScanTranscriptTurn reads the just-finished main-chain turn from the
-// transcript tail. A missing or unreadable file returns an error so callers
-// fall back to the legacy signal.
-func ScanTranscriptTurn(path string) (TurnFacts, error) {
-	lines, err := TranscriptTailLines(path, turnScanTailLines)
-	if err != nil {
-		return TurnFacts{}, err
-	}
-	return classifyTranscriptTail(lines), nil
-}
-
-// classifyTranscriptTail is ScanTranscriptTurn on already-read lines (oldest
-// first). Exposed for tests with fixture transcripts.
+// classifyTranscriptTail classifies the just-finished main-chain turn from
+// already-read transcript tail lines (oldest first). Exposed for tests with
+// fixture transcripts.
 func classifyTranscriptTail(lines []string) TurnFacts {
 	var facts TurnFacts
 	foundAssistant := false
@@ -229,7 +258,20 @@ func classifyTranscriptTail(lines []string) TurnFacts {
 			facts.TextHash = turnTextHash(text)
 			facts.Question = textAsksParent(text)
 			facts.Done, facts.HasDone = ScanDoneSentinel(text)
+		case "system":
+			if rec.Subtype == "compact_boundary" && !foundAssistant && !facts.FinalTextPending {
+				facts.Compaction = true
+				return facts
+			}
 		case "user":
+			if rec.IsCompact && !foundAssistant && !facts.FinalTextPending {
+				// The compaction summary, not a prompt: no reply is coming.
+				// Tool records after it mean a turn ran on past a mid-turn
+				// compaction (it may be blocked on a permission prompt), so
+				// that tail is classified as before.
+				facts.Compaction = true
+				return facts
+			}
 			if userRecordIsToolResult(rec.Message.Content) {
 				if !foundAssistant {
 					facts.FinalTextPending = true
@@ -283,18 +325,14 @@ func transcriptTypedCommand(lines []string) bool {
 // classifyTrigger maps the user record that started a turn to a trigger kind.
 func classifyTrigger(rec transcriptTurnRecord) (trigger, fromID string) {
 	text := strings.TrimSpace(transcriptText(rec.Message.Content))
+	isSend, from := parseSendEnvelope(text)
 	switch {
 	case rec.TurnOrigin == "task_notification", rec.Origin.Kind == "task-notification",
 		strings.HasPrefix(text, "<task-notification>"):
 		return TurnTriggerTask, ""
-	case strings.HasPrefix(text, sendEnvelopePrefix):
-		rest := strings.TrimPrefix(text, sendEnvelopePrefix)
-		if end := strings.IndexByte(rest, ']'); end > 0 {
-			return TurnTriggerSend, strings.TrimSpace(rest[:end])
-		}
-		return TurnTriggerSend, ""
-	case strings.HasPrefix(text, "[INBOX"), strings.HasPrefix(text, "Stop hook feedback:"),
-		strings.HasPrefix(text, "[HEARTBEAT]"), strings.HasPrefix(text, "[agent-deck inbox]"):
+	case isSend:
+		return TurnTriggerSend, from
+	case hasInboxWakePrefix(text), strings.HasPrefix(text, "Stop hook feedback:"):
 		return TurnTriggerInbox, ""
 	case rec.IsMeta, strings.HasPrefix(text, "<system-reminder>"), strings.HasPrefix(text, "<local-command"),
 		strings.HasPrefix(text, "<command-name>"):

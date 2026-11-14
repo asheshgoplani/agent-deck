@@ -32,6 +32,11 @@ type SetupWizard struct {
 
 	// Theme setting
 	selectedTheme int // 0=dark, 1=light
+
+	// reportKey is the main-screen key of "Report a problem" (hotkey
+	// report_problem), named on the Ready step so new users learn it exists.
+	// Empty (the user unbound it) drops the line.
+	reportKey string
 }
 
 // Wizard steps
@@ -60,7 +65,22 @@ func NewSetupWizard() *SetupWizard {
 		useDefaultConfigDir: true,
 		configDirInput:      configInput,
 		selectedTheme:       0, // Default to dark
+		reportKey:           defaultHotkeyBindings[hotkeyReportProblem],
 	}
+}
+
+// SetReportKey sets the key the Ready step names for "Report a problem".
+func (w *SetupWizard) SetReportKey(key string) {
+	w.reportKey = strings.TrimSpace(key)
+}
+
+// ReportTip is the onboarding line about reporting a problem, or "" when the
+// action is unbound.
+func (w *SetupWizard) ReportTip() string {
+	if w.reportKey == "" {
+		return ""
+	}
+	return "Found a bug or have an idea? Press " + w.reportKey + " on the main screen to report it as a GitHub issue."
 }
 
 // Show makes the wizard visible
@@ -379,6 +399,12 @@ func (w *SetupWizard) View() string {
 		content.WriteString("\n")
 		content.WriteString(lipgloss.NewStyle().Foreground(ColorCyan).Render("  - Claude Code settings"))
 		content.WriteString("\n\n")
+		// Esc here skips the rest of the wizard, so the report tip is on
+		// this step as well as on Ready.
+		if tip := w.ReportTip(); tip != "" {
+			content.WriteString(labelStyle.Render(tip))
+			content.WriteString("\n\n")
+		}
 		content.WriteString(subtitleStyle.Render("Press Enter to continue or Esc to use defaults."))
 		content.WriteString("\n\n")
 		content.WriteString(helpStyle.Render("Enter: continue"))
@@ -532,6 +558,10 @@ func (w *SetupWizard) View() string {
 		}
 
 		content.WriteString("\n")
+		if tip := w.ReportTip(); tip != "" {
+			content.WriteString(labelStyle.Render(tip))
+			content.WriteString("\n\n")
+		}
 		content.WriteString(subtitleStyle.Render("Press Enter to save and start using Agent Deck!"))
 		content.WriteString("\n\n")
 		content.WriteString(helpStyle.Render(renderDialogFooterRows(helpWidth, 2, " | ", []string{"Enter: save & finish", "Esc: back"})))

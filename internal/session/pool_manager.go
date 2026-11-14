@@ -80,16 +80,24 @@ func InitializeGlobalPool(ctx context.Context, config *UserConfig, sessions []*I
 		return nil, err
 	}
 
-	// FIRST: Discover existing sockets from another agent-deck instance
-	// This allows multiple TUI instances to share the same pool
-	discovered := pool.DiscoverExistingSockets()
-	if discovered > 0 {
-		poolMgrLog.Info("pool_sockets_reused", slog.Int("count", discovered))
-	}
-
 	// Get all available MCPs from config.toml
 	availableMCPs := GetAvailableMCPs()
 	poolMgrLog.Info("pool_mcps_available", slog.Int("count", len(availableMCPs)))
+
+	// Discover sockets another agent-deck instance already serves, so several
+	// TUI instances share one pool. Only sockets serving this config's exact
+	// definition of a pooled name are adopted (#2966): another config home's
+	// process of the same name, with its env and credentials, is never used.
+	specs := make(map[string]mcppool.SocketSpec)
+	for mcpName, def := range availableMCPs {
+		if pool.ShouldPool(mcpName) {
+			specs[mcpName] = mcppool.SocketSpec{Command: def.Command, Args: def.Args, Env: def.Env}
+		}
+	}
+	discovered := pool.DiscoverExistingSockets(specs)
+	if discovered > 0 {
+		poolMgrLog.Info("pool_sockets_reused", slog.Int("count", discovered))
+	}
 
 	// When pool_all = true, pool ALL available MCPs (not just those in use)
 	// This ensures any MCP can be attached via socket immediately

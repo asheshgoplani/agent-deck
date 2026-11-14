@@ -27,15 +27,9 @@ func (g *promptGuardTarget) check(raw string, captureErr error) error {
 		g.refused = true
 		return fmt.Errorf("%w: pane unreadable: %v", errInputPromptUnavailable, captureErr)
 	}
-	tool := g.tool
-	if session.IsClaudeCompatible(tool) {
-		tool = "claude"
-	} else if session.IsCodexCompatible(tool) {
-		tool = "codex"
-	}
-	detector := tmux.NewPromptDetector(tool)
+	detector := tmux.NewPromptDetector(session.PromptDetectorTool(g.tool))
 	content := tmux.StripANSI(raw)
-	if detector.ClassifySubstate(content) == tmux.SubstateInteractiveMenu {
+	if session.InteractiveMenuOpen(g.tool, content) {
 		g.menuOpen = true
 		g.refused = true
 		if g.typedBatches > 0 {
@@ -75,14 +69,8 @@ func (g *promptGuardTarget) checkAfterTyping(raw string, captureErr error) error
 	if captureErr != nil {
 		return nil
 	}
-	tool := g.tool
-	if session.IsClaudeCompatible(tool) {
-		tool = "claude"
-	} else if session.IsCodexCompatible(tool) {
-		tool = "codex"
-	}
 	content := tmux.StripANSI(raw)
-	if tmux.NewPromptDetector(tool).ClassifySubstate(content) != tmux.SubstateInteractiveMenu {
+	if !session.InteractiveMenuOpen(g.tool, content) {
 		return nil
 	}
 	g.menuOpen = true

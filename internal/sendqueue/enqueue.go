@@ -221,7 +221,13 @@ func SpawnWorker(profile, sessionID string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	return cmd.Process.Release()
+	// Reap the worker when it exits. Release alone leaves a long-lived caller
+	// (the daemon draining a group queue, the watcher host) with a zombie per
+	// worker; a short-lived CLI exits first and init reaps it instead. Nobody
+	// joins this goroutine: it ends with the worker, which outlives no caller
+	// on purpose (it is detached with Setsid).
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // KickWorkers starts a worker for every target in dir (or only sessionID)

@@ -3,7 +3,10 @@ package mcppool
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,10 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
@@ -47,6 +52,14 @@ type SocketProxy struct {
 	mcpStdout  io.ReadCloser
 
 	listener net.Listener
+	// legacyListener serves the pre-#2966 name-only path mcp-<name>.sock
+	// for this proxy's process when no live socket holds that path, so
+	// sessions started by an older version, whose mcp-proxy keeps dialing
+	// that path, reconnect after an upgrade. nil when another process holds
+	// the path or it could not be claimed.
+	legacyListener net.Listener
+	// clientSeq numbers clients across both listeners.
+	clientSeq atomic.Int64
 
 	clients   map[string]net.Conn
 	clientsMu sync.RWMutex
@@ -155,12 +168,188 @@ var dangerousEnvVars = map[string]bool{
 }
 
 // mcpSocketDir returns a user-private directory for MCP sockets instead of /tmp.
+//
+// When the data dir cannot be resolved it falls back to
+// "<TempDir>/agentdeck-<uid>" (the same path as before, so a TUI and CLI of
+// one user still meet there), but only after checking that directory is a
+// real 0700 directory we own; a planted symlink or foreign-owned directory is
+// refused in favour of a fresh private one (agentpaths.SecureTempDir).
 func mcpSocketDir() string {
 	dir, err := agentpaths.EffectiveDataPath("sockets", "sockets")
 	if err != nil {
-		return filepath.Join(os.TempDir(), fmt.Sprintf("agentdeck-%d", os.Getuid()))
+		return privateTempFallback("agentdeck")
 	}
 	return dir
+}
+
+// privateTempFallback returns agentpaths.SecureTempDir(prefix) and logs its
+// one-time notice (mode tightened, unsafe path refused).
+func privateTempFallback(prefix string) string {
+	dir, note := agentpaths.SecureTempDir(prefix)
+	if note != "" {
+		proxyLog.Warn("private_temp_dir_notice", slog.String("dir", dir), slog.String("detail", note))
+	}
+	return dir
+}
+
+// fallbackLogDir is the log directory used when the data dir is unresolvable:
+// a subdirectory of the per-user private temp dir, never a shared
+// "<TempDir>/agent-deck" another user could pre-create or symlink.
+func fallbackLogDir(sub string) string {
+	return filepath.Join(privateTempFallback("agentdeck"), "logs", sub)
+}
+
+// SocketFileName is the on-disk name of the pool socket that serves MCP name
+// with this command, args and env: "mcp-<name>-<identity>.sock".
+//
+// Every config home of a user shares the socket dir. Keying the socket by name
+// alone let one home attach to another home's process of the same name, with
+// that home's env and credentials (#2966). With the definition in the name, a
+// live socket is reused only by a home that would run exactly the same
+// process; a home with a different definition starts its own.
+//
+// Long names are shortened to fit the unix socket path limit (socketPathIn).
+func SocketFileName(name, command string, args []string, env map[string]string) string {
+	return filepath.Base(socketPathIn(mcpSocketDir(), name, command, args, env))
+}
+
+// sunPathBudget is the longest unix socket path agent-deck creates: macOS
+// allows 104 bytes in sun_path including the trailing NUL (Linux 108). The
+// stricter limit is used on every platform.
+const sunPathBudget = 103
+
+// socketPathIn is the pool socket path in dir for MCP name with this command,
+// args and env. It is normally dir/mcp-<name>-<identity>.sock. When that
+// would exceed sunPathBudget, the name is cut to a prefix plus a digest of
+// the full name, so long names still bind. If even that cannot fit, the
+// over-long path is returned and NewSocketProxy refuses it with a clear
+// error.
+func socketPathIn(dir, name, command string, args []string, env map[string]string) string {
+	id := socketIdentity(command, args, env)
+	full := filepath.Join(dir, fmt.Sprintf("mcp-%s-%s.sock", name, id))
+	if len(full) <= sunPathBudget {
+		return full
+	}
+	sum := sha256.Sum256([]byte(name))
+	digest := hex.EncodeToString(sum[:])[:8]
+	// room for the name part: budget minus dir, "/mcp-", "-<id>.sock"
+	room := sunPathBudget - len(dir) - len("/mcp-") - len("-"+id+".sock")
+	keep := room - len("_"+digest)
+	if keep < 0 {
+		return full
+	}
+	if keep > len(name) {
+		keep = len(name)
+	}
+	for keep > 0 && keep < len(name) && !utf8.RuneStart(name[keep]) {
+		keep--
+	}
+	return filepath.Join(dir, fmt.Sprintf("mcp-%s_%s-%s.sock", name[:keep], digest, id))
+}
+
+// legacySocketPath is the pre-#2966 name-only pool socket path in dir.
+func legacySocketPath(dir, name string) string {
+	return filepath.Join(dir, fmt.Sprintf("mcp-%s.sock", name))
+}
+
+// socketRefused reports whether a dial to path is refused: a socket file
+// with nothing listening. A timeout or a full accept queue means a live but
+// busy owner, and is not refused.
+func socketRefused(path string) bool {
+	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		return false
+	}
+	return errors.Is(err, syscall.ECONNREFUSED)
+}
+
+// socketIdentity is a short digest of command, args and env (keys sorted).
+// Each field is length-prefixed, so different splits never hash alike. Twelve
+// hex digits keep the socket path well inside the sun_path limit.
+func socketIdentity(command string, args []string, env map[string]string) string {
+	h := sha256.New()
+	field := func(s string) { fmt.Fprintf(h, "%d:%s;", len(s), s) }
+	field(command)
+	fmt.Fprintf(h, "a%d;", len(args))
+	for _, a := range args {
+		field(a)
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintf(h, "e%d;", len(keys))
+	for _, k := range keys {
+		field(k)
+		field(env[k])
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// verifyOwnedSocket checks that path is a unix socket (not a symlink) owned by
+// the current uid, inside a directory owned by the current uid that grants no
+// write access to group or other. Only such sockets are adopted: anything else
+// could be a socket another local user planted to intercept MCP traffic.
+func verifyOwnedSocket(path string) error {
+	uid := os.Getuid()
+	dir := filepath.Dir(path)
+	dfi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !dfi.IsDir() {
+		return fmt.Errorf("socket dir %s is not a directory", dir)
+	}
+	dst, ok := dfi.Sys().(*syscall.Stat_t)
+	if !ok || int(dst.Uid) != uid {
+		return fmt.Errorf("socket dir %s is not owned by uid %d", dir, uid)
+	}
+	if dfi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("socket dir %s is writable by group/other (%v)", dir, dfi.Mode().Perm())
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("%s is not a unix socket (%v)", path, fi.Mode().Type())
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) != uid {
+		return fmt.Errorf("socket %s is not owned by uid %d", path, uid)
+	}
+	return nil
+}
+
+// removeStaleOwnSocket removes path only when it is this user's own socket
+// in the private dir and nothing answers on it: a live socket belongs to the
+// process serving it (a proxy adopted from another agent-deck), and one that
+// fails verification is not ours to remove.
+func removeStaleOwnSocket(path string) {
+	if verifyOwnedSocket(path) == nil && !isSocketAlive(path) {
+		_ = os.Remove(path)
+	}
+}
+
+// ExternalSocketPath returns the pool socket for mcpName when another
+// agent-deck process of this user (normally the TUI) is serving it with the
+// same command, args and env: the socket must sit in this user's private pool
+// socket dir, be owned by this uid, and accept connections. Otherwise it
+// returns "".
+func ExternalSocketPath(mcpName, command string, args []string, env map[string]string) string {
+	socketPath := socketPathIn(mcpSocketDir(), mcpName, command, args, env)
+	if err := verifyOwnedSocket(socketPath); err != nil {
+		if !os.IsNotExist(err) {
+			proxyLog.Warn("external_socket_rejected", slog.String("mcp", mcpName), slog.String("error", err.Error()))
+		}
+		return ""
+	}
+	if !isSocketAlive(socketPath) {
+		return ""
+	}
+	return socketPath
 }
 
 func NewSocketProxy(ctx context.Context, name, command string, args []string, env map[string]string) (*SocketProxy, error) {
@@ -168,10 +357,22 @@ func NewSocketProxy(ctx context.Context, name, command string, args []string, en
 
 	sockDir := mcpSocketDir()
 	_ = os.MkdirAll(sockDir, 0700)
-	socketPath := filepath.Join(sockDir, fmt.Sprintf("mcp-%s.sock", name))
+	socketPath := socketPathIn(sockDir, name, command, args, env)
+	if len(socketPath) > sunPathBudget {
+		cancel()
+		return nil, fmt.Errorf("pool socket path %s is too long (%d bytes, limit %d): use a shorter data dir (XDG_DATA_HOME)", socketPath, len(socketPath), sunPathBudget)
+	}
 
-	// Check if socket already exists and is alive (another agent-deck instance owns it)
-	if isSocketAlive(socketPath) {
+	// Check if socket already exists and is alive (another agent-deck
+	// instance of this user owns it). A socket we do not own, or one in a
+	// directory others can write, is never reused and never unlinked: it is
+	// refused, so a live socket of this user is not removed from under it.
+	verifyErr := verifyOwnedSocket(socketPath)
+	if verifyErr != nil && !os.IsNotExist(verifyErr) {
+		cancel()
+		return nil, fmt.Errorf("refusing pool socket %s: %w", socketPath, verifyErr)
+	}
+	if verifyErr == nil && isSocketAlive(socketPath) {
 		proxyLog.Info("socket_reuse_external", slog.String("mcp", name))
 		// Return a proxy that just points to the existing socket (no process to manage).
 		// nextID and idMap zero values are ready to use without explicit initialization.
@@ -188,8 +389,10 @@ func NewSocketProxy(ctx context.Context, name, command string, args []string, en
 		}, nil
 	}
 
-	// Socket doesn't exist or is stale - remove and create fresh
-	os.Remove(socketPath)
+	// Socket doesn't exist or is our own stale one - remove and create fresh
+	if verifyErr == nil {
+		removeStaleOwnSocket(socketPath)
+	}
 
 	return &SocketProxy{
 		name:       name,
@@ -223,10 +426,11 @@ func (p *SocketProxy) Start() error {
 
 	logDir, err := agentpaths.EffectiveDataPath(filepath.Join("logs", "mcppool"), "logs")
 	if err != nil {
-		logDir = filepath.Join(os.TempDir(), "agent-deck", "logs", "mcppool")
+		logDir = fallbackLogDir("mcppool")
 	}
 	_ = os.MkdirAll(logDir, 0700)
-	p.logFile = filepath.Join(logDir, fmt.Sprintf("%s_socket.log", p.name))
+	// One log per definition: two homes may run the same name at once.
+	p.logFile = filepath.Join(logDir, fmt.Sprintf("%s-%s_socket.log", p.name, socketIdentity(p.command, p.args, p.env)))
 
 	logWriter, err := os.Create(p.logFile)
 	if err != nil {
@@ -316,7 +520,12 @@ func (p *SocketProxy) Start() error {
 
 	proxyLog.Info("socket_listening", slog.String("mcp", p.name), slog.String("path", p.socketPath))
 
-	go p.acceptConnections()
+	p.listenLegacyAlias()
+
+	go p.acceptConnections(listener)
+	if p.legacyListener != nil {
+		go p.acceptConnections(p.legacyListener)
+	}
 	go p.broadcastResponses()
 
 	p.SetStatus(StatusRunning)
@@ -332,10 +541,55 @@ func (p *SocketProxy) Start() error {
 // unbounded connections (e.g., from reconnect loops) can leak gigabytes of RAM.
 const maxClientsPerProxy = 100
 
-func (p *SocketProxy) acceptConnections() {
-	clientCounter := 0
+// listenLegacyAlias also serves this proxy on the pre-#2966 name-only path
+// (mcp-<name>.sock) when that path is free: absent, or this user's socket
+// with nothing listening (connection refused). Sessions started by an older
+// version keep "agent-deck mcp-proxy <dir>/mcp-<name>.sock" in their MCP
+// config and redial it; without this they lose the MCP after an upgrade
+// until restarted. The first definition of a name to start claims it; a live
+// holder (an old version still running, or another home's pool) is left
+// alone. New sessions and the CLI never get this path: they use the
+// definition-keyed socketPath, so a different definition is never matched to
+// another home's process through it.
+func (p *SocketProxy) listenLegacyAlias() {
+	legacy := legacySocketPath(filepath.Dir(p.socketPath), p.name)
+	if legacy == p.socketPath || len(legacy) > sunPathBudget {
+		return
+	}
+	switch err := verifyOwnedSocket(legacy); {
+	case err == nil:
+		if !socketRefused(legacy) {
+			return
+		}
+		_ = os.Remove(legacy)
+	case os.IsNotExist(err):
+	default:
+		proxyLog.Warn("legacy_socket_rejected", slog.String("mcp", p.name), slog.String("error", err.Error()))
+		return
+	}
+	l, err := net.Listen("unix", legacy)
+	if err != nil {
+		// Another instance claimed it first.
+		proxyLog.Debug("legacy_socket_alias_skipped", slog.String("mcp", p.name), slog.String("error", err.Error()))
+		return
+	}
+	_ = os.Chmod(legacy, 0600)
+	p.legacyListener = l
+	proxyLog.Info("legacy_socket_alias", slog.String("mcp", p.name), slog.String("path", legacy))
+}
+
+func (p *SocketProxy) closeListeners() {
+	if p.listener != nil {
+		p.listener.Close()
+	}
+	if p.legacyListener != nil {
+		p.legacyListener.Close()
+	}
+}
+
+func (p *SocketProxy) acceptConnections(listener net.Listener) {
 	for {
-		conn, err := p.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			select {
 			case <-p.ctx.Done():
@@ -358,8 +612,7 @@ func (p *SocketProxy) acceptConnections() {
 			continue
 		}
 
-		sessionID := fmt.Sprintf("%s-client-%d", p.name, clientCounter)
-		clientCounter++
+		sessionID := fmt.Sprintf("%s-client-%d", p.name, p.clientSeq.Add(1)-1)
 
 		p.clientsMu.Lock()
 		p.clients[sessionID] = conn
@@ -467,10 +720,8 @@ func (p *SocketProxy) broadcastResponses() {
 	// Close all client connections so reconnecting proxies know to retry
 	p.closeAllClientsOnFailure()
 
-	// Close listener so new connections fail fast (will be recreated on restart)
-	if p.listener != nil {
-		p.listener.Close()
-	}
+	// Close listeners so new connections fail fast (will be recreated on restart)
+	p.closeListeners()
 }
 
 // closeAllClientsOnFailure closes all client connections when the MCP process dies.
@@ -577,9 +828,7 @@ func (p *SocketProxy) Stop() error {
 	// Clear in-flight ID mappings to prevent memory leak on shutdown.
 	p.idMap.Clear()
 
-	if p.listener != nil {
-		p.listener.Close()
-	}
+	p.closeListeners()
 
 	// Only kill process and remove socket if we OWN it (mcpProcess != nil)
 	if p.mcpProcess != nil {
@@ -605,8 +854,9 @@ func (p *SocketProxy) Stop() error {
 		os.Remove(p.socketPath)
 		proxyLog.Info("proxy_stopped", slog.String("mcp", p.name))
 	} else {
-		// Clean up external socket files on shutdown to prevent stale sockets
-		os.Remove(p.socketPath)
+		// Clean up a stale external socket file on shutdown; a live one still
+		// belongs to the agent-deck process serving it.
+		removeStaleOwnSocket(p.socketPath)
 		proxyLog.Info("external_socket_disconnected", slog.String("mcp", p.name))
 	}
 

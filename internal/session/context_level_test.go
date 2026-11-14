@@ -182,13 +182,13 @@ func TestContextInjectionActive(t *testing.T) {
 		}
 	})
 
-	t.Run("ssh and sandbox still excluded regardless of level", func(t *testing.T) {
+	t.Run("ssh follows the level like any session", func(t *testing.T) {
 		restore := resetUserConfigCache(t, &UserConfig{Launch: LaunchSettings{ContextLevel: ContextLevelFull}})
 		defer restore()
 		ssh := identityTestInstance("claude")
 		ssh.SSHHost = "box"
-		if ssh.ContextInjectionActive() {
-			t.Error("ssh session must stay excluded")
+		if !ssh.ContextInjectionActive() {
+			t.Error("ssh session must inject (ASK-105)")
 		}
 	})
 }

@@ -49,7 +49,6 @@ const handlers = {};
 ext({ on(ev, h) { handlers[ev] = h; } });
 const seq = process.argv.slice(2);
 for (const ev of seq) { await handlers[ev](); }
-await new Promise(r => setTimeout(r, 1500));
 `
 	if err := os.WriteFile(driverPath, []byte(driver), 0o644); err != nil {
 		t.Fatalf("write driver: %v", err)

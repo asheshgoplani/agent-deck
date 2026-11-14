@@ -7,14 +7,385 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Profiles
+### New features
 
-- Each profile's `state.db` now records the profile it belongs to, and agent-deck refuses to open a store for writing when it belongs to another profile (for example a state.db copied into another profile's directory) instead of mixing two profiles' sessions; nothing is written. Read-only views (statusline, remote catalog) only log a warning and keep working. A profile directory reached through a symlink counts as the directory it points at. Existing stores are stamped on their first open. If you renamed or copied a profile directory on purpose, the error prints the one command that clears the stamp.
-- Hook-driven session-id bindings, last-access times, Claude session links and `session set <id> tool-session-id` now write to the profile the session was loaded from. A process that had another profile's store open as its default wrote them there, the same mistake fixed for the restart outcome in #2206.
+- `agent-deck list --no-archived` leaves archived sessions out, a cheaper poll when you only want live ones (#3092).
+- pi: the agent-deck extension v5 can be woken through a local socket instead of typed input, and `pi-hooks status` shows your pi version and whether the socket is on (#3078; thanks @fpmx3bp).
+- The session row that holds the voice mic now shows a mic badge with its state (listening, speaking, muted and so on), for local sessions and sessions under a remote. A collapsed group holding it shows the mic too (#3102).
+- `agent-deck remote <name> session ownership inspect <id> --json` now works, so you can ask a remote whether a session is still owned. It only reads, and `reconcile` and `abandon` are still not forwarded (#3111; thanks @jordanhubbard).
 
-### Events
+### Fixes
 
-- `agent-deck events publish` accepts only lowercase kind names: a kind with an uppercase letter, such as a third-party plugin's `macapp.myPlugin`, now gets exit 2. Rename such a kind to lowercase (`macapp.myplugin`).
+- `session send` now sees the Codex 0.167 approval picker as a menu, so a send can no longer confirm it by accident (#3088).
+- A session on an account slot no longer picks up the newest conversation of the default Claude dir when its own session id is empty at start or restart.
+- A Claude session with two or more channels (for example telegram and discord) gets its messages again, and a commented-out `TELEGRAM_STATE_DIR` line no longer turns telegram on (#3091).
+- `list` stays fast on a busy machine: when reading the panes times out it no longer starts dozens of extra tmux calls (#3092).
+- `session archive` with an expected content version checks only this session's own Claude transcript, never a same-id file from another project (#3076; thanks @arnzchen).
+- With `[updates] check_enabled = false`, the TUI no longer checks for updates once at startup (#3077; thanks @ruiheng).
+- A restart that fails partway keeps the session attached to its running tmux session instead of a dead one (#3079; thanks @ruiheng).
+- `session output` now reads the reply of a session started on an account slot (`--account`) from the slot's own transcript, instead of falling back to the pane (thanks Sharjeel for the report).
+- `session send` that holds back Enter now tells you what it left typed in the target's input box. Before, that leftover text made every later send to the session fail until someone cleared it (#3123; thanks Sharjeel for the report).
+- `mcp attach --global` for a Claude session now writes `~/.claude.json` when no config dir is set, the file Claude Code reads, so the server loads. `mcp attached` shows the right path too (#3110; thanks @zach-marto).
+- `mcp attach --global` and detach for an OpenCode session keep the servers you set up by hand and the headers of an attached HTTP server, instead of replacing the whole `mcp` list (#3109; thanks @zach-marto).
+- `agent-deck remote sessions` now prints the error and exits 1 when a remote cannot be reached, so "host down" no longer looks like "no sessions" (#3112; thanks @jordanhubbard, and @aron-intframe for a patch sketch).
+- `session attach` and other commands outside the TUI no longer wait about 5 seconds on a terminal that does not answer the background colour query, and keys typed in that time are kept (#3113; thanks @jordanhubbard).
+- A pi session with a footer extension (such as `pi-powerline-footer`) is no longer killed by the startup timeout while it sits idle at its prompt (#3100; thanks @tessneau for the report).
+- `doctor`, `session show` and the startup timeout message now say when a pi session has no agent-deck pi extension, which is what prevents that timeout (#3099; thanks @tessneau).
+- Your `[tools.pi]`, `[tools.claude]` and other built-in tool settings for `busy_patterns`, `prompt_patterns` and `spinner_chars` (and the `_extra` forms) now take effect. Before, they were ignored (#3114; thanks @ckjeter).
+- The footer error and notice lines in the TUI, such as "closed 'x'. R to restart", now show on a full screen instead of being cut off (#3120; thanks @tessneau).
+- A pi session started inside a standing order or heartbeat turn no longer clears that turn's origin, so permission prompts in it are still denied and an order turn cannot change orders (#3118; thanks @fpmx3bp).
+- A failed pi wake now names the pi wake socket, and the pi wake peer check is stricter. Review follow-ups to the pi wake work (#3117; thanks @fpmx3bp).
+- A tagged `session send` that reaches Claude Code as a pasted prompt is now recognised, so the reply goes back to the sender. `inbox stats` counts only wakeups that were really sent (#3132; thanks @tarekrached for the report).
+
+### Under the hood
+
+- The "has this child had a turn since it started" check now reads the hook turn count, which is simpler and more reliable (#3084; thanks @tarekrached).
+- The weekly screenshot test has a new settings drawer baseline (#3087).
+- CI: the native macOS job runs on macos-15 because GitHub retired macos-14, the nightly runtime health check builds again, and a Go dependency group is updated (#3121, #3129, #3101).
+- The MCP proxy backpressure tests now fill the buffers until the kernel blocks, so they pass on hosts with large socket buffers (#3130).
+
+## [1.16.38] - 2026-11-07
+
+### Highlights
+
+- After a restart, a conductor whose recovery prompt was left typed in its composer now gets Enter again, so it picks up its work and `session send` to it no longer stalls (see Fixes; thanks @tsblack).
+- Parents on the comms ledger are woken more reliably by their children, pi children included (see Fixes; thanks @fpmx3bp).
+
+### Fixes
+
+- Conductor restart: the recovery prompt was submitted with one Enter. When Claude Code did not act on it, the prompt sat in the composer as a draft until someone pressed Enter, and `session send` to the conductor was blocked meanwhile. If the composer still holds exactly the recovery prompt, agent-deck now presses Enter up to 2 more times (after 0.5 s, then 1 s). It looks at the pane again right before each Enter and never touches anything else typed there (#3062, #3074; thanks @tsblack for the report, the timings and the proposal).
+- `session send` could hang for good when `ps` or `pgrep` hung while it read a session's process tree. Both now run under a time limit, and the send treats the process tree as incomplete instead of waiting (#3072; thanks @fpmx3bp for the report).
+- pi children: when a pi run continues inside one prompt (an auto-retry, a compaction or a continue before it settles), it keeps one run id, so the parent is no longer woken an extra time for that run (#3071; thanks @fpmx3bp for the report).
+- Comms ledger: after the ledger log is restored to an earlier point, a new record no longer inherits an old record's failed wake attempts, which could silence its urgent wake (#3069). A record whose pending flag could not be written to disk, such as an urgent record that needs a wake, is no longer skipped by the delivery pass until a later write succeeds (#3070). After a restore, a parent left with an old pending flag is scanned once instead of on every idle poll (#3075) (thanks @fpmx3bp for the reports).
+
+### Under the hood
+
+- Hook files now keep a per-session turn count (`turn_seq`) that survives `/clear`, compaction and restarts, also with `[health]` off, and the restart and fresh-start tokens record it. Every hook write takes the status lock so no count is lost. Nothing reads the count yet; it is the first step toward simpler checks of whether a child has had a turn since it started (#3080; thanks @tarekrached for the plan in #3012).
+- Comms test matrix: a new scenario checks that a parent on the comms ledger sees each run of a pi child exactly once (#3073; thanks @fpmx3bp for the report).
+
+## [1.16.37] - 2026-11-07
+
+### Highlights
+
+- New users get a quick check page, a welcome screen and a first Claude session (or their first installed agent) in two Enters, with a short hint bar and a 5-key help (see New features).
+- Your bug reports now come back to you: after an update the TUI shows "What's new", with your fixed reports first and a "Is it fixed for you?" question; `agent-deck feedback mine` and `whats-new` do the same from the CLI (see New features).
+- Sandboxes are ready to use: `agent-deck provider connect azure` connects your own Azure in one step, the docker example gives a Claude session at its prompt in the project, and the TUI can destroy a sandbox and shows who owns it (see New features).
+- Much less CPU on busy machines: the usage status line, the notifier and `remote-agent` stop re-reading every profile on every refresh (see Under the hood).
+- Fixes: a multi-repo launch with `~/.claude` no longer overwrites your global `CLAUDE.md`, older Claude sessions can be forked again, an installed web app stays signed in, and copy in the TUI reaches your clipboard from tmux and over SSH (see Fixes; thanks @hohounk, @tsblack and @tiantianLl).
+
+### New features
+
+- First-run onboarding in the TUI. A fresh install opens a quick check page for tmux, agent-deck and each agent CLI, with an install line for anything missing (`r` checks again, `l` signs in). With no sessions, the main screen is the welcome: `n` new session, `i` import tmux sessions, `?` the keys. New Session defaults to the first installed agent instead of a shell (a set `default_tool` still wins), lists installed tools first, and puts worktree, Docker and multi-repo under "More options". The Claude hooks question is one ticked line in the form. After the first session a one-line hint bar teaches Enter, Ctrl+Q, `n` and `?`, once per machine. `?` now opens "5 keys to start", and Tab shows every key. An install that already had config or sessions sees no onboarding screens (#3055, #3056; thanks @sharjeelajmalsemantic786 for the plan and prototype).
+- What's new in the TUI: on the first start after an update, a short dialog lists your fixed reports ("Your report #N: fixed in vX") and the release highlights. `y` or `n` answers "Is it fixed for you?" after a preview of the exact public text; only `y` posts, and Enter never does. `Alt+N` opens it again, Esc closes it (#3052).
+- Report loop in the CLI: agent-deck keeps a list of the reports you filed with `agent-deck feedback bug|idea`. `feedback mine` lists them with the version that fixed each one, read from this changelog. `whats-new [--json] [--since] [--mark-seen]` shows your fixed reports first, then each release's highlights, and `agent-deck update` prints it after a manual install. `feedback fixed N --fixed|--not-fixed [--comment]` answers "Is it fixed for you?" on the issue, after showing you exactly what will be posted (#3050, #3051).
+- Agent reports (opt-in): `feedback bug --from-agent` lets an agent session file a bug without prompts or a browser. It is labelled as found by an agent, and a repeat of an open report adds a "Seen again" comment instead of a new issue. Nothing is posted until a person runs `agent-deck feedback agent-consent` once on that machine (`--off` turns it off again) (#3051).
+- `agent-deck provider connect azure` connects your own Azure to sandboxes in one step. It checks for `az` (and prints the install line if it is missing), logs in with a one-time code that works over ssh, lets you pick a subscription, creates one resource group and a service principal with Contributor on that group only, keeps the secret in a 0600 file, writes the provider config, and checks the result. Running it again keeps what works. `--disconnect` (or `provider disconnect azure`) asks first, removes the service principal it created and the local files, and keeps the resource group. Clear messages cover the usual Azure stumbling blocks, and `--json` prints one event per line. The secret is never printed, logged or put in argv (#3049).
+- Azure VM example provider (`examples/providers/azure-vm`): one small ready Linux VM per sandbox, using the `az` CLI. It works inside one resource group, tags everything it creates, and destroys only resources that carry its tags (#3018).
+- Ready docker sandboxes: the example docker provider now installs Claude Code, puts your project in the sandbox (a git clone, a copy of a folder, or a small demo) and skips Claude's first-run screens, so a new sandbox gives a Claude session at its prompt. An optional `claude_token_file` signs Claude in; the token is never put in argv, the image or a log (#3017).
+- TUI sandboxes: `d` on a sandbox's host row opens "Destroy Sandbox?", which says how many sessions will be stopped and follows the same rules as `remote destroy`. Create and destroy show the current step and elapsed time above the list, and a failed create says where it stopped and whether anything was left behind (#3017).
+- Sandbox owner: each new sandbox records whose it is (`[sandbox] owner`, or your login name by default), and `remote list`, the TUI and the web fleet view show it. `remote list --json` adds `owner` and the sandbox's `ssh_config` path. A start prompt typed in the New Session dialog now reaches a session on a new sandbox or a remote picked in the Where row (#3019).
+- `agent-deck switch <query> [--json] [--no-attach] [--wait 2s]` finds a session by id, id prefix, title or group words and shows it in the AgentDeck Mac app, from the Mac or from a box the app follows. If no app answers, it attaches in the terminal instead (#3048).
+- `recall timeline --json [--tail N] --sessions <id1>,<id2>,...` reads the first screens of up to 50 sessions in one call, also through `remote <name> recall timeline`. Each id gets its own result or error, in input order, and one failing id never fails the call. `agent-deck version --json` lists `recall_timeline_batch` in its `features`, so a client can tell the batch is there (#3061).
+- Newer tmux per socket (opt-in): `[tmux.binaries]` maps a tmux socket name to the tmux binary agent-deck runs on it, and `agent-deck session set <id> tmux-socket <name>` moves a stopped session to another socket. This lets you move sessions one at a time to a newer tmux (for example 3.6 for `indic_zero_width_marks`) while others stay on the distro's tmux. `list --json` and `session show --json` show `tmux_socket_name` and `tmux_binary` when they apply (#3045).
+
+### Fixes
+
+- Multi-repo launch with `-additional-path ~/.claude` (or any folder named `.claude`) replaced your global `~/.claude/CLAUDE.md`, and could replace `settings.json` the same way. Such a folder is now linked as `dot-claude/` and its files are left alone, and agent-deck only replaces a `CLAUDE.md` it wrote itself (#3041, #3042; thanks @hohounk for the report).
+- `session fork` no longer refuses a Claude session whose id was detected more than 5 minutes ago when its transcript is still on disk. `session show` and the TUI's Fork hint agree (#3032, #3034; thanks @tsblack for the report and the diagnosis).
+- Web: with `--token-file`, a web app installed to the home screen stays signed in. The token cookie now lasts 30 days and is renewed on use, gets `Secure` behind an HTTPS proxy, and is no longer set for a token it cannot hold (#3031, #3033; thanks @tiantianLl for the report).
+- A Codex session on its home screen shows `waiting` instead of `running`; a row of its braille logo was read as a spinner (#3037, #3038; thanks @Clarity-89 for the report and the fix).
+- Settings (`S`): the focused row is marked with `▶`, and on a choice row the selected option is underlined, so you can see where the cursor is (#3039, #3043; thanks @godlen4332 for the report).
+- Claude sessions no longer label ordinary inbox replies and progress updates delivered at Stop as "Child session(s) completed"; they get a neutral inbox heading. The outer "Stop hook error" label comes from Claude Code itself (#3053, #3057; thanks @c2keesey for the report and @mvanhorn for the fix).
+- Copy in the TUI (copy output, copy pane, code blocks, session info, `session output --copy`) now reaches your clipboard when the TUI runs inside tmux without `allow-passthrough`, and over SSH on a host that has its own clipboard tool (#3047).
+- `remote attach`: Ctrl+V image paste works again when Claude Code lists background agents under its composer, when tmux 3.5+ changes how Ctrl+V is encoded, and in windows opened with Shift+Enter. Cmd+V with only an image on the clipboard pastes the image too (#3046).
+- Restarting a Claude session that was started as a fork through `--extra-arg --resume <id> --fork-session` no longer forks its parent again on every restart; it resumes its own conversation. Forking such a session no longer copies the parent's selectors (#3067).
+- Sends to Devin sessions (the `devin` tool or a tool with `compatible_with = "devin"`) wait a little longer before Enter, so the message is submitted instead of left typed in the composer (#3064; thanks @ruiheng).
+- `session send` to a Codex session in the middle of a long turn no longer makes every other send to it fail after 5 s with "Codex acceptance lock timed out". They wait for the turn to end and are delivered as separate turns (#3054; thanks @c2keesey).
+- A `session send --no-wait` into an idle Claude session that got stuck in Claude's queued-messages list is now submitted. If it still cannot be, the send exits non-zero with `typed_not_submitted` instead of reporting delivered (#3044).
+- A child muted with `--no-transition-notify` (or `transition_events = false`) still has its DONE recorded, so `session children` and the agents view show it as done, and one `done_suppressed` log line says it was not delivered (#3029; thanks @tarekrached).
+- pi parents and children on the comms ledger: an urgent record that arrives while the parent is busy wakes it once it settles, each pi run is shown to the parent once instead of twice, and a second idle restart of a pi child gives the parent its "Restarted while idle" line (#3021, #3022, #3023; thanks @fpmx3bp).
+- The watcher-creator skill no longer teaches commands that do not exist (#3027).
+
+### Under the hood
+
+- Less CPU on busy machines: `usage statusline-wrap` keeps a small index instead of opening every profile store on each status line refresh, and short CLI commands skip a repeat hook cleanup sweep (#3060). The notifier skips empty profiles that have not changed and closes their stores (#3059). `remote-agent` stops full re-scans after state writes that do not change the listings, and `group list --json` checks each session's status once (#3058).
+- pi wake socket client, the first part of waking a pi parent over a private socket instead of typing into its pane. Nothing uses it yet (#3035; thanks @fpmx3bp).
+- Skill evals: watcher-creator gets its own evals, and `model-run.sh` runs both repo skills' evals against a real model (#3027).
+- CI: the Playwright jobs run on Ubuntu 24.04 because Playwright does not support 26.04 yet, and the eval smoke tests get more time (#3066).
+- Dependency updates: sentry-go 0.50.0, google.golang.org/api 0.310.0 and grpc 1.85.0 (#3028).
+
+## [1.16.36] - 2026-11-02
+
+### Highlights
+
+- A freshly launched Claude child no longer wakes its parent with an urgent "idle" before its first message lands (see Fixes; thanks @tarekrached).
+- `agent-deck usage statusline-wrap` no longer wraps an already-wrapped status line again, and repairs a `settings.json` that grew from nested wraps (see Fixes).
+- On a phone, a tap on the web terminal opens the keyboard, and a "‹ Sessions" button takes you back to the list (see Fixes).
+- Auto-update notices a new release within one check interval (90 s by default) instead of up to two.
+
+### Fixes
+
+- Fresh starts: about a second after `agent-deck launch`, a Claude child sat at its empty prompt before its kickoff was typed, and that reached the parent as an urgent "idle". It is now one info line, and the start's token lasts until the child's first real turn, so a child that boots slowly does not page the parent either. A concurrent-restart race on the same session is fixed too (#2954, #2989, #3010, #3014; thanks @tarekrached for the report and the fixes).
+- Usage status line: installing the wrapper is idempotent. A correct wrap writes nothing, a renamed binary or a profile flag is recognised, and a nested wrap collapses to one after a backup of `settings.json`, with a warning (#3011, #3016; thanks @ofhtech for the report).
+- Codex: every real turn end now gives the parent a `running -> waiting` record. Some turn ends were dropped as duplicates, so the parent was not woken for up to two hours (#2900, #2998; thanks @sakost for the report).
+- TUI: Shift+Up/Down (and Ctrl+Up, `K`, `J`, `+`, `-`) now move a sub-session whose parent is in another group or was deleted. Such a row is drawn in its place among the top-level rows instead of always last, and the parent link is kept (#2995, #3005; thanks @godlen4332 for the report).
+- Global search: sessions started from it no longer exit with 127; they use your configured Claude command (#3008; thanks @imkarrer).
+- Web on phones: a one-finger tap focuses the terminal and opens the keyboard; scrolling works as before. With a session open, a "‹ Sessions" button (720 px wide or less) goes back to the list and keeps the terminal attached (#2680, #2997; thanks @bautrey for the report and @Totopo27 for the tap idea).
+- Seen state: the web view no longer shows a Claude session as seen when it stopped after your last visit; a save from another process keeps the seen mark; "mark unread" from elsewhere reaches a Codex session; the older conductor templates skip archived rows (#2986, #2988).
+- Starting or restarting an archived session from the CLI, web or a queued start now unarchives it first, and puts the archive time back if the start fails. The web Fleet pane and `/api/remotes` counts leave out archived remote sessions (#2988).
+- `agent-deck open <page.html>`: when the page's folder is over the 20 MiB bundle cap, the bundle keeps the page and the files it loads instead of failing. If even that is too big, the error names the archive size and the five biggest files (#2987).
+- Auto-update: the notify daemon and `web --no-tui` poll on every `check_interval` tick; every second tick was served from the cache (#3006).
+
+### Under the hood
+
+- Faster CI and releases: a release that only bumps the version reuses the green tests of its pull request instead of running the suite again, the test shards are rebalanced and use a warm `-race` build cache, and advisory suites run on a pull request only when their own files change (#2929, #2977, #2993, #2994, #3003, #3004, #3013; thanks @kickinrad for #2929).
+- `go test -short` passes in distro build sandboxes with no tmux, a read-only HOME or slow cores, which fixes the nix build (#2937, #2996; thanks @jmikedupont2 for the report). Local whole-suite runs use CI's 20 minute package timeout (#2990).
+- Test speed and flake fixes (#2991, #2992, #3015), and a doc comment on where a fork resolves the `claude` command (#3007; thanks @imkarrer).
+
+### Upgrading
+
+- Restart every open TUI after upgrading. While an older TUI is still running next to the new version, it can save a session as seen with an old visit time, so that session may show as unseen once for no reason (#2986).
+
+## [1.16.35] - 2026-10-31
+
+### Highlights
+
+- A fresh install opens a Welcome: it shows which coding agents are installed and signed in, offers each tool's own login, and gets you to a first session in two keys. `Alt+W` ("Show me around") brings the tour back any time (see New features).
+- Opt-in tool-call tracing for Claude and Codex sessions, with an `agent-deck trace` command to read it. Off by default (see New features).
+- Company installs: an org-managed config file can cap telemetry and set an org id, and crash reports stay off unless a crash-report address is configured. A company-set crash-report address waits for your own yes before anything is sent (see New features and Security).
+- A session you have opened stays seen: it no longer goes back to waiting after a reload or a detach. Restart every open agent-deck TUI once after upgrading (see Fixes and Upgrading).
+- Pooled MCP servers are no longer shared between config homes that run the same name with a different command, args or env (see Fixes and Upgrading).
+- Conductor fixes: archived sessions no longer show in the chat bridge's session list or wake the conductor, the OS heartbeat saves its state again, and `bridge.log` no longer has every line twice. Run `agent-deck conductor setup <name>` again to get the bridge fixes (see Fixes and Upgrading).
+- Many fixes from community contributors: status that stuck at running or flipped to error, typing an em dash freezing an attached session, forks that ignored a Claude wrapper command, and more (see Fixes).
+
+### New features
+
+- First-run Welcome in the TUI. It appears only on a fresh install (no `config.toml`, no sessions, never shown before); an install that already has sessions keeps the setup wizard as before. It lists Claude Code, Codex, Gemini CLI and Pi, shows the install command for any that are missing, and offers a plain shell if none is found. For Claude and Codex it runs the tool's own status command (`claude auth status`, `codex login status`) and reads only the exit code; no credentials file or token is read. `l` runs the tool's own login (`claude auth login`, `codex login`) and re-checks when you come back. `Enter` opens the New Session dialog filled in with the highlighted agent and folder, and the next `Enter` creates the session. "What you can do" explains sessions, switching, send, conductors and remotes; it opens once after your first session and any time with `Alt+W` (rebindable as `[hotkeys] show_around`), and it is listed in the help overlay. `Esc` skips at every step (#2959).
+- Tool-call tracing (opt-in): with `[trace] level = "metadata"` or `"summaries"` (or `AGENTDECK_TRACE`), Claude and Codex hooks record turns and tool calls into a per-profile `trace.db`. Arguments and results are never stored; summaries only describe the shape of a call (command word and length, file name and size, key names) and pass a secret scrubber. New commands: `agent-deck trace [session-id]`, `trace stats`, `trace ingest` and `trace hook`. The default, `off`, writes nothing (#2955).
+- Managed installs: agent-deck reads an org-managed `managed.json` (`/Library/Application Support/AgentDeck/managed.json` on macOS, `/etc/agent-deck/managed.json` on Linux, or `AGENTDECK_MANAGED_CONFIG`) with `org_id`, `telemetry_level`, `crash_dsn` and `update_channel`. The managed telemetry level is a ceiling: it can lower or turn off telemetry, never turn it on or raise your own level. A file that does not validate turns telemetry and crash reports off. An org id (from the managed file or `[telemetry] org_id`) is sent with detailed usage events only when set (#2958).
+- Crash reports (opt-in): off unless a crash-report DSN is configured. Each report is rebuilt from an allow-list before it is sent: no free text, user info, headers, request data or environment; error messages are replaced by a short hash. Declining usage data (`agent-deck telemetry off`, or no at the prompt) turns crash reports off too. `agent-deck telemetry status` shows the org id, the managed file and whether crash reports are on and why not (#2958).
+- When a Codex notify payload is dropped (a turn end with no rollout, or a subagent thread), agent-deck writes one `codex_notify_dropped` line to `debug.log` with the reason, when `AGENTDECK_DEBUG` is set. The message text is never logged. Which payloads are dropped is unchanged (#2900, #2924; thanks @sakost for the report).
+- "Active on top" (`t`) now also applies inside each remote's section: groups with a live session come first, then an "idle / done" (or "stopped / done") divider and the rest. Fold state, parent and child rows, and `[ui] active_includes_idle` are honoured, and archived rows never count as live. Only the controller's TUI list changes (#2947, #2980; thanks @mglmnz for the report).
+- Codex sends (opt-in): with `AGENTDECK_CODEX_SUBMIT_RETRY=1`, a message left typed in the Codex composer but never submitted gets one more Enter. It retries only when two captures one check apart both still show this send's own unsent text and the turn has not started, at most once per send, and it never clears or retypes input. Unset, nothing changes (#2833, #2978; thanks @xinlei55555).
+- Notification bar order (opt-in): `[notifications] sort = "last_accessed"` puts the session you used most recently at `[1]`, like Alt+Tab, so the `Ctrl+b` number for a session you use often stops changing. Sessions never used come last, and with more sessions than `max_shown` the most recently used ones stay on the bar. A visit is an attach from the TUI list or a jump with the bar's `Ctrl+b` number keys; attaching with the CLI or web UI does not count. The default, `"waiting"`, keeps today's order, and `minimal = true` ignores the key (#2949, #2981; thanks @llogen for the report).
+
+### Security
+
+- Crash reports from a company-managed `crash_dsn` (in `managed.json` or `AGENTDECK_MANAGED_CONFIG`) no longer turn on for someone who has not answered the usage-data question. They start only after your own yes (`agent-deck telemetry on`, or yes at the CLI or TUI question); until then `agent-deck telemetry status` shows `Crash reports: off (waiting for your yes: agent-deck telemetry on)`. A no, and every existing off switch, still turns them off. A `crash_dsn` you put in your own `config.toml` behaves as before (#2975).
+- Pooled MCP sockets are now named by the MCP's definition (`mcp-<name>-<12 hex>.sock`, covering command, args and env), not by name only. Before, two config homes that pooled the same name with different settings silently used one process, including its env such as a different access token. Identical definitions still share one process (#2966, #2982).
+- `golang.org/x/net` is updated to v0.62.0, which fixes GO-2026-6860 and GO-2026-6866 in its `html` package. govulncheck reports that agent-deck does not call the affected code (#2965).
+- A dev-only test dependency, vitest, is updated to 4.1.12 for two `@vitest/mocker` advisories (GHSA-xp26-3454-mjgp, GHSA-qxg6-89mg-rqv8) (#2971).
+
+### Fixes
+
+- Conductor bridge: Telegram `/sessions`, Slack and Discord `/ad-sessions` and Mattermost `!sessions` list only active sessions; archived ones showed with a live-looking status (#2945, #2956; thanks @mineralinis for the report and @sharjeelajmalsemantic786).
+- Conductor heartbeat: archived children are left out of the counts and no longer wake the conductor, in both the bridge and the OS heartbeat. Completion records from archived children still reach the conductor's inbox (#2957; thanks @sharjeelajmalsemantic786).
+- The OS heartbeat saves its state again for a tick that carried inbox records; before, the heartbeat's own send drained the inbox and the save never matched (#2944, #2969; thanks @mineralinis for the report).
+- Under launchd and systemd, each line of the conductor's `bridge.log` is written once instead of twice (#2946, #2968; thanks @mineralinis for the report).
+- A quiet pi session sitting at its prompt stays at `waiting` instead of going back to `running` for days (#2896, #2967; thanks @koenzhao for the report).
+- After `session restart`, an old "Session startup timed out" message left in the pane's scrollback no longer flips a healthy session to `error` about two minutes later (#2938, #2970; thanks @koenzhao for the report).
+- A stale "Waiting for N background agents" line no longer keeps a Claude session at `running` once its transcript shows the work is done (#2927; thanks @kickinrad).
+- pi, Codex and Gemini sessions are detected as their own tool again instead of as Claude, so the right status patterns apply (#2828; thanks @jwiegley).
+- Typing an em dash (Option+Shift+-) with Option-as-Meta in an attached session no longer freezes all input and Ctrl+Q (#2931, #2932; thanks @eugenest for the report and the fix).
+- Forking a Claude session uses the configured `[claude] command` when it is a real executable (for example a wrapper script), instead of a bare `claude`. Aliases and remote or sandboxed forks still use `claude` (#2939, #2940; thanks @imkarrer for the report and the fix).
+- `agent-deck launch -mcp` and `mcp attach` respect `pool_mcps` and `exclude_mcps`, so a config no longer attaches to another config's pooled MCP server (#2952, #2953; thanks @jwr456 for the report and the fix).
+- `session restart --all` run from inside one of its sessions hands the batch to a detached process instead of ending partway (#2934; thanks @Oscar-Williams). `session switch` run on its own session does the same (#2897, #2925; thanks @Oscar-Williams for the idea and @bautrey for the original report).
+- "Restart fresh" no longer refuses with "this session still owns processes from an earlier spawn" when the old process is slow to exit (#2921, #2963).
+- `agent-deck codex-hooks install` and `uninstall` keep your `config.toml` intact: an unreadable file is never overwritten, the agent-deck block is replaced in place with your line endings, comments and blank lines are kept, and writes are atomic. A block placed below a `[table]` is refused with a clear message (#2930; thanks @kickinrad).
+- In the web UI, the live stream recovers on its own when it closes during a recovery check, instead of waiting for a reload (#2926; thanks @kickinrad).
+- Session rows with an attached viewer line up with their neighbours on every terminal; the viewer badge is now `◉` (#2943; thanks @Canonical111).
+- A scroll region left set on the terminal by another program no longer makes the deck scroll inside a band and leave stale rows on screen. Every full repaint and every detach resets it (#2964).
+- New Session dialog: the empty Name field previews exactly the name that will be created (with `~`, `.` and the `-2` suffix resolved); two quick creates in one folder get two names; Cancel on "Directory Not Found" goes back to the dialog with what you typed; with a worktree on, Branch is filled from the derived name (#2913, #2962).
+- With `group_sort = "creation"`, a session created or forked while the TUI is reloading goes last in its group instead of near the top (#2933, #2973; thanks @eugenechabanov for the report and the code reading).
+- Sandbox providers: an interrupted or timed-out create cleans up the sandbox it may have made, Ctrl-C waits for a rollback or destroy to finish, a second provisioning with the same name is refused, `remote remove` on a sandbox remote warns that the sandbox keeps running and points to `remote destroy`, and the New Session "Where" row says which settings it cannot carry instead of dropping them silently (#2918, #2961).
+- `remote list --json` and `remote sessions --json` print `[]` when no remotes are configured, instead of plain text (#2920, #2923).
+- A session you have already opened no longer goes back to ◐ (waiting) after a storage reload or a detach, and its detail label no longer blinks away. The "seen" mark and the time of your visit are now kept, and a hook is compared with that visit the same way in the TUI, CLI and web (#2950, #2951, #2985; thanks @pedro-lb for the report and the fix).
+- A pi session that finished its turn no longer stays `running` for hours because pi left its old "Working" banner in the chat area. A live banner on the composer still counts as busy (#2948, #2979; thanks @koenzhao for the report).
+- Typing an em dash (Option+Shift+-) with Option-as-Meta on the dashboard itself no longer freezes it; the held keys are released after 100 ms, the same rule attached sessions got in #2932 (#2974, #2983).
+- `agent-deck remote sessions` text output leaves out the remote's archived sessions and says how many were hidden; `--json` still lists them with `"archived": true`. Long or multi-byte titles are cut by display width, so they are never split and the columns stay aligned. The conductor template's `/sessions` guidance now says to skip archived rows (#2972, #2984).
+
+### Under the hood
+
+- Agent-flow evals: `skills/agent-deck/evals/flows.sh` drives a real agent-deck and tmux with a fake Claude to check send, child completion and inbox routing end to end, in an isolated HOME and tmux socket (#2960).
+- CI path filters in four workflows now point at the files the `home.go` / `instance.go` split created, so changes there run those checks again (#2908).
+- The pi hook ordering test drops a fixed 1.5 s wait, saving about a minute of CI (#2928; thanks @kickinrad).
+- Dependency updates: google.golang.org/api 0.308.0 and modernc.org/sqlite 1.61.0 (SQLite 3.54.1) (#2936). New dependency: `github.com/getsentry/sentry-go` v0.49.0, used only when crash reports are configured (#2958).
+
+### Upgrading
+
+- Conductor bridge fixes (archived sessions in the session list and heartbeat, `bridge.log` lines written twice) are in the bridge script. The shared conductor template's `/sessions` row (skip archived rows) changed too. An existing conductor picks these up when you run `agent-deck conductor setup <name>` again; a template file written by the previous release is recognised and updated in place.
+- The viewer badge in the session list changes from an eye emoji to `◉`.
+- Restart every open agent-deck TUI once after upgrading. The state database gets a new `acknowledged_at` column, and while old and new TUIs share it, one session can flip back to unseen once.
+- MCP pool: sessions started before the upgrade keep working on the old `mcp-<name>.sock` path without a restart. New sessions and the CLI use the new definition-keyed socket; restarting an old session moves it there. The per-MCP log is now `<name>-<id>_socket.log`.
+
+### Known issues
+
+- In the New Session dialog, Enter with a path suggestion list shown still creates with the typed path, and the web create dialog still needs a name.
+- Follow-ups to the "seen" and archived-row fixes are tracked in #2986: the web view can show a Claude session as seen when a newer Stop arrived, a full save from another process can reset the seen mark, "mark unread" from elsewhere reaches a Codex session only after the next reload, and the older `conductor-claude.md` / `conductor-hermes.md` templates still lack the archived-row skip.
+- A dashboard escape string that never ends (for example a very large clipboard reply, or one split by more than 100 ms over a slow SSH link) is now released as keys instead of dropped, and can trigger single-letter hotkeys. This is the same tradeoff attached sessions have had since #2932.
+
+## [1.16.34] - 2026-10-25
+
+### Highlights
+
+- Safer defaults on new installs: Claude asks before running tools, tools ask before trusting a folder agent-deck did not create, and a project's relative `env_file` is not run unless the folder is trusted. Existing installs keep their current values (see Changes and Upgrading).
+- In the New Session dialog, Enter now creates the session from any row, and an empty name becomes the folder name (see Changes).
+- Sandbox providers v1: plug in any machine. agent-deck asks your own command for a fresh sandbox, uses it as a remote and destroys it afterwards (see New features).
+- An opt-in wait timer takes the recommended option when a session has waited on you for too long (see New features).
+- A default Claude account for new sessions, and `agent-deck ask` for handing a secret to an agent without pasting it into chat (see New features).
+- Built with Go 1.26.10, which fixes GO-2026-6809 (see Security).
+
+### New features
+
+- Sandbox providers v1: a provider is any command. agent-deck runs `<command> create|list|status|destroy` with one JSON request on stdin and reads one JSON reply on stdout. A created sandbox becomes a normal remote with its own ssh config, known hosts and control socket under the agent-deck data dir; your `~/.ssh/config` is never edited. Provider output is checked before anything is written or run. New commands: `agent-deck provider list|test`, `remote add --provider`, `launch --provider` (a new session on a fresh sandbox in one step) and `remote destroy`. With a remote or provider configured, the New Session dialog shows a "Where" row (default: this machine). Nothing changes without a `[providers.<name>]` block. Examples are in `examples/providers/` and the guide is `docs/PLUG-IN-ANY-MACHINE.md` (#2917).
+- Opt-in wait timer: with `[sessions] wait_timeout = "5m"` (at least 1m), or per session with `agent-deck session set <id> wait-timeout 5m` or the "Wait timer" row in Edit Session, a session that has shown the same question for the whole timeout, with nobody attached, gets one Enter on the `(Recommended)` option. It only answers a plain single-choice Claude question with exactly one recommended row. It never answers a permission, approval or folder-trust prompt, a login screen, or a question about deleting, pushing, deploying or other outward actions. Every choice is logged. Off by default (#2914).
+- A default Claude account for new sessions: `[claude] default_account = "<slot>"`, or Settings (`S`) → Claude → "Default account". The New Session dialog starts on it, and `add` and `launch` without `--account` use it too. Changing the default never moves an existing session (#2895, #2912; thanks @godlen4332 for the suggestion).
+- `agent-deck ask secret|choice|text` lets a session ask you through a dialog (the TUI, or a hidden prompt in your terminal). A secret goes straight to the host's secret store; the asking agent only sees that it was stored, cancelled or timed out. The value never reaches the transcript, logs, pane or command line. See docs/ask.md (#2909).
+
+### Security
+
+- Builds use Go 1.26.10, which fixes GO-2026-6809 (crypto/x509 in the Go standard library did not refuse certain intermediate certificates that are no longer trusted) (#2906).
+- On new installs, three defaults are now safe: `[claude] dangerous_mode` is off, so Claude asks before running tools; folder trust is granted only for folders agent-deck made (worktrees, its own data folders, conductors) and folders in `[security] trusted_folders` or started with `--trust-folder`; and a relative `env_file` in an untrusted project is skipped with a warning instead of being run. Existing installs keep their current behaviour (see Upgrading) (#2915).
+
+### Changes
+
+- New Session dialog: Enter creates the session from any row, with the defaults filled in. This reverses the earlier default, where Enter walked to the next field. An empty name becomes the folder name, made unique (`billing-api`, `billing-api-2`, ...). If a required field is wrong, Enter moves to it and says why. Set `[ui] new_session_enter_advances = true` to keep the old walk. Ctrl+S creates in both modes, and remote creates still need a name (#2910).
+- On a new install, `launch` into a folder that is not trusted prints a note on stderr, and `--json` adds a `FOLDER_NOT_TRUSTED` warning. `--trust-folder` edits config.toml in place and keeps your comments and layout (#2915).
+
+### Fixes
+
+- `session switch-account` and `session restart` run from inside the session they target no longer kill themselves partway. The command hands the work to a detached copy of itself, prints where it logs, and exits (#2897, #2907; thanks @bautrey for the report).
+- A Codex child that ends its turn with the done line now sends its parent a "finished" record, as a Claude child does (#2899, #2905; thanks @sakost for the report).
+- A parent supervising a pi child is told after every run, not only the first (#2827; thanks @fpmx3bp).
+- Under load, account-switch settle waits up to 3 seconds for a half-drawn folder-trust prompt to finish drawing instead of stopping. Nothing is pressed until the whole dialog is on screen (#2893, #2904).
+
+### Under the hood
+
+- One agent-deck skill: the fleet, session-share, retro, repro, recall and contributor skills are folded into `skills/agent-deck` (#2889). The skill gets deterministic evals that need no model, plus a check that every command and flag it names exists (#2916).
+- Skill reference fixes: a `web --open` flag that does not exist, unclosed code blocks in the config reference, and other stale claims, now pinned by tests (#2902; thanks @kickinrad).
+- Stale `.claude` plans and slash commands are removed from the repo (#2901; thanks @jonnocraig). Unreachable internal helpers are removed (#2903; thanks @jennings).
+- The comms matrix test driver's pause read has a deadline, so a silent driver can no longer hang a run (#2824; thanks @fpmx3bp).
+- The website counts pageviews with a cookieless snippet that is skipped when Do Not Track or Global Privacy Control is set; TELEMETRY.md has a "Website" section (#2911).
+- Dependency updates: charmbracelet/x/vt, klauspost/compress, golang.org/x/net, google.golang.org/api and goreleaser-action (#2820, #2821).
+
+### Upgrading
+
+- Existing installs keep their values. The first terminal or TUI start after the update writes `dangerous_mode = true` under `[claude]` and `auto_trust_folders = true` under `[security]` into config.toml once, only for keys you have not set, keeps the old file as `config.toml.bak`, and prints a one-time notice that says how to turn them off. Daemons, hooks and scripts never edit config.toml. The safe defaults apply to new installs only.
+- On a new install, Claude asks before running tools unless you set `dangerous_mode = true`, and tools ask before trusting a folder unless you add it to `[security] trusted_folders` or pass `--trust-folder`.
+- If you are used to Enter moving through the New Session dialog, set `[ui] new_session_enter_advances = true`.
+
+### Known issues
+
+- govulncheck still lists GO-2026-5932 as informational: it is in x/crypto/openpgp, which agent-deck does not import.
+- `remote list --json` prints plain text when no remotes are configured (#2920).
+- Optional follow-ups: New Session name preview and mistyped-path hints after the Enter change (#2913), and sandbox provider follow-ups (#2918).
+
+## [1.16.33] - 2026-10-24
+
+### Highlights
+
+- Report a problem without leaving agent-deck: `agent-deck feedback bug|idea`, or `Z` in the TUI. You see the full scrubbed issue before anything is sent (see New features).
+- Hand one session to another as a reference: `agent-deck session ref <source> <target>`, or `alt+l` in the TUI (see New features).
+- Idle Claude and Codex sessions move onto a newly installed CLI build by themselves and keep their conversation (see New features).
+- Switching a session's Claude account no longer needs a person afterwards (see New features).
+- Security hardening for shared machines and chat bridges: the Slack bridge needs an allow-list, webhook watchers use signed requests, and state files, sockets and env secrets are private to your user. Read Upgrading before you update (see Security).
+- Many fixes for false parent alerts around restarts and stops, the TUI attach leak, mouse and keyboard input, and remotes; thanks to the community contributors named below (see Fixes).
+
+### New features
+
+- `agent-deck feedback bug|idea` and the TUI key `Z` (rebindable as `report_problem`) build a GitHub issue from the same sections as the bug and feature forms. They add the version, OS, terminal and tool, and for a bug the last 40 lines of `debug.log`. The home directory, tokens, emails, IP and MAC addresses, and remote and ssh host names and logins are scrubbed before you see the text. Nothing is filed until you say yes. With `gh` logged in the issue is filed with `gh issue create`; otherwise a prefilled issue page opens and you press Submit. Plain `agent-deck feedback` keeps the rating flow (#2887).
+- `agent-deck session ref <source> <target>` and `alt+l` in the TUI type one line into the target session's composer. The line names the source session, the command to read its output and its transcript path when known. It is never sent: you read it and press Enter. It is refused for the same session, sessions in different profiles, remote sessions, or a target that is not running or shows a menu. `--print` only prints the line (#2882).
+- Opt-in local timings: with `AGENTDECK_TIMINGS=1` or `[logs] timings = true`, agent-deck appends one JSON line per finished operation to `timings.jsonl` in the cache directory (name, duration, failed, no content; rotated at 8 MB). `agent-deck perf [--json] [--since]` prints count, p50, p95 and max per operation. Off by default. Telemetry is not touched (#2883).
+- Every session now gets the identity block. SSH remote and Docker sandbox sessions carry it in the launch command (the remote needs bash). opencode gets it through `OPENCODE_CONFIG_CONTENT` and copilot through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, without overwriting your own values. `--no-identity`, `[launch] inject_identity = false` and `context_level = "none"` still win. `session primer --json` gains a `delivery` field (#2875).
+- Idle sessions restart onto a newer Claude Code or Codex build once it is installed. Only a local session idle at an empty prompt for 5 minutes is restarted, and it resumes its conversation. Busy, attached, drafting and waiting-on-a-timer sessions are never touched, and conductors only when they opt in. The parent gets one info line, not a false "finished" alert; a resume that crashes or does not reach its prompt within 2 minutes is reported. Turn it off with `[sessions] auto_refresh_idle_builds = false` (#2787, #2793, #2802).
+- Switching a session's Claude account settles on its own: after the restart agent-deck answers the folder-trust prompt for the session's own project (and the first-start screens), checks plugins and MCP servers, sends the continue message and verifies the account. Any other prompt or menu stops it with no key sent. `--no-settle` skips this and `agent-deck session switch-settle` runs it by itself. A switch whose session did come up on the new account despite a start error is kept with a warning, and every failed switch prints a one-line reason on stderr (#2778, #2816).
+- In a remote attach, Ctrl+V with an image on your local clipboard uploads it and types its path into the remote Claude or Gemini composer. Anywhere else Ctrl+V works as before. Turn it off with `[remote] paste_images = false` (#2775, #2870).
+- A TUI attached to a session now says when an update is installed (`detach to restart`) and restarts on the next detach. `[updates] auto_restart` turns this off too (#2857).
+- Over plain ssh, a Ctrl+V with no image on that host shows one hint: attach from agent-deck on your own machine to paste an image (#2857).
+- `[remotes.<name>] require_same_profile = true` keeps remote talkback inside the remote's profile, so on a host shared by several tenants one tenant's events cannot reach another tenant's conductor. Off by default (#2831, #2886; thanks @jwr456 for the report and @Myasir92 for the fix).
+
+### Security
+
+- Slack bridge: an empty or missing `allowed_user_ids` now refuses every Slack user, unless `allow_all_users = true`. Other workspaces, bot and integration mentions, and events without a user ID are ignored. A refused user gets one reply with their member ID and the config line to add, the bridge warns at start, and `conductor setup` asks for member IDs (#2884).
+- Webhook watchers: `watcher create webhook` generates a shared secret. Signed requests carry `X-Webhook-Timestamp` and an HMAC-SHA256 of the timestamp, sender and body (5-minute window; a replay is refused). The plain token is accepted only on loopback. Browser requests with an `Origin` header get 403. A `watcher.toml` that does not parse now stops that watcher instead of running it with defaults (#2884).
+- `agent-deck openclaw` no longer sends the gateway password over plain `ws://` to a host that is not loopback or tailnet, unless you pass `--insecure` or set `allow_insecure = true` (#2884).
+- ntfy and slack watchers can use an access token, take `--server` and `--random-topic`, and warn on a public topic that is easy to guess. Chat messages starting with "-" are delivered as text, not read as flags. The Gemini key goes in a header instead of the URL. `conductor setup` installs the bridge's Python packages at pinned versions (#2884).
+- On machines several people log in to: project MCP configs are written 0600 and untracked ones are added to `.git/info/exclude`; SSH ControlMaster sockets live in a per-user `/tmp/agent-deck-ssh-<uid>`; the MCP pool uses only your own sockets; inline env values for local sessions go through a private file instead of the command line, and restart logs show `KEY=***`; state directories are 0700 and files 0600 (#2885).
+- Launch commands shell-quote paths, session ids, model and agent names, instance ids and env_file paths, so a value with quotes, `;` or `$(...)` can no longer run extra commands. Each folder-trust grant agent-deck makes for you is logged as `folder_trust_granted`. Ordinary values give the same commands as before (#2876).
+- A state database records the profile it belongs to. agent-deck refuses to open another profile's store for writing (for example a `state.db` copied into another profile's directory) instead of mixing two profiles' sessions; read-only views only warn. Hook bindings, last-access times, session links and `session set <id> tool-session-id` now write to the profile the session came from (#2786).
+- The events log directory is 0700 and its files 0600, and older logs are tightened (#2761).
+- Code scanning fixes: spawn-guard file paths are validated, and logged ids and errors go through the log sanitizer (#2891, #2892). A dev-only test dependency (vite) is updated for three advisories (#2829).
+
+### Fixes
+
+- The TUI no longer leaks one kqueue or epoll descriptor each time you attach and come back, which could end in "too many open files" after days of use (#2692, #2815).
+- Keys typed right after Enter reach the attached session instead of the TUI, and Ctrl+Q works from the first byte of an attach (#2856).
+- Scrolling with the mouse wheel on the classic dashboard no longer moves the sessions/preview divider by itself (#2826, #2858; thanks @cherninely for the report, root cause and regression test).
+- New plain shell sessions no longer show a long typed `export AGENTDECK_*=...` line; the variables are set when the shell starts (tmux 3.2 or later) (#2817, #2842).
+- A send to a busy Claude session that already has queued input is queued instead of refused (#2847).
+- A send to a Codex session that the running turn took in no longer blocks every later send (#2836, #2877; thanks @jwiegley for the report, the diagnosis and the fix this follows).
+- `session stop` no longer fails with `stale concurrent Status conflict` and leaves the row at error when another process samples the dead pane during the stop. The TUI close and archive and the web stop had the same fix (#2850, #2874).
+- Stopping a child that was stopped and started before no longer sends its parent an urgent error (#2853, #2888; thanks @kickinrad for the precise repro).
+- A parent is told when an idle child's process dies, and an idle restart sends its "refreshed" line even when the boot was not seen (#2806, #2813, #2846).
+- An idle restart or build refresh no longer sends the parent a false urgent error, a false "finished" record or a repeat of the child's last reply; a mid-turn restart and real errors after a restart are still reported (#2792, #2793, #2802, #2866, #2869). An idle auto-compaction no longer sends the parent an empty urgent record (#2857).
+- A session queued at its group's `max_concurrent` cap now gets the Claude folder-trust seed when it starts, and its `-m` message is delivered once (#2879; thanks @Myasir92).
+- Archived sessions are left out of `agent-deck status`, the TUI header counts and desktop alerts (#2878).
+- `inbox drain` and the fleet line say when no notify daemon is running, instead of looking like nothing finished (#2834, #2863; thanks @tarekrached for the report).
+- Remote commands to a long `user@host` no longer fail with exit 255: the ssh ControlPath uses a fixed-length `%C` name (#2837, #2849; thanks @tarekrached for the report and the fix).
+- Remotes: timed-out or interrupted ssh commands no longer leave processes behind (#2764). The TUI backs off a slow or failing remote host; Ctrl+R and `session focus --remote` clear the wait (#2763, #2771, #2773). A remote session's preview shows the bottom of the pane again (#2766). `remote attach` and `rename` look up only the one session (#2768).
+- Transcripts are found under the session's own Claude config directory (#2769, #2772), and after an account switch the readers follow the copy the live Claude writes, so limit-guard no longer reports a conductor as spinning (#2840).
+- Undoing a TUI or web delete keeps the session and its inbox entries; the web server no longer hangs on exit finishing pending deletes (#2761, #2776).
+- After an update the notify daemon restarts onto the new build on Linux too, and every install writes one line to `auto-update.log` (#2777).
+- opencode2 sessions created in the TUI are recognised as OpenCode and keep the opencode2 label in the list and previews (#2830, #2838; thanks @dtvillafana).
+- `inbox drain self`, auto-parent and no-argument session commands find the calling session by its whole tmux name (#2844, #2871).
+- The conductor bridge finds a renamed conductor's inbox; `list --json` gains an additive `conductor_name` field (#2867).
+- Comms spool entries written in the same millisecond are read in write order (#2823, #2859; thanks @fpmx3bp for the report and @Myasir92 for the fix).
+- Data races on tmux session names during a restart are fixed (#2805, #2807, #2808, #2843).
+- Costs: "this week" starts on the current Monday (#2810, #2812); events on a boundary date are counted correctly (#2809, #2811); quitting the TUI can no longer panic in the cost watcher (#2851). Thanks @Myasir92.
+- Groups: `group create` and `group update` take space-separated flags after the name (#2854). `launch -g`, `session fork -g` and `session move --group` resolve a group like `add -g`, and `add -g` fails on a name shared by several groups instead of picking one (#2839, #2845).
+- With `allow_multiple = false`, a second TUI can no longer start next to an idle primary (#2839, #2845).
+- Profiles: `profile migrate` can no longer lose a session from both profiles, the registration lock uses the resolved profile, `run-task` resolves the profile like other commands, and `inbox stats --all` stays in your profile (#2851, #2854).
+- Your config is kept: Gemini, Cursor and OpenCode MCP configs survive bad or null JSON, and your own Gemini and Cursor hook fields survive hooks install and uninstall (#2851, #2852, #2854).
+- Loadout and conductor sessions on their own Claude config root get folder trust there, so they no longer stall on the trust prompt (#2854).
+- Non-ASCII text: table cells, path shortening and the settings editor cut on whole characters, and `~` only replaces your real home directory (#2839, #2844, #2851, #2852).
+- `--help` and `-h` after any subcommand never run it; `plugin <sub> --help` created the state database (#2779).
+- Smaller fixes, many from @Myasir92: macOS network rate with a VPN up, watcher senders matched case-insensitively, `jj` prune keeps live workspaces, the branch picker skips `origin/HEAD`, ntfy and slack watchers reset their backoff, watcher subjects keep valid UTF-8, a stopped HTTP MCP server can start again, web push sends time out after 10 s, the releases-behind count is recounted after an upgrade, POSIX backslash rules in shellwords, unset recall hints disappear, Codex queued inputs that wrap are counted, booting sessions show as `starting`, `POST /api/groups` with an unknown parent returns 404, `plugin attach/detach` follow the CLI JSON contract, statuslines of Claude-compatible custom tools link to their session, global search index writes are serialized, and the edit-paths dialog no longer restarts an agent for unchanged paths (#2839, #2844, #2848, #2851, #2852, #2854).
+- A watcher's undelivered events are capped per conductor (1000 or 64 MiB) and refusals are counted in `watcher status`; a failed worktree setup script logs only the tail of its output (#2881).
+
+### Performance
+
+- `agent-deck events publish`, `open` and `browser` take about 13 ms instead of about 1 s. The web menu status pass at 100 sessions drops from 948 ms to 171 ms (#2861).
+- Codex discovery reads one `ps` snapshot per status pass, and rows whose tmux session is gone are proven absent from one listing: the web menu at 100 sessions drops from 177 ms to 93 ms (#2880).
+- With no tmux server running, the status pass no longer starts a tmux client per stopped session (#2835; thanks @borng).
+- The notify daemon reads only new event-log lines and starts about one tmux process per session per pass instead of five (#2770, #2774).
+- `list --json` captures all panes with one tmux call per socket (#2762).
+
+### Under the hood
+
+- `session_cmd.go`, `tmux.go`, `instance.go` and `home.go` are split into topic files with no code change; the menu snapshot types move to `internal/menudata`, so the TUI no longer imports the web package (#2864, #2865, #2872).
+- Unreachable functions, unbuilt `*_windows.go` files and the unused `internal/profile` package are removed (#2855).
+- README checked against the code; new `AGENTS.md` and `docs/architecture.md`; Browser panel docs (#2799, #2873).
+- `make release-ready` checks a release candidate before a tag, including the update path end to end (#2785). `scripts/check-fix-has-test.sh` flags fix PRs without a regression test (#2788). The send budget gate moves into `internal/session` (#2825; thanks @fpmx3bp).
+- Tests: a guard fails any test that reaches the real home or the host's service managers, many slow tests now take seconds, flaky tests are fixed, and new end-to-end tests cover sends, restarts and status detection (#2780, #2781, #2782, #2783, #2784, #2789, #2790, #2791, #2794, #2795, #2796, #2797, #2798, #2800, #2801, #2803, #2804, #2822, #2841, #2860, #2862, #2868, #2890, #2894; thanks @3rwww1 and @Myasir92).
+
+### Upgrading
+
+- Slack bridge: if your bot stops answering, add `allowed_user_ids = ["<your member ID>"]` under `[conductor.slack]` in config.toml and restart the bridge, or set `allow_all_users = true` to keep it open. There is no automatic fallback to the old open behaviour.
+- Webhook watchers: one without a secret keeps working on `127.0.0.1` with a startup warning. One bound to another address without a secret no longer starts: add `secret = "<openssl rand -hex 32>"` under `[source]` in its `watcher.toml` (chmod 600) or bind it to `127.0.0.1`, then sign requests as documented in documentation/WATCHERS.md. A `watcher.toml` that does not parse now stops that watcher; fix it and run `agent-deck watcher reload`.
+- openclaw over plain `ws://` to a non-loopback, non-tailnet host needs `--insecure` or `allow_insecure = true`; existing bridge sessions need `allow_insecure = true`.
+- `conductor setup` replaces a bridge Python package you upgraded yourself with its pinned version.
+- SSH: control sockets move to `/tmp/agent-deck-ssh-<uid>`, so the first remote command after the upgrade opens one new ssh connection per host; old ones expire on their own.
+- The MCP pool ignores old `/tmp/agentdeck-mcp-*.sock` files. A directory-local `.agent-deck/config.toml` owned by another user or writable by others is ignored with a warning. Your state root is tightened to 0700 once, with a notice.
+- Each `state.db` is stamped with its profile on first open. If you renamed or copied a profile directory on purpose, the error prints the command that clears the stamp.
+- `agent-deck events publish` refuses kind names with capital letters (exit 2); rename a kind such as `macapp.myPlugin` to `macapp.myplugin`.
+- Idle build refresh is on by default; set `[sessions] auto_refresh_idle_builds = false` to keep sessions on the build they started with.
+- A TUI, web or MCP restart now counts as a fresh start, so a plain `session restart` within 60 seconds of one is skipped unless you pass `--force`.
+- `status --json` leaves archived sessions out, so its total can be lower than the row count of `list --json`.
+
+### Known issues
+
+- Security: this release is built with Go 1.26.9, which is affected by GO-2026-6809 (the Go standard library's crypto/x509 does not yet refuse certain intermediate certificates that are no longer trusted; agent-deck reaches the affected code when it verifies TLS certificates). Systems with up-to-date root stores are not affected in practice. A follow-up release built with Go 1.26.10 fixes it.
+- Under heavy load, the account-switch settle can stop at a half-drawn folder-trust prompt. It fails safe: no key is sent, and you answer the prompt yourself (#2893).
 
 ## [1.16.30] - 2026-10-18
 

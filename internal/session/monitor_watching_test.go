@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 )
 
 func TestMonitorWatchingIdle(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
 	pane, err := os.ReadFile(filepath.Join("testdata", "background_work", "idle-monitor.txt"))
@@ -122,6 +124,7 @@ func TestMonitorWatchingUntilEvidence(t *testing.T) {
 }
 
 func TestMonitorWatchingFiniteAndBusyPrecedence(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	pane, err := os.ReadFile(filepath.Join("testdata", "background_work", "idle-monitor.txt"))
 	if err != nil {
@@ -183,6 +186,7 @@ func TestMonitorWatchingUntilCountAndAge(t *testing.T) {
 }
 
 func TestMonitorWatchingUntilPollAcknowledged(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
 	pane, err := os.ReadFile(filepath.Join("testdata", "background_work", "idle-monitor.txt"))

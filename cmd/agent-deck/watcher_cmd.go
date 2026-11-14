@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -172,9 +174,14 @@ func handleWatcherCreate(profile string, args []string) {
 	topic := fs.String("topic", "", "Topic for ntfy or slack adapter")
 	// --secret is DEPRECATED and refused at runtime (audit M2): an inline secret
 	// leaks via /proc/<pid>/cmdline, `ps`, and shell history. Source the github
-	// HMAC secret from $GITHUB_WEBHOOK_SECRET or --secret-file (chmod 600).
-	secret := fs.String("secret", "", "DEPRECATED/insecure: use $GITHUB_WEBHOOK_SECRET or --secret-file")
-	secretFile := fs.String("secret-file", "", "Path to a chmod-600 file holding the github HMAC secret")
+	// or webhook secret from $GITHUB_WEBHOOK_SECRET / $WEBHOOK_SECRET or
+	// --secret-file (chmod 600).
+	secret := fs.String("secret", "", "DEPRECATED/insecure: use $GITHUB_WEBHOOK_SECRET / $WEBHOOK_SECRET or --secret-file")
+	secretFile := fs.String("secret-file", "", "Path to a chmod-600 file holding the github or webhook secret (webhook: generated when not given)")
+	noSecret := fs.Bool("no-secret", false, "webhook only: accept unsigned requests from local processes (not recommended)")
+	server := fs.String("server", "", "ntfy server URL for ntfy or slack adapter (default "+watcher.DefaultNtfyServer+")")
+	tokenFile := fs.String("token-file", "", "Path to a chmod-600 file holding an ntfy access token (or set $NTFY_TOKEN)")
+	randomTopic := fs.Bool("random-topic", false, "Generate a random, hard-to-guess topic for ntfy or slack adapter")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher create <type> --name <name> [options]")
@@ -215,18 +222,43 @@ func handleWatcherCreate(profile string, args []string) {
 	}
 
 	// Validate type-specific required flags
-	var githubSecret string
+	var githubSecret, webhookSecret, ntfyToken string
 	switch adapterType {
 	case "webhook":
 		if *port == 0 {
 			fmt.Fprintln(os.Stderr, "Error: --port is required for webhook adapter")
 			exitCLI(1)
 		}
-	case "ntfy":
-		if *topic == "" {
-			fmt.Fprintln(os.Stderr, "Error: --topic is required for ntfy adapter")
+		s, err := resolveWebhookSecret(*secret, *secretFile, *noSecret, os.Getenv)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			exitCLI(1)
 		}
+		webhookSecret = s
+	case "ntfy", "slack":
+		if *topic != "" && *randomTopic {
+			fmt.Fprintln(os.Stderr, "Error: --topic and --random-topic cannot be used together")
+			exitCLI(1)
+		}
+		if *randomTopic {
+			t, err := watcher.RandomNtfyTopic()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				exitCLI(1)
+			}
+			*topic = t
+		}
+		if *topic == "" {
+			fmt.Fprintf(os.Stderr, "Error: --topic (or --random-topic) is required for %s adapter\n", adapterType)
+			exitCLI(1)
+		}
+		// Like the github secret, the token never comes from a CLI arg.
+		tok, err := resolveNtfyToken(*tokenFile, os.Getenv)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			exitCLI(1)
+		}
+		ntfyToken = tok
 	case "github":
 		// Audit M2: never accept the HMAC secret as a process-visible CLI arg.
 		s, err := resolveGithubWebhookSecret(*secret, *secretFile, os.Getenv)
@@ -235,11 +267,6 @@ func handleWatcherCreate(profile string, args []string) {
 			exitCLI(1)
 		}
 		githubSecret = s
-	case "slack":
-		if *topic == "" {
-			fmt.Fprintln(os.Stderr, "Error: --topic is required for slack adapter")
-			exitCLI(1)
-		}
 	}
 
 	db, err := openWatcherDB(profile)
@@ -295,7 +322,7 @@ func handleWatcherCreate(profile string, args []string) {
 	claimedName := true
 	switch adapterType {
 	case "webhook":
-		claimedName, err = writeWebhookWatcherSource(configPath, *port)
+		claimedName, err = writeWebhookWatcherSource(configPath, *port, webhookSecret)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing watcher config: %v\n", err)
 			exitCLI(1)
@@ -309,7 +336,7 @@ func handleWatcherCreate(profile string, args []string) {
 			exitCLI(1)
 		}
 	case "ntfy", "slack":
-		claimedName, err = writeTopicWatcherSource(configPath, adapterType, *topic)
+		claimedName, err = writeTopicWatcherSource(configPath, adapterType, *topic, *server, ntfyToken)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing watcher config: %v\n", err)
 			exitCLI(1)
@@ -361,6 +388,93 @@ func handleWatcherCreate(profile string, args []string) {
 	}
 
 	fmt.Printf("Created watcher: %s (type: %s)\n", *name, adapterType)
+	if adapterType == "webhook" {
+		printWebhookSecretHelp(*name, filepath.Join(configPath, "watcher.toml"), *port, webhookSecret != "")
+	}
+	if adapterType == "ntfy" || adapterType == "slack" {
+		if *randomTopic {
+			// The topic is a bearer capability: point at it, never print it.
+			fmt.Printf("Generated a random topic; it is stored as topic under [source] in %s\n",
+				filepath.Join(configPath, "watcher.toml"))
+		}
+		if msg := watcher.PublicNtfyTopicWarning(adapterType, *server, *topic, ntfyToken); msg != "" {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+		}
+	}
+}
+
+// resolveWebhookSecret sources the webhook watcher's shared secret the same
+// way as the github one, from $WEBHOOK_SECRET or --secret-file (chmod 600),
+// never an inline --secret. With neither it generates a random one, so a new
+// webhook watcher only accepts signed requests; --no-secret opts out and
+// returns "".
+func resolveWebhookSecret(inlineSecret, secretFile string, noSecret bool, getenv func(string) string) (string, error) {
+	if strings.TrimSpace(inlineSecret) != "" {
+		return "", errors.New("--secret is insecure (visible in ps / /proc / shell history); " +
+			"provide the webhook secret via $WEBHOOK_SECRET or --secret-file <path> (chmod 600), or omit both to generate one")
+	}
+	env := getenv("WEBHOOK_SECRET")
+	if noSecret {
+		if env != "" || secretFile != "" {
+			return "", errors.New("--no-secret cannot be combined with $WEBHOOK_SECRET or --secret-file")
+		}
+		return "", nil
+	}
+	if env != "" {
+		if err := watcher.CheckWebhookSecret(env); err != nil {
+			return "", fmt.Errorf("$WEBHOOK_SECRET %v", err)
+		}
+		return strings.TrimSpace(env), nil
+	}
+	if secretFile != "" {
+		s, err := readSecretFile(secretFile)
+		if err != nil {
+			return "", err
+		}
+		if err := watcher.CheckWebhookSecret(s); err != nil {
+			return "", fmt.Errorf("--secret-file %s %v", secretFile, err)
+		}
+		return s, nil
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate webhook secret: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// printWebhookSecretHelp tells the user where the webhook secret is stored and
+// how a sender signs with it. The secret itself is never printed, and the
+// examples read it from the file, so it never appears in a process's
+// arguments either.
+func printWebhookSecretHelp(name, tomlPath string, port int, hasSecret bool) {
+	if !hasSecret {
+		fmt.Printf("WARNING: webhook watcher %q accepts unsigned requests from any local process.\n", name)
+		fmt.Printf("To require a signature, add secret = \"<random hex, e.g. from: openssl rand -hex 32>\" under [source] in %s (chmod 600).\n", tomlPath)
+		return
+	}
+	fmt.Printf("Its secret is stored in %s ([source] secret, chmod 600); requests without it get 401.\n", tomlPath)
+	fmt.Println("Sign each request: X-Webhook-Timestamp is the unix time (within 5 minutes of this")
+	fmt.Println("machine's clock) and X-Webhook-Signature-256 is sha256=<hex HMAC-SHA256 of")
+	fmt.Println("timestamp, X-Webhook-Sender (\"\" if none) and body, joined by newlines>.")
+	fmt.Println("Each signature is accepted once (a replay gets 409). This example reads the")
+	fmt.Println("secret from the file, so it never appears on a command line:")
+	fmt.Println("python3 - <<'EOF'")
+	fmt.Println("import hashlib, hmac, re, time, urllib.request")
+	fmt.Printf("toml = open(%q).read()\n", tomlPath)
+	fmt.Println(`secret = re.search(r'^secret = "(.*)"$', toml, re.M).group(1).encode()`)
+	fmt.Println(`body, sender, ts = b'{"text":"hello"}', 'my-service', str(int(time.time()))`)
+	fmt.Println(`sig = hmac.new(secret, (ts + '\n' + sender + '\n').encode() + body, hashlib.sha256).hexdigest()`)
+	fmt.Printf("req = urllib.request.Request('http://127.0.0.1:%d/webhook', data=body, headers={\n", port)
+	fmt.Println(`    'X-Webhook-Timestamp': ts, 'X-Webhook-Sender': sender, 'X-Webhook-Signature-256': 'sha256=' + sig})`)
+	fmt.Println("print(urllib.request.urlopen(req).status)")
+	fmt.Println("EOF")
+	header := filepath.Join(filepath.Dir(tomlPath), "token-header")
+	fmt.Println("On a loopback bind a request may instead carry the secret itself as X-Webhook-Token,")
+	fmt.Println("kept in a chmod-600 header file. Any local process that sees such a request can")
+	fmt.Println("replay it; on any other bind the token is refused:")
+	fmt.Printf("  (umask 077; printf 'X-Webhook-Token: %%s\\n' \"$(sed -n 's/^secret = \"\\(.*\\)\"$/\\1/p' '%s')\" > '%s')\n", tomlPath, header)
+	fmt.Printf("  curl -sS -o /dev/null -w '%%{http_code}\\n' http://127.0.0.1:%d/webhook -H @'%s' -H 'X-Webhook-Sender: my-service' --data-binary 'hello'\n", port, header)
 }
 
 // resolveGithubWebhookSecret sources the GitHub webhook HMAC secret WITHOUT ever
@@ -383,23 +497,41 @@ func resolveGithubWebhookSecret(inlineSecret, secretFile string, getenv func(str
 		"set $GITHUB_WEBHOOK_SECRET or pass --secret-file <path> (chmod 600)")
 }
 
+// resolveNtfyToken sources the optional ntfy access token for an ntfy/slack
+// watcher the same way as the github secret: the NTFY_TOKEN env var, then
+// --token-file (which must be chmod 600). No token is not an error.
+func resolveNtfyToken(tokenFile string, getenv func(string) string) (string, error) {
+	if env := strings.TrimSpace(getenv("NTFY_TOKEN")); env != "" {
+		return env, nil
+	}
+	if tokenFile != "" {
+		return readSecretFileFlag("--token-file", tokenFile)
+	}
+	return "", nil
+}
+
 // readSecretFile reads a secret from path, refusing files that are group- or
 // world-accessible (any bit beyond 0600) so a leaked secret file is caught early.
 func readSecretFile(path string) (string, error) {
+	return readSecretFileFlag("--secret-file", path)
+}
+
+// readSecretFileFlag is readSecretFile with the flag name used in its errors.
+func readSecretFileFlag(flagName, path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", fmt.Errorf("cannot read --secret-file: %w", err)
+		return "", fmt.Errorf("cannot read %s: %w", flagName, err)
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return "", fmt.Errorf("--secret-file %s has insecure permissions %#o; chmod 600 it", path, perm)
+		return "", fmt.Errorf("%s %s has insecure permissions %#o; chmod 600 it", flagName, path, perm)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("cannot read --secret-file: %w", err)
+		return "", fmt.Errorf("cannot read %s: %w", flagName, err)
 	}
 	secret := strings.TrimSpace(string(data))
 	if secret == "" {
-		return "", fmt.Errorf("--secret-file %s is empty", path)
+		return "", fmt.Errorf("%s %s is empty", flagName, path)
 	}
 	return secret, nil
 }
@@ -427,20 +559,33 @@ func writeGithubWatcherSecret(dir, secret string, port int) (bool, error) {
 // table of watcher/<name>/watcher.toml. Without it the port given on the
 // command line never reaches the engine, and WebhookAdapter falls back to its
 // default 18460, so every webhook watcher contends for one port (#2532).
-func writeWebhookWatcherSource(dir string, port int) (bool, error) {
+// A non-empty secret is stored with it, in the same 0600 file.
+func writeWebhookWatcherSource(dir string, port int, secret string) (bool, error) {
+	settings := [][2]string{{"port", fmt.Sprintf("%d", port)}}
+	if secret != "" {
+		settings = append(settings, [2]string{"secret", secret})
+	}
 	return createWatcherSourceToml(dir,
 		"# Auto-generated by: agent-deck watcher create webhook\n",
-		[][2]string{{"port", fmt.Sprintf("%d", port)}})
+		settings)
 }
 
 // writeTopicWatcherSource persists the ntfy/slack --topic into the [source]
 // table of watcher/<name>/watcher.toml. Without it the topic given on the
 // command line never reaches the engine, whose adapters require
-// Settings["topic"] and fail Setup without it.
-func writeTopicWatcherSource(dir, adapterType, topic string) (bool, error) {
-	return createWatcherSourceToml(dir,
-		fmt.Sprintf("# Auto-generated by: agent-deck watcher create %s\n", adapterType),
-		[][2]string{{"topic", topic}})
+// Settings["topic"] and fail Setup without it. A non-empty server and access
+// token are stored alongside it (the file is 0600).
+func writeTopicWatcherSource(dir, adapterType, topic, server, token string) (bool, error) {
+	header := fmt.Sprintf("# Auto-generated by: agent-deck watcher create %s\n", adapterType)
+	settings := [][2]string{{"topic", topic}}
+	if server != "" {
+		settings = append(settings, [2]string{"server", server})
+	}
+	if token != "" {
+		header += "# Access token is stored here (chmod 600), never passed as a CLI arg.\n"
+		settings = append(settings, [2]string{"token", token})
+	}
+	return createWatcherSourceToml(dir, header, settings)
 }
 
 // createWatcherSourceToml writes a [source] table to watcher/<name>/watcher.toml
@@ -859,6 +1004,7 @@ func handleWatcherStatus(profile string, args []string) {
 	meta, _ := session.LoadWatcherMeta(name)
 	events, _ := db.LoadWatcherEvents(w.ID, 10)
 	undelivered, undeliveredErr := watcherUndelivered(profile, w.ID)
+	refused, refusedErr := db.LoadWatcherDeliveryRefusals(w.ID)
 	now := time.Now()
 
 	if *jsonOutput {
@@ -873,6 +1019,12 @@ func handleWatcherStatus(profile string, args []string) {
 			Count            int    `json:"count"`
 			OldestQueuedAt   string `json:"oldest_queued_at"`
 			OldestAgeSeconds int64  `json:"oldest_age_seconds"`
+		}
+		type refusedOut struct {
+			Conductor      string `json:"conductor"`
+			Count          int    `json:"count"`
+			FirstRefusedAt string `json:"first_refused_at"`
+			LastRefusedAt  string `json:"last_refused_at"`
 		}
 		type output struct {
 			ID         string     `json:"id"`
@@ -890,6 +1042,12 @@ func handleWatcherStatus(profile string, args []string) {
 			// a monitor does not read that as nothing waiting.
 			Undelivered      []undeliveredOut `json:"undelivered"`
 			UndeliveredError string           `json:"undelivered_error,omitempty"`
+			// Refused: routed events refused because this watcher's queue
+			// for a conductor was full, per conductor. They are stored in
+			// recent_events like the others but were never delivered. Null
+			// with RefusedError when the count could not be read.
+			Refused      []refusedOut `json:"refused"`
+			RefusedError string       `json:"refused_error,omitempty"`
 		}
 		out := output{
 			ID:          w.ID,
@@ -901,6 +1059,18 @@ func handleWatcherStatus(profile string, args []string) {
 			CreatedAt:   w.CreatedAt.Format(time.RFC3339),
 			UpdatedAt:   w.UpdatedAt.Format(time.RFC3339),
 			Undelivered: []undeliveredOut{},
+			Refused:     []refusedOut{},
+		}
+		if refusedErr != nil {
+			out.Refused, out.RefusedError = nil, refusedErr.Error()
+		}
+		for _, r := range refused {
+			out.Refused = append(out.Refused, refusedOut{
+				Conductor:      r.Conductor,
+				Count:          r.Count,
+				FirstRefusedAt: r.FirstRefusedAt.UTC().Format(time.RFC3339),
+				LastRefusedAt:  r.LastRefusedAt.UTC().Format(time.RFC3339),
+			})
 		}
 		if undeliveredErr != nil {
 			out.Undelivered, out.UndeliveredError = nil, undeliveredErr.Error()
@@ -946,6 +1116,13 @@ func handleWatcherStatus(profile string, args []string) {
 			fmt.Printf("  Undelivered: %d for %s, oldest queued %s ago\n",
 				p.Count, p.Conductor, now.Sub(p.Oldest).Round(time.Second))
 		}
+	}
+	if refusedErr != nil {
+		fmt.Printf("  Refused: unknown (%v)\n", refusedErr)
+	}
+	for _, r := range refused {
+		fmt.Printf("  Refused: %d for %s (delivery queue full, not delivered), first %s, last %s\n",
+			r.Count, r.Conductor, r.FirstRefusedAt.Format("2006-01-02 15:04:05"), r.LastRefusedAt.Format("2006-01-02 15:04:05"))
 	}
 	fmt.Println()
 
@@ -1320,7 +1497,9 @@ func printWatcherHelp() {
 	fmt.Println()
 	fmt.Println("Examples (one per adapter type):")
 	fmt.Println()
-	fmt.Println("  # Generic HTTP webhook listening on port 9000")
+	fmt.Println("  # Generic HTTP webhook on 127.0.0.1:9000. Requests must be signed with a")
+	fmt.Println("  # secret: generated and stored in its watcher.toml unless given by")
+	fmt.Println("  # $WEBHOOK_SECRET or --secret-file (chmod 600):")
 	fmt.Println("  agent-deck watcher create webhook --name my-webhook --port 9000")
 	fmt.Println()
 	fmt.Println("  # GitHub repository webhook with HMAC-SHA256 verification")
@@ -1328,11 +1507,16 @@ func printWatcherHelp() {
 	fmt.Println("  GITHUB_WEBHOOK_SECRET=... agent-deck watcher create github --name gh-alerts")
 	fmt.Println("  agent-deck watcher create github --name gh-alerts --secret-file ~/.gh-webhook-secret")
 	fmt.Println()
-	fmt.Println("  # ntfy.sh push-notification topic")
-	fmt.Println("  agent-deck watcher create ntfy --name phone-alerts --topic my-private-topic")
+	fmt.Println("  # ntfy push-notification topic. On the public https://ntfy.sh anyone who")
+	fmt.Println("  # knows the topic can read and post to it, so use a random topic:")
+	fmt.Println("  agent-deck watcher create ntfy --name phone-alerts --random-topic")
+	fmt.Println("  # or an access-protected topic on your own ntfy server (token from the")
+	fmt.Println("  # environment or a chmod-600 file, never a CLI arg):")
+	fmt.Println("  NTFY_TOKEN=... agent-deck watcher create ntfy --name phone-alerts \\")
+	fmt.Println("      --server https://ntfy.example.com --topic phone-alerts")
 	fmt.Println()
 	fmt.Println("  # Slack-bridged via ntfy topic (see skill for Cloudflare Worker setup)")
-	fmt.Println("  agent-deck watcher create slack --name team-slack --topic my-slack-topic")
+	fmt.Println("  agent-deck watcher create slack --name team-slack --random-topic")
 	fmt.Println()
 	fmt.Println("After creating, activate and inspect:")
 	fmt.Println("  agent-deck watcher start <name>")

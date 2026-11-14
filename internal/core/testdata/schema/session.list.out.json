@@ -88,6 +88,10 @@
         "command": {
           "type": "string"
         },
+        "conductor_name": {
+          "description": "stable conductor name of a conductor session (survives renames); absent for other sessions",
+          "type": "string"
+        },
         "created_at": {
           "type": "string",
           "format": "date-time"
@@ -158,7 +162,7 @@
           "type": "string"
         },
         "status_source": {
-          "description": "cached for an absent historical row whose stored status was used; live after a status refresh",
+          "description": "cached for an absent historical row whose stored status was used; live after a status refresh; stale when the refresh could not capture the pane (batched capture timed out): status is the last observation or the default, substate last known or absent",
           "type": "string"
         },
         "substate": {
@@ -180,8 +184,16 @@
         "title": {
           "type": "string"
         },
+        "tmux_binary": {
+          "description": "the [tmux.binaries] client for that socket; absent when none applies (run the bare tmux)",
+          "type": "string"
+        },
         "tmux_session": {
           "description": "live",
+          "type": "string"
+        },
+        "tmux_socket_name": {
+          "description": "tmux -L socket the session lives on; absent on the default server",
           "type": "string"
         },
         "tool": {

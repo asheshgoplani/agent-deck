@@ -29,8 +29,8 @@ var codexPaneOpenPaths = (*Instance).openCodexProcessPaths
 // means the list may be incomplete. Test seam.
 var codexPaneProcessPIDs = (*Instance).collectCodexProcessCandidates
 
-func (i *Instance) openCodexProcessPaths() ([]string, error) {
-	pids, probeErr := i.collectCodexProcessCandidates()
+func (i *Instance) openCodexProcessPaths(pass *StatusUpdatePass) ([]string, error) {
+	pids, probeErr := i.collectCodexProcessCandidates(pass)
 	var paths []string
 	for _, pid := range pids {
 		var open []string
@@ -69,10 +69,14 @@ func procFDLinkTargets(pid int) ([]string, error) {
 // names more than one thread (for example after /new, while the old rollout is
 // still open), so callers fail closed rather than guess.
 func (i *Instance) LiveCodexThreadID() string {
+	return i.liveCodexThreadID(nil)
+}
+
+func (i *Instance) liveCodexThreadID(pass *StatusUpdatePass) string {
 	if i == nil || !IsCodexCompatible(i.Tool) || !i.CodexRolloutIsResolvableLocally() {
 		return ""
 	}
-	paths, err := codexPaneOpenPaths(i)
+	paths, err := codexPaneOpenPaths(i, pass)
 	if err != nil {
 		return ""
 	}
@@ -114,16 +118,16 @@ func (i *Instance) LiveCodexUserThreadID() string {
 // when the probe is incomplete or ambiguous). A disk scan at that point can
 // only find someone else's rollout, such as a sibling's in the same project,
 // since this process has not written one (#2394).
-func (i *Instance) liveCodexBootstrapEvidence() (threadID string, live bool) {
+func (i *Instance) liveCodexBootstrapEvidence(pass *StatusUpdatePass) (threadID string, live bool) {
 	if i == nil || !IsCodexCompatible(i.Tool) || !i.CodexRolloutIsResolvableLocally() {
 		return "", false
 	}
-	pids, err := codexPaneProcessPIDs(i)
+	pids, err := codexPaneProcessPIDs(i, pass)
 	if len(pids) == 0 {
 		return "", false
 	}
 	if err != nil {
 		return "", true // Codex is live but the probe is incomplete: bind nothing
 	}
-	return i.LiveCodexUserThreadID(), true
+	return i.filterCodexProcessProbeCandidate(i.liveCodexThreadID(pass)), true
 }

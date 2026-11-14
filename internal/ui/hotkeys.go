@@ -82,6 +82,22 @@ const (
 	// have the bare key can set [hotkeys].agents_panel = "a" and move
 	// quick_approve.
 	hotkeyAgentsPanel = "agents_panel"
+	// hotkeyReportProblem opens the "Report a problem" form: a bug
+	// or idea becomes a structured GitHub issue through internal/issuereport,
+	// shown in full and filed only after an explicit confirm. "Z" is the one
+	// letter the overview dispatcher does not already use (every lowercase
+	// letter and A-Y are taken); ctrl+e stays the version-rating dialog.
+	hotkeyReportProblem = "report_problem"
+	// hotkeyShowAround reopens onboarding ("Show me around", ASK-131): the
+	// "What you can do" page, with Tab to the agents and sign-in page.
+	// Every letter is taken (see hotkeyReportProblem); "alt+w" (welcome) is
+	// a chord no main-screen action, dialog or attach-loop intercept uses.
+	hotkeyShowAround = "show_around"
+	// hotkeyWhatsNew opens "What's new" (ASK-205): this release's notes,
+	// your reports it fixed and "Is it fixed for you?". Every letter is
+	// taken (see hotkeyReportProblem); "alt+n" (news) is a chord no
+	// main-screen action, dialog or attach-loop intercept uses.
+	hotkeyWhatsNew = "whats_new"
 	// Session switcher. While attached it is intercepted in the tmux attach
 	// loop (see internal/tmux/pty.go AttachOptions); on the home screen it is
 	// dispatched like any other hotkey. Must resolve to a "ctrl+<letter>" chord.
@@ -148,6 +164,7 @@ var hotkeyActionOrder = []string{
 	hotkeyCopyInfo,
 	hotkeyContextInspector,
 	hotkeySendOutput,
+	hotkeySessionRef,
 	hotkeyExecShell,
 	hotkeyOpenShellHere,
 	hotkeyEditNotes,
@@ -168,6 +185,9 @@ var hotkeyActionOrder = []string{
 	hotkeyDeadLetters,
 	hotkeyTriggers,
 	hotkeyAgentsPanel,
+	hotkeyReportProblem,
+	hotkeyShowAround,
+	hotkeyWhatsNew,
 	hotkeySwitchSession,
 	hotkeyAltSession,
 	hotkeyMRUBack,
@@ -206,6 +226,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyCopyInfo:         "B",
 	hotkeyContextInspector: "C",
 	hotkeySendOutput:       "x",
+	hotkeySessionRef:       "alt+l",
 	hotkeyExecShell:        "E",
 	hotkeyOpenShellHere:    "H",
 	hotkeyEditNotes:        "e",
@@ -226,6 +247,9 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyDeadLetters:      "alt+d",
 	hotkeyTriggers:         "alt+t",
 	hotkeyAgentsPanel:      "alt+a",
+	hotkeyReportProblem:    "Z",
+	hotkeyShowAround:       "alt+w",
+	hotkeyWhatsNew:         "alt+n",
 	hotkeySwitchSession:    "ctrl+s",
 	hotkeyAltSession:       "`",
 	hotkeyMRUBack:          "alt+left",

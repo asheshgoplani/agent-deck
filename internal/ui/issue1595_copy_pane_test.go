@@ -75,7 +75,7 @@ func TestIssue1595CopyPaneHelpAndFooter(t *testing.T) {
 	// than collapsing a wrapped row into one entry, so the content measures
 	// taller and needs more height to fit on a single page.
 	overlay.SetSize(120, 100)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 	help := tmux.StripANSI(overlay.View())
 	if !strings.Contains(help, "V") || !strings.Contains(help, "Copy visible terminal text, including links") {
 		t.Fatalf("help does not advertise visible-pane copy:\n%s", help)

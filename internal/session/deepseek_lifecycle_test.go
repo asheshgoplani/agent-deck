@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // End-to-end lifecycle proof for the DeepSeek Harness integration.
@@ -95,6 +97,7 @@ func waitForPane(t *testing.T, inst *Instance, want string, timeout time.Duratio
 }
 
 func TestDeepSeekLifecycle_LaunchSendRestart(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	// New test: uses TestMain's bootstrapped server on the isolated socket, so
 	// the binary check is the right gate (skipIfNoTmuxServer is the legacy one).
 	skipIfNoTmuxBinary(t)

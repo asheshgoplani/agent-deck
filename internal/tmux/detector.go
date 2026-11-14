@@ -920,18 +920,24 @@ func StripANSI(content string) string {
 				i = j
 				continue
 			}
-			// OSC sequence: ESC ] ... BEL
+			// OSC sequence: ESC ] ... BEL or ST (ESC \), whichever comes first.
+			// Preferring a later BEL over an earlier ST would swallow the
+			// visible text between them.
 			if i+1 < len(content) && content[i+1] == ']' {
-				// Find BEL terminator
-				bellPos := strings.Index(content[i:], "\x07")
+				rest := content[i:]
+				bellPos := strings.IndexByte(rest, '\x07')
+				// Look for ST only before the BEL so a BEL-terminated
+				// sequence never rescans the rest of the content.
+				stScope := rest
 				if bellPos != -1 {
-					i += bellPos + 1
+					stScope = rest[:bellPos]
+				}
+				if stPos := strings.Index(stScope, "\x1b\\"); stPos != -1 {
+					i += stPos + 2
 					continue
 				}
-				// No BEL found - find ST (ESC \) as alternative terminator
-				stPos := strings.Index(content[i:], "\x1b\\")
-				if stPos != -1 {
-					i += stPos + 2
+				if bellPos != -1 {
+					i += bellPos + 1
 					continue
 				}
 			}
@@ -972,6 +978,33 @@ func StripANSI(content string) string {
 	return b.String()
 }
 
+// claudeFooterMaxLines bounds the footer Claude Code draws under its
+// composer: the status line, the mode line and one row per background agent
+// or workflow ("← for agents"). Longer is not a footer.
+const claudeFooterMaxLines = 64
+
+// claudeFooterBelow reports whether lines (everything under the composer's
+// lower rule) are only Claude Code's own footer: each non-blank line indented
+// the way Claude draws it, no further rule, and not more than
+// claudeFooterMaxLines (ASK-201: a conductor running many agents lists them
+// all there, which pushed the composer out of the 8-line window). Program
+// output after Claude exited, a shell prompt or a dialog under another rule
+// is not a footer.
+func claudeFooterBelow(lines []string) bool {
+	if len(lines) > claudeFooterMaxLines {
+		return false
+	}
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if isHorizontalRuleLine(line) || (!strings.HasPrefix(line, " ") && !strings.HasPrefix(line, " ")) {
+			return false
+		}
+	}
+	return true
+}
+
 // AgentComposerVisible reports whether the pane shows the input composer of
 // an agent that reads a pasted @path (Claude Code, Gemini): the remote attach
 // turns Ctrl+V with a clipboard image into an upload only then, never in an
@@ -997,7 +1030,7 @@ func AgentComposerVisible(tool, content string) bool {
 			}
 			for j := i + 2; j < len(lines); j++ {
 				if isHorizontalRuleLine(lines[j]) {
-					if j >= len(lines)-8 {
+					if j >= len(lines)-8 || claudeFooterBelow(lines[j+1:]) {
 						return true
 					}
 					break

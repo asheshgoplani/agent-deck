@@ -200,6 +200,33 @@ func (s *StateDB) DeleteInstanceRow(id string) error {
 	})
 }
 
+// DeleteSessionRows removes a session's instance row, claude_statuslines,
+// cost_events and watcher_events in one transaction. The migration's
+// source-delete phase uses it so a failure leaves the source untouched and
+// rolling back the target copy cannot lose the only copy of any row.
+func (s *StateDB) DeleteSessionRows(id string) error {
+	return withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`DELETE FROM watcher_events WHERE session_id = ? OR triage_session_id = ?`, id, id); err != nil {
+			return fmt.Errorf("delete watcher_events: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM cost_events WHERE session_id = ?`, id); err != nil {
+			return fmt.Errorf("delete cost_events: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM instances WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("delete instance: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM claude_statuslines WHERE session_id = ?`, id); err != nil {
+			return fmt.Errorf("delete claude_statuslines: %w", err)
+		}
+		return tx.Commit()
+	})
+}
+
 // --- cost_events round-trip ---
 
 // LoadCostEventsForSession returns every cost_events row matching session_id.

@@ -1,0 +1,19 @@
+# Config for the example docker provider: copy to
+# ~/.config/agent-deck/docker-sandbox.conf. Every key is optional.
+# "key = value" lines; the file is parsed, never sourced.
+
+# The project every new sandbox gets at /home/dev/<project_name>.
+# Set one of project_git / project_dir; with neither, the demo project.
+# project_git = https://github.com/you/repo.git
+# project_dir = /home/you/src/repo
+# project_name = repo
+
+# A Claude Code login for claude sessions on the sandbox: a file holding a
+# token from 'claude setup-token' on its one and only line (no comment,
+# no blank line), mode 0600, owned by you.
+# claude_token_file = /home/you/.config/agent-deck/claude-token
+
+# Copy this agent-deck binary (linux, the sandbox's CPU) into each new
+# sandbox, so agent-deck does not download a release from GitHub at create
+# (useful offline or when the GitHub API rate limit is hit).
+# agent_deck_binary = /home/you/bin/agent-deck

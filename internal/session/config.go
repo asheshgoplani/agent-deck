@@ -350,11 +350,11 @@ const (
 // 4. Config default profile
 // 5. Fallback to "default"
 //
-// Priority 3 was added to fix issue #881: prior to this, the TUI's
-// profile.DetectCurrentProfile honored CLAUDE_CONFIG_DIR while the web /
-// storage / push paths did not, so the same user on the same machine could
-// see different sessions in TUI vs web. Both call sites now route through
-// this function to guarantee a single source of truth.
+// Priority 3 was added to fix issue #881: prior to this, the TUI's profile
+// lookup honored CLAUDE_CONFIG_DIR while the web / storage / push paths did
+// not, so the same user on the same machine could see different sessions in
+// TUI vs web. Both paths now route through this function, so they share one
+// precedence order (pinned by profile_precedence_test.go).
 func GetEffectiveProfile(explicit string) string {
 	profile, _ := getEffectiveProfileWithSource(explicit)
 	return profile

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"al.essio.dev/pkg/shellescape"
 )
 
 // getCopilotHomeDir returns the Copilot CLI config/state directory.
@@ -186,12 +188,12 @@ func buildCopilotCommand(i *Instance) string {
 	// Determine model flag
 	modelFlag := ""
 	if i.CopilotModel != "" {
-		modelFlag = " --model " + i.CopilotModel
+		modelFlag = " --model " + shellescape.Quote(i.CopilotModel)
 	} else if i.CopilotSessionID == "" {
 		// Only apply default model for NEW sessions (not resumes)
 		userConfig, _ := LoadUserConfig()
 		if userConfig != nil && userConfig.Copilot.DefaultModel != "" {
-			modelFlag = " --model " + userConfig.Copilot.DefaultModel
+			modelFlag = " --model " + shellescape.Quote(userConfig.Copilot.DefaultModel)
 		}
 	}
 
@@ -221,7 +223,7 @@ func buildCopilotCommand(i *Instance) string {
 		return envPrefix + fmt.Sprintf(
 			"%s --resume %s%s%s",
 			baseCmd,
-			i.CopilotSessionID,
+			shellescape.Quote(i.CopilotSessionID),
 			modelFlag,
 			allowAllFlag,
 		)

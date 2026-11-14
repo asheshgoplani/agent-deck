@@ -81,7 +81,7 @@ func (h *Home) tryInstallUpdate() (tea.Model, tea.Cmd) {
 	}
 	exe := h.restartExecutable()
 	uiLog.Info("tui_update_install_started", "exe", exe, "latest", h.updateInfo.LatestVersion)
-	return h, tea.Exec(installUpdateCmd{exe: exe}, func(err error) tea.Msg {
+	return h, execHoldingInput(installUpdateCmd{exe: exe}, func(err error) tea.Msg {
 		return updateInstallFinishedMsg{err: err}
 	})
 }

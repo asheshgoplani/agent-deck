@@ -396,5 +396,7 @@ def test_send_to_conductor_passes_source_to_session_send():
         assert ok
         ok, _, _ = bridge.send_to_conductor("conductor-ops", "hi", profile="work")
         assert ok
-    assert calls[0][:2] == ("session", "send") and calls[0][-2:] == ("--source", "channel:slack")
+    assert calls[0][:2] == ("session", "send") and calls[0][-3:] == ("--", "conductor-ops", "hi")
+    flags = calls[0][:calls[0].index("--")]
+    assert flags[flags.index("--source") + 1] == "channel:slack"
     assert "--source" not in calls[1]

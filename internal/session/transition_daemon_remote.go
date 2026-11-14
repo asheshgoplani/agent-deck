@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -165,7 +166,12 @@ func (s *remoteTalkbackScheduler) finish(name string, rc RemoteConfig, targets [
 	var alertTargets []remoteTalkbackTarget
 	if st.failures >= remoteTalkbackAlertAfter && !st.alerted {
 		st.alerted = true
-		alertTargets = st.targets
+		// Targets found before require_same_profile was set must not hear of it.
+		for _, t := range st.targets {
+			if talkbackProfileAllowed(rc, t.Profile) {
+				alertTargets = append(alertTargets, t)
+			}
+		}
 	}
 	streakStart, failures := st.firstFailAt, st.failures
 	s.mu.Unlock()
@@ -182,10 +188,21 @@ func (s *remoteTalkbackScheduler) finish(name string, rc RemoteConfig, targets [
 
 // discoverTalkbackTargets lists the local conductors enrolled with remote: a
 // conductor-titled session that has a cursor for it, or a pending inbox record
-// from it.
+// from it. With require_same_profile only the remote's own profile counts.
 func discoverTalkbackTargets(remote string) ([]remoteTalkbackTarget, error) {
+	cfg, err := LoadUserConfig()
+	if err != nil {
+		return nil, err
+	}
+	var rc RemoteConfig
+	if cfg != nil {
+		rc = cfg.Remotes[remote]
+	}
 	var out []remoteTalkbackTarget
 	for _, profile := range profilesForTransitionDaemon() {
+		if !talkbackProfileAllowed(rc, profile) {
+			continue
+		}
 		storage, err := NewStorageWithProfile(profile)
 		if err != nil {
 			return nil, err
@@ -202,6 +219,12 @@ func discoverTalkbackTargets(remote string) ([]remoteTalkbackTarget, error) {
 		}
 	}
 	return out, nil
+}
+
+// talkbackProfileAllowed reports whether a conductor of profile may receive
+// rc's records: any profile, unless require_same_profile limits it to rc's.
+func talkbackProfileAllowed(rc RemoteConfig, profile string) bool {
+	return !rc.RequireSameProfile || strings.TrimSpace(profile) == strings.TrimSpace(rc.GetProfile())
 }
 
 func talkbackEnrolled(remote, parentID string) bool {

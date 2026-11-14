@@ -32,11 +32,21 @@ func TestBuildOpenClawBridgeCommand(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildOpenClawBridgeCommand(tc.agentID)
+			got := buildOpenClawBridgeCommand(tc.agentID, false)
 			if got != tc.want {
 				t.Fatalf("buildOpenClawBridgeCommand(%q) = %q, want %q", tc.agentID, got, tc.want)
 			}
 		})
+	}
+}
+
+// A bridge session made by `openclaw sync --insecure` must carry --insecure,
+// or it refuses the same plain ws:// gateway sync just reached.
+func TestBuildOpenClawBridgeCommand_CarriesInsecure(t *testing.T) {
+	got := buildOpenClawBridgeCommand("main", true)
+	want := "agent-deck openclaw bridge --insecure --agent main"
+	if got != want {
+		t.Fatalf("buildOpenClawBridgeCommand(main, insecure) = %q, want %q", got, want)
 	}
 }
 

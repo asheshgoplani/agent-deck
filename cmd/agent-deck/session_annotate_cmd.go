@@ -245,7 +245,7 @@ func firstLineClipped(text string, limit int) string {
 			continue
 		}
 		if len(line) > limit {
-			line = line[:limit]
+			line = strings.TrimSpace(truncateUTF8(line, limit))
 		}
 		return line
 	}

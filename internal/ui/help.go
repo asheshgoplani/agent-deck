@@ -91,6 +91,10 @@ type HelpOverlay struct {
 	// Runtime shortcuts follow the layout selected at startup. A saved
 	// opposite preference only takes effect after restart.
 	embeddedLayout bool
+
+	// allKeys selects the full key list. '?' opens on the short "5 keys to
+	// start" view (onboarding, ASK-211); Tab switches between the two.
+	allKeys bool
 }
 
 // SetHasAgents records whether anything has been adopted.
@@ -111,10 +115,22 @@ func NewHelpOverlay() *HelpOverlay {
 	return &HelpOverlay{hotkeys: resolveHotkeys(nil)}
 }
 
-// Show makes the help overlay visible
+// Show makes the help overlay visible on the short "5 keys to start" view.
 func (h *HelpOverlay) Show() {
 	h.visible = true
 	h.scrollOffset = 0
+	h.allKeys = false
+}
+
+// ShowAll makes the help overlay visible on the full key list.
+func (h *HelpOverlay) ShowAll() {
+	h.Show()
+	h.allKeys = true
+}
+
+// ShowingAllKeys reports whether the full key list is on screen.
+func (h *HelpOverlay) ShowingAllKeys() bool {
+	return h.allKeys
 }
 
 // Hide hides the help overlay
@@ -172,6 +188,17 @@ func (h *HelpOverlay) Update(msg tea.Msg) (*HelpOverlay, tea.Cmd) {
 	}
 
 	if key, ok := msg.(tea.KeyMsg); ok {
+		// Tab switches between "5 keys to start" and all keys.
+		if key.String() == "tab" {
+			h.allKeys = !h.allKeys
+			h.scrollOffset = 0
+			return h, nil
+		}
+		// The short view has nothing to scroll: any other key closes it.
+		if !h.allKeys {
+			h.Hide()
+			return h, nil
+		}
 		switch key.String() {
 		case "j", "down":
 			h.scrollOffset++
@@ -216,6 +243,9 @@ func (h *HelpOverlay) View() string {
 	if !h.visible {
 		return ""
 	}
+	if !h.allKeys {
+		return h.viewShort()
+	}
 
 	// Define help sections
 	newKeys := h.keyPair(hotkeyNewSession, hotkeyQuickCreate, "n/N")
@@ -259,6 +289,7 @@ func (h *HelpOverlay) View() string {
 	copyInfoKey := h.key(hotkeyCopyInfo, "B")
 	contextInspectorKey := h.key(hotkeyContextInspector, "C")
 	sendKey := h.key(hotkeySendOutput, "x")
+	sessionRefKey := h.key(hotkeySessionRef, "alt+l")
 	execShellKey := h.key(hotkeyExecShell, "E")
 	openShellHereKey := h.key(hotkeyOpenShellHere, "h")
 	notesKey := h.key(hotkeyEditNotes, "e")
@@ -273,6 +304,9 @@ func (h *HelpOverlay) View() string {
 	deadLettersKey := h.key(hotkeyDeadLetters, "alt+d")
 	triggersKey := h.key(hotkeyTriggers, "alt+t")
 	agentsPanelKey := h.key(hotkeyAgentsPanel, "alt+a")
+	reportKey := h.key(hotkeyReportProblem, "Z")
+	showAroundKey := h.key(hotkeyShowAround, "alt+w")
+	whatsNewKey := h.key(hotkeyWhatsNew, "alt+n")
 	groupKey := h.key(hotkeyCreateGroup, "g")
 	undoKey := h.key(hotkeyUndoDelete, "Ctrl+Z")
 	archiveKey := h.key(hotkeyArchiveSession, "A")
@@ -324,7 +358,9 @@ func (h *HelpOverlay) View() string {
 				{"Enter", quickStartEnter},
 				{restartKey, "Restart selected session"},
 				{detachKey, "Detach from session"},
+				{h.key(hotkeyNewSession, "n"), "New session"},
 				{helpKey, "Open this help"},
+				{showAroundKey, "Show me around: what you can do"},
 			},
 		},
 		{
@@ -332,7 +368,7 @@ func (h *HelpOverlay) View() string {
 			items: navigationItems,
 		},
 		{
-			title: "GROUP NAVIGATION (v1.7.60)",
+			title: "GROUP NAVIGATION",
 			items: [][2]string{
 				{"Alt+j / Alt+k", "Next / prev session in group"},
 				{"Alt+1 - Alt+9", "Jump to Nth session in group"},
@@ -373,6 +409,7 @@ func (h *HelpOverlay) View() string {
 				{yoloKey, "Toggle YOLO mode"},
 				{contextInspectorKey, "Inspect full context (everything the agent is being sent, ranked by cost)"},
 				{sendKey, "Send output to session"},
+				{sessionRefKey, "Hand a reference to another session (pick, move, ⏎ drop; never sent)"},
 				{execShellKey, "Exec shell in sandbox container"},
 				{openShellHereKey, "Open shell in session's worktree (split pane / window)"},
 				{editPathsKey, "Edit multi-repo paths"},
@@ -445,6 +482,8 @@ func (h *HelpOverlay) View() string {
 				{importKey, "Import tmux sessions"},
 				{switchKey, "Switch session (here or attached)"},
 				{scrollbackKey, "Scrollback pager (while attached)"},
+				{reportKey, "Report a problem or idea (GitHub issue; you see it in full and confirm first)"},
+				{whatsNewKey, "What's new in this version (and whether your reports are fixed)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},
@@ -553,7 +592,8 @@ func (h *HelpOverlay) View() string {
 	}
 	lines = append(lines, "")
 	lines = append(lines, separatorStyle.Render(strings.Repeat("─", separatorWidth)))
-	lines = append(lines, versionStyle.Render("Agent Deck v"+Version))
+	// dialogWidth minus border (2) and padding (4) is the row budget.
+	lines = append(lines, withBrandMark(versionStyle.Render("Agent Deck v"+Version), dialogWidth-6))
 
 	totalLines := len(lines)
 
@@ -615,15 +655,59 @@ func (h *HelpOverlay) View() string {
 	// Footer with appropriate hint
 	content.WriteString("\n\n")
 	if needsScroll {
-		content.WriteString(footerStyle.Render("j/k scroll • any other key to close"))
+		content.WriteString(footerStyle.Render("j/k scroll • Tab 5 keys • any other key to close"))
 	} else {
-		content.WriteString(footerStyle.Render("Press any key to close"))
+		content.WriteString(footerStyle.Render("Tab 5 keys • any other key to close"))
 	}
 
 	// Wrap in dialog box
-	box := DialogBoxStyle.
-		Width(dialogWidth).
-		Render(content.String())
+	box := renderSurfaceBox(DialogBoxStyle.Width(dialogWidth), content.String())
 
+	return centerInScreen(box, h.width, h.height)
+}
+
+// shortHelpKeys are the rows of the "5 keys to start" view (onboarding,
+// ASK-211; words from Sharjeel's prototype). Keys follow the user's hotkey
+// overrides; a key with no binding drops its row.
+func (h *HelpOverlay) shortHelpKeys() [][2]string {
+	enter := "Open the selected session"
+	if h.embeddedLayout {
+		enter = "Focus the selected session"
+	}
+	detach := DetachByteLabel(DetachByteFromBinding(h.key(hotkeyDetach, "ctrl+q")))
+	rows := [][2]string{
+		{"Enter", enter},
+		{detach, "Come back to this list"},
+		{h.key(hotkeyNewSession, "n"), "New session"},
+		{"↑ ↓", "Move between sessions"},
+		{h.key(hotkeyHelp, "?"), "This help"},
+	}
+	out := rows[:0]
+	for _, r := range rows {
+		if strings.TrimSpace(r[0]) != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// viewShort renders "5 keys to start": the keys a new user needs, with Tab
+// to the full list.
+func (h *HelpOverlay) viewShort() string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
+	keyStyle := lipgloss.NewStyle().Foreground(ColorPurple).Width(9)
+	descStyle := lipgloss.NewStyle().Foreground(ColorText)
+	noteStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+	tabStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+
+	lines := []string{titleStyle.Render("5 KEYS TO START"), ""}
+	for _, r := range h.shortHelpKeys() {
+		lines = append(lines, " "+keyStyle.Render(r[0])+" "+descStyle.Render(r[1]))
+	}
+	lines = append(lines, "", noteStyle.Render("That is all you need today."), "",
+		tabStyle.Render("Tab all keys")+dimStyle.Render(" │ Esc close"))
+
+	box := renderSurfaceBox(DialogBoxStyle.Width(fitDialogWidth(56, 35, h.width)), strings.Join(lines, "\n"))
 	return centerInScreen(box, h.width, h.height)
 }

@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "dry_run": true,
+  "number": 4242,
+  "body": "Fixed for me in v1.16.36.\n\nworks now\n\n(linux/amd64, via agent-deck feedback fixed)",
+  "account": "sim-user",
+  "gh_ready": true
+}

@@ -209,17 +209,10 @@ func PreviewSwitch(cfg *UserConfig, inst *Instance, target SwitchPreviewTarget) 
 	return PreviewSwitchWithMaxBytesAndSnapshot(cfg, inst, target, DefaultHandoffMaxChars, nil)
 }
 
-// PreviewSwitchWithMaxBytes is the compatibility entry point for callers that
-// do not have a registry snapshot. It still protects direct conductor rows;
-// CLI and TUI callers should use PreviewSwitchWithMaxBytesAndSnapshot so
-// dependent children and watcher-route ownership are also known.
-func PreviewSwitchWithMaxBytes(cfg *UserConfig, inst *Instance, target SwitchPreviewTarget, maxBytes int) *SwitchPreview {
-	return PreviewSwitchWithMaxBytesAndSnapshot(cfg, inst, target, maxBytes, nil)
-}
-
-// PreviewSwitchWithMaxBytesAndSnapshot is PreviewSwitchWithMaxBytes with the
-// caller's read-only source relationship snapshot. It never writes registry,
-// transcript, credential, watcher, or lifecycle state.
+// PreviewSwitchWithMaxBytesAndSnapshot is PreviewSwitch with a caller-chosen
+// handoff byte budget and the caller's read-only source relationship
+// snapshot. It never writes registry, transcript, credential, watcher, or
+// lifecycle state.
 func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, target SwitchPreviewTarget, maxBytes int, snapshot *SwitchSourceSnapshot) *SwitchPreview {
 	if inst == nil {
 		return &SwitchPreview{

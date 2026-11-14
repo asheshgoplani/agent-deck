@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -31,6 +32,15 @@ const attachOutputDrainTimeout = 250 * time.Millisecond
 // being short enough that the TUI does not feel frozen on return from
 // an attached session.
 const attachReplyQuarantine = 500 * time.Millisecond
+
+// attachHeldInputWindow is how long, from its introducer, the stdin pump
+// holds an unterminated escape string before releasing it as typed input.
+// A terminal writes a reply in one piece, but over ssh the pieces can arrive
+// some milliseconds apart; a reply that terminates within the window is still
+// discarded. Measured from the introducer rather than from the last byte, so
+// keys typed right after an Option-as-Meta chord are delayed by at most this
+// much, however fast they keep coming.
+const attachHeldInputWindow = 100 * time.Millisecond
 
 // AttachStdinPollInterval bounds how long the stdin reader may sit inside
 // poll(2) before it re-checks the attach context. A blocking os.Stdin.Read
@@ -133,6 +143,12 @@ const pageUpSeq = "\x1b[5~"
 type AttachOptions struct {
 	// DetachByte is the raw control byte that detaches (0 => default Ctrl+Q).
 	DetachByte byte
+	// TimingStart, when non-zero, is when the user asked for this attach: the
+	// first pane byte then records tui.attach (internal/optiming). DetachedAt,
+	// when non-nil, receives the moment the attach ended (tui.detach). Both
+	// are set only while timings are on.
+	TimingStart time.Time
+	DetachedAt  *time.Time
 	// SwitchKeyByte is the control byte (e.g. Ctrl+S, 0x13) that hands control
 	// back to the caller to open the in-attach session switcher. 0 disables it.
 	//
@@ -166,6 +182,11 @@ type AttachOptions struct {
 	// (#2704: `session focus --remote --attach` detaches it to bring a paused
 	// TUI back, and no other client).
 	OnClientStarted func(pid int)
+	// OnCtrlV, when non-nil, is called after a lone Ctrl+V (any encoding,
+	// see isLoneCtrlV) has been forwarded
+	// (the TUI's image-paste hint over plain ssh, ASK-92). It runs on the
+	// stdin goroutine and must not block.
+	OnCtrlV func()
 }
 
 // indexSwitchKey returns the index of the switch key in data and
@@ -268,6 +289,11 @@ type attachStdinPump struct {
 	ioErrors  chan<- error // buffered; sends are best-effort
 
 	tmuxIgnoresColorReplies bool
+
+	// onHold, when set, is called each time the reply filter starts holding
+	// an escape string. Test seam: lets a test write the next piece of a
+	// split reply only once the pump holds the first.
+	onHold func()
 }
 
 func tmuxParsesColorReplies(ver string) bool {
@@ -286,8 +312,10 @@ func tmuxParsesColorReplies(ver string) bool {
 // cancellation.
 func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 	buf := make([]byte, 32)
-	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies}
+	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies, KeysOnIdle: true}
 	fd := int(p.in.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
+	// heldSince is when replyFilter started holding; zero when it is not.
+	var heldSince time.Time
 
 	reportErr := func(err error) {
 		select {
@@ -331,6 +359,26 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 		// works for keyboard input outside it.
 		armed := time.Since(p.startTime) < attachReplyQuarantine
 		chunk = replyFilter.Consume(chunk, armed, false)
+		// A reply arrives in one piece, terminator included. An escape
+		// string still open once attachHeldInputWindow has passed was typed
+		// (Option-as-Meta Alt+Shift+- is ESC _, #2931): end it, so the keys
+		// behind it reach the pane and the detach check below. FlushIdle
+		// releases it as input, or drops it if it began in the quarantine.
+		if !replyFilter.Holding() {
+			heldSince = time.Time{}
+		} else {
+			if heldSince.IsZero() {
+				heldSince = time.Now()
+				if p.onHold != nil {
+					p.onHold()
+				}
+			}
+			wait := time.Until(heldSince.Add(attachHeldInputWindow))
+			if wait <= 0 || !PollFdReady(fd, wait) {
+				chunk = append(chunk, replyFilter.FlushIdle()...)
+				heldSince = time.Time{}
+			}
+		}
 		if len(chunk) == 0 {
 			continue
 		}
@@ -360,7 +408,21 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 			reportErr(fmt.Errorf("PTY write error: %w", err))
 			return SwitchNone, false
 		}
+		if p.opts.OnCtrlV != nil && isLoneCtrlV(chunk) {
+			p.opts.OnCtrlV()
+		}
 	}
+}
+
+// isLoneCtrlV reports whether chunk is one Ctrl+V and nothing else: the raw
+// byte, or the modifyOtherKeys and CSI u forms terminals send once tmux
+// turns on extended-keys.
+func isLoneCtrlV(chunk []byte) bool {
+	switch string(chunk) {
+	case "\x16", "\x1b[27;5;118~", "\x1b[118;5u":
+		return true
+	}
+	return false
 }
 
 // QuiesceAttachInput ends the attach's ownership of stdin: it waits for the
@@ -484,6 +546,18 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		detach = opts.DetachByte
 	}
 
+	// Put the terminal in raw mode before anything else, and above all before
+	// the tmux client starts. Bubble Tea hands the terminal over in cooked
+	// mode, where IXON makes the tty itself swallow Ctrl+Q (0x11 is START):
+	// a Ctrl+Q pressed after the client is up but before raw mode (the
+	// OnClientStarted callback writes the state DB in between) never reached
+	// the stdin pump, so the attach stayed put.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return SwitchNone, fmt.Errorf("failed to set raw mode: %w", err)
+	}
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
+
 	if !s.Exists() {
 		return SwitchNone, fmt.Errorf("session %s does not exist", s.Name)
 	}
@@ -565,6 +639,11 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	if opts.OnClientStarted != nil && cmd.Process != nil {
 		opts.OnClientStarted(cmd.Process.Pid)
 	}
+	// Attach notices (attach_notice.go) go to this client's status line.
+	if cmd.Process != nil {
+		pid := cmd.Process.Pid
+		defer SetAttachNoticeSink(func(text string) { s.showClientNotice(ctx, pid, text) })()
+	}
 
 	// Set the PTY to raw mode so all bytes pass through transparently.
 	// Without this, the PTY's default terminal settings (ISIG enabled)
@@ -574,41 +653,46 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		return SwitchNone, fmt.Errorf("failed to set pty raw mode: %w", err)
 	}
 
-	// Save original terminal state and set raw mode
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return SwitchNone, fmt.Errorf("failed to set raw mode: %w", err)
-	}
-	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
-
 	// Handle window resize signals
 	sigwinch := make(chan os.Signal, 1)
 	signal.Notify(sigwinch, syscall.SIGWINCH)
 	sigwinchDone := make(chan struct{}) // Signal for SIGWINCH goroutine to exit
-	defer func() {
-		signal.Stop(sigwinch)
-		close(sigwinchDone) // Signal goroutine to exit
-		// Don't close sigwinch - signal.Stop() handles cleanup
-	}()
+	resizeDone := make(chan struct{})   // Closed when the SIGWINCH goroutine has exited
+	// stopResize stops the SIGWINCH goroutine and waits for it to exit.
+	// cleanupAttach calls it before closing the PTY: a resize still running
+	// would ioctl a closed (or already reused) fd and read os.Stdin after the
+	// attach handed it back. The wait is bounded: the goroutine only blocks in
+	// its select, and GetsizeFull/Setsize are non-blocking ioctls. The defer
+	// covers any path that skips cleanupAttach.
+	var stopResizeOnce sync.Once
+	stopResize := func() {
+		stopResizeOnce.Do(func() {
+			signal.Stop(sigwinch) // Don't close sigwinch - signal.Stop() handles cleanup
+			close(sigwinchDone)
+			<-resizeDone
+		})
+	}
+	defer stopResize()
 
 	// WaitGroup to track ALL goroutines (including SIGWINCH handler).
 	//
-	// Deliberately never Wait()ed on, and it cannot be: the SIGWINCH handler
-	// only exits when the deferred close(sigwinchDone) runs, which is AFTER
-	// cleanupAttach, and the cmd.Wait() goroutine can outlive a detach by
-	// however long the tmux client takes to go away. Waiting here would
-	// deadlock the first and stall the second.
+	// Deliberately never Wait()ed on, and it cannot be: the cmd.Wait()
+	// goroutine can outlive a detach by however long the tmux client takes to
+	// go away, and the stdin and output goroutines have bounded waits of their
+	// own. Waiting here would stall the attach.
 	//
-	// The join that actually matters for correctness is stdinReaderDone, which
-	// cleanupAttach waits on individually — that is the goroutine that must not
-	// outlive the attach (see QuiesceAttachInput). The WaitGroup stays as
-	// documentation of goroutine ownership.
+	// The joins that matter for correctness are taken individually:
+	// stopResize waits on resizeDone, and cleanupAttach waits on
+	// stdinReaderDone — the goroutine that must not outlive the attach (see
+	// QuiesceAttachInput). The WaitGroup stays as documentation of goroutine
+	// ownership.
 	var wg sync.WaitGroup
 
 	// SIGWINCH handler goroutine - properly tracked in WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(resizeDone)
 		for {
 			select {
 			case <-sigwinchDone:
@@ -652,7 +736,11 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	ioErrors := make(chan error, 2)
 
 	startTime := time.Now()
-	const terminalStyleReset = "\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m"
+	// The trailing CSI r gives the scroll region back the whole screen: tmux
+	// leaves the region it last scrolled a pane with set on the outer terminal
+	// and only resets it on a clean exit, which closing its PTY on Ctrl+Q
+	// skips (ASK-140).
+	const terminalStyleReset = "\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m\x1b[r"
 	outputDone := make(chan struct{})
 
 	// Goroutine 1: Copy PTY output to stdout
@@ -660,7 +748,11 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	go func() {
 		defer wg.Done()
 		defer close(outputDone)
-		_, err := io.Copy(os.Stdout, ptmx)
+		var src io.Reader = ptmx
+		if !opts.TimingStart.IsZero() {
+			src = &firstByteTimer{r: ptmx, op: "tui.attach", start: opts.TimingStart}
+		}
+		_, err := io.Copy(os.Stdout, src)
 		if err != nil && err != io.EOF {
 			// Only report non-EOF errors (EOF is normal on PTY close)
 			select {
@@ -687,7 +779,7 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		startTime: startTime,
 		ioErrors:  ioErrors,
 
-		tmuxIgnoresColorReplies: !tmuxParsesColorReplies(hostTmuxVersionString()),
+		tmuxIgnoresColorReplies: !tmuxParsesColorReplies(socketTmuxVersionString(s.SocketName)),
 	}
 	wg.Add(1)
 	go func() {
@@ -724,6 +816,7 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		// process if needed after the attach session ends.
 		signal.Reset(syscall.SIGINT)
 		cancel()
+		stopResize()
 		_ = ptmx.Close()
 		_, _ = waitForAttachOutputDrain(outputDone, attachOutputDrainTimeout)
 		// Hand stdin back: stop the reader, then flush the input queue and arm
@@ -779,8 +872,29 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		attachErr = nil
 	}
 
+	if opts.DetachedAt != nil {
+		*opts.DetachedAt = time.Now()
+	}
 	cleanupAttach()
 	return SwitchIntent(switchOutcome.Load()), attachErr
+}
+
+// firstByteTimer records op (from start) on the first non-empty read of r,
+// then passes reads through untouched. Used only while timings are on.
+type firstByteTimer struct {
+	r     io.Reader
+	op    string
+	start time.Time
+	done  bool
+}
+
+func (f *firstByteTimer) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if n > 0 && !f.done {
+		f.done = true
+		optiming.Since(f.op, f.start)
+	}
+	return n, err
 }
 
 // AttachWindow attaches to a specific window within this tmux session.

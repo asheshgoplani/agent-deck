@@ -368,19 +368,11 @@ func migrateOneSession(src, dst *statedb.StateDB, sessionID string, opts Profile
 		result.MovedWatcherEvents++
 	}
 
-	// Source-delete phase. On any failure, attempt to roll back the target
-	// inserts so the user is not left with a duplicate.
-	if err := src.DeleteWatcherEventsForSession(sessionID); err != nil {
+	// Source-delete phase: one transaction, so on failure src is unchanged
+	// and rolling back the target inserts cannot lose the only copy.
+	if err := src.DeleteSessionRows(sessionID); err != nil {
 		rollbackTargetWrites(dst, sessionID, dstRow != nil)
-		return fmt.Errorf("delete watcher_events from source: %w", err)
-	}
-	if err := src.DeleteCostEventsForSession(sessionID); err != nil {
-		rollbackTargetWrites(dst, sessionID, dstRow != nil)
-		return fmt.Errorf("delete cost_events from source: %w", err)
-	}
-	if err := src.DeleteInstanceRow(sessionID); err != nil {
-		rollbackTargetWrites(dst, sessionID, dstRow != nil)
-		return fmt.Errorf("delete instance from source: %w", err)
+		return fmt.Errorf("delete session rows from source: %w", err)
 	}
 
 	result.MovedSessionIDs = append(result.MovedSessionIDs, sessionID)

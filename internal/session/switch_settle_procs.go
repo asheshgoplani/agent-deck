@@ -52,12 +52,6 @@ func settleDescendants(procs SettleProcReader, root int) []int {
 	return out
 }
 
-// SettleDescendants exposes the walk for callers that snapshot a pane's
-// processes before a restart.
-func SettleDescendants(procs SettleProcReader, root int) []int {
-	return settleDescendants(procs, root)
-}
-
 // SnapshotPaneProcesses lists the session's pane pid and every process
 // under it: the tree a restart replaces. Taken before a switch stops the
 // session, so settle can wait until each of them, a plugin poller above all,

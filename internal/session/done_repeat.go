@@ -34,6 +34,10 @@ func checkDoneRepeat(childID, profile string, sig DoneSignal, turnUUID string, b
 	if !ok || !sameDelivered(prev, profile, sig) {
 		return false, false
 	}
+	if prev.Suppressed {
+		// Recorded while delivery was off, so never delivered: not a repeat.
+		return false, false
+	}
 	if turnUUID != "" && prev.TurnUUID == turnUUID {
 		return true, false
 	}

@@ -131,6 +131,12 @@ type transcriptBackgroundScan struct {
 	TurnWorkflows int
 	TurnAgents    int
 	TurnAt        time.Time
+	// TurnWorkflowsKnown / TurnAgentsKnown: the count above is real. Either
+	// some turn_duration in the tail carried that field, so this Claude Code
+	// writes it and an absent one is zero (it omits zero; an older one never
+	// writes it), or a new Claude process started after the last turn_duration.
+	TurnWorkflowsKnown bool
+	TurnAgentsKnown    bool
 	// LastWorkflow / LastAgent name the newest launch of each kind, used to
 	// label a count that outlived its launch record in the tail window.
 	LastWorkflow string
@@ -151,8 +157,8 @@ type bgTranscriptRecord struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	ToolUseResult               json.RawMessage `json:"toolUseResult"`
-	PendingWorkflowCount        int             `json:"pendingWorkflowCount"`
-	PendingBackgroundAgentCount int             `json:"pendingBackgroundAgentCount"`
+	PendingWorkflowCount        *int            `json:"pendingWorkflowCount"`
+	PendingBackgroundAgentCount *int            `json:"pendingBackgroundAgentCount"`
 }
 
 // bgToolUseResult is the launch receipt Claude Code stores on the tool_result
@@ -216,6 +222,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 	pending := map[string]transcriptBackgroundTask{}
 	var order []string
 	terminated := map[string]bool{}     // ids already counted against the turn counts
+	var workflowsSeen, agentsSeen bool  // a turn_duration carried that count field
 	launchedKind := map[string]string{} // id -> kind, for notifications
 
 	for _, line := range lines {
@@ -241,8 +248,9 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 			continue // an assistant record never carries a notification of its own
 		case "system":
 			if rec.Subtype == "turn_duration" {
-				sc.TurnWorkflows = rec.PendingWorkflowCount
-				sc.TurnAgents = rec.PendingBackgroundAgentCount
+				sc.TurnWorkflows = countOf(rec.PendingWorkflowCount, &workflowsSeen)
+				sc.TurnAgents = countOf(rec.PendingBackgroundAgentCount, &agentsSeen)
+				sc.TurnWorkflowsKnown, sc.TurnAgentsKnown = workflowsSeen, agentsSeen
 				sc.TurnAt = at
 				terminated = map[string]bool{}
 			}
@@ -254,6 +262,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 				pending = map[string]transcriptBackgroundTask{}
 				order = nil
 				sc.TurnWorkflows, sc.TurnAgents = 0, 0
+				sc.TurnWorkflowsKnown, sc.TurnAgentsKnown = true, true
 			}
 		case "user":
 			if task, ok := backgroundLaunch(rec, uses, at); ok {
@@ -312,6 +321,16 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 		}
 	}
 	return sc
+}
+
+// countOf reads a turn_duration pending count, absent as zero, and records
+// in seen that the field was present.
+func countOf(n *int, seen *bool) int {
+	if n == nil {
+		return 0
+	}
+	*seen = true
+	return *n
 }
 
 // backgroundLaunch recognises the tool_result record of a background launch.
@@ -420,6 +439,10 @@ func mergeBackgroundWork(pane tmux.BackgroundWork, sc transcriptBackgroundScan, 
 		}
 		// hold 0: the counter is work in flight on its own (pre-A5); it is
 		// handled like any other pane item below.
+	}
+	if pane.InFlight() && scOK && pane.Steps == 0 && sc.awaitedLineStale(pane.Kind) {
+		// The Waiting line outlived its work: Claude Code counted it done.
+		pane = tmux.BackgroundWork{}
 	}
 	if scOK {
 		tx, at := sc.inFlight()
@@ -533,6 +556,34 @@ func (sc transcriptBackgroundScan) passiveShellCount(summary string, now time.Ti
 		return shells + monitors
 	}
 	return 0
+}
+
+// awaitedLineStale reports whether the transcript proves a "Waiting for N …
+// to finish" line of kind (agent or workflow) is history: this Claude Code
+// writes that kind's pending count, the last turn_duration's count is zero
+// once the terminal notifications since are taken off, and no launch of that
+// kind came after the record. A positive count proves nothing, however old:
+// background agents can sit idle for a long time.
+func (sc transcriptBackgroundScan) awaitedLineStale(kind string) bool {
+	var count int
+	var known bool
+	switch kind {
+	case tmux.BackgroundKindAgent:
+		count, known = sc.TurnAgents, sc.TurnAgentsKnown
+	case tmux.BackgroundKindWorkflow:
+		count, known = sc.TurnWorkflows, sc.TurnWorkflowsKnown
+	default:
+		return false
+	}
+	if !known || count > 0 {
+		return false
+	}
+	for _, t := range sc.Pending {
+		if t.Kind == kind && !t.At.Before(sc.TurnAt) {
+			return false
+		}
+	}
+	return true
 }
 
 func (sc transcriptBackgroundScan) pendingNamed(kind, name string) bool {

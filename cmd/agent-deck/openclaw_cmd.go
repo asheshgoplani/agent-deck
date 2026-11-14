@@ -54,6 +54,11 @@ func printOpenClawHelp() {
 	fmt.Println("  send           Send a message to an agent")
 	fmt.Println("  help           Show this help")
 	fmt.Println()
+	fmt.Println("The gateway password is sent in the clear over ws://, so a ws:// gateway_url")
+	fmt.Println("must be loopback (127.0.0.0/8, ::1, localhost) or tailnet (100.64.0.0/10,")
+	fmt.Println("fd7a:115c:a1e0::/48, *.ts.net). Use wss:// for any other host, or pass")
+	fmt.Println("--insecure (or set allow_insecure = true under [openclaw]) to allow it anyway.")
+	fmt.Println()
 	fmt.Println("Aliases: openclaw, oc")
 }
 
@@ -62,16 +67,18 @@ func printOpenClawHelp() {
 func handleOpenClawSync(profile string, args []string) {
 	fs := flag.NewFlagSet("openclaw sync", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	insecure := addOpenClawInsecureFlag(fs)
 	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(2)
 	}
 
 	cfg := loadOpenClawConfig()
+	clientOpts := openClawClientOptions(cfg, *insecure)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
+	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password, clientOpts...)
 	if err := client.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to gateway: %v\n", err)
 		exitCLI(1)
@@ -103,7 +110,7 @@ func handleOpenClawSync(profile string, args []string) {
 
 		if existing == nil {
 			// Create new session
-			command := buildOpenClawBridgeCommand(agent.ID)
+			command := buildOpenClawBridgeCommand(agent.ID, *insecure)
 			inst := session.NewInstanceWithGroupAndTool(agentDisplayName, os.Getenv("HOME"), groupName, "openclaw")
 			inst.Command = command
 
@@ -163,14 +170,15 @@ func handleOpenClawSync(profile string, args []string) {
 	}
 }
 
-func buildOpenClawBridgeCommand(agentID string) string {
-	return docker.ShellJoinArgs([]string{
-		"agent-deck",
-		"openclaw",
-		"bridge",
-		"--agent",
-		agentID,
-	})
+// buildOpenClawBridgeCommand is the command of a synced bridge session. With
+// insecure (sync ran with --insecure) the bridge gets --insecure too, so it can
+// reach the same plain ws:// gateway that sync just used.
+func buildOpenClawBridgeCommand(agentID string, insecure bool) string {
+	args := []string{"agent-deck", "openclaw", "bridge"}
+	if insecure {
+		args = append(args, "--insecure")
+	}
+	return docker.ShellJoinArgs(append(args, "--agent", agentID))
 }
 
 // --- bridge ---
@@ -179,6 +187,7 @@ func handleOpenClawBridge(args []string) {
 	fs := flag.NewFlagSet("openclaw bridge", flag.ContinueOnError)
 	agentID := fs.String("agent", "", "Agent ID to bridge")
 	agentName := fs.String("name", "", "Agent display name (optional)")
+	insecure := addOpenClawInsecureFlag(fs)
 	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(2)
 	}
@@ -189,8 +198,9 @@ func handleOpenClawBridge(args []string) {
 	}
 
 	cfg := loadOpenClawConfig()
+	clientOpts := openClawClientOptions(cfg, *insecure)
 
-	if err := openclaw.RunBridge(cfg.GatewayURL, cfg.Password, *agentID, *agentName); err != nil {
+	if err := openclaw.RunBridge(cfg.GatewayURL, cfg.Password, *agentID, *agentName, clientOpts...); err != nil {
 		fmt.Fprintf(os.Stderr, "Bridge error: %v\n", err)
 		exitCLI(1)
 	}
@@ -203,12 +213,19 @@ func handleOpenClawBridge(args []string) {
 func displayRemote(s string) string { return termtext.Clean(s) }
 
 func handleOpenClawStatus(args []string) {
+	fs := flag.NewFlagSet("openclaw status", flag.ContinueOnError)
+	insecure := addOpenClawInsecureFlag(fs)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(2)
+	}
+
 	cfg := loadOpenClawConfig()
+	clientOpts := openClawClientOptions(cfg, *insecure)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
+	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password, clientOpts...)
 	if err := client.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Gateway: OFFLINE (%v)\n", err)
 		exitCLI(1)
@@ -302,16 +319,18 @@ func handleOpenClawStatus(args []string) {
 func handleOpenClawList(args []string) {
 	fs := flag.NewFlagSet("openclaw list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	insecure := addOpenClawInsecureFlag(fs)
 	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(2)
 	}
 
 	cfg := loadOpenClawConfig()
+	clientOpts := openClawClientOptions(cfg, *insecure)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
+	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password, clientOpts...)
 	if err := client.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to gateway: %v\n", err)
 		exitCLI(1)
@@ -353,6 +372,7 @@ func handleOpenClawList(args []string) {
 func handleOpenClawSend(args []string) {
 	fs := flag.NewFlagSet("openclaw send", flag.ContinueOnError)
 	agentID := fs.String("agent", "", "Agent ID to send to")
+	insecure := addOpenClawInsecureFlag(fs)
 	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(2)
 	}
@@ -365,11 +385,12 @@ func handleOpenClawSend(args []string) {
 	message := strings.Join(fs.Args(), " ")
 
 	cfg := loadOpenClawConfig()
+	clientOpts := openClawClientOptions(cfg, *insecure)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
+	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password, clientOpts...)
 	if err := client.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to gateway: %v\n", err)
 		exitCLI(1)
@@ -393,6 +414,25 @@ func handleOpenClawSend(args []string) {
 }
 
 // --- Helpers ---
+
+// addOpenClawInsecureFlag registers --insecure on an openclaw subcommand.
+func addOpenClawInsecureFlag(fs *flag.FlagSet) *bool {
+	return fs.Bool("insecure", false,
+		"Allow sending the gateway password over plain ws:// to a host that is not loopback or tailnet")
+}
+
+// openClawClientOptions checks the gateway URL before anything connects: a
+// plain ws:// gateway must be loopback or tailnet unless --insecure or
+// allow_insecure is set, because the password would cross the network
+// unencrypted. It exits with the refusal otherwise.
+func openClawClientOptions(cfg *session.OpenClawSettings, insecure bool) []openclaw.ClientOption {
+	allow := insecure || cfg.AllowInsecure
+	if err := openclaw.CheckGatewayURL(cfg.GatewayURL, allow); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		exitCLI(1)
+	}
+	return []openclaw.ClientOption{openclaw.WithAllowInsecure(allow)}
+}
 
 func loadOpenClawConfig() *session.OpenClawSettings {
 	config, err := session.LoadUserConfig()

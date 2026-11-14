@@ -92,26 +92,39 @@ func probeOpenCodeBinaryMajorVersion(binary string) (int, bool) {
 // through: `env [VAR=value...] opencode` runs opencode with those assignments
 // applied, PATH included.
 func (i *Instance) openCodeLaunchBinary() (string, bool) {
-	words, ok := shellwords.Split(i.openCodeForkBinary())
+	bin, found, _, _ := i.launchBinary(i.openCodeForkBinary(), "opencode")
+	return bin, found
+}
+
+// launchBinary is the resolution openCodeLaunchBinary documents, for any
+// command line: name is the executable when the command has no word of its own.
+// It also returns the PATH the pane runs the command with and the command's
+// other leading VAR=value words (values expanded as for PATH), for probes that
+// run the binary in the environment the launch gives it.
+func (i *Instance) launchBinary(command, name string) (bin string, found bool, pathEnv string, assigns []string) {
+	pathEnv = os.Getenv("PATH")
+	words, ok := shellwords.Split(command)
 	if !ok {
-		return "", false
+		return "", false, pathEnv, nil
 	}
-	pathEnv := os.Getenv("PATH")
 	if dirs := i.spawnPathDirs(); len(dirs) > 0 {
 		pathEnv = strings.Join(append(dirs, pathEnv), string(os.PathListSeparator))
 	}
-	name := "opencode"
 	wrapped := false
 	for _, word := range words {
 		if isShellEnvAssignment(word) {
-			if value, found := strings.CutPrefix(word, "PATH="); found {
-				before := pathEnv
-				pathEnv = os.Expand(value, func(v string) string {
-					if v == "PATH" {
-						return before
-					}
-					return os.Getenv(v)
-				})
+			key, value, _ := strings.Cut(word, "=")
+			before := pathEnv
+			expanded := os.Expand(expandAssignmentTilde(value), func(v string) string {
+				if v == "PATH" {
+					return before
+				}
+				return os.Getenv(v)
+			})
+			if key == "PATH" {
+				pathEnv = expanded
+			} else {
+				assigns = append(assigns, key+"="+expanded)
 			}
 			continue
 		}
@@ -121,12 +134,32 @@ func (i *Instance) openCodeLaunchBinary() (string, bool) {
 		}
 		if wrapped && strings.HasPrefix(word, "-") {
 			// env options (-i, -u NAME, -S ...) change what follows; don't guess.
-			return "", false
+			return "", false, pathEnv, nil
 		}
 		name = word
 		break
 	}
-	return lookPathIn(name, pathEnv)
+	bin, found = lookPathIn(name, pathEnv)
+	return bin, found, pathEnv, assigns
+}
+
+// expandAssignmentTilde expands a ~ that starts value or follows a colon in it
+// to $HOME, as the shell does in an assignment (PATH=~/bin:$PATH,
+// PI_CODING_AGENT_DIR=~/alt). Only a bare ~, the current user, is expanded.
+func expandAssignmentTilde(value string) string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return value
+	}
+	parts := strings.Split(value, ":")
+	for k, part := range parts {
+		if part == "~" {
+			parts[k] = home
+		} else if rest, ok := strings.CutPrefix(part, "~/"); ok {
+			parts[k] = filepath.Join(home, rest)
+		}
+	}
+	return strings.Join(parts, ":")
 }
 
 // lookPathIn is exec.LookPath against an explicit PATH value. A name with a
@@ -155,8 +188,8 @@ func isExecutableFile(path string) bool {
 }
 
 // openCodeRejectsV1LaunchFlags reports whether this session's OpenCode is 2.x
-// or newer. Sandboxed and SSH sessions run a binary this host cannot see, so
-// they keep the 1.x flags.
+// or newer. The explicit opencode2 launcher is always v2, even when it cannot
+// be probed locally. Other sandboxed and SSH launchers keep the 1.x flags.
 func (i *Instance) openCodeRejectsV1LaunchFlags() bool {
 	if openCodeExecutableBase(i.openCodeForkBinary()) == "opencode2" {
 		return true

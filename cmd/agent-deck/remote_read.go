@@ -182,7 +182,7 @@ func validateRemoteEventsPublishArgs(args []string) error {
 		values[name] = value // Go flags use the last assignment.
 	}
 	if !events.IsMacappRemoteReplyKind(values["kind"]) {
-		return fmt.Errorf("remote events publish forwards only %s, %s and %s; refused kind %q", events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus, values["kind"])
+		return fmt.Errorf("remote events publish forwards only %s, %s, %s and %s; refused kind %q", events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus, events.KindMacappAskSeen, values["kind"])
 	}
 	if values["data-file"] != "-" {
 		return fmt.Errorf("remote events publish reads its data from stdin: pass --data-file -")
@@ -250,4 +250,27 @@ func remoteUnsupportedAnswer(name string, args []string) []byte {
 		return append(raw, '\n')
 	}
 	return []byte(msg + "\n")
+}
+
+// validateRemoteOwnershipArgs admits `ownership inspect <id> [--json]` only.
+// The remote also accepts status/show aliases, reconcile and abandon; none of
+// those are forwarded.
+func validateRemoteOwnershipArgs(args []string) error {
+	if len(args) < 2 || args[0] != "inspect" {
+		return fmt.Errorf("unsupported remote command: session ownership forwards 'inspect <id> [--json]' only")
+	}
+	ids := 0
+	for _, a := range args[1:] {
+		switch {
+		case a == "--json" || a == "-json":
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unsupported remote command: session ownership inspect forwards --json only, not %q", a)
+		default:
+			ids++
+		}
+	}
+	if ids != 1 {
+		return fmt.Errorf("session ownership inspect needs exactly one session id")
+	}
+	return nil
 }

@@ -60,8 +60,13 @@ func groupList(ctx context.Context, in GroupListIn) (GroupListOut, error) {
 	// Warm the pane-title cache and hook statuses once so the counts match
 	// the TUI and /api/menu (#610).
 	session.RefreshInstancesForCLIStatus(d.instances)
-	tree := session.NewGroupTreeWithGroups(d.instances, d.groups)
+	return groupListFromTree(session.NewGroupTreeWithGroups(d.instances, d.groups)), nil
+}
 
+// groupListFromTree builds group.list's output from a loaded tree,
+// refreshing the sessions' statuses for the counts.
+func groupListFromTree(tree *session.GroupTree) GroupListOut {
+	refreshTreeStatuses(tree)
 	out := GroupListOut{
 		Groups:        []GroupNode{},
 		TotalGroups:   len(tree.Groups),
@@ -100,10 +105,37 @@ func groupList(ctx context.Context, in GroupListIn) (GroupListOut, error) {
 			out.Groups = append(out.Groups, subtree(g))
 		}
 	}
-	return out, nil
+	return out
 }
 
-// groupStatus refreshes and counts every session in path and its subgroups.
+// groupListRefreshStatus refreshes one session's status for the counts; a
+// variable so tests can count the refreshes.
+var groupListRefreshStatus = func(inst *session.Instance) { _ = inst.UpdateStatus() }
+
+// refreshTreeStatuses refreshes every session of the tree once. A session is
+// counted once per ancestor group; refreshing it at each count cost one full
+// status refresh per level. GroupList gives a stable order; Groups (what the
+// counts read) catches any group GroupList lacks.
+func refreshTreeStatuses(tree *session.GroupTree) {
+	seen := make(map[*session.Instance]struct{})
+	refresh := func(g *session.Group) {
+		for _, sess := range g.Sessions {
+			if _, ok := seen[sess]; !ok {
+				seen[sess] = struct{}{}
+				groupListRefreshStatus(sess)
+			}
+		}
+	}
+	for _, g := range tree.GroupList {
+		refresh(g)
+	}
+	for _, g := range tree.Groups {
+		refresh(g)
+	}
+}
+
+// groupStatus counts every session in path and its subgroups (statuses
+// already refreshed by refreshTreeStatuses).
 func groupStatus(tree *session.GroupTree, path string) GroupStatus {
 	var st GroupStatus
 	for p, sub := range tree.Groups {
@@ -111,7 +143,6 @@ func groupStatus(tree *session.GroupTree, path string) GroupStatus {
 			continue
 		}
 		for _, sess := range sub.Sessions {
-			_ = sess.UpdateStatus()
 			switch sess.Status {
 			case session.StatusRunning:
 				st.Running++

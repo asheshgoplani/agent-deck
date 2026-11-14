@@ -162,6 +162,7 @@ func readGolden(t *testing.T, path string) string {
 var equivalenceScript = [][]string{
 	{"list"}, {"ls"}, {"list", "--json"}, {"list", "--all"}, {"list", "--all", "--json"},
 	{"list", "--include-superseded"}, {"list", "--bogus"},
+	{"list", "--json", "--no-archived"}, {"list", "--no-archived"}, {"list", "--all", "--json", "--no-archived"},
 	{"group"}, {"group", "list"}, {"group", "list", "--json"}, {"group", "list", "-q"},
 	{"session", "start", "nosuch"}, {"session", "start", "nosuch", "--json"},
 	{"session", "start", "--json=bogus", "alpha"},

@@ -12,7 +12,9 @@ package ui
 //
 // and review the diff like any other test change. The #2449 fix was light-theme
 // only; the later inter-option gap fix intentionally adds surface backgrounds
-// to dark-theme pill separators without changing visible content.
+// to dark-theme pill separators without changing visible content, and ASK-211
+// round 2 fills the dark-theme surface after every reset too and draws Name
+// and Path as field bars (same visible text).
 
 import (
 	"os"
@@ -238,7 +240,8 @@ func TestNewDialog_LightThemeSurfaceFillIsUniform_Issue2449(t *testing.T) {
 			sawName, sawPath := false, false
 			for i, row := range strings.Split(view, "\n") {
 				plain := stripAnsi(row)
-				if strings.Contains(plain, "> session-name") {
+				// The empty name previews the folder name (ASK-110).
+				if strings.Contains(plain, "> project") {
 					sawName = true
 				}
 				if strings.Contains(plain, "> /work/project") {

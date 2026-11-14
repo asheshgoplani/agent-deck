@@ -289,6 +289,9 @@ type StatusRow struct {
 	Status       string
 	Tool         string
 	Acknowledged bool
+	// AcknowledgedAt is when the user last marked the session seen (zero when
+	// not acknowledged).
+	AcknowledgedAt time.Time
 	// HookLag is the persisted tool_data.hook_lag extra (nil when absent):
 	// the completed-turn samples a CLI pass recorded for a Claude session
 	// whose hook still says running (session/hook_lag.go).
@@ -330,6 +333,11 @@ func GetGlobal() *StateDB {
 	return globalDB
 }
 
+// BeforeCreate, when set, runs before Open creates a database file that does
+// not exist yet. The session package uses it to record a new install
+// (install_kind.go) before this release creates its first state.db.
+var BeforeCreate func(dbPath string)
+
 // Open creates or opens a SQLite database at dbPath with WAL mode and busy timeout.
 //
 // busy_timeout and foreign_keys are PER-CONNECTION pragmas in SQLite, so they
@@ -340,6 +348,11 @@ func GetGlobal() *StateDB {
 // level. journal_mode=WAL is persistent on the database file, so it can stay
 // as a one-shot Exec.
 func Open(dbPath string) (*StateDB, error) {
+	if BeforeCreate != nil {
+		if _, err := os.Lstat(dbPath); errors.Is(err, os.ErrNotExist) {
+			BeforeCreate(dbPath)
+		}
+	}
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
 		return nil, fmt.Errorf("statedb: mkdir: %w", err)
@@ -466,7 +479,8 @@ func (s *StateDB) Migrate() error {
 			pin             TEXT NOT NULL DEFAULT '',
 			last_sent_at    INTEGER NOT NULL DEFAULT 0,
 			tool_data       TEXT NOT NULL DEFAULT '{}',
-			acknowledged    INTEGER NOT NULL DEFAULT 0
+			acknowledged    INTEGER NOT NULL DEFAULT 0,
+			acknowledged_at INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create instances: %w", err)
@@ -631,6 +645,11 @@ func (s *StateDB) Migrate() error {
 		return err
 	}
 
+	// Watcher delivery refusals: additive table, SchemaVersion unchanged.
+	if err := migrateWatcherDeliveryRefusals(tx); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(claudeStatuslineSchema); err != nil {
 		return fmt.Errorf("statedb: create Claude statusline cache: %w", err)
 	}
@@ -641,6 +660,7 @@ func (s *StateDB) Migrate() error {
 	// See CLAUDE.md "Schema Migration Safety": every new column MUST have a corresponding ALTER TABLE.
 	alterMigrations := []string{
 		"ALTER TABLE instances ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE instances ADD COLUMN acknowledged_at INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE watcher_events ADD COLUMN triage_session_id TEXT NOT NULL DEFAULT ''",
 		// Slack-truncation fix: full message text alongside the (first-line,
 		// 200-byte) subject label, so the conductor bridge can forward the
@@ -686,6 +706,23 @@ func (s *StateDB) Migrate() error {
 			if !strings.Contains(err.Error(), "duplicate column") {
 				return fmt.Errorf("statedb: alter migration: %w", err)
 			}
+		}
+	}
+
+	// Sessions marked seen before acknowledged_at existed (or by an older
+	// binary sharing this database) have no visit time; use the last visit
+	// (last_accessed, whole seconds). A Stop that finished after it, even
+	// while agent-deck was closed, then still reads as unseen. Rows with no
+	// recorded visit stay at 0, so any Stop clears them as before. Count
+	// first: Migrate runs on every open, and an unconditional UPDATE would be
+	// a write per open.
+	var legacyAcks int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM instances WHERE acknowledged = 1 AND acknowledged_at = 0 AND last_accessed > 0`).Scan(&legacyAcks); err != nil {
+		return fmt.Errorf("statedb: count legacy acknowledgments: %w", err)
+	}
+	if legacyAcks > 0 {
+		if _, err := tx.Exec(`UPDATE instances SET acknowledged_at = last_accessed * 1000 WHERE acknowledged = 1 AND acknowledged_at = 0 AND last_accessed > 0`); err != nil {
+			return fmt.Errorf("statedb: backfill acknowledged_at: %w", err)
 		}
 	}
 
@@ -814,6 +851,33 @@ func archivedAtUnix(t time.Time) int64 {
 	return t.UTC().Unix()
 }
 
+// upsertInstanceSQL is the full-row write shared by SaveInstance and
+// saveInstancesOnce. InstanceRow does not model the seen mark (acknowledged /
+// acknowledged_at): it is written only by targeted paths (SetAcknowledged*,
+// and the running-write reset in WriteStatus & co.). INSERT OR REPLACE deletes
+// and re-inserts the row, so leaving those columns out reset them to their
+// defaults on every full save, wiping a mark another process wrote after this
+// process loaded its snapshot (#2986 item 2). The stored values are carried
+// over inside the statement itself (the VALUES subqueries run before the
+// replace deletes the old row), so a concurrent SetAcknowledged cannot be lost
+// in a pre-fetch/commit window. A row saved as "running" clears both, the same
+// rule as writeStatusSQL.
+//
+// Trailing parameters after pin: status, id, status, id.
+const upsertInstanceSQL = `
+		INSERT OR REPLACE INTO instances (
+			id, title, project_path, group_path, sort_order,
+			command, wrapper, tool, status, tmux_session, tmux_socket_name,
+			created_at, last_accessed,
+			parent_session_id, is_conductor, no_transition_notify,
+			worktree_path, worktree_repo, worktree_branch, account,
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin,
+			acknowledged, acknowledged_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			CASE WHEN ? = 'running' THEN 0 ELSE COALESCE((SELECT acknowledged FROM instances WHERE id = ?), 0) END,
+			CASE WHEN ? = 'running' THEN 0 ELSE COALESCE((SELECT acknowledged_at FROM instances WHERE id = ?), 0) END)
+	`
+
 // SaveInstance inserts or replaces a single instance.
 func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	toolData := inst.ToolData
@@ -852,22 +916,14 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	if autoName {
 		autoNameInt = 1
 	}
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO instances (
-			id, title, project_path, group_path, sort_order,
-			command, wrapper, tool, status, tmux_session, tmux_socket_name,
-			created_at, last_accessed,
-			parent_session_id, is_conductor, no_transition_notify,
-			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+	_, err := s.db.Exec(upsertInstanceSQL,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
 		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
+		inst.Status, inst.ID, inst.Status, inst.ID,
 	)
 	return err
 }
@@ -1033,16 +1089,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 		}
 	}
 
-	stmt, err := tx.Prepare(`
-		INSERT OR REPLACE INTO instances (
-			id, title, project_path, group_path, sort_order,
-			command, wrapper, tool, status, tmux_session, tmux_socket_name,
-			created_at, last_accessed,
-			parent_session_id, is_conductor, no_transition_notify,
-			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
+	stmt, err := tx.Prepare(upsertInstanceSQL)
 	if err != nil {
 		return err
 	}
@@ -1080,6 +1127,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
 			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
+			inst.Status, inst.ID, inst.Status, inst.ID,
 		); err != nil {
 			return err
 		}
@@ -1336,7 +1384,7 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 		// Only read the prior value when someone listens: the write path
 		// stays one statement for every caller otherwise.
 		return withBusyRetry(func() error {
-			_, err := s.db.Exec(writeStatusSQL, status, tool, status, id)
+			_, err := s.db.Exec(writeStatusSQL, status, tool, status, status, id)
 			return err
 		})
 	}
@@ -1351,7 +1399,7 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 		// The edge is claimed by the write that changes the row: when the
 		// TUI and the notify daemon both write the same transition, only
 		// one UPDATE matches status IS NOT ?, so only one publishes.
-		res, err := s.db.Exec(writeStatusSQL+` AND status IS NOT ?`, status, tool, status, id, status)
+		res, err := s.db.Exec(writeStatusSQL+` AND status IS NOT ?`, status, tool, status, status, id, status)
 		if err != nil {
 			return err
 		}
@@ -1359,7 +1407,7 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 		changed = n > 0 && from != status
 		if n == 0 {
 			// Same status: still refresh tool and the acknowledged reset.
-			_, err = s.db.Exec(writeStatusSQL, status, tool, status, id)
+			_, err = s.db.Exec(writeStatusSQL, status, tool, status, status, id)
 		}
 		return err
 	})
@@ -1381,7 +1429,7 @@ func (s *StateDB) WriteStatusIfCurrent(id, expected, status, tool string) (bool,
 		if observe != nil {
 			_ = s.db.QueryRow(`SELECT tmux_session FROM instances WHERE id = ?`, id).Scan(&tmuxName)
 		}
-		res, err := s.db.Exec(writeStatusSQL+` AND status = ?`, status, tool, status, id, expected)
+		res, err := s.db.Exec(writeStatusSQL+` AND status = ?`, status, tool, status, status, id, expected)
 		if err != nil {
 			return err
 		}
@@ -1399,9 +1447,13 @@ func (s *StateDB) WriteStatusIfCurrent(id, expected, status, tool string) (bool,
 // status and its update, where a second writer can interleave.
 var afterStatusRead func()
 
+// A running write clears the seen mark and its visit time together, so an
+// unacked row never keeps an old acknowledged_at that an older binary's later
+// ack (which does not stamp the time) would revive past the Migrate backfill.
 const writeStatusSQL = `UPDATE instances
 	 SET status = ?, tool = ?,
-	     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+	     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
+	     acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END
 	 WHERE id = ?`
 
 // StatusChange is one status row transition written through WriteStatus.
@@ -1539,7 +1591,8 @@ func (s *StateDB) PersistInstanceStatusesTx(updates []InstanceStatusUpdate) erro
 		stmt, err := tx.Prepare(
 			`UPDATE instances
 			   SET status = ?,
-			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
+			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END
 			 WHERE id = ?`,
 		)
 		if err != nil {
@@ -1548,7 +1601,7 @@ func (s *StateDB) PersistInstanceStatusesTx(updates []InstanceStatusUpdate) erro
 		defer stmt.Close()
 
 		for _, u := range updates {
-			if _, err := stmt.Exec(u.Status, u.Status, u.ID); err != nil {
+			if _, err := stmt.Exec(u.Status, u.Status, u.Status, u.ID); err != nil {
 				return err
 			}
 		}
@@ -1762,7 +1815,7 @@ func (s *StateDB) WriteLastAccessed(id string, at time.Time) error {
 // abort the whole query and silently blank every session's shared status;
 // the json_valid guard turns such a row into a NULL hook_lag instead.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
-	rows, err := s.db.Query(`SELECT id, status, tool, acknowledged,
+	rows, err := s.db.Query(`SELECT id, status, tool, acknowledged, acknowledged_at,
 		CASE WHEN json_valid(tool_data) THEN json_extract(tool_data, '$.hook_lag') ELSE NULL END
 		FROM instances`)
 	if err != nil {
@@ -1775,11 +1828,15 @@ func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 		var id string
 		var sr StatusRow
 		var ack int
+		var ackAt int64
 		var hookLag sql.NullString
-		if err := rows.Scan(&id, &sr.Status, &sr.Tool, &ack, &hookLag); err != nil {
+		if err := rows.Scan(&id, &sr.Status, &sr.Tool, &ack, &ackAt, &hookLag); err != nil {
 			return nil, err
 		}
 		sr.Acknowledged = ack != 0
+		if sr.Acknowledged && ackAt > 0 {
+			sr.AcknowledgedAt = time.UnixMilli(ackAt)
+		}
 		if hookLag.Valid && hookLag.String != "" {
 			sr.HookLag = json.RawMessage(hookLag.String)
 		}
@@ -1831,12 +1888,12 @@ func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 // STALE stored status. Same self-inflicted false positive WriteRestartOutcome's
 // stamps exist to prevent (#1868).
 func (s *StateDB) SetAcknowledgedStamped(id string, ack bool) (WriteStamps, error) {
-	v := 0
+	v, at := 0, int64(0)
 	if ack {
-		v = 1
+		v, at = 1, time.Now().UnixMilli()
 	}
 	if err := withBusyRetry(func() error {
-		_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
+		_, err := s.db.Exec("UPDATE instances SET acknowledged = ?, acknowledged_at = ? WHERE id = ?", v, at, id)
 		return err
 	}); err != nil {
 		return WriteStamps{}, err
@@ -1973,11 +2030,17 @@ func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
 			}
 		}
 
-		// No live primary exists: claim it
-		if _, err := tx.Exec(
-			"UPDATE instance_heartbeats SET is_primary = 1 WHERE pid = ?",
-			s.pid,
-		); err != nil {
+		// No live primary exists: claim it. Upsert rather than UPDATE: our
+		// heartbeat row can be missing (RegisterInstance failed, or another
+		// instance's CleanDeadInstances deleted it after a missed heartbeat),
+		// and an UPDATE matching zero rows would report us primary without
+		// recording it, letting the next instance win too.
+		now := time.Now().Unix()
+		if _, err := tx.Exec(`
+			INSERT INTO instance_heartbeats (pid, started, heartbeat, is_primary)
+			VALUES (?, ?, ?, 1)
+			ON CONFLICT(pid) DO UPDATE SET is_primary = 1
+		`, s.pid, now, now); err != nil {
 			return fmt.Errorf("statedb: claim primary: %w", err)
 		}
 

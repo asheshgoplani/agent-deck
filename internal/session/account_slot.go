@@ -2,6 +2,8 @@ package session
 
 import (
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 )
 
@@ -49,4 +51,37 @@ func ValidateAccountSlot(account, tool string) error {
 		return fmt.Errorf("account %q has no DeepSeek config_dir", account)
 	}
 	return nil
+}
+
+// DefaultAccountForNewSession returns the [claude].default_account slot a new
+// Claude session starts on when nobody picked one (#2895), or "" to inherit
+// the conductor/group/env chain. Callers apply it to Claude sessions only.
+//
+// It is a creation-time prefill, not a level of resolveClaudeConfigDir: the
+// slot is stored on Instance.Account, so changing the default never moves an
+// existing session (that stays switch-account's job). Instance.Account beats
+// group and conductor config_dir, so the default yields to a
+// [groups."<groupPath>".claude] (or ancestor group) config_dir and to a parent
+// conductor's [conductors.<name>.claude] config_dir, which the user scoped
+// more narrowly than one machine-wide switch. A slot no longer configured
+// falls back to inherit with a log line instead of failing the create.
+func DefaultAccountForNewSession(cfg *UserConfig, groupPath string, parent *Instance) string {
+	if cfg == nil {
+		return ""
+	}
+	account := strings.TrimSpace(cfg.Claude.DefaultAccount)
+	if account == "" {
+		return ""
+	}
+	if cfg.GetGroupClaudeConfigDir(groupPath) != "" {
+		return ""
+	}
+	if parent != nil && parent.IsConductor && cfg.GetConductorClaudeConfigDir(parent.ResolveConductorNameThreadSafe()) != "" {
+		return ""
+	}
+	if !slices.Contains(ConfiguredAccountNames(cfg), account) {
+		sessionLog.Warn("default_account_not_configured", slog.String("account", account))
+		return ""
+	}
+	return account
 }

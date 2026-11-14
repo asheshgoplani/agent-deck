@@ -55,13 +55,28 @@ const (
 type Unavailable struct {
 	Reason UnavailableReason
 	Err    error
+	// Absent: the target provably has no listener (no socket file, or a stale
+	// one nobody answers on). Only the pi wake reads it, to type a doorbell
+	// solely when nothing is there to refuse it.
+	Absent bool
+	// Socket names the socket in the message; empty is the Claude socket.
+	Socket string
 }
 
 func (u *Unavailable) Error() string {
 	if u.Err != nil {
-		return fmt.Sprintf("claude socket unavailable (%s): %v", u.Reason, u.Err)
+		return fmt.Sprintf("%s unavailable (%s): %v", socketName(u.Socket), u.Reason, u.Err)
 	}
-	return fmt.Sprintf("claude socket unavailable (%s)", u.Reason)
+	return fmt.Sprintf("%s unavailable (%s)", socketName(u.Socket), u.Reason)
+}
+
+// socketName is the socket an error names: the Claude messaging socket
+// unless the error says otherwise.
+func socketName(s string) string {
+	if s == "" {
+		return "claude socket"
+	}
+	return s
 }
 
 func (u *Unavailable) Unwrap() error { return u.Err }
@@ -69,10 +84,14 @@ func (u *Unavailable) Unwrap() error { return u.Err }
 // CommittedError means a write to the socket was started and failed midway.
 // The message may or may not have reached the target's inbox, so it is a
 // hard error: NEVER retried on tmux (that would risk double delivery).
-type CommittedError struct{ Err error }
+type CommittedError struct {
+	Err error
+	// Socket names the socket in the message; empty is the Claude socket.
+	Socket string
+}
 
 func (c *CommittedError) Error() string {
-	return fmt.Sprintf("claude socket write failed after send was committed: %v", c.Err)
+	return fmt.Sprintf("%s write failed after send was committed: %v", socketName(c.Socket), c.Err)
 }
 
 func (c *CommittedError) Unwrap() error { return c.Err }

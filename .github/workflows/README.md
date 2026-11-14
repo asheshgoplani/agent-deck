@@ -16,7 +16,7 @@ it from the gate; keep the ruleset and this table in lockstep.
 | Context | Workflow (job) | What it gates |
 |---|---|---|
 | `intake` | `pr-intake.yml` (`intake`) | PR description format against the contract in `.github/INTAKE.md`: required headings, one AI-disclosure box, a real "What actually bothered you" section. Labels `intake:clean` or `needs-info` and posts one comment; it never closes or requests changes. The job itself exits green in both outcomes, so what the ruleset enforces today is that `intake` has reported on the current tip; a `needs-info` body is surfaced by label and comment for the human merger. |
-| `Full test suite (PR gate)` | `go-test.yml` (`full-test-suite`) | The exact release-gate test step (`gotestsum`, `-race ./...`) on every PR, no path filter, short-circuiting when the diff touches nothing Go-related. |
+| `Full test suite (PR gate)` | `go-test.yml` (`full-test-suite`) | The full race suite (`gotestsum`, `-race ./...`, in parallel shards) on every PR; `release.yml` calls the same workflow, no path filter, short-circuiting when the diff touches nothing Go-related. A version-only release PR (only `CHANGELOG.md` and the `var Version` line of `cmd/agent-deck/main.go`, parsed from the patch) whose base sha has a green push run with every shard green skips the shards; the `version-only` job (build, vet, binary version, changelog heading, version, release and update-path tests) gates it instead (`.github/scripts/version-only-diff.sh`, run from the base sha so a PR cannot edit its own verdict, ASK-161). The gate fails when the `changes` job did not succeed. |
 | `golangci` | `golangci-lint.yml` (`golangci`) | `golangci-lint` over the whole module. |
 | `analyze` | `codeql.yml` (`analyze`) | CodeQL security analysis of the Go code. |
 
@@ -36,14 +36,66 @@ that never reports blocks the merge forever (see the header comment in
 | `session-persistence.yml` | PR touching tmux/session lifecycle paths, or `workflow_dispatch` | Path filter. Runs the eight `TestPersistence_*` tests (race-detector on) plus `scripts/verify-session-persistence.sh` end-to-end. Covers the class of bug where a single SSH logout destroys every managed tmux session on Linux+systemd. See the "Session persistence: mandatory test coverage" section in the root `CLAUDE.md`. The same tests also run inside `Full test suite (PR gate)`, which is required. |
 | `lighthouse-ci.yml` | PR touching `internal/web/**`, `.lighthouserc.json`, `tests/lighthouse/**`, or the workflow itself; also re-runs on `labeled` / `unlabeled` so the override below is reactive | Path filter. Two-layer Lighthouse gate against `agent-deck web --no-tui`: (1) absolute thresholds in `.lighthouserc.json` (`total-byte-weight`, `resource-summary:script:size`, `cumulative-layout-shift` as hard error; FCP/LCP/TBT/Speed Index as soft warn); (2) bundle-delta gate (`tests/lighthouse/compare-deltas.mjs`) that fails if a single PR grows `total-byte-weight` or `script:size` by more than 5% vs the base ref. Reinstated in v1.7.70 after the `--no-tui` flag fixed the bubbletea/headless-CI start failure that disabled the gate in v1.7.42. **Maintainer override on the delta gate**: apply the `lighthouse-regression-acknowledged` label (auto-created by the workflow) to acknowledge an intentional regression; the workflow re-runs on the `labeled` event and the check turns green. The absolute thresholds in layer (1) do not participate in the override. |
 | `go-test.yml` (`native-ssh`, `native-ssh-macos`) | Every PR, but skipped unless the `changes` job reports Go-relevant files (same answer the shards use) | Not a ruleset context. Runs `scripts/ci-native-ssh.sh` against a real sshd on Linux and macOS and uploads the evidence artifact. Despite the "Required" in the job display name, only `Full test suite (PR gate)` from this workflow is in the ruleset. |
-| `go-test.yml` (`comms-matrix`, calling `comms-matrix.yml`) | Every PR, but skipped unless the `changes` job reports Go-relevant files | Not a ruleset context. Calls `comms-matrix.yml` with `advisory: true`, so a failing rig leg adds a warning annotation and a summary line instead of turning the run red. |
+| `go-test.yml` (`comms-matrix`, calling `comms-matrix.yml`) | PRs only when the rig changes (`tests/comms_matrix/**`, `comms-matrix.yml`, `sandbox/Dockerfile`; the `changes` job's `comms` output); every Go push to main; nightly via `comms-matrix.yml`'s own schedule | Not a ruleset context. Calls `comms-matrix.yml` with `advisory: true`, so a failing rig leg adds a warning annotation and a summary line instead of turning the run red. |
+
+### Advisory suites kept off the PR critical path
+
+Shared GitHub-hosted runners are the bottleneck on a PR, so suites that are
+not ruleset contexts and whose path filter used to match most Go changes now
+run on a PR only when their own files change. The code they cover is checked
+after merge (push to main) and nightly:
+
+| Workflow | On a PR | After merge |
+|---|---|---|
+| `structure-advisory.yml` | the workflow itself | push to main (measures the pushed commit against the previous one) |
+| `functional-check.yml` | `tools/funccheck/**`, the workflow | push to main on the old paths, nightly |
+| `bench-fleet.yml` | `tools/bench/**`, `bench/**`, the workflow | push to main on the old paths, nightly |
+| `release-snapshot.yml` | `.goreleaser.yml`, `release.yml`, the workflow | push to main on the old paths, nightly |
+| `govulncheck.yml` | `go.mod`, `go.sum`, the workflow | every push to main, nightly |
+
+The narrowly path-filtered suites (`eval-smoke`, `session-persistence`,
+`perf-smoke`, `tmux-systemd-user-acceptance`, `runtime-health-acceptance`,
+`web-tests`) keep their PR filters and gain a nightly run as a backstop.
 
 ## Release automation (tag-triggered)
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, runs `go test -race ./...`, runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs into a **draft** release, asserts the four tarballs + `checksums.txt` landed, verifies every tarball against its published SHA-256, signs SLSA build provenance — and only then publishes the release. Finally it pushes the Homebrew formula, best-effort. Replaces the pre-#332 manual `make release-local` step. |
+| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, gates on a green race suite for the tag commit (the `reuse` job reuses a green `Go tests` run on that commit, or on the release PR head with the same tree and parent, including a version-only release PR run on a fully green base (rule R); otherwise the `tests` job runs the `go-test.yml` shards on the tag), runs the blocking eval harness beside it (integration tests run beside it too, informational), runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs into a **draft** release, asserts the four tarballs + `checksums.txt` landed, verifies every tarball against its published SHA-256, signs SLSA build provenance — and only then publishes the release. Finally it pushes the Homebrew formula, best-effort. Replaces the pre-#332 manual `make release-local` step. |
 | `homebrew-verify.yml` | `workflow_run` after `release.yml` completes successfully (plus weekly cron, `workflow_dispatch`, and PRs touching install docs) | Probes the live tap: formula exists, its version matches `/releases/latest`, and every URL in it resolves. Moved off the tag-push trigger in #1759 because it used to race the release it was verifying. |
+
+### The release tests the tag commit once, in the PR-gate shards (#2929)
+
+`release.yml` does not keep its own copy of the suite. Its build waits on one
+of two verified answers for the commit the tag points at (`ref-check` resolves
+it and the build step refuses any other checkout):
+
+- **Reuse.** `scripts/ci/release-test-reuse.sh` (the `reuse` job) looks for a
+  `Go tests` run that already passed on the same code: the `push` run on main
+  for the tag commit itself, or the `pull_request` run for the same-repository
+  PR that was squash-merged as the tag commit, when that PR head has the tag
+  commit's tree *and* its parent (so GitHub's test merge added nothing). The run
+  must be a success whose `Full test suite (PR gate)` job and every
+  `Test shard (...)` job concluded success on the latest attempt. A candidate
+  still running is waited for up to 20 minutes. The reused run's URL is in the
+  job summary. Rule R (ASK-164): that same-tree PR run also counts when it was
+  a version-only release PR run (shards skipped, `Version-only release check`
+  and the gate green) and, checked again by the release, the tag commit's
+  parent has a push run on main with the gate and every shard green and the
+  parent's own `.github/scripts/version-only-diff.sh` says parent..tag changes
+  only the `Version` line and `CHANGELOG.md`. A merge commit, any other change,
+  a base without the detector or without a fully green push run takes the
+  shards. Tested by `tests/ci/release-test-reuse-version-only.test.sh`.
+- **Run.** Anything else (no candidate, a red one, an API error, the deadline)
+  runs `go-test.yml` itself as the `tests` job with `shards_only: true`: the
+  same shards, invocation and package list as a PR, without the comms matrix
+  and native SSH jobs, which are not ruleset checks.
+
+`reuse` can only skip a duplicate run; it never fails or passes the release by
+itself. The eval harness (`eval_full` tier, which no PR workflow runs) stays
+blocking in its own job; the integration tests stay informational. A manual
+dispatch must use the tag as its ref (`gh workflow run release.yml --ref vX -f
+tag=vX`), because the shards check out the run's ref.
 
 ### The release is published last, and only once (#1759)
 

@@ -10,10 +10,10 @@ import (
 // false when the instance has no tmux session to ask.
 func (i *Instance) viewerTarget() (socketName, sessionName string, ok bool) {
 	ts := i.GetTmuxSession()
-	if ts == nil || ts.Name == "" {
+	if ts == nil || ts.TmuxName() == "" {
 		return "", "", false
 	}
-	return ts.SocketName, ts.Name, true
+	return ts.SocketName, ts.TmuxName(), true
 }
 
 // Viewers lists the people attached to this session's tmux session (its

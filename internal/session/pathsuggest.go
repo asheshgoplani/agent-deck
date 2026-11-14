@@ -119,7 +119,7 @@ func PathSuggest(in PathSuggestInput) []PathCandidate {
 		if p == "" {
 			continue
 		}
-		at := inst.LastAccessedAt
+		at := inst.GetLastAccessedAtThreadSafe()
 		if at.IsZero() {
 			at = inst.CreatedAt
 		}

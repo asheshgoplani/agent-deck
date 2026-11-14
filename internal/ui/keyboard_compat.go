@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,6 +40,14 @@ import (
 // (U+E000..U+F8FF), which Unicode reserves for application-private use
 // and no standard keyboard or input method can produce.
 const shiftEnterMarker rune = 0xE5E5
+
+// dashboardHeldInputWindow is how long, from its introducer, the dashboard
+// input holds an unterminated escape string before releasing it as typed
+// input (#2974), as the attach stdin pump does (#2931). A terminal writes a
+// reply in one piece; one still open after this was typed: with
+// Option-as-Meta, Alt+Shift+- is ESC _. A reply that terminates within the
+// window is still dropped.
+const dashboardHeldInputWindow = 100 * time.Millisecond
 
 // DisableKittyKeyboard writes the escape sequence that pops the Kitty keyboard
 // protocol stack, restoring the previous keyboard mode. If nothing was on the
@@ -331,8 +340,18 @@ type csiuReader struct {
 	err         error  // pending source error to return after draining buffers
 	replyFilter termreply.Filter
 	replyWindow uint64
+	// heldSince is when replyFilter started holding an unterminated escape
+	// string (KeysOnIdle); zero when it holds none. heldGen is the filter's
+	// HoldGeneration for that hold, so a new hold gets its own window.
+	heldSince time.Time
+	heldGen   uint64
 	// pollFn checks whether more bytes follow a lone ESC within a timeout.
 	pollFn func(time.Duration) bool
+	// yieldEmpty makes Read return (0, nil) when a chunk produced nothing
+	// (a swallowed terminal reply, an incomplete sequence) instead of reading
+	// the source again: the TUI's input polls before each read and must never
+	// sit in a blocking stdin read when the terminal is released (#2692).
+	yieldEmpty bool
 }
 
 // csiuFileReader wraps a *os.File and overrides Read with CSI u translation.
@@ -373,6 +392,9 @@ func newCSIuReader(r io.Reader) *csiuReader {
 		src:   r,
 		inBuf: make([]byte, 0, 256),
 	}
+	// consume releases a held escape string once dashboardHeldInputWindow
+	// has passed; Read and SessionInputRouter call it when input is idle.
+	inner.replyFilter.KeysOnIdle = true
 	if f, ok := r.(*os.File); ok {
 		fd := int(f.Fd())
 		inner.pollFn = func(timeout time.Duration) bool {
@@ -385,9 +407,12 @@ func newCSIuReader(r io.Reader) *csiuReader {
 // Read implements io.Reader. It reads from the underlying source, translates
 // CSI u sequences, and returns the result.
 func (c *csiuReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	// Drain any previously translated bytes first.
 	if len(c.outBuf) > 0 {
-		n := copy(p, c.outBuf)
+		n := copy(p, c.outBuf[:inputTokenPrefix(c.outBuf, len(p))])
 		c.outBuf = c.outBuf[n:]
 		return n, nil
 	}
@@ -397,12 +422,33 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 			return 0, c.err
 		}
 
+		// A held escape string whose window has passed is released without
+		// reading the source, which may have nothing more to give (#2974).
+		if c.heldDue() {
+			if processed := c.consume(nil, false); len(processed) > 0 {
+				copied := copy(p, processed[:inputTokenPrefix(processed, len(p))])
+				c.outBuf = append(c.outBuf, processed[copied:]...)
+				return copied, nil
+			}
+			// Dropped (begun armed). A yielding reader was called only
+			// because the hold was due: the source may have nothing, so
+			// do not block on it (#2692).
+			if c.yieldEmpty {
+				return 0, nil
+			}
+			continue
+		}
+
 		// Read new bytes from the source into the internal buffer.
 		tmp := make([]byte, len(p))
 		n, err := c.src.Read(tmp)
 		processed := c.consume(tmp[:n], err == io.EOF)
 		if len(processed) > 0 {
-			copied := copy(p, processed)
+			// Bytes held from an earlier chunk can make processed longer than
+			// p. Bubble Tea decodes each Read on its own, so cutting a mouse
+			// report here turns its tail into keys: '<' of ESC[<65;166;31M
+			// shrinks the preview (#2826). Return whole tokens only.
+			copied := copy(p, processed[:inputTokenPrefix(processed, len(p))])
 			if copied < len(processed) {
 				c.outBuf = append(c.outBuf, processed[copied:]...)
 			}
@@ -425,8 +471,78 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 				return 1, nil
 			}
 			// More bytes incoming — loop to bundle them with the ESC.
+			continue
+		}
+		// A held escape string: wait for the rest of its window, then the
+		// loop releases it unless a terminator arrived. A yielding reader
+		// returns instead; tuiInput asks heldDue before polling again.
+		if wait, holding := c.heldWait(); holding && !c.yieldEmpty && c.pollFn != nil {
+			if !c.pollFn(wait) {
+				c.releaseHeld() // idle for the rest of the window
+				if processed := c.translate(false); len(processed) > 0 {
+					copied := copy(p, processed[:inputTokenPrefix(processed, len(p))])
+					c.outBuf = append(c.outBuf, processed[copied:]...)
+					return copied, nil
+				}
+			}
+			continue
+		}
+		if c.yieldEmpty {
+			return 0, nil
 		}
 	}
+}
+
+// inputTokenPrefix returns the longest prefix of b, at most limit bytes, that
+// ends on an input token boundary: a whole CSI or SS3 sequence, ESC plus the
+// key it modifies, or a whole UTF-8 rune. If the first token alone is longer
+// than limit, it returns limit, as cutting is then unavoidable.
+func inputTokenPrefix(b []byte, limit int) int {
+	if len(b) <= limit {
+		return len(b)
+	}
+	end := 0
+	for end < len(b) {
+		next := end + inputTokenLen(b[end:])
+		if next > limit {
+			break
+		}
+		end = next
+	}
+	if end == 0 {
+		return limit
+	}
+	return end
+}
+
+// inputTokenLen is the length of the input token at the start of b.
+func inputTokenLen(b []byte) int {
+	if len(b) > 2 && b[0] == 0x1b && b[1] == 0x1b && (b[2] == '[' || b[2] == 'O') {
+		return 1 + escapeTokenLen(b[1:]) // alt + an escape sequence
+	}
+	return escapeTokenLen(b)
+}
+
+func escapeTokenLen(b []byte) int {
+	if b[0] != 0x1b {
+		_, w := utf8.DecodeRune(b)
+		return w
+	}
+	if len(b) == 1 {
+		return 1
+	}
+	switch b[1] {
+	case '[':
+		j := 2
+		for j < len(b) && (b[j] < 0x40 || b[j] > 0x7E) {
+			j++
+		}
+		return min(j+1, len(b))
+	case 'O':
+		return min(3, len(b))
+	}
+	_, w := utf8.DecodeRune(b[1:])
+	return 1 + w // alt + a key (alt+esc for ESC ESC)
 }
 
 // consume applies dashboard-only terminal-reply filtering and extended-key
@@ -441,6 +557,11 @@ func (c *csiuReader) consume(chunk []byte, final bool) []byte {
 			c.replyWindow = window
 		}
 	}
+	// Bytes read after the hold window are not part of the held string:
+	// end it first, so an armed (dropped) string cannot take them along.
+	if c.heldDue() {
+		c.releaseHeld()
+	}
 	if len(chunk) > 0 {
 		// Always run the reply filter. Escape-string families (DCS/OSC/
 		// APC/PM/SOS) are never keyboard input and can arrive outside
@@ -453,7 +574,41 @@ func (c *csiuReader) consume(chunk []byte, final bool) []byte {
 	if final {
 		c.inBuf = append(c.inBuf, c.replyFilter.Consume(nil, armed, true)...)
 	}
+	// An escape string still open once dashboardHeldInputWindow has passed
+	// since its introducer was typed (#2974): release it, with the keys held
+	// behind it, as input. FlushIdle drops it instead if it began armed.
+	if !c.replyFilter.Holding() {
+		c.heldSince = time.Time{}
+	} else if gen := c.replyFilter.HoldGeneration(); c.heldSince.IsZero() || gen != c.heldGen {
+		c.heldSince, c.heldGen = time.Now(), gen // a new hold: its own window
+	}
+	if c.heldDue() {
+		c.releaseHeld()
+	}
 	return c.translate(final)
+}
+
+// releaseHeld ends the held escape string: into inBuf as input, or dropped
+// if it began armed.
+func (c *csiuReader) releaseHeld() {
+	c.inBuf = append(c.inBuf, c.replyFilter.FlushIdle()...)
+	c.heldSince = time.Time{}
+}
+
+// heldWait reports whether an escape string is held and how much of its
+// hold window is left.
+func (c *csiuReader) heldWait() (time.Duration, bool) {
+	if !c.replyFilter.Holding() || c.heldSince.IsZero() {
+		return 0, false
+	}
+	return max(time.Until(c.heldSince.Add(dashboardHeldInputWindow)), 0), true
+}
+
+// heldDue reports whether a held escape string's window has passed, so that
+// consume releases it.
+func (c *csiuReader) heldDue() bool {
+	wait, holding := c.heldWait()
+	return holding && wait <= 0
 }
 
 // translate scans c.inBuf for CSI u / modifyOtherKeys sequences and replaces

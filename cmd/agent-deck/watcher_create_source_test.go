@@ -71,7 +71,7 @@ func TestWatcherCreate_PersistsTopicForEngine(t *testing.T) {
 func TestWriteTopicWatcherSource_Writes0600(t *testing.T) {
 	dir := t.TempDir()
 
-	written, err := writeTopicWatcherSource(dir, "ntfy", "phone-alerts")
+	written, err := writeTopicWatcherSource(dir, "ntfy", "phone-alerts", "", "")
 	if err != nil {
 		t.Fatalf("writeTopicWatcherSource: %v", err)
 	}
@@ -109,7 +109,7 @@ group = "client-a/inbox"
 		t.Fatalf("seed watcher.toml: %v", err)
 	}
 
-	written, err := writeTopicWatcherSource(dir, "slack", "new-topic")
+	written, err := writeTopicWatcherSource(dir, "slack", "new-topic", "", "")
 	if err != nil {
 		t.Fatalf("writeTopicWatcherSource: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestWriteTopicWatcherSource_ConcurrentCreateKeepsOneWriter(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			written, err := writeTopicWatcherSource(dir, "ntfy", topic)
+			written, err := writeTopicWatcherSource(dir, "ntfy", topic, "", "")
 			if err != nil {
 				t.Errorf("writeTopicWatcherSource(%s): %v", topic, err)
 				return

@@ -11,12 +11,16 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/provider"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
@@ -79,7 +83,13 @@ func handleRemote(profile string, args []string) {
 
 	switch args[0] {
 	case "add":
+		if remoteAddProviderRequested(args[1:]) {
+			handleRemoteAddProvider(profile, args[1:])
+			return
+		}
 		handleRemoteAdd(args[1:])
+	case "destroy":
+		handleRemoteDestroy(args[1:])
 	case "remove", "rm":
 		handleRemoteRemove(args[1:])
 	case "list", "ls":
@@ -103,6 +113,11 @@ func handleRemote(profile string, args []string) {
 // return through its own context handling after its ssh groups are gone.
 const remoteSignalGrace = 2 * time.Second
 
+// remoteSignalProviderWait bounds how long a signalled remote command waits
+// for provider work (a rollback or destroy, each bounded at 2 minutes by
+// the provider package) before it exits anyway.
+const remoteSignalProviderWait = 3 * time.Minute
+
 // installRemoteSignalCleanup makes a signal to any `remote ...` command kill
 // its ssh process groups before the CLI exits. ssh runs in its own process
 // group (so a timeout can kill everything it started), which also means the
@@ -116,7 +131,7 @@ func installRemoteSignalCleanup() {
 	go func() {
 		sig := <-sigs
 		session.KillSSHProcesses()
-		time.Sleep(remoteSignalGrace)
+		awaitRemoteSignalExit(sigs, providerWork, remoteSignalGrace, remoteSignalProviderWait)
 		code := 1
 		if s, ok := sig.(syscall.Signal); ok {
 			code = 128 + int(s)
@@ -125,9 +140,29 @@ func installRemoteSignalCleanup() {
 	}()
 }
 
+// awaitRemoteSignalExit returns when a signalled remote command may exit:
+// after grace, or, while provider work is in flight (a sandbox create
+// rolling back, a destroy), once that work is done, so the sandbox is not
+// left running. That wait is bounded by maxWait, and a second signal ends
+// it at once.
+func awaitRemoteSignalExit(sigs <-chan os.Signal, work *providerWorkTracker, grace, maxWait time.Duration) {
+	if !work.busy() {
+		time.Sleep(grace)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Waiting for the sandbox provider to clean up (press Ctrl-C again to quit now)...")
+	timer := time.NewTimer(maxWait)
+	defer timer.Stop()
+	select {
+	case <-work.done():
+	case <-sigs:
+	case <-timer.C:
+	}
+}
+
 func isRemoteManagementCommand(name string) bool {
 	switch name {
-	case "add", "remove", "rm", "list", "ls", "sessions", "drain", "attach", "rename", "update", "exec":
+	case "add", "remove", "rm", "destroy", "list", "ls", "sessions", "drain", "attach", "rename", "update", "exec":
 		return true
 	}
 	return false
@@ -139,13 +174,27 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("Usage: agent-deck remote exec <name> <command> [arguments]")
 	case "add":
 		fmt.Println("Usage: agent-deck remote add <name> <user@host> [options]")
+		fmt.Println("       agent-deck remote add --provider <name> [--name <remote>]")
 		fmt.Println("\nOptions:")
 		fmt.Println("  --agent-deck-path string")
 		fmt.Println("        Path to agent-deck on the remote (default: agent-deck)")
 		fmt.Println("  --profile string")
 		fmt.Println("        Remote profile to use (default: default)")
+		fmt.Println("  --provider string")
+		fmt.Println("        Create a sandbox with this [providers.<name>] and register it (no <user@host>)")
+		fmt.Println("  --name string")
+		fmt.Println("        With --provider: remote name (default: <provider>-<random suffix>)")
 	case "remove", "rm":
 		fmt.Println("Usage: agent-deck remote remove <name>")
+	case "destroy":
+		fmt.Println("Usage: agent-deck remote destroy <name> [--yes] [--force]")
+		fmt.Println("\nStops the remote's sessions, destroys its provider sandbox and removes the remote.")
+		fmt.Println("Only for remotes added with --provider; use 'remote remove' for a plain remote.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  --yes")
+		fmt.Println("        Stop the remote's sessions without asking (required when not on a terminal)")
+		fmt.Println("  --force")
+		fmt.Println("        Destroy even when the remote's sessions cannot be listed")
 	case "list", "ls":
 		fmt.Println("Usage: agent-deck remote list [options]")
 		fmt.Println("\nOptions:")
@@ -153,6 +202,8 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("        Ask each remote for its agent-deck version and update timer now (two SSH calls per remote)")
 		fmt.Println("  --retry")
 		fmt.Println("        Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
+		fmt.Println("  --owner <name>")
+		fmt.Println("        Show only sandboxes owned by <name>; \"me\" is this machine's [sandbox] owner (default $USER)")
 		fmt.Println("  --json")
 		fmt.Println("        Output as JSON")
 	case "sessions":
@@ -206,6 +257,7 @@ func printRemoteUsage() {
 	fmt.Println("  session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),")
 	fmt.Println("  recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,")
 	fmt.Println("  session queue list/release/cancel (queue entry IDs; --json supported),")
+	fmt.Println("  session ownership inspect <id> [--json] (read-only receipt),")
 	fmt.Println("  triggers (read-only list: --session/--kind/--health/--all/--json),")
 	fmt.Println("  events publish forwards the Mac app's replies only (macapp.open.ack, macapp.browser.response,")
 	fmt.Println("  macapp.app.focus) with --data-file - on stdin, at most 2 MiB.")
@@ -217,7 +269,10 @@ func printRemoteUsage() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  add <name> <user@host>    Add a remote agent-deck instance")
+	fmt.Println("  add --provider <name> [--name x]")
+	fmt.Println("                            Create a provider sandbox and register it as a remote")
 	fmt.Println("  remove <name>             Remove a remote")
+	fmt.Println("  destroy <name> [--yes]    Stop a sandbox remote's sessions, destroy it, remove it")
 	fmt.Println("  list                      List configured remotes")
 	fmt.Println("  sessions [name] [--json] [--with-errors|--json-envelope]")
 	fmt.Println("                            Fetch sessions from remote(s); --json is a bare array,")
@@ -233,6 +288,8 @@ func printRemoteUsage() {
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck remote add dev user@dev-box")
 	fmt.Println("  agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck")
+	fmt.Println("  agent-deck remote add --provider docker --name sb1")
+	fmt.Println("  agent-deck remote destroy sb1 --yes")
 	fmt.Println("  agent-deck remote list")
 	fmt.Println("  agent-deck remote sessions dev --json")
 	fmt.Println("  agent-deck remote dev recall timeline SESSION --json --tail 100")
@@ -356,27 +413,51 @@ func handleRemoteAdd(args []string) {
 }
 
 func handleRemoteRemove(args []string) {
+	if code := runRemoteRemove(args); code != 0 {
+		exitCLI(code)
+	}
+}
+
+// runRemoteRemove is `remote remove <name>`: forget the remote. For a
+// provider sandbox it says the sandbox keeps running and points to `remote
+// destroy`; on a terminal it asks first.
+func runRemoteRemove(args []string) int {
+	out := providerDeps.stdout
 	if len(args) < 1 {
-		fmt.Println("Usage: agent-deck remote remove <name>")
-		exitCLI(1)
+		fmt.Fprintln(out, "Usage: agent-deck remote remove <name>")
+		return 1
 	}
 
 	name := args[0]
 
 	config, err := session.LoadUserConfig()
 	if err != nil {
-		fmt.Printf("Error: failed to load config: %v\n", err)
-		exitCLI(1)
+		fmt.Fprintf(out, "Error: failed to load config: %v\n", err)
+		return 1
 	}
 
-	if config.Remotes == nil {
-		fmt.Printf("Error: remote '%s' not found\n", name)
-		exitCLI(1)
+	rc, exists := config.Remotes[name]
+	if !exists {
+		fmt.Fprintf(out, "Error: remote '%s' not found\n", name)
+		return 1
 	}
 
-	if _, exists := config.Remotes[name]; !exists {
-		fmt.Printf("Error: remote '%s' not found\n", name)
-		exitCLI(1)
+	if provider.IsSandbox(rc) {
+		errOut := providerDeps.stderr
+		files := filepath.Dir(rc.SSHConfig)
+		if rc.SSHConfig == "" {
+			files, _ = provider.SandboxDir(name)
+		}
+		fmt.Fprintf(errOut, "Warning: '%s' is a sandbox (provider %s). Removing the remote leaves sandbox %s still running and its ssh files in %s.\n", name, rc.Provider, rc.SandboxID, files)
+		fmt.Fprintf(errOut, "  To stop and destroy it instead: agent-deck remote destroy %s\n", name)
+		if providerDeps.isTTY() {
+			fmt.Fprintf(out, "Forget '%s' and leave the sandbox running? [y/N] ", name)
+			answer, _ := bufio.NewReader(providerDeps.stdin).ReadString('\n')
+			if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+				fmt.Fprintln(out, "Aborted. Nothing was changed.")
+				return 1
+			}
+		}
 	}
 
 	delete(config.Remotes, name)
@@ -387,11 +468,12 @@ func handleRemoteRemove(args []string) {
 	}
 
 	if err := session.SaveUserConfig(config); err != nil {
-		fmt.Printf("Error: failed to save config: %v\n", err)
-		exitCLI(1)
+		fmt.Fprintf(out, "Error: failed to save config: %v\n", err)
+		return 1
 	}
 
-	fmt.Printf("Removed remote '%s'\n", name)
+	fmt.Fprintf(out, "Removed remote '%s'\n", name)
+	return 0
 }
 
 func handleRemoteList(args []string) {
@@ -399,6 +481,7 @@ func handleRemoteList(args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	check := fs.Bool("check", false, "Ask each remote for its agent-deck version and update timer now")
 	retry := fs.Bool("retry", false, "Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
+	ownerFilter := fs.String("owner", "", "Show only sandboxes owned by this person (\"me\" = [sandbox] owner, else $USER)")
 	_ = parseCLIFlags(fs, args)
 
 	config, err := session.LoadUserConfig()
@@ -406,8 +489,24 @@ func handleRemoteList(args []string) {
 		fmt.Printf("Error: failed to load config: %v\n", err)
 		exitCLI(1)
 	}
+	owner := strings.TrimSpace(*ownerFilter)
+	if owner == "me" {
+		owner = config.SandboxOwner()
+	}
+	if owner != "" {
+		config = withRemotesOwnedBy(config, owner)
+	}
 
 	if len(config.Remotes) == 0 {
+		// #2920: --json must stay parseable with nothing configured.
+		if *jsonOutput {
+			fmt.Println("[]")
+			return
+		}
+		if owner != "" {
+			fmt.Printf("No sandboxes owned by %s.\n", session.PrintableOwner(owner))
+			return
+		}
 		fmt.Println("No remotes configured.")
 		fmt.Println("\nAdd one with: agent-deck remote add <name> <user@host>")
 		return
@@ -459,15 +558,32 @@ func handleRemoteList(args []string) {
 			// for a remote too old to say (#2472). Omitted when never read.
 			Timer          *update.TimerStatus `json:"timer,omitempty"`
 			TimerCheckedAt string              `json:"timer_checked_at,omitempty"`
+			// Kind, Provider and SandboxID describe a provider sandbox
+			// remote ("sandbox (provider docker)"); omitted for plain ones.
+			Kind      string `json:"kind,omitempty"`
+			Provider  string `json:"provider,omitempty"`
+			SandboxID string `json:"sandbox_id,omitempty"`
+			// Owner is who created the sandbox ([sandbox] owner or $USER
+			// on the machine that made it); SSHConfig is the path of its
+			// own ssh_config. Both omitted for plain remotes.
+			Owner     string `json:"owner,omitempty"`
+			SSHConfig string `json:"ssh_config,omitempty"`
 		}
 
-		var remotes []remoteJSON
+		remotes := []remoteJSON{}
 		for name, rc := range config.Remotes {
 			row := remoteJSON{
 				Name:          name,
 				Host:          rc.Host,
 				AgentDeckPath: rc.GetAgentDeckPath(),
 				Profile:       rc.GetProfile(),
+				Kind:          provider.DisplayKind(rc),
+				Provider:      rc.Provider,
+				SandboxID:     rc.SandboxID,
+				Owner:         session.PrintableOwner(rc.Owner),
+			}
+			if provider.IsSandbox(rc) {
+				row.SSHConfig = rc.SSHConfig
 			}
 			state := versions[name]
 			row.VersionState = state.Compare(Version).String()
@@ -498,17 +614,47 @@ func handleRemoteList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "PROFILE", "VERSION / LAST POLL")
-	fmt.Println(strings.Repeat("-", 84))
+	// A sandbox's host cell ("sandbox (provider docker) · owner: alice")
+	// can be wider than the usual 30; widen the column so PATH and the
+	// rest stay aligned.
+	hosts := make(map[string]string, len(config.Remotes))
+	hostWidth := 30
+	for name, rc := range config.Remotes {
+		host := rc.Host
+		if kind := provider.DisplayKind(rc); kind != "" {
+			host = kind
+			if owner := session.PrintableOwner(rc.Owner); owner != "" {
+				host += " · owner: " + owner
+			}
+		}
+		hosts[name] = host
+		hostWidth = max(hostWidth, runewidth.StringWidth(host))
+	}
+	fmt.Printf("%-15s %s %-20s %-10s %s\n", "NAME", runewidth.FillRight("HOST", hostWidth), "PATH", "PROFILE", "VERSION / LAST POLL")
+	fmt.Println(strings.Repeat("-", 84+hostWidth-30))
 	for name, rc := range config.Remotes {
 		status := remoteVersionColumn(versions[name], Version) + " / " + remotePollColumn(configuredRemotePoll(polls[name], rc))
 		// The remote's own update timer, once a --check has read it (#2472).
 		if timer := versions[name].Timer; timer != nil {
 			status += " / " + remoteTimerColumn(timer)
 		}
-		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), status)
+		fmt.Printf("%-15s %s %-20s %-10s %s\n", name, runewidth.FillRight(hosts[name], hostWidth), rc.GetAgentDeckPath(), rc.GetProfile(), status)
 	}
 	fmt.Printf("\nTotal: %d remotes (controller v%s)\n", len(config.Remotes), Version)
+}
+
+// withRemotesOwnedBy returns a copy of cfg whose Remotes holds only the
+// sandboxes owned by owner (`remote list --owner`). Plain remotes and
+// sandboxes made before owners have none and never match.
+func withRemotesOwnedBy(cfg *session.UserConfig, owner string) *session.UserConfig {
+	filtered := *cfg
+	filtered.Remotes = map[string]session.RemoteConfig{}
+	for name, rc := range cfg.Remotes {
+		if rc.Owner != "" && rc.Owner == owner {
+			filtered.Remotes[name] = rc
+		}
+	}
+	return &filtered
 }
 
 // configuredRemotePoll treats a changed SSH identity as never polled.
@@ -682,9 +828,13 @@ func handleRemoteSessions(args []string) {
 	}
 
 	if len(config.Remotes) == 0 {
-		if envelope {
+		switch {
+		case envelope:
 			writeRemoteSessionsJSON(remoteSessionsOutput{})
-		} else {
+		case jsonOutput:
+			// #2920: the bare array, same as a configured remote with no sessions.
+			writeRemoteSessionsArray(nil)
+		default:
 			fmt.Println("No remotes configured.")
 		}
 		return
@@ -725,29 +875,18 @@ func handleRemoteSessions(args []string) {
 		if !addRemoteSessionFetch(&output, name, rc.Host, sessions, err) {
 			if !jsonOutput {
 				fmt.Printf("  [%s] Error: %v\n", name, err)
+			} else if !envelope {
+				// #3107: the bare array has no room for errors. Keep stdout a
+				// valid array and say it on stderr, so `[]` is never read as
+				// "reachable, no sessions".
+				fmt.Fprintf(os.Stderr, "[%s] Error: %v\n", name, err)
 			}
 			continue
 		}
 
 		if !jsonOutput {
 			fmt.Printf("\n═══ Remote: %s (%s) ═══\n\n", name, rc.Host)
-			if len(sessions) == 0 {
-				fmt.Println("  No sessions found.")
-			} else {
-				fmt.Printf("  %-20s %-15s %-10s %s\n", "TITLE", "TOOL", "STATUS", "ID")
-				fmt.Printf("  %s\n", strings.Repeat("-", 60))
-				for _, s := range sessions {
-					title := s.Title
-					if len(title) > 20 {
-						title = title[:17] + "..."
-					}
-					id := s.ID
-					if len(id) > 8 {
-						id = id[:8]
-					}
-					fmt.Printf("  %-20s %-15s %-10s %s\n", title, s.Tool, s.Status, id)
-				}
-			}
+			writeRemoteSessionsText(os.Stdout, sessions)
 		}
 	}
 
@@ -757,8 +896,43 @@ func handleRemoteSessions(args []string) {
 	case jsonOutput:
 		writeRemoteSessionsArray(output.Sessions)
 	}
-	if envelope && len(output.Errors) != 0 {
+	// #3107: an unreachable remote is "unknown", never "no sessions", so any
+	// failed remote fails the command in every output mode. Stdout still
+	// carries the sessions that were reachable.
+	if len(output.Errors) != 0 {
 		exitCLI(1)
+	}
+}
+
+// writeRemoteSessionsText prints one remote's session table for the text
+// output of `remote sessions`. Archived rows are left out (#2972): `list
+// --json` on the remote keeps them with "archived": true, and an archived
+// session keeps a live-looking status. The JSON outputs still carry them.
+// Titles are cut by display width, so a multi-byte character is never split.
+func writeRemoteSessionsText(w io.Writer, sessions []session.RemoteSessionInfo) {
+	live := make([]session.RemoteSessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		if !s.Archived {
+			live = append(live, s)
+		}
+	}
+	archived := len(sessions) - len(live)
+	if len(live) == 0 {
+		fmt.Fprintln(w, "  No sessions found.")
+	} else {
+		fmt.Fprintf(w, "  %-20s %-15s %-10s %s\n", "TITLE", "TOOL", "STATUS", "ID")
+		fmt.Fprintf(w, "  %s\n", strings.Repeat("-", 60))
+		for _, s := range live {
+			title := runewidth.FillRight(truncateWidth(s.Title, 20), 20)
+			id := s.ID
+			if len(id) > 8 {
+				id = id[:8]
+			}
+			fmt.Fprintf(w, "  %s %-15s %-10s %s\n", title, s.Tool, s.Status, id)
+		}
+	}
+	if archived > 0 {
+		fmt.Fprintf(w, "  (%d archived not shown; --json lists them)\n", archived)
 	}
 }
 

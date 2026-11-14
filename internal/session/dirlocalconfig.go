@@ -26,7 +26,9 @@ import (
 // way ~/.agent-deck/config.toml is, so it is deliberately restricted to these
 // three declarative keys. Any other key or section is refused with an error
 // naming the file and the offending key(s) (fail closed) rather than
-// silently ignored.
+// silently ignored. A file that is owned by another uid, or that sits in or
+// is itself group/world-writable (a user-private group excepted), is skipped
+// with a warning instead of being applied (LOC-11).
 //
 // default_location and path_template get a second layer of scrutiny (P1
 // review follow-up, #2093, round 3): unlike sparse_checkout, both are used to
@@ -219,6 +221,14 @@ const (
 // dir-local file < inner dir-local file. Explicit CLI/session overrides are
 // the caller's responsibility to apply on top of the returned settings.
 func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[string]string, map[string][]string, error) {
+	settings, sources, rejections, _, err := resolveWorktreeSettingsForDir(targetDir)
+	return settings, sources, rejections, err
+}
+
+// resolveWorktreeSettingsForDir is ResolveWorktreeSettingsForDir that also
+// returns one notice per directory-local file skipped as untrusted (LOC-11),
+// so the TUI can show it: its permission warnings only reach the debug log.
+func resolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[string]string, map[string][]string, []string, error) {
 	settings := GetWorktreeSettings()
 
 	sources := map[string]string{
@@ -227,6 +237,7 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 		WorktreeKeySparseCheckout:  sourceDefault,
 	}
 	rejections := map[string][]string{}
+	var skipped []string
 
 	// Consult the RAW global config (pre-default-application) so "default"
 	// vs. "global" is reported correctly.
@@ -244,7 +255,7 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 
 	paths, err := DiscoverDirLocalConfigPaths(targetDir)
 	if err != nil {
-		return settings, sources, rejections, err
+		return settings, sources, rejections, skipped, err
 	}
 
 	// dirBoundary returns the boundary an untrusted default_location/
@@ -276,9 +287,22 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 	}
 
 	for _, path := range paths {
+		// LOC-11: a file (or its .agent-deck dir) that another user owns or
+		// could write is not the user's config; skip it with a warning
+		// rather than fail the launch.
+		if reason := dirLocalConfigUntrustedReason(path); reason != "" {
+			notice := fmt.Sprintf("ignoring directory-local config %s: %s (it must be owned by you and not writable by others)", path, reason)
+			warnPermissionOnce("dirlocal:"+path+":"+reason, "dir_local_config_untrusted", path, reason, notice)
+			skipped = append(skipped, notice)
+			for _, key := range []string{WorktreeKeyDefaultLocation, WorktreeKeyPathTemplate, WorktreeKeySparseCheckout} {
+				rejections[key] = append(rejections[key], fmt.Sprintf(
+					"%s: file ignored (%s); falling back to %s value", path, reason, sources[key]))
+			}
+			continue
+		}
 		local, err := loadDirLocalConfig(path)
 		if err != nil {
-			return settings, sources, rejections, err
+			return settings, sources, rejections, skipped, err
 		}
 
 		if local.Worktree.DefaultLocation != nil {
@@ -299,7 +323,7 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 		}
 	}
 
-	return settings, sources, rejections, nil
+	return settings, sources, rejections, skipped, nil
 }
 
 // resolveSymlinksBestEffort resolves symlinks for path even when path itself
@@ -432,4 +456,13 @@ func validateDirLocalWorktreeValue(key, raw, targetDir, boundary string) string 
 func GetWorktreeSettingsForDir(targetDir string) (WorktreeSettings, error) {
 	settings, _, _, err := ResolveWorktreeSettingsForDir(targetDir)
 	return settings, err
+}
+
+// GetWorktreeSettingsForDirWithNotice is GetWorktreeSettingsForDir plus a
+// one-line notice naming every directory-local config that was skipped as
+// untrusted (owned by another user, or writable by group/world), or "" when
+// none was. The TUI shows it, since the skip changes which settings apply.
+func GetWorktreeSettingsForDirWithNotice(targetDir string) (WorktreeSettings, string, error) {
+	settings, _, _, skipped, err := resolveWorktreeSettingsForDir(targetDir)
+	return settings, strings.Join(skipped, "; "), err
 }

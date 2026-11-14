@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -65,6 +66,17 @@ func buildRemoteFlatItemsWithGroups(remoteName string, sessions []session.Remote
 // group renders as "name (0)". This is the remote's own list, so a remote too
 // old to report one simply shows no empty groups.
 func buildRemoteFlatItemsWithEmptyGroups(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths []string, includeEmpty bool) []session.Item {
+	var emptyPaths []string
+	if includeEmpty {
+		emptyPaths = groupPaths
+	}
+	return buildRemoteRows(remoteName, sessions, collapsed, order, groupPaths, emptyPaths)
+}
+
+// buildRemoteRows is buildRemoteFlatItemsWithEmptyGroups with the two uses of
+// the group list apart: groupPaths only ranks siblings, and each path in
+// emptyPaths that holds none of sessions gets a header-only row.
+func buildRemoteRows(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths, emptyPaths []string) []session.Item {
 	items := make([]session.Item, 0, len(sessions)+2)
 
 	remoteRoot := "remotes/" + remoteName
@@ -98,13 +110,11 @@ func buildRemoteFlatItemsWithEmptyGroups(remoteName string, sessions []session.R
 	for g := range buckets {
 		bucketPaths = append(bucketPaths, g)
 	}
-	if includeEmpty {
-		for _, p := range groupPaths {
-			g := normalizeRemoteGroupPath(p)
-			if _, has := buckets[g]; !has {
-				buckets[g] = nil // header only, no session rows
-				bucketPaths = append(bucketPaths, g)
-			}
+	for _, p := range emptyPaths {
+		g := normalizeRemoteGroupPath(p)
+		if _, has := buckets[g]; !has {
+			buckets[g] = nil // header only, no session rows
+			bucketPaths = append(bucketPaths, g)
 		}
 	}
 	sortRemoteGroupPaths(bucketPaths, remoteGroupRank(groupPaths))
@@ -204,6 +214,142 @@ func buildRemoteFlatItemsWithEmptyGroups(remoteName string, sessions []session.R
 	}
 
 	return items
+}
+
+// buildRemoteFlatItemsForViewMode is buildRemoteFlatItemsWithEmptyGroups with
+// the "Active on top" view mode applied inside this one remote's section
+// (#2947). The host header stays first; below it come the groups holding a
+// live session with only those sessions, then a divider, then the groups again
+// with the rest. Empty groups go below the divider. A parent row and its
+// children move as one block (live if any of them is), so a child never
+// renders away from its parent, and a folded group shows once: on top when
+// anything under it is live. Every other mode, a folded host, or a remote
+// with nothing to split builds the rows exactly as before.
+func buildRemoteFlatItemsForViewMode(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths []string, includeEmpty bool, mode session.GroupViewMode, opts session.ViewModeOptions) []session.Item {
+	remoteRoot := "remotes/" + remoteName
+	if mode != session.GroupViewActiveTop || collapsed[remoteRoot] {
+		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+	}
+	top, bottom := splitRemoteSessionsActiveTop(remoteRoot, sessions, collapsed, opts)
+	if len(top) == 0 {
+		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+	}
+	// Only a group with no session anywhere under it is empty. A group whose
+	// sessions all went on top is not, and must not come back below the
+	// divider as a header with nothing under it.
+	var emptyPaths []string
+	if includeEmpty {
+		emptyPaths = genuinelyEmptyRemoteGroups(remoteRoot, sessions, collapsed, groupPaths)
+	}
+	if len(bottom) == 0 && len(emptyPaths) == 0 { // nothing sits below
+		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+	}
+	bottomRows := buildRemoteRows(remoteName, bottom, collapsed, order, groupPaths, emptyPaths)
+	rows := buildRemoteRows(remoteName, top, collapsed, order, groupPaths, nil)
+	rows = append(rows, session.Item{Type: session.ItemTypeDivider, DividerLabel: mode.DividerLabel(opts)})
+	return append(rows, bottomRows[1:]...)
+}
+
+// genuinelyEmptyRemoteGroups returns the paths of groupPaths that hold no
+// session, directly or in a subgroup. A path inside a folded group that does
+// hold sessions is left out too: that folded header already shows once, with
+// its sessions, and the empty path would only draw it a second time.
+func genuinelyEmptyRemoteGroups(remoteRoot string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, groupPaths []string) []string {
+	occupied := make(map[string]bool) // every group path, and each ancestor, holding a session
+	for i := range sessions {
+		prefix := ""
+		for _, seg := range strings.Split(normalizeRemoteGroupPath(sessions[i].Group), "/") {
+			prefix = joinGroupSegment(prefix, seg)
+			occupied[prefix] = true
+		}
+	}
+	var out []string
+	for _, p := range groupPaths {
+		g := normalizeRemoteGroupPath(p)
+		if occupied[g] {
+			continue
+		}
+		underOccupiedFold := false
+		prefix := ""
+		for _, seg := range strings.Split(g, "/") {
+			prefix = joinGroupSegment(prefix, seg)
+			if collapsed[remoteRoot+"/"+prefix] && occupied[prefix] {
+				underOccupiedFold = true
+				break
+			}
+		}
+		if !underOccupiedFold {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// splitRemoteSessionsActiveTop sorts one remote's sessions into the rows
+// above and below the active-on-top divider, keeping each slice in input
+// order. Status comes from the remote's last snapshot; an archived row never
+// counts as live (#1945).
+func splitRemoteSessionsActiveTop(remoteRoot string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, opts session.ViewModeOptions) (top, bottom []session.RemoteSessionInfo) {
+	live := func(s session.RemoteSessionInfo) bool {
+		return !s.Archived && opts.CountsAsActive(session.Status(s.Status))
+	}
+	// unit names what a row moves with: its outermost folded ancestor group,
+	// or else its parent block in its bucket (the same nesting the builder
+	// draws, see remoteNestedParents).
+	buckets := make(map[string][]int)
+	for i := range sessions {
+		g := normalizeRemoteGroupPath(sessions[i].Group)
+		buckets[g] = append(buckets[g], i)
+	}
+	unit := make([]string, len(sessions))
+	for g, idxs := range buckets {
+		folded := ""
+		prefix := ""
+		for _, seg := range strings.Split(g, "/") {
+			prefix = joinGroupSegment(prefix, seg)
+			if collapsed[remoteRoot+"/"+prefix] {
+				folded = prefix
+				break
+			}
+		}
+		if folded != "" {
+			for _, i := range idxs {
+				unit[i] = "fold\x00" + folded
+			}
+			continue
+		}
+		ids := make([]string, len(idxs))
+		parents := make([]string, len(idxs))
+		for k, i := range idxs {
+			ids[k] = sessions[i].ID
+			parents[k] = sessions[i].ParentSessionID
+		}
+		nested := remoteNestedParents(ids, parents)
+		for k, i := range idxs {
+			root := ids[k]
+			if p, ok := nested[root]; ok {
+				root = p
+			}
+			unit[i] = "row\x00" + g + "\x00" + root
+			if root == "" {
+				unit[i] = fmt.Sprintf("idx\x00%d", i) // ID-less rows stand alone
+			}
+		}
+	}
+	liveUnit := make(map[string]bool)
+	for i := range sessions {
+		if live(sessions[i]) {
+			liveUnit[unit[i]] = true
+		}
+	}
+	for i := range sessions {
+		if liveUnit[unit[i]] {
+			top = append(top, sessions[i])
+		} else {
+			bottom = append(bottom, sessions[i])
+		}
+	}
+	return top, bottom
 }
 
 // remoteNestedParents decides which rows of one remote group bucket nest

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/session"
-	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
 // #2368: the web move endpoint goes through WebMutator.MoveSessionToGroup,
@@ -67,7 +67,7 @@ func TestIssue2368_WebMoveSessionToGroup(t *testing.T) {
 		t.Fatalf("stored group after root move = %q", got)
 	}
 
-	if _, _, err := m.MoveSessionToGroup("does-not-exist", "review"); !errors.Is(err, web.ErrSessionNotFound) {
+	if _, _, err := m.MoveSessionToGroup("does-not-exist", "review"); !errors.Is(err, menudata.ErrSessionNotFound) {
 		t.Fatalf("unknown id: err=%v, want ErrSessionNotFound", err)
 	}
 }

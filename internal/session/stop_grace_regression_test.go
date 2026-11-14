@@ -4,11 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/stretchr/testify/require"
 )
 
 func TestStoppedSessionSurvivesStartupGraceRefresh(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	skipIfNoTmuxBinary(t)
 
 	inst := NewInstanceWithTool("stop-grace", t.TempDir(), "shell")

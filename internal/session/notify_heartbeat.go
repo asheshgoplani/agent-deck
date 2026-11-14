@@ -42,11 +42,11 @@ func WriteNotifyHeartbeat() {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
 		return
 	}
 	_ = os.Rename(tmp, path)

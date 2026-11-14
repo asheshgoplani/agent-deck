@@ -166,10 +166,9 @@ func TestWriteGeminiMCPSettings_PreservesExistingConfig(t *testing.T) {
 	geminiConfigDirOverride = tmpDir
 	defer func() { geminiConfigDirOverride = "" }()
 
-	// Clear user config cache
-	userConfigCacheMu.Lock()
-	userConfigCache = nil
-	userConfigCacheMu.Unlock()
+	// old-mcp is an agent-deck catalog entry, so leaving it out of the enabled
+	// list removes it. Servers outside the catalog are kept (#146, ASK-102).
+	t.Cleanup(resetUserConfigCache(t, &UserConfig{MCPs: map[string]MCPDef{"old-mcp": {Command: "test"}}}))
 
 	settingsFile := filepath.Join(tmpDir, "settings.json")
 
@@ -269,5 +268,53 @@ func TestGetGeminiMCPNames(t *testing.T) {
 	// Should be sorted
 	if names[0] != "alpha" || names[1] != "beta" || names[2] != "zeta" {
 		t.Errorf("Names should be sorted, got %v", names)
+	}
+}
+
+// ASK-102: a settings.json that cannot be parsed (Gemini accepts comments) or
+// has a null root must be refused, not replaced by {"mcpServers":...}; and the
+// user's own non-catalog servers must survive a catalog rewrite.
+func TestWriteGeminiMCPSettings_FailsClosedAndKeepsUserServers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+	geminiConfigDirOverride = tmpDir
+	defer func() { geminiConfigDirOverride = "" }()
+	t.Cleanup(resetUserConfigCache(t, &UserConfig{MCPs: map[string]MCPDef{"cat": {Command: "echo"}}}))
+	settingsFile := filepath.Join(tmpDir, "settings.json")
+
+	for _, seed := range []string{"{\n  // pinned theme\n  \"theme\": \"Dracula\",\n  \"mcpServers\": {}\n}", "null"} {
+		if err := os.WriteFile(settingsFile, []byte(seed), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("seed %q: panicked: %v", seed, r)
+				}
+			}()
+			if err := WriteGeminiMCPSettings([]string{"cat"}); err == nil {
+				t.Errorf("seed %q: expected error, got nil", seed)
+			}
+		}()
+		if after, _ := os.ReadFile(settingsFile); string(after) != seed {
+			t.Errorf("seed %q: file was modified to %s", seed, after)
+		}
+	}
+
+	seed := `{"theme":"x","mcpServers":{"mine":{"command":"foo"},"cat":{"command":"old"}}}`
+	if err := os.WriteFile(settingsFile, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteGeminiMCPSettings(nil); err != nil {
+		t.Fatalf("WriteGeminiMCPSettings: %v", err)
+	}
+	data, _ := os.ReadFile(settingsFile)
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	servers, _ := cfg["mcpServers"].(map[string]interface{})
+	if cfg["theme"] != "x" || servers["mine"] == nil || servers["cat"] != nil {
+		t.Errorf("want theme kept, user server 'mine' kept, managed 'cat' dropped; got %s", data)
 	}
 }

@@ -62,12 +62,16 @@ func handleRunTask(args []string) {
 	if child == "" {
 		child = os.Getenv("AGENTDECK_INSTANCE_ID")
 	}
-	if profile == "" {
-		profile = os.Getenv("AGENTDECK_PROFILE")
+	// --profile, then AGENTDECK_PROFILE, then the profile every other command
+	// resolves (CLAUDE_CONFIG_DIR behind the #1790 guard, config.json
+	// default_profile). A literal "default" here lost the completion for
+	// non-pane callers whose default_profile is another profile.
+	resolved, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run-task: resolve profile: %v\n", err)
+		exitCLI(2)
 	}
-	if profile == "" {
-		profile = session.DefaultProfile
-	}
+	profile = resolved
 	if title == "" {
 		title = os.Getenv("AGENTDECK_TITLE")
 	}
@@ -113,7 +117,8 @@ func runTaskUsage() {
 	fmt.Println("exits when done, the kernel exit is captured exactly once, a durable")
 	fmt.Println("completion record is written, and the parent session is woken once.")
 	fmt.Println()
-	fmt.Println("child/profile default to $AGENTDECK_INSTANCE_ID / $AGENTDECK_PROFILE.")
+	fmt.Println("child defaults to $AGENTDECK_INSTANCE_ID; profile to $AGENTDECK_PROFILE,")
+	fmt.Println("then the configured default profile.")
 	fmt.Println()
 	fmt.Println("Example (set as a session wrapper):")
 	fmt.Println("  agent-deck add -c claude --wrapper \"agent-deck run-task -- {command}\" .")

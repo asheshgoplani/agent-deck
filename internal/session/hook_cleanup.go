@@ -20,6 +20,16 @@ type hookCleanupRoots struct {
 	registry string
 }
 
+// hookStartupSweepInterval bounds how often the startup sweep runs across
+// processes. The sweep reads every profile store (hookRegistryIDs), and short-
+// lived CLI processes (a Claude status line refresh, a hook handler) start many
+// times a minute; orphans have a 24-hour grace period anyway (ASK-229).
+const hookStartupSweepInterval = 10 * time.Minute
+
+// hookStartupSweepStamp, in the hooks root, records the last completed startup
+// sweep. A leading dot without ".tmp-" is never a hook artifact name.
+const hookStartupSweepStamp = ".startup-sweep"
+
 var hookStartupCleanup = struct {
 	sync.Mutex
 	completed map[hookCleanupRoots]bool
@@ -38,11 +48,36 @@ func pruneHookArtifactsOnStartup() error {
 	if hookStartupCleanup.completed[roots] {
 		return nil
 	}
+	stamp := filepath.Join(roots.hooks, hookStartupSweepStamp)
+	if info, err := os.Lstat(stamp); err == nil && info.Mode().IsRegular() {
+		if age := time.Since(info.ModTime()); age >= 0 && age < hookStartupSweepInterval {
+			hookStartupCleanup.completed[roots] = true
+			return nil
+		}
+	}
 	if err := PruneHookArtifacts(); err != nil {
 		return err
 	}
 	hookStartupCleanup.completed[roots] = true
+	markHookStartupSweep(stamp)
 	return nil
+}
+
+// markHookStartupSweep records a completed startup sweep, only when the hooks
+// root already exists: the sweep never creates it.
+func markHookStartupSweep(stamp string) {
+	if info, err := os.Lstat(filepath.Dir(stamp)); err != nil || !info.IsDir() {
+		return
+	}
+	now := time.Now()
+	if err := os.Chtimes(stamp, now, now); err == nil {
+		return
+	}
+	// O_EXCL|O_NOFOLLOW: never follow or truncate something planted there.
+	f, err := os.OpenFile(stamp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err == nil {
+		_ = f.Close()
+	}
 }
 
 // PruneHookArtifacts removes orphaned hook artifact groups after a 24-hour
@@ -54,6 +89,9 @@ func pruneHookArtifacts(deletedID string) error {
 	ids, err := hookRegistryIDs()
 	if err != nil {
 		return err
+	}
+	if deletedID == "" {
+		sweepLaunchEnvOrphans(ids, time.Now().Add(-24*time.Hour))
 	}
 	root, err := os.OpenRoot(GetHooksDir())
 	if errors.Is(err, os.ErrNotExist) {
@@ -136,7 +174,7 @@ func hookArtifactID(name string) string {
 		name = name[1:index]
 	}
 	name = strings.TrimSuffix(name, ".tmp")
-	for _, suffix := range []string{".generation.json", ".codex-writer.lock", ".projectdir-missing", ".events.jsonl", hermesOwnedSessionSuffix, ".json", ".sid", ".lock"} {
+	for _, suffix := range []string{".generation.json", ".codex-writer.lock", ".projectdir-missing", ".events.jsonl", hermesOwnedSessionSuffix, ".json", ".sid", ".lock", HookTurnSeqSuffix, turnOriginSuffix} {
 		if strings.HasSuffix(name, suffix) {
 			id := strings.TrimSuffix(name, suffix)
 			if validHookArtifactID(id) {

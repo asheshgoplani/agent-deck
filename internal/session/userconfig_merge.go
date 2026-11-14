@@ -86,13 +86,15 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	// ── Maintenance.Enabled (only field panel manages) ─────────────────
 	merged.Maintenance.Enabled = panel.Maintenance.Enabled
 
-	// ── Claude subset (DangerousMode + ConfigDir; ExtraArgs, AutoMode,
-	//    UseChrome, HooksEnabled, etc. preserved from disk) ─────────────
+	// ── Claude subset (DangerousMode + ConfigDir + DefaultAccount;
+	//    ExtraArgs, AutoMode, UseChrome, HooksEnabled, etc. preserved
+	//    from disk) ─────────────────────────────────────────────────────
 	if panel.Claude.DangerousMode != nil {
 		merged.Claude.DangerousMode = panel.Claude.DangerousMode
 	}
 	// Panel deliberately writes "" when the user wants to clear the field.
 	merged.Claude.ConfigDir = panel.Claude.ConfigDir
+	merged.Claude.DefaultAccount = panel.Claude.DefaultAccount
 
 	// ── Preview subset (panel manages Show* + NotesOutputSplit; the
 	//    nested Analytics sub-table stays from disk) ───────────────────

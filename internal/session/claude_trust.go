@@ -2,7 +2,9 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,7 +33,8 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 	}
 	// Locked and verified: parallel callers on one account must not lose
 	// each other's entries (SWFB1018).
-	return updateClaudeJSONLocked(claudeJSONPath, func(cfg map[string]any) {
+	granted := false
+	err := updateClaudeJSONLocked(claudeJSONPath, func(cfg map[string]any) {
 		projects, _ := cfg["projects"].(map[string]any)
 		if projects == nil {
 			projects = map[string]any{}
@@ -40,10 +43,50 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 		if entry == nil {
 			entry = map[string]any{}
 		}
+		if accepted, _ := entry["hasTrustDialogAccepted"].(bool); !accepted {
+			granted = true
+		}
 		entry["hasTrustDialogAccepted"] = true
 		projects[parentDir] = entry
 		cfg["projects"] = projects
 	})
+	if err == nil && granted {
+		logFolderTrustGranted("claude", parentDir, "config", claudeJSONPath)
+	}
+	return err
+}
+
+// ClaudeTrustJSONPaths returns every .claude.json a trust seed for inst must
+// reach: the home root, plus <dir>/.claude.json when inst runs on an explicit
+// config root (account, conductor, group, env, profile or global config_dir),
+// since Claude then runs with CLAUDE_CONFIG_DIR=<dir> and reads trust there
+// (#2673).
+func ClaudeTrustJSONPaths(inst *Instance) []string {
+	var out []string
+	root := GetUserMCPRootPath()
+	if root != "" {
+		out = append(out, root)
+	}
+	if inst != nil && IsClaudeConfigDirExplicitForInstance(inst) {
+		if dir := GetClaudeConfigDirForInstance(inst); dir != "" {
+			if p := filepath.Join(dir, ".claude.json"); p != root {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// preAcceptClaudeTrustForInstance seeds trust for dir in every file
+// ClaudeTrustJSONPaths(inst) names and returns the joined failures.
+func preAcceptClaudeTrustForInstance(inst *Instance, dir string) error {
+	var errs []error
+	for _, p := range ClaudeTrustJSONPaths(inst) {
+		if err := PreAcceptClaudeTrust(p, dir); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // WriteMultiRepoParentClaudeMD writes a .claude/CLAUDE.md to parentDir telling
@@ -64,9 +107,9 @@ func WriteMultiRepoParentClaudeMD(parentDir string, repoNames []string) error {
 		return fmt.Errorf("repoNames is empty")
 	}
 
-	claudeDir := filepath.Join(parentDir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", claudeDir, err)
+	claudeDir, err := ensureOwnedParentClaudeDir(parentDir)
+	if err != nil {
+		return err
 	}
 
 	var b strings.Builder
@@ -97,19 +140,92 @@ func WriteMultiRepoParentClaudeMD(parentDir string, repoNames []string) error {
 		}
 	}
 
-	mdPath := filepath.Join(claudeDir, "CLAUDE.md")
-	tmp := mdPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, mdPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename %s: %w", mdPath, err)
+	if err := writeOwnedParentFile(claudeDir, "CLAUDE.md", []byte(b.String()), isGeneratedMultiRepoClaudeMD); err != nil {
+		return err
 	}
 
-	// Remove legacy root-level CLAUDE.md from initial #1155 implementation.
-	_ = os.Remove(filepath.Join(parentDir, "CLAUDE.md"))
+	// Remove legacy root-level CLAUDE.md from initial #1155 implementation,
+	// but only a regular file this code generated.
+	legacy := filepath.Join(parentDir, "CLAUDE.md")
+	if fi, err := os.Lstat(legacy); err == nil && fi.Mode().IsRegular() {
+		if data, err := os.ReadFile(legacy); err == nil && isGeneratedMultiRepoClaudeMD(data) {
+			_ = os.Remove(legacy)
+		}
+	}
 
+	return nil
+}
+
+// multiRepoClaudeMDHeader starts every CLAUDE.md WriteMultiRepoParentClaudeMD
+// generates; it marks a file as ours to refresh.
+const multiRepoClaudeMDHeader = "# Multi-Repo Session\n"
+
+func isGeneratedMultiRepoClaudeMD(data []byte) bool {
+	return strings.HasPrefix(string(data), multiRepoClaudeMDHeader)
+}
+
+// ensureOwnedParentClaudeDir creates <parentDir>/.claude and verifies it is a
+// real directory, not a symlink. A link there points outside the parent (for
+// example at the user's ~/.claude, #3041) and must never be written through.
+func ensureOwnedParentClaudeDir(parentDir string) (string, error) {
+	claudeDir := filepath.Join(parentDir, ".claude")
+	if err := os.Mkdir(claudeDir, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		return "", fmt.Errorf("mkdir %s: %w", claudeDir, err)
+	}
+	fi, err := os.Lstat(claudeDir)
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", claudeDir, err)
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return "", fmt.Errorf("refusing to write into %s: not a directory agent-deck created", claudeDir)
+	}
+	return claudeDir, nil
+}
+
+// writeOwnedParentFile atomically writes dir/name. An existing entry is
+// replaced only when it is a regular file and canReplace (nil means any
+// regular file) accepts its contents; a symlink is never followed or replaced.
+func writeOwnedParentFile(dir, name string, data []byte, canReplace func([]byte) bool) error {
+	path := filepath.Join(dir, name)
+	if fi, err := os.Lstat(path); err == nil {
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("refusing to overwrite %s: not a regular file", path)
+		}
+		if canReplace != nil {
+			existing, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", path, err)
+			}
+			if !canReplace(existing) {
+				return fmt.Errorf("refusing to overwrite %s: not generated by agent-deck", path)
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	tmp, err := os.CreateTemp(dir, name+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp for %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write %s: %w", tmpName, err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("chmod %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("rename %s: %w", path, err)
+	}
 	return nil
 }
 
@@ -144,9 +260,9 @@ func WriteMultiRepoParentSettings(parentDir string, repoNames []string) error {
 		return fmt.Errorf("repoNames is empty")
 	}
 
-	claudeDir := filepath.Join(parentDir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", claudeDir, err)
+	claudeDir, err := ensureOwnedParentClaudeDir(parentDir)
+	if err != nil {
+		return err
 	}
 
 	type permissions struct {
@@ -244,16 +360,7 @@ func WriteMultiRepoParentSettings(parentDir string, repoNames []string) error {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
 
-	settingsPath := filepath.Join(claudeDir, "settings.json")
-	tmp := settingsPath + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, settingsPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename %s: %w", settingsPath, err)
-	}
-	return nil
+	return writeOwnedParentFile(claudeDir, "settings.json", out, nil)
 }
 
 // findChildSettings returns the absolute path to a child project's

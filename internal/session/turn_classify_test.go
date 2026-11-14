@@ -212,14 +212,14 @@ func TestClassifyTurnTier_NoiseOnUnchangedTextAndClass(t *testing.T) {
 
 func TestClassifyTrigger_PrefixFallbacksAndEnvelope(t *testing.T) {
 	cases := map[string]string{
-		fxUser("u", "<task-notification>x</task-notification>", nil):        TurnTriggerTask,
-		fxUser("u", "[INBOX] A child just committed a completion", nil):     TurnTriggerInbox,
-		fxUser("u", "Stop hook feedback:\nChild session(s) completed", nil): TurnTriggerInbox,
-		fxUser("u", "[HEARTBEAT] Check sessions", nil):                      TurnTriggerInbox,
-		fxUser("u", "<system-reminder>ctx</system-reminder>", nil):          TurnTriggerSystem,
-		fxUser("u", "anything", map[string]any{"isMeta": true}):             TurnTriggerSystem,
-		fxUser("u", "[agent-deck from:abc-123] please review", nil):         TurnTriggerSend,
-		fxUser("u", "please review", nil):                                   TurnTriggerHuman,
+		fxUser("u", "<task-notification>x</task-notification>", nil):                TurnTriggerTask,
+		fxUser("u", "[INBOX] A child just committed a completion", nil):             TurnTriggerInbox,
+		fxUser("u", "Stop hook feedback:\nNew session messages (normal inbox", nil): TurnTriggerInbox,
+		fxUser("u", "[HEARTBEAT] Check sessions", nil):                              TurnTriggerInbox,
+		fxUser("u", "<system-reminder>ctx</system-reminder>", nil):                  TurnTriggerSystem,
+		fxUser("u", "anything", map[string]any{"isMeta": true}):                     TurnTriggerSystem,
+		fxUser("u", "[agent-deck from:abc-123] please review", nil):                 TurnTriggerSend,
+		fxUser("u", "please review", nil):                                           TurnTriggerHuman,
 	}
 	for line, want := range cases {
 		f := classifyTranscriptTail([]string{line, fxAssistantText("a", "reply")})
@@ -285,5 +285,31 @@ func TestInboxConfig_Defaults(t *testing.T) {
 	c.WakeOn = []string{"urgent", "info"}
 	if !c.WakesFor(TurnTierInfo) {
 		t.Fatal("wake_on info")
+	}
+}
+
+// The comms ledger types "[agent-deck msg] N pending ..." into a parent's
+// pane; a turn it starts is an inbox wake, not a human prompt, and both
+// classifiers must agree on every machine prefix.
+func TestClassifyTrigger_MatchesCommsPromptTrigger(t *testing.T) {
+	for _, prompt := range []string{
+		"[agent-deck msg] 2 pending (1 urgent); ack with `agent-deck msg ack`",
+		"[agent-deck inbox] child finished",
+		"[INBOX #abc] child finished",
+		"[HEARTBEAT] check",
+		"[agent-deck from:conductor-x] please report",
+		"<task-notification>x</task-notification>",
+		"<system-reminder>y</system-reminder>",
+		"fix the bug",
+	} {
+		var rec transcriptTurnRecord
+		if err := json.Unmarshal([]byte(fxUser("u", prompt, nil)), &rec); err != nil {
+			t.Fatal(err)
+		}
+		gotT, gotF := classifyTrigger(rec)
+		wantT, wantF := commsPromptTrigger(prompt)
+		if gotT != wantT || gotF != wantF {
+			t.Errorf("classifyTrigger(%q) = %q,%q; commsPromptTrigger = %q,%q", prompt, gotT, gotF, wantT, wantF)
+		}
 	}
 }

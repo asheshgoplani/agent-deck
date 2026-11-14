@@ -325,8 +325,8 @@ func (i *Instance) ReconcileTitleFromClaude(sessionID string) (string, bool) {
 	}
 	i.SetTitleThreadSafe(name)
 	i.SyncTmuxDisplayName()
-	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Name != "" {
-		_ = tmux.WriteBadgeUpdate(tmuxSess.Name, name)
+	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.TmuxName() != "" {
+		_ = tmux.WriteBadgeUpdate(tmuxSess.TmuxName(), name)
 	}
 	return name, true
 }

@@ -93,14 +93,17 @@ type CommsSpoolEntry struct {
 	State          string `json:"state,omitempty"` // status edge: the status entered
 	SessionID      string `json:"session_id,omitempty"`
 	TurnID         string `json:"turn_id,omitempty"`
+	RunID          string `json:"run_id,omitempty"` // pi: the run token a v4 extension minted at agent_start, capped
+	PiRun          string `json:"pi_run,omitempty"` // pi: piRunSignal of the FULL run_id, before the cap (the inbox's run key)
 	Text           string `json:"text,omitempty"`   // assistant text (turn_end), capped
 	TH             string `json:"th,omitempty"`     // sha256/16 of the FULL trimmed text, before the cap
 	Prompt         string `json:"prompt,omitempty"` // user prompt prefix (either edge)
 	TranscriptPath string `json:"transcript_path,omitempty"`
 	Cwd            string `json:"cwd,omitempty"`
-	Via            string `json:"via,omitempty"` // wake: tmux | stop
-	Ref            string `json:"ref,omitempty"` // call: the session read; wake: the record it was for
-	TSignal        int64  `json:"t_signal"`      // Unix ms the harness signal was received
+	Via            string `json:"via,omitempty"`     // wake: tmux | stop
+	Ref            string `json:"ref,omitempty"`     // call: the session read; wake: the record it was for
+	TSignal        int64  `json:"t_signal"`          // Unix ms the harness signal was received
+	TWrite         int64  `json:"t_write,omitempty"` // Unix ns the producer wrote the entry: orders one millisecond
 
 	// path is where the entry sits on disk (set by ReadCommsSpool).
 	path string
@@ -168,11 +171,15 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		e.TH = turnTextHash(full) // the hash of the full text, before the cap
 	}
 	e.Text = capBytes(full, commsSpoolTextBytes)
+	if run := strings.TrimSpace(e.RunID); run != "" && e.Harness == "pi" {
+		e.PiRun = piRunSignal(run) // the status file and the inbox hash the whole id
+	}
 	e.Prompt = comms.CapText(strings.TrimSpace(e.Prompt), commsSpoolPromptBytes)
 	e.Harness = capBytes(e.Harness, commsSpoolIDBytes)
 	e.Event = capBytes(e.Event, commsSpoolIDBytes)
 	e.SessionID = capBytes(e.SessionID, commsSpoolIDBytes)
 	e.TurnID = capBytes(e.TurnID, commsSpoolIDBytes)
+	e.RunID = capBytes(e.RunID, commsSpoolIDBytes)
 	e.TranscriptPath = capBytes(e.TranscriptPath, commsSpoolCwdBytes)
 	e.Cwd = capBytes(e.Cwd, commsSpoolCwdBytes)
 	e.Via = capBytes(e.Via, commsSpoolIDBytes)
@@ -196,6 +203,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		commsLog.Warn("comms_spool_full", slog.String("instance", e.Instance), slog.String("edge", e.Edge), slog.Int("cap", limit))
 		return errors.New("comms spool: instance spool full; is the notify daemon running?")
 	}
+	e.TWrite = time.Now().UnixNano()
 	data, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -265,6 +273,16 @@ func ReadCommsSpool(instanceID string) ([]CommsSpoolEntry, error) {
 		e.path = path
 		out = append(out, e)
 	}
+	// The name orders entries by millisecond only: within one, the random
+	// part of a ULID minted by another process (two hook-handler runs) sorts
+	// either way (#2823). The write time orders them as they were spooled;
+	// an entry without one (an older producer) keeps the name order.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TSignal != out[j].TSignal {
+			return out[i].TSignal < out[j].TSignal
+		}
+		return out[i].TWrite < out[j].TWrite
+	})
 	return out, nil
 }
 
@@ -383,6 +401,19 @@ func PruneCommsSpool(now time.Time) {
 	}
 }
 
+// inboxWakePrefixes open a prompt that agent-deck typed to wake a session
+// (inbox, heartbeat, comms ledger). Both trigger classifiers share them.
+var inboxWakePrefixes = []string{"[INBOX", "[HEARTBEAT]", "[agent-deck inbox]", comms.WakePrefix}
+
+func hasInboxWakePrefix(text string) bool {
+	for _, p := range inboxWakePrefixes {
+		if strings.HasPrefix(text, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // commsPromptTrigger maps the prompt that started a turn to a trigger kind,
 // for harnesses whose transcript the daemon cannot read. The prefixes are
 // the ones the Claude classifier recognises, so a tagged send, an inbox or
@@ -391,17 +422,13 @@ func PruneCommsSpool(now time.Time) {
 // urgent: louder, not lossy.
 func commsPromptTrigger(prompt string) (trigger, fromID string) {
 	text := strings.TrimSpace(prompt)
+	isSend, from := parseSendEnvelope(text)
 	switch {
 	case text == "":
 		return TurnTriggerUnknown, ""
-	case strings.HasPrefix(text, sendEnvelopePrefix):
-		rest := strings.TrimPrefix(text, sendEnvelopePrefix)
-		if end := strings.IndexByte(rest, ']'); end > 0 {
-			return TurnTriggerSend, strings.TrimSpace(rest[:end])
-		}
-		return TurnTriggerSend, ""
-	case strings.HasPrefix(text, "[INBOX"), strings.HasPrefix(text, "[HEARTBEAT]"),
-		strings.HasPrefix(text, "[agent-deck inbox]"), strings.HasPrefix(text, "[agent-deck msg]"):
+	case isSend:
+		return TurnTriggerSend, from
+	case hasInboxWakePrefix(text):
 		return TurnTriggerInbox, ""
 	case strings.HasPrefix(text, "<task-notification>"):
 		return TurnTriggerTask, ""

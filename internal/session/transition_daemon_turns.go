@@ -22,7 +22,9 @@ import (
 //     a finished record (no separate transition record).
 //
 // Tools without a readable Claude transcript take the legacy path: the size
-// or Codex signal, no text, treated as urgent. That is today's behaviour.
+// or Codex signal, no text, treated as urgent. That is today's behaviour,
+// except for a restart's boot (#2792) and a fresh start's boot (#2954), which
+// are not turns.
 //
 // observedFlip is true when the caller SAW the child run and stop (the
 // snapshot edge). An observed flip with an unchanged transcript is a real turn
@@ -39,6 +41,28 @@ import (
 // commit; in both cases the caller leaves its bookkeeping untouched so the
 // next poll retries.
 func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[string]*Instance, from, to string, ts time.Time, observedFlip bool) (TransitionNotificationEvent, bool) {
+	return d.emitTurnWith(profile, inst, byID, from, to, ts, observedFlip, nil)
+}
+
+// emitTurnWith is emitTurn for a pi child whose verdict the caller already
+// derived from one status snapshot (nil: read one here).
+func (d *TransitionDaemon) emitTurnWith(profile string, inst *Instance, byID map[string]*Instance, from, to string, ts time.Time, observedFlip bool, pi *piTurnVerdict) (TransitionNotificationEvent, bool) {
+	event, ok := d.emitTurnInner(profile, inst, byID, from, to, ts, observedFlip, pi)
+	// A transiently failed commit leaves the run open so the fallback (or
+	// the next poll) retries it.
+	if ok && event.DeliveryResult != transitionDeliveryFailed {
+		// Issue #2900: whatever decided this turn (a record, a restart
+		// judgement, a drop), the Codex run it ended is not lost.
+		d.noteCodexTurnDecided(profile, inst, to, time.Now())
+	}
+	return event, ok
+}
+
+// turnCachedSubstate is the substate the last status pass cached for the
+// child's pane (a seam for tests; it never captures the pane).
+var turnCachedSubstate = func(inst *Instance) Substate { return inst.CachedSubstate() }
+
+func (d *TransitionDaemon) emitTurnInner(profile string, inst *Instance, byID map[string]*Instance, from, to string, ts time.Time, observedFlip bool, pi *piTurnVerdict) (TransitionNotificationEvent, bool) {
 	event := TransitionNotificationEvent{
 		ChildSessionID: inst.ID,
 		ChildTitle:     inst.Title,
@@ -46,7 +70,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		FromStatus:     from,
 		ToStatus:       to,
 		Timestamp:      ts,
-		Substate:       string(inst.CachedSubstate()),
+		Substate:       string(turnCachedSubstate(inst)),
 		ExitCode:       inst.ExitCode(),
 	}
 	if event.Timestamp.IsZero() {
@@ -57,14 +81,31 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	if classified && facts.Pending {
 		return event, false
 	}
-	if classified && facts.UUID == "" && facts.TextHash == "" {
+	var piv piTurnVerdict
+	if pi != nil {
+		piv = *pi
+	} else if strings.EqualFold(strings.TrimSpace(inst.Tool), "pi") {
+		piv = piVerdict(inst, d.statusSnapshot(inst.ID), to, time.Now())
+	}
+	if piv.Awaiting {
+		return event, false // the run's settle has not landed; the next poll retries
+	}
+	// ASK-92: an idle auto-compaction grows the transcript and may flip the
+	// pane, but no one started a turn and the child said nothing. A flip into
+	// error still reaches the parent the legacy way.
+	compaction := classified && facts.Compaction && attentionClass(to) != "error"
+	if classified && !compaction && facts.UUID == "" && facts.TextHash == "" {
 		// No turn identity (an interrupted turn, a reply with no text): the
 		// noise rule cannot recognise it next poll, so journaling it would add
 		// one line per observation. Treat it as unclassified: legacy signal,
 		// the notifier's dedup is the bound.
 		classified = false
 	}
-	event.LastOutputHash = transitionEventOutputHash(inst)
+	if strings.EqualFold(strings.TrimSpace(inst.Tool), "pi") {
+		event.LastOutputHash = piv.Signal // from the one snapshot; "" is the fallback
+	} else {
+		event.LastOutputHash = transitionEventOutputHash(inst)
+	}
 	statsParent := statsParentFor(inst)
 	selfConductor := isSelfSuppressedConductor(inst)
 
@@ -74,6 +115,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	if !classified || inst.GetJSONLPath() == "" {
 		signal = event.LastOutputHash
 	}
+	d.dropStaleBannerWatch(inst.ID) // before judgeRestart can spend a newer restart's token
 	tok, verdict, why := d.judgeRestart(inst.ID, inst.GetJSONLPath(), signal, func() string { return restartPaneSubstate(inst) }, to, event.Timestamp)
 	switch verdict {
 	case restartNewError:
@@ -86,7 +128,34 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	case restartBoot:
 		return d.emitRestartBoot(inst, event, tok, selfConductor), true
 	}
+	// Issue #2954: nor is a fresh start's arrival at its empty prompt
+	// (fresh_start.go). A resuming restart leaves no fresh-start token.
+	switch ftok, verdict := judgeFreshStart(inst, to, event.Timestamp, event.Substate); verdict {
+	case freshStartNotYet:
+		// Only the poll pass (recordTerminalTurns) retries a false: it keeps
+		// its key uncommitted. The snapshot edge and hook candidates discard it.
+		return event, false
+	case freshStartBoot:
+		result := d.emitFreshStartBoot(inst, event, ftok, selfConductor)
+		return result, result.DeliveryResult != transitionDeliveryFailed
+	}
 	event.restartJudged = true
+
+	if !classified && d.restartResumeEcho(inst, to, event.Timestamp, observedFlip) {
+		// The unseen-boot info line already told the parent this restart
+		// resumed with no new turn; the same idle prompt, seen again once the
+		// flush-race window lets an unanswered user record go unclassified,
+		// is not a finished turn.
+		_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.NoiseSuppressed++ })
+		event.DeliveryResult = transitionDeliveryDropped
+		return event, true
+	}
+
+	if compaction {
+		_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.NoiseSuppressed++ })
+		event.DeliveryResult = transitionDeliveryDropped
+		return event, true
+	}
 
 	if !classified {
 		if selfConductor {
@@ -97,7 +166,16 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		}
 		// Legacy signal, no text: emit as before. The notifier's dedup is the
 		// only improvement available without a transcript.
+		// Issue #2900: a Codex turn whose hook evidence is stale carries a
+		// signal minted from its observed run, and a late hook completion of
+		// a run already recorded that way is absorbed.
+		absorb, commitCodex := d.codexTurnGate(profile, inst, &event, time.Now())
+		if absorb {
+			event.DeliveryResult = transitionDeliveryDropped
+			return event, true
+		}
 		result := d.notifier.NotifyTransition(event)
+		commitCodex(result)
 		if result.DeliveryResult == transitionDeliveryCommitted {
 			_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.RecordsLegacy++ })
 		}

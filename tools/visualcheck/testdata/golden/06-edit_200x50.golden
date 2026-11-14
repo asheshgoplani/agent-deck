@@ -7,7 +7,6 @@
 
 
 
-
                                                                      ╭────────────────────────────────────────────────────────────╮
                                                                      │                                                            │
                                                                      │                                                            │
@@ -31,6 +30,8 @@
                                                                      │      [ ] Auto mode (restart, claude)                       │
                                                                      │      Extra args (restart, claude) — space-separated:       │
                                                                      │      > --model opus --verbose                              │
+                                                                     │      Wait timer (claude) — <age>, off, empty = config:        │
+                                                                     │      > e.g. <age>                                             │
                                                                      │                                                            │
                                                                      │                                                            │
                                                                      │    Type to edit │ Enter save │ Tab next │ Esc cancel       │

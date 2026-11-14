@@ -46,6 +46,7 @@ func TestIssue1190_CustomPathSelectThenType(t *testing.T) {
 	h.newDialog.SetDefaultTool("")
 	h.newDialog.SetSize(120, 50)
 	h.newDialog.Show()
+	h.newDialog.enterAdvances = true // Enter opens browse in the opt-in walk (ASK-110 default: Enter creates)
 	h.newDialog.focusIndex = h.newDialog.indexOf(focusPath)
 	h.newDialog.pathInput.SetValue("") // emulate an empty custom-path scenario
 	h.newDialog.updateFocus()

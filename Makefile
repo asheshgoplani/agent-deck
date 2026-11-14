@@ -1,4 +1,4 @@
-.PHONY: bench-fleet build run install install-user uninstall uninstall-user clean dev release-ready release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
+.PHONY: bench-fleet bench-ops build run install install-user uninstall uninstall-user clean dev release-ready changelog-release release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -12,7 +12,7 @@ GOLANGCI_LINT_VERSION=v2.14.0
 TAILWIND_BIN=$(HOME)/.local/bin/tailwindcss
 
 # Keep local and CI builds on the version required by go.mod.
-export GOTOOLCHAIN=go1.26.9
+export GOTOOLCHAIN=go1.26.10
 
 # Build the binary (requires compiled CSS via `make css`)
 build: css
@@ -140,11 +140,11 @@ dev:
 
 # Run tests (with race detector)
 test:
-	go test -race -v ./...
+	go test -race -timeout 20m -v ./...
 
 # Regenerate the CLI/storage-bytes behaviour-freeze goldens under
 # cmd/agent-deck/testdata/goldens/ after a reviewed, intended behaviour
-# change (CORE-PLAN.md section 7). Never run this to make a red suite green
+# change. Never run this to make a red suite green
 # without reading the diff first — see testdata/goldens/README.md.
 goldens-update:
 	AGENTDECK_UPDATE_GOLDENS=1 go test ./cmd/agent-deck/ -run 'TestCLIGoldens$$|TestStorageBytesGoldens$$' -v
@@ -165,6 +165,14 @@ test-perf:
 bench:
 	go test -run '^$$' -bench '^Benchmark' -benchmem -benchtime=1x -count=3 -timeout 5m \
 		./cmd/agent-deck/... ./internal/tmux/...
+
+# Operation benchmarks (BenchmarkOp_*) on a ref, recorded in bench/ops/results
+# and rendered into docs/performance.md. BENCH_REF=. means this checkout.
+#   make bench-ops BENCH_LABEL=1.16.31 BENCH_REF=release/1.16.31
+BENCH_LABEL ?= local
+BENCH_REF ?= .
+bench-ops:
+	./bench/ops/run.sh $(BENCH_LABEL) $(BENCH_REF) $(BENCH_OPS_ARGS)
 
 # Isolated synthetic fleet suite, including a private tmux server (Docker only).
 bench-fleet:
@@ -196,6 +204,13 @@ ci:
 release-ready:
 	./scripts/release-readiness.sh $(READY_ARGS)
 
+# Move CHANGELOG.md's Unreleased lines under the release heading, e.g.
+# make changelog-release VERSION=1.16.39 (optional DATE=YYYY-MM-DD, default
+# today in Europe/Berlin). release-ready refuses a Version without a heading.
+changelog-release:
+	@if [ "$(origin VERSION)" != "command line" ]; then echo "usage: make changelog-release VERSION=X.Y.Z [DATE=YYYY-MM-DD]"; exit 2; fi
+	./scripts/changelog-release.sh $(VERSION) $(DATE)
+
 # Local release using GoReleaser
 # Prerequisites: brew install goreleaser
 # Required env: GITHUB_TOKEN
@@ -216,7 +231,7 @@ release-local:
 	fi; \
 	echo "Version: $$CODE_VERSION"
 	@echo "=== Running tests ==="
-	go test -race ./...
+	go test -race -timeout 20m ./...
 	@echo "=== Running GoReleaser ==="
 	goreleaser release --clean
 	@echo "=== Draft release built ==="
@@ -257,12 +272,12 @@ dist-local:
 	go run ./tools/dist-local -version "$(DIST_VERSION)" -output "$(DIST_OUTPUT)"
 
 # Functional checks run in Docker locally. Native execution is CI-only.
-FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.26.9
+FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.26.10
 FUNCCHECK_BINARY ?=
 FUNCCHECK_MODE ?= docker
 .PHONY: check-functional funccheck-image
 funccheck-image:
-	@printf '%s\n' 'FROM golang:1.26.9-bookworm' \
+	@printf '%s\n' 'FROM golang:1.26.10-bookworm' \
 		'RUN apt-get update -qq && apt-get install -y --no-install-recommends tmux git' \
 		'WORKDIR /deps' 'COPY go.mod go.sum ./' \
 		'RUN go mod download && chmod -R a+rX /go/pkg/mod' \
@@ -286,7 +301,7 @@ check-functional: funccheck-image
 		sh -ec 'mkdir -p "$$HOME"; if [ -z "$$FUNCCHECK_BINARY" ]; then go build $(LDFLAGS) -o /tmp/agent-deck-funccheck ./cmd/agent-deck; FUNCCHECK_BINARY=/tmp/agent-deck-funccheck; fi; go run ./tools/funccheck "$$FUNCCHECK_BINARY"'
 endif
 
-# Visual check (docs/CORE-PLAN.md section 7): drives a real agent-deck
+# Visual check: drives a real agent-deck
 # binary through every TUI screen in a private tmux server, diffs captured
 # frames against tools/visualcheck/testdata/golden, writes contact-sheet.html.
 # Needs Linux + a real tmux (see tools/visualcheck/README.md); run on the

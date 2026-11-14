@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -45,24 +43,14 @@ func httpMCPServerConfig(def MCPDef) MCPServerConfig {
 }
 
 // getExternalSocketPath returns the socket path if an external pool socket exists and is alive
-// This allows CLI commands to use sockets created by the TUI without needing pool initialization
-func getExternalSocketPath(mcpName string) string {
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("agentdeck-mcp-%s.sock", mcpName))
-
-	// Check if socket file exists
-	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
-		return ""
-	}
-
-	// Check if socket is alive (accepting connections)
-	conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
-	if err != nil {
-		mcpCatLog.Debug("socket_not_alive", slog.String("socket", socketPath), slog.Any("error", err))
-		return ""
-	}
-	conn.Close()
-
-	return socketPath
+// This allows CLI commands to use sockets created by the TUI without needing pool initialization.
+// It looks only in this user's private pool socket dir and only accepts sockets
+// owned by this uid (mcppool.ExternalSocketPath); the old shared
+// /tmp/agentdeck-mcp-<name>.sock location is never trusted. The socket must
+// serve def's command, args and env: another config home's process of the
+// same name is never attached (#2966).
+func getExternalSocketPath(mcpName string, def MCPDef) string {
+	return mcppool.ExternalSocketPath(mcpName, def.Command, def.Args, def.Env)
 }
 
 // tryPoolSocket attempts to resolve an MCP to a pool socket in order of preference:
@@ -71,7 +59,7 @@ func getExternalSocketPath(mcpName string) string {
 //  3. Fallback to stdio (last resort, logged as error for visibility)
 //
 // Returns (config, true) if socket was found, or (empty, false) to fall through to stdio.
-func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, bool) {
+func tryPoolSocket(pool *mcppool.Pool, name string, def MCPDef, scope string) (MCPServerConfig, bool) {
 	// Case 1: Pool exists and should manage this MCP
 	if pool != nil && pool.ShouldPool(name) {
 		// Try in-memory pool state first (fastest)
@@ -86,7 +74,7 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 
 		// Pool says not running, but check if socket exists on disk
 		// (handles race during pool initialization or stale in-memory state)
-		if socketPath := getExternalSocketPath(name); socketPath != "" {
+		if socketPath := getExternalSocketPath(name, def); socketPath != "" {
 			mcpCatLog.Warn("pool_stale_disk_recovery", slog.String("mcp", name), slog.String("scope", scope),
 				slog.String("socket", socketPath),
 				slog.String("detail", "pool.IsRunning=false but socket alive on disk, using disk socket"))
@@ -119,7 +107,21 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 	if pool == nil {
 		config, _ := LoadUserConfig()
 		if config != nil && config.MCPPool.Enabled {
-			if socketPath := getExternalSocketPath(name); socketPath != "" {
+			// Apply this config's pool allowlist, exactly as the TUI path does
+			// via ShouldPool. The socket dir is shared by every config home of
+			// the user; a config that never opted a name in must not attach to
+			// any pool socket of that name.
+			allow := &mcppool.PoolConfig{
+				Enabled:     config.MCPPool.Enabled,
+				PoolAll:     config.MCPPool.PoolAll,
+				ExcludeMCPs: config.MCPPool.ExcludeMCPs,
+				PoolMCPs:    config.MCPPool.PoolMCPs,
+			}
+			if !allow.Allows(name) {
+				mcpCatLog.Debug("pool_excluded_cli", slog.String("mcp", name), slog.String("scope", scope))
+				return MCPServerConfig{}, false
+			}
+			if socketPath := getExternalSocketPath(name, def); socketPath != "" {
 				mcpCatLog.Info("external_socket_discovered", slog.String("mcp", name), slog.String("scope", scope), slog.String("socket", socketPath))
 				return MCPServerConfig{
 					Command: "agent-deck",
@@ -194,9 +196,21 @@ func writeJSONFileAtomic(root, path string, data []byte, perm os.FileMode) error
 	// A cleaned absolute path holds ".." only inside a name; such a path just
 	// skips the shortcut. The guard is the traversal check CodeQL
 	// go/path-injection recognises.
+	// A file looser than perm is rewritten even when its bytes match, so an
+	// .mcp.json left world-readable by an older agent-deck is tightened
+	// through the same symlink-safe replace.
 	if !strings.Contains(path, "..") {
-		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
-			return nil
+		if st, statErr := os.Stat(path); statErr == nil {
+			if st.Mode().Perm()&^perm == 0 {
+				if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+					return nil
+				}
+			} else {
+				mcpCatLog.Info("project_mcp_permissions_tightened",
+					slog.String("path", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(path), "\n", ""), "\r", "")),
+					slog.String("from", fmt.Sprintf("%o", st.Mode().Perm())),
+					slog.String("to", fmt.Sprintf("%o", perm)))
+			}
 		}
 	}
 	return withProjectMCPOptOut(atomicfile.WriteFileWithin(root, path, data, perm))
@@ -276,7 +290,7 @@ func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []st
 				continue
 			}
 
-			if socketCfg, used := tryPoolSocket(pool, name, "local"); used {
+			if socketCfg, used := tryPoolSocket(pool, name, def, "local"); used {
 				agentDeckServers[name] = socketCfg
 				continue
 			}
@@ -326,9 +340,11 @@ func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []st
 		return fmt.Errorf("failed to marshal mcp json: %w", err)
 	}
 
-	if err := writeJSONFileAtomic(projectRoot, mcpFile, data, 0644); err != nil {
+	// 0600: the file carries MCP env values, which are often tokens.
+	if err := writeJSONFileAtomic(projectRoot, mcpFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to save mcp json: %w", err)
 	}
+	excludeProjectMCPFromGit(projectRoot, mcpFile)
 
 	return nil
 }
@@ -467,8 +483,7 @@ func writeJSONObjectConfig(path string, cfg map[string]interface{}) error {
 // WriteGlobalMCP adds or removes MCPs from Claude's global config
 // This modifies ~/.claude-work/.claude.json → mcpServers
 func writeGlobalMCPLocked(enabledNames []string) error {
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 
 	// Read existing config (preserve other fields like projects, settings, etc.)
 	// A parse failure aborts the mutation: degrading to an empty map here and
@@ -507,8 +522,18 @@ func writeGlobalMCPLocked(enabledNames []string) error {
 // WriteGlobalMCPAndClearProjectMCPs.
 // ---------------------------------------------------------------------------
 
+// claudeConfigFilePath returns the file Claude Code reads user-scope MCP
+// servers from. With no explicit config dir (CLAUDE_CONFIG_DIR unset, no
+// config_dir configured) Claude reads ~/.claude.json, not ~/.claude/.claude.json
+// (#3103). With an explicit dir it is $DIR/.claude.json.
 func claudeConfigFilePath() string {
-	return filepath.Join(GetClaudeConfigDir(), ".claude.json")
+	dir, source := resolveClaudeConfigDir(resolveOpts{})
+	if source == "default" {
+		if p := GetUserMCPRootPath(); p != "" {
+			return p
+		}
+	}
+	return filepath.Join(dir, ".claude.json")
 }
 
 // WriteGlobalMCP adds or removes MCPs from Claude's global config
@@ -579,8 +604,7 @@ func WriteGlobalMCPAndClearProjectMCPs(projectPath string, enabledNames []string
 
 // GetGlobalMCPNames returns the names of MCPs currently in Claude's global config
 func GetGlobalMCPNames() []string {
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -604,8 +628,7 @@ func GetGlobalMCPNames() []string {
 
 // GetProjectMCPNames returns MCPs from projects[path].mcpServers in Claude's config
 func GetProjectMCPNames(projectPath string) []string {
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -658,7 +681,7 @@ func buildManagedMCPServers(enabledNames []string, scope string) map[string]MCPS
 			mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", scope), slog.String("transport", cfg.Type), slog.String("url", def.URL))
 			continue
 		}
-		if socketCfg, used := tryPoolSocket(pool, name, scope); used {
+		if socketCfg, used := tryPoolSocket(pool, name, def, scope); used {
 			mcpServers[name] = socketCfg
 			continue
 		}
@@ -690,8 +713,7 @@ func writeProjectMCPLocked(projectPath string, enabledNames []string) error {
 	if projectPath == "" {
 		return fmt.Errorf("project MCP write: empty project path")
 	}
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 
 	// A parse failure aborts the mutation: degrading to an empty map here and
 	// writing it back would delete the user's entire Claude configuration.
@@ -815,7 +837,7 @@ func writeUserMCPLocked(enabledNames []string) error {
 			}
 
 			// Try to use pool socket for this MCP (stdio only)
-			if socketCfg, used := tryPoolSocket(pool, name, "user"); used {
+			if socketCfg, used := tryPoolSocket(pool, name, def, "user"); used {
 				mcpServers[name] = socketCfg
 				continue
 			}

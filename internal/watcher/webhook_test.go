@@ -69,6 +69,56 @@ func TestFirstLine_UTF8Boundary(t *testing.T) {
 	}
 }
 
+func TestFirstLine_InvalidUTF8Input(t *testing.T) {
+	// Invalid bytes in the input itself (not a cut made by the cap) must not
+	// reach the stored subject, and must not erase the valid text around them:
+	// each bad byte becomes U+FFFD.
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			// Over the cap: the trim loop stripped byte by byte back past
+			// the bad byte and returned "".
+			name:  "leading invalid byte in long line",
+			input: "\xff" + strings.Repeat("a", 300),
+			want:  "\uFFFD" + strings.Repeat("a", 197),
+		},
+		{
+			name:  "early invalid byte in long line",
+			input: "ok \xff" + strings.Repeat("a", 300),
+			want:  "ok \uFFFD" + strings.Repeat("a", 194),
+		},
+		{
+			// Under the cap: validation was skipped entirely.
+			name:  "invalid byte in short line",
+			input: "hello \xc3(world",
+			want:  "hello \uFFFD(world",
+		},
+		{
+			name:  "truncated codepoint at end of short line",
+			input: "caf\xc3",
+			want:  "caf\uFFFD",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := firstLine(tc.input, 200)
+			if !utf8.ValidString(got) {
+				t.Errorf("firstLine produced invalid UTF-8 (len=%d, bytes=% x)", len(got), []byte(got))
+			}
+			if len(got) > 200 {
+				t.Errorf("firstLine exceeded maxLen: got %d bytes, max 200", len(got))
+			}
+			if got != tc.want {
+				t.Errorf("firstLine(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFirstLine_NewlineBeforeCap(t *testing.T) {
 	// When a newline exists before maxLen, firstLine truncates at the newline
 	// regardless of UTF-8 boundaries (newline is ASCII so always safe).
@@ -495,10 +545,11 @@ func TestWebhook_Listen_NonJSON_RawPayload(t *testing.T) {
 
 func TestWebhook_Setup_CustomBind(t *testing.T) {
 	a := &WebhookAdapter{}
+	// A non-loopback bind needs a secret (see webhook_auth_test.go).
 	err := a.Setup(context.Background(), AdapterConfig{
 		Type:     "webhook",
 		Name:     "test",
-		Settings: map[string]string{"bind": "0.0.0.0", "port": "18461"},
+		Settings: map[string]string{"bind": "0.0.0.0", "port": "18461", "secret": webhookTestSecret},
 	})
 	if err != nil {
 		t.Fatalf("Setup: %v", err)

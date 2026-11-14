@@ -1,0 +1,13 @@
+{
+  "id": "/subscriptions/__SUB_ID__/resourceGroups/__RG__",
+  "location": "__LOCATION__",
+  "managedBy": null,
+  "name": "__RG__",
+  "properties": {
+    "provisioningState": "Succeeded"
+  },
+  "tags": {
+    "agent-deck": "sandboxes"
+  },
+  "type": "Microsoft.Resources/resourceGroups"
+}

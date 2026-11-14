@@ -33,14 +33,21 @@ var codexOwnershipCache = struct {
 	bySocket map[string]codexOwnershipSnapshot
 }{bySocket: make(map[string]codexOwnershipSnapshot)}
 
-// StatusUpdatePass pins lazy Codex ownership evidence for an entire sweep,
-// even if that sweep outlives the TTL. Its zero value is ready for concurrent
-// workers. New bindings and refreshes by other passes remain visible. Create a
-// new pass for each sweep; do not retain it between sweeps.
+// StatusUpdatePass pins lazy Codex ownership evidence and one process-table
+// snapshot for an entire sweep, even if that sweep outlives the TTL. Its zero
+// value is ready for concurrent workers. New bindings and refreshes by other
+// passes remain visible. Create a new pass for each sweep; do not retain it
+// between sweeps.
 type StatusUpdatePass struct {
 	mu       sync.Mutex
 	bySocket map[string]codexOwnershipSnapshot
 	loading  map[string]chan struct{}
+	// tmux session listings per socket (see listedSessions).
+	listed  map[string]passSessionListing
+	listing map[string]chan struct{}
+
+	procsOnce sync.Once
+	procs     processSnapshot // read on first use; see processes
 }
 
 // UpdateStatus refreshes one instance using this pass's shared evidence.
@@ -137,7 +144,7 @@ func (i *Instance) codexExclusions(p *StatusUpdatePass) map[string]bool {
 	ownName := ""
 	if i.tmuxSession != nil {
 		socket = i.tmuxSession.SocketName
-		ownName = i.tmuxSession.Name
+		ownName = i.tmuxSession.TmuxName()
 	}
 	snapshot := p.codexOwnership(socket)
 	snapshot.claims.Lock()
@@ -169,9 +176,9 @@ func (i *Instance) recordCodexOwnership(id string) {
 	claims.Lock()
 	defer claims.Unlock()
 	if claims.updates != nil {
-		claims.updates[i.tmuxSession.Name] = id
+		claims.updates[i.tmuxSession.TmuxName()] = id
 	}
 	if claims.bySession != nil {
-		claims.bySession[i.tmuxSession.Name] = id
+		claims.bySession[i.tmuxSession.TmuxName()] = id
 	}
 }

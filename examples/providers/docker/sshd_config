@@ -1,0 +1,9 @@
+# Key auth only, for user dev only.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+AllowUsers dev
+X11Forwarding no

@@ -1,0 +1,1 @@
+To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code FAKE1234X to authenticate.

@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // A deliberately broken binary exits successfully for every command. The
@@ -18,9 +19,7 @@ func TestBrokenBinaryFails(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("run in Docker")
 	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Fatal("tmux required for functional evaluator tests")
-	}
+	testutil.RequireTmux(t) // functional evaluator tests drive real tmux
 	t.Setenv("FUNCCHECK_SOURCE_CHECKS", "0")
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "broken-agent-deck")
@@ -49,9 +48,7 @@ func TestBrokenBinaryFails(t *testing.T) {
 }
 
 func TestSandboxRejectsSocketOverrideAndDoesNotInheritIdentity(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Fatal("tmux required")
-	}
+	testutil.RequireTmux(t)
 	t.Setenv("AGENTDECK_SESSION_ID", "host-parent")
 	t.Setenv("CLAUDE_CONFIG_DIR", "/host/private-account")
 	t.Setenv("TMUX", "/host/private-socket,1,0")

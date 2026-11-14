@@ -721,7 +721,7 @@ func (i *Instance) buildDeepSeekCommand(baseCommand string) string {
 
 	envPrefix := i.buildEnvSourceCommand()
 	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
-		i.ID, shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
+		shellescape.Quote(i.ID), shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
 
 	// Passthrough: a custom command from the CLI or config that is not the bare
 	// binary name owns its own flags entirely.
@@ -961,7 +961,7 @@ func (i *Instance) buildDeepSeekResumeCommand() string {
 
 	envPrefix := i.buildEnvSourceCommand()
 	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
-		i.ID, shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
+		shellescape.Quote(i.ID), shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
 
 	if trimmed := strings.TrimSpace(i.Command); isDeepSeekPassthroughCommand(trimmed) {
 		return envPrefix + i.deepSeekHomeExport() + trimmed

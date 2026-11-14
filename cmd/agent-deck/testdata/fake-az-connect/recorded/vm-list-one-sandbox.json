@@ -1,0 +1,70 @@
+[
+  {
+    "additionalCapabilities": null,
+    "applicationProfile": null,
+    "availabilitySet": null,
+    "billingProfile": null,
+    "capacityReservation": null,
+    "diagnosticsProfile": null,
+    "evictionPolicy": null,
+    "extendedLocation": null,
+    "extensionsTimeBudget": null,
+    "fqdns": "",
+    "hardwareProfile": {
+      "vmSize": "Standard_B2s",
+      "vmSizeProperties": null
+    },
+    "host": null,
+    "hostGroup": null,
+    "id": "/subscriptions/__SUB_ID__/resourceGroups/__RG_UPPER__/providers/Microsoft.Compute/virtualMachines/adk-0123456789",
+    "identity": null,
+    "instanceView": null,
+    "licenseType": null,
+    "location": "__LOCATION__",
+    "macAddresses": "60-45-BD-12-34-56",
+    "name": "adk-0123456789",
+    "networkProfile": {
+      "networkInterfaces": [
+        {
+          "deleteOption": null,
+          "id": "/subscriptions/__SUB_ID__/resourceGroups/__RG_UPPER__/providers/Microsoft.Network/networkInterfaces/adk-0123456789-nic",
+          "primary": null,
+          "resourceGroup": "__RG_UPPER__"
+        }
+      ]
+    },
+    "osProfile": {
+      "adminUsername": "dev",
+      "computerName": "adk-0123456789"
+    },
+    "powerState": "VM running",
+    "priority": null,
+    "privateIps": "10.77.0.4",
+    "provisioningState": "Succeeded",
+    "publicIps": "192.0.2.10",
+    "resourceGroup": "__RG_UPPER__",
+    "storageProfile": {
+      "osDisk": {
+        "caching": "ReadWrite",
+        "createOption": "FromImage",
+        "deleteOption": "Delete",
+        "diskSizeGb": 64,
+        "managedDisk": {
+          "id": "/subscriptions/__SUB_ID__/resourceGroups/__RG_UPPER__/providers/Microsoft.Compute/disks/adk-0123456789-osdisk",
+          "resourceGroup": "__RG_UPPER__",
+          "storageAccountType": "Premium_LRS"
+        },
+        "name": "adk-0123456789-osdisk",
+        "osType": "Linux"
+      }
+    },
+    "tags": {
+      "agent-deck-provider": "azure-vm",
+      "agent-deck-sandbox": "adk-0123456789",
+      "agent-deck-ssh-user": "dev"
+    },
+    "type": "Microsoft.Compute/virtualMachines",
+    "vmId": "7d1f2c3b-0000-4000-8000-0000000000d1",
+    "zones": null
+  }
+]

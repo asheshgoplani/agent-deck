@@ -18,6 +18,28 @@ fixed navigation keys (`j`/`k`/`h`/`l`/`G`, jump-mode hints) stay Latin only,
 and in jump mode a Cyrillic letter falls through to its twin's action. Attached
 panes are untouched: they receive the raw bytes exactly as typed.
 
+### First run
+
+A fresh install (no `config.toml`, no sessions) opens a **Welcome** instead of
+the setup wizard. It shows once; `Esc` skips it and it does not come back.
+
+- It lists Claude Code, Codex, Gemini CLI and Pi as installed or not, with the
+  install command for each missing one, and offers a plain shell when none is
+  installed.
+- For Claude and Codex it shows whether you are signed in, from the tool's own
+  status command (`claude auth status`, `codex login status`; only the exit
+  code is read). `l` on a tool that is not signed in starts a session running
+  the tool's own login (`claude auth login`, `codex login`) and attaches you to it;
+  come back with `Ctrl+Q` and the Welcome confirms the sign-in. agent-deck never
+  reads or stores a token. The check uses the account a new session would use
+  (`[claude] default_account`).
+- `↑`/`↓` pick an agent, `Enter` opens the New Session dialog with it and this
+  folder filled in, and `Enter` again starts the session: two keys from the
+  Welcome to a running session.
+- After that first session, **What you can do** opens once. `Alt+W` ("Show me
+  around", `show_around`) opens it any time; `Tab` there goes to the agents and
+  sign-in page.
+
 ### Navigation
 
 | Key | Action |
@@ -74,6 +96,8 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `u` | Mark unread, idle -> waiting (**rebindable**) |
 | `a` | Quick approve — sends `1` to Claude (**rebindable**) |
 | `o` | Prompt session — send a one-line prompt without attaching (**rebindable**) |
+| `Q` | Queue a message for after the current turn (`queue_message`, **rebindable**) |
+| `C` | Inspect full context — everything the agent is being sent, ranked by cost (`context_inspector`, **rebindable**) |
 | `I` | Insert mode: keystrokes go straight to the selected session's pane until `Esc`; `Enter` submits. Insert mode is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft |
 | `y` | Toggle YOLO mode (**rebindable**) |
 | `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level at the parent's first child) |
@@ -82,6 +106,7 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `,` | Pin (cycles off -> top -> bottom -> off) |
 | `f` / `F` | Quick fork / fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi) (**rebindable**) |
 | `x` | Send output to another session (**rebindable**) |
+| `alt+l` | Hand a reference to another session: pick this one, move to the target, `Enter` (or `alt+l`) drops, `Esc` cancels. Types a one-line pointer to the picked session (title, id, path, status, `agent-deck session output <id> -q`) into the target's composer and never presses Enter. Group rows, the same session and remote sessions are refused in place; nothing moves (**rebindable**: `[hotkeys].session_ref`) |
 | `E` | Exec shell in sandbox container (**rebindable**) |
 | `H` | Open shell in session's worktree, split pane / window (**rebindable**) |
 | `p` | Edit multi-repo paths (**rebindable**) |
@@ -105,14 +130,16 @@ your drag as a selection gesture.
 | Key | Action |
 |-----|--------|
 | `c` | Copy last AI response (**rebindable**) |
-| `C` | Copy session info — repo / path / branch |
+| `B` | Copy session info — repo / path / branch (**rebindable**, `copy_info`) |
 | `V` | Copy visible terminal text, links included (**rebindable**) |
 | `Y` | Copy a fenced code block from output; opens a picker when there are several |
 | `Shift+drag` | Native terminal selection — bypasses mouse reporting |
 | `Option+drag` | Native terminal selection in iTerm2 |
 
-Note the family is only half-rebindable: `c` and `V` are `copy_output` and
-`copy_pane` under `[hotkeys]`, while `C` and `Y` are fixed.
+`c`, `B` and `V` are `copy_output`, `copy_info` and `copy_pane` under
+`[hotkeys]`; `Y` is fixed. Copy info moved from `C` to `B`: `C` now opens the
+context inspector (set `copy_info = "C"` and rebind `context_inspector` to get
+the old key back).
 
 All four copy paths use the same clipboard chain, falling back to OSC 52 so they
 work over SSH. If your terminal offers no selection bypass at all, you can turn
@@ -170,7 +197,11 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Ctrl+Y` | Install the available update now (`install_update`; runs `agent-deck update` on the terminal, see [Updates](#updates)) |
 | `Ctrl+T` | Restart agent-deck in place now (`restart_deck`; the new build starts with the same args, env and selection) |
 | `Alt+D` | Dead-letter events (list, inspect, retry, confirmed selected purge) |
+| `Alt+T` | Triggers panel — every launchd job, systemd unit, watcher and bridge that wakes a session (`triggers`, **rebindable**) |
 | `Ctrl+E` | Open feedback dialog |
+| `Z` | Report a problem or idea: a short form, then the full GitHub issue text, filed only after you press `y` (`report_problem`, **rebindable**) |
+| `Alt+W` | Show me around: "What you can do" (sessions, switching, send, conductor, remotes, each with its key), then `Tab` for your agents and sign-in (`show_around`, **rebindable**) |
+| `Alt+N` | What's new: this version's highlights and any of your reports it fixed, each with "Is it fixed for you?" (`y`/`n`, optional comment, then the exact public comment and the GitHub account that posts it; posted only after you press `y`, never while gh is not logged in). Also opens by itself on the first start after an update (`whats_new`, **rebindable**) |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |
 
 ### Worktree Shortcuts
@@ -214,18 +245,18 @@ completion content are never rendered.
 ### New Session (`n`)
 
 **Fields (order: Name → Tool → Model → Reasoning effort → Path):**
-- Session name (required)
+- Session name (optional: left empty, it is the folder name, made unique and cut to 50 characters; the empty field previews that exact name). With a worktree on, an empty name's branch is taken from that name
 - Command (claude/gemini/opencode/codex/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
 - Model ID (claude/codex/gemini/opencode): empty means the tool default; `↓` or `Space` opens the list of known IDs, or type any ID (CLI: `--model`)
 - Reasoning effort (claude/codex): `←`/`→` or `Space` cycles the levels (CLI: `--effort`)
 - Project path (required, supports `~/`)
 - Parent group (auto-selected)
-- Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, start query, and the account row (CLI: `--account`; hidden when no named accounts are configured)
+- Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, start query, and the account row (CLI: `--account`; hidden when no named accounts are configured; starts on `[claude].default_account`, labelled `(default)`, when one is set)
 - `[ Create session ]` button (last row)
 
-**Controls:** `Enter` next field on every row (inside the Claude options it steps row by row) | `Tab`/`Shift+Tab` and `↓`/`↑` move fields the same way | `Enter` on `[ Create session ]` or `Ctrl+S` anywhere creates | `Esc` back out of a list, then cancel
+**Controls:** `Enter` creates from any row with what is filled in | `Tab`/`Shift+Tab` and `↓`/`↑` move between rows (inside the Claude options row by row) | `↓`/`Space` open the model list, `Space`/`→` browse paths; while a list is open `Enter` picks | `Ctrl+S` creates too | `Esc` back out of a list, then cancel
 
-Enter-advances is the default (`[ui].new_session_enter_advances = true`): Enter never creates the session until you reach the Create button, so typing a name and pressing Enter through the form no longer launches a session before you have chosen the model, path, or options. The footer on every row says what Enter does there. Set `[ui].new_session_enter_advances = false` to restore the legacy behavior where Enter creates from any row; `Ctrl+S` creates in both modes.
+The common case is two keys: `n`, then `Enter` (this folder, the remembered tool, the selected group, the folder name as title). `N` on the home screen creates with the group's defaults without opening the dialog. If a required field is wrong (empty path, worktree without a valid branch, multi-repo with fewer than 2 paths), `Enter` moves to that field and shows why. A path that does not exist asks whether to create the folder; Cancel returns to the dialog with focus on Path, so a typo can be fixed. Set `[ui].new_session_enter_advances = true` to walk the form instead: Enter moves to the next row and only the `[ Create session ]` button or `Ctrl+S` creates.
 
 Pressing `n` on a remote group/session opens a remote-aware dialog (remote paths and group pre-filled); the session is created over SSH on the remote, never on localhost.
 
@@ -233,7 +264,7 @@ Claude New Session defaults are remembered in `$XDG_CONFIG_HOME/agent-deck/confi
 
 ### Edit Session (`Shift+P`)
 
-Edits the fields a session iterates on at runtime: Title, Harness (tool), Pin position, the account row (shown when `[profiles.<name>.*].config_dir` slots are configured for a supported harness), and for claude sessions Skip permissions, Auto mode, Extra args, Plugins.
+Edits the fields a session iterates on at runtime: Title, Harness (tool), Pin position, the account row (shown when `[profiles.<name>.*].config_dir` slots are configured for a supported harness), and for claude sessions Skip permissions, Auto mode, Extra args, Wait timer (take the recommended option after this long: `5m`, `off`, or empty for `[sessions] wait_timeout`; applies live), Plugins.
 
 **Controls:** `Tab`/`↓` `Shift+Tab`/`↑` move rows | `←`/`→` choose (pills) | `Space` toggle (checkboxes) | `Enter` save | `Esc` cancel. The footer says what the keys do on the focused row; on a changed harness or account row it reads "Enter switch (asks first)".
 
@@ -314,18 +345,17 @@ A harness or account change is saved on its own (not together with other edits) 
 
 ### Global Search (`G`)
 
-- Full content search across `~/.claude/projects/`
-- Regex + fuzzy matching
+- Full-text search of the Recall index (`recall.db`): Claude transcripts plus the other harnesses Recall reads (see `docs/recall.md`)
+- Same query as `agent-deck recall search`
 - Recency ranking
 - Split view: results + preview
 - `[/]` scroll preview
 - `Enter` create/jump to session
 
-**Config:**
+**Config:** `G` is off unless Recall is on (with Recall off it falls back to the local title search; see `docs/recall.md`):
 ```toml
-[global_search]
+[recall]
 enabled = true
-recent_days = 30
 ```
 
 ## Preview Pane

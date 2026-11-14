@@ -13,6 +13,7 @@ type Entry struct {
 	DisplayName    string   `json:"display_name"`
 	Binary         string   `json:"binary"`
 	VersionArgs    []string `json:"-"`
+	StatusArgs     []string `json:"-"` // own sign-in status command: exit 0 signed in, non-zero not; nil when none
 	InstallCommand string   `json:"install_command"`
 	LoginCommand   string   `json:"login_command"`
 	DocsURL        string   `json:"docs_url"`
@@ -33,11 +34,13 @@ type Override struct {
 var table = []Entry{
 	{Name: "claude", DisplayName: "Claude Code", Binary: "claude", VersionArgs: []string{"--version"},
 		InstallCommand: "curl -fsSL https://claude.ai/install.sh | bash",
-		LoginCommand:   "claude /login",
+		LoginCommand:   "claude auth login",
+		StatusArgs:     []string{"auth", "status"},
 		DocsURL:        "https://docs.anthropic.com/en/docs/claude-code/setup", Images: true},
 	{Name: "codex", DisplayName: "Codex", Binary: "codex", VersionArgs: []string{"--version"},
 		InstallCommand: "npm install -g @openai/codex",
 		LoginCommand:   "codex login",
+		StatusArgs:     []string{"login", "status"},
 		DocsURL:        "https://github.com/openai/codex"},
 	{Name: "gemini", DisplayName: "Gemini CLI", Binary: "gemini", VersionArgs: []string{"--version"},
 		InstallCommand: "npm install -g @google/gemini-cli",
@@ -64,16 +67,6 @@ func All(overrides map[string]Override) []Entry {
 		out = append(out, apply(e, overrides[e.Name]))
 	}
 	return out
-}
-
-// Lookup returns one entry with its override applied.
-func Lookup(name string, overrides map[string]Override) (Entry, bool) {
-	for _, e := range table {
-		if e.Name == name {
-			return apply(e, overrides[name]), true
-		}
-	}
-	return Entry{}, false
 }
 
 // Names lists the harness names, sorted.

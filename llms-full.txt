@@ -1,6 +1,11 @@
 # Agent Deck - Complete Documentation for AI Assistants
 
-This file contains complete documentation for AI/LLM consumption.
+This file contains documentation for AI/LLM consumption.
+
+It is a hand-assembled snapshot of README.md, skills/agent-deck/SKILL.md and
+skills/agent-deck/references/ (cli, config, troubleshooting, tui). It is not
+generated and can lag behind those files; when they disagree, the files in the
+repo are right. Run `agent-deck --version` for the installed version.
 
 **Discord:** https://discord.gg/e4xSs6NBN8
 
@@ -17,7 +22,7 @@ This file contains complete documentation for AI/LLM consumption.
 **Your AI agent command center**
 
 [![GitHub Stars](https://img.shields.io/github/stars/asheshgoplani/agent-deck?style=for-the-badge&logo=github&color=yellow&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/stargazers)
-[![Go Version](https://img.shields.io/badge/Go-1.26.9-00ADD8?style=for-the-badge&logo=go&labelColor=1a1b26)](https://go.dev)
+[![Go Version](https://img.shields.io/badge/Go-1.26.10-00ADD8?style=for-the-badge&logo=go&labelColor=1a1b26)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-9ece6a?style=for-the-badge&labelColor=1a1b26)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20WSL-7aa2f7?style=for-the-badge&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck)
 [![Latest Release](https://img.shields.io/github/v/release/asheshgoplani/agent-deck?style=for-the-badge&color=e0af68&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/releases)
@@ -100,7 +105,7 @@ Running many sessions? Socket pooling shares MCP processes across all sessions v
 
 ### Search
 
-Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `$` (error). Press `G` for global search across all Claude conversations.
+Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `&` (error). Press `$` for the Cost Dashboard and `G` for global search of the Recall index (needs `[recall] enabled`).
 
 ### Status Detection
 
@@ -120,6 +125,8 @@ Waiting sessions appear right in your tmux status bar. Press `Ctrl+b 1-6` to jum
 ```
 ⚡ [1] frontend [2] api [3] backend
 ```
+
+By default the session that started waiting most recently is `[1]`. To order the bar by the session you used most recently instead, like Alt+Tab, set `sort = "last_accessed"` under `[notifications]` in `config.toml` (default: `"waiting"`). Only visits through the agent-deck TUI count: attaching from its session list and jumping with the bar's `Ctrl+b` number keys. Attaching with the `agent-deck` CLI or the web UI does not change the order. `minimal = true` ignores `sort`.
 
 ### Git Worktrees
 
@@ -314,7 +321,7 @@ compatibility: claude, codex, opencode
 
 Terminal session manager for AI coding agents. Built with Go + Bubble Tea.
 
-**Version:** 0.8.98 | **Repo:** [github.com/asheshgoplani/agent-deck](https://github.com/asheshgoplani/agent-deck)
+**Repo:** [github.com/asheshgoplani/agent-deck](https://github.com/asheshgoplani/agent-deck)
 
 ## Script Path Resolution (IMPORTANT)
 
@@ -363,6 +370,7 @@ agent-deck session output "Project"
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session output <name>` | Get last response |
+| `agent-deck session ref <source> <target>` | Hand `<target>` a short reference to `<source>` in its composer (not sent; `--print` only prints) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck mcp list` | List available MCPs |
@@ -495,7 +503,7 @@ agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
 | Key | Action |
 |-----|--------|
 | `/` | Local search |
-| `G` | Global search (all Claude conversations) |
+| `G` | Global search (Recall index, needs `[recall] enabled`) |
 | `!@#$` | Filter by status (running/waiting/idle/error) |
 
 ### Global
@@ -587,7 +595,7 @@ env = { EXA_API_KEY = "key" }
 description = "Web search"
 ```
 
-See [config-reference.md](references/config-reference.md) for all options.
+See [config-reference.md](skills/agent-deck/references/config-reference.md) for all options.
 
 ## Troubleshooting
 
@@ -617,7 +625,7 @@ cat ~/.config/agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET"  # Sanitized
 3. Output of commands above
 4. Relevant log: `tail -100 ~/.agent-deck/logs/agentdeck_<session>_*.log`
 
-See [troubleshooting.md](references/troubleshooting.md) for detailed diagnostics.
+See [troubleshooting.md](skills/agent-deck/references/troubleshooting.md) for detailed diagnostics.
 
 ## Session Sharing
 
@@ -626,15 +634,15 @@ Share Claude sessions between developers for collaboration or handoff.
 **Use when:** User says "share session", "export session", "send to colleague", "import session"
 
 ```bash
-# Export current session to file (session-share is a sibling skill)
-$SKILL_DIR/../session-share/scripts/export.sh
+# Export current session to file (scripts ship in the agent-deck skill)
+$SKILL_DIR/scripts/session-share/export.sh
 # Output: ~/session-shares/session-<date>-<title>.json
 
 # Import received session
-$SKILL_DIR/../session-share/scripts/import.sh ~/Downloads/session-file.json
+$SKILL_DIR/scripts/session-share/import.sh ~/Downloads/session-file.json
 ```
 
-**See:** [session-share skill](../session-share/SKILL.md) for full documentation.
+**See:** [session-share.md](skills/agent-deck/references/session-share.md) for full documentation.
 
 ## Critical Rules
 
@@ -644,11 +652,11 @@ $SKILL_DIR/../session-share/scripts/import.sh ~/Downloads/session-file.json
 
 ## References
 
-- [cli-reference.md](references/cli-reference.md) - Complete CLI command reference
-- [config-reference.md](references/config-reference.md) - All config.toml options
-- [tui-reference.md](references/tui-reference.md) - TUI features and shortcuts
-- [troubleshooting.md](references/troubleshooting.md) - Common issues and bug reporting
-- [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
+- [cli-reference.md](skills/agent-deck/references/cli-reference.md) - Complete CLI command reference
+- [config-reference.md](skills/agent-deck/references/config-reference.md) - All config.toml options
+- [tui-reference.md](skills/agent-deck/references/tui-reference.md) - TUI features and shortcuts
+- [troubleshooting.md](skills/agent-deck/references/troubleshooting.md) - Common issues and bug reporting
+- [session-share.md](skills/agent-deck/references/session-share.md) - Export/import sessions for collaboration
 
 
 ---
@@ -701,9 +709,11 @@ agent-deck add -t "Research" -c claude --mcp exa --mcp firecrawl /tmp/r
 ### list - List sessions
 
 ```bash
-agent-deck list [--json] [--all]
+agent-deck list [--json] [--all] [--no-archived]
 agent-deck ls  # Alias
 ```
+
+`--no-archived` leaves archived sessions out before any status work (for pollers that only need live sessions). When the batched pane capture of a live `list --json` times out, the listing does not capture each pane on its own: those rows carry `status_source: "stale"` (status is the last observation or the default, substate may be absent), and `--stats` reports `captures_skipped`.
 
 ### remove - Remove session
 
@@ -976,7 +986,7 @@ config_dir = "~/.claude-work"   # Optional override for profile "work"
 |-----|------|---------|-------------|
 | `config_dir` | string | `~/.claude` | Claude config directory. Override with `CLAUDE_CONFIG_DIR` env. |
 | `profiles.<name>.claude.config_dir` | string | none | Profile-specific Claude config directory. Takes precedence over `[claude].config_dir` when that profile is active. |
-| `dangerous_mode` | bool | `false` | Skip Claude permission dialogs. Required for automation. |
+| `dangerous_mode` | bool | `false` on new installs; `true` on installs from before v1.16.34 | Skip Claude permission dialogs. Required for automation. Unset, an install that predates v1.16.34 keeps `true` (written into its config.toml once, with a one-time notice). |
 
 Config resolution order for Claude config dir:
 1. `CLAUDE_CONFIG_DIR` env var
@@ -1055,7 +1065,7 @@ notify_in_cli = true          # Show in CLI commands
 
 ## [global_search] Section
 
-Search across all Claude conversations.
+Settings for the old in-memory global search index. The TUI `G` key no longer reads this section: it searches the Recall index and is gated by `[recall] enabled` (see the `[recall]` section). The keys are still parsed and shown in the Settings panel.
 
 ```toml
 [global_search]
@@ -1068,7 +1078,7 @@ index_rate_limit = 20       # Files/second for indexing
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable `G` key global search. |
+| `enabled` | bool | `true` | Old global search switch. Does not gate `G` (use `[recall] enabled`). |
 | `tier` | string | `"auto"` | Strategy: `instant` (fast, more RAM), `balanced` (LRU cache). |
 | `memory_limit_mb` | int | `100` | Max memory for balanced tier. |
 | `recent_days` | int | `90` | Only search recent conversations. |
@@ -1097,7 +1107,9 @@ show_pool_status = true     # Show 🔌 indicator
 
 **Benefits:** 30 sessions x 5 MCPs = 150 processes -> 5 shared processes (90% memory savings).
 
-**Socket location:** `/tmp/agentdeck-mcp-{name}.sock`
+**Socket location:** `<data dir>/sockets/mcp-<name>-<id>.sock` (for example `~/.agent-deck/sockets/`), private to your user. `<id>` is a short digest of the MCP's `command`, `args` and `env`, so several config homes that pool the same name with a different definition (for example another token) each run their own process, and only an identical definition shares one. A long name is shortened to keep the path within the 104-byte unix socket limit. The log is `<data dir>/logs/mcppool/<name>-<id>_socket.log`.
+
+**Upgrading from a version with name-only sockets (`mcp-<name>.sock`):** sessions started before the upgrade keep that path in their MCP config. The pool also answers on `mcp-<name>.sock` while no other process does (the first definition of that name to start claims it), so those sessions reconnect without a restart. New sessions use the `mcp-<name>-<id>.sock` path. Restart an old session to move it to its own definition's socket. Sockets under `/tmp/agentdeck-mcp-*.sock` from old versions are ignored.
 
 ## [mcps.*] Section
 
@@ -1346,13 +1358,14 @@ max_lines = 2000
 
 ### Global Search Not Working
 
-Check config:
+`G` searches the Recall index (`recall.db`). It is off unless Recall is on:
 ```toml
-[global_search]
+[recall]
 enabled = true
 ```
 
-Also verify `~/.claude/projects/` exists and has content.
+Then check the index with `agent-deck recall status`. With Recall off, `G`
+falls back to the local title search. See `docs/recall.md`.
 
 ## Debugging
 
@@ -1406,60 +1419,19 @@ Prepare clear answers to:
 
 ### Step 3: Create GitHub Issue
 
-Go to: **https://github.com/asheshgoplani/agent-deck/issues/new**
+Blank issues are off in this repo, so use the **Bug report** form:
+**https://github.com/asheshgoplani/agent-deck/issues/new?template=bug.yml**
 
-Use this template:
+Its fields, filled from Steps 1 and 2:
 
-```markdown
-## Description
+- **agent-deck version**: output of `agent-deck version`
+- **OS and terminal**: OS, terminal, and `tmux -V`
+- **Steps to reproduce**: exact commands or TUI actions
+- **Expected vs actual**
+- **Logs (redacted)**: relevant log lines, `agent-deck status --json`, and a sanitized config
+- **Was this written with AI help?** and, if so, **which model**
 
-[Brief description of the issue]
-
-## Steps to Reproduce
-
-1. [First step]
-2. [Second step]
-3. [What happened]
-
-## Expected Behavior
-
-[What should have happened]
-
-## Environment
-
-- agent-deck version: [output of `agent-deck version`]
-- OS: [macOS/Linux/WSL]
-- tmux version: [output of `tmux -V`]
-
-## Debug Output
-
-<details>
-<summary>Status JSON</summary>
-
-```json
-[paste agent-deck status --json]
-```
-
-</details>
-
-<details>
-<summary>Config (sanitized)</summary>
-
-```toml
-[paste sanitized config]
-```
-
-</details>
-
-<details>
-<summary>Logs</summary>
-
-```
-[paste relevant log lines]
-```
-
-</details>
-```
+Questions and setup help go to [Discussions](https://github.com/asheshgoplani/agent-deck/discussions), not issues.
 
 ### Step 4: Follow Up
 
@@ -1584,13 +1556,13 @@ Complete reference for agent-deck Terminal UI features.
 | Key | Action |
 |-----|--------|
 | `/` | Local search (fuzzy) |
-| `G` | Global search (all Claude conversations) |
+| `G` | Global search (Recall index, needs `[recall] enabled`) |
 | `Tab` | Switch between local/global search |
 | `0` | Clear filter (show all) |
 | `!` | Filter: running only (toggle) |
 | `@` | Filter: waiting only (toggle) |
 | `#` | Filter: idle only (toggle) |
-| `$` | Filter: error only (toggle) |
+| `&` | Filter: error only (toggle) |
 
 ### Global
 
@@ -1672,18 +1644,17 @@ Complete reference for agent-deck Terminal UI features.
 
 ### Global Search (`G`)
 
-- Full content search across `~/.claude/projects/`
-- Regex + fuzzy matching
+- Full-text search of the Recall index (`recall.db`): Claude transcripts plus the other harnesses Recall reads (see `docs/recall.md`)
+- Same query as `agent-deck recall search`
 - Recency ranking
 - Split view: results + preview
 - `[/]` scroll preview
 - `Enter` create/jump to session
 
-**Config:**
+**Config:** `G` is off unless Recall is on (with Recall off it falls back to the local title search; see `docs/recall.md`):
 ```toml
-[global_search]
+[recall]
 enabled = true
-recent_days = 30
 ```
 
 ## Preview Pane

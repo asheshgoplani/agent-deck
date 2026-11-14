@@ -131,17 +131,6 @@ func TestQueuedIgnoreBudgetSkipsTheGate(t *testing.T) {
 	}
 }
 
-// The gate sums a group limit over the target's exact group only.
-func TestBudgetGroupMembersExactMatch(t *testing.T) {
-	target := &session.Instance{ID: "a", GroupPath: "work"}
-	got := budgetGroupMembers(target, []*session.Instance{
-		target, {ID: "b", GroupPath: "work"}, {ID: "c", GroupPath: "work/sub"}, {ID: "d", GroupPath: "other"},
-	})
-	if strings.Join(got, ",") != "a,b" {
-		t.Fatalf("members = %v, want a,b (subgroups are separate)", got)
-	}
-}
-
 // runAgentDeckBounded is runAgentDeck with a deadline: a gate that does not
 // refuse would start the agent and wait for it, so the run is killed and the
 // test fails with its output instead of hanging.

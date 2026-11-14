@@ -84,8 +84,21 @@ function WorkHead() {
       .catch(() => {})
   }
 
+  // #2680: phones hide the sidebar, so while a session is open the work head
+  // carries a visible way back to the Fleet session list (CSS shows it only
+  // at <=720px). It switches the tab and keeps the selection, so the
+  // terminal stays attached and the Session tab returns to it.
+  const showBack = !!selected && activeTabSignal.value !== 'fleet'
+
   return html`
     <div class="work-head">
+      ${showBack && html`
+        <button type="button" class="mob-back" data-testid="mobile-back-to-list"
+                aria-label="Back to session list" title="Back to session list"
+                onClick=${() => { activeTabSignal.value = 'fleet' }}>
+          <${Icon} d=${ICONS.chevL} size=${14}/><span>Sessions</span>
+        </button>
+      `}
       <div class="path">
         <span class=${`kind ${session.kind || ''}`}>${kindLabel}</span>
         ${profile && html`<span class="seg">${profile} /</span>`}

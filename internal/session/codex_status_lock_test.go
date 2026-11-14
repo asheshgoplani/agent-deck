@@ -40,7 +40,7 @@ func TestCodexBootstrapWalkDoesNotHoldStatusLock(t *testing.T) {
 				<-release
 				return filepath.WalkDir(root, fn)
 			}
-			codexPaneProcessPIDs = func(*Instance) ([]int, error) { return nil, nil }
+			codexPaneProcessPIDs = func(*Instance, *StatusUpdatePass) ([]int, error) { return nil, nil }
 			t.Cleanup(func() { codexWalkDir, codexPaneProcessPIDs = origWalk, origPIDs })
 
 			inst := &Instance{ID: "issue-2674", Tool: "codex", Status: StatusRunning,

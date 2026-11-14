@@ -10,6 +10,9 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+// switchAccountExecute is session.SwitchAccount, a seam for tests.
+var switchAccountExecute = session.SwitchAccount
+
 // handleSessionSwitchAccount switches a Claude session to another named
 // account (#924) and migrates the conversation file into the target account's
 // config dir, so the restarted session resumes with full context. The
@@ -46,6 +49,10 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		fmt.Println("(\"settle <title>: ok|FAILED|STOPPED ...\"; JSON: \"settle\"). The exit code stays 0")
 		fmt.Println("for a completed switch; --settle-strict exits 4 (3: stopped at a prompt) when the")
 		fmt.Println("settle is not healthy. --no-settle skips it.")
+		fmt.Println()
+		fmt.Println("Run from inside the session it targets, the switch is handed to a detached")
+		fmt.Println("agent-deck (the restart ends the calling pane): the command prints that")
+		fmt.Println("process's pid and log file and exits 0; the switch's own result is in the log.")
 		fmt.Println()
 		fmt.Println("Claude Code may key one working directory under several project directories")
 		fmt.Println("(the path as typed, its macOS /private form, its realpath). Every copy of the")
@@ -101,12 +108,24 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
+	// #2897: from inside the target, the switch's first stop ends this
+	// process; hand it to a detached child. A refusal or a no-op stops
+	// nothing, so those still answer here.
+	handOff := true
+	if callerRunsInsideTarget(inst) {
+		preview := session.PreviewSwitch(userConfig, inst, session.SwitchPreviewTarget{Harness: inst.Tool, Account: account})
+		handOff = preview.Refusal == nil && preview.TargetAccount != inst.Account
+	}
+	if handOff && handOffIfSelfTarget(out, profile, "switch-account", args, inst) {
+		return
+	}
+
 	// The tree the restart replaces; settle waits for it to be gone.
 	var oldPIDs []int
 	if !*noRestart && !*noSettle {
 		oldPIDs = session.SnapshotPaneProcesses(inst)
 	}
-	result, switchErr := session.SwitchAccount(userConfig, inst, account, session.AccountSwitchOptions{
+	result, switchErr := switchAccountExecute(userConfig, inst, account, session.AccountSwitchOptions{
 		NoRestart:          *noRestart,
 		Storage:            storage,
 		ArchiveDestination: *archiveDestination,

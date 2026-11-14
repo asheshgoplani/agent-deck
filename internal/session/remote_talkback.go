@@ -635,7 +635,7 @@ func SaveRemoteCursor(remote, parent string, c RemoteCursor) error {
 		return err
 	}
 	path := RemoteCursorPath(remote, parent)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	lock, err := AcquireConfigFileLockTimeout(path, inboxLockWait)
@@ -643,7 +643,7 @@ func SaveRemoteCursor(remote, parent string, c RemoteCursor) error {
 		return fmt.Errorf("lock cursor %s: %w", filepath.Base(path), err)
 	}
 	defer lock.Release()
-	return writeFileDurable(path, append(data, '\n'), 0o644)
+	return writeFileDurable(path, append(data, '\n'), 0o600)
 }
 
 // ListRemoteCursors returns every saved cursor, or those of one remote,
@@ -743,6 +743,7 @@ const (
 	RemoteTalkbackStageWriter  = "writer"
 	RemoteTalkbackStageStalled = "stalled"
 	RemoteTalkbackStageIngest  = "ingest"
+	RemoteTalkbackStageProfile = "profile"
 )
 
 // RemoteTalkbackError is a failed drain with the stage it failed at.
@@ -773,6 +774,10 @@ type RemoteTalkbackDeps struct {
 	WriterProbe   func(ctx context.Context) (WriterStatus, error)
 	Parent        func() (*Instance, string)
 	Wake          func(parent *Instance, profile string, ev TransitionNotificationEvent)
+
+	// RequireSameProfile refuses a receiving parent of another profile
+	// (#2831, [remotes.<name>] require_same_profile).
+	RequireSameProfile bool
 }
 
 // RemoteTalkbackResult is one drain's outcome. CursorBefore/After are nil
@@ -793,10 +798,11 @@ type RemoteTalkbackResult struct {
 func SSHTalkbackDeps(name string, rc RemoteConfig) RemoteTalkbackDeps {
 	runner := NewSSHRunner(name, rc)
 	return RemoteTalkbackDeps{
-		RemoteProfile: rc.GetProfile(),
-		FetchAfter:    runner.FetchRecordsAfter,
-		FetchAll:      runner.FetchPendingRecords,
-		WriterProbe:   runner.FetchWriterStatus,
+		RemoteProfile:      rc.GetProfile(),
+		RequireSameProfile: rc.RequireSameProfile,
+		FetchAfter:         runner.FetchRecordsAfter,
+		FetchAll:           runner.FetchPendingRecords,
+		WriterProbe:        runner.FetchWriterStatus,
 	}
 }
 
@@ -811,6 +817,21 @@ func RunRemoteTalkback(ctx context.Context, remote, targetID string, deps Remote
 	if remoteProfile == "" {
 		return res, &RemoteTalkbackError{Stage: RemoteTalkbackStageFetch,
 			Err: fmt.Errorf("remote %s: no remote profile to scope the drain to", remote)}
+	}
+	if deps.RequireSameProfile {
+		// Fail closed: no process-profile fallback when the parent's is unknown.
+		local := ""
+		if deps.Parent != nil {
+			_, local = deps.Parent()
+		}
+		if local = strings.TrimSpace(local); local == "" {
+			return res, &RemoteTalkbackError{Stage: RemoteTalkbackStageProfile,
+				Err: fmt.Errorf("remote %s requires the same profile: the receiving profile of %s is unknown", remote, targetID)}
+		}
+		if local != remoteProfile {
+			return res, &RemoteTalkbackError{Stage: RemoteTalkbackStageProfile,
+				Err: fmt.Errorf("remote %s requires the same profile: %s is in profile %q, the remote's is %q", remote, targetID, local, remoteProfile)}
+		}
 	}
 	cursor, cursorFound, cerr := LoadRemoteCursor(remote, targetID)
 	if cerr != nil {

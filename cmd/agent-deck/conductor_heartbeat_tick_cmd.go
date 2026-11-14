@@ -59,10 +59,13 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 			in.InboxError = in.InboxError || err != nil
 			continue
 		}
-		// An archived session's pane is gone on purpose; counting it would
-		// report every archived session as an error on every tick.
-		if inst.IsArchived() || inst.ResolveConductorName() != "" ||
+		if inst.ResolveConductorName() != "" ||
 			(inst.GroupPath != name && !strings.HasPrefix(inst.GroupPath, name+"/")) {
+			continue
+		}
+		// Archived children neither count nor wake the conductor, as in
+		// statusInstances. Their completion records still arrive via the inbox.
+		if inst.IsArchived() {
 			continue
 		}
 		_ = inst.UpdateStatus()
@@ -73,8 +76,18 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 
 	msg, next := session.BuildHeartbeatTick(in, prev)
 	if *commitMessage != "" {
+		// The send being committed may itself have drained the inbox
+		// (#2944), so prefer the state the printing tick recorded.
+		committed, err := session.CommitHeartbeatTickPending(name, *commitMessage)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "heartbeat-tick: save state: %v\n", err)
+			exitCLI(1)
+		}
+		if committed {
+			return
+		}
 		if msg != *commitMessage {
-			fmt.Fprintln(os.Stderr, "heartbeat-tick: inputs changed before commit; next tick will retry")
+			fmt.Fprintln(os.Stderr, "heartbeat-tick: message is not the last printed tick; state not saved")
 			exitCLI(1)
 		}
 		if err := session.SaveHeartbeatTickState(name, next); err != nil {
@@ -89,6 +102,9 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 		}
 	}
 	if msg != "" {
+		if err := session.SaveHeartbeatTickPending(name, msg, next); err != nil {
+			fmt.Fprintf(os.Stderr, "heartbeat-tick: save pending state: %v\n", err)
+		}
 		fmt.Println(msg)
 	}
 }

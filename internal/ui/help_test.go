@@ -12,7 +12,7 @@ import (
 func TestHelpOverlayQuickStartUsesCanonicalRecoveryAndDetachNames(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(100, 120)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 
 	view := overlay.View()
 	for _, want := range []string{"QUICK START", "R", "Restart selected session", "Ctrl+Q", "Detach from session"} {
@@ -59,7 +59,7 @@ func TestHelpOverlayShowsNotesShortcutWhenEnabled(t *testing.T) {
 
 	overlay := NewHelpOverlay()
 	overlay.SetSize(100, 120) // tall enough for the SESSIONS list after the #2058 navigation rows
-	overlay.Show()
+	overlay.ShowAll()         // ASK-211: ? opens on 5 keys; these keys are in the full list
 
 	view := overlay.View()
 	if !strings.Contains(view, "Edit notes") {
@@ -73,7 +73,7 @@ func TestHelpOverlayShowsNotesShortcutWhenEnabled(t *testing.T) {
 func TestHelpOverlayShowsArchiveKeys(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(100, 120) // tall enough to render the full SESSIONS section
-	overlay.Show()
+	overlay.ShowAll()         // ASK-211: ? opens on 5 keys; these keys are in the full list
 
 	view := overlay.View()
 	for _, want := range []string{"Archive session", "Unarchive session", "Toggle archived view"} {
@@ -153,7 +153,7 @@ func TestWrapWithHangingIndent_ZeroOrNegativeWidth_ReturnsInput(t *testing.T) {
 func TestHelpOverlayShowsCopySection(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(100, 200) // tall enough to render every section
-	overlay.Show()
+	overlay.ShowAll()         // ASK-211: ? opens on 5 keys; these keys are in the full list
 
 	view := overlay.View()
 
@@ -187,7 +187,7 @@ func TestHelpOverlayShowsCopySection(t *testing.T) {
 func TestHelpOverlayShowsYoloToggle(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(100, 200)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 
 	if view := overlay.View(); !strings.Contains(view, "Toggle YOLO mode") {
 		t.Fatalf("help overlay should document the yolo toggle, got %q", view)
@@ -204,7 +204,7 @@ func TestHelpOverlayWrappedKeyColumnKeepsAlignmentAndSeparator(t *testing.T) {
 	// that wraps across rows is never split across a scroll-page boundary.
 	overlay := NewHelpOverlay()
 	overlay.SetSize(200, 300)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 
 	view := overlay.View()
 
@@ -245,7 +245,7 @@ func TestHelpOverlayWrappedKeyColumnKeepsAlignmentAndSeparator(t *testing.T) {
 func TestHelpOverlayMoreBelowClearsAtTrueEnd(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(200, 60)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 
 	// Scroll far past the end, as "j" held down would.
 	for i := 0; i < 200; i++ {
@@ -279,7 +279,7 @@ func TestHelpOverlayMoreBelowClearsAtTrueEnd(t *testing.T) {
 func TestHelpOverlayMRUKeys_Golden(t *testing.T) {
 	overlay := NewHelpOverlay()
 	overlay.SetSize(100, 120)
-	overlay.Show()
+	overlay.ShowAll() // ASK-211: ? opens on 5 keys; these keys are in the full list
 
 	view := stripAnsi(overlay.View())
 	lines := strings.Split(view, "\n")

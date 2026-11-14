@@ -61,19 +61,26 @@ type Router struct {
 // Keys starting with "*@" are treated as wildcard domain rules;
 // all other keys are treated as exact email rules.
 func NewRouter(clients map[string]ClientEntry) *Router {
-	r := &Router{
-		clients:   make(map[string]ClientEntry, len(clients)),
-		wildcards: make(map[string]ClientEntry),
-	}
+	r := &Router{}
+	r.clients, r.wildcards = buildRouteTables(clients)
+	return r
+}
+
+// buildRouteTables splits clients into exact and wildcard tables. Keys are
+// lowercased so Match is case-insensitive: mail providers treat addresses
+// that way and Gmail passes the From header's case through unchanged.
+func buildRouteTables(clients map[string]ClientEntry) (exact, wild map[string]ClientEntry) {
+	exact = make(map[string]ClientEntry, len(clients))
+	wild = make(map[string]ClientEntry)
 	for key, entry := range clients {
+		key = strings.ToLower(key)
 		if strings.HasPrefix(key, "*@") {
-			domain := strings.TrimPrefix(key, "*@")
-			r.wildcards[domain] = entry
+			wild[strings.TrimPrefix(key, "*@")] = entry
 		} else {
-			r.clients[key] = entry
+			exact[key] = entry
 		}
 	}
-	return r
+	return exact, wild
 }
 
 // LoadClientsJSON reads a clients.json file from disk and returns the parsed entries.
@@ -117,6 +124,8 @@ func (r *Router) Match(sender string) *RouteResult {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	sender = strings.ToLower(sender)
+
 	// 1. Exact match
 	if entry, ok := r.clients[sender]; ok {
 		return &RouteResult{
@@ -150,15 +159,7 @@ func (r *Router) Match(sender string) *RouteResult {
 // before acquiring the write lock, then swaps both under a single lock (D-12/D-16).
 // A nil input is treated as an empty map (never assigns nil to internal fields, D-15/Pitfall 5).
 func (r *Router) Reload(newClients map[string]ClientEntry) {
-	newExact := make(map[string]ClientEntry)
-	newWild := make(map[string]ClientEntry)
-	for k, v := range newClients {
-		if strings.HasPrefix(k, "*@") {
-			newWild[strings.TrimPrefix(k, "*@")] = v
-		} else {
-			newExact[k] = v
-		}
-	}
+	newExact, newWild := buildRouteTables(newClients)
 	r.mu.Lock()
 	r.clients = newExact
 	r.wildcards = newWild

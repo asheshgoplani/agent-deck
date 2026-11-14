@@ -105,7 +105,7 @@ func stubCodexPaneOpenPaths(t *testing.T, paths []string, err error) {
 	t.Helper()
 	restore := codexPaneOpenPaths
 	t.Cleanup(func() { codexPaneOpenPaths = restore })
-	codexPaneOpenPaths = func(*Instance) ([]string, error) { return paths, err }
+	codexPaneOpenPaths = func(*Instance, *StatusUpdatePass) ([]string, error) { return paths, err }
 }
 
 func TestLiveCodexThreadID(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -63,6 +64,10 @@ type hookPayload struct {
 	TurnID               json.RawMessage `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
 	LastAssistantMessage json.RawMessage `json:"last_assistant_message"` // Claude Stop
 	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
+	Settles              json.RawMessage `json:"settles"`                // pi: the capability bit, sent with run_id by a v4+ extension (agent_settled itself is v3+)
+	RunID                json.RawMessage `json:"run_id"`                 // pi: the run token minted at agent_start
+	ToolName             json.RawMessage `json:"tool_name"`              // PermissionRequest / PreToolUse
+	ToolInput            json.RawMessage `json:"tool_input"`             // PermissionRequest / PreToolUse
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
 	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
@@ -159,6 +164,7 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 	entry := session.CommsSpoolEntry{
 		Harness: harness, Event: p.HookEventName, Edge: edge, Instance: instanceID,
 		SessionID: sessionID, TurnID: strings.TrimSpace(rawString(p.TurnID)), Text: text, Prompt: prompt,
+		RunID:          strings.TrimSpace(rawString(p.RunID)),
 		TranscriptPath: transcript, Cwd: strings.TrimSpace(p.Cwd), TSignal: time.Now().UnixMilli(),
 	}
 	if edge == session.CommsEdgeStatus {
@@ -195,7 +201,30 @@ type hookStatusFile struct {
 	CodexCompletedSequence   uint64 `json:"codex_completed_sequence,omitempty"`
 	HookGeneration           string `json:"hook_generation,omitempty"`
 	Sequence                 uint64 `json:"sequence,omitempty"`
-	InitialMessagePending    bool   `json:"initial_message_pending,omitempty"`
+	// TurnSeq counts the instance's turn edges (UserPromptSubmit and Stop),
+	// one per edge, for the life of the hook file (#3012). Every write carries
+	// it forward under the status lock, so a /clear, a compaction or a new
+	// process's SessionStart never loses it, and it does not depend on the
+	// [health] event history. A file written before it existed reads as 0.
+	TurnSeq uint64 `json:"turn_seq,omitempty"`
+	// Settles is the writer's capability bit (a v4+ extension: it sends
+	// agent_settled keyed by run; v3 sends agent_settled without the bit) and
+	// PiRunID the run token the extension minted at agent_start, both from the
+	// turn_start and turn_end payloads; an older extension sends neither. PiSettle* are a run's
+	// identity, merged in by its agent_settled; every other write rebuilds the
+	// file, so the next turn_start erases them.
+	Settles bool   `json:"settles,omitempty"`
+	PiRunID string `json:"pi_run_id,omitempty"`
+	// PiOrphanRuns lists settles-capable runs that never settled (aborted, or
+	// ended unsettled) and were overwritten by a newer run's status, oldest first,
+	// at most piOrphanRunsMax. Every pi write carries it forward, so no write can
+	// erase an entry; the daemon emits each run once under its own run key.
+	PiOrphanRuns          []piOrphanRun `json:"pi_orphan_runs,omitempty"`
+	piSource              bool          // set by the writer: a pi-sourced write, run fields or not
+	PiSettleTurnID        string        `json:"pi_settle_turn_id,omitempty"`
+	PiSettleSessionID     string        `json:"pi_settle_session_id,omitempty"`
+	PiSettledAt           int64         `json:"pi_settled_at,omitempty"`
+	InitialMessagePending bool          `json:"initial_message_pending,omitempty"`
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). omitempty so ordinary Stops
 	// (no sentinel) leave the fields absent, which the daemon reads as
@@ -334,6 +363,7 @@ func handleHookHandler() {
 
 // Capture ordering before reading stdin or doing any event-specific work.
 func handleHookHandlerReceivedAt(receivedAt time.Time) {
+	startHookDeadline()
 	instanceID := os.Getenv("AGENTDECK_INSTANCE_ID")
 	if instanceID == "" {
 		// No instance ID means this Claude session isn't managed by agent-deck.
@@ -366,6 +396,13 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 		logBgWorkerHookDropOnce(instanceID, bgSessionID, payload.HookEventName)
 		return
 	}
+	// Agent activity tracing (ASK-129): one redacted spool line, no SQLite,
+	// errors ignored; a no-op unless [trace] level / AGENTDECK_TRACE is on.
+	// Before the PreToolUse sync gate: tracing records every tool edge it is
+	// given, the gate only protects the status file's ordering. After the
+	// background-worker drop (#2683): those hooks belong to no pane, so a
+	// trace span keyed on this instance would misattribute them too.
+	spoolTraceFromHook(instanceID, data, receivedAt)
 	if payload.HookEventName == "PreToolUse" && os.Getenv(session.PreToolHookSyncMarkerEnv) != "1" {
 		// An old async hook can first be scheduled after a newer Stop or
 		// permission event. No payload timestamp can recover that order.
@@ -388,6 +425,25 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// UserPromptSubmit, pi agent_settled).
 	spoolCommsFromHook(instanceID, payload)
 
+	// Turn origin (standing orders): a Claude prompt records whether an
+	// order or a heartbeat started this turn; the turn's Stop clears it,
+	// unless the Stop is blocked below and the same turn goes on.
+	stopBlocked := false
+	switch claudeTurnEdge(payload) {
+	case "prompt":
+		if err := session.RecordTurnOrigin(instanceID, rawString(payload.Prompt)); err != nil {
+			hookHandlerLog.Warn("turn_origin_write_failed", slog.String("error", err.Error()))
+		}
+	case "start":
+		session.ClearTurnOrigin(instanceID)
+	case "stop":
+		defer func() {
+			if !stopBlocked {
+				session.ClearTurnOrigin(instanceID)
+			}
+		}()
+	}
+
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)
 
@@ -403,7 +459,10 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	}
 
 	if status == "" {
-		// Unknown or unhandled event, nothing to write
+		if payload.Source == "pi" && normalizeHookEventKey(payload.HookEventName) == "agentsettled" {
+			mergePiSettle(instanceID, payload)
+		}
+		// Unknown or unhandled event, nothing else to write
 		return
 	}
 
@@ -426,7 +485,11 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	if isStopHookEvent(payload.HookEventName) {
 		scan = detectDoneSentinel(data)
 	}
-	writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt)
+	var pi piRunInfo
+	if payload.Source == "pi" {
+		pi = piRunInfo{Settles: rawBool(payload.Settles), RunID: strings.TrimSpace(rawString(payload.RunID)), Source: true}
+	}
+	writeHookStatusFull(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt, pi)
 	if payload.HookEventName == "PreToolUse" {
 		// This high-frequency edge only publishes activity. Lifecycle hooks
 		// still own metadata reconciliation, costs, and Recall indexing.
@@ -460,8 +523,16 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// that exits with no decision falls through to Claude Code's default,
 	// which denies in UI-less contexts. Status-tracking behavior above is
 	// unchanged.
-	if normalizeHookEventKey(payload.HookEventName) == "permissionrequest" && parentIsDSP() {
-		fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+	//
+	// A turn started by a standing order or a heartbeat has nobody to answer
+	// the prompt: it is denied at once (before the DSP allow) and the owner
+	// gets a NEED, instead of the conductor waiting forever.
+	if normalizeHookEventKey(payload.HookEventName) == "permissionrequest" {
+		if origin := session.LoadTurnOrigin(instanceID); origin != "" {
+			denyUnattendedPermission(instanceID, origin, payload)
+		} else if parentIsDSP() {
+			fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+		}
 	}
 
 	// Conductor fleet snapshot: on the Claude turn-start edges (UserPromptSubmit,
@@ -534,6 +605,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 		if dl, ledgerOK := session.LedgerStopDecision(instanceID, resolveStopHookActive(payload)); ledgerOK {
 			printed := false
 			if dl.Blocked {
+				stopBlocked = true
 				if out, mErr := json.Marshal(dl.Decision); mErr == nil {
 					_, err := fmt.Println(string(out))
 					printed = err == nil
@@ -543,6 +615,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 			return
 		}
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
+			stopBlocked = true
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
 				// A Stop-hook block buys the parent another turn: a machine
@@ -620,6 +693,24 @@ func writeHookStatusReceivedAt(instanceID, status, sessionID, event, cwd string,
 // writeHookStatusReceivedAtPlatform also records the payload's platform
 // (Hermes extra.platform), used to keep delegate events from binding.
 func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time) {
+	writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform, scan, receivedAt, piRunInfo{})
+}
+
+// piRunInfo is what a pi extension's turn_start and turn_end say about their
+// writer and run: the capability bit and the run token.
+type piRunInfo struct {
+	Settles bool
+	RunID   string
+	Source  bool // the write comes from the pi extension, lifecycle writes included
+}
+
+// rawBool reads a leniently decoded field as a bool (false for anything else).
+func rawBool(raw json.RawMessage) bool {
+	var b bool
+	return json.Unmarshal(raw, &b) == nil && b
+}
+
+func writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time, pi piRunInfo) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -643,6 +734,9 @@ func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd
 		Timestamp: time.Now().Unix(),
 		Cwd:       strings.TrimSpace(cwd),
 		Platform:  platform,
+		Settles:   pi.Settles,
+		PiRunID:   pi.RunID,
+		piSource:  pi.Source,
 	}
 	if os.Getenv("AGENTDECK_TOOL") == "hermes" && session.HermesHookRecordsOwnSession(event, platform, sessionID) {
 		statusFile.hermesOwnedSessionID = sessionID
@@ -659,13 +753,145 @@ func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd
 	writeHookStatusFile(instanceID, statusFile, true)
 }
 
+// mergePiSettle records a pi run's identity in the status file its turn_end
+// wrote. The settle is no status edge: status, event and timestamps stay as they
+// were, so the v2 turn_end contract is intact, and only the identity fields are
+// added. The next turn_start rebuilds the file and erases them. Without a status
+// file (the settle came first) there is nothing to merge into.
+func mergePiSettle(instanceID string, p hookPayload) {
+	hooksDir := getHooksDir()
+	if err := os.MkdirAll(hooksDir, 0700); err != nil {
+		return
+	}
+	// The status lock is held from the read through the write: a turn_start
+	// that lands in between would otherwise be overwritten by this stale copy.
+	lock, err := os.OpenFile(filepath.Join(hooksDir, filepath.Base(instanceID)+".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return
+	}
+	defer closeChecked(lock)
+	if err := lockHookStatus(lock, false); err != nil {
+		return
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+
+	data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json"))
+	if err != nil {
+		return
+	}
+	var current hookStatusFile
+	if json.Unmarshal(data, &current) != nil || current.Status == "" {
+		return
+	}
+	// Merge only into the turn_end this settle belongs to: a newer run's file
+	// (a turn_start or a session_start won), another session's or another run's
+	// is left alone.
+	sessionID := strings.TrimSpace(p.SessionID)
+	runID := strings.TrimSpace(rawString(p.RunID))
+	if current.Event != "turn_end" || (current.SessionID != "" && sessionID != "" && current.SessionID != sessionID) ||
+		(current.PiRunID != "" && runID != "" && current.PiRunID != runID) {
+		return
+	}
+	current.PiSettleTurnID = strings.TrimSpace(rawString(p.TurnID))
+	current.PiSettleSessionID = sessionID
+	current.PiSettledAt = time.Now().UnixMilli()
+	writeHookStatusFileLocked(instanceID, current, false, true)
+}
+
+// piOrphanRunsMax bounds the list: a fifth unsettled run drops the oldest.
+const piOrphanRunsMax = session.PiOrphanRunsMax
+
+// piOrphanRun is one carried run; TurnEndNS is its turn_end's received time when
+// it had one, and Settled whether its settle had merged (the daemon may not have
+// polled it yet).
+type piOrphanRun struct {
+	RunID     string `json:"run_id"`
+	TurnEndNS int64  `json:"turn_end_ns,omitempty"`
+	Settled   bool   `json:"settled,omitempty"`
+	AtNS      int64  `json:"at_ns,omitempty"` // when it was first carried
+}
+
+// carryOrphanedPiRuns gives a pi write the list of previous runs the old file held,
+// plus the old file's run itself when this write starts a different run or a
+// lifecycle (turn_start, session_start, session_shutdown), settled or not: the
+// daemon cannot emit a run the file no longer names, and it may not have polled a
+// settle yet. The run being written is never its own entry; the persisted pi-run
+// key keeps a carried run from being emitted twice.
+func carryOrphanedPiRuns(hooksDir, instanceID string, statusFile *hookStatusFile) {
+	data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json"))
+	if err != nil {
+		return
+	}
+	var prev hookStatusFile
+	if json.Unmarshal(data, &prev) != nil {
+		return
+	}
+	list := append([]piOrphanRun(nil), prev.PiOrphanRuns...)
+	for _, o := range statusFile.PiOrphanRuns { // a settle merge already holds the list it read
+		dup := false
+		for _, e := range list {
+			dup = dup || e.RunID == o.RunID
+		}
+		if !dup {
+			list = append(list, o)
+		}
+	}
+	switch statusFile.Event {
+	case "turn_start", "session_start", "session_shutdown":
+	default:
+		prev.Settles = false // only these writes can overwrite a run
+	}
+	if prev.Settles && prev.PiRunID != "" && prev.PiRunID != statusFile.PiRunID {
+		entry := piOrphanRun{RunID: prev.PiRunID, Settled: prev.PiSettleTurnID != "" || prev.PiSettledAt != 0}
+		if prev.Event == "turn_end" {
+			entry.TurnEndNS = prev.ReceivedAt
+		}
+		list = append(list, entry)
+	}
+	now := time.Now()
+	kept := list[:0]
+	for _, e := range list {
+		if e.AtNS == 0 {
+			e.AtNS = now.UnixNano()
+		}
+		ref := e.AtNS
+		if e.TurnEndNS > 0 {
+			ref = e.TurnEndNS
+		}
+		// Older than the consumed-key retention: its key may be pruned, so it
+		// would re-emit; drop it.
+		if e.RunID != statusFile.PiRunID && now.Sub(time.Unix(0, ref)) <= session.ConsumedTurnsRetention {
+			kept = append(kept, e)
+		}
+	}
+	if len(kept) > piOrphanRunsMax {
+		kept = kept[len(kept)-piOrphanRunsMax:]
+	}
+	statusFile.PiOrphanRuns = kept
+}
+
 func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnchor bool) bool {
+	return writeHookStatusFileLocked(instanceID, statusFile, mutateAnchor, false)
+}
+
+// writeHookStatusFileLocked is writeHookStatusFile for a caller that already
+// holds the instance's status lock (held true).
+func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mutateAnchor, held bool) bool {
 	hooksDir := getHooksDir()
 	generation := strings.TrimSpace(os.Getenv("AGENTDECK_HOOK_GENERATION"))
-	if generation != "" || statusFile.ReceivedAt != 0 {
+	// Every write takes the status lock: turn_seq is read from the previous
+	// file and written back, so an unlocked write could lose an increment.
+	if !held {
 		lockPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".lock")
 		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
+			// The status file cannot be written either: say so, as the
+			// write below would have.
+			hookHandlerLog.Warn("hook_status_write_failed",
+				slog.String("path", lockPath),
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 			return false
 		}
 		defer closeChecked(lock)
@@ -674,15 +900,28 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 		}
 		defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 	}
+	if statusFile.piSource || (statusFile.Settles && statusFile.PiRunID != "") {
+		carryOrphanedPiRuns(hooksDir, instanceID, &statusFile)
+	}
 	// Compare under the same lock as publication, including when no launch
 	// generation is present. A delayed tool must not erase a newer lifecycle
 	// event. Other harnesses retain their existing publication semantics.
-	if statusFile.Event == "PreToolUse" && statusFile.ReceivedAt != 0 {
-		var previous hookStatusFile
-		data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json"))
-		if err == nil && json.Unmarshal(data, &previous) == nil && previous.ReceivedAt >= statusFile.ReceivedAt {
-			return false
-		}
+	var previous hookStatusFile
+	if data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json")); err != nil || json.Unmarshal(data, &previous) != nil {
+		previous = hookStatusFile{}
+	}
+	if statusFile.Event == "PreToolUse" && statusFile.ReceivedAt != 0 && previous.ReceivedAt >= statusFile.ReceivedAt {
+		return false
+	}
+	// The count also lives in <id>.turnseq, which outlives the status file:
+	// the TUI removes <id>.json on every attach-return (ClearHookStatus), and
+	// a count that restarted there would read as "no turn" to a token taken
+	// at the same number.
+	turnSeqPath := filepath.Join(hooksDir, filepath.Base(instanceID)+session.HookTurnSeqSuffix)
+	sidecarSeq := readHookTurnSeqFile(turnSeqPath)
+	statusFile.TurnSeq = max(previous.TurnSeq, sidecarSeq)
+	if isTurnSeqEvent(statusFile.Event) {
+		statusFile.TurnSeq++
 	}
 	var hermesCwdRoots []string
 	if generation != "" {
@@ -707,6 +946,20 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 		b, err := json.Marshal(control)
 		if err != nil || atomicHookWrite(controlPath, b) != nil {
 			return false
+		}
+	}
+
+	// The sidecar first, once the write is accepted: ahead of the status
+	// file is harmless (readers take the larger), behind it would let an
+	// attach-return take the count back. A count only the status file had
+	// (a step-1 file) is copied over on the next write of any event.
+	if statusFile.TurnSeq > sidecarSeq {
+		if err := atomicHookWrite(turnSeqPath, []byte(strconv.FormatUint(statusFile.TurnSeq, 10))); err != nil {
+			hookHandlerLog.Warn("hook_turn_seq_write_failed",
+				slog.String("path", turnSeqPath),
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 		}
 	}
 
@@ -752,12 +1005,39 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 	return true
 }
 
+// readHookTurnSeqFile is the count in <id>.turnseq, 0 when it is missing or
+// unreadable.
+func readHookTurnSeqFile(path string) uint64 {
+	data, err := readHookFileBounded(path)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// isTurnSeqEvent reports whether event is a turn edge that bumps turn_seq:
+// a submitted prompt or a Stop.
+func isTurnSeqEvent(event string) bool {
+	switch normalizeHookEventKey(event) {
+	case "userpromptsubmit", "stop":
+		return true
+	}
+	return false
+}
+
 const preToolLockBudget = 100 * time.Millisecond
 const preToolLockRetry = 2 * time.Millisecond
 
 // A tool must never queue indefinitely behind a stalled lifecycle writer.
 // Contention beyond the budget leaves the last status intact and fails open.
 func lockHookStatus(lock *os.File, bounded bool) error {
+	if !bounded && !hookDeadline.IsZero() {
+		return lockHookStatusByDeadline(lock)
+	}
 	if !bounded {
 		return syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
 	}
@@ -771,15 +1051,46 @@ func lockHookStatus(lock *os.File, bounded bool) error {
 	}
 }
 
+// hookDeadlineEnv is set by the pi extension to the milliseconds this handler
+// may live. Its own timer in pi cannot be relied on: it dies with pi, and the
+// detached handler would then outlive it. The variable is absent on the Claude
+// path, which is unchanged.
+const hookDeadlineEnv = "AGENTDECK_HOOK_DEADLINE_MS"
+
+// hookDeadline is the moment a self-bounded handler gives up; zero otherwise.
+var hookDeadline time.Time
+
+// startHookDeadline arms a watchdog that ends the process, non-zero, at the
+// deadline named by hookDeadlineEnv. It does nothing when the variable is unset
+// or not a positive number.
+func startHookDeadline() {
+	ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv(hookDeadlineEnv)))
+	if err != nil || ms <= 0 {
+		return
+	}
+	hookDeadline = time.Now().Add(time.Duration(ms) * time.Millisecond)
+	time.AfterFunc(time.Until(hookDeadline), func() { os.Exit(1) })
+}
+
+// lockHookStatusByDeadline takes the status lock without blocking in the
+// kernel: it retries until the handler's deadline, then ends the process.
+func lockHookStatusByDeadline(lock *os.File) error {
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
+		}
+		if !time.Now().Before(hookDeadline) {
+			os.Exit(1)
+		}
+		time.Sleep(preToolLockRetry)
+	}
+}
+
 func readHookFileBounded(path string) ([]byte, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	f, _, err := session.OpenHookFileNoFollow(path)
 	if err != nil {
 		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path)
-	if f == nil {
-		_ = syscall.Close(fd)
-		return nil, errors.New("open hook file")
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, 64<<10))
@@ -971,6 +1282,15 @@ func installUsageFeeds(w io.Writer) {
 		default:
 			fmt.Fprintf(w, "  %-*s  already wired: %s\n", width, r.Slot, r.Feed.Command)
 		}
+		printUsageFeedWarnings(w, width, r.Feed.Warnings)
+	}
+}
+
+// printUsageFeedWarnings prints a slot's statusLine warnings (a nested
+// wrapper, an unusually large settings.json; #3011) under its row.
+func printUsageFeedWarnings(w io.Writer, width int, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(w, "  %-*s  warning: %s\n", width, "", warning)
 	}
 }
 
@@ -1039,6 +1359,7 @@ func printUsageFeedStatus(w io.Writer, feeds []session.UsageFeed, ages map[strin
 			cache = "cache " + shortDuration(age.Age) + " old"
 		}
 		fmt.Fprintf(w, "  %-*s  %s · %s\n", width, f.Slot, wiring, cache)
+		printUsageFeedWarnings(w, width, f.Warnings)
 	}
 	if unwired > 0 {
 		fmt.Fprintln(w, "Run 'agent-deck hooks install' to wire the usage feed (the accounts field reads it).")

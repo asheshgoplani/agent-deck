@@ -3,6 +3,7 @@ package watcher
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -312,6 +313,121 @@ func TestIssue2537_AnEventForAConductorWithNoSessionIsStored(t *testing.T) {
 	if n := countWatcherEvents(t, db, "w1"); n != 1 || outbox.callCount() != 1 {
 		t.Fatalf("watcher_events holds %d rows after %d outbox calls, want the event stored after one", n, outbox.callCount())
 	}
+}
+
+// TestConductorQueueFull_EventIsStoredNotRetried: a conductor whose
+// delivery queue is full (ErrDeliveryQueueFull) cannot take the event until
+// its worker delivers some, so the event is tried once and stored, as for a
+// conductor with no session; holding it for a retry would only move the
+// unbounded growth into the writer.
+func TestConductorQueueFull_EventIsStoredNotRetried(t *testing.T) {
+	db := newTestDB(t)
+	saveTestWatcher(t, db, "w1", "inbox", "mock")
+	outbox := &flakyOutbox{recordingOutbox: recordingOutbox{db: db}, err: fmt.Errorf("%w: conductor %q", ErrDeliveryQueueFull, "demo"), failures: -1}
+	engine := newOutboxTestEngine(t, db, outbox, 0)
+	engine.cfg.QueueRetryInterval = 50 * time.Millisecond
+	runEvents(t, engine, Event{Source: "mock", Sender: "alice@example.com", Subject: "hi", Body: "queue full", Timestamp: time.Now()})
+
+	if n := countWatcherEvents(t, db, "w1"); n != 1 || outbox.callCount() != 1 {
+		t.Fatalf("watcher_events holds %d rows after %d outbox calls, want the event stored after one", n, outbox.callCount())
+	}
+}
+
+// TestConductorQueueFull_RefusalsAreCountedAndLoggedWithARunningTotal: each
+// event the outbox refuses as queue full adds one to the watcher's persisted
+// refusal count for that conductor (it survives the engine), and the
+// watcher_delivery_queue_full warning is rate limited but carries the running
+// total, so a long flood is neither silent nor one line per event.
+func TestConductorQueueFull_RefusalsAreCountedAndLoggedWithARunningTotal(t *testing.T) {
+	db := newTestDB(t)
+	saveTestWatcher(t, db, "w1", "inbox", "mock")
+	full := fmt.Errorf("%w: conductor %q", ErrDeliveryQueueFull, "demo")
+	events := func(prefix string, n int) []Event {
+		var out []Event
+		for i := 0; i < n; i++ {
+			out = append(out, Event{Source: "mock", Sender: "alice@example.com", Subject: "hi", Body: "flood", CustomDedupKey: prefix + strconv.Itoa(i), Timestamp: time.Now()})
+		}
+		return out
+	}
+	run := func(interval time.Duration, evs []Event) string {
+		t.Helper()
+		var logBuf strings.Builder
+		var logMu sync.Mutex
+		engine := newOutboxTestEngine(t, db, &flakyOutbox{recordingOutbox: recordingOutbox{db: db}, err: full, failures: -1}, 0)
+		engine.log = slog.New(slog.NewTextHandler(&lockedWriter{w: &logBuf, mu: &logMu}, nil))
+		engine.refusalLogInterval = interval
+		runEvents(t, engine, evs...)
+		logMu.Lock()
+		defer logMu.Unlock()
+		return logBuf.String()
+	}
+
+	logged := run(time.Hour, events("a", 3))
+	if n := strings.Count(logged, "watcher_delivery_queue_full"); n != 1 || !strings.Contains(logged, "refused_total=1") {
+		t.Fatalf("%d queue-full warnings for 3 refusals in one interval, want 1 with refused_total=1:\n%s", n, logged)
+	}
+	rows, err := db.LoadWatcherDeliveryRefusals("w1")
+	if err != nil || len(rows) != 1 || rows[0].Conductor != "demo" || rows[0].Count != 3 {
+		t.Fatalf("refusal rows = %+v, %v; want 3 for demo", rows, err)
+	}
+
+	logged = run(0, events("b", 2))
+	if n := strings.Count(logged, "level=WARN msg=watcher_delivery_queue_full"); n != 2 || !strings.Contains(logged, "refused_total=5") {
+		t.Fatalf("with no rate limit: %d warnings, want 2, the last with refused_total=5:\n%s", n, logged)
+	}
+}
+
+// TestConductorQueueFull_RecentRefusalsTurnTheWatcherWarning: the health
+// state lists the watcher's persisted refusals per conductor, and a refusal
+// within RefusalWarningWindow moves a healthy watcher to warning, so the
+// health alert reaches its conductor. Refusals older than the window are
+// still listed, but the watcher is healthy again.
+func TestConductorQueueFull_RecentRefusalsTurnTheWatcherWarning(t *testing.T) {
+	health := func(t *testing.T, db *statedb.StateDB) HealthState {
+		t.Helper()
+		engine := newOutboxTestEngine(t, db, &recordingOutbox{db: db}, 20*time.Millisecond)
+		engine.RegisterAdapter("w1", &MockAdapter{}, AdapterConfig{Type: "mock", Name: "inbox"}, 60)
+		if err := engine.Start(); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer engine.Stop()
+		select {
+		case state := <-engine.HealthCh():
+			return state
+		case <-time.After(5 * time.Second):
+			t.Fatal("no health state")
+		}
+		return HealthState{}
+	}
+
+	t.Run("recent", func(t *testing.T) {
+		db := newTestDB(t)
+		saveTestWatcher(t, db, "w1", "inbox", "mock")
+		first := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+		for _, at := range []time.Time{first, time.Now()} {
+			if _, err := db.RecordWatcherDeliveryRefusal("w1", "demo", at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state := health(t, db)
+		if state.Status != HealthStatusWarning || !strings.Contains(state.Message, "2 routed events for conductor demo refused") {
+			t.Fatalf("status %s, message %q; want warning naming 2 refusals for demo", state.Status, state.Message)
+		}
+		if len(state.Refused) != 1 || state.Refused[0].Conductor != "demo" || state.Refused[0].Count != 2 || !state.Refused[0].FirstRefusedAt.Equal(first) {
+			t.Fatalf("health state refused = %+v", state.Refused)
+		}
+	})
+	t.Run("old", func(t *testing.T) {
+		db := newTestDB(t)
+		saveTestWatcher(t, db, "w1", "inbox", "mock")
+		if _, err := db.RecordWatcherDeliveryRefusal("w1", "demo", time.Now().Add(-RefusalWarningWindow-time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		state := health(t, db)
+		if state.Status != HealthStatusHealthy || len(state.Refused) != 1 || state.Refused[0].Count != 1 {
+			t.Fatalf("status %s, refused %+v; want healthy with the old refusal still listed", state.Status, state.Refused)
+		}
+	})
 }
 
 // TestIssue2537_AnEventTheOutboxNeverQueuedIsNotStored: the outbox fails

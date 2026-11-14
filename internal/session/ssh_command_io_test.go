@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 )
 
 // The shim runs this helper before the remote command. It observes actual
@@ -34,10 +36,11 @@ func TestRunIOSocketProcessHelper(t *testing.T) {
 }
 
 func TestRunIOCleanupBeforeSSHAndLiteralStreams(t *testing.T) {
-	if err := os.MkdirAll(sshControlDir, 0700); err != nil {
+	controlDir, err := sshcontrol.Ensure()
+	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := filepath.Join(sshControlDir, fmt.Sprintf("runio-%d", time.Now().UnixNano()))
+	prefix := filepath.Join(controlDir, fmt.Sprintf("runio-%d", time.Now().UnixNano()))
 	stale, live, regular := prefix+"-stale", prefix+"-live", prefix+"-file"
 	recreateOrphanSocket(t, stale)
 	t.Cleanup(func() { _ = os.Remove(stale); _ = os.Remove(regular) })

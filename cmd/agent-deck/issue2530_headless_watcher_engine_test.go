@@ -26,11 +26,12 @@ import (
 const issue2530Profile = "e2e2530"
 
 type issue2530Env struct {
-	t    *testing.T
-	bin  string
-	root string
-	env  []string
-	port string // the webhook watcher's port
+	t      *testing.T
+	bin    string
+	root   string
+	env    []string
+	port   string // the webhook watcher's port
+	secret string // the webhook watcher's generated secret
 }
 
 func newIssue2530Env(t *testing.T) *issue2530Env {
@@ -107,6 +108,7 @@ func (e *issue2530Env) createWebhookWatcher() {
 	if !strings.HasPrefix(st.ConfigPath, e.root+string(filepath.Separator)) {
 		e.t.Fatalf("watcher dir %q is outside the test root %q", st.ConfigPath, e.root)
 	}
+	e.secret = decodeWatcherSource(e.t, filepath.Join(st.ConfigPath, "watcher.toml"))["secret"]
 	clients := `{"alice@example.com": {"conductor": "demo", "name": "Alice"}}`
 	if err := os.WriteFile(filepath.Join(filepath.Dir(st.ConfigPath), "clients.json"), []byte(clients), 0o600); err != nil {
 		e.t.Fatal(err)
@@ -176,6 +178,7 @@ func (e *issue2530Env) post(body string) {
 		e.t.Fatal(err)
 	}
 	req.Header.Set("X-Webhook-Sender", "alice@example.com")
+	req.Header.Set("X-Webhook-Token", e.secret)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		e.t.Fatalf("POST to the webhook watcher: %v", err)

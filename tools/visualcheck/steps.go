@@ -45,6 +45,7 @@ var visualCheckSteps = []visualCheckStep{
 	{"08-mcp-manager", stepMCPManager},
 	{"09-settings", stepSettings},
 	{"10-help", stepHelp},
+	{"23-show-around", stepShowAround},
 	{"11-update-banner", stepUpdateBanner},
 	{"12-attach-shell", stepAttachShell},
 	{"13-detach-shell", stepDetachShell},
@@ -60,10 +61,10 @@ var expectedFrames = []string{
 	"02-preview", "19-fork-options", "20-plugin-manager", "21-watchers",
 	"03-group-view", "04-collapsed", "04-expanded",
 	"05-create-dialog", "06-edit", "07-switcher", "08-mcp-manager", "09-settings",
-	"10-help", "11-update-banner", "12-attach-shell", "13-detach-shell", "14-fork",
+	"10-help-short", "10-help", "11-update-banner", "12-attach-shell", "13-detach-shell", "14-fork",
 	"15-filter-running", "16-filter-waiting", "17-time-today", "18-view-active-top",
 	"19-archived-empty", "20-stopped-preview", "21-filter-empty",
-	"22-triggers",
+	"22-triggers", "23-show-around",
 }
 
 func stepStateVisibility(w *widthRun) error {
@@ -457,8 +458,17 @@ func stepSettings(w *widthRun) error {
 	return closeScreen(w, "THEME")
 }
 
+// stepHelp opens help: '?' shows the "5 keys to start" view (10-help-short),
+// Tab switches to the full key list (10-help).
 func stepHelp(w *widthRun) error {
 	if err := w.send("?"); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "5 KEYS TO START", "Tab all keys"); err != nil {
+		return err
+	}
+	w.capture("10-help-short")
+	if err := w.send("Tab"); err != nil {
 		return err
 	}
 	if err := waitScreen(w, 5*time.Second, "KEYBOARD SHORTCUTS"); err != nil {
@@ -466,6 +476,19 @@ func stepHelp(w *widthRun) error {
 	}
 	w.capture("10-help")
 	return closeScreen(w, "KEYBOARD SHORTCUTS")
+}
+
+// stepShowAround opens "Show me around" (alt+w): the What you can do page of
+// the onboarding overlay (internal/ui/onboarding.go).
+func stepShowAround(w *widthRun) error {
+	if err := w.send("M-w"); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "What you can do", "Esc close"); err != nil {
+		return err
+	}
+	w.capture("23-show-around")
+	return closeScreen(w, "What you can do")
 }
 
 func waitScreen(w *widthRun, timeout time.Duration, markers ...string) error {

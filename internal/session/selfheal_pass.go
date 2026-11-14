@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +65,15 @@ func capsFromSettings(s SelfHealSettings) selfheal.Caps {
 	return caps
 }
 
+// selfHealOutputSig is the content signal of a candidate. A pi child's comes from
+// the status the pass already holds; without one it reads through the seam.
+func selfHealOutputSig(inst *Instance, hs *HookStatus) string {
+	if hs != nil && inst != nil && strings.EqualFold(strings.TrimSpace(inst.Tool), "pi") {
+		return piVerdict(inst, hs, "", time.Now()).Signal
+	}
+	return transitionEventOutputHash(inst)
+}
+
 // buildSelfHealCandidate assembles the pure Candidate snapshot for one instance
 // from data the daemon already read this cycle. It does NO new tmux capture and
 // NO DB mutation — it reuses the cached substate, the canonical status, the hook
@@ -90,7 +100,7 @@ func buildSelfHealCandidate(inst *Instance, status string, hs *HookStatus, lastS
 		Substate:         sub,
 		Busy:             busy,
 		HookRunningFresh: hookRunningFresh,
-		OutputSig:        transitionEventOutputHash(inst),
+		OutputSig:        selfHealOutputSig(inst, hs),
 		Stopped:          normalizeStatusString(status) == "stopped",
 		OptedOut:         optedOut,
 		StatusChangedAt:  inst.GetWaitingSince(), // best-available durable dwell anchor

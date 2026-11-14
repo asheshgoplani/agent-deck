@@ -436,7 +436,11 @@ agent_deck_path = "/home/alice/.local/bin/agent-deck"
 	assert.NotContains(t, got, "/opt/homebrew/bin")
 	assert.NotContains(t, got, home)
 	assert.NotContains(t, got, "command -v", "no probe: the marker would be on the other host")
-	assert.True(t, strings.HasSuffix(got, "exec claude --session-id 1'"), "got %q", got)
+	// ASK-105: every SSH payload runs under bash -c on the remote (a fish/csh
+	// login shell cannot run the POSIX prelude), so the tool is the last word
+	// of the bash -c program inside the ssh argument.
+	assert.Contains(t, got, `&& bash -c '\''for __d in`, "got %q", got)
+	assert.True(t, strings.HasSuffix(got, "exec claude --session-id 1'\\'''"), "got %q", got)
 
 	// The prelude precedes the export prefix inside the remote program, after
 	// the cd, so the remote shell evaluates it before the tool execs.

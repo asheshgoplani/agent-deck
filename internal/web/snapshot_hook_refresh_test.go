@@ -410,3 +410,96 @@ func allSessionStatuses() []session.Status {
 		session.StatusStopped,
 	}
 }
+
+// Issue #2853 parity: the web read path ignores a "dead" hook (SessionEnd)
+// written before the session's newest spawn began, as Instance.UpdateStatus
+// does, and still shows error for a dead hook from after it.
+func TestRefreshSnapshotHookStatuses_DeadHookFromEarlierSpawnIgnored(t *testing.T) {
+	now := time.Now()
+	began := now.Add(-30 * time.Second)
+	const id = "sess-2853-web"
+	session.MarkInstanceSpawnedForTest(id, began)
+
+	for _, tc := range []struct {
+		name   string
+		hookAt time.Time
+		want   session.Status
+	}{
+		{"previous process's SessionEnd", began.Add(-6 * time.Second), session.StatusRunning},
+		{"new process exited after the spawn began", began.Add(5 * time.Second), session.StatusError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hooks := map[string]*session.HookStatus{
+				id: {Status: "dead", Event: "SessionEnd", UpdatedAt: tc.hookAt},
+			}
+			snap := snapshotWithSession(id, "claude", session.StatusRunning)
+			refreshSnapshotHookStatusesAt(snap, hooks, now)
+			if got := snap.Items[0].Session.Status; got != tc.want {
+				t.Fatalf("dead hook at spawn%+ds: got %q want %q", int(tc.hookAt.Sub(began).Seconds()), got, tc.want)
+			}
+		})
+	}
+}
+
+// The web overlay makes the same call as the Codex fast path: a fresh Codex
+// completion older than the user's last visit was already seen.
+func TestApplyHookStatusToMenuSession_CodexCompletionBeforeVisitIsIdle(t *testing.T) {
+	now := time.Now()
+	hook := &session.HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: now.Add(-2 * time.Second)}
+
+	seen := &MenuSession{ID: "codex-seen", Tool: "codex", Status: session.StatusIdle, Acknowledged: true, AcknowledgedAt: now}
+	applyHookStatusToMenuSession(seen, hook, now)
+	if seen.Status != session.StatusIdle {
+		t.Fatalf("completion before the visit: status = %q, want %q", seen.Status, session.StatusIdle)
+	}
+
+	// Seen before, but this completion came after the visit: still waiting.
+	fresh := &MenuSession{ID: "codex-fresh", Tool: "codex", Status: session.StatusIdle, Acknowledged: true, AcknowledgedAt: now.Add(-5 * time.Second)}
+	applyHookStatusToMenuSession(fresh, hook, now)
+	if fresh.Status != session.StatusWaiting {
+		t.Fatalf("completion after the visit: status = %q, want %q", fresh.Status, session.StatusWaiting)
+	}
+
+	unseen := &MenuSession{ID: "codex-unseen", Tool: "codex", Status: session.StatusIdle}
+	applyHookStatusToMenuSession(unseen, hook, now)
+	if unseen.Status != session.StatusWaiting {
+		t.Fatalf("completion with no visit: status = %q, want %q", unseen.Status, session.StatusWaiting)
+	}
+
+	// Marked unread, published before the visit time was cleared: the mark
+	// alone decides, so the completion is unread again.
+	unread := &MenuSession{ID: "codex-unread", Tool: "codex", Status: session.StatusIdle, AcknowledgedAt: now}
+	applyHookStatusToMenuSession(unread, hook, now)
+	if unread.Status != session.StatusWaiting {
+		t.Fatalf("completion marked unread: status = %q, want %q", unread.Status, session.StatusWaiting)
+	}
+}
+
+// #2986 item 1: the TUI's published seen mark only covers turns that ended
+// before the visit. If the TUI missed a running edge, a Claude Stop newer
+// than the visit must still show as waiting on the web, matching the
+// cold-read rule.
+func TestApplyHookStatusToMenuSession_ClaudeStopAfterVisitIsWaiting(t *testing.T) {
+	now := time.Now()
+	hook := &session.HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: now.Add(-2 * time.Second)}
+
+	fresh := &MenuSession{ID: "claude-fresh", Tool: "claude", Status: session.StatusIdle, Acknowledged: true, AcknowledgedAt: now.Add(-5 * time.Second)}
+	applyHookStatusToMenuSession(fresh, hook, now)
+	if fresh.Status != session.StatusWaiting {
+		t.Fatalf("Stop after the visit: status = %q, want %q", fresh.Status, session.StatusWaiting)
+	}
+
+	// The same Stop before the visit was already seen.
+	seen := &MenuSession{ID: "claude-seen", Tool: "claude", Status: session.StatusWaiting, Acknowledged: true, AcknowledgedAt: now}
+	applyHookStatusToMenuSession(seen, hook, now)
+	if seen.Status != session.StatusIdle {
+		t.Fatalf("Stop before the visit: status = %q, want %q", seen.Status, session.StatusIdle)
+	}
+
+	// Not seen at all: waiting regardless of the visit time.
+	unread := &MenuSession{ID: "claude-unread", Tool: "claude", Status: session.StatusIdle, AcknowledgedAt: now}
+	applyHookStatusToMenuSession(unread, hook, now)
+	if unread.Status != session.StatusWaiting {
+		t.Fatalf("Stop marked unread: status = %q, want %q", unread.Status, session.StatusWaiting)
+	}
+}

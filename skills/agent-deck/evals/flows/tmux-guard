@@ -1,0 +1,35 @@
+#!/bin/sh
+# `tmux` on PATH for the agent-flow evals. It logs every call agent-deck makes
+# and forwards it to the real tmux ONLY when the call already names the eval's
+# private socket (`-L $AGENT_FLOW_SOCKET`), as `[tmux].socket_name` promises.
+# Any other call is refused (exit 64) and logged as REFUSED, so the evals fail
+# closed: nothing can reach the user's default tmux server through this shim.
+# `tmux -V` (version probe, no server) is allowed.
+log="${AGENT_FLOW_TMUX_LOG:?}"
+sock="${AGENT_FLOW_SOCKET:?}"
+real="${AGENT_FLOW_REAL_TMUX:?}"
+named="" version="" expect=""
+for arg in "$@"; do
+  if [ -n "$expect" ]; then
+    [ "$expect" = L ] && named="$arg"
+    [ "$expect" = S ] && named="-S:$arg"
+    expect=""; continue
+  fi
+  case "$arg" in
+    -V) version=1 ;;
+    -L) expect=L ;;
+    -L?*) named="${arg#-L}" ;;
+    -S) expect=S ;;
+    -S?*) named="-S:${arg#-S}" ;;
+    -f|-c|-T) expect=x ;;
+    -*) ;;
+    *) break ;;
+  esac
+done
+if [ "$named" = "$sock" ] || { [ -n "$version" ] && [ -z "$named" ]; }; then
+  printf 'ok %s\n' "$*" >>"$log"
+  exec "$real" "$@"
+fi
+printf 'REFUSED socket=%s argv=%s\n' "${named:-<default>}" "$*" >>"$log"
+echo "agent-flow tmux guard: refusing a tmux call that does not name -L $sock" >&2
+exit 64

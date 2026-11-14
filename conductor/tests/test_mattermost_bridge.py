@@ -585,7 +585,7 @@ def test_a_message_during_a_pending_late_reply_is_queued_then_drained_and_both_r
     server, queued = asyncio.run(scenario())
     assert queued == [_from_owner("and another thing")]
     sends = [args for args in cli_calls if args[:2] == ("session", "send")]
-    assert [args[3] for args in sends] == [_from_owner("long job"), _from_owner("and another thing")]
+    assert [args[-1] for args in sends] == [_from_owner("long job"), _from_owner("and another thing")]
     replies = [p["message"] for p in server.posts if "answer" in p["message"]]
     assert len(replies) == 2
     assert replies[0].startswith("Queued response (waited") and replies[0].endswith("late answer")

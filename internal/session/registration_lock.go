@@ -87,5 +87,20 @@ func registrationLockPath(profile string) (string, error) {
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return "", fmt.Errorf("create locks dir for registration lock: %w", err)
 	}
-	return filepath.Join(locks, fmt.Sprintf("session-registration-%s.lock", spawnLockSafeID(profile))), nil
+	return filepath.Join(locks, fmt.Sprintf("session-registration-%s.lock", spawnLockSafeID(registrationLockProfile(profile)))), nil
+}
+
+// registrationLockProfile resolves the raw -p value ("" when absent) to the
+// profile whose state.db the caller will open, so `add` with no -p and
+// `-p <same profile>` take the same lockfile. Quiet: storage prints the #1790
+// warning itself. Quiet mode errors on an unreadable config.json, where
+// storage uses the non-quiet fallback, so retry that before giving up.
+func registrationLockProfile(profile string) string {
+	if resolved, err := ResolveProfileForStorageQuiet(profile); err == nil && resolved != "" {
+		return resolved
+	}
+	if resolved, err := ResolveProfileForStorage(profile); err == nil && resolved != "" {
+		return resolved
+	}
+	return GetEffectiveProfile(profile)
 }

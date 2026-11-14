@@ -31,12 +31,36 @@ const (
 	codexConsumeLockDelay    = 5 * time.Millisecond
 )
 
+// OpenHookFileNoFollow opens a hook artifact for reading without following a
+// final-component symlink and without blocking, and only when it is a regular
+// file. The hook dirs (the sandbox scope in particular) are writable from a
+// container, so a FIFO or device planted there must not stall the reader.
+// O_NONBLOCK does not change reads of a regular file.
+func OpenHookFileNoFollow(path string) (*os.File, os.FileInfo, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("hook file %s: not a regular file", path)
+	}
+	return f, info, nil
+}
+
 // readStatusFileNoFollow reads a hook status file without following a
-// final-component symlink (O_NOFOLLOW) and bounded in size, so a compromised
+// final-component symlink (O_NOFOLLOW), regular files only and without
+// blocking (OpenHookFileNoFollow), and bounded in size, so a compromised
 // sandbox cannot symlink <id>.json at a sibling/host/device file to exfiltrate
-// or DoS the shared notify-daemon, nor OOM it with a huge real <id>.json.
+// or DoS the shared notify-daemon, block it with a FIFO, nor OOM it with a
+// huge real <id>.json.
 func readStatusFileNoFollow(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, _, err := OpenHookFileNoFollow(path)
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +158,50 @@ func maskConsumedCodexCompletion(instanceID string, status *HookStatus) {
 	status.codexCompletionConsumed = true
 }
 
+// receivedAtFromNS is the time a received_at_ns names, zero for 0.
+func receivedAtFromNS(ns int64) time.Time {
+	if ns <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// PiOrphanRun is one carried unsettled pi run; TurnEndNS is its turn_end's received
+// time (unix ns) when it had one.
+type PiOrphanRun struct {
+	RunID     string `json:"run_id"`
+	TurnEndNS int64  `json:"turn_end_ns,omitempty"`
+	Settled   bool   `json:"settled,omitempty"`
+	AtNS      int64  `json:"at_ns,omitempty"`
+}
+
+// PiOrphanRunsMax is the most orphan entries the status file lists.
+const PiOrphanRunsMax = 4
+
+// orphanArray copies the newest PiOrphanRunsMax entries into HookStatus's array.
+func orphanArray(list []PiOrphanRun) (a [PiOrphanRunsMax]PiOrphanRun) {
+	if len(list) > PiOrphanRunsMax {
+		list = list[len(list)-PiOrphanRunsMax:]
+	}
+	copy(a[:], list)
+	return a
+}
+
+// ageNS is the time the entry's age is measured from: its turn_end when it had
+// one, else the time it was first carried (0 when neither is known).
+func (o PiOrphanRun) ageNS() int64 {
+	if o.TurnEndNS > 0 {
+		return o.TurnEndNS
+	}
+	return o.AtNS
+}
+
+// expired reports whether the entry is older than the consumed-key retention.
+func (o PiOrphanRun) expired(now time.Time) bool {
+	ref := o.ageNS()
+	return ref > 0 && now.Sub(time.Unix(0, ref)) > consumedTurnsTTL
+}
+
 // HookStatus holds the decoded status from a hook status file.
 type HookStatus struct {
 	Status                   string    // running, idle, waiting, dead
@@ -149,6 +217,24 @@ type HookStatus struct {
 	HookGeneration           string
 	Sequence                 uint64
 	codexCompletionConsumed  bool
+	// PiSettleTurnID, PiSettleSessionID and PiSettledAt are a pi run's identity,
+	// merged into the status file by the run's agent_settled without a status
+	// edge. The next turn_start rebuilds the file and erases them.
+	PiSettleTurnID    string
+	PiSettleSessionID string
+	PiSettledAt       int64 // Unix ms
+	// Settles is the writer's capability bit, sent with the run token by a v4+
+	// extension (agent_settled itself is v3+). PiRunID is the run token the
+	// extension minted at agent_start.
+	Settles bool
+	PiRunID string
+	// PiOrphanRuns are runs that never settled and were overwritten by a newer
+	// run's status (see hook-handler); the daemon emits each once under its own key.
+	PiOrphanRuns  [PiOrphanRunsMax]PiOrphanRun // the first PiOrphanCount are set; an array keeps HookStatus comparable
+	PiOrphanCount int
+	// ReceivedAt is when the hook handler received the event that wrote the file
+	// (received_at_ns), zero when the file predates it.
+	ReceivedAt time.Time
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). Empty for ordinary turns.
 	DoneStatus  string // "ok" or "fail" when a completion sentinel was seen
@@ -168,6 +254,12 @@ type HookStatus struct {
 	// own session id, so its events must never bind the entry's session.
 	// Empty for agents that send no platform.
 	Platform string
+	// TurnSeq is the hook file's turn_seq: the instance's turn edges
+	// (UserPromptSubmit and Stop) so far, carried through every other event
+	// (#3012). 0 for a file written before it existed. From the hook file
+	// only, so 0 again after ClearHookStatus removes it: a judge reads the
+	// count with readHookTurnSeq, which also reads <id>.turnseq.
+	TurnSeq uint64
 }
 
 // hookGenerationForInstance resolves generation authority by instance, not by
@@ -256,7 +348,7 @@ func NewStatusFileWatcher(onChange func()) (*StatusFileWatcher, error) {
 	}
 
 	// Ensure directory exists
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
 		return nil, err
 	}
 
@@ -501,23 +593,30 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			continue
 		}
 		var raw struct {
-			Status                   string `json:"status"`
-			SessionID                string `json:"session_id"`
-			Event                    string `json:"event"`
-			Timestamp                int64  `json:"ts"`
-			DoneStatus               string `json:"done_status"`
-			DoneSummary              string `json:"done_summary"`
-			TranscriptPath           string `json:"transcript_path"`
-			Cwd                      string `json:"cwd"`
-			Platform                 string `json:"platform"`
-			CodexStartedGeneration   string `json:"codex_started_generation"`
-			CodexCompletedGeneration string `json:"codex_completed_generation"`
-			CodexStartedSessionID    string `json:"codex_started_session_id"`
-			CodexCompletedSessionID  string `json:"codex_completed_session_id"`
-			CodexStartedSequence     uint64 `json:"codex_started_sequence"`
-			CodexCompletedSequence   uint64 `json:"codex_completed_sequence"`
-			HookGeneration           string `json:"hook_generation"`
-			Sequence                 uint64 `json:"sequence"`
+			Status                   string        `json:"status"`
+			SessionID                string        `json:"session_id"`
+			Event                    string        `json:"event"`
+			Timestamp                int64         `json:"ts"`
+			DoneStatus               string        `json:"done_status"`
+			DoneSummary              string        `json:"done_summary"`
+			TranscriptPath           string        `json:"transcript_path"`
+			Cwd                      string        `json:"cwd"`
+			Platform                 string        `json:"platform"`
+			CodexStartedGeneration   string        `json:"codex_started_generation"`
+			CodexCompletedGeneration string        `json:"codex_completed_generation"`
+			CodexStartedSessionID    string        `json:"codex_started_session_id"`
+			CodexCompletedSessionID  string        `json:"codex_completed_session_id"`
+			CodexStartedSequence     uint64        `json:"codex_started_sequence"`
+			CodexCompletedSequence   uint64        `json:"codex_completed_sequence"`
+			HookGeneration           string        `json:"hook_generation"`
+			Sequence                 uint64        `json:"sequence"`
+			PiSettleTurnID           string        `json:"pi_settle_turn_id"`
+			PiSettleSessionID        string        `json:"pi_settle_session_id"`
+			PiSettledAt              int64         `json:"pi_settled_at"`
+			Settles                  bool          `json:"settles"`
+			PiRunID                  string        `json:"pi_run_id"`
+			PiOrphanRuns             []PiOrphanRun `json:"pi_orphan_runs"`
+			ReceivedAtNS             int64         `json:"received_at_ns"`
 		}
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
@@ -543,6 +642,13 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			CodexCompletedSequence:   raw.CodexCompletedSequence,
 			HookGeneration:           raw.HookGeneration,
 			Sequence:                 raw.Sequence,
+			PiSettleTurnID:           raw.PiSettleTurnID,
+			PiSettleSessionID:        raw.PiSettleSessionID,
+			PiSettledAt:              raw.PiSettledAt,
+			Settles:                  raw.Settles,
+			PiRunID:                  raw.PiRunID,
+			PiOrphanRuns:             orphanArray(raw.PiOrphanRuns), PiOrphanCount: min(len(raw.PiOrphanRuns), PiOrphanRunsMax),
+			ReceivedAt: receivedAtFromNS(raw.ReceivedAtNS),
 		}
 		maskConsumedCodexCompletion(instanceID, hookStatus)
 		out[instanceID] = hookStatus
@@ -676,23 +782,30 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	}
 
 	var status struct {
-		Status                   string `json:"status"`
-		SessionID                string `json:"session_id"`
-		Event                    string `json:"event"`
-		Timestamp                int64  `json:"ts"`
-		DoneStatus               string `json:"done_status"`
-		DoneSummary              string `json:"done_summary"`
-		TranscriptPath           string `json:"transcript_path"`
-		Cwd                      string `json:"cwd"`
-		Platform                 string `json:"platform"`
-		CodexStartedGeneration   string `json:"codex_started_generation"`
-		CodexCompletedGeneration string `json:"codex_completed_generation"`
-		CodexStartedSessionID    string `json:"codex_started_session_id"`
-		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
-		CodexStartedSequence     uint64 `json:"codex_started_sequence"`
-		CodexCompletedSequence   uint64 `json:"codex_completed_sequence"`
-		HookGeneration           string `json:"hook_generation"`
-		Sequence                 uint64 `json:"sequence"`
+		Status                   string        `json:"status"`
+		SessionID                string        `json:"session_id"`
+		Event                    string        `json:"event"`
+		Timestamp                int64         `json:"ts"`
+		DoneStatus               string        `json:"done_status"`
+		DoneSummary              string        `json:"done_summary"`
+		TranscriptPath           string        `json:"transcript_path"`
+		Cwd                      string        `json:"cwd"`
+		Platform                 string        `json:"platform"`
+		CodexStartedGeneration   string        `json:"codex_started_generation"`
+		CodexCompletedGeneration string        `json:"codex_completed_generation"`
+		CodexStartedSessionID    string        `json:"codex_started_session_id"`
+		CodexCompletedSessionID  string        `json:"codex_completed_session_id"`
+		CodexStartedSequence     uint64        `json:"codex_started_sequence"`
+		CodexCompletedSequence   uint64        `json:"codex_completed_sequence"`
+		HookGeneration           string        `json:"hook_generation"`
+		Sequence                 uint64        `json:"sequence"`
+		PiSettleTurnID           string        `json:"pi_settle_turn_id"`
+		PiSettleSessionID        string        `json:"pi_settle_session_id"`
+		PiSettledAt              int64         `json:"pi_settled_at"`
+		Settles                  bool          `json:"settles"`
+		PiRunID                  string        `json:"pi_run_id"`
+		PiOrphanRuns             []PiOrphanRun `json:"pi_orphan_runs"`
+		ReceivedAtNS             int64         `json:"received_at_ns"`
 	}
 	if err := json.Unmarshal(data, &status); err != nil {
 		hookLog.Warn("hook_file_corrupt",
@@ -725,6 +838,13 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		CodexCompletedSequence:   status.CodexCompletedSequence,
 		HookGeneration:           status.HookGeneration,
 		Sequence:                 status.Sequence,
+		PiSettleTurnID:           status.PiSettleTurnID,
+		PiSettleSessionID:        status.PiSettleSessionID,
+		PiSettledAt:              status.PiSettledAt,
+		Settles:                  status.Settles,
+		PiRunID:                  status.PiRunID,
+		PiOrphanRuns:             orphanArray(status.PiOrphanRuns), PiOrphanCount: min(len(status.PiOrphanRuns), PiOrphanRunsMax),
+		ReceivedAt: receivedAtFromNS(status.ReceivedAtNS),
 	}
 	maskConsumedCodexCompletion(instanceID, hookStatus)
 

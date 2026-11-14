@@ -20,7 +20,7 @@ on:
       - 'cmd/agent-deck/main.go'
       - 'cmd/agent-deck/coldstart_perf_test.go'
       - 'internal/health/**'
-      - 'internal/ui/home.go'
+      - 'internal/ui/home*.go'
       - 'internal/tmux/**'
       - 'internal/testutil/perfbudget.go'
       - 'internal/testutil/perfbudget_test.go'
@@ -28,6 +28,10 @@ on:
       - '.github/workflows/perf-smoke.yml'
       - 'docs/perf-budget-suite.md'
   workflow_dispatch: {}
+  # Nightly backstop (post-tag CI queue): the PR trigger above stays
+  # path-filtered; this run covers changes that reach this code from
+  # outside those paths.
+  schedule: [{ cron: '20 3 * * *' }]
 
 # Every job here builds or launches the agent-deck binary. Since v1.16.7 a
 # TUI or daemon installs a newer release on its own and restarts in place;
@@ -108,7 +112,7 @@ jobs:
     name: Runtime health (100 sessions)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: golang:1.26.9
+    container: golang:1.26.10
     env:
       PERF_BUDGET_MULTIPLIER: '2.0'
     steps:

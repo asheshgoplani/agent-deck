@@ -23,8 +23,8 @@ import (
 // "attached or hung" until morning). So a small worker off the event loop
 // (runAttachedHeartbeat) keeps rewriting the loop's last heartbeat while
 // the loop is parked, with Attached set and LastTickAt left where the
-// loop put it. It never decides anything: every auto-update decision
-// still waits for the next tick, after the detach.
+// loop put it. It never decides anything: it only tells the attach that
+// an update waits (attached_update.go); the restart runs on the detach.
 
 // attachedHeartbeatPoll is how often the attach worker looks at the
 // attach flag; it writes at most every update.TUIHeartbeatEvery.
@@ -98,6 +98,7 @@ func (h *Home) runAttachedHeartbeat(ctx context.Context, ticks <-chan time.Time)
 			return
 		case now := <-ticks:
 			h.attachedHeartbeatTick(now)
+			h.attachedUpdateTick(now)
 		}
 	}
 }

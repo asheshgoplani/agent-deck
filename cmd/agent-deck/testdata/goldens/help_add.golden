@@ -102,6 +102,8 @@ Options:
     	Lock session title so Claude's session name never overrides it (#697)
   -tmux-socket string
     	tmux -L socket name for this session (overrides [tmux].socket_name)
+  -trust-folder
+    	Let agent-deck mark this folder trusted for the tool (adds it to [security] trusted_folders in config.toml)
   -w string
     	Create session in git worktree for branch (not supported with --ssh)
   -why value

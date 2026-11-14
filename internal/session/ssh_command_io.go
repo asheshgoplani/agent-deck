@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 )
 
 // RunIO forwards the CLI's streams without buffering or combining diagnostics
@@ -18,7 +20,7 @@ func (r *SSHRunner) RunIO(ctx context.Context, stdin io.Reader, stdout, stderr i
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(sshControlDir, 0700); err != nil {
+	if _, err := sshcontrol.Ensure(); err != nil {
 		return err
 	}
 	CleanStaleSSHSockets()

@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestHookStatusTool_Registry(t *testing.T) {
@@ -73,6 +75,7 @@ func startPiPaneInstance(t *testing.T, name string) *Instance {
 // TestIssue2222_PiHookFastPath drives the real UpdateStatus fast path for a
 // live pi session, one row per hook status the pi extension can produce.
 func TestIssue2222_PiHookFastPath(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	skipIfNoTmuxBinary(t)
 
 	tests := []struct {

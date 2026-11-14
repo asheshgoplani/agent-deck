@@ -62,7 +62,7 @@ func WriteSessionLifecycleEvent(ev SessionLifecycleEvent) (err error) {
 	}
 
 	logPath := GetSessionLifecycleLogPath()
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return fmt.Errorf("create session lifecycle log dir: %w", err)
 	}
 
@@ -75,7 +75,7 @@ func WriteSessionLifecycleEvent(ev SessionLifecycleEvent) (err error) {
 	sessionLifecycleLogMu.Lock()
 	defer sessionLifecycleLogMu.Unlock()
 
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644) //nolint:gosec // log file
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // log file
 	if err != nil {
 		return fmt.Errorf("open session lifecycle log: %w", err)
 	}

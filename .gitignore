@@ -75,3 +75,8 @@ RESULTS/
 
 # sentrux structural baseline (issue #2148); generated, never committed
 .sentrux/
+
+# Stray build and test outputs; never committed
+*.log
+*.o
+*.profraw

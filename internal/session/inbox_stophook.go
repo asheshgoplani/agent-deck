@@ -84,7 +84,7 @@ func saveStopBlockCountLocked(instanceID string, count int) error {
 	if err != nil {
 		return err
 	}
-	return writeFileDurable(stopBlocksPathFor(instanceID), data, 0o644)
+	return writeFileDurable(stopBlocksPathFor(instanceID), data, 0o600)
 }
 
 // DrainForStopHook implements the conductor Stop-hook contract for one instance.
@@ -205,10 +205,10 @@ func urgentLatencyMS(events []TransitionNotificationEvent, now time.Time) int64 
 	return now.Sub(newest).Milliseconds()
 }
 
-// FormatCompletionsForInjection renders drained completions as the human-
+// FormatCompletionsForInjection renders drained messages as the human-
 // readable reason injected into the conductor's next turn.
 func FormatCompletionsForInjection(events []TransitionNotificationEvent) string {
-	return FormatInboxRecords(events, "Child session(s) completed while you were busy — handle each:")
+	return FormatInboxRecords(events, "New session messages (normal inbox delivery; continue this turn to handle each):")
 }
 
 // FormatInboxRecords renders records under a caller-chosen header line; one

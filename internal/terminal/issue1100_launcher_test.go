@@ -36,7 +36,7 @@ func TestIssue1100_BuildAttachCommand_RemoteSession(t *testing.T) {
 	for _, want := range []string{
 		"ssh -tt",
 		" -o ControlMaster=auto",
-		" -o ControlPath='/tmp/agent-deck-ssh/%r@%h:%p'",
+		" -o ControlPath='" + perUserControlPath() + "'",
 		" -o ControlPersist=600",
 		"'user@server.example'",
 		"'/usr/local/bin/agent-deck'",

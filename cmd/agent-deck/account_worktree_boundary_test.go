@@ -59,6 +59,9 @@ func TestAccountWorktreeBoundary(t *testing.T) {
 					defer cancel()
 					cmd := exec.CommandContext(ctx, channelsCLIBinary(t), args...)
 					cmd.Env = env
+					// A tmux server the CLI started may hold the output pipe after
+					// the timeout kills the CLI; bound that wait too (#2937).
+					cmd.WaitDelay = 5 * time.Second
 					out, err := cmd.CombinedOutput()
 					return string(out), err
 				}

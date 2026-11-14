@@ -96,6 +96,7 @@ func handleSessionRemove(profile string, args []string) {
 	//
 	// KillAndWait runs the SIGTERM→SIGKILL escalation synchronously so
 	// the kill completes before this short-lived CLI exits.
+	saveStoppedBeforeRemoval(storage, inst)
 	_ = inst.KillAndWait()
 	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
@@ -210,6 +211,7 @@ func bulkRemoveSessions(
 	removed := make([]removedSessionRow, 0, len(doomed))
 	removedIDs := make([]string, 0, len(doomed))
 	for _, inst := range doomed {
+		saveStoppedBeforeRemoval(storage, inst)
 		_ = inst.KillAndWait()
 		if pruneWorktree {
 			pruneSessionWorktree(inst)
@@ -266,6 +268,22 @@ func warnRemovedSessionCleanup(r session.RemovedSessionCleanup, id string, jsonO
 	}
 	if r.NotifyStateErr != nil {
 		fmt.Fprintf(os.Stderr, "warn: notify-state sweep for %s failed: %v\n", id, r.NotifyStateErr)
+	}
+}
+
+// saveStoppedBeforeRemoval saves the row as stopped before a removal kills
+// the session (#2806). The row is deleted only after the kill and, with a
+// worktree, after `git worktree remove`, which can take longer than the
+// notify daemon's 5 s death grace on a big tree. Until then the daemon would
+// read the old row with no pane and tell the parent the child "exited while
+// idle". A stopped row is a deliberate end, so it never does. Best-effort: a
+// failed write leaves the old behavior.
+func saveStoppedBeforeRemoval(storage *session.Storage, inst *session.Instance) {
+	if storage == nil || inst == nil {
+		return
+	}
+	if db := storage.GetDB(); db != nil {
+		_ = db.WriteStatus(inst.ID, string(session.StatusStopped), inst.Tool)
 	}
 }
 

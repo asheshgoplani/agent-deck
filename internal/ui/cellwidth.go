@@ -181,15 +181,10 @@ func widthConventionsAgreeRune(r rune) bool {
 // "1️⃣ 2️⃣ s..." which ansi.StringWidth measures at 10).
 //
 // To keep cellWidth(out) <= width, we shrink the budget passed to
-// ansi.Truncate by the keycap count of the input. Worst case every keycap
-// survives the truncation and each costs +1 cell vs ansi.Truncate's
-// internal measurement, so:
-//
-//	  cellWidth(out)
-//	= ansi.StringWidth(out)
-//	= ansi_truncate_internal(out) + keycapCount(out)
-//	<= (width - keycapCount(s)) + keycapCount(out)
-//	<= width                       [since keycapCount(out) <= keycapCount(s)]
+// ansi.Truncate one cell at a time until cellWidth(out) <= width. Each kept
+// keycap costs +1 cell vs ansi.Truncate's internal measurement, so the
+// budget ends at about width minus the keycaps that are kept, not minus
+// every keycap in s.
 //
 // ansi.Truncate already handles ANSI escape sequence boundaries — never cuts
 // mid-CSI, preserves SGR state through the visible prefix, and skips
@@ -202,20 +197,49 @@ func cellTruncate(s string, width int, tail string) string {
 	if cellWidth(s) <= width {
 		return s
 	}
-	n := keycapCount(s)
-	if n == 0 {
+	if keycapCount(s) == 0 {
 		return ansi.Truncate(s, width, tail)
 	}
-	adj := width - n
-	// If shrinking the budget would push tail off the right edge,
-	// drop the tail. cellWidth(out) <= width still holds because
-	// ansi.Truncate keeps its own internal-width(out) <= width, and
-	// out contains at most n keycaps. The output may not exactly
-	// fill the budget in that edge case, but it will never exceed it.
-	if adj < cellWidth(tail) {
-		return ansi.Truncate(s, width, "")
+	// Shrinking the budget by keycapCount(s) over-shrinks when most keycaps
+	// lie past the cut, and once that went below the tail's width the old
+	// fallback cut at the full width, keycaps and all. Instead shrink one
+	// cell at a time until the output fits; each step drops at most one
+	// cluster, so this ends after at most width steps.
+	for adj := width; adj > 0; adj-- {
+		t := tail
+		if adj <= cellWidth(tail) {
+			t = ""
+		}
+		if out := ansi.Truncate(s, adj, t); cellWidth(out) <= width {
+			return out
+		}
 	}
-	return ansi.Truncate(s, adj, tail)
+	return ""
+}
+
+// cellTruncateLeft is cellTruncate from the left for plain text (a path, no
+// escape sequences): it returns the longest suffix of s that starts on a
+// grapheme cluster boundary and is at most width cells wide, so a cut never
+// leaves a stray variation selector, keycap mark or half a ZWJ sequence or
+// flag at its start.
+func cellTruncateLeft(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	var starts []int
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		from, _ := g.Positions()
+		starts = append(starts, from)
+	}
+	cut := len(s)
+	for i := len(starts) - 1; i >= 0; i-- {
+		if cellWidth(s[starts[i]:]) > width {
+			break
+		}
+		cut = starts[i]
+	}
+	return s[cut:]
 }
 
 // keycapCount returns the number of extended grapheme clusters in s that end

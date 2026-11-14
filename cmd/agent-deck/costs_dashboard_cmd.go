@@ -6,9 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
-	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -78,7 +76,7 @@ func runCostsDashboard(profile, command string, args []string) error {
 		payload, err = store.DashboardGroups(period)
 	case "budgets":
 		var budgetCfg costs.BudgetConfig
-		budgetCfg, err = costBudgetConfig(cfg)
+		budgetCfg, err = session.CostBudgetConfig(cfg)
 		if err == nil {
 			payload, err = costs.NewBudgetChecker(budgetCfg, store).Dashboard()
 		}
@@ -89,31 +87,4 @@ func runCostsDashboard(profile, command string, args []string) error {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(payload)
-}
-
-// costBudgetConfig keeps the dashboard and enforcement on the same settings.
-func costBudgetConfig(cfg *session.UserConfig) (costs.BudgetConfig, error) {
-	result := costs.BudgetConfig{}
-	if cfg == nil {
-		return result, nil
-	}
-	settings := cfg.Costs.Budgets
-	result.Enforce = settings.Enforce
-	result.DailyLimit = int64(math.Round(settings.DailyLimit * 1_000_000))
-	result.WeeklyLimit = int64(math.Round(settings.WeeklyLimit * 1_000_000))
-	result.MonthlyLimit = int64(math.Round(settings.MonthlyLimit * 1_000_000))
-	result.GroupLimits = make(map[string]int64, len(settings.Groups))
-	for name, budget := range settings.Groups {
-		result.GroupLimits[name] = int64(math.Round(budget.DailyLimit * 1_000_000))
-	}
-	result.SessionLimits = make(map[string]int64, len(settings.Sessions))
-	for id, budget := range settings.Sessions {
-		result.SessionLimits[id] = int64(math.Round(budget.TotalLimit * 1_000_000))
-	}
-	var err error
-	result.Timezone, err = time.LoadLocation(cfg.Costs.GetTimezone())
-	if err != nil {
-		return result, fmt.Errorf("costs timezone: %w", err)
-	}
-	return result, nil
 }

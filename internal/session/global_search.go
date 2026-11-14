@@ -474,6 +474,10 @@ type GlobalSearchIndex struct {
 
 	// Index data (protected by atomic pointer for lock-free reads)
 	entries atomic.Pointer[[]SearchEntry]
+	// writeMu serializes every Load-copy-Store of entries so concurrent
+	// writers (initialLoad, per-file updateFile, eviction, Close) do not
+	// overwrite each other's changes.
+	writeMu sync.Mutex
 
 	// File tracking for incremental updates
 	fileTrackers map[string]*FileTracker
@@ -653,6 +657,9 @@ func measureDataSize(projectsDir string, recentDays int) (int64, error) {
 // initialLoad loads all session files on startup
 func (idx *GlobalSearchIndex) initialLoad() {
 	defer idx.wg.Done()
+	// Hold writeMu for the whole walk: the trackers it writes and the entries
+	// it publishes must change together, so updateFile calls wait until then.
+	idx.writeMu.Lock()
 
 	projectsDir := filepath.Join(idx.claudeDir, "projects")
 	cutoff := time.Time{}
@@ -745,14 +752,29 @@ func (idx *GlobalSearchIndex) initialLoad() {
 		return nil
 	})
 
-	// Store entries and mark loading complete
+	// Keep entries updateFile stored before the walk took writeMu for files
+	// the walk did not index; for walked files the walk's full read is newer.
+	if cur := idx.entries.Load(); cur != nil && len(*cur) > 0 {
+		walked := make(map[string]bool, len(entries))
+		for i := range entries {
+			walked[entries[i].FilePath] = true
+		}
+		for _, e := range *cur {
+			if !walked[e.FilePath] {
+				entries = append(entries, e)
+			} else if e.hasContent() {
+				idx.currentMemoryBytes.Add(-e.content.Size())
+			}
+		}
+	}
 	idx.entries.Store(&entries)
-	idx.loading.Store(false)
 
 	// Evict oldest entries if over memory limit
 	if idx.currentMemoryBytes.Load() > idx.memoryLimitBytes {
 		idx.evictOldestEntries()
 	}
+	idx.writeMu.Unlock()
+	idx.loading.Store(false)
 }
 
 // isUUIDFileName checks if filename matches UUID pattern
@@ -819,6 +841,15 @@ func (idx *GlobalSearchIndex) watcherLoop() {
 func (idx *GlobalSearchIndex) updateFile(path string) {
 	if !isUUIDFileName(filepath.Base(path)) {
 		return
+	}
+
+	// Serialize with other writers so tracker and entries reads are not stale.
+	// The file I/O below runs under the lock because the read offset comes
+	// from the tracker; a read that blocks also delays initialLoad and Close.
+	idx.writeMu.Lock()
+	defer idx.writeMu.Unlock()
+	if idx.ctx.Err() != nil {
+		return // closed; do not repopulate released entries
 	}
 
 	info, err := os.Stat(path)
@@ -953,6 +984,7 @@ func (idx *GlobalSearchIndex) updateFile(path string) {
 // evictOldestEntries frees memory by nil-ing content on the oldest 25% of entries.
 // Evicted entries retain metadata (Summary, CWD, SessionID) so they still appear
 // in results; search just falls back to on-disk scanning for them.
+// Caller must hold writeMu.
 func (idx *GlobalSearchIndex) evictOldestEntries() {
 	entries := idx.entries.Load()
 	if entries == nil || len(*entries) == 0 {
@@ -1132,8 +1164,10 @@ func (idx *GlobalSearchIndex) Close() {
 
 	// Release all content memory
 	emptyEntries := make([]SearchEntry, 0)
+	idx.writeMu.Lock()
 	idx.entries.Store(&emptyEntries)
 	idx.currentMemoryBytes.Store(0)
+	idx.writeMu.Unlock()
 
 	// Clear file trackers
 	idx.trackerMu.Lock()

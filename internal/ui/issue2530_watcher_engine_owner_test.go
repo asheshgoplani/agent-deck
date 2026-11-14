@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/testutil/logassert"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
 )
@@ -34,6 +35,7 @@ func captureStopLogs(t *testing.T, q *conductorQueue) *logassert.Capture {
 // When the first quits, the second takes over: it queues, and its panel feed
 // gets the events on the channels it has listened on since Init.
 func TestIssue2530_SecondTUIWaitsAndTakesOverTheEngine(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	port := issue2524FreePort(t)
 	env := newIssue2524Env(t, "hook-2530", map[string]string{"bind": "127.0.0.1", "port": port}, "", "")
 

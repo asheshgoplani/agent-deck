@@ -10,11 +10,19 @@ change an existing watcher's settings.
 Options:
   -name string
     	Watcher name (required)
+  -no-secret
+    	webhook only: accept unsigned requests from local processes (not recommended)
   -port int
     	Port for webhook adapter
+  -random-topic
+    	Generate a random, hard-to-guess topic for ntfy or slack adapter
   -secret string
-    	DEPRECATED/insecure: use $GITHUB_WEBHOOK_SECRET or --secret-file
+    	DEPRECATED/insecure: use $GITHUB_WEBHOOK_SECRET / $WEBHOOK_SECRET or --secret-file
   -secret-file string
-    	Path to a chmod-600 file holding the github HMAC secret
+    	Path to a chmod-600 file holding the github or webhook secret (webhook: generated when not given)
+  -server string
+    	ntfy server URL for ntfy or slack adapter (default https://ntfy.sh)
+  -token-file string
+    	Path to a chmod-600 file holding an ntfy access token (or set $NTFY_TOKEN)
   -topic string
     	Topic for ntfy or slack adapter

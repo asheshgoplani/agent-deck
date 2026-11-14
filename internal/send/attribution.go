@@ -110,8 +110,12 @@ func (a EnterAttribution) NudgeEnter(p EnterPresser, c PaneCapture, strip func(s
 // (Claude Code 2.1.295) or, on a build or keybinding that accepts on Enter,
 // submits the suggestion as an instruction. Withholding costs nothing: with
 // a suggestion on screen the composer holds none of our text to submit.
+// Claude's queued-messages hint (ASK-95) is the same: the composer is empty,
+// our message already sits in Claude's queue, and an Enter there could act
+// on that queue instead.
 func (a EnterAttribution) BareEnterBlocked(c PaneCapture, strip func(string) string) bool {
-	return a.EnterWouldSubmitForeignDraft(c, strip) || ComposerBodyIsSuggestion(c.Raw)
+	return a.EnterWouldSubmitForeignDraft(c, strip) || ComposerBodyIsSuggestion(c.Raw) ||
+		(c.OK && ComposerShowsQueuedHint(c.Raw, strip))
 }
 
 // EnterWouldSubmitForeignDraft reports whether a bare Enter pressed into the

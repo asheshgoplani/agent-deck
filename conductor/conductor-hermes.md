@@ -95,9 +95,12 @@ or:
 
 AUTO: frontend - told it to use the existing auth middleware
 NEED: api-fix - asking whether to run integration tests against staging or prod
+[info] docs-lane merged its PR
 ```
 
-The bridge parses your response: if it contains `NEED:` lines, those get sent to the user.
+Your response is parsed by tier: `NEED:` / `[urgent]` lines reach the user now (retired after 3 unanswered cycles), `[info]` lines are batched into a digest, everything else (`[STATUS]`, `AUTO:`) stays local.
+
+Outside a heartbeat (a wake-nudge or Stop-block turn) nothing you write reaches the user, so for a decision the user must act on now run `agent-deck conductor notify --tier urgent "<one line>"`, and `--tier info "<one line>"` for progress worth a digest. At most one urgent per decision.
 
 ## Auto-Response Guidelines
 
@@ -168,7 +171,7 @@ The bridge may forward these special commands:
 | Command | What to Do |
 |---------|------------|
 | `/status` | Run `agent-deck -p {PROFILE} status --json` and format a brief summary |
-| `/sessions` | Run `agent-deck -p {PROFILE} list --json` and list active sessions with status |
+| `/sessions` | Run `agent-deck -p {PROFILE} list --json` and list active sessions with status; skip rows with `"archived": true` |
 | `/check <name>` | Run `agent-deck -p {PROFILE} session output <name>` and summarize what it's doing |
 | `/send <name> <msg>` | Forward the message to that session via `agent-deck -p {PROFILE} session send` |
 | `/cmd <session> <slash command>` (also `cmd ...` without the leading slash) | Run a Claude Code client command (`/model <id>`, `/compact`, `/clear`, `/exit`, any slash command or skill) on that session: run `agent-deck -p {PROFILE} session command --json --wait-idle 60s <session> '<slash command>'` (single quotes, so `$(...)` and backticks in the text are never expanded; write a `'` inside it as `'\''`; add `--background` when `<session>` is you). Reply with one short line from the JSON: `after` or the first `evidence` entry when `ok`, otherwise `code` and `error`. `/cmd <session> what can I run` runs `agent-deck -p {PROFILE} session commands --json <session>` instead. Never type a slash command with `session send` or tmux. |

@@ -1,0 +1,198 @@
+#!/bin/sh
+# Template agent-deck sandbox provider for "my VM controller has an HTTP API".
+#
+# Protocol 1 (see docs/PLUG-IN-ANY-MACHINE.md):
+#   argv:   provider <create|list|status|destroy>
+#   stdin:  one JSON request object
+#   stdout: one JSON response object (exit 0)
+#   errors: message on stderr, non-zero exit
+#
+# Copy this file, then fix every TODO for your API. Needs: curl, python3.
+#
+# Env (set it in the environment agent-deck runs in, never in argv):
+#   VM_API_URL        required, base URL, for example https://vms.example.internal/api
+#   VM_API_TOKEN      required, bearer token. It is written to a 0600 curl
+#                     config file, never passed in argv.
+#   VM_SSH_USER       login user on the VMs (default dev)
+#   VM_SSH_KEY_PATH   absolute path of a 0600 private key that opens every VM.
+#                     Unset: auth type "agent" (your ssh-agent must hold the key).
+set -eu
+umask 077
+
+die() {
+	printf 'ssh-vm provider: %s\n' "$*" >&2
+	exit 1
+}
+
+action="${1:-}"
+case "$action" in
+create | list | status | destroy) ;;
+"") die "usage: provider <create|list|status|destroy> < request.json" ;;
+*) die "unknown action: $action" ;;
+esac
+
+[ -n "${VM_API_URL:-}" ] || die "VM_API_URL is not set (base URL of your VM controller API)"
+[ -n "${VM_API_TOKEN:-}" ] || die "VM_API_TOKEN is not set (API token, read from env only)"
+command -v curl >/dev/null 2>&1 || die "curl not found in PATH"
+command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
+
+case "$VM_API_TOKEN" in
+*'"'* | *'\'* | *"
+"*) die "VM_API_TOKEN contains a quote, backslash or newline" ;;
+esac
+
+URL="${VM_API_URL%/}"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/agent-deck-ssh-vm-XXXXXXXX")" || die "cannot make temp dir"
+# Only this provider's own temp dir: request, response and curl config.
+trap 'rm -rf -- "$work"' EXIT INT TERM
+chmod 0700 "$work"
+
+# Token goes into a curl config file (0600), so it never shows in ps.
+printf 'header = "Authorization: Bearer %s"\n' "$VM_API_TOKEN" >"$work/curl.cfg"
+chmod 0600 "$work/curl.cfg"
+
+head -c 1048576 >"$work/request.json"
+
+# All JSON work. python3 -I ignores the cwd and PYTHON* env.
+PY='
+import json, os, re, sys
+
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+def die(msg):
+    sys.stderr.write("ssh-vm provider: " + msg + "\n")
+    sys.exit(1)
+
+def load(path, what):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        die("cannot parse %s: %s" % (what, e))
+
+def request(action, out_body):
+    req = load(os.path.join(work, "request.json"), "request")
+    if not isinstance(req, dict) or req.get("protocol") != 1:
+        die("request speaks protocol %r, this provider speaks 1" % (req.get("protocol") if isinstance(req, dict) else None,))
+    if req.get("action") != action:
+        die("request action does not match argv action")
+    if action in ("status", "destroy"):
+        sid = req.get("id")
+        if not isinstance(sid, str) or not ID_RE.match(sid):
+            die("invalid sandbox id")
+        print(sid)
+    elif action == "create":
+        # TODO: shape the create body your API expects.
+        body = {
+            "name": req.get("name") or "",
+            "labels": dict(req.get("labels") or {}, **{"agent-deck.provider": "ssh-vm"}),
+        }
+        with open(out_body, "w") as f:
+            json.dump(body, f)
+
+def to_sandbox(vm):
+    # TODO: map your API fields onto the sandbox object.
+    if not isinstance(vm, dict):
+        die("API returned a VM that is not an object")
+    key = os.environ.get("VM_SSH_KEY_PATH", "")
+    sb = {
+        "id": str(vm.get("id", "")),                      # TODO: your id field
+        "host": vm.get("ip") or vm.get("hostname") or "", # TODO: address agent-deck can reach
+        "port": int(vm.get("ssh_port") or 22),            # TODO
+        "user": vm.get("ssh_user") or os.environ.get("VM_SSH_USER") or "dev",
+        "auth": {"type": "key", "key_path": key} if key else {"type": "agent"},
+        "labels": {"provider": "ssh-vm"},
+    }
+    state = {"running": "running", "ready": "running", "booting": "starting",
+             "pending": "starting", "stopped": "stopped"}.get(str(vm.get("status", "")).lower())
+    sb["state"] = state or "unknown"                       # TODO: your status values
+    if vm.get("expires_at"):
+        sb["expires_at"] = vm["expires_at"]               # TODO: must be RFC3339
+    if vm.get("host_key"):
+        sb["host_keys"] = [vm["host_key"]]                # TODO: "ssh-ed25519 AAAA..." form
+    for k, v in (vm.get("labels") or {}).items():
+        if isinstance(k, str) and isinstance(v, str) and k.startswith("agent-deck/"):
+            sb["labels"][k] = v
+    if not ID_RE.match(sb["id"]):
+        die("API returned an invalid VM id")
+    return sb
+
+def response(action):
+    data = load(os.path.join(work, "response.json"), "API response")
+    if action in ("create", "status"):
+        vm = data.get("vm", data) if isinstance(data, dict) else data  # TODO: envelope
+        print(json.dumps({"protocol": 1, "sandbox": to_sandbox(vm)}))
+    elif action == "list":
+        vms = data.get("vms", []) if isinstance(data, dict) else data  # TODO: envelope
+        if not isinstance(vms, list):
+            die("API list response is not a list")
+        print(json.dumps({"protocol": 1, "sandboxes": [to_sandbox(v) for v in vms]}))
+
+work = os.environ["WORK"]
+if sys.argv[1] == "request":
+    request(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")
+else:
+    response(sys.argv[2])
+'
+
+py() {
+	WORK="$work" python3 -I -c "$PY" "$@"
+}
+
+# api METHOD PATH [BODYFILE]: response body in $work/response.json; prints HTTP code.
+api() {
+	if [ -n "${3:-}" ]; then
+		curl --silent --show-error --config "$work/curl.cfg" \
+			--max-time 50 --request "$1" \
+			--header 'Content-Type: application/json' --data-binary "@$3" \
+			--output "$work/response.json" --write-out '%{http_code}' \
+			-- "$URL$2"
+	else
+		curl --silent --show-error --config "$work/curl.cfg" \
+			--max-time 50 --request "$1" \
+			--output "$work/response.json" --write-out '%{http_code}' \
+			-- "$URL$2"
+	fi
+}
+
+check() {
+	case "$1" in
+	2??) ;;
+	*) die "API returned HTTP $1 for $2" ;;
+	esac
+}
+
+case "$action" in
+create)
+	py request create "$work/body.json"
+	# TODO: your create endpoint. If create returns before the VM boots,
+	# poll status here until it has an address (agent-deck allows
+	# create_timeout_seconds, default 600).
+	code="$(api POST /vms "$work/body.json")" || die "API request failed"
+	check "$code" "create"
+	py response create
+	;;
+list)
+	py request list
+	# TODO: your list endpoint; filter to VMs agent-deck made.
+	code="$(api GET '/vms?label=agent-deck.provider%3Dssh-vm')" || die "API request failed"
+	check "$code" "list"
+	py response list
+	;;
+status)
+	id="$(py request status)"
+	code="$(api GET "/vms/$id")" || die "API request failed"
+	[ "$code" = 404 ] && die "no such sandbox: $id"
+	check "$code" "status"
+	py response status
+	;;
+destroy)
+	id="$(py request destroy)"
+	# TODO: your delete endpoint.
+	code="$(api DELETE "/vms/$id")" || die "API request failed"
+	# 404: already gone, destroy is idempotent.
+	[ "$code" = 404 ] || check "$code" "destroy"
+	printf '{"protocol":1,"ok":true}\n'
+	;;
+esac

@@ -65,7 +65,7 @@ type sendResultMsg struct{ err error }
 type historyResultMsg struct{ messages []ChatMessage }
 
 // NewBridgeModel creates a new bridge TUI model.
-func NewBridgeModel(gatewayURL, password, agentID, agentName string) *BridgeModel {
+func NewBridgeModel(gatewayURL, password, agentID, agentName string, opts ...ClientOption) *BridgeModel {
 	ti := textinput.New()
 	ti.Placeholder = "Type a message..."
 	ti.Focus()
@@ -74,7 +74,7 @@ func NewBridgeModel(gatewayURL, password, agentID, agentName string) *BridgeMode
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	client := NewClient(gatewayURL, password)
+	client := NewClient(gatewayURL, password, opts...)
 
 	m := &BridgeModel{
 		client:    client,
@@ -605,8 +605,8 @@ func (m *BridgeModel) isMyEvent(agentID, sessionKey string) bool {
 }
 
 // RunBridge launches the bridge TUI as a bubbletea program.
-func RunBridge(gatewayURL, password, agentID, agentName string) error {
-	model := NewBridgeModel(gatewayURL, password, agentID, agentName)
+func RunBridge(gatewayURL, password, agentID, agentName string, opts ...ClientOption) error {
+	model := NewBridgeModel(gatewayURL, password, agentID, agentName, opts...)
 	p := tea.NewProgram(model)
 	_, err := p.Run()
 	return err

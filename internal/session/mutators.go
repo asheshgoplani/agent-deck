@@ -58,12 +58,22 @@ const (
 	// Code prompt suggestions: children-off, on or off. Empty clears it (back
 	// to the profile/[launch] config). See prompt_suggestions.go.
 	FieldPromptSuggestions = "prompt-suggestions"
+	// FieldWaitTimeout sets the per-session wait timer (ASK-119): a Go
+	// duration of at least 1m, "off" (or 0) to disable it for this session,
+	// or empty to use [sessions] wait_timeout. Live. See wait_timer.go.
+	FieldWaitTimeout = "wait-timeout"
 	// FieldFavorite marks a session as a favourite (true/false). Live.
 	FieldFavorite = "favorite"
 	// FieldIntendedSwitch marks the session's current account+model as
 	// switched on purpose (value = reason) for DefaultIntendedSwitchTTL, for a
 	// switch made in the TUI. Empty clears. Live. See intended_switch.go.
 	FieldIntendedSwitch = "intended-switch"
+	// FieldTmuxSocket moves a STOPPED session to another tmux -L socket
+	// ("" = the default server). The next start creates its tmux session
+	// there, with that socket's [tmux.binaries] binary, and resumes the
+	// conversation as any start does. Refused while the tmux session runs:
+	// the old pane would be stranded on the old server.
+	FieldTmuxSocket = "tmux-socket"
 )
 
 var ValidMutableFields = []string{
@@ -92,9 +102,19 @@ var ValidMutableFields = []string{
 	FieldModel,
 	FieldContextLevel,
 	FieldPromptSuggestions,
+	FieldWaitTimeout,
 	FieldFavorite,
 	FieldIntendedSwitch,
+	FieldTmuxSocket,
 }
+
+// tmuxSocketNamePattern is what `tmux -L` accepts as a plain socket name here:
+// no path separators, so the socket stays in tmux's own socket directory.
+var tmuxSocketNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// tmuxSessionRunning reports whether inst's tmux session exists on its
+// current socket. A var so tests can stand in for tmux.
+var tmuxSessionRunning = func(inst *Instance) bool { return inst.Exists() }
 
 type FieldRestartPolicy int
 
@@ -493,6 +513,15 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		}
 		inst.IdleTimeoutSecs = secs
 
+	case FieldWaitTimeout:
+		// ASK-119: live; the wait timer's next tick reads the new value.
+		oldValue = inst.WaitTimeout
+		norm, perr := normalizeWaitTimeout(value)
+		if perr != nil {
+			return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
+		}
+		inst.WaitTimeout = norm
+
 	case FieldContextLevel:
 		// #2260: empty clears the override (inherit group/global); anything
 		// else must be one of none/primer/full. Restart-required — the level
@@ -558,6 +587,23 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			inst.IntendedSwitch = nil
 		} else {
 			inst.MarkIntendedSwitch(reason, DefaultIntendedSwitchTTL, time.Now())
+		}
+
+	case FieldTmuxSocket:
+		oldValue = inst.TmuxSocketName
+		name := strings.TrimSpace(value)
+		if name != "" && !tmuxSocketNamePattern.MatchString(name) {
+			return oldValue, nil, &MutationError{Field: field, Msg: fmt.Sprintf("invalid tmux socket name %q: expected letters, digits, '.', '_' or '-' (max 64), or '' for the default server", name)}
+		}
+		if name == oldValue {
+			break
+		}
+		if tmuxSessionRunning(inst) {
+			return oldValue, nil, &MutationError{Field: field, Msg: "session is running: stop it first (agent-deck session stop <id>), then set tmux-socket and start it"}
+		}
+		inst.TmuxSocketName = name
+		if ts := inst.GetTmuxSession(); ts != nil {
+			ts.SocketName = name
 		}
 
 	case FieldFavorite:

@@ -17,7 +17,14 @@
 # install script.
 name: Structure advisory
 on:
+  # Advisory, off the PR critical path (post-tag CI queue): on a PR this
+  # runs only when this workflow changes. Every push to main that touches
+  # source measures the pushed commit against the commit before it.
   pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/structure-advisory.yml'
+  push:
     branches: [main]
     paths:
       - '**/*.go'
@@ -55,7 +62,7 @@ jobs:
       - name: Check out PR head (full history for merge-base)
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: head
           fetch-depth: 0
           persist-credentials: false
@@ -70,7 +77,11 @@ jobs:
         working-directory: head
         run: |
           set -eu
-          base_sha=$(git merge-base "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
+          # On push to main there is no PR: measure against the commit
+          # before the push.
+          base_ref="${{ github.event.pull_request.base.sha || github.event.before }}"
+          head_ref="${{ github.event.pull_request.head.sha || github.sha }}"
+          base_sha=$(git merge-base "$base_ref" "$head_ref")
           echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Check out merge base

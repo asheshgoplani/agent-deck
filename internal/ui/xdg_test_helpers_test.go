@@ -5,11 +5,14 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func setXDGTestHome(t *testing.T) string {
 	t.Helper()
+	// A guard violation fails this test instead of aborting the package (#2801).
+	sandboxguard.Report(t)
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)

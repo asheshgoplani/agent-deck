@@ -42,9 +42,10 @@
     <meta name="twitter:image" content="https://asheshgoplani.github.io/agent-deck/og-image.svg">
     <meta name="twitter:creator" content="@AsheshGoplani">
 
-    <!-- Favicon - Status Grid Logo -->
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 32'%3E%3Crect fill='%231a1b26' width='48' height='32' rx='4'/%3E%3Ccircle cx='10' cy='16' r='5' fill='%239ece6a'/%3E%3Ccircle cx='24' cy='16' r='5' fill='%23e0af68'/%3E%3Ccircle cx='38' cy='16' r='5' fill='%23565f89'/%3E%3C/svg%3E">
-    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 32'%3E%3Crect fill='%231a1b26' width='48' height='32' rx='4'/%3E%3Ccircle cx='10' cy='16' r='5' fill='%239ece6a'/%3E%3Ccircle cx='24' cy='16' r='5' fill='%23e0af68'/%3E%3Ccircle cx='38' cy='16' r='5' fill='%23565f89'/%3E%3C/svg%3E">
+    <!-- Favicon: the agent-deck mark (status dots on Calm Navy) -->
+    <link rel="icon" href="favicon.ico" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
     <!-- LLM documentation reference -->
     <link rel="alternate" type="text/plain" href="https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt" title="LLM Documentation">
@@ -163,6 +164,37 @@
     }
     </script>
 
+    <!-- PostHog pageviews (EU, cookieless, pageviews only). Skipped entirely under
+         Do Not Track or Global Privacy Control. See TELEMETRY.md, "Website". -->
+    <script>
+        (function () {
+            var dnt = navigator.doNotTrack === '1' || navigator.doNotTrack === 'yes' ||
+                window.doNotTrack === '1' || navigator.msDoNotTrack === '1' ||
+                navigator.globalPrivacyControl === true;
+            if (dnt) return;
+            !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],Object.defineProperty(u,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e}}),Object.defineProperty(u.people,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(){return u.toString(1)+".people (stub)"}}),o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagResult isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+            posthog.init('phc_C2gvPAmkpoba6aB8Pyk9DwTwGV7swUU5sG4G6FcavLiv', {
+                api_host: 'https://eu.i.posthog.com',
+                persistence: 'memory',
+                respect_dnt: true,
+                capture_pageview: true,
+                capture_pageleave: false,
+                autocapture: false,
+                disable_session_recording: true,
+                disable_surveys: true,
+                person_profiles: 'identified_only',
+                // Nothing beyond pageviews, whatever the shared project settings say.
+                advanced_disable_flags: true,
+                advanced_disable_decide: true,
+                capture_heatmaps: false,
+                capture_dead_clicks: false,
+                capture_performance: false,
+                capture_exceptions: false,
+                disable_web_experiments: true
+            });
+        })();
+    </script>
+
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -263,10 +295,8 @@
     <header class="fixed top-0 left-0 right-0 z-50 bg-tn-bg/80 backdrop-blur-md border-b border-tn-border">
         <nav class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
             <a href="#" class="flex items-center gap-3 text-xl font-semibold">
-                <!-- Status Grid Logo -->
-                <span class="flex items-center gap-0.5 mono text-sm bg-tn-surface px-1.5 py-0.5 rounded border border-tn-border">
-                    <span class="text-tn-border">[</span><span class="text-tn-green">●</span><span class="text-tn-border">│</span><span class="text-tn-yellow">◐</span><span class="text-tn-border">│</span><span class="text-tn-dim">○</span><span class="text-tn-border">]</span>
-                </span>
+                <!-- agent-deck mark -->
+                <img src="logo-header-dark.svg" alt="Agent Deck" class="h-6 w-12">
             </a>
             <div class="flex items-center gap-6">
                 <a href="https://github.com/asheshgoplani/agent-deck" target="_blank" rel="noopener"
@@ -287,7 +317,7 @@
         <section class="max-w-6xl mx-auto px-6 py-4 text-center">
             <!-- Compact Logo & Title -->
             <div class="mb-4 flex flex-col md:flex-row items-center justify-center gap-4 md:gap-6">
-                <!-- Status Grid Logo SVG -->
+                <!-- agent-deck mark on its navy tile -->
                 <img src="logo.svg" alt="Agent Deck Logo" class="w-20 md:w-24">
 
                 <div class="text-center md:text-left">

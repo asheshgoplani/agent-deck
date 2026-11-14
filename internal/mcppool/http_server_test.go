@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -114,5 +116,69 @@ func TestHTTPPool_StartStop(t *testing.T) {
 	// Shutdown
 	if err := pool.Shutdown(); err != nil {
 		t.Fatalf("Shutdown() failed: %v", err)
+	}
+}
+
+// markerHealthServer answers 200 only while marker exists, so the URL is
+// unreachable until the fake MCP command (fakeMCPArgs) has spawned.
+func markerHealthServer(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	marker := filepath.Join(t.TempDir(), "up")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := os.Stat(marker); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	return ts, marker
+}
+
+func fakeMCPArgs(marker string) []string {
+	return []string{"-c", `touch "$0"; exec sleep 30`, marker}
+}
+
+// TestHTTPPool_StartAfterStop_RespawnsServer: HTTPPool.Stop cancels the
+// server's context and HTTPPool.Start reuses the same *HTTPServer, so the
+// respawn must not run on the cancelled context ("context canceled").
+func TestHTTPPool_StartAfterStop_RespawnsServer(t *testing.T) {
+	ts, marker := markerHealthServer(t)
+
+	pool := NewHTTPPool(context.Background())
+	defer func() { _ = pool.Shutdown() }()
+
+	for i := 1; i <= 2; i++ {
+		if err := pool.Start("fake", ts.URL, ts.URL, "sh", fakeMCPArgs(marker), nil, 5*time.Second); err != nil {
+			t.Fatalf("start #%d: %v", i, err)
+		}
+		server := pool.GetServer("fake")
+		if !server.IsRunning() || !server.StartedByUs() {
+			t.Fatalf("start #%d: running=%v startedByUs=%v, want both true", i, server.IsRunning(), server.StartedByUs())
+		}
+		if err := pool.Stop("fake"); err != nil {
+			t.Fatalf("stop #%d: %v", i, err)
+		}
+		if err := os.Remove(marker); err != nil {
+			t.Fatalf("remove marker: %v", err)
+		}
+	}
+}
+
+// TestHTTPServer_StartAfterParentCancel_Fails: the per-Start context still
+// derives from the parent, so a server whose pool has shut down stays down.
+func TestHTTPServer_StartAfterParentCancel_Fails(t *testing.T) {
+	ts, marker := markerHealthServer(t)
+
+	parent, cancel := context.WithCancel(context.Background())
+	server := NewHTTPServer(parent, "fake", ts.URL, ts.URL, "sh", fakeMCPArgs(marker), nil, 5*time.Second)
+	cancel()
+	_ = server.Stop()
+
+	if err := server.Start(); err == nil {
+		_ = server.Stop()
+		t.Fatal("Start after parent cancel succeeded, want error")
 	}
 }

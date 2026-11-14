@@ -15,6 +15,7 @@ import (
 // title reconciliation that originally replaced the title with a worktree
 // folder basename.
 func TestIssue1607_CreateSessionTitleLock(t *testing.T) {
+	skipIfNoTmuxBinaryUI(t)
 	tests := []struct {
 		name       string
 		title      string

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/session"
-	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
 // benchInstances builds n sessions with roughly a third archived, matching a
@@ -70,7 +70,7 @@ func BenchmarkPublishWebMenuSnapshot(b *testing.B) {
 			home.instances = instances
 			home.instancesMu.Unlock()
 			home.groupTree = session.NewGroupTree(instances)
-			home.SetWebMenuData(web.NewMemoryMenuData(nil))
+			home.SetWebMenuData(menudata.NewMemoryMenuData(nil))
 
 			b.ReportAllocs()
 			for b.Loop() {

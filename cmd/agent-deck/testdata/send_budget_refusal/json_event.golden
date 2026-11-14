@@ -1,0 +1,10 @@
+{
+  "data": {
+    "limit_usd": 1,
+    "reason": "daily global limit exceeded",
+    "used_usd": 5,
+    "via": "send"
+  },
+  "kind": "session.budget_exceeded",
+  "session_id": "<SESSION_ID>"
+}

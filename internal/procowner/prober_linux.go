@@ -3,6 +3,7 @@
 package procowner
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,10 @@ import (
 // procRoot is a variable so tests can point the reader at a fixture tree
 // instead of the live /proc. Production never changes it.
 var procRoot = "/proc"
+
+// readProcFile reads a /proc file; a variable so tests can return the errors a
+// live /proc gives only inside a race. Production never changes it.
+var readProcFile = os.ReadFile
 
 // LinuxProber reads process start identity from /proc.
 //
@@ -51,9 +56,11 @@ func (p LinuxProber) Inspect(pid int) (ProcInfo, error) {
 	// Read stat first: it is the single read that makes pid, ppid, pgid and
 	// start time one coherent observation of one process. Reading them from
 	// separate files would let a recycle slip between them.
-	data, err := os.ReadFile(filepath.Join(dir, "stat"))
+	data, err := readProcFile(filepath.Join(dir, "stat"))
 	if err != nil {
-		if os.IsNotExist(err) {
+		// ESRCH: the entry was opened while the task lived and it exited
+		// before the read (#2921). The kernel is saying the process is gone.
+		if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
 			return ProcInfo{}, fmt.Errorf("%w: pid %d", ErrNoProcess, pid)
 		}
 		return ProcInfo{}, fmt.Errorf("%w: read stat for pid %d: %v", ErrUnreadable, pid, err)
@@ -86,7 +93,7 @@ func (p LinuxProber) Inspect(pid int) (ProcInfo, error) {
 func ownerUID(dir string) (int, error) {
 	fi, err := os.Stat(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
 			return 0, fmt.Errorf("%w: %s", ErrNoProcess, dir)
 		}
 		return 0, fmt.Errorf("%w: stat %s: %v", ErrUnreadable, dir, err)

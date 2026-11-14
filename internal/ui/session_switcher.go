@@ -122,7 +122,7 @@ func (s *SessionSwitcher) Show(fromID string, allInstances []*session.Instance, 
 	// MarkAccessed'd on detach, so it sorts to the front — pre-selecting it
 	// means the first Ctrl+S step lands on the most-recent other session.
 	sort.SliceStable(list, func(i, j int) bool {
-		return list[i].LastAccessedAt.After(list[j].LastAccessedAt)
+		return list[i].GetLastAccessedAtThreadSafe().After(list[j].GetLastAccessedAtThreadSafe())
 	})
 
 	cursor := 0

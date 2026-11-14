@@ -144,15 +144,11 @@ func envFileValue(path, projectPath, key string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimPrefix(strings.TrimSpace(line), "export ")
-		v, ok := strings.CutPrefix(line, key+"=")
-		if !ok {
-			continue
-		}
-		return ExpandPath(strings.Trim(strings.TrimSpace(v), `"'`)), true
+	v, ok := envAssignmentValue(string(data), key)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	return ExpandPath(strings.Trim(strings.TrimSpace(v), `"'`)), true
 }
 
 // channelAnchorPresent reports whether the anchor entry exists at all, a

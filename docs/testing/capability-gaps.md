@@ -2,8 +2,8 @@
 
 This file records capabilities that the fast gate (Tier F) cannot verify
 deterministically and offline, so they are not faked green. They live in Tier N
-(nightly, needs creds) and show on the dashboard as greyed "NIGHTLY" cards. See
-the strategy doc, `docs/testing/2026-05-26-capability-e2e-strategy.md`.
+(nightly, needs creds) and show on the dashboard as greyed "NIGHTLY" cards. The
+suite lives in `tests/capability/` and runs through `scripts/capability-e2e.sh`.
 
 The principle (Pattern 5): a capability we cannot verify in the fast pass is
 shown as a documented gap, never as a passing test that does not actually

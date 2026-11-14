@@ -610,3 +610,202 @@ func TestEditSessionDialogAccountSwitchCancelReturnsToRow(t *testing.T) {
 		t.Fatalf("account = %q after decline, want personal", inst.Account)
 	}
 }
+
+// withDefaultAccountConfig is withAccountsConfig plus [claude].default_account
+// (#2895), and lets the caller add group or conductor overrides before save.
+func withDefaultAccountConfig(t *testing.T, defaultAccount string, edit func(*session.UserConfig), accounts ...string) {
+	t.Helper()
+	cfg := withAccountsConfig(t, accounts...)
+	cfg.Claude.DefaultAccount = defaultAccount
+	if edit != nil {
+		edit(cfg)
+	}
+	if err := session.SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+}
+
+// #2895: with [claude].default_account set, every opening starts on that slot
+// instead of inherit, and the pill says it is the default.
+func TestNewDialogAccountPreselectsConfiguredDefault(t *testing.T) {
+	withDefaultAccountConfig(t, "work", nil, "ai", "it", "work")
+
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(120, 50)
+	d.ShowInGroup("projects", "Projects", "/tmp", nil, "")
+
+	if got := d.GetClaudeAccount(); got != "work" {
+		t.Fatalf("GetClaudeAccount() = %q, want the configured default \"work\"", got)
+	}
+	view := stripAnsi(d.claudeOptions.View())
+	if !strings.Contains(view, "work (default)") {
+		t.Fatalf("the default slot's pill must read \"work (default)\":\n%s", view)
+	}
+	if strings.Contains(view, "ai (default)") || strings.Contains(view, "inherit (default)") {
+		t.Fatalf("only the configured slot may carry the default label:\n%s", view)
+	}
+
+	// ←/→ still reaches inherit and every slot.
+	p := d.claudeOptions
+	p.focusIndex = p.getFocusCount() - 1
+	seen := map[string]bool{}
+	for i := 0; i < 4; i++ {
+		p.Update(tea.KeyMsg{Type: tea.KeyRight})
+		seen[p.GetAccount()] = true
+	}
+	for _, want := range []string{"", "ai", "it", "work"} {
+		if !seen[want] {
+			t.Errorf("cycling never reached %q (saw %v)", want, seen)
+		}
+	}
+}
+
+// #2895 keeps the #924/#2152 no-leak rule: a one-off pick (another slot, or
+// inherit) is not remembered; the next opening returns to the default.
+func TestNewDialogOneOffAccountRevertsToDefault(t *testing.T) {
+	withDefaultAccountConfig(t, "work", nil, "ai", "work")
+
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(120, 50)
+	for _, oneOff := range []string{"ai", ""} {
+		d.ShowInGroup("projects", "Projects", "/tmp", nil, "")
+		d.claudeOptions.SetAccount(oneOff)
+		if got := d.GetClaudeAccount(); got != oneOff {
+			t.Fatalf("one-off pick = %q, want %q", got, oneOff)
+		}
+		d.Hide()
+		d.ShowInGroup("projects", "Projects", "/tmp", nil, "")
+		if got := d.GetClaudeAccount(); got != "work" {
+			t.Errorf("after a one-off %q the next opening carries %q, want the default \"work\"", oneOff, got)
+		}
+		d.Hide()
+	}
+}
+
+// A group or conductor config_dir is scoped more narrowly than a machine-wide
+// default, and Instance.Account would beat it, so the dialog starts on inherit
+// there.
+func TestNewDialogDefaultAccountYieldsToGroupConfigDir(t *testing.T) {
+	withDefaultAccountConfig(t, "work", func(cfg *session.UserConfig) {
+		cfg.Groups = map[string]session.GroupSettings{
+			"pinned": {Claude: session.GroupClaudeSettings{ConfigDir: "/tmp/claude-pinned"}},
+		}
+		cfg.Conductors = map[string]session.ConductorOverrides{
+			"ops": {Claude: session.ConductorClaudeSettings{ConfigDir: "/tmp/claude-ops"}},
+		}
+	}, "ai", "work")
+
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(120, 50)
+
+	d.ShowInGroup("pinned", "Pinned", "/tmp", nil, "")
+	if got := d.GetClaudeAccount(); got != "" {
+		t.Errorf("group with config_dir: account = %q, want inherit", got)
+	}
+	d.Hide()
+
+	d.ShowInGroup("pinned/child", "Child", "/tmp", nil, "")
+	if got := d.GetClaudeAccount(); got != "" {
+		t.Errorf("subgroup of a group with config_dir: account = %q, want inherit", got)
+	}
+	d.Hide()
+
+	ops := &session.Instance{ID: "cond-ops", Title: "conductor-ops", IsConductor: true, ConductorName: "ops"}
+	d.ShowInGroup("projects", "Projects", "/tmp", []*session.Instance{ops}, ops.ID)
+	if got := d.GetClaudeAccount(); got != "" {
+		t.Errorf("conductor parent with config_dir: account = %q, want inherit", got)
+	}
+	d.Hide()
+
+	d.ShowInGroup("projects", "Projects", "/tmp", []*session.Instance{ops}, "")
+	if got := d.GetClaudeAccount(); got != "work" {
+		t.Errorf("no override in play: account = %q, want the default \"work\"", got)
+	}
+}
+
+// Moving the Parent row onto or off a conductor with its own config_dir
+// re-applies the rule while the Account row is untouched; a pick the user
+// made on the Account row is never overwritten.
+func TestNewDialogDefaultAccountFollowsConductorPick(t *testing.T) {
+	withDefaultAccountConfig(t, "work", func(cfg *session.UserConfig) {
+		cfg.Conductors = map[string]session.ConductorOverrides{
+			"ops": {Claude: session.ConductorClaudeSettings{ConfigDir: "/tmp/claude-ops"}},
+		}
+	}, "ai", "work")
+	ops := &session.Instance{ID: "cond-ops", Title: "conductor-ops", IsConductor: true, ConductorName: "ops"}
+
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(120, 50)
+	d.ShowInGroup("projects", "Projects", "/tmp", []*session.Instance{ops}, "")
+	if got := d.GetClaudeAccount(); got != "work" {
+		t.Fatalf("no parent: account = %q, want the default \"work\"", got)
+	}
+	d.focusIndex = d.indexOf(focusConductor)
+	d.updateFocus()
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if d.GetParentSessionID() != ops.ID {
+		t.Fatalf("parent = %q, want %q", d.GetParentSessionID(), ops.ID)
+	}
+	if got := d.GetClaudeAccount(); got != "" {
+		t.Fatalf("moved onto a conductor with config_dir: account = %q, want inherit", got)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if got := d.GetClaudeAccount(); got != "work" {
+		t.Fatalf("moved back to no parent: account = %q, want the default \"work\"", got)
+	}
+
+	// A pick on the Account row stays put when the parent changes.
+	d.claudeOptions.cycleAccount(-1) // work -> ai, as a left arrow on the row
+	if got := d.GetClaudeAccount(); got != "ai" {
+		t.Fatalf("cycle: account = %q, want \"ai\"", got)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if got := d.GetClaudeAccount(); got != "ai" {
+		t.Fatalf("user pick overwritten on parent change: account = %q, want \"ai\"", got)
+	}
+}
+
+// A default naming a slot that was removed from config.toml lands on inherit
+// (and is logged) rather than on some neighbour, and no pill claims it.
+func TestNewDialogUnknownDefaultAccountFallsBackToInherit(t *testing.T) {
+	withDefaultAccountConfig(t, "gone", nil, "ai", "work")
+
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(120, 50)
+	d.ShowInGroup("projects", "Projects", "/tmp", nil, "")
+
+	if got := d.GetClaudeAccount(); got != "" {
+		t.Fatalf("GetClaudeAccount() = %q, want inherit for a removed slot", got)
+	}
+	if view := stripAnsi(d.claudeOptions.View()); strings.Contains(view, "(default)") {
+		t.Fatalf("no pill may carry the default label for a removed slot:\n%s", view)
+	}
+}
+
+// Fork and non-Claude tools show no account row, default or not, and a
+// non-Claude session never gets the default.
+func TestNewDialogDefaultAccountOnlyForClaude(t *testing.T) {
+	withDefaultAccountConfig(t, "work", nil, "work")
+
+	d := NewNewDialog()
+	d.SetDefaultTool("gemini")
+	d.SetSize(120, 50)
+	d.ShowInGroup("projects", "Projects", "/tmp", nil, "")
+	if got := d.GetClaudeAccount(); got != "" {
+		t.Errorf("gemini session account = %q, want none", got)
+	}
+
+	fork := NewClaudeOptionsPanelForFork()
+	cfg, _ := session.LoadUserConfig()
+	fork.SetDefaults(cfg)
+	if fork.hasAccountRow() || strings.Contains(fork.View(), "(default)") {
+		t.Error("fork mode must not offer an account row")
+	}
+}

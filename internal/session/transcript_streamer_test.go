@@ -105,6 +105,25 @@ func waitForEvents(t *testing.T, buf *safeBuf, n int, timeout time.Duration) []S
 	}
 }
 
+// waitForEventType polls buf until an event of type typ appears, failing the
+// test with the events seen so far if none arrives within timeout.
+func waitForEventType(t *testing.T, buf *safeBuf, typ string, timeout time.Duration) []StreamEvent {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		events := collectStreamEvents(t, buf.Snapshot())
+		for _, e := range events {
+			if e.Type == typ {
+				return events
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %s event within %s; got %+v", typ, timeout, events)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // TestStreamConfig_Defaults verifies the approved defaults: 10s idle, 4000
 // chars, 3 tools. These are load-bearing for the #689 streaming contract.
 func TestStreamConfig_Defaults(t *testing.T) {
@@ -242,9 +261,13 @@ func TestStreamTranscript_EmitsToolUseAndResult(t *testing.T) {
 	finalText := fmt.Sprintf(`{"type":"assistant","timestamp":%q,"uuid":"u-c","message":{"id":"msg-c","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn"}}`, ts)
 	writeJSONL(t, path, []string{toolUse, toolRes, finalText})
 
-	events := waitForEvents(t, buf, 4, 2*time.Second)
+	// The stop is the last of five events (start, tool_use, tool_result,
+	// text, stop) and is written separately from the text before it, so
+	// wait for the stop itself rather than an event count.
+	waitForEventType(t, buf, "stop", 2*time.Second)
 	cancel()
 	<-done
+	events := collectStreamEvents(t, buf.Snapshot())
 
 	var gotToolUse, gotToolResult, gotStop bool
 	for _, e := range events {

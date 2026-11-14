@@ -1,6 +1,8 @@
 package session
 
 import (
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -458,5 +460,64 @@ func TestGetAvailableGeminiModels_UpdatedFallback(t *testing.T) {
 		if m != expected[i] {
 			t.Errorf("at index %d: expected %q, got %q", i, expected[i], m)
 		}
+	}
+}
+
+// recordingTransport answers every request with a one-model list and keeps
+// the request it saw.
+type recordingTransport struct{ got *http.Request }
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.got = req
+	body := `{"models":[{"name":"models/gemini-test","supportedGenerationMethods":["generateContent"]}]}`
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}, nil
+}
+
+// TestGetAvailableGeminiModels_APIKeyInHeaderNotURL: the model list request
+// carries GOOGLE_API_KEY in the x-goog-api-key header, never in the URL,
+// where proxies, logs and error messages would record it.
+func TestGetAvailableGeminiModels_APIKeyInHeaderNotURL(t *testing.T) {
+	geminiModelCacheMu.Lock()
+	geminiModelCacheList = nil
+	geminiModelCacheTime = time.Time{}
+	geminiModelCacheMu.Unlock()
+	t.Cleanup(func() {
+		geminiModelCacheMu.Lock()
+		geminiModelCacheList = nil
+		geminiModelCacheTime = time.Time{}
+		geminiModelCacheMu.Unlock()
+	})
+	t.Setenv("GEMINI_MODELS_OVERRIDE", "")
+	const key = "test-key-not-real-123"
+	t.Setenv("GOOGLE_API_KEY", key)
+
+	rt := &recordingTransport{}
+	orig := http.DefaultTransport
+	http.DefaultTransport = rt
+	t.Cleanup(func() { http.DefaultTransport = orig })
+
+	models, err := GetAvailableGeminiModels()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 1 || models[0] != "gemini-test" {
+		t.Fatalf("models = %v, want the served list [gemini-test]", models)
+	}
+	if rt.got == nil {
+		t.Fatal("no request reached the transport")
+	}
+	if u := rt.got.URL.String(); strings.Contains(u, key) || rt.got.URL.Query().Has("key") {
+		t.Errorf("request URL carries the API key: %s", u)
+	}
+	if got := rt.got.Header.Get("x-goog-api-key"); got != key {
+		t.Errorf("x-goog-api-key header = %q, want the API key", got)
+	}
+	if rt.got.URL.Host != "generativelanguage.googleapis.com" || rt.got.URL.Path != "/v1beta/models" {
+		t.Errorf("request went to %s, want the Gemini models endpoint", rt.got.URL.Redacted())
 	}
 }

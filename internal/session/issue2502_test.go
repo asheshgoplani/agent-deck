@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestIssue2502_FreshStopWithLiveSpinner(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	for _, name := range []string{"pair-006", "pair-066", "pair-088"} {
 		t.Run(name, func(t *testing.T) {
 			b, err := os.ReadFile(filepath.Join("..", "tmux", "testdata", "issue2502", name+".txt"))
@@ -49,6 +52,7 @@ func TestIssue2502_CompletedAfterTimedSpinner(t *testing.T) {
 }
 
 func TestIssue2502_CachedIdleThenLiveSpinner(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	const composer = "\n────────────────────────\n❯\n────────────────────────\nHaiku 4.5\n"
 	inst, cleanup := startHookLagInstance(t, "review-transition", "✻ Simmered for 2s · done 8:34 PM"+composer)
 	defer cleanup()

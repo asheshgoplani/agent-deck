@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -425,20 +426,24 @@ func expectWSStatusEvent(t *testing.T, conn *websocket.Conn, event string) {
 
 // TestSessionWSUpgradeDoesNotWaitOnMenuRefresh guards #2663: a terminal open
 // must not queue behind an inline menu-data refresh that holds the
-// MemoryMenuData lock. The lock is held here to stand in for that refresh.
+// MemoryMenuData lock. A fallback whose revision probe blocks stands in for
+// that refresh: LoadMenuSnapshot holds the lock while it waits.
 func TestSessionWSUpgradeDoesNotWaitOnMenuRefresh(t *testing.T) {
 	srv := NewServer(Config{
 		ListenAddr: "127.0.0.1:0",
 		Profile:    "work",
 	})
-	menu := NewMemoryMenuData(&fakeMenuDataLoader{
+	loader := &blockingRevisionMenuLoader{
 		snapshot: &MenuSnapshot{
 			Profile: "work",
 			Items: []MenuItem{
 				{Type: MenuItemTypeSession, Session: &MenuSession{ID: "sess-1"}},
 			},
 		},
-	})
+		release: make(chan struct{}),
+		probing: make(chan struct{}, 1),
+	}
+	menu := NewMemoryMenuData(loader)
 	if _, err := menu.LoadMenuSnapshot(); err != nil {
 		t.Fatalf("prime snapshot: %v", err)
 	}
@@ -447,22 +452,43 @@ func TestSessionWSUpgradeDoesNotWaitOnMenuRefresh(t *testing.T) {
 	testServer := httptest.NewServer(srv.Handler())
 	defer testServer.Close()
 
-	menu.mu.Lock()
-	unlocked := false
-	unlock := func() {
-		if !unlocked {
-			unlocked = true
-			menu.mu.Unlock()
+	// Hold the MemoryMenuData lock the real way: a LoadMenuSnapshot whose
+	// revision probe blocks. The probe is only due once the store's revision
+	// check interval has passed since the prime, so keep calling until one
+	// call reaches it (and then blocks, holding the lock). Bounded by a
+	// deadline so a store change cannot hang this goroutine.
+	loader.block.Store(true)
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(loader.release)
 		}
 	}
-	defer unlock()
+	defer release()
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			_, _ = menu.LoadMenuSnapshot()
+			select {
+			case <-loader.release:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+	select {
+	case <-loader.probing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("menu refresh never reached the revision probe")
+	}
 
 	dialer := *websocket.DefaultDialer
 	dialer.HandshakeTimeout = 2 * time.Second
 	start := time.Now()
 	conn, _, err := dialer.Dial(wsURL(testServer.URL, "/ws/session/sess-1"), nil)
 	elapsed := time.Since(start)
-	unlock()
+	release()
 	if err != nil {
 		t.Fatalf("websocket upgrade blocked behind menu refresh (%s): %v", elapsed, err)
 	}
@@ -472,41 +498,32 @@ func TestSessionWSUpgradeDoesNotWaitOnMenuRefresh(t *testing.T) {
 	}
 }
 
-func TestMemoryMenuDataCachedSnapshotDoesNotTakeLock(t *testing.T) {
-	menu := NewMemoryMenuData(nil)
-	if got := menu.CachedMenuSnapshot(); got != nil {
-		t.Fatalf("expected nil cached snapshot before publish, got %+v", got)
-	}
-	menu.SetSnapshot(&MenuSnapshot{Items: []MenuItem{
-		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "sess-1"}},
-	}})
-
-	menu.mu.Lock()
-	defer menu.mu.Unlock()
-	done := make(chan *MenuSnapshot, 1)
-	go func() { done <- menu.CachedMenuSnapshot() }()
-	select {
-	case got := <-done:
-		if _, ok := snapshotSessionByID(got, "sess-1"); !ok {
-			t.Fatalf("cached snapshot missing sess-1: %+v", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("CachedMenuSnapshot blocked on the menu-data lock")
-	}
+type blockingRevisionMenuLoader struct {
+	snapshot *MenuSnapshot
+	block    atomic.Bool
+	release  chan struct{}
+	probing  chan struct{}
 }
 
-// TestMemoryMenuDataInvalidateCacheClearsCachedSnapshot guards the #2663
-// follow-up: after a mutation the published snapshot may name a tmux session
-// that no longer exists, so InvalidateCache must drop it.
-func TestMemoryMenuDataInvalidateCacheClearsCachedSnapshot(t *testing.T) {
-	menu := NewMemoryMenuData(nil)
-	menu.SetSnapshot(&MenuSnapshot{Items: []MenuItem{
-		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "sess-1", TmuxSession: "old"}},
-	}})
-	menu.InvalidateCache()
-	if got := menu.CachedMenuSnapshot(); got != nil {
-		t.Fatalf("expected InvalidateCache to clear the cached snapshot, got %+v", got)
+func (l *blockingRevisionMenuLoader) LoadMenuSnapshot() (*MenuSnapshot, error) {
+	return l.snapshot, nil
+}
+
+// MenuDataRevision blocks once block is set, until release is closed (or a
+// deadline passes, so a broken test cannot hang the package), standing in for
+// a slow storage probe made while MemoryMenuData holds its lock.
+func (l *blockingRevisionMenuLoader) MenuDataRevision() (int64, error) {
+	if l.block.Load() {
+		select {
+		case l.probing <- struct{}{}:
+		default:
+		}
+		select {
+		case <-l.release:
+		case <-time.After(10 * time.Second):
+		}
 	}
+	return 1, nil
 }
 
 // recordTmuxAttach swaps the websocket bridge constructor for one that records

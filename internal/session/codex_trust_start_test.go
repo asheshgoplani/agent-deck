@@ -11,6 +11,9 @@ import (
 func TestPreAcceptCodexWorkspaceTrust_SeedsHostConfig(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	// An install from before the FX-8 safe defaults (auto_trust_folders on);
+	// the new-install side is in folder_trust_policy_test.go.
+	defer SetInstallKindForTest(InstallKindExisting)()
 	codexHome := filepath.Join(tmpHome, ".codex")
 	if err := os.MkdirAll(codexHome, 0o755); err != nil {
 		t.Fatalf("mkdir codex home: %v", err)

@@ -97,7 +97,11 @@ The full spec is in [references/goal.md](goal.md). For early use, follow Phase 1
 3. Run the manager script manually every few minutes to check + nudge.
 4. After one real goal completes successfully, graduate to Phase 2 (CLI wrapper) and Phase 3 (cron'd daemon).
 
-### Future CLI surface (Phase 2)
+### Future CLI surface (Phase 2, not built)
+
+These `agent-deck goal ...` commands do not exist yet. Today, use
+`skills/agent-deck/scripts/goal/goal.sh` to start a goal and
+`skills/agent-deck/scripts/goal/manager.py` to advance it.
 
 ```bash
 agent-deck goal \

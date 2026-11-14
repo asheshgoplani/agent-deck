@@ -16,6 +16,10 @@ func TestMain(m *testing.M) { os.Exit(runTestMain(m)) }
 // into the real ~/.local/share/agent-deck, even when the update path test
 // regresses before its own leak check.
 func runTestMain(m *testing.M) int {
+	// Pin the Go build and module caches before HOME moves: the in-test
+	// `go build` of agent-deck would otherwise start from an empty cache
+	// under the isolated HOME (see testutil.PinGoCaches).
+	testutil.PinGoCaches()
 	cleanupHome := testutil.IsolateHome()
 	defer cleanupHome()
 	cleanupTmux := testutil.IsolateTmuxSocket()

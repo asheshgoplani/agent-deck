@@ -53,6 +53,7 @@ func TestReapStaleControlClients_StopsAndReportsWhenTheBudgetIsSpent(t *testing.
 // it is invisible from inside reapStaleControlClients — only the caller can be
 // wrong about it.
 func TestSweepStaleControlClients_BoundsTheWholeSweepNotJustTheQuery(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	socket := orphanLiveTestSocket(t)
 	const session = "agentdeck_sweep_budget"
 	startOrphanLiveSession(t, socket, session)

@@ -1,7 +1,16 @@
 name: Functional check (advisory)
 
 on:
+  # Advisory, off the PR critical path (post-tag CI queue): on a PR this
+  # runs only when its own files change; the code it covers is checked
+  # after merge on push to main and nightly.
   pull_request:
+    paths:
+      - 'tools/funccheck/**'
+      - '.github/workflows/functional-check.yml'
+  schedule: [{ cron: '30 2 * * *' }]
+  push:
+    branches: [main]
     paths:
       - 'cmd/**'
       - 'internal/**'
@@ -47,7 +56,7 @@ jobs:
           docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
             -v "$PWD:/src" -w /src -e HOME=/tmp/h -e GOCACHE=/tmp/h/.cache \
             -e GOMODCACHE=/go/pkg/mod -e GOTOOLCHAIN=local \
-            agentdeck-funccheck:go1.26.9 \
+            agentdeck-funccheck:go1.26.10 \
             go test -count=1 -v -timeout=2m ./tools/funccheck | tee funccheck-tests.log
       - name: Check the build against a disposable fleet
         id: fleet

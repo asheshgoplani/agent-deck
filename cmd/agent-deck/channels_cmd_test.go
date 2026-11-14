@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,9 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // channelsCLIBuildOnce builds the agent-deck binary exactly once per test
@@ -56,6 +60,10 @@ func ensureChannelsCLIBinary() error {
 
 func channelsCLIBinary(t *testing.T) string {
 	t.Helper()
+	// Every caller drives the real binary end to end (#2937): distro
+	// builders such as the nix package run `go test -short` in a slow
+	// sandbox. CI runs without -short, so these still run there.
+	testutil.SkipShort(t, "runs the real agent-deck binary end to end")
 	if err := ensureChannelsCLIBinary(); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +171,13 @@ func runAgentDeckEnv(
 // start failure instead of calling t.Fatalf, so a test may run it from a
 // goroutine of its own. A non-zero exit is an exitCode, not an error.
 func execAgentDeckEnv(bin, home, stdin string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int, err error) {
-	cmd := exec.Command(bin, args...)
+	// A CLI call that never exits fails here instead of hanging until the
+	// package's 10 minute alarm (#2937). WaitDelay bounds the wait on a
+	// grandchild (a tmux server, a daemon) still holding the output pipes.
+	ctx, cancel := context.WithTimeout(context.Background(), agentDeckExecTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.WaitDelay = 10 * time.Second
 	cmd.Env = agentDeckTestEnv(home, extraEnv)
 
 	var outBuf, errBuf strings.Builder
@@ -172,7 +186,9 @@ func execAgentDeckEnv(bin, home, stdin string, extraEnv []string, args ...string
 	cmd.Stderr = &errBuf
 
 	if runErr := cmd.Run(); runErr != nil {
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("agent-deck %s did not exit within %s: %w", strings.Join(args, " "), agentDeckExecTimeout, runErr)
+		} else if exitErr, ok := runErr.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
 			err = runErr
@@ -180,6 +196,10 @@ func execAgentDeckEnv(bin, home, stdin string, extraEnv []string, args ...string
 	}
 	return outBuf.String(), errBuf.String(), exitCode, err
 }
+
+// agentDeckExecTimeout bounds one execAgentDeckEnv call. No CLI call a test
+// makes waits this long by design; a call that does is hung.
+const agentDeckExecTimeout = 3 * time.Minute
 
 // agentDeckTestEnv is the environment runAgentDeckEnv gives the binary: the
 // parent's environment with HOME, XDG and agent-deck variables pointed at

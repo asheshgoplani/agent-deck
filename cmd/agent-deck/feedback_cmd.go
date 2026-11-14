@@ -2,14 +2,21 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
+	"github.com/asheshgoplani/agent-deck/internal/issuereport"
+	"github.com/asheshgoplani/agent-deck/internal/reportloop"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -21,7 +28,9 @@ import (
 //
 // Overridable for tests.
 var ghUserLogin = func() string {
-	out, err := exec.Command("gh", "api", "user", "-q", ".login").Output()
+	cmd := exec.Command("gh", "api", "user", "-q", ".login")
+	cmd.Env = issuereport.GhEnv() // no prompts, no update notice, childenv
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -33,6 +42,34 @@ var ghUserLogin = func() string {
 // interactively as they are emitted (see #679 follow-up: a previous strings.Builder wrapper
 // hid every prompt until after the function returned, leaving users typing at a blank cursor).
 func handleFeedback(args []string) {
+	// `agent-deck feedback bug|idea` files a structured GitHub issue
+	// (ASK-109); plain `agent-deck feedback` keeps the rating flow below.
+	if len(args) > 0 && (args[0] == "mine" || args[0] == "fixed" || args[0] == "agent-consent") {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		var code int
+		switch args[0] {
+		case "mine":
+			code = runFeedbackMine(ctx, args[1:], Version, os.Stdout)
+		case "fixed":
+			code = runFeedbackFixed(ctx, args[1:], Version, os.Stdin, os.Stdout)
+		default:
+			code = runFeedbackAgentConsent(ctx, args[1:], os.Stdin, os.Stdout)
+		}
+		stop()
+		if code != 0 {
+			exitCLI(code)
+		}
+		return
+	}
+	if len(args) > 0 && (args[0] == string(issuereport.KindBug) || args[0] == string(issuereport.KindIdea)) {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		code := runFeedbackReport(ctx, issuereport.Kind(args[0]), args[1:], Version, os.Stdin, os.Stdout)
+		stop()
+		if code != 0 {
+			exitCLI(code)
+		}
+		return
+	}
 	if err := handleFeedbackWithSender(args, Version, feedback.NewSender(), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exitCLI(1)
@@ -171,19 +208,28 @@ func handleFeedbackWithSender(args []string, version string, sender *feedback.Se
 // login from gh; when empty, the "As:" line falls back to a generic
 // string with no @ prefix.
 func renderFeedbackDisclosure(w io.Writer, body, login string) {
-	asLine := "  As:     your GitHub account   (visible to anyone viewing the discussion)"
+	renderPublicPostDisclosure(w, publicPost{subject: "This feedback",
+		where: "https://github.com/asheshgoplani/agent-deck/discussions/600",
+		place: "discussion", page: "that discussion page"}, body, login)
+}
+
+// renderPublicPostDisclosure prints the #679 disclosure for any public
+// post: where it lands, how it is posted, which account carries it and
+// the exact body. `feedback fixed` uses it for an issue comment.
+func renderPublicPostDisclosure(w io.Writer, p publicPost, body, login string) {
+	asLine := fmt.Sprintf("  As:     your GitHub account   (visible to anyone viewing the %s)", p.place)
 	if login != "" {
-		asLine = fmt.Sprintf("  As:     @%s   (your own GitHub account — visible to anyone viewing the discussion)", login)
+		asLine = fmt.Sprintf("  As:     @%s   (your own GitHub account — visible to anyone viewing the %s)", login, p.place)
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "This feedback will be posted PUBLICLY on GitHub.")
+	fmt.Fprintf(w, "%s will be posted PUBLICLY on GitHub.\n", p.subject)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  Where:  https://github.com/asheshgoplani/agent-deck/discussions/600")
+	fmt.Fprintln(w, "  Where:  "+p.where)
 	fmt.Fprintln(w, "  How:    via the `gh` GitHub CLI (already installed and authenticated on this machine)")
 	fmt.Fprintln(w, asLine)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Anyone browsing that discussion page will see your GitHub username")
+	fmt.Fprintf(w, "Anyone browsing %s will see your GitHub username\n", p.page)
 	fmt.Fprintln(w, "next to the post. If you would rather keep this private, answer N.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Exact content that will be posted (no more, no less):")
@@ -248,6 +294,12 @@ func persistFeedbackOptOut(w io.Writer, userMessage string) {
 // explicit (issue #679).
 func printFeedbackHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck feedback")
+	fmt.Fprintln(w, "       agent-deck feedback bug|idea [flags]   (report a problem; see 'agent-deck feedback bug --help')")
+	fmt.Fprintln(w, "       agent-deck feedback bug --from-agent --title T --what W [--json]   (agent sessions: no prompt, gh only)")
+	fmt.Fprintln(w, "       agent-deck feedback mine [--json]       (the reports filed from this machine and their state)")
+	fmt.Fprintln(w, "       agent-deck feedback fixed N --fixed|--not-fixed [--comment C]   (answer \"Is it fixed for you?\")")
+	fmt.Fprintln(w, "       agent-deck feedback agent-consent [--off]   (let agent sessions post with --from-agent; asks y/N)")
+	fmt.Fprintln(w, "       agent-deck whats-new [--json]           (what changed since you last looked; your fixed reports first)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Rate agent-deck and optionally leave a comment.")
 	fmt.Fprintln(w)
@@ -275,4 +327,461 @@ func printFeedbackHelp(w io.Writer) {
 	fmt.Fprintln(w, "  asking again. Maximum 3 prompts per version. Pressing `n` at any")
 	fmt.Fprintln(w, "  step is a permanent opt-out. `agent-deck feedback` always works")
 	fmt.Fprintln(w, "  on demand regardless of pacing.")
+}
+
+// ── agent-deck feedback bug|idea (ASK-109) ─────────────────────────────
+//
+// Builds a structured GitHub issue with internal/issuereport, shows the
+// FULL text, and files it only after an explicit yes: "y" at the prompt,
+// or --yes (which the Mac app passes only after its user saw the text
+// returned by --json --dry-run and clicked Send).
+
+// feedbackReportLogLines is how many debug.log lines a bug report carries.
+const feedbackReportLogLines = 40
+
+// Seams for tests; production uses the issuereport functions.
+var (
+	feedbackCollectDiagnostics = issuereport.CollectDiagnostics
+	feedbackGhReady            = issuereport.GhReady
+	feedbackFileIssue          = issuereport.File
+	feedbackBrowserAvailable   = issuereport.BrowserAvailable
+)
+
+// feedbackReportJSON is the --json output the Mac app parses.
+type feedbackReportJSON struct {
+	OK         bool     `json:"ok"`
+	DryRun     bool     `json:"dry_run,omitempty"`
+	Method     string   `json:"method,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	Labels     []string `json:"labels,omitempty"`
+	Body       string   `json:"body,omitempty"`
+	URL        string   `json:"url,omitempty"`
+	Number     int      `json:"number,omitempty"`
+	Deduped    *bool    `json:"deduped,omitempty"`
+	URLTrimmed *bool    `json:"url_trimmed,omitempty"`
+	GhReady    *bool    `json:"gh_ready,omitempty"`
+	ErrorCode  string   `json:"error_code,omitempty"`
+	Message    string   `json:"message,omitempty"`
+}
+
+const errCodeConfirmRequired = "confirm_required"
+
+func writeFeedbackJSON(w io.Writer, v feedbackReportJSON) {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false) // keep <token>/<host> placeholders and & in URLs readable
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+}
+
+// runFeedbackReport implements `agent-deck feedback bug|idea` and returns
+// the process exit code.
+func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string, version string, in io.Reader, w io.Writer) int {
+	fs := flag.NewFlagSet("feedback "+string(kind), flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	title := fs.String("title", "", "one-line title")
+	what := fs.String("what", "", "what happened (idea: the problem it would solve)")
+	expected := fs.String("expected", "", "what you expected (idea: the proposed behavior)")
+	steps := fs.String("steps", "", "steps to reproduce (idea: alternatives considered)")
+	tool := fs.String("tool", "", "agent tool involved (claude, codex, ...)")
+	surface := fs.String("surface", "cli", "where the report is filed from (cli, tui, mac app)")
+	dryRun := fs.Bool("dry-run", false, "print the exact issue and the fallback URL; send nothing")
+	jsonOut := fs.Bool("json", false, "machine output; never prompts")
+	yes := fs.Bool("yes", false, "confirm sending (required with --json)")
+	noOpen := fs.Bool("no-open", false, "print the prefilled URL instead of opening a browser")
+	fromAgent := fs.Bool("from-agent", false, "an agent session files it: no prompt, gh only, de-duplicated, labelled "+agentLabel)
+	issueSrc := fs.String("issue", "", "file exactly this previewed issue: a JSON file from --dry-run --json, or - for stdin")
+	help := fs.Bool("help", false, "show help")
+	fs.BoolVar(help, "h", false, "show help")
+
+	fail := func(code issuereport.ErrCode, msg, url string) int {
+		if *jsonOut {
+			writeFeedbackJSON(w, feedbackReportJSON{ErrorCode: string(code), Message: msg, URL: url})
+		} else {
+			if code == errCodeConfirmRequired || code == errCodeConsentRequired {
+				msg = "(" + string(code) + "): " + msg
+			} else {
+				msg = ": " + msg
+			}
+			fmt.Fprintln(w, "Error"+msg)
+			if url != "" {
+				fmt.Fprintln(w, "You can still file it in your browser:")
+				fmt.Fprintln(w, url)
+			}
+		}
+		return 1
+	}
+
+	if err := fs.Parse(args); err != nil {
+		for _, a := range args {
+			if a == "--json" || a == "-json" {
+				*jsonOut = true
+			}
+		}
+		return fail(issuereport.ErrInvalidInput, err.Error(), "")
+	}
+	if *help {
+		printFeedbackReportHelp(w, kind)
+		return 0
+	}
+	if !*dryRun && !*fromAgent {
+		// Inside an agent session, a post is an agent's.
+		asAgent, refuse := agentPostInSession(in)
+		if refuse {
+			return fail(errCodeConsentRequired, inSessionConsentMessage, "")
+		}
+		*fromAgent = asAgent
+	}
+	if *fromAgent {
+		switch {
+		case *issueSrc != "":
+			return fail(issuereport.ErrInvalidInput, "--from-agent builds the issue from --title and --what; it cannot be combined with --issue", "")
+		case !*dryRun && !agentReportsAllowed():
+			// A person's opt-in, never --yes: the agent itself passes --yes.
+			return fail(errCodeConsentRequired, agentConsentMessage, "")
+		case os.Getenv(agentInstanceEnv) == "" && !*yes && !*dryRun:
+			return fail(issuereport.ErrInvalidInput, "--from-agent runs inside an agent-deck session ("+agentInstanceEnv+" is not set); add --yes to file anyway", "")
+		case strings.TrimSpace(*title) == "" || strings.TrimSpace(*what) == "":
+			return fail(issuereport.ErrInvalidInput, "--from-agent needs --title and --what", "")
+		}
+	}
+	// Inside an agent session a real post took the
+	// --from-agent path above (or was refused), so a prompt here has a person.
+	interactive := !*jsonOut && !*dryRun && !*fromAgent
+	var reader *bufio.Reader
+	if interactive {
+		reader = bufio.NewReader(in)
+	}
+	notSent := func() int {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Not sent. Nothing left this machine.")
+		return 130
+	}
+
+	var is issuereport.Issue
+	if *issueSrc != "" {
+		// --issue: file exactly the issue the caller previewed (the Mac
+		// app shows the --dry-run --json text, then sends it back). No
+		// rebuild, no new log read: what was shown is what is filed.
+		surfaceSet := false
+		fs.Visit(func(f *flag.Flag) { surfaceSet = surfaceSet || f.Name == "surface" })
+		if *title != "" || *what != "" || *expected != "" || *steps != "" || *tool != "" || surfaceSet || fs.NArg() > 0 {
+			return fail(issuereport.ErrInvalidInput, "--issue files a previewed issue as-is; it cannot be combined with --title, --what, --expected, --steps, --tool, --surface or a title argument", "")
+		}
+		if *issueSrc == "-" && interactive && !*yes {
+			return fail(issuereport.ErrInvalidInput, "--issue - reads the issue from stdin, so the y/N prompt cannot; add --yes after showing the text, or pass a file", "")
+		}
+		var err error
+		if is, err = readPreviewedIssue(*issueSrc, in); err != nil {
+			return fail(issuereport.ErrInvalidInput, err.Error(), "")
+		}
+		clean, err := issuereport.SanitizeIssue(kind, is)
+		if err != nil {
+			return fail(issuereport.ErrInvalidInput, err.Error(), "")
+		}
+		// The scrubber removed something (a token, a host, an escape
+		// sequence). With --yes nobody sees the cleaned text before it
+		// goes, so refuse; a prompt or a dry run shows the cleaned text.
+		if (clean.Title != is.Title || clean.Body != is.Body) && *yes && !*dryRun {
+			return fail(issuereport.ErrInvalidInput, "--issue: the issue has text the scrubber removes (a secret, a host name, a control character); it is not the text a preview printed. Preview it again with --dry-run and send that", "")
+		}
+		is = clean
+	} else {
+		if *title == "" && fs.NArg() > 0 {
+			*title = strings.Join(fs.Args(), " ")
+		}
+		r := issuereport.Report{Kind: kind, Title: *title, WhatHappened: *what, Expected: *expected,
+			Steps: *steps, Tool: *tool, Surface: *surface}
+		if *fromAgent {
+			// A model wrote it: say so in the form's AI disclosure.
+			r.AIAuthored, r.AIModel = true, os.Getenv(agentModelEnv)
+		}
+		if interactive {
+			if err := promptMissingReportFields(ctx, w, reader, &r); err != nil {
+				return notSent()
+			}
+		}
+		if err := r.Validate(); err != nil {
+			return fail(issuereport.CodeOf(err), err.Error(), "")
+		}
+		logLines := 0
+		if kind == issuereport.KindBug && !*fromAgent {
+			logLines = feedbackReportLogLines
+		}
+		diag := feedbackCollectDiagnostics(version, logLines)
+		if *fromAgent {
+			// An agent posts with no prompt: version, OS and terminal only,
+			// never the debug.log tail.
+			diag.LogExcerpt = ""
+		}
+		is = issuereport.Build(r, diag)
+		if *fromAgent {
+			is = agentIssue(is)
+		}
+	}
+	if *fromAgent && !*dryRun {
+		return fileAgentReport(ctx, kind, is, *what, version, *jsonOut, w, fail)
+	}
+	fallbackURL, trimmed := issuereport.NewIssueURL(is)
+
+	switch {
+	case *jsonOut && *dryRun:
+		ready := feedbackGhReady(ctx)
+		writeFeedbackJSON(w, feedbackReportJSON{OK: true, DryRun: true, Title: is.Title, Labels: is.Labels,
+			Body: is.Body, URL: fallbackURL, URLTrimmed: &trimmed, GhReady: &ready})
+		return 0
+	case *jsonOut && !*yes:
+		writeFeedbackJSON(w, feedbackReportJSON{ErrorCode: errCodeConfirmRequired,
+			Message: "sending needs --yes after the user has seen the full issue (get it with --dry-run)"})
+		return 1
+	case *dryRun:
+		fmt.Fprintln(w, "Dry run: nothing is sent.")
+		fmt.Fprintln(w)
+		printIssuePreview(w, is)
+		if feedbackGhReady(ctx) {
+			fmt.Fprintln(w, "Would file with: gh issue create (gh is installed and logged in)")
+		} else {
+			fmt.Fprintln(w, "Would file with: your browser (gh is not installed or not logged in)")
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Prefilled GitHub URL (browser fallback):")
+		fmt.Fprintln(w, fallbackURL)
+		if trimmed {
+			fmt.Fprintf(w, "(the URL version is trimmed to stay under %d characters; the log is cut first)\n", issuereport.MaxURLLen)
+			fmt.Fprintln(w, trimmedBrowserNote)
+		}
+		return 0
+	}
+
+	if !*jsonOut {
+		ready := feedbackGhReady(ctx)
+		fmt.Fprintln(w)
+		browserTrimmed := !ready && trimmed
+		fmt.Fprintln(w, "This issue will be filed PUBLICLY on https://github.com/"+issuereport.Repo+"/issues")
+		if browserTrimmed {
+			fmt.Fprintln(w, "Full text (the browser page gets a SHORTER version of it; see the note below):")
+		} else {
+			fmt.Fprintln(w, "Full text (no more, no less):")
+		}
+		fmt.Fprintln(w)
+		printIssuePreview(w, is)
+		switch {
+		case ready:
+			who := "your GitHub account"
+			if login := ghUserLogin(); login != "" {
+				who = "@" + login
+			}
+			fmt.Fprintf(w, "How: gh issue create, as %s.\n", who)
+		case *noOpen || !feedbackBrowserAvailable():
+			fmt.Fprintln(w, "How: gh is not installed or not logged in; you get a prefilled GitHub URL and press Submit there.")
+		default:
+			fmt.Fprintln(w, "How: gh is not installed or not logged in; your browser opens a prefilled GitHub page and you press Submit there.")
+		}
+		if browserTrimmed {
+			fmt.Fprintln(w, trimmedBrowserNote)
+		}
+		if !*yes {
+			fmt.Fprint(w, "File this on GitHub? [y/N]: ")
+			answer, err := readLineCtx(ctx, reader)
+			if err != nil && ctx.Err() != nil {
+				return notSent()
+			}
+			if !isYesConfirmation(answer) {
+				fmt.Fprintln(w, "Not sent. Nothing left this machine.")
+				return 0
+			}
+		}
+	}
+
+	res, err := feedbackFileIssue(ctx, is, issuereport.FileOptions{OpenBrowser: !*jsonOut && !*noOpen})
+	if err != nil {
+		var ie *issuereport.Error
+		url := ""
+		if errors.As(err, &ie) {
+			url = ie.URL
+		}
+		code := issuereport.CodeOf(err)
+		if code == "" {
+			code = issuereport.ErrGhFailed
+		}
+		return fail(code, err.Error(), url)
+	}
+	note := ""
+	number := 0
+	if res.Method == "gh" {
+		number = issueNumberFromURL(res.URL)
+		note = recordReport(reportloop.Report{Number: number, URL: res.URL, Title: is.Title, Kind: string(kind),
+			FiledVersion: strings.TrimPrefix(version, "v")})
+	}
+	if *jsonOut {
+		out := feedbackReportJSON{OK: true, Method: res.Method, URL: res.URL, Number: number}
+		if res.Method == "browser" {
+			out.URLTrimmed = &trimmed
+		}
+		writeFeedbackJSON(w, out)
+		return 0
+	}
+	switch {
+	case res.Method == "gh":
+		fmt.Fprintln(w, "Filed: "+res.URL)
+		if note != "" {
+			fmt.Fprintln(w, note)
+		}
+	case *noOpen:
+		fmt.Fprintln(w, "Open this URL and press Submit to file it:")
+		fmt.Fprintln(w, res.URL)
+	case !res.Opened:
+		fmt.Fprintln(w, "No browser can open here (headless or SSH session). Open this URL on any machine and press Submit to file it:")
+		fmt.Fprintln(w, res.URL)
+	default:
+		fmt.Fprintln(w, "Opened your browser on the prefilled issue; press Submit there to file it.")
+		fmt.Fprintln(w, res.URL)
+	}
+	return 0
+}
+
+// trimmedBrowserNote is printed whenever the browser fallback will carry a
+// shorter body than the preview (the prefilled URL has a length limit).
+var trimmedBrowserNote = fmt.Sprintf("Note: the browser page gets a TRIMMED text: a prefilled GitHub URL must stay under %d characters, so the log excerpt (then the longest field) is cut and marked (trimmed). GitHub shows the page before you press Submit.", issuereport.MaxURLLen)
+
+// readLineCtx reads one line, or returns ctx.Err() as soon as ctx is done
+// (Ctrl-C at a prompt: signal.NotifyContext cancels ctx while the read is
+// still blocked on the terminal).
+func readLineCtx(ctx context.Context, reader *bufio.Reader) (string, error) {
+	type line struct {
+		s   string
+		err error
+	}
+	ch := make(chan line, 1)
+	go func() {
+		s, err := reader.ReadString('\n')
+		ch <- line{s, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case l := <-ch:
+		return l.s, l.err
+	}
+}
+
+// previewedIssueJSON is what --issue reads: the title, labels and body
+// keys of the --dry-run --json output (other keys are ignored).
+type previewedIssueJSON struct {
+	Title  string   `json:"title"`
+	Labels []string `json:"labels"`
+	Body   string   `json:"body"`
+}
+
+// maxIssueJSONBytes bounds what --issue reads (a body is at most
+// issuereport.MaxBodyLen; JSON escaping can double it).
+const maxIssueJSONBytes = 4*issuereport.MaxBodyLen + 64*1024
+
+func readPreviewedIssue(src string, in io.Reader) (issuereport.Issue, error) {
+	var r io.Reader
+	if src == "-" {
+		r = in
+	} else {
+		f, err := os.Open(src) // #nosec G304 -- a file the user named on the command line
+		if err != nil {
+			return issuereport.Issue{}, fmt.Errorf("--issue: %w", err)
+		}
+		defer f.Close()
+		r = f
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxIssueJSONBytes+1))
+	if err != nil {
+		return issuereport.Issue{}, fmt.Errorf("--issue: read: %w", err)
+	}
+	if len(data) > maxIssueJSONBytes {
+		return issuereport.Issue{}, fmt.Errorf("--issue: input is larger than %d bytes", maxIssueJSONBytes)
+	}
+	var p previewedIssueJSON
+	if err := json.Unmarshal(data, &p); err != nil {
+		return issuereport.Issue{}, fmt.Errorf("--issue: not the JSON --dry-run --json prints: %w", err)
+	}
+	return issuereport.Issue{Title: p.Title, Labels: p.Labels, Body: p.Body}, nil
+}
+
+// promptMissingReportFields asks for the fields not given as flags. It
+// returns ctx.Err() when the user pressed Ctrl-C at a prompt.
+func promptMissingReportFields(ctx context.Context, w io.Writer, reader *bufio.Reader, r *issuereport.Report) error {
+	var cancelled error
+	ask := func(prompt string, dst *string) {
+		if cancelled != nil || strings.TrimSpace(*dst) != "" {
+			return
+		}
+		fmt.Fprint(w, prompt)
+		line, err := readLineCtx(ctx, reader)
+		if err != nil && ctx.Err() != nil {
+			cancelled = ctx.Err()
+			return
+		}
+		*dst = strings.TrimSpace(line)
+	}
+	if r.Kind == issuereport.KindIdea {
+		ask("What problem would this solve? ", &r.WhatHappened)
+		ask("Proposed behavior: ", &r.Expected)
+		ask("Alternatives considered (optional, Enter to skip): ", &r.Steps)
+	} else {
+		ask("What happened? ", &r.WhatHappened)
+		ask("What did you expect? ", &r.Expected)
+		ask("Steps to reproduce (optional, Enter to skip): ", &r.Steps)
+	}
+	ask("Title (optional, Enter to use the first line above): ", &r.Title)
+	return cancelled
+}
+
+func printIssuePreview(w io.Writer, is issuereport.Issue) {
+	const rule = "────────────────────────────────────────────────────────"
+	fmt.Fprintln(w, rule)
+	fmt.Fprint(w, is.Text())
+	fmt.Fprintln(w, rule)
+}
+
+func printFeedbackReportHelp(w io.Writer, kind issuereport.Kind) {
+	fmt.Fprintf(w, "Usage: agent-deck feedback %s [flags]\n", kind)
+	fmt.Fprintln(w)
+	if kind == issuereport.KindIdea {
+		fmt.Fprintln(w, "Propose an idea as a GitHub issue on asheshgoplani/agent-deck (feature form).")
+	} else {
+		fmt.Fprintln(w, "Report a bug as a GitHub issue on asheshgoplani/agent-deck (bug form), with")
+		fmt.Fprintln(w, "version, OS, terminal and the last lines of the agent-deck log attached.")
+	}
+	fmt.Fprintln(w, "Home paths become ~; tokens, emails, hostnames and IPs are replaced by placeholders.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Nothing is sent until you have seen the full issue and answered y.")
+	fmt.Fprintln(w, "With gh installed and logged in it files via `gh issue create`; otherwise")
+	fmt.Fprintln(w, "it opens a prefilled GitHub page in your browser and you press Submit there.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Flags:")
+	fmt.Fprintln(w, "  --title T        one-line title (default: first line of --what)")
+	if kind == issuereport.KindIdea {
+		fmt.Fprintln(w, "  --what TEXT      what problem would this solve?")
+		fmt.Fprintln(w, "  --expected TEXT  proposed behavior")
+		fmt.Fprintln(w, "  --steps TEXT     alternatives considered (optional)")
+	} else {
+		fmt.Fprintln(w, "  --what TEXT      what happened")
+		fmt.Fprintln(w, "  --expected TEXT  what you expected")
+		fmt.Fprintln(w, "  --steps TEXT     steps to reproduce (optional)")
+	}
+	fmt.Fprintln(w, "  --tool T         agent tool involved (claude, codex, ...)")
+	fmt.Fprintln(w, "  --dry-run        print the exact issue and the prefilled URL; send nothing")
+	fmt.Fprintln(w, "  --json           JSON output, never prompts; sending also needs --yes")
+	fmt.Fprintln(w, "  --yes            confirm sending without the y/N prompt")
+	fmt.Fprintln(w, "  --no-open        print the prefilled URL instead of opening a browser")
+	fmt.Fprintln(w, "  --from-agent     for agent sessions: needs --title and --what, never prompts, never opens")
+	fmt.Fprintln(w, "                   a browser (gh only, else gh_failed), runs inside a session ("+agentInstanceEnv+")")
+	fmt.Fprintln(w, "                   or with --yes. Needs [feedback] agent_reports, which a person turns on with")
+	fmt.Fprintln(w, "                   'agent-deck feedback agent-consent' (else consent_required; --yes does not")
+	fmt.Fprintln(w, "                   stand in). Posts the scrubbed text, version, OS and terminal (no log lines),")
+	fmt.Fprintln(w, "                   marked AI-authored (model: "+agentModelEnv+" or unsure), with the "+agentLabel)
+	fmt.Fprintln(w, "                   label; an open agent issue with exactly the same title gets a \"seen again\"")
+	fmt.Fprintln(w, "                   comment instead.")
+	fmt.Fprintln(w, "                   JSON: {ok, number, url, deduped, method}. The number is kept for 'feedback mine'.")
+	fmt.Fprintln(w, "                   Inside an agent session ("+agentInstanceEnv+" set), terminal or not,")
+	fmt.Fprintln(w, "                   any post (not --dry-run) takes this path, flag or not.")
+	fmt.Fprintln(w, "  --issue FILE|-   file exactly the issue a --dry-run --json printed (title, labels,")
+	fmt.Fprintln(w, "                   body); nothing is rebuilt. With - it is read from stdin and needs --yes.")
+	fmt.Fprintln(w, "                   It is scrubbed again and must carry the form's sections; with --yes,")
+	fmt.Fprintln(w, "                   text the scrubber would change is refused (invalid_input)")
 }

@@ -2,13 +2,13 @@
     │    Welcome > Tool > Claude > [Ready]             │    
     │                                                  │    
     │    Ready to Go!                                  │    
-    │                                                  │    
-    │                                                  │    
     │    Your configuration:                           │    
-    │                                                  │    
     │      Default tool: 🤖 claude                     │    
     │      Dangerous mode: disabled                    │    
     │      Config dir: ~/.claude (default)             │    
+    │    Found a bug or have an idea? Press Z on       │    
+    │    the main screen to report it as a GitHub      │    
+    │    issue.                                        │    
     │    Press Enter to save and start using Agent     │    
     │    Deck!                                         │    
     │    Enter: save & finish | Esc: back              │    

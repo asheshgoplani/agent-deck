@@ -109,7 +109,7 @@ func TestNormalizeArgs(t *testing.T) {
 				return fs
 			},
 			args:     []string{"--", "--json", "title"},
-			expected: []string{"--json", "title"},
+			expected: []string{"--", "--json", "title"},
 		},
 		{
 			name: "session show with title containing special chars",
@@ -188,6 +188,20 @@ func TestNormalizeArgsIntegration(t *testing.T) {
 			expectJSON:       true,
 			expectQuiet:      false,
 			expectIdentifier: "Fix #147: Shift+R Restart Race",
+		},
+		{
+			name:             "flag-shaped identifier after double dash",
+			args:             []string{"--json", "--", "-q"},
+			expectJSON:       true,
+			expectQuiet:      false,
+			expectIdentifier: "-q",
+		},
+		{
+			name:             "every argument after double dash is positional",
+			args:             []string{"--", "--json", "-q"},
+			expectJSON:       false,
+			expectQuiet:      false,
+			expectIdentifier: "--json",
 		},
 	}
 
@@ -708,5 +722,18 @@ func TestErrorWithData_PreservesLargeExtraPayload(t *testing.T) {
 	}
 	if payload["1024"] != float64(1024) || payload["success"] != false {
 		t.Fatalf("large payload lost its final field or reserved success value")
+	}
+}
+
+// CodeQL go/index-out-of-bounds: a short mcp-proxy argument list must not
+// reach args[1].
+func TestMCPProxySocketArg_ShortArgsDoNotPanic(t *testing.T) {
+	for _, args := range [][]string{nil, {}, {"mcp-proxy"}} {
+		if got, ok := mcpProxySocketArg(args); ok || got != "" {
+			t.Errorf("mcpProxySocketArg(%q) = %q, %v; want \"\", false", args, got, ok)
+		}
+	}
+	if got, ok := mcpProxySocketArg([]string{"mcp-proxy", "/tmp/s.sock"}); !ok || got != "/tmp/s.sock" {
+		t.Errorf("mcpProxySocketArg = %q, %v; want /tmp/s.sock, true", got, ok)
 	}
 }

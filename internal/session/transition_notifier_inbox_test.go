@@ -216,3 +216,79 @@ func TestNotifyTransition_BusyParentStillCommittedToInbox(t *testing.T) {
 		t.Fatalf("inbox record wrong child: %+v", inbox[0])
 	}
 }
+
+// A conductor archives a worker once it has finished, and that archive can
+// land before the transition daemon commits the worker's last turn. The
+// completion record must still reach the parent's inbox: archived sessions
+// are excluded from operator alerts (desktop banners, status counts), never
+// from the parent's record of what its child did.
+func TestNotifyTransition_ArchivedChildStillCommittedToInbox(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("AGENT_DECK_HOME", "")
+	t.Setenv("AGENT_DECK_PROFILE", "")
+	ClearUserConfigCache()
+	ResetInboxFingerprintCacheForTest()
+	t.Cleanup(func() {
+		ClearUserConfigCache()
+		ResetInboxFingerprintCacheForTest()
+	})
+
+	if err := os.MkdirAll(tmpHome+"/.agent-deck", 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	profile := "_test-archived-commit"
+	storage, err := NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	defer storage.Close()
+
+	now := time.Now()
+	child := &Instance{
+		ID:              "child-archived-1",
+		Title:           "worker",
+		ProjectPath:     "/tmp/child",
+		GroupPath:       DefaultGroupPath,
+		ParentSessionID: "parent-archived-1",
+		Tool:            "shell",
+		Status:          StatusIdle,
+		CreatedAt:       now,
+		ArchivedAt:      now,
+	}
+	parent := &Instance{
+		ID:          "parent-archived-1",
+		Title:       "conductor-ops",
+		ProjectPath: "/tmp/parent",
+		GroupPath:   DefaultGroupPath,
+		Tool:        "shell",
+		Status:      StatusRunning,
+		CreatedAt:   now,
+	}
+	if err := storage.SaveWithGroups([]*Instance{child, parent}, nil); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+
+	n := NewTransitionNotifier()
+	t.Cleanup(n.Close)
+	result := n.NotifyTransition(TransitionNotificationEvent{
+		ChildSessionID: child.ID,
+		ChildTitle:     child.Title,
+		Profile:        profile,
+		FromStatus:     "running",
+		ToStatus:       "idle",
+		Timestamp:      now,
+	})
+	if result.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("archived child: expected committed_inbox, got %q (reason %q)", result.DeliveryResult, result.DeadLetterReason)
+	}
+
+	inbox, err := DrainInboxForParent(parent.ID)
+	if err != nil {
+		t.Fatalf("DrainInboxForParent: %v", err)
+	}
+	if len(inbox) != 1 || inbox[0].ChildSessionID != child.ID {
+		t.Fatalf("parent inbox = %+v, want exactly the archived child's record", inbox)
+	}
+}

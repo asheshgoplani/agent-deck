@@ -3,8 +3,8 @@
 # capability-e2e.sh: run the capability-level E2E suite, emit a JSON manifest,
 # and regenerate the HTML dashboard from it.
 #
-# This is the single entry point referenced by the capability-e2e strategy
-# (docs/testing/2026-05-26-capability-e2e-strategy.md section 4). It is safe to
+# This is the single entry point for the capability-level E2E suite
+# (tests/capability/; known gaps in docs/testing/capability-gaps.md). It is safe to
 # run standalone today; wiring it into release.yml is a one-line add later
 # (Wave 3).
 #

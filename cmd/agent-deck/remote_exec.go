@@ -38,6 +38,13 @@ func remoteCommandArgs(args []string) ([]string, error) {
 					if remoteQueueArgs(args) {
 						return append([]string(nil), args...), nil
 					}
+				case "ownership":
+					// Read-only receipt (#3108): inspect only; reconcile and
+					// abandon change state and never travel.
+					if err := validateRemoteOwnershipArgs(args[2:]); err != nil {
+						return nil, err
+					}
+					return append([]string(nil), args...), nil
 				case "switch", "switch-preview", "switch-account":
 					if err := validateRemoteSwitchArgs(args[1], args[2:]); err != nil {
 						return nil, err

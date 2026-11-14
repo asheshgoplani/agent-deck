@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -21,6 +22,7 @@ const (
 	SettingDefaultTool
 	SettingDangerousMode
 	SettingClaudeConfigDir
+	SettingClaudeDefaultAccount
 	SettingGeminiYoloMode
 	SettingCodexYoloMode
 	SettingHermesYoloMode
@@ -59,7 +61,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 39
+const settingsCount = 40
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -108,6 +110,12 @@ type SettingsPanel struct {
 	statsShowNetwork    bool
 	statsShowGPU        bool
 	statsShowLoad       bool
+
+	// [claude].default_account (#2895) and the slots its radio row offers
+	// (ConfiguredAccountNames). The value is kept verbatim, so a slot removed
+	// from config survives an unrelated save until the row is moved.
+	claudeDefaultAccount string
+	claudeAccountSlots   []string
 
 	showSessionTimestamps  bool
 	showPaneTitles         bool
@@ -298,6 +306,8 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 			s.claudeConfigIsScope = true
 		}
 	}
+	s.claudeDefaultAccount = config.Claude.DefaultAccount
+	s.claudeAccountSlots = session.ConfiguredAccountNames(config)
 
 	// Gemini settings
 	s.geminiYoloMode = config.Gemini.YoloMode
@@ -450,6 +460,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	if !s.claudeConfigIsScope {
 		config.Claude.ConfigDir = s.claudeConfigDir
 	}
+	config.Claude.DefaultAccount = s.claudeDefaultAccount
 
 	// Gemini settings
 	config.Gemini.YoloMode = s.geminiYoloMode
@@ -682,6 +693,16 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 			changed = true
 		}
 
+	case SettingClaudeDefaultAccount:
+		idx := s.defaultAccountIndex() + delta
+		if idx >= 0 && idx <= len(s.claudeAccountSlots) {
+			s.claudeDefaultAccount = ""
+			if idx > 0 {
+				s.claudeDefaultAccount = s.claudeAccountSlots[idx-1]
+			}
+			changed = true
+		}
+
 	case SettingSearchTier:
 		newVal := s.searchTier + delta
 		if newVal >= 0 && newVal < len(tierNames) {
@@ -746,6 +767,17 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 	}
 
 	return changed
+}
+
+// defaultAccountIndex is the Default account radio index: 0 = None, i+1 =
+// claudeAccountSlots[i]. A slot no longer configured reads as None.
+func (s *SettingsPanel) defaultAccountIndex() int {
+	for i, name := range s.claudeAccountSlots {
+		if name == s.claudeDefaultAccount {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // toggleValue toggles a checkbox value
@@ -902,13 +934,20 @@ func (s *SettingsPanel) handleTextEdit(msg tea.KeyMsg) (*SettingsPanel, tea.Cmd,
 
 	case "backspace":
 		if len(s.textBuffer) > 0 {
-			s.textBuffer = s.textBuffer[:len(s.textBuffer)-1]
+			// Drop the whole last rune, not one byte, so non-ASCII paths stay valid UTF-8.
+			_, size := utf8.DecodeLastRuneInString(s.textBuffer)
+			s.textBuffer = s.textBuffer[:len(s.textBuffer)-size]
 		}
 
 	default:
-		// Add character
-		if len(key) == 1 {
-			s.textBuffer += key
+		// Add typed characters. msg.String() is longer than one byte for
+		// non-ASCII runes, so append the runes themselves. Alt-chords and
+		// bracketed pastes stay ignored, as before.
+		switch {
+		case msg.Type == tea.KeyRunes && !msg.Alt && !msg.Paste:
+			s.textBuffer += string(msg.Runes)
+		case msg.Type == tea.KeySpace && !msg.Alt:
+			s.textBuffer += " "
 		}
 	}
 
@@ -938,6 +977,16 @@ func (s *SettingsPanel) View() string {
 
 	highlightStyle := lipgloss.NewStyle().
 		Background(ColorSurface)
+
+	// The Surface band alone is about 1.2:1 against the dialog background
+	// (#3039), so the focused row also gets an accent marker in its indent.
+	cursorMarker := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("▶") + " "
+	gutter := func(item SettingType) string {
+		if s.cursor == int(item) {
+			return cursorMarker
+		}
+		return "  "
+	}
 
 	warningStyle := lipgloss.NewStyle().
 		Foreground(ColorYellow)
@@ -970,7 +1019,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingTheme) {
 		themeRow = highlightStyle.Render(themeRow)
 	}
-	content.WriteString("  " + themeRow + "\n\n")
+	content.WriteString(gutter(SettingTheme) + themeRow + "\n\n")
 
 	// DEFAULT TOOL
 	content.WriteString(sectionStyle.Render("DEFAULT TOOL"))
@@ -979,7 +1028,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingDefaultTool) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + line + "\n")
+	content.WriteString(gutter(SettingDefaultTool) + line + "\n")
 	content.WriteString(dimStyle.Render("  Pre-selected when creating new sessions"))
 	content.WriteString("\n\n")
 
@@ -992,7 +1041,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingDangerousMode) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingDangerousMode) + labelStyle.Render(line) + "\n")
 
 	// Config directory
 	line = "Config directory"
@@ -1010,7 +1059,18 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingClaudeConfigDir) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingClaudeConfigDir) + labelStyle.Render(line) + "\n")
+
+	// Default account (#2895): the slot new sessions start on.
+	accountNames := append([]string{"None"}, s.claudeAccountSlots...)
+	line = "Default account: " + s.renderRadioGroup(accountNames, s.defaultAccountIndex(), s.cursor == int(SettingClaudeDefaultAccount))
+	if s.claudeDefaultAccount != "" && s.defaultAccountIndex() == 0 {
+		line += dimStyle.Render(" (" + s.claudeDefaultAccount + " not configured)")
+	}
+	if s.cursor == int(SettingClaudeDefaultAccount) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString(gutter(SettingClaudeDefaultAccount) + labelStyle.Render(line) + "\n\n")
 
 	// GEMINI
 	content.WriteString(sectionStyle.Render("GEMINI"))
@@ -1021,7 +1081,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingGeminiYoloMode) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingGeminiYoloMode) + labelStyle.Render(line) + "\n\n")
 
 	// CODEX
 	content.WriteString(sectionStyle.Render("CODEX"))
@@ -1032,7 +1092,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingCodexYoloMode) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingCodexYoloMode) + labelStyle.Render(line) + "\n\n")
 
 	// HERMES
 	content.WriteString(sectionStyle.Render("HERMES"))
@@ -1043,7 +1103,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingHermesYoloMode) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingHermesYoloMode) + labelStyle.Render(line) + "\n\n")
 
 	// UPDATES
 	content.WriteString(sectionStyle.Render("UPDATES"))
@@ -1053,25 +1113,25 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingCheckForUpdates) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingCheckForUpdates) + labelStyle.Render(line) + "\n")
 
 	line = s.renderCheckbox("Offer to install on startup", s.autoUpdate)
 	if s.cursor == int(SettingAutoUpdate) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingAutoUpdate) + labelStyle.Render(line) + "\n")
 
 	line = s.renderCheckbox("Install updates automatically", s.autoInstall)
 	if s.cursor == int(SettingAutoInstall) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingAutoInstall) + labelStyle.Render(line) + "\n")
 
 	line = s.renderCheckbox("Restart automatically after update", s.autoRestart)
 	if s.cursor == int(SettingAutoRestart) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingAutoRestart) + labelStyle.Render(line) + "\n\n")
 
 	// LOGS
 	content.WriteString(sectionStyle.Render("LOGS"))
@@ -1081,19 +1141,19 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingLogMaxSize) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line))
+	content.WriteString(gutter(SettingLogMaxSize) + labelStyle.Render(line))
 
-	line = s.renderNumber("    Lines to keep:", s.logMaxLines, "")
+	line = s.renderNumber("Lines to keep:", s.logMaxLines, "")
 	if s.cursor == int(SettingLogMaxLines) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString(labelStyle.Render(line) + "\n")
+	content.WriteString("  " + gutter(SettingLogMaxLines) + labelStyle.Render(line) + "\n")
 
 	line = s.renderCheckbox("Remove orphan logs", s.removeOrphans)
 	if s.cursor == int(SettingRemoveOrphans) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingRemoveOrphans) + labelStyle.Render(line) + "\n\n")
 
 	// GLOBAL SEARCH
 	content.WriteString(sectionStyle.Render("GLOBAL SEARCH"))
@@ -1106,19 +1166,19 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingGlobalSearchEnabled) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingGlobalSearchEnabled) + labelStyle.Render(line) + "\n")
 
 	line = "Search tier: " + s.renderRadioGroup(tierNames, s.searchTier, s.cursor == int(SettingSearchTier))
 	if s.cursor == int(SettingSearchTier) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingSearchTier) + labelStyle.Render(line) + "\n")
 
 	line = s.renderNumber("Recent days:", s.recentDays, "(0 = all)")
 	if s.cursor == int(SettingRecentDays) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingRecentDays) + labelStyle.Render(line) + "\n\n")
 
 	// PREVIEW
 	content.WriteString(sectionStyle.Render("PREVIEW"))
@@ -1128,25 +1188,25 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingShowOutput) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingShowOutput) + labelStyle.Render(line) + "\n")
 
 	line = s.renderCheckbox("Show Analytics", s.showAnalytics) + " - Claude analytics panel"
 	if s.cursor == int(SettingShowAnalytics) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingShowAnalytics) + labelStyle.Render(line) + "\n")
 
 	line = s.renderCheckbox("Show Notes", s.showNotes) + " - Session notes in preview"
 	if s.cursor == int(SettingShowNotes) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingShowNotes) + labelStyle.Render(line) + "\n")
 
 	line = s.renderNumber("Notes/Output split:", s.notesOutputSplit, "%")
 	if s.cursor == int(SettingNotesOutputSplit) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingNotesOutputSplit) + labelStyle.Render(line) + "\n\n")
 
 	// MAINTENANCE
 	content.WriteString(sectionStyle.Render("MAINTENANCE"))
@@ -1159,7 +1219,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingMaintenanceEnabled) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingMaintenanceEnabled) + labelStyle.Render(line) + "\n\n")
 
 	// SYSTEM STATS
 	content.WriteString(sectionStyle.Render("SYSTEM STATS"))
@@ -1169,19 +1229,19 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingStatsEnabled) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingStatsEnabled) + labelStyle.Render(line) + "\n")
 
 	line = s.renderNumber("Refresh interval:", s.statsRefreshSecs, "sec")
 	if s.cursor == int(SettingStatsRefresh) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingStatsRefresh) + labelStyle.Render(line) + "\n")
 
 	line = "Format: " + s.renderRadioGroup(statsFormatNames, s.statsFormat, s.cursor == int(SettingStatsFormat))
 	if s.cursor == int(SettingStatsFormat) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingStatsFormat) + labelStyle.Render(line) + "\n")
 
 	content.WriteString(dimStyle.Render("  Visible stats:") + "\n")
 
@@ -1189,19 +1249,19 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingStatsShowCPU) {
 		line = highlightStyle.Render(line)
 	}
-	cpuCol := "  " + labelStyle.Render(line)
+	cpuCol := gutter(SettingStatsShowCPU) + labelStyle.Render(line)
 
 	line = s.renderCheckbox("RAM", s.statsShowRAM)
 	if s.cursor == int(SettingStatsShowRAM) {
 		line = highlightStyle.Render(line)
 	}
-	ramCol := "  " + labelStyle.Render(line)
+	ramCol := gutter(SettingStatsShowRAM) + labelStyle.Render(line)
 
 	line = s.renderCheckbox("Disk", s.statsShowDisk)
 	if s.cursor == int(SettingStatsShowDisk) {
 		line = highlightStyle.Render(line)
 	}
-	diskCol := "  " + labelStyle.Render(line)
+	diskCol := gutter(SettingStatsShowDisk) + labelStyle.Render(line)
 
 	content.WriteString(cpuCol + ramCol + diskCol + "\n")
 
@@ -1209,19 +1269,19 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingStatsShowNetwork) {
 		line = highlightStyle.Render(line)
 	}
-	netCol := "  " + labelStyle.Render(line)
+	netCol := gutter(SettingStatsShowNetwork) + labelStyle.Render(line)
 
 	line = s.renderCheckbox("GPU", s.statsShowGPU)
 	if s.cursor == int(SettingStatsShowGPU) {
 		line = highlightStyle.Render(line)
 	}
-	gpuCol := "  " + labelStyle.Render(line)
+	gpuCol := gutter(SettingStatsShowGPU) + labelStyle.Render(line)
 
 	line = s.renderCheckbox("Load", s.statsShowLoad)
 	if s.cursor == int(SettingStatsShowLoad) {
 		line = highlightStyle.Render(line)
 	}
-	loadCol := "  " + labelStyle.Render(line)
+	loadCol := gutter(SettingStatsShowLoad) + labelStyle.Render(line)
 
 	content.WriteString(netCol + gpuCol + loadCol + "\n\n")
 
@@ -1236,7 +1296,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingSyncTitle) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingSyncTitle) + labelStyle.Render(line) + "\n\n")
 
 	// DISPLAY
 	content.WriteString(sectionStyle.Render("DISPLAY"))
@@ -1246,13 +1306,13 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingShowSessionTimestamps) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingShowSessionTimestamps) + labelStyle.Render(line) + "\n")
 
 	line = s.renderCheckbox("Show pane titles", s.showPaneTitles) + " - Task description per row"
 	if s.cursor == int(SettingShowPaneTitles) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingShowPaneTitles) + labelStyle.Render(line) + "\n\n")
 
 	// UI / TOOL PICKER
 	content.WriteString(sectionStyle.Render("TOOL PICKER"))
@@ -1265,13 +1325,13 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingShowOnlyInstalledTools) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingShowOnlyInstalledTools) + labelStyle.Render(line) + "\n")
 
 	line = "Visible tools…  (Enter to edit checklist)"
 	if s.cursor == int(SettingVisibleTools) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+	content.WriteString(gutter(SettingVisibleTools) + labelStyle.Render(line) + "\n\n")
 
 	// INTERFACE
 	content.WriteString(sectionStyle.Render("INTERFACE"))
@@ -1281,13 +1341,13 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingEmbeddedTerminal) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingEmbeddedTerminal) + labelStyle.Render(line) + "\n")
 
 	line = "Sidebar density: " + s.renderRadioGroup(sidebarDensityNames, s.sidebarDensity, s.cursor == int(SettingSidebarDensity))
 	if s.cursor == int(SettingSidebarDensity) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingSidebarDensity) + labelStyle.Render(line) + "\n")
 	content.WriteString(dimStyle.Render("    Lines per session in the embedded sidebar: 3 / 2 / 1 (1 keeps the tool marker)") + "\n")
 	content.WriteString(dimStyle.Render("    Auto: the most lines that still fit every open session on screen") + "\n\n")
 
@@ -1298,7 +1358,7 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingPrivacy) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(gutter(SettingPrivacy) + labelStyle.Render(line) + "\n")
 	content.WriteString(dimStyle.Render("    "+s.privacyTickLabel) + "\n\n")
 
 	// MCP & TOOLS
@@ -1360,41 +1420,42 @@ func (s *SettingsPanel) View() string {
 			7,  // SettingDefaultTool
 			11, // SettingDangerousMode
 			12, // SettingClaudeConfigDir
-			15, // SettingGeminiYoloMode
-			18, // SettingCodexYoloMode
-			21, // SettingHermesYoloMode
-			24, // SettingCheckForUpdates
-			25, // SettingAutoUpdate
-			26, // SettingAutoInstall
-			27, // SettingAutoRestart
-			30, // SettingLogMaxSize
-			30, // SettingLogMaxLines (shares line with LogMaxSize)
-			31, // SettingRemoveOrphans
-			34, // SettingGlobalSearchEnabled
-			35, // SettingSearchTier
-			36, // SettingRecentDays
-			39, // SettingShowOutput
-			40, // SettingShowAnalytics
-			41, // SettingShowNotes
-			42, // SettingNotesOutputSplit
-			45, // SettingMaintenanceEnabled
-			48, // SettingStatsEnabled
-			49, // SettingStatsRefresh
-			50, // SettingStatsFormat
-			52, // SettingStatsShowCPU (row with RAM, Disk)
-			52, // SettingStatsShowRAM
-			52, // SettingStatsShowDisk
-			53, // SettingStatsShowNetwork (row with GPU, Load)
-			53, // SettingStatsShowGPU
-			53, // SettingStatsShowLoad
-			56, // SettingSyncTitle (SESSIONS section, after stats)
-			59, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
-			60, // SettingShowPaneTitles (DISPLAY section, after timestamps)
-			63, // SettingShowOnlyInstalledTools (TOOL PICKER section)
-			64, // SettingVisibleTools
-			67, // SettingEmbeddedTerminal (INTERFACE section)
-			68, // SettingSidebarDensity
-			73, // SettingPrivacy (PRIVACY section)
+			13, // SettingClaudeDefaultAccount
+			16, // SettingGeminiYoloMode
+			19, // SettingCodexYoloMode
+			22, // SettingHermesYoloMode
+			25, // SettingCheckForUpdates
+			26, // SettingAutoUpdate
+			27, // SettingAutoInstall
+			28, // SettingAutoRestart
+			31, // SettingLogMaxSize
+			31, // SettingLogMaxLines (shares line with LogMaxSize)
+			32, // SettingRemoveOrphans
+			35, // SettingGlobalSearchEnabled
+			36, // SettingSearchTier
+			37, // SettingRecentDays
+			40, // SettingShowOutput
+			41, // SettingShowAnalytics
+			42, // SettingShowNotes
+			43, // SettingNotesOutputSplit
+			46, // SettingMaintenanceEnabled
+			49, // SettingStatsEnabled
+			50, // SettingStatsRefresh
+			51, // SettingStatsFormat
+			53, // SettingStatsShowCPU (row with RAM, Disk)
+			53, // SettingStatsShowRAM
+			53, // SettingStatsShowDisk
+			54, // SettingStatsShowNetwork (row with GPU, Load)
+			54, // SettingStatsShowGPU
+			54, // SettingStatsShowLoad
+			57, // SettingSyncTitle (SESSIONS section, after stats)
+			60, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			61, // SettingShowPaneTitles (DISPLAY section, after timestamps)
+			64, // SettingShowOnlyInstalledTools (TOOL PICKER section)
+			65, // SettingVisibleTools
+			68, // SettingEmbeddedTerminal (INTERFACE section)
+			69, // SettingSidebarDensity
+			74, // SettingPrivacy (PRIVACY section)
 		}
 		cursorLine := rowOf[cursorToLine[s.cursor]]
 
@@ -1490,7 +1551,8 @@ func (s *SettingsPanel) renderRadioGroup(options []string, selected int, focused
 	var parts []string
 	for i, opt := range options {
 		if i == selected {
-			style := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
+			// Underline the choice on the focused row so h/l visibly moves it.
+			style := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Underline(focused)
 			parts = append(parts, style.Render(">"+opt))
 		} else {
 			style := lipgloss.NewStyle().Foreground(ColorTextDim)

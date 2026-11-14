@@ -1,0 +1,539 @@
+#!/usr/bin/env bash
+# Example agent-deck sandbox provider: one local Docker container per sandbox.
+#
+# Protocol 1 (see docs/PLUG-IN-ANY-MACHINE.md):
+#   argv:   provider <create|list|status|destroy>
+#   stdin:  one JSON request object
+#   stdout: one JSON response object (exit 0)
+#   errors: message on stderr, non-zero exit
+#
+# Needs: docker, ssh-keygen, python3 (JSON only), coreutils timeout.
+#
+# Optional env:
+#   AGENTDECK_SANDBOX_IMAGE   image tag (default agent-deck-sandbox:p1-<hash of the build files>,
+#                             so an edited Dockerfile is rebuilt on the next create)
+#   AGENTDECK_SANDBOX_WAIT    seconds to wait for sshd after start (default 60)
+#   AGENTDECK_SANDBOX_CONFIG  provider config file (default
+#                             ${XDG_CONFIG_HOME:-$HOME/.config}/agent-deck/docker-sandbox.conf)
+#   TMPDIR                    where per-sandbox key dirs are made (default /tmp)
+#
+# Config file (optional; "key = value" lines, # comments; never sourced):
+#   project_git       = https://github.com/you/repo.git   clone into /home/dev/<name>
+#   project_dir       = /abs/local/folder                 or copy this folder in
+#   project_name      = name                              folder name (default: from the
+#                                                         URL or folder, else "demo")
+#   claude_token_file = /abs/path                         file holding a CLAUDE_CODE_OAUTH_TOKEN
+#                                                         (claude setup-token); must be a regular
+#                                                         file you own, mode 0600 or 0400, holding
+#                                                         exactly one line: the token
+#   agent_deck_binary = /abs/path/agent-deck              copy this linux binary in at create, so
+#                                                         agent-deck need not download a release
+# Each key can also come from env: AGENTDECK_SANDBOX_PROJECT_GIT, _PROJECT_DIR,
+# _PROJECT_NAME, _CLAUDE_TOKEN_FILE, _AGENT_DECK_BINARY (env wins). Without a project the sandbox gets
+# the built-in demo project at /home/dev/demo. The token is copied into the running
+# container through a pipe (never argv, never the image, never logged).
+set -euo pipefail
+umask 077
+
+IMAGE="${AGENTDECK_SANDBOX_IMAGE:-}"
+WAIT_SECONDS="${AGENTDECK_SANDBOX_WAIT:-60}"
+LABEL=agent-deck.provider=docker
+self="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+HERE="$(cd "$(dirname "$self")" && pwd -P)"
+
+die() {
+	printf 'docker provider: %s\n' "$*" >&2
+	exit 1
+}
+
+need() {
+	command -v "$1" >/dev/null 2>&1 || die "$1 not found in PATH"
+}
+
+# All JSON work happens here. python3 -I: isolated mode, ignores the cwd and
+# PYTHON* env, so nothing in the caller's directory can be imported.
+PY='
+import json, os, re, sys
+
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+LABEL_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$")
+
+def die(msg):
+    sys.stderr.write("docker provider: " + msg + "\n")
+    sys.exit(1)
+
+def printable(v):
+    return isinstance(v, str) and len(v) <= 256 and all(c.isprintable() for c in v)
+
+def read_request(action):
+    raw = sys.stdin.read(1 << 20)
+    try:
+        req = json.loads(raw)
+    except ValueError as e:
+        die("request is not valid JSON: %s" % e)
+    if not isinstance(req, dict):
+        die("request must be a JSON object")
+    if req.get("protocol") != 1:
+        die("request speaks protocol %r, this provider speaks 1" % (req.get("protocol"),))
+    if req.get("action") != action:
+        die("request action %r does not match argv action %r" % (req.get("action"), action))
+    return req
+
+def cmd_request(action, out_path=""):
+    req = read_request(action)
+    if action in ("status", "destroy"):
+        sid = req.get("id")
+        if not isinstance(sid, str) or not ID_RE.match(sid):
+            die("invalid sandbox id")
+        print(sid)
+    elif action == "create":
+        labels = req.get("labels") or {}
+        if not isinstance(labels, dict) or len(labels) > 30:
+            die("labels must be an object with at most 30 entries")
+        name = req.get("name") or ""
+        if not printable(name):
+            die("invalid name")
+        lines = []
+        for k, v in sorted(labels.items()):
+            if not LABEL_KEY_RE.match(k) or not printable(v):
+                die("invalid label %r" % (k,))
+            lines.append("agent-deck.label.%s=%s" % (k, v))
+        if name:
+            lines.append("agent-deck.name=%s" % name)
+        with open(out_path, "a") as f:
+            f.write("".join(l + "\n" for l in lines))
+
+def state_of(st):
+    s = (st or {}).get("Status", "")
+    if s == "running":
+        return "running"
+    if s in ("created", "restarting"):
+        return "starting"
+    if s in ("exited", "paused", "dead", "removing"):
+        return "stopped"
+    return "unknown"
+
+def host_port(c):
+    ports = ((c.get("NetworkSettings") or {}).get("Ports") or {}).get("22/tcp") or []
+    for p in ports:
+        if p.get("HostIp") in ("127.0.0.1", "") and str(p.get("HostPort", "")).isdigit():
+            return int(p["HostPort"])
+    hc = ((c.get("HostConfig") or {}).get("PortBindings") or {}).get("22/tcp") or []
+    for p in hc:
+        if str(p.get("HostPort", "")).isdigit():
+            return int(p["HostPort"])
+    return 0
+
+def sandbox(c):
+    labels = (c.get("Config") or {}).get("Labels") or {}
+    keydir = labels.get("agent-deck.keydir", "")
+    key = os.path.join(keydir, "id_ed25519") if keydir else ""
+    out_labels = {"provider": "docker"}
+    for k, v in labels.items():
+        if k.startswith("agent-deck.label."):
+            out_labels[k[len("agent-deck.label."):]] = v
+    if key and os.path.isfile(key) and not os.path.islink(key):
+        auth = {"type": "key", "key_path": key}
+    else:
+        # Key dir is gone (for example /tmp was cleared). Still list the
+        # container so it can be destroyed.
+        auth = {"type": "agent"}
+        out_labels["key-missing"] = "true"
+    sb = {
+        "id": c["Id"][:12],
+        "host": "127.0.0.1",
+        "port": host_port(c),
+        "user": "dev",
+        "auth": auth,
+        "labels": out_labels,
+        "state": state_of(c.get("State")),
+    }
+    try:
+        with open(os.path.join(keydir, "host_key.pub")) as f:
+            hk = f.read().split()
+        if len(hk) >= 2:
+            sb["host_keys"] = [hk[0] + " " + hk[1]]
+    except OSError:
+        pass
+    return sb
+
+def load_inspect():
+    try:
+        data = json.load(sys.stdin)
+    except ValueError as e:
+        die("cannot parse docker inspect output: %s" % e)
+    return [c for c in data if ((c.get("Config") or {}).get("Labels") or {}).get("agent-deck.provider") == "docker"]
+
+def cmd_one():
+    cs = load_inspect()
+    if not cs:
+        die("no such sandbox")
+    print(json.dumps({"protocol": 1, "sandbox": sandbox(cs[0])}))
+
+def cmd_list():
+    print(json.dumps({"protocol": 1, "sandboxes": [sandbox(c) for c in load_inspect()]}))
+
+def cmd_field(name):
+    cs = load_inspect()
+    if not cs:
+        sys.exit(2)  # not ours; the caller reports it
+    c = cs[0]
+    if name == "port":
+        print(host_port(c))
+    elif name == "keydir":
+        print(((c.get("Config") or {}).get("Labels") or {}).get("agent-deck.keydir", ""))
+    elif name == "id+keydir":
+        # Line 1 the full container id, line 2 the key dir.
+        print(c.get("Id", ""))
+        print(((c.get("Config") or {}).get("Labels") or {}).get("agent-deck.keydir", ""))
+
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+CONF_KEYS = ("project_git", "project_dir", "project_name", "claude_token_file", "agent_deck_binary")
+
+def cmd_config(path):
+    # Prints the resolved settings as shell-safe key=value lines.
+    conf = {}
+    if path and os.path.exists(path):
+        try:
+            with open(path) as f:
+                lines = f.read(1 << 16).splitlines()
+        except OSError as e:
+            die("cannot read config %s: %s" % (path, e.strerror))
+        for n, raw in enumerate(lines, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                die("config %s line %d: expected key = value" % (path, n))
+            k, v = (x.strip() for x in line.split("=", 1))
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("\"", chr(39)):
+                v = v[1:-1]
+            if k not in CONF_KEYS:
+                die("config %s line %d: unknown key %r" % (path, n, k))
+            conf[k] = v
+    for k in CONF_KEYS:
+        env = os.environ.get("AGENTDECK_SANDBOX_" + k.upper())
+        if env:
+            conf[k] = env
+    git, pdir = conf.get("project_git", ""), conf.get("project_dir", "")
+    if git and pdir:
+        die("set project_git or project_dir, not both")
+    if git and not re.match(r"^(https://|http://|ssh://|git@)[^\s]+$", git):
+        die("project_git must be an https://, http://, ssh:// or git@ URL")
+    if pdir:
+        pdir = os.path.expanduser(pdir)
+        if not os.path.isabs(pdir) or not os.path.isdir(pdir):
+            die("project_dir must be an existing absolute folder")
+    name = conf.get("project_name", "")
+    if not name:
+        src = git or pdir
+        name = re.sub(r"\.git$", "", src.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]) if src else "demo"
+    if not NAME_RE.match(name):
+        die("invalid project_name %r (letters, digits, . _ -)" % name)
+    tok = conf.get("claude_token_file", "")
+    if tok:
+        tok = os.path.expanduser(tok)
+        if not os.path.isabs(tok):
+            die("claude_token_file must be an absolute path")
+    adb = conf.get("agent_deck_binary", "")
+    if adb:
+        adb = os.path.expanduser(adb)
+        if not os.path.isabs(adb) or not os.path.isfile(adb) or not os.access(adb, os.X_OK):
+            die("agent_deck_binary must be an absolute path to an executable file")
+    for k, v in (("git", git), ("dir", pdir), ("name", name), ("token_file", tok), ("agent_deck", adb)):
+        if any(c in v for c in "\n\r\0"):
+            die("config value for %s has a line break" % k)
+        print("%s=%s" % (k, v))
+
+cmd = sys.argv[1]
+if cmd == "config":
+    cmd_config(sys.argv[2] if len(sys.argv) > 2 else "")
+elif cmd == "request":
+    cmd_request(*sys.argv[2:])
+elif cmd == "one":
+    cmd_one()
+elif cmd == "list":
+    cmd_list()
+elif cmd == "field":
+    cmd_field(sys.argv[2])
+'
+
+py() {
+	python3 -I -c "$PY" "$@"
+}
+
+valid_id() {
+	[[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+}
+
+# inspect_labelled <id>: docker inspect JSON on stdout. Exit 3 when the
+# container does not exist, 1 on any other docker error.
+inspect_labelled() {
+	local id="$1" out err
+	valid_id "$id" || die "invalid sandbox id"
+	err="$(mktemp)"
+	if out="$(docker container inspect -- "$id" 2>"$err")"; then
+		rm -f -- "$err"
+		printf '%s' "$out"
+		return 0
+	fi
+	if grep -qi 'no such' "$err"; then
+		rm -f -- "$err"
+		return 3
+	fi
+	sed 's/^/docker: /' "$err" >&2
+	rm -f -- "$err"
+	return 1
+}
+
+# build_files_hash: hash of everything the image is built from, so any edit
+# (Dockerfile, scripts, demo project) gives a new tag.
+build_files_hash() {
+	(
+		cd -- "$HERE" &&
+			find .dockerignore Dockerfile entrypoint.sh sshd_config sandbox-setup.sh demo-project -type f -print0 |
+			LC_ALL=C sort -z | xargs -0 sha256sum
+	) | sha256sum | cut -c1-12
+}
+
+# load_config: read the optional provider config into CONF_* globals.
+load_config() {
+	local file="${AGENTDECK_SANDBOX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-deck/docker-sandbox.conf}" out line
+	out="$(py config "$file")" || exit 1
+	CONF_GIT="" CONF_DIR="" CONF_NAME="demo" CONF_TOKEN_FILE="" CONF_AGENT_DECK=""
+	while IFS= read -r line; do
+		case "$line" in
+		git=*) CONF_GIT="${line#*=}" ;;
+		dir=*) CONF_DIR="${line#*=}" ;;
+		name=*) CONF_NAME="${line#*=}" ;;
+		token_file=*) CONF_TOKEN_FILE="${line#*=}" ;;
+		agent_deck=*) CONF_AGENT_DECK="${line#*=}" ;;
+		esac
+	done <<<"$out"
+}
+
+# check_token_file <path>: a regular file (not a symlink) the current user
+# owns, with no group or other permission bits, holding exactly one line.
+# Never prints any of it.
+check_token_file() {
+	local f="$1" mode
+	[ -e "$f" ] || die "claude_token_file $f does not exist"
+	[ -f "$f" ] && [ ! -L "$f" ] || die "claude_token_file $f must be a regular file, not a symlink"
+	[ -O "$f" ] || die "claude_token_file $f must be owned by you"
+	mode="$(stat -c '%a' -- "$f")" || die "cannot stat claude_token_file $f"
+	case "$mode" in
+	600 | 400) ;;
+	*) die "claude_token_file $f has mode $mode; it must be 0600 or 0400" ;;
+	esac
+	[ -s "$f" ] || die "claude_token_file $f is empty"
+	# Exactly one line holding the token: no comment, no blank line, no
+	# second line. grep -c and grep -q print no content, so the token is
+	# never shown, even in the error.
+	[ "$(grep -c '' -- "$f")" = 1 ] && grep -q '[^[:space:]]' -- "$f" && ! grep -q '^[[:space:]]*#' -- "$f" ||
+		die "claude_token_file $f must hold exactly one line, the token, with no comment or blank line (content not shown)"
+}
+
+# setup_input: the setup script's stdin. The token goes from its file into
+# the pipe with cat; it is never in a variable, argv or a log.
+setup_input() {
+	printf 'project_name=%s\n' "$CONF_NAME"
+	if [ -n "$CONF_DIR" ]; then
+		printf 'project_copied=1\n'
+	elif [ -n "$CONF_GIT" ]; then
+		printf 'project_git=%s\n' "$CONF_GIT"
+	fi
+	if [ -n "$CONF_TOKEN_FILE" ]; then
+		printf 'claude_token='
+		cat -- "$CONF_TOKEN_FILE"
+		printf '\n'
+	fi
+}
+
+# setup_sandbox <cid>: make the new container ready (project, Claude
+# onboarding, optional login), as user dev, before its sshd is used.
+setup_sandbox() {
+	local cid="$1"
+	if [ -n "$CONF_AGENT_DECK" ]; then
+		docker exec -i -u dev "$cid" sh -c 'cat >"$1" && chmod 0755 "$1"' _ /home/dev/.local/bin/agent-deck <"$CONF_AGENT_DECK" >&2 ||
+			die "cannot copy agent_deck_binary into the sandbox"
+	fi
+	if [ -n "$CONF_DIR" ]; then
+		tar -C "$CONF_DIR" -cf - . |
+			docker exec -i -u dev "$cid" sh -c 'mkdir -p "$1" && tar -C "$1" -xf -' _ "/home/dev/$CONF_NAME" >&2 ||
+			die "cannot copy project_dir into the sandbox"
+	fi
+	setup_input | docker exec -i -u dev "$cid" /usr/local/bin/agent-deck-sandbox-setup >&2 ||
+		die "sandbox setup failed (see above)"
+}
+
+ensure_image() {
+	if [ -z "${IMAGE:-}" ]; then
+		IMAGE="agent-deck-sandbox:p1-$(build_files_hash)"
+	fi
+	if docker image inspect -- "$IMAGE" >/dev/null 2>&1; then
+		return 0
+	fi
+	printf 'docker provider: building %s (first run only)\n' "$IMAGE" >&2
+	docker build --tag "$IMAGE" -- "$HERE" >&2 || die "docker build failed"
+}
+
+# remove_keydir <dir>: delete only a key dir this provider made.
+remove_keydir() {
+	local dir="$1" f
+	[ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || return 0
+	case "$(basename -- "$dir")" in
+	agent-deck-docker-*) ;;
+	*) return 0 ;;
+	esac
+	for f in id_ed25519 id_ed25519.pub host_key.pub labels; do
+		rm -f -- "$dir/$f"
+	done
+	rmdir -- "$dir" 2>/dev/null || true
+}
+
+wait_ssh() {
+	local port="$1" i=0
+	while [ "$i" -lt "$WAIT_SECONDS" ]; do
+		# Docker's port proxy accepts TCP before sshd is up, so wait for the
+		# SSH banner, not just a connect.
+		if timeout 3 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" && IFS= read -r -t 2 line <&3 && case "$line" in SSH-*) exit 0 ;; *) exit 1 ;; esac' _ "$port" 2>/dev/null; then
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+
+cleanup_create() {
+	if [ -n "${CREATE_CID:-}" ]; then
+		docker rm -f -- "$CREATE_CID" >/dev/null 2>&1 || true
+	fi
+	remove_keydir "${CREATE_KEYDIR:-}"
+}
+
+do_create() {
+	local req="$1" root port
+	# Globals, not locals: the EXIT trap runs after the function unwinds.
+	CREATE_KEYDIR=""
+	CREATE_CID=""
+	need ssh-keygen
+	need timeout
+	root="${TMPDIR:-/tmp}"
+	root="${root%/}"
+	[ -n "$root" ] || root=/tmp
+	CREATE_KEYDIR="$(mktemp -d "$root/agent-deck-docker-XXXXXXXX")" || die "cannot make key dir"
+	local keydir="$CREATE_KEYDIR"
+	chmod 0700 "$keydir"
+	trap 'cleanup_create' EXIT
+
+	load_config
+	if [ -n "$CONF_TOKEN_FILE" ]; then
+		check_token_file "$CONF_TOKEN_FILE"
+	fi
+
+	printf '%s\n' "$LABEL" "agent-deck.keydir=$keydir" >"$keydir/labels"
+	printf '%s' "$req" | py request create "$keydir/labels"
+	printf '%s\n' "agent-deck.label.project=/home/dev/$CONF_NAME" \
+		"agent-deck.label.claude-login=$([ -n "$CONF_TOKEN_FILE" ] && echo token || echo none)" >>"$keydir/labels"
+
+	ensure_image
+
+	ssh-keygen -q -t ed25519 -N '' -C agent-deck-sandbox -f "$keydir/id_ed25519" </dev/null >/dev/null ||
+		die "ssh-keygen failed"
+	chmod 0600 "$keydir/id_ed25519" "$keydir/id_ed25519.pub"
+
+	CREATE_CID="$(docker create --label-file "$keydir/labels" --publish 127.0.0.1::22 \
+		--hostname agent-deck-sandbox "$IMAGE")" || die "docker create failed"
+	local cid="$CREATE_CID"
+	docker cp "$keydir/id_ed25519.pub" "$cid:/etc/agent-deck/authorized_keys" >/dev/null ||
+		die "cannot copy public key into container"
+	docker start "$cid" >/dev/null || die "docker start failed"
+	setup_sandbox "$cid"
+
+	port="$(docker container inspect -- "$cid" | py field port)"
+	[[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -gt 0 ] || die "no published ssh port"
+	wait_ssh "$port" || die "sshd did not answer on 127.0.0.1:$port within ${WAIT_SECONDS}s"
+
+	docker exec "$cid" cat /etc/ssh/ssh_host_ed25519_key.pub >"$keydir/host_key.pub" ||
+		die "cannot read container host key"
+	chmod 0600 "$keydir/host_key.pub"
+
+	docker container inspect -- "$cid" | py one
+	trap - EXIT
+}
+
+do_list() {
+	local ids
+	ids="$(docker ps --all --quiet --no-trunc --filter "label=$LABEL")" || die "docker ps failed"
+	if [ -z "$ids" ]; then
+		printf '{"protocol":1,"sandboxes":[]}\n'
+		return 0
+	fi
+	# ids are hex container ids from docker itself.
+	# shellcheck disable=SC2086
+	docker container inspect -- $ids | py list
+}
+
+do_status() {
+	local id="$1" out rc=0
+	out="$(inspect_labelled "$id")" || rc=$?
+	[ "$rc" -eq 3 ] && die "no such sandbox: $id"
+	[ "$rc" -eq 0 ] || die "docker inspect failed"
+	printf '%s' "$out" | py one
+}
+
+do_destroy() {
+	local id="$1" out rc=0 keydir fields full_id
+	out="$(inspect_labelled "$id")" || rc=$?
+	if [ "$rc" -eq 3 ]; then
+		# Already gone: destroy is idempotent.
+		printf '{"protocol":1,"ok":true}\n'
+		return 0
+	fi
+	[ "$rc" -eq 0 ] || die "docker inspect failed"
+	# py field fails when the container does not carry our label.
+	fields="$(printf '%s' "$out" | py field id+keydir)" || die "refusing to remove $id: not an agent-deck docker sandbox"
+	full_id="" keydir=""
+	{
+		IFS= read -r full_id || true
+		IFS= read -r keydir || true
+	} <<<"$fields"
+	valid_id "$full_id" || die "docker inspect gave no container id for $id"
+	# Remove the container whose label was just checked, by its full id,
+	# not the request's id, which docker would resolve again as a prefix.
+	docker rm -f -- "$full_id" >/dev/null || die "docker rm failed"
+	remove_keydir "$keydir"
+	printf '{"protocol":1,"ok":true}\n'
+}
+
+main() {
+	local action="${1:-}" req id
+	case "$action" in
+	create | list | status | destroy) ;;
+	"") die "usage: provider <create|list|status|destroy> < request.json" ;;
+	*) die "unknown action: $action" ;;
+	esac
+	need python3
+	req="$(head -c 1048576)"
+
+	case "$action" in
+	create)
+		need docker
+		do_create "$req"
+		;;
+	list)
+		printf '%s' "$req" | py request list
+		need docker
+		do_list
+		;;
+	status | destroy)
+		id="$(printf '%s' "$req" | py request "$action")"
+		valid_id "$id" || die "invalid sandbox id"
+		need docker
+		"do_$action" "$id"
+		;;
+	esac
+}
+
+main "$@"

@@ -7,7 +7,7 @@ on:
       - 'internal/session/hook_watcher.go'
       - 'internal/session/hook_cleanup*'
       - 'internal/session/storage.go'
-      - 'internal/ui/home.go'
+      - 'internal/ui/home*.go'
       - 'internal/ui/hook_cleanup*'
       - '.github/scripts/hooks-fd/**'
       - '.github/workflows/hooks-fd-macos.yml'
@@ -76,7 +76,7 @@ jobs:
             cp "$checkout/go.mod" "$checkout/go.sum" "$context/$checkout/"
           done
           cat > "$RUNNER_TEMP/hooks-test.Dockerfile" <<'DOCKERFILE'
-          FROM golang:1.26.9
+          FROM golang:1.26.10
           RUN apt-get update && apt-get install -y --no-install-recommends tmux
           ENV GOMODCACHE=/tmp/gomod
           WORKDIR /deps
@@ -144,7 +144,7 @@ jobs:
 
   native-descriptors:
     name: Native macOS baseline red and head green
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     env:
       BASE_REVISION: 7d2302fb8a41c5fcab7a441d56729b4b6547885a

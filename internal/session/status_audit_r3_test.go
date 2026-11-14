@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // Status-detection audit, review round 3 (2026-09-23).
@@ -23,6 +25,7 @@ func piCorpusFrame(t *testing.T, name string) string {
 // subagent (real capture: "── ⠴ Working ──" banner over the running
 // subagent step) must.
 func TestAuditR3_PiDelegateTaskProseVsLiveSubagent(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	cases := []struct {
 		frame     string
 		persisted Status

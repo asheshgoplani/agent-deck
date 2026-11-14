@@ -174,13 +174,15 @@ func TestCosmeticNewDialogCommandRow_ConsistentIndentAcrossWidths(t *testing.T) 
 
 		commandRowIdx := -1
 		for i, line := range lines {
-			if strings.Contains(line, "Command:") {
+			// ASK-211: the tool row is labelled "Agent:" and starts on the
+			// label line; continuation rows follow it.
+			if strings.Contains(line, "Agent:") {
 				commandRowIdx = i
 				break
 			}
 		}
 		if commandRowIdx < 0 {
-			t.Fatalf("width=%d: Command: label not found in dialog view:\n%s", width, view)
+			t.Fatalf("width=%d: Agent: label not found in dialog view:\n%s", width, view)
 		}
 
 		// The pill row(s) follow the label until a blank content line (the

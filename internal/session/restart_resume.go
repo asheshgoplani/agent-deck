@@ -35,9 +35,12 @@ import (
 // The daemon then holds back exactly two things. The exit of the old process,
 // and only an exit: an error while the old pid is gone, the hook file holds
 // its SessionEnd (stamped no later than a second, the file's resolution, after
-// the restart recorded the new process), the new process is alive and its
-// pane shows no error (once). And the new process's first arrival at its
-// prompt with no new user or assistant record in the transcript (and no
+// the restart recorded the new process; or, once the new process's
+// SessionStart replaced it, the hook event history does), the new process is alive and its
+// pane shows no error (that one SessionEnd, however often the daemon sees
+// it; the hold lasts per token, so the next restart's token holds its own
+// old SessionEnd). And the new process's first arrival at its prompt with no new user
+// or assistant record in the transcript (and no
 // SessionEnd of its own), which becomes one info-tier line instead and
 // spends the token. Any other error after the restart is the new process's
 // and goes to the parent at once, urgent, with what is wrong instead of the
@@ -60,7 +63,8 @@ const restartResumeMaxScan = 1 << 20
 // profile has any more.
 const restartTokenOrphanAge = 24 * time.Hour
 
-// restartBootTimeout is how long the new process has to reach its prompt.
+// restartBootTimeout is how long the new process has to reach its prompt. It
+// also bounds a fresh start's wait for its boot to show (fresh_start.go).
 // AGENTDECK_RESTART_BOOT_TIMEOUT overrides it (tests).
 func restartBootTimeout() time.Duration {
 	if d, err := time.ParseDuration(os.Getenv("AGENTDECK_RESTART_BOOT_TIMEOUT")); err == nil && d > 0 {
@@ -80,6 +84,9 @@ type restartToken struct {
 	Transcript string `json:"transcript,omitempty"`
 	Offset     int64  `json:"offset,omitempty"`
 	Signal     string `json:"signal,omitempty"`
+	// TurnSeq is the hook file's turn_seq at the restart (#3012): a turn
+	// since then shows as a higher one. Recorded only; no judge reads it yet.
+	TurnSeq uint64 `json:"turn_seq,omitempty"`
 
 	// NewPID is the pane pid of the resumed process and SpawnedAt when the
 	// restart recorded it, from the spawned file; 0 while the restart runs.
@@ -96,10 +103,16 @@ type restartSpawned struct {
 func (i *Instance) SetRestartReason(reason string) { i.restartReason = reason }
 
 func restartTokenPath(id, suffix string) (string, error) {
+	return runtimeTokenPath("restart-resume", id, suffix)
+}
+
+// runtimeTokenPath is session id's token file in runtime/<dir>: restart-resume
+// here, fresh-start for a fresh start's token (fresh_start.go).
+func runtimeTokenPath(dir, id, suffix string) (string, error) {
 	if id == "" || strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
 		return "", fmt.Errorf("invalid session id %q", id)
 	}
-	return runtimeDataPath(filepath.Join("restart-resume", id+suffix))
+	return runtimeDataPath(filepath.Join(dir, id+suffix))
 }
 
 // noteRestartToken records the token before a restart. Only a child idle at
@@ -119,14 +132,19 @@ func noteRestartToken(i *Instance, now time.Time) {
 	if facts, ok := instanceTurnFacts(i); ok && (facts.Pending || facts.FinalTextPending) {
 		return
 	}
-	tok := restartToken{At: now, Reason: i.restartReason, Tool: i.Tool, OldPID: instancePanePID(i)}
+	tok := restartToken{At: now, Reason: i.restartReason, Tool: i.Tool, OldPID: instancePanePID(i), TurnSeq: readHookTurnSeq(i.ID)}
 	if path := i.GetJSONLPath(); path != "" {
 		if info, err := os.Stat(path); err == nil {
 			tok.Transcript, tok.Offset = path, info.Size()
 		}
 	}
 	if tok.Transcript == "" {
-		if tok.Signal = transitionEventOutputHash(i); tok.Signal == "" {
+		if tok.Signal = transitionEventOutputHash(i); tok.Signal == "" && strings.EqualFold(strings.TrimSpace(i.Tool), "pi") {
+			// A pi child restarted again before any new run: its file is the last
+			// restart's session_start, which names no run.
+			tok.Signal = piCarriedRunSignal(restartHookStatus(i.ID))
+		}
+		if tok.Signal == "" {
 			return
 		}
 	}
@@ -192,8 +210,12 @@ var restartPIDAlive = func(pid int) bool {
 	return err == nil && proc.Signal(syscall.Signal(0)) == nil
 }
 
-func writeRestartFile(id, suffix string, v any) {
-	path, err := restartTokenPath(id, suffix)
+func writeRestartFile(id, suffix string, v any) { writeTokenFile("restart-resume", id, suffix, v) }
+
+// writeTokenFile writes one token file atomically (a temp file renamed over
+// it), so a reader sees the old file or the new one, never part of one.
+func writeTokenFile(dir, id, suffix string, v any) {
+	path, err := runtimeTokenPath(dir, id, suffix)
 	if err != nil {
 		return
 	}
@@ -207,7 +229,7 @@ func writeRestartFile(id, suffix string, v any) {
 		}
 	}
 	if err != nil {
-		sessionLog.Warn("restart_token_write_failed", slog.String("instance_id", id), slog.String("error", err.Error()))
+		sessionLog.Warn("restart_token_write_failed", slog.String("dir", dir), slog.String("instance_id", id), slog.String("error", err.Error()))
 	}
 }
 
@@ -263,13 +285,39 @@ func paneErrorText(substate string) string {
 // restartState is the daemon's memory of its tokens: which old exits were
 // held back already, and the build an idle refresh restarted onto.
 type restartState struct {
-	mu       sync.Mutex
-	exitHeld map[string]bool
+	mu sync.Mutex
+	// exitHeld is the old process's SessionEnd held back per child, with the
+	// token it was held under. The same SessionEnd seen again under the same
+	// token (one pass judges a flip on two paths, and a later pass re-reads
+	// the light while it is still on file) is the same exit, held again; an
+	// error with any other evidence is news. A hold under another token is
+	// stale: the token can be removed by paths that never reach
+	// spendRestartToken (the notifier, the sweep, the restart process).
+	exitHeld map[string]restartExitHold
 	build    map[string]string
+	// banner holds resumed children whose token the unseen-boot info line
+	// spent (#2813): the sweep still checks their pane for an error banner
+	// until the boot timeout, as it did while the token lived.
+	banner map[string]restartBannerWatch
+}
+
+// restartExitHold is one held exit: the token's At (which token) and the
+// UpdatedAt of the SessionEnd it held (which exit).
+type restartExitHold struct {
+	tokenAt time.Time
+	stamp   time.Time
+}
+
+type restartBannerWatch struct {
+	profile string
+	tok     restartToken
+	until   time.Time
 }
 
 func (d *TransitionDaemon) restarts() *restartState {
-	d.restartOnce.Do(func() { d.restart = &restartState{exitHeld: map[string]bool{}, build: map[string]string{}} })
+	d.restartOnce.Do(func() {
+		d.restart = &restartState{exitHeld: map[string]restartExitHold{}, build: map[string]string{}, banner: map[string]restartBannerWatch{}}
+	})
 	return d.restart
 }
 
@@ -281,6 +329,10 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 	tok, ok := readRestartToken(id)
 	if !ok || ts.Before(tok.At) {
 		return tok, restartNews, ""
+	}
+	hs := restartHookStatus(id)
+	if piRunReplay(signal, hs) {
+		return tok, restartNews, "" // a carried run replayed, not the boot: the token stays
 	}
 	substate := pane()
 	isError := normalizeStatusString(to) == string(StatusError)
@@ -294,7 +346,6 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 		return tok, restartUnsettled, "" // the restart is still running; the boot timeout bounds this
 	}
 	newAlive := restartPIDAlive(tok.NewPID)
-	hs := restartHookStatus(id)
 	// The restart's kill is what ends the old Claude, so its SessionEnd can be
 	// written just after the restart recorded the new process; the hook file
 	// stamps whole seconds. A SessionEnd up to its resolution later is the old
@@ -302,15 +353,35 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 	oldEndBy := tok.SpawnedAt.Add(time.Second)
 	oldEnd := hookSessionEnd(hs) && !hs.UpdatedAt.After(oldEndBy)
 	newEnd := hookSessionEnd(hs) && hs.UpdatedAt.After(oldEndBy)
+	newStart := hs != nil && strings.EqualFold(strings.TrimSpace(hs.Event), "SessionStart") && !hs.UpdatedAt.Before(tok.SpawnedAt.Truncate(time.Second))
+	var endStamp time.Time
+	fromHistory := false
+	if oldEnd {
+		endStamp = hs.UpdatedAt
+	} else if newStart {
+		// The pass read the light from the old SessionEnd, and the new
+		// process's SessionStart replaced it in the hook file before this
+		// judgement: that SessionEnd is in the hook event history.
+		if at, ok := restartSessionEndIn(id, tok.At, oldEndBy); ok {
+			oldEnd, endStamp, fromHistory = true, at.Truncate(time.Second), true
+		}
+	}
 	rs := d.restarts()
 	switch normalizeStatusString(to) {
 	case string(StatusError):
 		// Only the old process's exit event: its pid gone, its own SessionEnd,
 		// the new process alive. Anything else is the new process's error.
+		// One exit is ours, seen as often as the light shows it: a hold
+		// already spent on another SessionEnd does not cover this one.
 		rs.mu.Lock()
-		ours := newAlive && oldEnd && tok.OldPID > 0 && tok.OldPID != tok.NewPID && !restartPIDAlive(tok.OldPID) && !rs.exitHeld[id]
+		ours := newAlive && oldEnd && tok.OldPID > 0 && tok.OldPID != tok.NewPID && !restartPIDAlive(tok.OldPID)
+		if held, seen := rs.exitHeld[id]; ours && seen && held.tokenAt.Equal(tok.At) && !held.stamp.Equal(endStamp) {
+			// The history line takes its own clock read after the hook
+			// file's: the same SessionEnd can read one second later there.
+			ours = fromHistory && held.stamp.Equal(endStamp.Add(-time.Second))
+		}
 		if ours {
-			rs.exitHeld[id] = true
+			rs.exitHeld[id] = restartExitHold{tokenAt: tok.At, stamp: endStamp}
 		}
 		rs.mu.Unlock()
 		if ours {
@@ -322,7 +393,7 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 		}
 		return tok, restartNewError, "Restarted, but the resumed session reports an error."
 	case string(StatusWaiting), string(StatusIdle):
-		if newAlive && !newEnd && restartTranscriptUnchanged(tok, transcript, signal) {
+		if newAlive && !newEnd && restartTurnUnchanged(tok, transcript, signal, hs) {
 			d.spendRestartToken(id)
 			return tok, restartBoot, ""
 		}
@@ -344,6 +415,68 @@ func restartTranscriptUnchanged(tok restartToken, transcript, signal string) boo
 		return tok.Transcript == transcript && noTurnSince(tok.Transcript, tok.Offset)
 	}
 	return signal != "" && signal == tok.Signal
+}
+
+// restartTurnUnchanged is restartTranscriptUnchanged with the child's hook file.
+// A settles-capable pi child's token holds its last run's key. The kill writes
+// nothing (pi writes no session_shutdown under respawn-pane -k), and the resumed
+// pi's session_start, the only lifecycle write, rebuilds the file with no run:
+// the flip carries no signal, and the file names the runs before it only in the
+// list it carries forward. The newest entry being the token's run is the
+// same "no new turn".
+func restartTurnUnchanged(tok restartToken, transcript, signal string, hs *HookStatus) bool {
+	if restartTranscriptUnchanged(tok, transcript, signal) {
+		return true
+	}
+	if signal != "" || tok.Transcript != "" || !strings.HasPrefix(tok.Signal, "pi-run:") {
+		return false
+	}
+	return piCarriedRunSignal(hs) == tok.Signal
+}
+
+// piCarriedRunSignal is the key of the newest run a settles-capable pi child's
+// file carries forward when the file itself names no run (a session_start or
+// session_shutdown rebuilt it).
+func piCarriedRunSignal(hs *HookStatus) string {
+	if hs == nil || (hs.Event != "session_start" && hs.Event != "session_shutdown") ||
+		(hs.Settles && hs.PiRunID != "") || hs.PiOrphanCount == 0 {
+		return ""
+	}
+	return piRunSignal(hs.PiOrphanRuns[hs.PiOrphanCount-1].RunID)
+}
+
+// piRunReplay reports whether signal is a run the pi child's file carries
+// forward (recordOrphanedPiRuns replaying it): a run from before the boot, so it
+// is not the boot and must not spend the token. That holds for the token's own
+// run too: a replay of it is that run's own record, which the parent has not had
+// yet (a run whose replay is stamped after the token: finished between the
+// token and the kill, or cut short by it, with the daemon down across its end).
+func piRunReplay(signal string, hs *HookStatus) bool {
+	if !strings.HasPrefix(signal, "pi-run:") || hs == nil {
+		return false
+	}
+	for _, o := range hs.PiOrphanRuns[:hs.PiOrphanCount] {
+		if piRunSignal(o.RunID) == signal {
+			return true
+		}
+	}
+	return false
+}
+
+// piBackAtPrompt reports whether the resumed pi wrote its session_start after
+// the token: it is at its prompt, whatever the status reads (past the hook
+// window the status comes from the pane). Under the kill the old pi writes
+// nothing after the token (no session_shutdown), and the resumed pi can write
+// before the restart records it, so the bound is the token, not the spawn record.
+func piBackAtPrompt(tok restartToken, hs *HookStatus) bool {
+	if hs == nil || hs.Event != "session_start" {
+		return false
+	}
+	at := hs.ReceivedAt
+	if at.IsZero() {
+		at = hs.UpdatedAt.Add(time.Second) // whole seconds: written no later than this
+	}
+	return at.After(tok.At)
 }
 
 // restartBootRecord is the notifier's own check (#2792) for a producer that
@@ -486,13 +619,149 @@ func (d *TransitionDaemon) noteRestartBuild(id, build string) {
 	rs.mu.Unlock()
 }
 
+// restartBootSettle is how long after the spawn the sweep keeps checking the
+// pane for an error banner before it sends the info line for an unseen boot.
+const restartBootSettle = 5 * time.Second
+
+// restartBootUnseen reports a token holder back at its prompt whose boot flip
+// was never seen (#2813): its new process alive for restartBootSettle, its own
+// SessionStart (pi: session_start) after the restart, no new SessionEnd and no new turn in the
+// transcript. The hook file keeps only the last event, and the old process's
+// SessionEnd can land after the new SessionStart (the kill fires it
+// asynchronously); then the file holds that old SessionEnd (judgeRestart's
+// oldEndBy rule), the light reads error from it, and the new SessionStart is
+// proven from the hook event history. The caller has ruled out an error banner.
+func restartBootUnseen(inst *Instance, tok restartToken, status string, now time.Time) bool {
+	if tok.NewPID <= 0 || !restartPIDAlive(tok.NewPID) || now.Sub(tok.SpawnedAt) < restartBootSettle {
+		return false
+	}
+	st := normalizeStatusString(status)
+	atPrompt := st == string(StatusWaiting) || st == string(StatusIdle)
+	hs := restartHookStatus(inst.ID)
+	switch {
+	case hs == nil:
+		return false
+	case strings.EqualFold(strings.TrimSpace(hs.Event), "SessionStart"):
+		// Whole seconds, the hook file's resolution.
+		if !atPrompt || hs.UpdatedAt.Before(tok.SpawnedAt.Truncate(time.Second)) {
+			return false
+		}
+	case strings.EqualFold(strings.TrimSpace(inst.Tool), "pi") && hs.Event == "session_start":
+		// pi's spelling; the kill writes nothing, so a session_start after
+		// the token is the resumed pi's.
+		if !atPrompt || !piBackAtPrompt(tok, hs) {
+			return false
+		}
+	case hookSessionEnd(hs):
+		oldEnd := !hs.UpdatedAt.After(tok.SpawnedAt.Add(time.Second)) && tok.OldPID > 0 && tok.OldPID != tok.NewPID && !restartPIDAlive(tok.OldPID)
+		if !oldEnd || !(atPrompt || st == string(StatusError)) || !restartSessionStartSince(inst.ID, tok.At) {
+			return false
+		}
+	default:
+		return false
+	}
+	return restartTurnUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), hs)
+}
+
+// restartSessionStartSince reports whether the hook event history
+// (<id>.events.jsonl, written by the hook handler next to the hook file)
+// holds a SessionStart at or after since. With the history off ([health]
+// enabled = false) or missing, nothing is proven.
+var restartSessionStartSince = func(id string, since time.Time) bool {
+	for _, ev := range restartHookHistory(id) {
+		if strings.EqualFold(strings.TrimSpace(ev.Event), "SessionStart") && !ev.At.Before(since) {
+			return true
+		}
+	}
+	return false
+}
+
+// hookHistoryTurnSince (freshStartTurnSeenLegacy only) reads child id's hook
+// event history from since: seen
+// when it holds a SessionStart, turn when one is neither SessionStart nor
+// SessionEnd (a SessionEnd may be an older process's, landing late) or is a
+// second SessionStart.
+func hookHistoryTurnSince(id string, since time.Time) (turn, seen bool) {
+	starts := 0
+	for _, ev := range restartHookHistory(id) {
+		if ev.At.Before(since) {
+			continue
+		}
+		switch e := strings.TrimSpace(ev.Event); {
+		case strings.EqualFold(e, "SessionStart"):
+			seen = true
+			if starts++; starts > 1 {
+				return true, true
+			}
+		case !strings.EqualFold(e, "SessionEnd"):
+			return true, true
+		}
+	}
+	return false, seen
+}
+
+// restartHistoryClockLag bounds how much later the hook handler's history
+// line reads the clock than the hook file's ts (it loads the config and
+// writes the status file first): the same event can cross a second there.
+const restartHistoryClockLag = 500 * time.Millisecond
+
+// restartSessionEndIn returns the last SessionEnd in the hook event history
+// stamped at or after since and, in whole seconds like the hook file, no
+// later than by, allowing for the history's later clock read.
+func restartSessionEndIn(id string, since, by time.Time) (time.Time, bool) {
+	var at time.Time
+	found := false
+	for _, ev := range restartHookHistory(id) {
+		if strings.EqualFold(strings.TrimSpace(ev.Event), "SessionEnd") && !ev.At.Before(since) && !ev.At.Add(-restartHistoryClockLag).Truncate(time.Second).After(by) {
+			at, found = ev.At, true
+		}
+	}
+	return at, found
+}
+
+type restartHookEvent struct {
+	At    time.Time `json:"at"`
+	Event string    `json:"event"`
+}
+
+// restartHookHistory reads the tail of child id's hook event history
+// (<id>.events.jsonl, written by the hook handler next to the hook file).
+func restartHookHistory(id string) []restartHookEvent {
+	// Non-blocking and regular files only: judgeRestart reads this inside
+	// emitTurn, so a FIFO planted at the path must not stall the daemon.
+	f, info, err := OpenHookFileNoFollow(filepath.Join(filepath.Dir(hookStatusFilePath(id)), filepath.Base(id)+".events.jsonl"))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	// The newest events are at the tail; a cut first line does not parse.
+	if info.Size() > maxHookStatusFileSize {
+		_, _ = f.Seek(info.Size()-maxHookStatusFileSize, io.SeekStart)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxHookStatusFileSize))
+	if err != nil {
+		return nil
+	}
+	var events []restartHookEvent
+	for _, line := range strings.Split(string(data), "\n") {
+		var ev restartHookEvent
+		if json.Unmarshal([]byte(line), &ev) == nil {
+			events = append(events, ev)
+		}
+	}
+	return events
+}
+
 // sweepRestartTokens reports a resumed child whose pane shows an error banner
-// at once, and spends every token older than the boot timeout. A child
-// whose new process is alive and at its prompt (its boot flip may have gone
-// unseen), or already on a new turn, came back and gets nothing. Any other
+// at once, sends the info line for one back at its prompt whose boot flip went
+// unseen (restartBootUnseen), and spends every token older than the boot
+// timeout. A child whose new process is alive and at its prompt with no
+// proof of a clean resume, or already on a new turn, gets nothing. Any other
 // (the new process dead, an error, a boot still spinning with no new turn) is
-// reported to its parent once, as an urgent error.
+// reported to its parent once, as an urgent error. After the info line,
+// sweepRestartBanners keeps the banner check until the boot timeout.
 func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*Instance, statuses map[string]string, now time.Time) {
+	defer d.sweepRestartBanners(profile, byID, now)
 	dir, err := runtimeDataPath("restart-resume")
 	if err != nil {
 		return
@@ -520,18 +789,49 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 			continue // another profile's child, or gone
 		}
 		if tok.NewPID != 0 {
+			// A new process: what the parent was told about the one before
+			// it (a banner, a timeout) is not news about this one. A token
+			// with no pid yet (a retry that may fail before it spawns
+			// anything) leaves the mark: the old death is still the news.
+			delete(d.idleExitTold[profile], id)
 			// A resume that went straight to an error banner flips waiting ->
 			// error, which no path reports: tell the parent now, with it.
 			if banner := paneErrorText(restartPaneSubstate(inst)); banner != "" {
 				d.spendRestartToken(id)
 				if strings.TrimSpace(inst.ParentSessionID) != "" && !isSelfSuppressedConductor(inst) {
-					d.emitRestartError(inst, TransitionNotificationEvent{
+					if d.emitRestartError(inst, TransitionNotificationEvent{
 						ChildSessionID: inst.ID, ChildTitle: inst.Title, Profile: profile,
 						FromStatus: string(StatusRunning), ToStatus: string(StatusError), Timestamp: now,
-					}, tok, "Restarted, but the resumed session shows "+banner+".")
+					}, tok, "Restarted, but the resumed session shows "+banner+".").DeliveryResult == transitionDeliveryCommitted {
+						d.markIdleExitTold(profile, id) // its later death is the same failure
+					}
 				}
 				continue
 			}
+		}
+		if restartBootUnseen(inst, tok, statuses[id], now) {
+			// Issue #2813: back at its prompt with no flip seen (real Claude
+			// resumes straight to it): the info line now, without waiting
+			// for the boot timeout.
+			to := normalizeStatusString(statuses[id])
+			if to == string(StatusError) {
+				to = string(StatusWaiting) // read from the old process's SessionEnd
+				// The light reads error until that SessionEnd ages out, so a
+				// death of the resumed process makes no waiting -> error
+				// flip: hand it to the idle-death watch (#2806) now.
+				d.watchIdleExit(profile, id, string(StatusWaiting))
+			}
+			d.spendRestartToken(id)
+			d.emitRestartBoot(inst, TransitionNotificationEvent{
+				ChildSessionID: inst.ID, ChildTitle: inst.Title, Profile: profile,
+				FromStatus: string(StatusRunning), ToStatus: to, Timestamp: now,
+			}, tok, isSelfSuppressedConductor(inst))
+			// An error banner is still reported until the boot timeout.
+			rs := d.restarts()
+			rs.mu.Lock()
+			rs.banner[id] = restartBannerWatch{profile: profile, tok: tok, until: tok.At.Add(timeout)}
+			rs.mu.Unlock()
+			continue
 		}
 		if now.Sub(tok.At) <= timeout {
 			continue
@@ -549,7 +849,8 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 			case string(StatusWaiting), string(StatusIdle):
 				continue // back at its prompt
 			case string(StatusRunning):
-				if !restartTranscriptUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst)) {
+				if hs := restartHookStatus(id); piBackAtPrompt(tok, hs) ||
+					!restartTurnUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), hs) {
 					continue // back, and already on a new turn
 				}
 			}
@@ -564,6 +865,113 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 			LastOutputHash: "restart-timeout:" + tok.At.UTC().Format(time.RFC3339Nano),
 			Text:           fmt.Sprintf("Restarted, but did not come back to its prompt within %s.", timeout),
 		}
-		d.commitRestartRecord(inst, event)
+		if d.commitRestartRecord(inst, event).DeliveryResult == transitionDeliveryCommitted && !d.idleExitPaneAlive(inst) {
+			// That record is the death's report; the light may still read
+			// waiting and flip to error a pass later (#2806 would say it
+			// again).
+			d.markIdleExitTold(profile, id)
+		}
+	}
+}
+
+// restartResumeEcho reports whether an unclassified flip of inst to `to` at
+// ts is the resumed process at the prompt the unseen-boot info line (#2813)
+// already reported: the banner watch is live and the transcript gained no
+// user or assistant record since the restart. An error, a banner, a
+// permission or elicitation prompt, or anything after the watch expires is
+// still news. An observed flip on a transcript the resumed process never
+// wrote (it may be writing a new session file the instance does not resolve
+// yet, #2184) is news too: noTurnSince cannot see that turn.
+func (d *TransitionDaemon) restartResumeEcho(inst *Instance, to string, ts time.Time, observedFlip bool) bool {
+	switch normalizeStatusString(to) {
+	case string(StatusWaiting), string(StatusIdle):
+	default:
+		return false
+	}
+	rs := d.restarts()
+	rs.mu.Lock()
+	w, ok := rs.banner[inst.ID]
+	rs.mu.Unlock()
+	if !ok || ts.After(w.until) || ts.Before(w.tok.At) {
+		return false
+	}
+	if w.tok.Transcript == "" || w.tok.Transcript != inst.GetJSONLPath() || !noTurnSince(w.tok.Transcript, w.tok.Offset) {
+		return false
+	}
+	if observedFlip {
+		info, err := os.Stat(w.tok.Transcript)
+		if err != nil || info.ModTime().Before(w.tok.At) {
+			return false
+		}
+	}
+	// A permission request or elicitation dialog after the restart blocks the
+	// child on input; its parent must hear it.
+	if hs := restartHookStatus(inst.ID); hs != nil && hookEventBlocksTurn(hs.Event) && !hs.UpdatedAt.Before(w.tok.At.Truncate(time.Second)) {
+		return false
+	}
+	sub := restartPaneSubstate(inst)
+	return sub != string(tmux.SubstateInteractiveMenu) && paneErrorText(sub) == ""
+}
+
+// dropStaleBannerWatch forgets child id's banner watch once a newer restart
+// left a token: the watch's own token was spent when the info line went out,
+// so a token under another At is the next restart's, which judges its own
+// boot (sweepRestartBanners does the same, but only on its own pass).
+func (d *TransitionDaemon) dropStaleBannerWatch(id string) {
+	rs := d.restarts()
+	rs.mu.Lock()
+	w, ok := rs.banner[id]
+	rs.mu.Unlock()
+	if !ok {
+		return
+	}
+	if tok, live := readRestartToken(id); !live || tok.At.Equal(w.tok.At) {
+		return
+	}
+	rs.mu.Lock()
+	if cur, ok := rs.banner[id]; ok && cur.tok.At.Equal(w.tok.At) {
+		delete(rs.banner, id)
+	}
+	rs.mu.Unlock()
+}
+
+// sweepRestartBanners reports an error banner on a resumed child whose token
+// the unseen-boot info line spent, once, until the boot timeout (#2813). The
+// info line is not sent again.
+func (d *TransitionDaemon) sweepRestartBanners(profile string, byID map[string]*Instance, now time.Time) {
+	rs := d.restarts()
+	rs.mu.Lock()
+	watches := make(map[string]restartBannerWatch, len(rs.banner))
+	for id, w := range rs.banner {
+		if w.profile == profile {
+			watches[id] = w
+		}
+	}
+	rs.mu.Unlock()
+	for id, w := range watches {
+		inst := byID[id]
+		_, restarting := readRestartToken(id) // a new restart judges its own boot
+		done := inst == nil || restarting || now.After(w.until)
+		var banner string
+		if !done {
+			banner = paneErrorText(restartPaneSubstate(inst))
+			done = banner != ""
+		}
+		if !done {
+			continue
+		}
+		rs.mu.Lock()
+		delete(rs.banner, id)
+		rs.mu.Unlock()
+		if banner == "" || strings.TrimSpace(inst.ParentSessionID) == "" || isSelfSuppressedConductor(inst) {
+			continue
+		}
+		result := d.emitRestartError(inst, TransitionNotificationEvent{
+			ChildSessionID: inst.ID, ChildTitle: inst.Title, Profile: profile,
+			FromStatus: string(StatusRunning), ToStatus: string(StatusError), Timestamp: now,
+		}, w.tok, "Restarted, but the resumed session shows "+banner+".")
+		if result.DeliveryResult == transitionDeliveryCommitted {
+			d.markIdleExitTold(profile, id) // its later death is the same failure
+		}
 	}
 }

@@ -79,5 +79,5 @@ func (s *Session) AbsenceIsForeignServer() bool {
 	if !emptySocketResolvesAwayFromDefault(os.Getenv, os.Getuid()) {
 		return false
 	}
-	return defaultServerHasSession(s.Name)
+	return defaultServerHasSession(s.TmuxName())
 }

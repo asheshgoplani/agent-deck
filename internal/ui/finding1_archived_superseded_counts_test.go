@@ -8,7 +8,7 @@ package ui
 // same tracked set list --json enumerates (session.VisibleInstances).
 //
 // This uses REAL *session.Instance values (unlike the fabricated-snapshot
-// issue953 tests) so refreshSessionRenderSnapshot's archivedSuperseded flag
+// issue953 tests) so refreshSessionRenderSnapshot's archived flag
 // and renderGroupPreview's session.VisibleInstances filter are both
 // exercised end-to-end.
 

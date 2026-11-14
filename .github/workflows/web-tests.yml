@@ -24,6 +24,10 @@ on:
       - 'go.mod'
       - 'go.sum'
   workflow_dispatch: {}
+  # Nightly backstop (post-tag CI queue): the PR trigger above stays
+  # path-filtered; this run covers changes that reach this code from
+  # outside those paths.
+  schedule: [{ cron: '40 3 * * *' }]
 
 # Every job here builds or launches the agent-deck binary. Since v1.16.7 a
 # TUI or daemon installs a newer release on its own and restarts in place;
@@ -66,7 +70,9 @@ jobs:
 
   e2e:
     name: playwright (e2e + screenshots)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright's chromium
+    # install (--with-deps) does not support yet. Move back once it does.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
       run:
@@ -102,7 +108,7 @@ jobs:
       - name: Build fixture binary
         working-directory: .
         env:
-          GOTOOLCHAIN: go1.26.9
+          GOTOOLCHAIN: go1.26.10
         run: go build -o tests/web/.tmp/web-fixture ./tests/web/fixtures/cmd/web-fixture/
 
       - name: Run Playwright e2e
@@ -137,5 +143,5 @@ jobs:
           go-version-file: go.mod
       - name: Run TestParity_*
         env:
-          GOTOOLCHAIN: go1.26.9
+          GOTOOLCHAIN: go1.26.10
         run: go test ./internal/web/ -run TestParity -race -count=1

@@ -640,7 +640,7 @@ func crossHarnessPlanCommand(target *Instance, plan *FreshTargetLaunchPlan, _ st
 	keys := make([]string, 0, len(plan.Environment))
 	for key := range plan.Environment {
 		if !IsValidEnvKey(key) {
-			return "", false, fmt.Errorf("cross-harness lifecycle plan has invalid environment key %q", key)
+			return "", false, fmt.Errorf("cross-harness lifecycle plan has invalid environment key (%s, %d bytes)", EnvKeyRejectReason(key), len(key))
 		}
 		keys = append(keys, key)
 	}

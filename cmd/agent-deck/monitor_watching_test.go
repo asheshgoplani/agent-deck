@@ -3,16 +3,14 @@ package main
 import (
 	"encoding/json"
 	"github.com/asheshgoplani/agent-deck/internal/session"
-	"os/exec"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestMonitorWatchingJSONParity(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireTmux(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")

@@ -348,6 +348,14 @@ func TestSearch_HintFiltersJoinStateDBLive(t *testing.T) {
 	if len(res.Hits) != 0 {
 		t.Fatalf("unknown ticket matched: %+v", res.Hits)
 	}
+	// An unset hint stops matching at once.
+	if ok, err := f.reg.UnsetSessionHint("instance", "deck-a", "ticket"); err != nil || !ok {
+		t.Fatalf("unset: ok=%v err=%v", ok, err)
+	}
+	res, _ = s.Search(ctx, SearchOptions{Query: "auth", Filters: Filters{Hints: map[string]string{"ticket": "SB-412"}}})
+	if len(res.Hits) != 0 {
+		t.Fatalf("unset hint still matched: %+v", res.Hits)
+	}
 	if _, err := New(f.st, "").Search(ctx, SearchOptions{Query: "auth", Filters: Filters{Tags: []string{"x"}}}); err == nil {
 		t.Fatal("tag filter without state.db must error, not silently ignore")
 	}

@@ -9,7 +9,7 @@ Common issues and solutions for agent-deck.
 | Session shows `✕` error | `agent-deck session start <name>` |
 | MCPs not loading | `agent-deck session restart <name>` |
 | CLI changes not in TUI | Press `Ctrl+R` to refresh |
-| Flag not working | Put flags BEFORE arguments |
+| Flag not working | Flags work before or after arguments; anything after `--` is not a flag |
 | Fork fails | Check Claude session has a valid session ID, or Pi session has JSONL history under Agent Deck's Pi session dir |
 | Status stuck | Wait 2 seconds or press `u` to mark unread |
 
@@ -26,7 +26,7 @@ terminals and Windows Terminal, including WSL2. This bypasses application mouse
 reporting and lets the terminal perform native selection.
 
 The full explanation of why mouse capture blocks selection, plus the complete
-copy-key table (`c` / `C` / `V` / `Y`), lives in
+copy-key table (`c` / `B` / `V` / `Y`), lives in
 [Terminal shortcuts](../../../docs/terminal-shortcuts.md#text-selection-and-copying)
 and the [TUI Reference](tui-reference.md#copy--text-selection).
 
@@ -43,15 +43,16 @@ resizing, and mouse copy mode.
 
 ### Flags Ignored
 
-**Problem:** Flags after positional arguments are silently ignored.
+Flags may go before or after positional arguments; agent-deck moves them into place, so both of these send the message:
 
 ```bash
-# WRONG - message not sent
 agent-deck session start my-project -m "Hello"
-
-# CORRECT
 agent-deck session start -m "Hello" my-project
 ```
+
+If a flag still seems ignored: everything after `--` is positional, and a value flag followed by another flag (`-m --json`) is an error. Pass `-m=--json` if that really is the value.
+
+Two subcommands still stop parsing at the first positional, so put their flags first: `config show --json <path>` (in `config show <path> --json` the `--json` is ignored) and `openclaw send --agent <id> <message>` (anything after the message start is message text).
 
 ### MCP Not Available
 
@@ -89,12 +90,9 @@ Then restart the conductor:
 agent-deck session restart conductor-<name>
 ```
 
-If you use multiple profiles, set the same under the profile override:
-
-```toml
-[profiles.work.claude]
-allow_dangerous_mode = true
-```
+`[claude]` applies to every profile. There is no per-profile copy of these keys:
+`[profiles.<name>.claude]` takes only `config_dir` and `prompt_suggestions`, so
+`allow_dangerous_mode` or `dangerous_mode` there has no effect.
 
 ### Atuin Pty-Proxy Incompatibility
 
@@ -128,7 +126,7 @@ Atuin pty-proxy is only needed for the atuin TUI overlay feature and is not requ
 
 **With many sessions:** Normal if batched updates. Check:
 ```bash
-agent-deck status  # Should show ~0.5% CPU when idle
+agent-deck health  # per-process CPU%, RSS and status-pass latency against the budgets
 ```
 
 **With active session:** Normal (live preview updates).
@@ -144,13 +142,14 @@ max_lines = 2000
 
 ### Global Search Not Working
 
-Check config:
+`G` searches the Recall index (`recall.db`). It is off unless Recall is on:
 ```toml
-[global_search]
+[recall]
 enabled = true
 ```
 
-Also verify `~/.claude/projects/` exists and has content.
+Then check the index with `agent-deck recall status`. With Recall off, `G`
+falls back to the local title search. See `docs/recall.md`.
 
 ### Shift+Enter Submits Instead of Inserting a Newline (Kitty)
 
@@ -253,7 +252,7 @@ attached, typed or resized last: the person using the session sees it
 full-size, and the idle terminal shows the other person's size (clipped if it
 is smaller, the pane in the top-left corner with dots around it if it is
 larger) until they type or resize. That is tmux's one-size-per-window rule,
-not a stuck window. The deck's `👁️ N` row badge and `session viewers` say who
+not a stuck window. The deck's `◉ N` row badge and `session viewers` say who
 else has the session open.
 
 Windows opened by hand get the policy from one `after-new-window` hook that
@@ -320,7 +319,7 @@ AGENTDECK_DEBUG=1 agent-deck
 
 Check session logs:
 ```bash
-tail -100 ~/.agent-deck/logs/agentdeck_<session>_*.log
+tail -100 ~/.local/share/agent-deck/logs/agentdeck_<session>_*.log
 ```
 
 ## Report a Bug
@@ -345,7 +344,7 @@ agent-deck session show <session-name> --json
 cat ~/.config/agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET\|PASSWORD"  # (legacy: ~/.agent-deck/config.toml)
 
 # Recent logs (if error occurred)
-tail -100 ~/.agent-deck/logs/agentdeck_<session>_*.log 2>/dev/null
+tail -100 ~/.local/share/agent-deck/logs/agentdeck_<session>_*.log 2>/dev/null
 
 # System info
 uname -a
@@ -363,68 +362,32 @@ Prepare clear answers to:
 
 ### Step 3: Create GitHub Issue
 
-Go to: **https://github.com/asheshgoplani/agent-deck/issues/new**
+Fastest route: `agent-deck feedback bug` asks for what happened, what you expected and the steps, fills the bug form below with version, OS, terminal and a scrubbed log tail, shows you the full text and files it after you answer `y` (`--dry-run` only prints it). Ideas go through `agent-deck feedback idea`. From an agent session use `agent-deck feedback bug --from-agent --title T --what W --json` once a person has run `agent-deck feedback agent-consent`: no prompt, scrubbed text without log lines, `found-by-agent` label, and an open agent issue with the same title gets a "seen again" comment instead of a duplicate.
 
-Use this template:
+By hand:
 
-```markdown
-## Description
+Blank issues are off in this repo, so use the **Bug report** form:
+**https://github.com/asheshgoplani/agent-deck/issues/new?template=bug.yml**
 
-[Brief description of the issue]
+Its fields, filled from Steps 1 and 2:
 
-## Steps to Reproduce
+- **agent-deck version**: output of `agent-deck version`
+- **OS and terminal**: OS, terminal, and `tmux -V`
+- **Steps to reproduce**: exact commands or TUI actions
+- **Expected vs actual**
+- **Logs (redacted)**: relevant log lines, `agent-deck status --json`, and a sanitized config
+- **Was this written with AI help?** and, if so, **which model**
 
-1. [First step]
-2. [Second step]
-3. [What happened]
-
-## Expected Behavior
-
-[What should have happened]
-
-## Environment
-
-- agent-deck version: [output of `agent-deck version`]
-- OS: [macOS/Linux/WSL]
-- tmux version: [output of `tmux -V`]
-
-## Debug Output
-
-<details>
-<summary>Status JSON</summary>
-
-```json
-[paste agent-deck status --json]
-```
-
-</details>
-
-<details>
-<summary>Config (sanitized)</summary>
-
-```toml
-[paste sanitized config]
-```
-
-</details>
-
-<details>
-<summary>Logs</summary>
-
-```
-[paste relevant log lines]
-```
-
-</details>
-```
+Questions and setup help go to [Discussions](https://github.com/asheshgoplani/agent-deck/discussions), not issues.
 
 ### Step 4: Follow Up
 
 - Check for responses on your issue
+- `agent-deck feedback mine` lists your reports; after the release that fixes one, `agent-deck whats-new` (and `agent-deck update`) shows `Your report #N: fixed in vX`, and `agent-deck feedback fixed N --fixed|--not-fixed` tells the maintainers whether it works for you
 - Test any suggested fixes
 - Update issue with results
 - Join [Discord](https://discord.gg/e4xSs6NBN8) for quick help and community support
-- Run `agent-deck feedback` to submit a rating and optional comment
+- Run `agent-deck feedback` to submit a rating and optional comment, or `agent-deck feedback bug` / `agent-deck feedback idea` to file an issue
 
 ## Recovery
 
@@ -480,7 +443,7 @@ mv ~/.agent-deck/profiles/default/sessions.json.migrated \
 
 Session logs preserved:
 ```bash
-tail -500 ~/.agent-deck/logs/agentdeck_<session>_*.log
+tail -500 ~/.local/share/agent-deck/logs/agentdeck_<session>_*.log
 ```
 
 ### Profile Corrupted
@@ -510,9 +473,9 @@ curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/unins
 - **Binary:** `~/.local/bin/agent-deck` or `/usr/local/bin/agent-deck`
 - **Homebrew:** `agent-deck` package (if installed via brew)
 - **tmux config:** The `# agent-deck configuration` block in `~/.tmux.conf`
-- **Data directory:** `~/.agent-deck/` (sessions, logs, config)
+- **Data:** the XDG config/data/cache dirs (`~/.config/agent-deck/`, `~/.local/share/agent-deck/`, `~/.cache/agent-deck/`) and a legacy `~/.agent-deck/`
 
-Use `--keep-data` to preserve your sessions and configuration.
+Use `--keep-data` to preserve your sessions and configuration, `--keep-tmux-config` to keep the tmux block, and `-y` to skip the prompts.
 
 ## Critical Warnings
 

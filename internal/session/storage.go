@@ -48,6 +48,10 @@ type InstanceData struct {
 	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
 	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
 	TitleLocked        bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
+	// Acknowledged and AcknowledgedAt carry the user's "seen" mark from the
+	// acknowledged columns into a rebuilt session, so a reload does not undo it.
+	Acknowledged   bool      `json:"-"`
+	AcknowledgedAt time.Time `json:"-"`
 	// ConductorName mirrors Instance.ConductorName, the stable conductor key.
 	// Lives in the tool_data extras zone (conductor_identity.go).
 	ConductorName string `json:"conductor_name,omitempty"`
@@ -194,9 +198,17 @@ type InstanceData struct {
 	// tool_data extras zone (context_level_persist.go).
 	ContextLevel string `json:"context_level,omitempty"`
 
+	// QueuedMessage mirrors Instance.QueuedMessage (tool_data extras zone,
+	// queued_start.go).
+	QueuedMessage string `json:"queued_message,omitempty"`
+
 	// PromptSuggestions mirrors Instance.PromptSuggestions (tool_data extras
 	// zone, prompt_suggestions.go).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
+
+	// WaitTimeout mirrors Instance.WaitTimeout (tool_data extras zone,
+	// wait_timer.go).
+	WaitTimeout string `json:"wait_timeout,omitempty"`
 
 	// IntendedSwitch mirrors Instance.IntendedSwitch (tool_data extras zone,
 	// intended_switch.go).
@@ -510,6 +522,7 @@ func (s *Storage) saveWithGroups(instances []*Instance, groupTree *GroupTree) ([
 // can still hold stale unedited fields, which must not become future edit intent.
 type instanceStorageSnapshot struct {
 	dbPath   string
+	profile  string // the Storage's profile: where a queued message is sent
 	original *statedb.InstanceRow
 	stored   *statedb.InstanceRow
 }
@@ -528,6 +541,7 @@ func (s *Storage) rememberInstanceSnapshot(inst *Instance, original, stored *sta
 	inst.restartDB.Store(s.db)
 	inst.storageSnapshot = &instanceStorageSnapshot{
 		dbPath:   s.dbPath,
+		profile:  s.profile,
 		original: statedb.CloneInstanceRow(original),
 		stored:   statedb.CloneInstanceRow(stored),
 	}
@@ -698,11 +712,12 @@ func (s *Storage) DeleteInstanceDeferredCleanup(id string) (func(), error) {
 	profileDir := filepath.Dir(s.dbPath)
 	return func() {
 		if err := cleanupImageUploads(profileDir, id); err != nil {
-			storageLog.Warn("image_upload_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
+			storageLog.Warn("image_upload_cleanup_failed", slog.String("id", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(id), "\n", ""), "\r", "")), slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 		}
 		if err := pruneHookArtifacts(id); err != nil {
-			storageLog.Warn("hook_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
+			storageLog.Warn("hook_cleanup_failed", slog.String("id", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(id), "\n", ""), "\r", "")), slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 		}
+		removeLaunchEnvFiles(id)
 	}, nil
 }
 
@@ -1106,7 +1121,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	}
 	tmuxName := ""
 	if inst.tmuxSession != nil {
-		tmuxName = inst.tmuxSession.Name
+		tmuxName = inst.tmuxSession.TmuxName()
 	}
 	var sandboxJSON json.RawMessage
 	if inst.Sandbox != nil {
@@ -1165,7 +1180,9 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// #2260: the per-session context-level override lives in the same extras
 	// zone so a restart from any process honours `session set ... context-level`.
 	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
+	toolData = WriteQueuedMessageToToolData(toolData, inst.QueuedMessage)
 	toolData = WritePromptSuggestionsToToolData(toolData, inst.PromptSuggestions)
+	toolData = WriteWaitTimeoutToToolData(toolData, inst.WaitTimeout)
 	toolData = WriteIntendedSwitchToToolData(toolData, inst.IntendedSwitch)
 	toolData = WriteLimitVerdictResetToToolData(toolData, inst.LimitVerdictResetAt)
 	// #1815: the resume-identity taint travels with the id it describes, so a
@@ -1224,7 +1241,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		TmuxSession:         tmuxName,
 		TmuxSocketName:      inst.TmuxSocketName,
 		CreatedAt:           inst.CreatedAt,
-		LastAccessed:        inst.LastAccessedAt,
+		LastAccessed:        inst.GetLastAccessedAtThreadSafe(),
 		ParentSessionID:     inst.ParentSessionID,
 		IsConductor:         inst.IsConductor,
 		NoTransitionNotify:  inst.NoTransitionNotify,
@@ -1379,7 +1396,9 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
+			QueuedMessage:             ReadQueuedMessageFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			WaitTimeout:               ReadWaitTimeoutFromToolData(r.ToolData),
 			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
 			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
@@ -1525,7 +1544,9 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
+			QueuedMessage:             ReadQueuedMessageFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			WaitTimeout:               ReadWaitTimeoutFromToolData(r.ToolData),
 			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
 			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
@@ -1556,6 +1577,25 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			DefaultPath:   g.DefaultPath,
 			MaxConcurrent: g.MaxConcurrent,
 		}
+	}
+
+	// The "seen" mark lives outside the registry snapshot on purpose: putting it
+	// in the snapshot would make every acknowledgment write trigger a reload.
+	// Read it once per load instead. Best effort: without it the session is
+	// rebuilt from its stored status alone, as before.
+	if acks, ackErr := s.db.ReadAllStatuses(); ackErr == nil {
+		for _, d := range data.Instances {
+			// Running/starting stays authoritative, as in
+			// SetAcknowledgedFromShared: no seen mark and no visit time.
+			if d.Status == StatusRunning || d.Status == StatusStarting {
+				continue
+			}
+			if sr, ok := acks[d.ID]; ok && sr.Acknowledged {
+				d.Acknowledged, d.AcknowledgedAt = true, sr.AcknowledgedAt
+			}
+		}
+	} else {
+		storageLog.Warn("ack_read_failed", slog.String("error", ackErr.Error()))
 	}
 
 	instances, groups, err := s.convertToInstances(data)
@@ -1739,6 +1779,11 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			// server for a session that lives on an isolated socket and
 			// report it as dead (issue #687, v1.7.50).
 			tmuxSess.SocketName = instData.TmuxSocketName
+			// A stored "waiting" rebuilds as unseen; the user's saved visit
+			// overrides that so a reload does not turn the dot back to waiting.
+			if instData.Acknowledged {
+				tmuxSess.ApplySharedAcknowledged(true)
+			}
 			// Issue #663: for multi-repo sessions ProjectPath is a symlink
 			// inside MultiRepoTempDir (see home.go:7255-7364), so the
 			// restart pane must cwd into the parent dir — not the symlink
@@ -1847,7 +1892,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
 			ConductorName:                instData.ConductorName,
 			ContextLevel:                 instData.ContextLevel,
+			QueuedMessage:                instData.QueuedMessage,
 			PromptSuggestions:            instData.PromptSuggestions,
+			WaitTimeout:                  instData.WaitTimeout,
 			IntendedSwitch:               instData.IntendedSwitch,
 			LimitVerdictResetAt:          instData.LimitVerdictResetAt,
 			LastStartedAt:                instData.LastStartedAt,
@@ -1900,6 +1947,10 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		// Session ID syncing (SetEnvironment calls) will happen on EnsureConfigured()
 		// or when the session is restarted. This saves 0-4 subprocess calls per session.
 
+		inst.acknowledgedAt = instData.AcknowledgedAt
+		// A stale fork pair persisted by an older build (a session
+		// that already has its own conversation id) is removed on load.
+		inst.healStaleClaudeSelectorExtraArgs("load")
 		instances[i] = inst
 	}
 

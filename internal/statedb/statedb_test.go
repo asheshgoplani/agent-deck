@@ -724,6 +724,49 @@ func TestElectPrimary_Failover(t *testing.T) {
 	}
 }
 
+// TestElectPrimary_NoHeartbeatRow is the regression test for a phantom primary.
+// A process whose heartbeat row is missing (RegisterInstance failed, or another
+// instance's CleanDeadInstances deleted it after a missed heartbeat) used to win
+// the election while its claim UPDATE matched zero rows. It reported
+// isPrimary=true without recording it, so the next instance also won and two
+// primaries ran.
+func TestElectPrimary_NoHeartbeatRow(t *testing.T) {
+	db := newTestDB(t)
+
+	// No RegisterInstance: there is no row for db.pid.
+	isPrimary, err := db.ElectPrimary(30 * time.Second)
+	if err != nil {
+		t.Fatalf("ElectPrimary: %v", err)
+	}
+	if !isPrimary {
+		t.Fatal("First instance should become primary")
+	}
+
+	var primaries int
+	if err := db.DB().QueryRow(
+		"SELECT COUNT(*) FROM instance_heartbeats WHERE pid = ? AND is_primary = 1", db.pid,
+	).Scan(&primaries); err != nil {
+		t.Fatalf("Count primaries: %v", err)
+	}
+	if primaries != 1 {
+		t.Fatalf("ElectPrimary returned true but recorded %d primary rows for pid %d, want 1", primaries, db.pid)
+	}
+
+	// A second, registered instance must now lose the election.
+	firstPID := db.pid
+	db.pid = pickDeadPID(firstPID)
+	if err := db.RegisterInstance(false); err != nil {
+		t.Fatalf("RegisterInstance (second): %v", err)
+	}
+	isPrimary, err = db.ElectPrimary(30 * time.Second)
+	if err != nil {
+		t.Fatalf("ElectPrimary (second): %v", err)
+	}
+	if isPrimary {
+		t.Error("Second instance became primary while the first (live) instance also believes it is primary")
+	}
+}
+
 func TestResignPrimary(t *testing.T) {
 	db := newTestDB(t)
 

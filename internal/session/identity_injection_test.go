@@ -168,17 +168,19 @@ func TestIdentityInjection_OptOuts(t *testing.T) {
 			t.Errorf("codex flag = %q, want empty", got)
 		}
 	})
-	t.Run("ssh and sandbox skipped", func(t *testing.T) {
+	t.Run("ssh and sandbox inject but never write a controller-local file", func(t *testing.T) {
 		identityTestEnv(t)
 		ssh := identityTestInstance("claude")
 		ssh.SSHHost = "box"
-		if ssh.identityInjectionEnabled() {
-			t.Error("ssh session must not inject a controller-local file path")
-		}
 		sb := identityTestInstance("claude")
 		sb.Sandbox = &SandboxConfig{Enabled: true}
-		if sb.identityInjectionEnabled() {
-			t.Error("sandboxed session must not inject a host-local file path")
+		for _, inst := range []*Instance{ssh, sb} {
+			if !inst.identityInjectionEnabled() {
+				t.Error("ssh/sandbox sessions must inject (ASK-105)")
+			}
+			if _, _, ok := inst.ensureIdentityFile(); ok {
+				t.Error("ssh/sandbox sessions must not use a controller-local file path")
+			}
 		}
 	})
 	t.Run("default on", func(t *testing.T) {
@@ -660,7 +662,7 @@ func TestBuildIdentityPrompt_HostAndSkillsSection(t *testing.T) {
 		t.Errorf("missing local hostname line:\n%s", got)
 	}
 
-	wantSection := "\n## Skills\nPool skills exist for many tasks. List: `agent-deck skill list`; attach to this session: `agent-deck skill attach <session id> <skill>` (then restart); attached now: none.\n"
+	wantSection := "\n## Skills\nPool skills exist for many tasks. List them: `agent-deck skill list`. Attached to this session now: none (`agent-deck skill attached abc12345-1700000000`). Attach one: `agent-deck skill attach abc12345-1700000000 <skill>`, then restart.\n"
 	if !strings.Contains(got, wantSection) {
 		t.Errorf("skills section mismatch:\nwant substring %q\ngot:\n%s", wantSection, got)
 	}
@@ -683,7 +685,7 @@ func TestBuildIdentityPrompt_SkillsSectionListsAttachedSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := inst.BuildIdentityPrompt()
-	if !strings.Contains(got, "attached now: brainstorming, systematic-debugging.\n") {
+	if !strings.Contains(got, "Attached to this session now: brainstorming, systematic-debugging (") {
 		t.Errorf("attached skills not listed:\n%s", got)
 	}
 }

@@ -1,5 +1,5 @@
 // TerminalPanel.js -- Preact component wrapping xterm.js 6.0.0 terminal lifecycle
-// Ports createTerminalUI, connectWS, installTerminalTouchScroll from app.js
+// Ports createTerminalUI, connectWS from app.js (touch handling: terminalTouch.js)
 import { html } from 'htm/preact'
 import { useEffect, useRef, useCallback, useState } from 'preact/hooks'
 import { effect } from '@preact/signals'
@@ -11,6 +11,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
 import { terminalKeymap } from './terminalKeys.js'
 import { createPasteHandler } from './terminalPaste.js'
+import { installTerminalTouch } from './terminalTouch.js'
 import { registerOsc52Handler } from './terminalClipboard.js'
 import { createTerminalLinkHandler, installModifierClickLinks } from './terminalLinks.js'
 import { observeSession, shouldReattach, sessionStartedSignal, noteSessionStarted } from './terminalReconnect.js'
@@ -29,48 +30,6 @@ function wsURLForSession(sessionId, token) {
   )
   if (token) url.searchParams.set('token', token)
   return url.toString()
-}
-
-// Install touch-to-scroll on the terminal container.
-// PERF-E: takes the shared AbortController so every listener registered here
-// is torn down by the single controller.abort() in the useEffect cleanup. No
-// local dispose() return value is needed.
-function installTouchScroll(container, xtermEl, controller) {
-  if (!container || !xtermEl) return
-
-  let active = false
-  let lastY = 0
-
-  function onTouchStart(event) {
-    if (!event.touches || event.touches.length !== 1) return
-    active = true
-    lastY = event.touches[0].clientY
-  }
-
-  function onTouchMove(event) {
-    if (!active || !event.touches || event.touches.length !== 1) return
-    event.preventDefault()
-    const y = event.touches[0].clientY
-    const delta = lastY - y
-    lastY = y
-    if (xtermEl && delta !== 0) {
-      xtermEl.dispatchEvent(
-        new WheelEvent('wheel', {
-          deltaY: delta,
-          deltaMode: 0,
-          bubbles: true,
-          cancelable: true,
-        })
-      )
-    }
-  }
-
-  function onTouchEnd() { active = false }
-
-  container.addEventListener('touchstart', onTouchStart, { capture: true, passive: true, signal: controller.signal })
-  container.addEventListener('touchmove', onTouchMove, { capture: true, passive: false, signal: controller.signal })
-  container.addEventListener('touchend', onTouchEnd, { capture: true, passive: true, signal: controller.signal })
-  container.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true, signal: controller.signal })
 }
 
 export function TerminalPanel() {
@@ -97,7 +56,7 @@ export function TerminalPanel() {
 
   // Cleanup function: dispose terminal, close WS, remove observers.
   // PERF-E: a single controller.abort() detaches every event listener
-  // registered inside the main useEffect (8 total: 4 touch, 1 window
+  // registered inside the main useEffect (5 touch incl. the tap mousedown guard, 1 window
   // resize, 4 ws).
   const cleanup = useCallback(() => {
     const ctx = ctxRef.current
@@ -278,9 +237,15 @@ export function TerminalPanel() {
       signal: controller.signal,
     })
 
-    // Touch scrolling for mobile -- listeners attach via the shared
-    // AbortController (PERF-E). No local dispose handle is needed.
-    installTouchScroll(container, terminal.element, controller)
+    // Touch: one-finger drag scrolls, one-finger tap focuses so the phone
+    // keyboard opens (#2680; tap-to-focus idea from #2765). Read-only
+    // sessions never focus. Listeners attach via the shared AbortController
+    // (PERF-E). No local dispose handle is needed.
+    installTerminalTouch(container, terminal.element, {
+      focus: () => terminal.focus(),
+      isReadOnly: () => readOnlySignal.value,
+      controller,
+    })
 
     // Issue #2675: Cmd-click (Ctrl-click off macOS) opens the hovered link even
     // when the app captures the mouse (tmux `mouse on`, Claude Code), where a

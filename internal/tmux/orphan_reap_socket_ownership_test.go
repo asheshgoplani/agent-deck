@@ -137,6 +137,7 @@ func attachedClientUnder(t *testing.T, base, socketName, session string) int {
 // the honest answer ("I asked the wrong server") is only available by comparing
 // sockets.
 func TestIsLiveTmuxClientOrServer_RefusesACandidateOnAnotherServer(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	if runtime.GOOS != "linux" {
 		t.Skip("resolving a candidate's own socket reads /proc/<pid>/environ; linux-only by construction")
 	}
@@ -182,6 +183,7 @@ func TestIsLiveTmuxClientOrServer_RefusesACandidateOnAnotherServer(t *testing.T)
 // a socket comparison that refuses them too would close the hole by making the
 // sweep inert — the failure mode this file's subject has twice already.
 func TestIsLiveTmuxClientOrServer_AcceptsACandidateOnOurOwnSocket(t *testing.T) {
+	skipIfNoTmuxBinary(t)
 	if runtime.GOOS != "linux" {
 		t.Skip("resolving a candidate's own socket reads /proc/<pid>/environ; linux-only by construction")
 	}

@@ -59,7 +59,7 @@ func writeSessionIDLifecycleEventTo(event SessionIDLifecycleEvent, logPath strin
 		event.Timestamp = time.Now().Unix()
 	}
 
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return fmt.Errorf("create lifecycle log dir: %w", err)
 	}
 

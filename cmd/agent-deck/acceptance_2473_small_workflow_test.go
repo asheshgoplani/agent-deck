@@ -200,10 +200,11 @@ func TestAcceptance2473_SmallWorkflowLifecycle(t *testing.T) {
 	}
 }
 
-// tmuxBackgroundProbeTTL is a little past tmux's background-work probe cache
-// (bgWorkCacheTTL, 3s): the notify daemon polls every 1 to 3 s, so a frame
-// that changed is seen by the next poll at the latest.
-const tmuxBackgroundProbeTTL = 3200 * time.Millisecond
+// tmuxBackgroundProbeTTL is past tmux's background-work probe cache
+// (bgWorkCacheTTL, 500ms since #2507; it was 3s when this test was written)
+// and the pane capture cache (500ms), so the next poll reads the new frame,
+// as the notify daemon's next pass (every 1 to 3 s) does.
+const tmuxBackgroundProbeTTL = 1 * time.Second
 
 func readAcceptanceFixture(t *testing.T, parts ...string) string {
 	t.Helper()

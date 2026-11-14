@@ -4,6 +4,38 @@ Claude can start a tool turn after a task notification or a blocked Stop without
 emitting UserPromptSubmit. Agent Deck subscribes to PreToolUse so those tool turns
 report running in session show, list, and Recall live status frames.
 
+## Normal inbox delivery at Stop
+
+When an urgent inbox message is pending at a turn boundary, Agent Deck's
+synchronous Stop hook intentionally returns `decision: "block"` with the messages
+in its `reason`. This continues the turn so Claude can handle them. For a parent
+that reads the session inbox, the reason starts with:
+
+```text
+New session messages (normal inbox delivery; continue this turn to handle each):
+```
+
+A parent enrolled in the comms ledger gets its Stop block from the ledger path
+instead, and that reason starts with `[agent-deck msg] N record(s) arrived while
+you were busy (urgent first; ...; act on each):`. Both are normal delivery.
+
+Each record retains its own sender, priority, status, and text; a reply or waiting
+update does not mean a child finished. Genuine finished records retain their
+completion status and summary.
+
+Some Claude Code versions show a blocked Stop under an outer "Stop hook error"
+label even when the hook ran successfully and the block is an intentional
+continuation, not a failed hook process, crash, or timeout. The heading explains
+the reason, but it does not change Claude's outer label. See
+[#3053](https://github.com/asheshgoplani/agent-deck/issues/3053).
+
+Disabling the Stop hook sacrifices this turn-boundary delivery. Making it
+asynchronous causes Claude to ignore its decision and reason. Agent Deck keeps
+the synchronous blocking contract and the consecutive-block guard: at most three
+blocks in a row, then pending records remain queued for another delivery path.
+Any Stop with `stop_hook_active=false` resets the budget. A queue holding only
+info-tier records never blocks; those records wait for the parent's next turn.
+
 ## Upgrade each host and Claude configuration
 
 1. Upgrade the installed Agent Deck binary on the local or remote host. A local

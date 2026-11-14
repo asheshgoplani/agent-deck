@@ -1,9 +1,11 @@
 package watcher
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -375,4 +377,176 @@ func TestConductorOutbox_IgnoresAStoredNameOnAnUnflaggedRow(t *testing.T) {
 	if spawned.started("worker") {
 		t.Fatalf("worker started for the unflagged row: %v", spawned.targets)
 	}
+}
+
+// TestConductorOutbox_CapsPendingDeliveriesPerWatcherAndConductor: a
+// loopback webhook with no secret takes events from any local process, and
+// each new body is a new key. The outbox stops queueing one watcher's events
+// for a conductor once it holds MaxPending of them undelivered (or
+// MaxPendingBytes of their message text) and refuses the new event with
+// ErrDeliveryQueueFull. A replay of an event already queued is still
+// "already queued", another conductor is not affected, and once the queue
+// drains events are queued again, with one line naming the watcher.
+func TestConductorOutbox_CapsPendingDeliveriesPerWatcherAndConductor(t *testing.T) {
+	db := newTestDB(t)
+	id := saveTestConductor(t, db, "demo")
+	saveTestConductor(t, db, "other")
+	t.Setenv("AGENTDECK_EVENTS_BUS", "off")
+	dir := sendqueue.Dir(filepath.Dir(db.Path()))
+	spawned := &spawnRecorder{}
+	var logBuf strings.Builder
+	var logMu sync.Mutex
+	outbox := NewConductorOutbox(OutboxConfig{
+		Profile: "outboxtest", Dir: dir, DB: db, SpawnWorker: spawned.spawn,
+		MaxPending: 3,
+		Logger:     slog.New(slog.NewTextHandler(&lockedWriter{w: &logBuf, mu: &logMu}, nil)),
+	})
+	ev := func(conductor string, i int) Event {
+		return Event{Source: "webhook", Sender: "local", Body: "body " + strconv.Itoa(i), RoutedTo: conductor, CustomDedupKey: "hook-" + strconv.Itoa(i)}
+	}
+	for i := 0; i < 3; i++ {
+		if err := outbox.Enqueue("w1", "hook", ev("demo", i)); err != nil {
+			t.Fatalf("Enqueue %d: %v", i, err)
+		}
+	}
+	for i := 3; i < 6; i++ {
+		if err := outbox.Enqueue("w1", "hook", ev("demo", i)); !errors.Is(err, ErrDeliveryQueueFull) {
+			t.Fatalf("Enqueue %d over the cap: %v, want ErrDeliveryQueueFull", i, err)
+		}
+	}
+	if err := outbox.Enqueue("w1", "hook", ev("demo", 0)); err != nil {
+		t.Fatalf("replay of a queued event over the cap: %v, want already queued", err)
+	}
+	if recs, _ := sendqueue.List(dir, id); len(recs) != 3 {
+		t.Fatalf("%d records for demo, want the cap of 3", len(recs))
+	}
+	if err := outbox.Enqueue("w1", "hook", ev("other", 0)); err != nil {
+		t.Fatalf("another conductor is capped too: %v", err)
+	}
+
+	// The worker delivers one: there is room again.
+	recs, _ := sendqueue.List(dir, id)
+	recs[0].State = sendqueue.StateLanded
+	if err := sendqueue.Save(dir, recs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Enqueue("w1", "hook", ev("demo", 9)); err != nil {
+		t.Fatalf("Enqueue after the queue drained: %v", err)
+	}
+	logMu.Lock()
+	logged := logBuf.String()
+	logMu.Unlock()
+	if n := strings.Count(logged, "watcher_delivery_queue_has_room"); n != 1 || !strings.Contains(logged, "watcher_delivery_queue_has_room watcher=hook conductor=demo") {
+		t.Fatalf("%d has-room lines, want one naming watcher hook and conductor demo:\n%s", n, logged)
+	}
+}
+
+// TestConductorOutbox_AFloodFromOneWatcherDoesNotRefuseAnother: an unsigned
+// loopback webhook and a signed GitHub watcher route to the same conductor.
+// A local flood fills the webhook's share of the queue; the GitHub watcher's
+// events are still queued, and when the webhook gets room again the line
+// that says so names the webhook, not the watcher whose event came next.
+func TestConductorOutbox_AFloodFromOneWatcherDoesNotRefuseAnother(t *testing.T) {
+	db := newTestDB(t)
+	id := saveTestConductor(t, db, "demo")
+	t.Setenv("AGENTDECK_EVENTS_BUS", "off")
+	dir := sendqueue.Dir(filepath.Dir(db.Path()))
+	spawned := &spawnRecorder{}
+	var logBuf strings.Builder
+	var logMu sync.Mutex
+	outbox := NewConductorOutbox(OutboxConfig{
+		Profile: "outboxtest", Dir: dir, DB: db, SpawnWorker: spawned.spawn,
+		MaxPending: 3,
+		Logger:     slog.New(slog.NewTextHandler(&lockedWriter{w: &logBuf, mu: &logMu}, nil)),
+	})
+	ev := func(prefix string, i int) Event {
+		return Event{Source: prefix, Sender: prefix, Body: prefix + " " + strconv.Itoa(i), RoutedTo: "demo", CustomDedupKey: prefix + "-" + strconv.Itoa(i)}
+	}
+	for i := 0; i < 10; i++ {
+		err := outbox.Enqueue("w-hook", "local-hook", ev("hook", i))
+		if i < 3 && err != nil {
+			t.Fatalf("hook Enqueue %d: %v", i, err)
+		}
+		if i >= 3 && !errors.Is(err, ErrDeliveryQueueFull) {
+			t.Fatalf("hook Enqueue %d over its cap: %v, want ErrDeliveryQueueFull", i, err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := outbox.Enqueue("w-gh", "github", ev("gh", i)); err != nil {
+			t.Fatalf("signed github event %d refused by the webhook's flood: %v", i, err)
+		}
+	}
+	if err := outbox.Enqueue("w-gh", "github", ev("gh", 3)); !errors.Is(err, ErrDeliveryQueueFull) {
+		t.Fatalf("github over its own cap: %v, want ErrDeliveryQueueFull", err)
+	}
+	if recs, _ := sendqueue.List(dir, id); len(recs) != 6 {
+		t.Fatalf("%d records for demo, want 3 per watcher", len(recs))
+	}
+
+	// One webhook event is delivered; a github event is refused again first,
+	// then the webhook gets its room back.
+	recs, _ := sendqueue.List(dir, id)
+	for _, r := range recs {
+		if strings.HasPrefix(r.Key, DeliveryKey("w-hook", ev("hook", 0))) {
+			r.State = sendqueue.StateLanded
+			if err := sendqueue.Save(dir, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := outbox.Enqueue("w-gh", "github", ev("gh", 4)); !errors.Is(err, ErrDeliveryQueueFull) {
+		t.Fatalf("github got the webhook's room: %v", err)
+	}
+	if err := outbox.Enqueue("w-hook", "local-hook", ev("hook", 20)); err != nil {
+		t.Fatalf("hook Enqueue after one was delivered: %v", err)
+	}
+	logMu.Lock()
+	logged := logBuf.String()
+	logMu.Unlock()
+	if !strings.Contains(logged, "watcher_delivery_queue_has_room watcher=local-hook conductor=demo") || strings.Contains(logged, "has_room watcher=github") {
+		t.Fatalf("has-room lines do not name the watcher that got room:\n%s", logged)
+	}
+}
+
+// TestConductorOutbox_CapsPendingBytesPerConductor: the byte cap stops a few
+// large bodies (a webhook body may be 1 MiB) before the entry cap does.
+func TestConductorOutbox_CapsPendingBytesPerConductor(t *testing.T) {
+	db := newTestDB(t)
+	saveTestConductor(t, db, "demo")
+	t.Setenv("AGENTDECK_EVENTS_BUS", "off")
+	dir := sendqueue.Dir(filepath.Dir(db.Path()))
+	spawned := &spawnRecorder{}
+	outbox := NewConductorOutbox(OutboxConfig{
+		Profile: "outboxtest", Dir: dir, DB: db, SpawnWorker: spawned.spawn,
+		MaxPendingBytes: 3500, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	big := strings.Repeat("x", 1000)
+	for i := 0; i < 3; i++ {
+		if err := outbox.Enqueue("w1", "hook", Event{Sender: "local", Body: big + strconv.Itoa(i), RoutedTo: "demo", CustomDedupKey: "big-" + strconv.Itoa(i)}); err != nil {
+			t.Fatalf("Enqueue %d: %v", i, err)
+		}
+	}
+	if err := outbox.Enqueue("w1", "hook", Event{Sender: "local", Body: big + "3", RoutedTo: "demo", CustomDedupKey: "big-3"}); !errors.Is(err, ErrDeliveryQueueFull) {
+		t.Fatalf("Enqueue over the byte cap: %v, want ErrDeliveryQueueFull", err)
+	}
+}
+
+// TestConductorOutbox_DefaultCaps: an outbox configured with no caps gets
+// the documented defaults, never "unlimited".
+func TestConductorOutbox_DefaultCaps(t *testing.T) {
+	o := NewConductorOutbox(OutboxConfig{})
+	if o.maxPending != DefaultMaxPendingDeliveries || o.maxPendingBytes != DefaultMaxPendingDeliveryBytes {
+		t.Fatalf("caps %d / %d, want %d / %d", o.maxPending, o.maxPendingBytes, DefaultMaxPendingDeliveries, DefaultMaxPendingDeliveryBytes)
+	}
+}
+
+type lockedWriter struct {
+	w  io.Writer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }

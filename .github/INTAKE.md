@@ -67,7 +67,7 @@ My human asked: "opencode sessions always show running in the deck even after th
 ## Checklist
 - [x] Targeted diff: one problem, no unrelated changes
 - [x] Tests added or updated for new behavior
-- [x] Test suite passes sandboxed, inside a container: run `.github/skills/agent-deck-contributor/scripts/self-check.sh`, which prints the Docker command (never `go test` on your host)
+- [x] Test suite passes sandboxed, inside a container: run `skills/agent-deck/scripts/contributing/self-check.sh`, which prints the Docker command (never `go test` on your host)
 - [x] CHANGELOG.md untouched (entries are added at landing)
 - [x] AI-assisted? Disclosed above, with validation evidence, and I can answer questions about the code
 - [x] "Allow edits from maintainers" is enabled
@@ -103,7 +103,7 @@ And before pushing code:
 ```bash
 gofmt -l ./cmd ./internal            # must print nothing
 go vet ./...
-FULL_TESTS=1 .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
+FULL_TESTS=1 skills/agent-deck/scripts/contributing/self-check.sh pr-body.md
 ```
 
 Never run `go test` on your host: agent-deck tests start real tmux servers and processes. `self-check.sh` refuses to run it outside a container and prints the exact `docker run` command that reruns the check, sandboxed `go test` included, inside a throwaway container. Run that command and open only when it ends with `Ready to open`.

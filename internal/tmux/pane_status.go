@@ -177,7 +177,9 @@ func ParsePaneStatus(content string) PaneStatus {
 			n, _ := strconv.Atoi(m[1])
 			st.AutoCompactPct = &n
 		}
-		inQueue = inQueue && strings.HasPrefix(line, "↳")
+		// A wrapped entry continues on rows indented four spaces; the queue
+		// block stays open across them.
+		inQueue = inQueue && (strings.HasPrefix(line, "↳") || strings.HasPrefix(raw, "    ") && line != "")
 	}
 	return st
 }

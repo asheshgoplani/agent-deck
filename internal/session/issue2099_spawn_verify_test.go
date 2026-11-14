@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // Issue #2099: `session start` printed "✓ Started" with exit 0 even when no
@@ -19,8 +21,10 @@ import (
 
 // TestIssue2099_VerifySpawnedReportsRecordedFailure: a spawn-failure record
 // is present and the tmux session is gone → the error carries the record.
-// No tmux needed: the isolated socket has no such session.
+// Needs the tmux binary to probe the isolated socket (which has no such
+// session); without it the probe errors instead of reporting absence.
 func TestIssue2099_VerifySpawnedReportsRecordedFailure(t *testing.T) {
+	testutil.RequireTmux(t)
 	inst := NewInstance("test-2099-recorded", "/tmp")
 	inst.Tool = "custom2099"
 	t.Cleanup(func() { clearSpawnFailureRecord(inst.ID) })
@@ -49,6 +53,7 @@ func TestIssue2099_VerifySpawnedReportsRecordedFailure(t *testing.T) {
 // tmux session still does not exist → still an error (never a false
 // "Started"), naming the missing tmux session.
 func TestIssue2099_VerifySpawnedNoSessionNoRecord(t *testing.T) {
+	testutil.RequireTmux(t)
 	inst := NewInstance("test-2099-missing", "/tmp")
 	inst.Tool = "custom2099"
 	t.Cleanup(func() { clearSpawnFailureRecord(inst.ID) })

@@ -85,7 +85,8 @@ func (m *CodexSubmissionMarker) MarkSubmitted(now time.Time) error {
 
 // MarkTransportAmbiguous records that transport was attempted without exact
 // submission evidence. It deliberately remains unresolved until a new rollout
-// generation appears or an operator proves transport never occurred.
+// generation appears, the running turn takes up later input, or an operator
+// proves transport never occurred.
 func (m *CodexSubmissionMarker) MarkTransportAmbiguous(now time.Time) error {
 	return m.updatePhase(codexSubmissionPhaseAmbiguous, now)
 }
@@ -109,9 +110,15 @@ func (m *CodexSubmissionMarker) updatePhase(phase string, now time.Time) error {
 
 // ReconcileCodexSubmissionMarker resolves a crashed or completed prior sender
 // while the matching acceptance lock is held. A different exact generation is
-// assigned to that prior attempt and makes its marker safe to remove. With no
-// new generation, delivery remains unknowable and all later sends fail closed.
-func ReconcileCodexSubmissionMarker(instanceID, codexSessionID, currentGeneration string) (string, error) {
+// assigned to that prior attempt and makes its marker safe to remove. Codex
+// starts no turn for input sent while a turn runs (issue #2836), so
+// tookInputSince (nil for none) may instead show that the unchanged turn took
+// up user input recorded after the attempt began. Without either, delivery
+// remains unknowable and all later sends fail closed.
+func ReconcileCodexSubmissionMarker(
+	instanceID, codexSessionID, currentGeneration string,
+	tookInputSince func(generation string, since time.Time) (bool, error),
+) (string, error) {
 	marker, found, err := readCodexSubmissionMarker(codexSessionID)
 	if err != nil || !found {
 		return "", err
@@ -120,16 +127,25 @@ func ReconcileCodexSubmissionMarker(instanceID, codexSessionID, currentGeneratio
 		return "", fmt.Errorf("Codex submission marker ownership does not match this instance")
 	}
 	if currentGeneration == marker.PriorTurnGeneration {
-		path, pathErr := codexSubmissionMarkerPath(codexSessionID)
-		if pathErr != nil {
-			return "", pathErr
+		took, evidenceErr := false, error(nil)
+		if currentGeneration != "" && tookInputSince != nil {
+			took, evidenceErr = tookInputSince(currentGeneration, marker.CreatedAt)
 		}
-		return "", fmt.Errorf(
-			"unresolved Codex submission %s at %s: no newer rollout generation is durable; inspect the exact Codex rollout and target pane, then manually remove this marker only if no turn was submitted; refusing a second send",
-			marker.AttemptID, path,
-		)
-	}
-	if err := validateCodexMarkerGeneration(marker.CodexSessionID, currentGeneration, false); err != nil {
+		if !took || evidenceErr != nil {
+			path, pathErr := codexSubmissionMarkerPath(codexSessionID)
+			if pathErr != nil {
+				return "", pathErr
+			}
+			refusal := fmt.Errorf(
+				"unresolved Codex submission %s at %s: no newer rollout generation is durable and the running turn took up no later input; inspect the exact Codex rollout and target pane, then manually remove this marker only if no turn was submitted; refusing a second send",
+				marker.AttemptID, path,
+			)
+			if evidenceErr != nil {
+				return "", fmt.Errorf("%w (cannot read the running turn's input: %v)", refusal, evidenceErr)
+			}
+			return "", refusal
+		}
+	} else if err := validateCodexMarkerGeneration(marker.CodexSessionID, currentGeneration, false); err != nil {
 		return "", fmt.Errorf("cannot reconcile Codex submission marker: %w", err)
 	}
 	if err := ClearCodexSubmissionMarker(marker); err != nil {

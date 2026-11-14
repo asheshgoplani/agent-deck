@@ -1,0 +1,28 @@
+{
+  "id": "/subscriptions/__SUB_ID__/providers/__NAMESPACE__",
+  "namespace": "__NAMESPACE__",
+  "providerAuthorizationConsentState": null,
+  "registrationPolicy": "RegistrationRequired",
+  "registrationState": "__STATE__",
+  "resourceTypes": [
+    {
+      "aliases": null,
+      "apiProfiles": null,
+      "apiVersions": [
+        "2024-07-01",
+        "2024-03-01"
+      ],
+      "capabilities": "SupportsExtension",
+      "defaultApiVersion": "2024-03-01",
+      "locationMappings": null,
+      "locations": [
+        "East US",
+        "West Europe",
+        "North Europe"
+      ],
+      "properties": null,
+      "resourceType": "__RESOURCE_TYPE__",
+      "zoneMappings": []
+    }
+  ]
+}

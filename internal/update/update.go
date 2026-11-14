@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 )
 
 const (
@@ -75,6 +76,29 @@ func SetCheckIntervalDuration(d time.Duration) {
 	if d > 0 {
 		checkInterval = d
 	}
+}
+
+// cacheFreshMarginMax caps the margin cacheFreshFor takes off the interval.
+const cacheFreshMarginMax = 10 * time.Second
+
+// cacheFreshFor is how long a saved check answers CheckForUpdate without a
+// poll: the check interval less a small margin (10%, at most 10s).
+//
+// A headless poller (notify-daemon, `web --no-tui`) ticks every check
+// interval, and the cache it saved on the previous tick is stamped after
+// that tick's network round trip. Compared against the full interval, the
+// next tick finds the cache younger than the interval by that lag, serves
+// it, and only every second tick reaches GitHub: a new release was noticed
+// up to twice check_interval (default 90s, so 3 min) after publishing. The
+// margin absorbs the lag so every tick polls, as check_interval documents.
+// Polls stay conditional (If-None-Match with the cached ETag), and a cache
+// another process saved moments ago is still shared.
+func cacheFreshFor(interval time.Duration) time.Duration {
+	margin := interval / 10
+	if margin > cacheFreshMarginMax {
+		margin = cacheFreshMarginMax
+	}
+	return interval - margin
 }
 
 // SetBridgeScriptInstaller configures the bridge.py installer used after updates.
@@ -343,14 +367,8 @@ func CachedUpdateInfo(currentVersion string) (*UpdateInfo, error) {
 	if cache == nil || cache.LatestVersion == "" {
 		return nil, nil
 	}
-	info := &UpdateInfo{
-		CurrentVersion: currentVersion,
-		LatestVersion:  cache.LatestVersion,
-		DownloadURL:    cache.DownloadURL,
-		ReleaseURL:     cache.ReleaseURL,
-		ReleasesBehind: cache.ReleasesBehind,
-		Available:      ReleaseSupersedes(cache.LatestVersion, currentVersion),
-	}
+	info := &UpdateInfo{CurrentVersion: currentVersion}
+	applyCacheToInfo(info, cache, currentVersion)
 	return info, nil
 }
 
@@ -380,6 +398,8 @@ func fetchLatestRelease() (*Release, error) {
 // should keep using its cached copy. newETag is the response's ETag, to
 // remember for the next call regardless of whether it was a 200 or a 304.
 func fetchLatestReleaseConditional(etag string) (release *Release, newETag string, notModified bool, err error) {
+	done := optiming.StartResult("update.check")
+	defer func() { done(err != nil) }()
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", apiBaseURL, GitHubRepo)
 
 	resp, authed, err := githubAPIGetConditional(url, etag)
@@ -618,13 +638,23 @@ func compareNumericIdentifiers(a, b string) int {
 
 // applyCacheToInfo fills info from a cached (or just-confirmed-unchanged)
 // release: used both when the cache is still fresh and when a conditional
-// poll comes back 304 Not Modified.
+// poll comes back 304 Not Modified. The cached ReleasesBehind is only used
+// when the cache was written by this same version: after an upgrade it still
+// counts how far the old binary was behind, so it is left at 0 (unknown).
 func applyCacheToInfo(info *UpdateInfo, cache *UpdateCache, currentVersion string) {
 	info.LatestVersion = cache.LatestVersion
 	info.DownloadURL = cache.DownloadURL
 	info.ReleaseURL = cache.ReleaseURL
-	info.ReleasesBehind = cache.ReleasesBehind
+	info.ReleasesBehind = 0
+	if cacheWrittenBy(cache, currentVersion) {
+		info.ReleasesBehind = cache.ReleasesBehind
+	}
 	info.Available = ReleaseSupersedes(cache.LatestVersion, currentVersion)
+}
+
+// cacheWrittenBy reports whether cache was last written by currentVersion.
+func cacheWrittenBy(cache *UpdateCache, currentVersion string) bool {
+	return strings.TrimPrefix(cache.CurrentVersion, "v") == strings.TrimPrefix(currentVersion, "v")
 }
 
 // CheckForUpdate checks if a new version is available
@@ -643,8 +673,9 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 	cache, cacheErr := loadCache()
 	haveCache := cacheErr == nil
 
-	// Try to use cache first (unless force check)
-	if !forceCheck && haveCache && time.Since(cache.CheckedAt) < checkInterval {
+	// Try to use cache first (unless force check). A cache written by another
+	// version (the user upgraded) is polled again so ReleasesBehind is recounted.
+	if !forceCheck && haveCache && time.Since(cache.CheckedAt) < cacheFreshFor(checkInterval) && cacheWrittenBy(cache, currentVersion) {
 		applyCacheToInfo(info, cache, currentVersion)
 		return info, nil
 	}
@@ -670,6 +701,15 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 		}
 		applyCacheToInfo(info, cache, currentVersion)
 		refreshed := *cache
+		if !cacheWrittenBy(cache, currentVersion) {
+			// The release is unchanged but this binary is not the one that
+			// counted; recount (0 on failure, like the 200 path).
+			info.ReleasesBehind = 0
+			if recent, recentErr := fetchRecentReleases(recentReleasesLimit); recentErr == nil {
+				info.ReleasesBehind = CountReleasesBehind(currentVersion, recent)
+			}
+			refreshed.ReleasesBehind = info.ReleasesBehind
+		}
 		refreshed.CheckedAt = time.Now()
 		refreshed.CurrentVersion = currentVersion
 		if newETag != "" {
@@ -746,7 +786,9 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 // binary for the requested platform. It fails closed: checksum download,
 // missing-entry, or hash mismatch errors occur before the installed binary is
 // touched.
-func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
+func PerformVerifiedUpdate(release *Release, goos, goarch string) (err error) {
+	done := optiming.StartResult("update.install")
+	defer func() { done(err != nil) }()
 	execPath, upgradeCmd, managed, err := detectHomebrewManagedInstall()
 	if err != nil {
 		return fmt.Errorf("failed to detect install type: %w", err)
@@ -879,11 +921,28 @@ type ChangelogEntry struct {
 	Content string
 }
 
-// FetchChangelog fetches the CHANGELOG.md from GitHub
+// ChangelogEnv overrides where the changelog is read from: an http(s) URL
+// or a local file path. Unset means the CHANGELOG.md on GitHub main.
+const ChangelogEnv = "AGENTDECK_CHANGELOG_URL"
+
+// FetchChangelog fetches the CHANGELOG.md from GitHub, or from the URL or
+// file ChangelogEnv names.
 func FetchChangelog() (string, error) {
 	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/CHANGELOG.md", GitHubRepo)
+	if src := strings.TrimSpace(os.Getenv(ChangelogEnv)); src != "" {
+		if !strings.HasPrefix(src, "http://") && !strings.HasPrefix(src, "https://") {
+			data, err := os.ReadFile(strings.TrimPrefix(src, "file://")) // #nosec G304 -- operator-set override
+			if err != nil {
+				return "", fmt.Errorf("failed to read changelog: %w", err)
+			}
+			return string(data), nil
+		}
+		url = src
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	// #nosec G704 -- url is the fixed GitHub CHANGELOG URL, or the
+	// AGENTDECK_CHANGELOG_URL the operator set (tests, the sandbox simulation).
 	resp, err := client.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch changelog: %w", err)

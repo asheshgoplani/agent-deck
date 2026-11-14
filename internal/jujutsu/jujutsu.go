@@ -140,34 +140,14 @@ func getWorkspacePath(repoDir, workspaceName string) (string, error) {
 		return GetRepoRoot(repoDir)
 	}
 
-	cmd := exec.Command("jj", "workspace", "root", "--name", workspaceName, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
+	cmd := exec.Command("jj", "workspace", "root", "--name", workspaceName, "-R", repoDir, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get workspace path: %w", err)
 	}
-	return string(output), nil
-}
-
-// IsDefaultWorkspace returns true if the given directory is the default workspace.
-func IsDefaultWorkspace(dir string) (bool, error) {
-	root, err := GetRepoRoot(dir)
-	if err != nil {
-		return false, err
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return false, err
-	}
-	return absDir == root, nil
-}
-
-// IsWorktree checks if the directory is a non-default jj workspace.
-func IsWorktree(dir string) bool {
-	isDefault, err := IsDefaultWorkspace(dir)
-	if err != nil {
-		return false
-	}
-	return !isDefault
+	// jj ends the path with a newline; untrimmed, os.Stat reports a live
+	// workspace as missing and PruneWorktrees forgets it.
+	return strings.TrimSpace(string(output)), nil
 }
 
 // GetWorktreeBaseRoot returns the default workspace path (equivalent to main worktree in git).
@@ -229,7 +209,7 @@ func (b *JJBackend) PruneWorktrees() error {
 		return err
 	}
 	for _, ws := range workspaces {
-		if ws.Path == "default" {
+		if ws.Branch == "default" {
 			continue
 		}
 		path, pathErr := getWorkspacePath(b.repoDir, ws.Branch)
@@ -295,21 +275,6 @@ func (b *JJBackend) CheckoutBranch(branchName string) error {
 	return nil
 }
 
-// AbortMerge undoes the last operation (equivalent to aborting a merge).
-func AbortMerge(repoDir string) error {
-	cmd := exec.Command("jj", "undo", "-R", repoDir) // #nosec G204 -- jj invocations with slice args, not shell-formed
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to undo: %s: %w", strings.TrimSpace(string(output)), err)
-	}
-	return nil
-}
-
-// GetMainWorktreePath returns the path to the default workspace.
-func GetMainWorktreePath(dir string) (string, error) {
-	return GetRepoRoot(dir)
-}
-
 // workspaceNameFromPath generates a workspace name from a filesystem path.
 func workspaceNameFromPath(path string) string {
 	name := filepath.Base(path)
@@ -326,7 +291,8 @@ func (b *JJBackend) GetWorktreeForBranch(branchName string) (string, error) {
 
 	for _, wt := range worktrees {
 		if wt.Branch == branchName {
-			return wt.Path, nil
+			// parseWorkspacesList leaves Path empty; resolve it here.
+			return getWorkspacePath(b.repoDir, wt.Branch)
 		}
 	}
 

@@ -138,9 +138,11 @@ func tempHomeWithConfig(t *testing.T, contents string) string {
 // TestRemoteSessionsPlainJSONStaysBareArray pins the contract that existing
 // consumers (conductor scripts, skills) rely on when they pipe
 // `agent-deck remote sessions --json` through `jq '.[]'`: a per-remote fetch
-// failure must not turn the output into an object. The configured remote is
-// deliberately unreachable, so FetchSessions fails and exercises the "some
-// remotes errored" branch of the plain (non-envelope) --json path.
+// failure must not turn the output into an object. Since #3107 the process
+// exits non-zero and writes the error to stderr, while stdout stays a bare
+// array. The configured remote is deliberately unreachable, so FetchSessions
+// fails and exercises the "some remotes errored" branch of the plain
+// (non-envelope) --json path.
 //
 // walk defect #2: a zero-session result must marshal as `[]`, never `null`
 // — `jq '.[]'` and `for row in $(jq -c '.[]')` both choke on `null` (no
@@ -153,9 +155,11 @@ func TestRemoteSessionsPlainJSONStaysBareArray(t *testing.T) {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
 	home := tempHomeWithConfig(t, "[remotes.unreachable]\nhost = 'nobody@203.0.113.1'\n")
-	stdout, _, code := runAgentDeck(t, home, "remote", "sessions", "--json")
-	if code != 0 {
-		t.Fatalf("plain --json must not fail the process on a per-remote error: code=%d stdout=%q", code, stdout)
+	stdout, stderr, code := runAgentDeck(t, home, "remote", "sessions", "--json")
+	// #3107: an unreachable remote is "unknown", never "no sessions": the
+	// array stays valid on stdout, but the process fails and says why.
+	if code == 0 || strings.TrimSpace(stderr) == "" {
+		t.Fatalf("plain --json must report a per-remote error: code=%d stderr=%q stdout=%q", code, stderr, stdout)
 	}
 
 	if trimmed := strings.TrimSpace(stdout); !strings.HasPrefix(trimmed, "[") {
@@ -171,11 +175,10 @@ func TestRemoteSessionsPlainJSONStaysBareArray(t *testing.T) {
 	}
 }
 
-// TestRemoteSessionsNoRemotesConfiguredStaysPlainText pins the long-standing
-// quirk that "no remotes configured" is reported as plain text even under
-// --json, since there is no session list to report. Scripts parsing that
-// output already had to handle this case, so nothing here regresses.
-func TestRemoteSessionsNoRemotesConfiguredStaysPlainText(t *testing.T) {
+// TestRemoteSessionsNoRemotesConfiguredJSONIsEmptyArray: with no remotes
+// configured, plain --json prints an empty array (#2920). It used to print
+// "No remotes configured." even under --json, which broke JSON parsers.
+func TestRemoteSessionsNoRemotesConfiguredJSONIsEmptyArray(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
@@ -183,8 +186,8 @@ func TestRemoteSessionsNoRemotesConfiguredStaysPlainText(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("empty remotes: code=%d stderr=%q", code, stderr)
 	}
-	if strings.TrimSpace(stdout) != "No remotes configured." {
-		t.Fatalf("no-remotes output = %q, want the plain text message", stdout)
+	if strings.TrimSpace(stdout) != "[]" {
+		t.Fatalf("no-remotes --json output = %q, want []", stdout)
 	}
 }
 

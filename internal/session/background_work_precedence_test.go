@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // Issue #2473 review round 2: background work never outranks an open menu or
@@ -55,6 +57,7 @@ func reloadAs(t *testing.T, profile string, inst *Instance, status Status) *Inst
 // Hook fast path: every waiting hook event over a menu frame with a workflow
 // row AND a pending transcript workflow stays waiting with the menu substate.
 func TestBackgroundWork2473_MenuOutranksWorkOnHookPath(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	cases := []struct {
 		name, fixture, event string
 	}{
@@ -123,6 +126,7 @@ func TestBackgroundWork2473_MenuOutranksWorkOnTmuxPath(t *testing.T) {
 // auth-401 banner with the workflow row: error on the tmux path, and on the
 // Stop-hook path the same waiting/auth-401 as main, never running.
 func TestBackgroundWork2473_AuthErrorOutranksWork(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	t.Run("tmux path", func(t *testing.T) {
 		t.Setenv("CLAUDE_CONFIG_DIR", "")
 		turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
@@ -190,6 +194,7 @@ func TestHookEventBlocksTurn(t *testing.T) {
 // ("Would you like me to ...?") opens no menu. The workflow is in flight, so
 // both the Stop-hook path and the tmux path read running/background-work.
 func TestBackgroundWork2473_ProseQuestionKeepsWorkflowRunning(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	would := loadPaneFixture(t, "workflow-prose-question.txt")
 	frames := map[string]string{
 		"would-you-like": would,
@@ -267,6 +272,7 @@ func TestBackgroundWork2473_DaemonWritesNoRecordUnderProseQuestion(t *testing.T)
 // waiting/PermissionRequest while the workflow runs and no menu is drawn: the
 // frame decides. With the menu still open it stays waiting.
 func TestBackgroundWork2473_StaleBlockingHookFollowsTheFrame(t *testing.T) {
+	testutil.SkipShort(t, "drives real tmux panes for several seconds; runs in CI without -short")
 	escaped := strings.Replace(loadPaneFixture(t, "workflow-running.txt"),
 		"✻ Waiting for 1 dynamic workflow to finish",
 		"⏺ Bash(git push origin main)\n  ⎿  Interrupted · What should Claude do instead?", 1)

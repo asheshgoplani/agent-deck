@@ -3,6 +3,9 @@ Telemetry: OFF
   Consent:       undecided
   Install id:    -
   Level:         full
+  Org id:        none
+  Managed:       none
+  Crash reports: off (no DSN configured)
   Endpoint:      https://eu.i.posthog.com
   Upload:        not configured (no PostHog project key; events stay local)
   Project key:   none

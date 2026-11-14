@@ -191,3 +191,38 @@ func TestStopRemoteAttachSSHKillsImmediately(t *testing.T) {
 		t.Fatal("ssh transport survived detach")
 	}
 }
+
+// A Ctrl+V image upload outlives the attach (remoteImagePaste.send runs in
+// its own goroutine) and ends with paste.notice. Once the attach is over that
+// notice must not draw over the dashboard, on every non-handoff path too.
+func TestStopRemoteAttachSilencesLateNotices(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		transport string
+		exited    bool
+	}{
+		{"ssh detach", RemoteTransportSSH, false},
+		{"ssh exited", RemoteTransportSSH, true},
+		{"mosh exited", RemoteTransportMosh, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer w.Close()
+			outputDone := make(chan struct{})
+			close(outputDone)
+			var buf strings.Builder
+			out := &attachOutput{w: &buf}
+			if stopRemoteAttach(&exec.Cmd{}, r, make(chan error, 1), outputDone, out, tc.transport, tc.exited, time.Second) {
+				t.Fatal("non-handoff stop handed off the PTY")
+			}
+			out.notice("agent-deck: the image could not reach host: boom")
+			out.notice("")
+			if buf.Len() != 0 {
+				t.Fatalf("notice after the attach ended reached the terminal: %q", buf.String())
+			}
+		})
+	}
+}

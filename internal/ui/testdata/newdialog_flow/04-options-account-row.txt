@@ -1,4 +1,7 @@
                                                                                                     
+                                                                                                    
+                                                                                                    
+                                                                                                    
        ╭────────────────────────────────────────────────────────────────────────────────────╮       
        │                                                                                    │       
        │                                                                                    │       
@@ -6,13 +9,13 @@
        │                                                                                    │       
        │      in group: default                                                             │       
        │                                                                                    │       
-       │      Name:                                                                         │       
-       │      > demo                                                                        │       
+       │      Name:  > demo                                                                 │       
        │                                                                                    │       
-       │      Command:                                                                      │       
-       │        shell     claude     gemini     opencode     opencode2     codex            │       
-       │        pi     copilot     crush     muse     cursor agent     hermes               │       
-       │        deepseek     omp                                                            │       
+       │      Agent:   shell     claude     gemini     opencode     opencode2               │       
+       │               codex     pi     copilot     crush     muse     cursor agent         │       
+       │               hermes     deepseek     omp                                          │       
+       │                                                                                    │       
+       │      Path:  > /home/user/project                                                   │       
        │                                                                                    │       
        │      Model ID:                                                                     │       
        │      > tool default (↓ to browse)                                                  │       
@@ -20,13 +23,7 @@
        │                                                                                    │       
        │      Reasoning effort: Tool default                                                │       
        │                                                                                    │       
-       │      Path:                                                                         │       
-       │      > /home/user/project                                                          │       
-       │                                                                                    │       
-       │      [ ] Create in worktree                                                        │       
-       │      [ ] Run in Docker sandbox                                                     │       
-       │                                                                                    │       
-       │      [ ] Multi-repo mode                                                           │       
+       │      ▸ More options: worktree, Docker sandbox, multi-repo                          │       
        │                                                                                    │       
        │    ─ Claude Options ─                                                              │       
        │      Session: (•) New  ( ) Continue  ( ) Resume                                    │       
@@ -42,9 +39,12 @@
        │      [ Create session ]                                                            │       
        │                                                                                    │       
        │                                                                                    │       
-       │    Space/y toggle │ Tab/↑↓ navigate │ Enter next │ ^S create │ Esc cancel          │       
+       │    Space/y toggle │ Tab/↑↓ navigate │ Enter create │ Esc cancel                    │       
        │                                                                                    │       
        │                                                                                    │       
        ╰────────────────────────────────────────────────────────────────────────────────────╯       
+                                                                                                    
+                                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     

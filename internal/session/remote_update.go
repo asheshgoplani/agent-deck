@@ -473,14 +473,6 @@ func MarkRemoteAutoUpdateRan(at time.Time, version string) error {
 	})
 }
 
-// RemoteAutoUpdateRanVersion returns the controller version the last sweep
-// pushed ("" when never, or stamped by a build before this field).
-func RemoteAutoUpdateRanVersion() string {
-	remoteVersionCacheMu.Lock()
-	defer remoteVersionCacheMu.Unlock()
-	return loadRemoteVersionCache().AutoUpdateRanVersion
-}
-
 // ClaimRemoteAutoUpdateRun is the startup sweep's check-and-stamp in one
 // step: under the cache locks (see updateRemoteVersionCache) it re-reads
 // the stamp, applies ShouldAutoUpdateRemotes, and writes the new

@@ -22,7 +22,7 @@ The script auto-detects current session/profile and creates a child session.
 
 ### Fanning out several children?
 
-This section covers **one** child (launch + one of the three retrieval modes). For a *fleet* — several children in parallel, supervised non-blockingly from the parent — load the sibling [fleet skill](../../fleet/SKILL.md) instead. It covers parented fan-out, polling live status and asserted completions via `agent-deck session children --json` (plus the push variant `--follow --until-done`), answering children stuck in `waiting`, and the grouping/`--parent` pitfalls.
+This section covers **one** child (launch + one of the three retrieval modes). For a *fleet* — several children in parallel, supervised non-blockingly from the parent — read [fleet.md](fleet.md) instead. It covers parented fan-out, polling live status and asserted completions via `agent-deck session children --json` (plus the push variant `--follow --until-done`), answering children stuck in `waiting`, and the grouping/`--parent` pitfalls.
 
 ### Recommended MCPs
 
@@ -148,7 +148,7 @@ $SKILL_DIR/scripts/launch-subagent.sh "Title" "Prompt" \
 
 ```bash
 # Code review from Codex
-$SKILL_DIR/scripts/launch-subagent.sh "Codex Review" "Read cmd/main.go and suggest improvements" --tool codex --wait --timeout 180
+$SKILL_DIR/scripts/launch-subagent.sh "Codex Review" "Read cmd/agent-deck/main.go and suggest improvements" --tool codex --wait --timeout 180
 
 # Architecture feedback from Gemini
 $SKILL_DIR/scripts/launch-subagent.sh "Gemini Arch" "Review the project structure and suggest better patterns" --tool gemini --wait --timeout 180

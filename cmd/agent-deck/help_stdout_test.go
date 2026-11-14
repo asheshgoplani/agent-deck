@@ -26,6 +26,7 @@ var appHelpProbes = [][]string{
 	{"usage", "ingest", "--help"},
 	{"session", "help"},
 	{"session", "send", "--help"},
+	{"session", "ref", "--help"},
 	{"session", "send-status", "--help"},
 	{"session", "queue", "--help"},
 	{"session", "queue", "help"},

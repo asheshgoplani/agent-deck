@@ -68,6 +68,31 @@ func (s *Session) ClientAttached() (bool, error) {
 	return attached, err
 }
 
+// HumanClientAttached reports whether a terminal client (a person) is
+// attached to the session. Unlike ClientAttached (#{session_attached}) it
+// leaves out control-mode clients, which agent-deck itself holds for live
+// pipes and key senders (ASK-119 wait timer).
+func (s *Session) HumanClientAttached() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := s.tmuxCmdContext(ctx, "list-clients", "-t", s.Name, "-F", "#{client_control_mode}").Output()
+	if err != nil {
+		return false, err
+	}
+	return hasHumanClient(string(out)), nil
+}
+
+// hasHumanClient reports whether list-clients -F '#{client_control_mode}'
+// output names a client that is not in control mode.
+func hasHumanClient(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "0" {
+			return true
+		}
+	}
+	return false
+}
+
 // activePaneMode reports whether a client is attached to the session and the
 // mode (empty when none) of the current window's active pane, which is the
 // pane tmux uses to display config causes.

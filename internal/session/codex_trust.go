@@ -103,6 +103,7 @@ func PreAcceptCodexTrust(codexConfigPath, projectDir string) error {
 	if err := atomicfile.WriteFile(codexConfigPath, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", codexConfigPath, err)
 	}
+	logFolderTrustGranted("codex", projectDir, "config", codexConfigPath)
 	return nil
 }
 
@@ -127,6 +128,10 @@ func (i *Instance) preAcceptCodexWorkspaceTrust() {
 		return
 	}
 	projectDir := i.EffectiveWorkingDir()
+	if folderTrustAllowed(i, projectDir) == "" {
+		folderTrustSkipped("codex", i, projectDir)
+		return
+	}
 	configPath := GetCodexConfigPath(i.getCodexHomeDir())
 	if err := PreAcceptCodexTrust(configPath, projectDir); err != nil {
 		sessionLog.Warn("codex_preaccept_trust_failed",
