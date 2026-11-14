@@ -1203,7 +1203,7 @@ agent-deck inbox stats [--json] --all
 agent-deck inbox stats --reset <session-id>
 ```
 
-Read-only counters (#2469) kept per parent under `runtime/inbox-stats/`: records by tier (`records_urgent`, `records_info`, `records_legacy`), turns suppressed (`noise_suppressed`, `dedup_suppressed`), wakeups (`wakeups_urgent`, `wakeups_digest`, `wakeups_suppressed`), delivery (`drains`, `records_delivered`, `bytes_injected`, `text_bytes`), notices withdrawn because the parent already read the child's result with `session output` (`wakeups_withdrawn`, `records_withdrawn`) and `last_urgent_latency_ms`. The text form adds the signal ratio (recorded turns over observed turns). Nothing is consumed.
+Read-only counters (#2469) kept per parent under `runtime/inbox-stats/`: records by tier (`records_urgent`, `records_info`, `records_legacy`), turns suppressed (`noise_suppressed`, `dedup_suppressed`), wakeups (`wakeups_urgent` counts only wake lines actually sent, `wakeups_digest`, `wakeups_suppressed`, and `wakeups_gated` for records that could wake but sent nothing because the parent is not a wake target, was busy or was debounced; a record that is not a reply wakes only a conductor), delivery (`drains`, `records_delivered`, `bytes_injected`, `text_bytes`), notices withdrawn because the parent already read the child's result with `session output` (`wakeups_withdrawn`, `records_withdrawn`) and `last_urgent_latency_ms`. The text form adds the signal ratio (recorded turns over observed turns). Nothing is consumed.
 
 Every record drained with `inbox drain` now carries `tier`, `trigger`, `text` (the child's new text, capped), `text_hash`, `turn_uuid`, `question` and `seq`; the text form prints the text indented under the record line.
 
