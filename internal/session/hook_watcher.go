@@ -331,8 +331,10 @@ type StatusFileWatcher struct {
 	mu       sync.RWMutex
 	statuses map[string]*HookStatus // instance_id -> latest hook status
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx     context.Context
+	cancel  context.CancelFunc
+	started chan struct{} // closed when Start() begins running
+	done    chan struct{} // closed when Start() returns
 
 	// onChange is called when a hook status changes (for TUI refresh)
 	onChange func()
@@ -368,12 +370,20 @@ func NewStatusFileWatcher(onChange func()) (*StatusFileWatcher, error) {
 		statuses:   make(map[string]*HookStatus),
 		ctx:        ctx,
 		cancel:     cancel,
+		started:    make(chan struct{}),
+		done:       make(chan struct{}),
 		onChange:   onChange,
 	}, nil
 }
 
 // Start begins watching the hooks directory. Must be called in a goroutine.
 func (w *StatusFileWatcher) Start() {
+	if w.started != nil {
+		close(w.started)
+	}
+	if w.done != nil {
+		defer close(w.done)
+	}
 	if err := w.watcher.Add(w.hooksDir); err != nil {
 		hookLog.Warn("hook_watcher_add_failed", slog.String("dir", w.hooksDir), slog.String("error", err.Error()))
 		return
@@ -670,6 +680,16 @@ func errString(err error) string {
 func (w *StatusFileWatcher) Stop() {
 	w.cancel()
 	_ = w.watcher.Close()
+	if w.started != nil {
+		select {
+		case <-w.started:
+			if w.done != nil {
+				<-w.done
+			}
+		default:
+			// Start() was never launched, so there is nothing to join.
+		}
+	}
 }
 
 // GetHookStatus returns the hook status for an instance, or nil if not available.
