@@ -36,10 +36,14 @@ func (i *Instance) SetArchivedAtThreadSafe(t time.Time) {
 // gone, so there is nothing for Kill to tear down. Archiving such a session
 // would otherwise keep whatever status the dead pane left behind (usually
 // error), and every status count would report the archive as a crash.
+//
+// Like Kill, it releases any auth hold: this is a deliberate stop, so a later
+// restart is a user act, not automation the hold should block.
 func (i *Instance) MarkStopped() {
 	i.mu.Lock()
 	i.Status = StatusStopped
 	i.stopRevision++
+	i.clearAuthHoldLocked()
 	i.mu.Unlock()
 }
 
