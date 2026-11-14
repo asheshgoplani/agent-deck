@@ -73,6 +73,8 @@ Options:
     	Do not inject the agent-deck session identity block into the harness (global default: [launch] inject_identity)
   -no-parent
     	Disable automatic parent linking
+  -no-tag
+    	Do not prefix the [agent-deck from:<id>] envelope a launch from inside its parent session gets by default ([send] tag_sends)
   -no-title-sync
     	Alias for --title-lock
   -no-transition-notify

@@ -695,7 +695,7 @@ func TestWatcherHelp_MentionsAdapterExamples(t *testing.T) {
 		"--topic",
 		"watcher-creator",
 		"install-skill",
-		"agent-deck#watchers",
+		"docs/guide/conductor.md#watchers",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("watcher help missing %q\n\nFull output:\n%s", want, out)

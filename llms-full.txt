@@ -59,7 +59,7 @@ OpenCode will auto-discover the skill from `~/.claude/skills/`.
 
 **Option 3: Any LLM** (ChatGPT, Claude, Gemini, etc.)
 ```
-Read https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/README.md
+Read https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt
 and answer: How do I fork a session?
 ```
 
