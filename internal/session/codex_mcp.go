@@ -254,6 +254,11 @@ func WriteCodexMCPConfig(codexHome string, enabledNames []string) error {
 		return fmt.Errorf("create Codex config dir: %w", err)
 	}
 
+	lock, err := acquireCodexConfigLock(configFile)
+	if err != nil {
+		return fmt.Errorf("locking Codex MCP config: %w", err)
+	}
+	defer lock.Release()
 	var existingData []byte
 	var existingConfig codexMCPConfig
 	if _, err := os.Stat(configFile); err == nil {
