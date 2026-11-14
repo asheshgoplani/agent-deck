@@ -422,15 +422,12 @@ func hasInboxWakePrefix(text string) bool {
 // urgent: louder, not lossy.
 func commsPromptTrigger(prompt string) (trigger, fromID string) {
 	text := strings.TrimSpace(prompt)
+	isSend, from := parseSendEnvelope(text)
 	switch {
 	case text == "":
 		return TurnTriggerUnknown, ""
-	case strings.HasPrefix(text, sendEnvelopePrefix):
-		rest := strings.TrimPrefix(text, sendEnvelopePrefix)
-		if end := strings.IndexByte(rest, ']'); end > 0 {
-			return TurnTriggerSend, strings.TrimSpace(rest[:end])
-		}
-		return TurnTriggerSend, ""
+	case isSend:
+		return TurnTriggerSend, from
 	case hasInboxWakePrefix(text):
 		return TurnTriggerInbox, ""
 	case strings.HasPrefix(text, "<task-notification>"):

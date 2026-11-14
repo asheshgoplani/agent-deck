@@ -253,6 +253,11 @@ func handleSessionShow(profile string, args []string) {
 			jsonData["codex_hooks_config"] = codexHooksConfig
 		}
 	}
+	// Same for a pi session without the agent-deck extension (#3098).
+	piHooks := piHooksStateForInstance(inst)
+	if piHooks.State != "" {
+		jsonData["pi_hooks"] = piHooks
+	}
 
 	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
 		jsonData["tmux_session"] = tmuxSession.Name
@@ -375,6 +380,9 @@ func handleSessionShow(profile string, args []string) {
 
 	if codexHooksState != "" {
 		sb.WriteString(fmt.Sprintf("Codex:   %s\n", codexHooksLine(codexHooksState, codexHooksConfig)))
+	}
+	if piHooks.State != "" {
+		sb.WriteString(fmt.Sprintf("pi:      %s\n", piHooksLine(piHooks)))
 	}
 
 	if inst.NoTransitionNotify {

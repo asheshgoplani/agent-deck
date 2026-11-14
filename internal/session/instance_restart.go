@@ -71,7 +71,7 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 		return
 	}
 	lookupPath := i.EffectiveWorkingDir()
-	uuid, found := discoverLatestClaudeJSONL(lookupPath)
+	uuid, found := discoverLatestClaudeJSONLForInstance(i, lookupPath)
 	if !found {
 		return
 	}

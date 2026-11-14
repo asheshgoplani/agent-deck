@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -181,6 +182,48 @@ func TestMCPProxyReconnectKeepsInput(t *testing.T) {
 	assertMCPProxyEOFExit(t, f)
 }
 
+// fillMCPProxyUntilBlocked writes to w until a write stops making progress
+// and returns the channel that receives the writer's final error. Writing
+// until the kernel pushes back, instead of a fixed payload, keeps the fixture
+// independent of the host's pipe and socket buffer sizes: with
+// net.core.wmem_default at 4 MiB a unix socket takes a 4 MiB write whole.
+func fillMCPProxyUntilBlocked(t *testing.T, direction string, w io.Writer) <-chan error {
+	t.Helper()
+	const (
+		chunk = 64 << 10
+		limit = 1 << 30 // far beyond any pipe or socket buffer
+		poll  = 100 * time.Millisecond
+	)
+	var total atomic.Int64
+	written := make(chan error, 1)
+	go func() {
+		data := bytes.Repeat([]byte("x"), chunk)
+		for total.Load() < limit {
+			n, err := w.Write(data)
+			total.Add(int64(n))
+			if err != nil {
+				written <- err
+				return
+			}
+		}
+		written <- nil
+	}()
+	last := int64(-1)
+	for {
+		select {
+		case err := <-written:
+			t.Fatalf("fixture did not exercise %s backpressure: writer returned %v after %d bytes", direction, err, total.Load())
+		case <-time.After(poll):
+		}
+		n := total.Load()
+		if n == last {
+			t.Logf("%s blocked after %d bytes", direction, n)
+			return written
+		}
+		last = n
+	}
+}
+
 func TestMCPProxyEOFWithInputBackpressure(t *testing.T) {
 	for _, mode := range []string{"dial-backoff", "blocked-backend"} {
 		t.Run(mode, func(t *testing.T) {
@@ -193,17 +236,7 @@ func TestMCPProxyEOFWithInputBackpressure(t *testing.T) {
 				conn := acceptMCPProxy(t, listener)
 				exchangeMCPProxy(t, f, conn, "before-backpressure")
 			}
-			written := make(chan error, 1)
-			go func() {
-				_, err := f.input.Write(bytes.Repeat([]byte("x"), 4<<20))
-				written <- err
-			}()
-			time.Sleep(100 * time.Millisecond)
-			select {
-			case err := <-written:
-				t.Fatalf("fixture did not exercise input backpressure: %v", err)
-			default:
-			}
+			written := fillMCPProxyUntilBlocked(t, "input", f.input)
 			assertMCPProxyEOFExit(t, f)
 			select {
 			case <-written:
@@ -219,17 +252,7 @@ func TestMCPProxyEOFWithOutputBackpressure(t *testing.T) {
 	f := newMCPProxyFixture(t, path)
 	conn := acceptMCPProxy(t, listener)
 	exchangeMCPProxy(t, f, conn, "before-backpressure")
-	written := make(chan error, 1)
-	go func() {
-		_, err := conn.Write(bytes.Repeat([]byte("x"), 4<<20))
-		written <- err
-	}()
-	time.Sleep(100 * time.Millisecond)
-	select {
-	case err := <-written:
-		t.Fatalf("fixture did not exercise output backpressure: %v", err)
-	default:
-	}
+	fillMCPProxyUntilBlocked(t, "output", conn)
 	assertMCPProxyEOFExit(t, f)
 }
 
