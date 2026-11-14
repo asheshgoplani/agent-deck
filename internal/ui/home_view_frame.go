@@ -930,7 +930,7 @@ func (h *Home) renderFrame() string {
 	// ═══════════════════════════════════════════════════════════════════
 	// SANDBOX STATUS (a sandbox create or destroy in flight, or just done).
 	// Above the list, with its height reserved: the footer error line
-	// below the help bar is clipped by the viewport and auto-dismissed.
+	// below the help bar is auto-dismissed after 5 s.
 	// ═══════════════════════════════════════════════════════════════════
 	sandboxStatusLines := h.sandboxStatusLines(time.Now())
 	sandboxStatusHeight := len(sandboxStatusLines)
@@ -947,8 +947,16 @@ func (h *Home) renderFrame() string {
 	if h.debugMode {
 		debugBarHeight = 1
 	}
-	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - sandboxStatusHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight() - h.hintBarHeight()
+	// The footer error line under the help bar gets its row too, or the
+	// final clamp cuts it off a full frame: it was set and logged but
+	// never on screen, so a close notice ("R to restart") or a create's
+	// setup warning was missed.
+	footerErrorHeight := 0
+	if h.err != nil && !h.sessionRefToastActive() {
+		footerErrorHeight = 1
+	}
+	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug, -footerErrorHeight error
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - sandboxStatusHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight() - h.hintBarHeight() - footerErrorHeight
 
 	var mainContent string
 	if welcome {
