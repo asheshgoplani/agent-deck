@@ -14,6 +14,7 @@
 |-------|---------------|
 | [Conductor](../../docs/conductor/) | Local quickstart, architecture, state files, lifecycle, remote channels, gotchas |
 | [Watcher Setup](../../docs/WATCHER-SETUP.md) | Give your fleet ears: GitHub / Gmail / ntfy / Slack / calendar event forwarding |
+| [Connect an assistant](../../docs/assistants/README.md) | Let an outside assistant (Hermes, OpenClaw, a Slack or Telegram bot, any MCP or HTTP client) see your sessions with one scoped token |
 
 **User guides** — reference material for going deeper:
 
