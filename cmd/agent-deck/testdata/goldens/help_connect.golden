@@ -1,0 +1,44 @@
+Usage: agent-deck connect [assistant] [options]
+
+Connect an assistant bot to agent-deck with one scoped token. Prints one
+copy-paste block: the config for that assistant and a short guide it keeps.
+Read-only by default; send, approve and launch are opt-in.
+
+Assistants (optional; without one you get a generic block the assistant adapts):
+  any        Any assistant (it sets itself up)
+  hermes     Hermes Agent
+  openclaw   OpenClaw
+  grok       Grok (xAI API, remote MCP)
+  claude     Claude Code / Claude Desktop
+  chatgpt    ChatGPT (via Codex CLI or the Responses API)
+  codex      Codex CLI
+  slack      Slack bot (HTTP API)
+  telegram   Telegram bot (HTTP API)
+  mcp        Any MCP client (generic)
+  http       Any HTTP client (generic)
+
+Options:
+  --scopes LIST   Comma-separated: read,send,approve,launch (default read)
+  --name NAME     Token name (default: the assistant). Reusing a name rotates its token
+  --url URL       agent-deck web address for HTTP snippets (default http://127.0.0.1:8420)
+  --json          Print the connection as JSON (token, config, guide)
+
+Commands:
+  connect list [--json]                  List connected assistants and their scopes
+  connect revoke <name>                  Revoke a token (effective on its next call)
+  connect audit [--name N] [-n 50] [--json]  Show recent assistant calls
+  connect serve [--token-file F]         MCP server over stdio (token from F or $AGENTDECK_ASSISTANT_TOKEN)
+  connect test [--token-file F] [--name N] [--url U]  Check a token end to end (list_sessions)
+
+Tools: whoami, list_sessions, session_status, read_output (read), send_message (send),
+approve (approve), launch_session (launch). There is no stop/remove/restart tool.
+Over HTTP (agent-deck web): POST /mcp and /api/assistant/v1/..., bearer token only.
+Rate limits per token: 120 read and 10 write calls per minute. Audit log:
+assistants-audit.jsonl in the agent-deck data directory (never message bodies).
+
+Examples:
+  agent-deck connect                         # generic block, read-only
+  agent-deck connect hermes                  # Hermes config + guide
+  agent-deck connect claude --scopes read,send
+  agent-deck connect telegram --url https://deck.example.ts.net --json
+  agent-deck connect revoke hermes

@@ -1,0 +1,6 @@
+Usage: agent-deck connect serve [--token-file F]
+
+Serve the agent-deck assistant tools over stdio MCP (newline-delimited JSON-RPC 2.0).
+An MCP client starts this; the token's scopes decide what it may do. Exits when stdin closes.
+  -token-file string
+    	File holding the assistant token (default $AGENTDECK_ASSISTANT_TOKEN)

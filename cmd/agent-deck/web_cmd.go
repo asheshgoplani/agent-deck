@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/asheshgoplani/agent-deck/internal/assistant"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
@@ -191,6 +192,16 @@ func buildWebServerFromOptions(profile string, options webCommandOptions, menuDa
 	// endpoint-by-endpoint regression matrix.
 	if resolvedToken != "" {
 		server.SetMCPManager(web.NewDefaultMCPManager())
+	}
+	// Assistant routes (/mcp, /api/assistant/v1/) always demand an
+	// assistant token of their own, so they are wired with or without an
+	// owner token. The owner form (/connect) uses the owner auth.
+	if store, err := connectStore(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: assistant connections disabled: %v\n", err)
+	} else if self, err := os.Executable(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: assistant connections disabled: locating agent-deck binary: %v\n", err)
+	} else {
+		server.SetAssistantService(assistant.NewService(store, assistant.BinaryExecutor{Path: self}, Version), connectBinaryPath())
 	}
 
 	return server, nil

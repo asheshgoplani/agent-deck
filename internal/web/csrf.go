@@ -3,7 +3,10 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/assistant"
 )
 
 // csrfProtect rejects cross-origin state-changing requests (POST, PUT, PATCH,
@@ -24,6 +27,15 @@ func (s *Server) csrfProtect(next http.Handler) http.Handler {
 	failClosed := s.cfg.Token != ""
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isMutationMethod(r.Method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Assistant routes authenticate only with a bearer header (never a
+		// cookie), which a cross-site page cannot attach, so the cookie CSRF
+		// check does not apply; the handler checks Origin itself.
+		// Only a canonical path is exempt: "/api/assistant/v1/../../x"
+		// must not skip the check on its way to an owner route.
+		if assistant.IsAssistantPath(r.URL.Path) && path.Clean(r.URL.Path) == r.URL.Path {
 			next.ServeHTTP(w, r)
 			return
 		}
