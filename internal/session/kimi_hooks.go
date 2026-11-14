@@ -49,7 +49,7 @@ func isAgentDeckKimiHookCommand(command string) bool {
 
 func InjectKimiHooks(configDir string) (bool, error) {
 	configPath := filepath.Join(configDir, "config.toml")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return false, fmt.Errorf("create Kimi config dir: %w", err)
 	}
 	lock, err := AcquireConfigFileLock(configPath)
