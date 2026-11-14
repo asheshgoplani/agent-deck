@@ -53,6 +53,24 @@ func BearerToken(h string) string {
 	return strings.TrimSpace(h[7:])
 }
 
+// RequestBearerToken is the one Authorization parser for the whole web
+// server: the assistant routes and the owner routes both call it, so a
+// header spelling means the same thing on each side. It returns the token
+// from the request's single Authorization header (see BearerToken; "" when
+// there is none or it is not a bearer credential). ok is false when the
+// request carries more than one Authorization header: the credential is
+// ambiguous (a proxy may pick a different one), so callers refuse it.
+func RequestBearerToken(h http.Header) (token string, ok bool) {
+	vals := h.Values("Authorization")
+	switch len(vals) {
+	case 0:
+		return "", true
+	case 1:
+		return BearerToken(vals[0]), true
+	}
+	return "", false
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -105,7 +123,12 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) auth(w http.ResponseWriter, r *http.Request) (Record, bool) {
-	tok := BearerToken(r.Header.Get("Authorization"))
+	tok, ok := RequestBearerToken(r.Header)
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="agent-deck assistant", error="invalid_request"`)
+		writeErr(w, http.StatusUnauthorized, &CallError{Code: CodeUnauthorized, Message: "send exactly one Authorization header"})
+		return Record{}, false
+	}
 	if tok == "" {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="agent-deck assistant"`)
 		writeErr(w, http.StatusUnauthorized, &CallError{Code: CodeUnauthorized, Message: "assistant token required (Authorization: Bearer adk_...)"})
@@ -131,10 +154,10 @@ func (h *HTTPHandler) serveMCP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, &CallError{Code: "method_not_allowed", Message: "POST JSON-RPC messages to /mcp"})
 		return
 	}
-	tok := BearerToken(r.Header.Get("Authorization"))
 	if _, ok := h.auth(w, r); !ok {
 		return
 	}
+	tok, _ := RequestBearerToken(r.Header)
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil || len(body) > maxBodyBytes {
 		writeErr(w, http.StatusRequestEntityTooLarge, &CallError{Code: CodeInvalid, Message: "request body too large or unreadable"})
