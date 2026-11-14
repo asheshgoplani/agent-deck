@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixes
+
+- A standing-order or heartbeat wake that Claude Code hands over as a paste (a `<pasted_content>` wrapper, as for any multi-line prompt) now still counts as an unattended turn, so its permission prompts are denied with a `NEED:` and it cannot change orders.
+
 ## [1.16.39] - 2026-11-15
 
 ### Highlights

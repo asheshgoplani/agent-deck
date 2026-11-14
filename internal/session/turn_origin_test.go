@@ -15,6 +15,19 @@ func TestTurnOriginForPrompt(t *testing.T) {
 		"please watch my PRs":                         "",
 		"<channel source=\"discord\">hi</channel>":    "",
 		"[ORDER Bad Name] x":                          "",
+		// Claude Code stores a multi-line prompt that arrived as a paste
+		// inside a <pasted_content> wrapper (issue #3131); an order wake is
+		// always multi-line, so the hook prompt may carry the wrapper.
+		"<pasted_content id=\"p1\">\n[ORDER watch-ci] its check changed.\nWas: a\n</pasted_content id=\"p1\">":      "order:watch-ci",
+		"<pasted_content id=\"p2\">\n" + SendEnvelope("abc") + "\n[ORDER x] its check\n</pasted_content id=\"p2\">": "order:x",
+		SendEnvelope("abc") + "\n<pasted_content id=\"p3\">\n[ORDER y] its check\n</pasted_content id=\"p3\">":      "order:y",
+		"<pasted_content id=\"p4\">\n[HEARTBEAT] [ops] Status: 1 waiting.\n</pasted_content id=\"p4\">":             TurnOriginHeartbeat,
+		// Same rule as parseSendEnvelope: only a LEADING, well-formed
+		// wrapper is unwrapped, and only its first line counts.
+		"<pasted_content id=\"p5\">\nlog:\n[ORDER x] its check\n</pasted_content id=\"p5\">":      "",
+		"see this:\n<pasted_content id=\"p6\">\n[ORDER x] its check\n</pasted_content id=\"p6\">": "",
+		"<pasted_contentx>\n[ORDER x] its check":                                                  "",
+		"<pasted_content id=\"p7\"\n>[ORDER x] its check":                                         "",
 	} {
 		if got := TurnOriginForPrompt(prompt); got != want {
 			t.Errorf("%q: got %q want %q", prompt, got, want)
