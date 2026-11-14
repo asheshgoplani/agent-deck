@@ -441,10 +441,8 @@ func handleSessionSend(profile string, args []string) {
 				readyBudget = send.DefaultAgentReadyTimeout
 			}
 			var readyErr error
-			acceptanceGuard, readyErr, guardErr = acquireCodexAcceptanceWhenReady(
-				time.Now().Add(readyBudget), codexAcceptanceLockWait(*timeout), waitReady,
-				inst.LatestCodexTurnGeneration,
-				func(d time.Duration) (*codexAcceptanceGuard, error) { return acquireCodexAcceptanceGuard(inst, d) },
+			acceptanceGuard, readyErr, guardErr = acquireCodexAcceptanceForSend(
+				inst, time.Now().Add(readyBudget), codexAcceptanceLockWait(*timeout), waitReady,
 			)
 			if readyErr != nil {
 				failReady(readyErr)

@@ -57,6 +57,7 @@ type freshStartToken struct {
 // freshStartObservable reports whether claudeCmd runs the claude binary itself
 // (bare or a path), with no alias (#1822 F3, e.g. cdw) or inline env before
 // it, which may pick a config dir the transcript lookup and hooks do not see.
+// The restart token asks it too, before it records turn_seq.
 func freshStartObservable(claudeCmd string) bool {
 	fields := strings.Fields(claudeCmd)
 	return len(fields) > 0 && !isShellEnvAssignment(fields[0]) && isClaudeCommand(claudeCmd)
@@ -64,17 +65,28 @@ func freshStartObservable(claudeCmd string) bool {
 
 // noteFreshStart writes i's token before the spawn when the command just built
 // starts a new conversation (launchesFresh, consumed here) whose turns this
-// host sees: not over SSH, in a sandbox or behind a wrapper, with Claude's
-// hooks on and installed, without drift, in the child's config dir. A config
-// that does not load writes none. Otherwise it removes a stale one.
+// host sees (claudeTurnSeqObservable). Otherwise it removes a stale one.
 func noteFreshStart(i *Instance, now time.Time) {
-	fresh := i.launchesFresh.Swap(false) && IsClaudeCompatible(i.Tool) && !i.notLocal() && !i.hasEffectiveWrapper()
+	fresh := i.launchesFresh.Swap(false)
 	clearFreshStartToken(i.ID)
-	if !fresh {
+	if !fresh || !claudeTurnSeqObservable(i) {
 		return
 	}
+	seq := readHookTurnSeq(i.ID)
+	writeTokenFile(freshStartDir, i.ID, ".json", freshStartToken{At: now, SessionID: i.ClaudeSessionID, TurnSeq: &seq})
+}
+
+// claudeTurnSeqObservable reports whether every turn of i's Claude process
+// bumps the instance's turn_seq (#3012): a Claude child not over SSH, in a
+// sandbox or behind a wrapper, with Claude's hooks on and installed, without
+// drift, in the config dir its spawn runs under. A config that does not load
+// counts as not. The fresh-start and restart tokens record turn_seq only then.
+func claudeTurnSeqObservable(i *Instance) bool {
+	if !IsClaudeCompatible(i.Tool) || i.notLocal() || i.hasEffectiveWrapper() {
+		return false
+	}
 	if cfg, err := LoadUserConfig(); err != nil || (cfg != nil && !cfg.Claude.GetHooksEnabled()) {
-		return
+		return false
 	}
 	// The dir the spawn runs under: the ambient one when the builder left
 	// CLAUDE_CONFIG_DIR to the command (#1822 F3), else what it exported.
@@ -85,10 +97,7 @@ func noteFreshStart(i *Instance, now time.Time) {
 			dir = filepath.Join(home, ".claude")
 		}
 	}
-	if CheckClaudeHooksInstalled(dir) {
-		seq := readHookTurnSeq(i.ID)
-		writeTokenFile(freshStartDir, i.ID, ".json", freshStartToken{At: now, SessionID: i.ClaudeSessionID, TurnSeq: &seq})
-	}
+	return CheckClaudeHooksInstalled(dir)
 }
 
 func readFreshStartToken(id string) (freshStartToken, bool) {
