@@ -80,6 +80,9 @@ func hookEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("AGENTDECK_PROFILE", "_test")
+	// A test run from inside a session that set a hook generation would have
+	// every status write rejected: the fresh home has no generation file.
+	t.Setenv("AGENTDECK_HOOK_GENERATION", "")
 }
 
 func statusWritten(instance string) bool {
@@ -133,6 +136,9 @@ func TestHookHandler_DeadlineDoesNotFireOnAHandlerThatFinishes(t *testing.T) {
 func TestHookHandler_WithoutADeadlineTheLockStillBlocksUntilReleased(t *testing.T) {
 	hookEnv(t)
 	const instance = "pi-nodeadline-lock"
+	// Build the binary before the release timer starts: a cold build inside
+	// runHookHandlerBinary would use up the 900 ms hold.
+	channelsCLIBinary(t)
 	lock := holdStatusLock(t, instance)
 	// The release runs in a timer goroutine that reads lock.Fd(): join it before
 	// the cleanup closes the file.

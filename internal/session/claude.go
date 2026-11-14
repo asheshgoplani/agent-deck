@@ -299,10 +299,9 @@ func GetMCPInfo(projectPath string) *MCPInfo {
 // getMCPInfoUncached reads MCP info from disk (called by cached wrapper)
 func getMCPInfoUncached(projectPath string) *MCPInfo {
 	info := &MCPInfo{}
-	configDir := GetClaudeConfigDir()
 
 	// Read .claude.json for global and project MCPs
-	configFile := filepath.Join(configDir, ".claude.json")
+	configFile := claudeConfigFilePath()
 	if data, err := os.ReadFile(configFile); err == nil {
 		var config claudeConfigForMCP
 		if json.Unmarshal(data, &config) == nil {
