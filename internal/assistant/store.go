@@ -241,13 +241,34 @@ func (s *Store) Create(name, assistant string, scopes []Scope, profile string) (
 		return "", Record{}, fmt.Errorf("creating token dir: %w", err)
 	}
 	_ = os.Chmod(filepath.Dir(tokenPath), 0o700)
-	if err := writeFileAtomic(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+	// A rotation keeps the old token file until the new record is saved:
+	// the new token is staged next to it and renamed into place only after
+	// the save, so a failed save leaves the old token working and in its
+	// file. Names cannot start with '.', so the staging name never collides
+	// with another token file.
+	pending := filepath.Join(filepath.Dir(tokenPath), "."+name+".token.pending")
+	if err := writeFileAtomic(pending, []byte(token+"\n"), 0o600); err != nil {
 		return "", Record{}, fmt.Errorf("writing token file: %w", err)
 	}
+	prev, hadPrev := s.records[name]
 	s.records[name] = rec
 	if err := s.saveLocked(); err != nil {
 		s.dropCacheLocked()
+		_ = os.Remove(pending)
 		return "", Record{}, err
+	}
+	if err := os.Rename(pending, tokenPath); err != nil {
+		// Put the previous record back so the file and the records agree.
+		if hadPrev {
+			s.records[name] = prev
+		} else {
+			delete(s.records, name)
+		}
+		if serr := s.saveLocked(); serr != nil {
+			s.dropCacheLocked()
+		}
+		_ = os.Remove(pending)
+		return "", Record{}, fmt.Errorf("writing token file: %w", err)
 	}
 	return token, rec, nil
 }
