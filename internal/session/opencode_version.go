@@ -115,7 +115,7 @@ func (i *Instance) launchBinary(command, name string) (bin string, found bool, p
 		if isShellEnvAssignment(word) {
 			key, value, _ := strings.Cut(word, "=")
 			before := pathEnv
-			expanded := os.Expand(value, func(v string) string {
+			expanded := os.Expand(expandAssignmentTilde(value), func(v string) string {
 				if v == "PATH" {
 					return before
 				}
@@ -141,6 +141,25 @@ func (i *Instance) launchBinary(command, name string) (bin string, found bool, p
 	}
 	bin, found = lookPathIn(name, pathEnv)
 	return bin, found, pathEnv, assigns
+}
+
+// expandAssignmentTilde expands a ~ that starts value or follows a colon in it
+// to $HOME, as the shell does in an assignment (PATH=~/bin:$PATH,
+// PI_CODING_AGENT_DIR=~/alt). Only a bare ~, the current user, is expanded.
+func expandAssignmentTilde(value string) string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return value
+	}
+	parts := strings.Split(value, ":")
+	for k, part := range parts {
+		if part == "~" {
+			parts[k] = home
+		} else if rest, ok := strings.CutPrefix(part, "~/"); ok {
+			parts[k] = filepath.Join(home, rest)
+		}
+	}
+	return strings.Join(parts, ":")
 }
 
 // lookPathIn is exec.LookPath against an explicit PATH value. A name with a
