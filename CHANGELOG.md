@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - pi: the agent-deck extension v5 can be woken through a local socket instead of typed input, and `pi-hooks status` shows your pi version and whether the socket is on (#3078; thanks @fpmx3bp).
 - The session row that holds the voice mic now shows a mic badge with its state (listening, speaking, muted and so on), for local sessions and sessions under a remote. A collapsed group holding it shows the mic too (#3102).
 - `agent-deck remote <name> session ownership inspect <id> --json` now works, so you can ask a remote whether a session is still owned. It only reads, and `reconcile` and `abandon` are still not forwarded (#3111; thanks @jordanhubbard).
+- Connect any assistant bot (Hermes, OpenClaw, Claude, Codex, a Slack or Telegram bot, your own orchestrator) with `agent-deck connect`, which prints one copy-paste block for the assistant's config. The assistant gets a scoped token (`read`, `send`, `approve`, `launch`; read-only by default) and talks to agent-deck over MCP (on this machine or over HTTP at `/mcp`) or a plain HTTP API under `/api/assistant/v1/`. You can also paste one line into the assistant and let it set itself up from `docs/assistants/SETUP-PROMPT.md`, or use the new `/connect` page in `agent-deck web`. Tokens are stored hashed, each has a rate limit, and every call is written to an audit log without message text. With `[web].mutations_enabled = false`, assistant tokens can read but not send, approve or launch. A call with an argument a tool does not list is refused with `invalid_arguments` (#3137; the feature is Sharjeel's work from #3082, with thanks).
+- `[inbox] wake_parents = true` also wakes an idle Claude parent that is not a conductor when a child's result is in your `wake_on` list. Off by default. A wake never types over text someone left in the input box, and is skipped while the parent shows a menu or a permission dialog (#3138).
+- `launch --no-tag` starts a child without the `[agent-deck from:<parent id>]` envelope on its first message, so its result does not wake the parent (#3138).
+- A much shorter README: what agent-deck is, a 30-second install, three commands to a first session, and how to connect your assistant. The long sections moved unchanged into `docs/guide/` (#3141; the README is Sharjeel's work from #3083, with thanks).
+
+### Security
+
+- Builds use Go 1.26.11, which fixes GO-2026-6859 (an HTTP/1 server crash in the Go standard library's `net/http`, a `MaxBytesReader` header race) (#3128).
+
+### Changed
+
+- An idle Claude session that launched a child is now woken by that child's result (a done line, a question or an error), also when it is not a conductor. Turn it off with `[send] tag_sends = false` or `launch --no-tag`. Conductors see no change (#3138; thanks @tarekrached for the report in #3131).
+- Owner routes of `agent-deck web` now accept a lowercase `bearer` scheme, as RFC 9110 allows, and a request with more than one Authorization header is refused with 401 on every authenticated route (#3137).
+- `agent-deck status`, the TUI status counts, both conductor heartbeats and `group list` leave archived sessions out. `session_count` and `total_sessions` in `group list` count active sessions only, so they can be lower than the rows `list --json` still prints. `session show --json` now reports `archived` and `archived_at` (#3127, #3140; thanks @wallacms for #3127).
 
 ### Fixes
 
@@ -37,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A pi session started inside a standing order or heartbeat turn no longer clears that turn's origin, so permission prompts in it are still denied and an order turn cannot change orders (#3118; thanks @fpmx3bp).
 - A failed pi wake now names the pi wake socket, and the pi wake peer check is stricter. Review follow-ups to the pi wake work (#3117; thanks @fpmx3bp).
 - A tagged `session send` that reaches Claude Code as a pasted prompt is now recognised, so the reply goes back to the sender. `inbox stats` counts only wakeups that were really sent (#3132; thanks @tarekrached for the report).
+- `session archive` on a session whose pane was already gone (after a reboot, say) is now stored as `stopped` instead of keeping the `error` the dead pane left behind. The TUI header pill, the Error filter and `agent-deck status` now agree, and archived sessions no longer show up as crashes on every conductor heartbeat (#3127, #3140; thanks @wallacms for #3127).
+- `session send` to a Codex session now submits on the first attempt instead of leaving the message typed in the composer (`typed_not_submitted`), and a send during a long Codex turn is no longer refused with "cannot reconcile Codex submission marker" when the marker is intact (#3125; thanks @barjatiyasaurabh).
+- A Codex session with a long-running turn no longer gets stuck refusing sends after an earlier send's input was taken into that turn: the check now reads as far back as the rest of the send path does. A `--wait` send to such a session also re-reads its rollout less while it waits for the receipt (#3142, follow-up to #3125).
+- A restarted idle child is judged by the hook turn count, so the parent gets one "Restarted while idle; conversation resumed, no new turn." line instead of the old reply again when the daemon reads a different transcript path than the restart did (for example `CLAUDE_CONFIG_DIR` set only in the shell that ran the restart). A turn the resolved transcript does not show is now news instead of being taken for the boot. Claude children with hooks installed only (#3139; step 3 of #3012, thanks @tarekrached for the plan).
+- An OpenCode V2 config with an MCP server named `type` is read again, and `mcp attach` keeps it under `mcp.servers` instead of moving the whole servers map one level down (#3143; thanks @Bowen-Xue-ac2 for the report in #3104).
+- A pi session whose command clears an inherited `PI_CODING_AGENT_DIR` (`PI_CODING_AGENT_DIR= pi`) now gets an install hint that spells out `PI_CODING_AGENT_DIR= agent-deck pi-hooks install`, so the extension lands where that pi loads it (#3136, refs #3098).
+- pi: a pi parent that is listed in the Comms Ledger now reads its children's results as a full ledger consumer. Its doorbell goes through the extension's socket, a listed pi is never typed into, and a pi parent that is busy when an urgent result lands is rung once when it settles idle. A pi started inside the parent's pane no longer takes the parent's records (#3024; thanks @fpmx3bp).
+- A child turn that runs longer than the transcript tail window is now attributed to the session that sent the prompt instead of `unknown`, so the asker gets its reply and wake. A wake into a session that is not a conductor is skipped while it shows a menu or a permission dialog. `inbox stats` counts wakeups dispatched, not confirmed (#3138).
 
 ### Under the hood
 
