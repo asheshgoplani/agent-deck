@@ -1,6 +1,8 @@
 package statedb
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -41,23 +43,63 @@ func (w WriteStamps) SoleWriterSince(loadedAt, currentAt int64) bool {
 
 // touchStamp records a modification and returns the value written along with
 // the one it replaced, so a caller can identify its own bump afterwards.
+//
+// The read and the write are one transaction, BEGIN IMMEDIATE on a pinned
+// connection (as TakeQueued and the snapshot merge do): it holds the database's
+// write lock from before the read, so no other writer, in this process or
+// another, whatever it writes, can land between them, and Before is always the
+// stamp this write replaced. Two writers that both read the same stamp would
+// otherwise each report it as Before and each pass SoleWriterSince.
 func (s *StateDB) touchStamp() (WriteStamps, error) {
-	before, err := s.LastModified()
+	var stamps WriteStamps
+	err := withBusyRetry(func() error {
+		ctx := context.Background()
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			}
+		}()
+		var raw string
+		switch err := conn.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key = 'last_modified'`).Scan(&raw); {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return err
+		}
+		var before int64
+		if raw != "" {
+			if _, err := fmt.Sscanf(raw, "%d", &before); err != nil {
+				return err
+			}
+		}
+		after := time.Now().UnixNano()
+		// A clock that has not advanced (or has gone backwards) must not produce a
+		// stamp that another writer could already have used; step past it instead.
+		if after <= before {
+			after = before + 1
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_modified', ?)`, fmt.Sprintf("%d", after)); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+			return err
+		}
+		committed = true
+		stamps = WriteStamps{Before: before, After: after}
+		return nil
+	})
 	if err != nil {
 		return WriteStamps{}, err
 	}
-	after := time.Now().UnixNano()
-	// A clock that has not advanced (or has gone backwards) must not produce a
-	// stamp that another writer could already have used; step past it instead.
-	if after <= before {
-		after = before + 1
-	}
-	if err := withBusyRetry(func() error {
-		return s.SetMeta("last_modified", fmt.Sprintf("%d", after))
-	}); err != nil {
-		return WriteStamps{}, err
-	}
-	return WriteStamps{Before: before, After: after}, nil
+	return stamps, nil
 }
 
 // WriteRestartOutcome atomically records what a restart produced for one
