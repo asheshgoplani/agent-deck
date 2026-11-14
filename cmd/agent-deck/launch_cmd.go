@@ -794,6 +794,8 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		parent:    parentInstance,
 		childTool: newInstance.Tool,
 		enabled:   !*noTag && sendTagsEnabled(),
+
+		childReportsTurns: newInstance.TurnsReportedToParent(),
 	})
 
 	// Keep validation and writing inside the compensated post-insert step.

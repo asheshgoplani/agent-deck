@@ -453,6 +453,11 @@ func (i *Instance) turnsReportedToParent() bool {
 	return instanceAcceptsTransitionEvents(i) && GetNotificationsSettings().GetTransitionEventsEnabled()
 }
 
+// TurnsReportedToParent is turnsReportedToParent for callers outside the
+// package: `launch` tags a kickoff only for a child whose turns reach its
+// parent (issue #3131).
+func (i *Instance) TurnsReportedToParent() bool { return i.turnsReportedToParent() }
+
 // identityNoOpNoticeRule is the child-side form of the conductor's no-op
 // notice rule: an acknowledgement or a status ping that needs no
 // action gets no reply, since every reply is itself delivered and answered.

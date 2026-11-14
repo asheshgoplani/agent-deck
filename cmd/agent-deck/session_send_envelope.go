@@ -120,6 +120,9 @@ type launchKickoffTagInputs struct {
 	parent    *session.Instance // the session launch links the child to; nil for top-level
 	childTool string
 	enabled   bool // [send] tag_sends, minus launch --no-tag
+	// childReportsTurns is false for a child launched with
+	// --no-transition-notify or with [notifications] transition events off.
+	childReportsTurns bool
 }
 
 // tagLaunchKickoff prepends the send envelope to a launch's initial message
@@ -130,11 +133,15 @@ type launchKickoffTagInputs struct {
 // urgent result wakes an idle Claude parent under the existing rule for a
 // parent that asked. It is never tagged when the caller is not the linked
 // parent (a human shell, --parent naming another session, a nested launch
-// linked to the caller's own parent) or the parent has no prompt-time drain;
+// linked to the caller's own parent), the parent has no prompt-time drain,
+// or the child's turns are not reported to its parent (--no-transition-notify
+// or transition events off: its identity block tells it to answer an
+// enveloped message with `session send`, which would type its whole answer
+// into the parent, and no record is sent that a tag could make a wake);
 // every other exclusion is tagSendMessage's.
 func tagLaunchKickoff(message string, in launchKickoffTagInputs) (string, bool) {
 	sender := strings.TrimSpace(in.senderID)
-	if strings.TrimSpace(message) == "" || in.parent == nil || sender == "" || sender != in.parent.ID {
+	if strings.TrimSpace(message) == "" || in.parent == nil || sender == "" || sender != in.parent.ID || !in.childReportsTurns {
 		return message, false
 	}
 	return tagSendMessage(message, sendTagInputs{
