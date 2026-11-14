@@ -24,7 +24,7 @@ const (
 	ReasonNoSocket          UnavailableReason = "no_socket"
 	ReasonSocketPerms       UnavailableReason = "socket_perms"
 	// ReasonPeerNotInPaneTree: the kernel says the process listening on the
-	// socket is outside the target's pane tree. Unlike ReasonNotInPaneTree,
+	// socket is outside the target's pane tree, or runs as another user. Unlike ReasonNotInPaneTree,
 	// which picks among session records, this reads the live peer itself.
 	ReasonPeerNotInPaneTree UnavailableReason = "peer_not_in_pane_tree"
 	// ReasonContextDone: the caller's context ended before the frame was
@@ -35,7 +35,7 @@ const (
 const (
 	// MaxSockPath is the longest unix socket path macOS accepts (sun_path is
 	// 104 bytes including the NUL); Linux allows 107, so one limit is used.
-	// The launch side (session.PiSocketPath) refuses longer paths up front.
+	// The pi launch side refuses longer paths before it exports one.
 	MaxSockPath = 103
 	// piWakeFrameCap is the extension's input cap: an unended or larger
 	// frame is destroyed unsent, so the client refuses to write one.
@@ -102,6 +102,10 @@ func (r *PiWakeRefused) Error() string { return "pi wake refused: " + r.Reason }
 // by callerUID that neither the group nor others can reach, in a directory
 // that is likewise private. Failures are *Unavailable.
 func VetPiSocket(path string, callerUID int) error {
+	return namePiSocket(vetPiSocket(path, callerUID))
+}
+
+func vetPiSocket(path string, callerUID int) error {
 	if len(path) > MaxSockPath {
 		// The launch never exports a path this long, so no extension listens on it.
 		return &Unavailable{Reason: ReasonSocketPathTooLong, Absent: true,
@@ -198,6 +202,27 @@ type piWakeReply struct {
 // and is a *CommittedError; a cancel during the write is a *CommittedError. The
 // caller never types after either, so neither can double-deliver.
 func SendPiWake(ctx context.Context, target PiWakeTarget, nonce, line string, ids []string, opts PiWakeOptions) (PiWakeResult, error) {
+	res, err := sendPiWake(ctx, target, nonce, line, ids, opts)
+	return res, namePiSocket(err)
+}
+
+// piSocketName is what a pi wake's errors call the socket they failed on.
+const piSocketName = "pi wake socket"
+
+// namePiSocket makes err name the pi wake socket rather than Claude's.
+func namePiSocket(err error) error {
+	var u *Unavailable
+	if errors.As(err, &u) {
+		u.Socket = piSocketName
+	}
+	var c *CommittedError
+	if errors.As(err, &c) {
+		c.Socket = piSocketName
+	}
+	return err
+}
+
+func sendPiWake(ctx context.Context, target PiWakeTarget, nonce, line string, ids []string, opts PiWakeOptions) (PiWakeResult, error) {
 	if err := ctx.Err(); err != nil {
 		return PiWakeResult{}, &Unavailable{Reason: ReasonContextDone, Err: err}
 	}
@@ -270,7 +295,7 @@ func SendPiWake(ctx context.Context, target PiWakeTarget, nonce, line string, id
 		_ = conn.Close()
 	}()
 
-	pid, err := peerPID(conn)
+	pid, uid, err := peerCred(conn)
 	// Checked first: a cancel closes the conn, which would otherwise read as
 	// a peer failure.
 	if cerr := ctx.Err(); cerr != nil {
@@ -279,6 +304,11 @@ func SendPiWake(ctx context.Context, target PiWakeTarget, nonce, line string, id
 	if err != nil || !opts.PanePIDs[pid] {
 		return PiWakeResult{}, &Unavailable{Reason: ReasonPeerNotInPaneTree,
 			Err: fmt.Errorf("listener pid %d (%v) is not in the target pane tree", pid, err)}
+	}
+	// A second guard beside the pane tree: the listener runs as this user.
+	if uid != os.Getuid() {
+		return PiWakeResult{}, &Unavailable{Reason: ReasonPeerNotInPaneTree,
+			Err: fmt.Errorf("listener pid %d runs as uid %d, want %d", pid, uid, os.Getuid())}
 	}
 
 	replyWindow := opts.ReplyWindow
@@ -317,20 +347,19 @@ func SendPiWake(ctx context.Context, target PiWakeTarget, nonce, line string, id
 	}
 }
 
-// peerPID returns the pid of the process listening on conn's socket.
-func peerPID(conn net.Conn) (int, error) {
+// peerCred returns the pid and uid of the process listening on conn's socket.
+func peerCred(conn net.Conn) (pid, uid int, err error) {
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
-		return 0, errors.New("not a unix connection")
+		return 0, 0, errors.New("not a unix connection")
 	}
 	raw, err := uc.SyscallConn()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var pid int
 	var sockErr error
-	if err := raw.Control(func(fd uintptr) { pid, sockErr = peerPIDOfFd(int(fd)) }); err != nil {
-		return 0, err
+	if err := raw.Control(func(fd uintptr) { pid, uid, sockErr = peerCredOfFd(int(fd)) }); err != nil {
+		return 0, 0, err
 	}
-	return pid, sockErr
+	return pid, uid, sockErr
 }
