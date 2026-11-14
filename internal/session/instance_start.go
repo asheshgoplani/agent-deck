@@ -184,7 +184,7 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 	// EffectiveWorkingDir() so the encoded-path key matches what Claude
 	// actually wrote on the first boot.
 	lookupPath := i.EffectiveWorkingDir()
-	uuid, found := discoverLatestClaudeJSONL(lookupPath)
+	uuid, found := discoverLatestClaudeJSONLForInstance(i, lookupPath)
 	if !found {
 		return
 	}

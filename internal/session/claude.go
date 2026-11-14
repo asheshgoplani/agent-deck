@@ -868,11 +868,35 @@ func findActiveSessionIDExcluding(configDir, projectPath string, excludeIDs map[
 // absent / unreadable / empty project dir is NOT an error; the caller falls
 // through to the existing fresh-session branch.
 func discoverLatestClaudeJSONL(projectPath string) (string, bool) {
+	return discoverLatestClaudeJSONLIn("", projectPath)
+}
+
+// discoverLatestClaudeJSONLForInstance is discoverLatestClaudeJSONL for one
+// instance. A session on an account slot looks ONLY in its own config dir (the
+// one GetClaudeConfigDirForInstance, GetJSONLPath and LiveTranscriptPath
+// resolve): a wrong transcript is worse than none, so it must never adopt the
+// newest file of the default dir or of another slot. A session without a slot
+// keeps the process-wide dir.
+func discoverLatestClaudeJSONLForInstance(inst *Instance, projectPath string) (string, bool) {
+	if inst != nil && inst.Account != "" {
+		own := GetClaudeConfigDirForInstance(inst)
+		if own == "" {
+			return "", false
+		}
+		return discoverLatestClaudeJSONLIn(own, projectPath)
+	}
+	return discoverLatestClaudeJSONLIn("", projectPath)
+}
+
+// discoverLatestClaudeJSONLIn scans configDir; "" means the process-wide dir.
+func discoverLatestClaudeJSONLIn(configDir, projectPath string) (string, bool) {
 	if projectPath == "" {
 		return "", false
 	}
 
-	configDir := GetClaudeConfigDir()
+	if configDir == "" {
+		configDir = GetClaudeConfigDir()
+	}
 	if configDir == "" {
 		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
 	}
