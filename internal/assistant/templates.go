@@ -392,11 +392,29 @@ func curlExamples(c *Connection, envStyle bool) string {
 		base, tok = "$AGENTDECK_URL"+strings.TrimSuffix(APIPathPrefix, "/"), "$"+TokenEnvVar
 	}
 	h := `-H "Authorization: Bearer ` + tok + `"`
+	// The env-style URLs expand $AGENTDECK_URL on purpose; a literal URL is
+	// quoted so it stays data when the command is pasted.
+	url := func(path string) string {
+		if envStyle {
+			return `"` + base + path + `"`
+		}
+		return shellLiteral(base + path)
+	}
 	return strings.Join([]string{
-		`curl -fsS ` + h + ` "` + base + `/sessions"`,
-		`curl -fsS ` + h + ` "` + base + `/sessions/SESSION_ID/output"`,
-		`curl -fsS ` + h + ` -H 'Content-Type: application/json' -d '{"message":"..."}' "` + base + `/sessions/SESSION_ID/send"   # needs scope send`,
+		`curl -fsS ` + h + ` ` + url("/sessions"),
+		`curl -fsS ` + h + ` ` + url("/sessions/SESSION_ID/output"),
+		`curl -fsS ` + h + ` -H 'Content-Type: application/json' -d '{"message":"..."}' ` + url("/sessions/SESSION_ID/send") + `   # needs scope send`,
 	}, "\n")
+}
+
+// shellLiteral quotes s as one literal shell word. It keeps the readable
+// double-quoted form when nothing in s is special inside double quotes, and
+// single-quotes it otherwise ($, `, \, " and ! would expand or end the word).
+func shellLiteral(s string) string {
+	if !strings.ContainsAny(s, "$`\\\"!'") {
+		return `"` + s + `"`
+	}
+	return shellescape.Quote(s)
 }
 
 // --- per-assistant snippets --------------------------------------------------
@@ -493,7 +511,7 @@ func snippetChatGPT(c *Connection) string {
 
 func snippetBot(c *Connection) string {
 	return "# In the bot's environment:\n" +
-		"AGENTDECK_URL=" + baseOf(c) + "\n" +
+		"AGENTDECK_URL=" + shellescape.Quote(baseOf(c)) + "\n" +
 		TokenEnvVar + "=" + c.Token + "\n\n" +
 		"# The bot calls (JSON in, JSON out):\n" + curlExamples(c, true) + "\n\n" +
 		"# Python:\n" +
