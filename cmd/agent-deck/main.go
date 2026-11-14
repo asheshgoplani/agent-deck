@@ -404,7 +404,7 @@ const credsRefreshRemovedIn = "v1.16.21"
 // and remote-agent dispatch. Drop this stub two releases after
 // credsRefreshRemovedIn.
 func printCredsRefreshRemoved() {
-	fmt.Printf("creds-refresh was removed in %s. Disable any old unit with: systemctl --user disable --now agent-deck-creds-refresh. For long-lived logins use: claude setup-token (see README \"Vendor terms and logins\").\n", credsRefreshRemovedIn)
+	fmt.Printf("creds-refresh was removed in %s. Disable any old unit with: systemctl --user disable --now agent-deck-creds-refresh. For long-lived logins use: claude setup-token (see https://github.com/asheshgoplani/agent-deck/blob/main/docs/guide/tools.md#vendor-terms-and-logins).\n", credsRefreshRemovedIn)
 }
 
 func main() {
@@ -704,6 +704,9 @@ func main() {
 			return
 		case "recall":
 			handleRecall(profile, args[1:])
+			return
+		case "connect":
+			handleConnect(profile, args[1:])
 			return
 		case "usage":
 			handleUsage(profile, args[1:])
@@ -1664,7 +1667,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -4806,6 +4809,7 @@ func printHelp() {
 	fmt.Println("  usage            Show remaining provider subscription quota")
 	fmt.Println("  recall           Search every Claude conversation on this machine (docs/recall.md)")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
+	fmt.Println("  connect          Connect an assistant bot (Hermes, Claude, ChatGPT, Telegram...) with a scoped token")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  provider         List and test sandbox providers (remote add --provider)")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")

@@ -29,7 +29,7 @@ type GroupListOut struct {
 type GroupNode struct {
 	Name         string       `json:"name"`
 	Path         string       `json:"path"`
-	SessionCount int          `json:"session_count" doc:"Sessions in this group and its subgroups"`
+	SessionCount int          `json:"session_count" doc:"Sessions in this group and its subgroups, archived ones left out"`
 	Status       *GroupStatus `json:"status,omitempty" doc:"Status counts; absent for an empty group"`
 	Children     []GroupNode  `json:"children,omitempty"`
 }
@@ -70,12 +70,13 @@ func groupListFromTree(tree *session.GroupTree) GroupListOut {
 	out := GroupListOut{
 		Groups:        []GroupNode{},
 		TotalGroups:   len(tree.Groups),
-		TotalSessions: tree.SessionCount(),
+		TotalSessions: len(groupSessions(tree, "")),
 	}
 	nodes := make(map[string]GroupNode, len(tree.GroupList))
 	for _, g := range tree.GroupList {
-		count := tree.SessionCountForGroup(g.Path)
-		status := groupStatus(tree, g.Path)
+		sessions := groupSessions(tree, g.Path)
+		count := len(sessions)
+		status := groupStatus(sessions)
 		node := GroupNode{Name: g.Name, Path: g.Path, SessionCount: count}
 		if count > 0 {
 			node.Status = &status
@@ -120,6 +121,11 @@ func refreshTreeStatuses(tree *session.GroupTree) {
 	seen := make(map[*session.Instance]struct{})
 	refresh := func(g *session.Group) {
 		for _, sess := range g.Sessions {
+			// Archived sessions are not counted (groupSessions), so their
+			// status is not worth a tmux round-trip.
+			if sess.IsArchived() {
+				continue
+			}
 			if _, ok := seen[sess]; !ok {
 				seen[sess] = struct{}{}
 				groupListRefreshStatus(sess)
@@ -134,27 +140,41 @@ func refreshTreeStatuses(tree *session.GroupTree) {
 	}
 }
 
-// groupStatus counts every session in path and its subgroups (statuses
-// already refreshed by refreshTreeStatuses).
-func groupStatus(tree *session.GroupTree, path string) GroupStatus {
-	var st GroupStatus
+// groupSessions returns the sessions group.list counts for path: the group's
+// own and its subgroups' ("" for every group), leaving archived sessions out.
+// #3127 made archived sessions stay out of every status count (`status`, the
+// TUI header pill and group rows, the group preview, remote rows); group.list
+// follows the same rule for its status counts, session_count and
+// total_sessions, so an old archived row that kept its `error` status no
+// longer shows up as an error here. The group itself is still listed, like
+// an empty group.
+func groupSessions(tree *session.GroupTree, path string) []*session.Instance {
+	var out []*session.Instance
 	for p, sub := range tree.Groups {
-		if p != path && !strings.HasPrefix(p, path+"/") {
+		if path != "" && p != path && !strings.HasPrefix(p, path+"/") {
 			continue
 		}
-		for _, sess := range sub.Sessions {
-			switch sess.Status {
-			case session.StatusRunning:
-				st.Running++
-			case session.StatusWaiting:
-				st.Waiting++
-			case session.StatusIdle:
-				st.Idle++
-			case session.StatusError:
-				st.Error++
-			case session.StatusStopped:
-				st.Stopped++
-			}
+		out = append(out, session.FilterInstancesByArchive(sub.Sessions, false)...)
+	}
+	return out
+}
+
+// groupStatus counts sessions by status (statuses already refreshed by
+// refreshTreeStatuses).
+func groupStatus(sessions []*session.Instance) GroupStatus {
+	var st GroupStatus
+	for _, sess := range sessions {
+		switch sess.Status {
+		case session.StatusRunning:
+			st.Running++
+		case session.StatusWaiting:
+			st.Waiting++
+		case session.StatusIdle:
+			st.Idle++
+		case session.StatusError:
+			st.Error++
+		case session.StatusStopped:
+			st.Stopped++
 		}
 	}
 	return st

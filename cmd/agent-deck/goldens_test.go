@@ -82,6 +82,10 @@ var excludedCommands = []excludedCommand{
 	{"telegram-doctor", "contacts the Telegram API (network)"},
 	{"feedback", "sends telemetry/feedback to a remote endpoint"},
 	{"debug-dump", "captures live PIDs/goroutine state into a ring-buffer dump; not byte-stable by design"},
+	{"connect hermes", "creates (or rotates) an assistant token in the store; `connect <assistant>` for every kind is covered by internal/assistant tests"},
+	{"connect serve", "long-running MCP stdio server; covered by internal/assistant round-trip tests"},
+	{"connect test", "spawns `connect serve` (or calls a live web server)"},
+	{"connect revoke", "mutates the assistant token store"},
 	{"recall", "unbounded scan of real Claude conversation transcripts on the host, outside the sandbox"},
 	{"session context", "walks the real host CLAUDE.md/AGENTS.md memory hierarchy outside the sandbox (see session_context_golden_test.go)"},
 	{"session start", "starts a real tmux process; covered instead by the storage-bytes goldens (deliverable 2)"},
@@ -244,6 +248,11 @@ func safeSpecs() []goldenSpec {
 		{"triggers_all_json", []string{"-p", goldensProfile, "triggers", "--all", "--json"}, 0},
 		{"triggers_fires_json", []string{"-p", goldensProfile, "triggers", "fires", "systemd:agentdeck-overnight", "--json"}, 0},
 
+		// A fresh sandbox has no assistant tokens and no audit log.
+		{"connect_list", []string{"connect", "list"}, 0},
+		{"connect_list_json", []string{"connect", "list", "--json"}, 0},
+		{"connect_audit_json", []string{"connect", "audit", "--json"}, 0},
+
 		{"completion_bash", []string{"completion", "bash"}, 0},
 		{"completion_zsh", []string{"completion", "zsh"}, 0},
 		{"completion_fish", []string{"completion", "fish"}, 0},
@@ -265,7 +274,7 @@ func helpSpecs() []goldenSpec {
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
 		"uninstall", "completion", "costs", "config", "inbox", "feedback", "whats-new",
 		"watcher", "openclaw", "system", "mcp-proxy", "hooks", "hook-handler", "codex-notify",
-		"notify-daemon", "run-task", "open", "switch", "file", "browser", "triggers",
+		"notify-daemon", "run-task", "open", "switch", "file", "browser", "triggers", "connect",
 	}
 
 	subcommands := []string{
@@ -304,6 +313,7 @@ func helpSpecs() []goldenSpec {
 		"usage statusline", "recall timeline", "recall follow",
 		"events follow", "events publish",
 		"triggers list", "triggers scan", "triggers mute", "triggers unmute", "triggers run", "triggers fires",
+		"connect list", "connect revoke", "connect audit", "connect serve", "connect test",
 	}
 
 	all := append(append([]string{}, topLevel...), subcommands...)

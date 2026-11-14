@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/assistant"
 )
 
 // authorizeRequest accepts a bearer header or a cookie established by a
@@ -33,6 +35,20 @@ func (s *Server) authorizeStreamRequest(r *http.Request) bool {
 }
 
 func (s *Server) authorize(r *http.Request, allowQueryToken bool) bool {
+	// The Authorization header is parsed by the same function the assistant
+	// routes use, so every spelling an assistant route accepts is seen here
+	// too. More than one Authorization header is ambiguous and refused.
+	headerToken, ok := assistant.RequestBearerToken(r.Header)
+	if !ok {
+		return false
+	}
+	// An assistant token (adk_...) is only ever valid on the assistant
+	// routes, which do their own auth. Refuse it on owner routes even when
+	// the server has no owner token, so a connected bot cannot reach the
+	// owner API by presenting its own credential.
+	if s.isAssistantCredential(r, headerToken, allowQueryToken) {
+		return false
+	}
 	if s.cfg.Token == "" {
 		return true
 	}
@@ -44,7 +60,6 @@ func (s *Server) authorize(r *http.Request, allowQueryToken bool) bool {
 		}
 	}
 
-	headerToken := bearerToken(r.Header.Get("Authorization"))
 	if headerToken != "" && secureEqual(headerToken, s.cfg.Token) {
 		return true
 	}
@@ -146,24 +161,20 @@ func isCookieSafeValue(v string) bool {
 	return true
 }
 
-func bearerToken(authHeader string) string {
-	authHeader = strings.TrimSpace(authHeader)
-	if authHeader == "" {
-		return ""
-	}
-
-	const bearerPrefix = "Bearer "
-	if !strings.HasPrefix(authHeader, bearerPrefix) {
-		return ""
-	}
-
-	token := strings.TrimSpace(strings.TrimPrefix(authHeader, bearerPrefix))
-	if token == "" {
-		return ""
-	}
-	return token
-}
-
 func secureEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// isAssistantCredential reports whether the request presents an assistant
+// token (headerToken, parsed by assistant.RequestBearerToken, or the query
+// token where that is accepted). An owner token that happens to share the
+// prefix is never mistaken for one.
+func (s *Server) isAssistantCredential(r *http.Request, headerToken string, allowQueryToken bool) bool {
+	looksAssistant := func(tok string) bool {
+		return strings.HasPrefix(tok, assistant.TokenPrefix) && (s.cfg.Token == "" || !secureEqual(tok, s.cfg.Token))
+	}
+	if looksAssistant(headerToken) {
+		return true
+	}
+	return allowQueryToken && looksAssistant(strings.TrimSpace(r.URL.Query().Get("token")))
 }

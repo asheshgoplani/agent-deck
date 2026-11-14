@@ -1,0 +1,5 @@
+Usage: agent-deck connect list [--json]
+
+List connected assistants: name, assistant, scopes, profile, created.
+  -json
+    	Output as JSON

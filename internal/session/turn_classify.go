@@ -115,6 +115,17 @@ func parseSendEnvelope(text string) (ok bool, fromID string) {
 	return true, ""
 }
 
+// PromptSender returns the sender named by a prompt's send envelope, by the
+// same rule the transcript classifier applies (parseSendEnvelope), or "" for
+// a prompt that is not a tagged send. The hook handler records it at prompt
+// time (issue #3131).
+func PromptSender(prompt string) string {
+	if ok, from := parseSendEnvelope(prompt); ok {
+		return from
+	}
+	return ""
+}
+
 // HasSendEnvelope reports whether message already starts with an envelope
 // (a forwarded or re-sent message), so it is never tagged twice.
 func HasSendEnvelope(message string) bool {
@@ -556,7 +567,46 @@ func instanceTurnFacts(inst *Instance) (TurnFacts, bool) {
 	if err != nil {
 		return TurnFacts{}, false
 	}
+	if facts.Trigger == TurnTriggerUnknown && facts.FromID == "" {
+		// Issue #3131: the turn ran longer than the tail window, so its
+		// prompt was never read. The hook recorded the prompt's sender;
+		// use it only when the turn that just ended is that prompt's turn.
+		if from := hookPromptSenderForEndedTurn(inst.ID); from != "" {
+			facts.Trigger, facts.FromID = TurnTriggerSend, from
+		}
+	}
 	return facts, true
+}
+
+// hookPromptSenderForEndedTurn returns the sender the hook handler recorded
+// for the instance's last tagged prompt (prompt_from_id), but only when
+// exactly one turn edge, the Stop that ended that prompt's turn, has been
+// counted since (turn_seq == prompt_turn_seq + 1). Any other count means the
+// turn being classified may have been started by something else (a task
+// notification, a blocked Stop that went on, a newer prompt), so it returns
+// "" and the turn stays unknown. Both numbers come from one read of one file
+// the handler writes under its status lock.
+func hookPromptSenderForEndedTurn(instanceID string) string {
+	if strings.TrimSpace(instanceID) == "" {
+		return ""
+	}
+	data, err := readStatusFileNoFollow(hookStatusFilePath(instanceID))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	var raw struct {
+		TurnSeq       uint64 `json:"turn_seq"`
+		PromptFromID  string `json:"prompt_from_id"`
+		PromptTurnSeq uint64 `json:"prompt_turn_seq"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return ""
+	}
+	from := strings.TrimSpace(raw.PromptFromID)
+	if from == "" || raw.PromptTurnSeq == 0 || raw.TurnSeq != raw.PromptTurnSeq+1 {
+		return ""
+	}
+	return from
 }
 
 // ClassifyTranscriptTailForReplay exposes the tail classifier for the

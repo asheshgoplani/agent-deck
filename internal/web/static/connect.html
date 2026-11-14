@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" href="/static/icons/logo.svg" type="image/svg+xml" />
+    <title>Connect an assistant</title>
+    <style>
+      :root {
+        --bg: #f7f7f9; --card: #ffffff; --fg: #1a1b26; --muted: #5a5f73; --line: #dcdde3;
+        --accent: #3b6fd8; --accent-fg: #ffffff; --ok: #1f8a4c; --bad: #c0392b; --code: #f0f1f5;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1b26; --card: #222433; --fg: #e3e5ef; --muted: #9aa0b8; --line: #34374a;
+          --accent: #7aa2f7; --accent-fg: #11121a; --ok: #73d39a; --bad: #f7768e; --code: #181926;
+        }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+      main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+      h1 { font-size: 22px; margin: 0 0 4px; }
+      h2 { font-size: 16px; margin: 0 0 8px; }
+      p { margin: 6px 0; }
+      .muted { color: var(--muted); }
+      .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 16px; }
+      .scopes label { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+      select, input[type=text] { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+      button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+      button:disabled { opacity: .5; cursor: default; }
+      pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; max-height: 60vh; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 12px 0 0; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+      .status { min-height: 1.5em; }
+      .ok { color: var(--ok); } .bad { color: var(--bad); }
+      details summary { cursor: pointer; color: var(--muted); }
+      table { border-collapse: collapse; width: 100%; font-size: 13px; }
+      td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Connect an assistant</h1>
+      <p class="muted">Let your assistant bot (Hermes, OpenClaw, Grok, Claude, ChatGPT, Codex, a Slack or Telegram bot...) see your agent-deck sessions. Read-only unless you tick more.</p>
+
+      <section class="card" id="prompt-card">
+        <h2>Easiest: paste one line into your assistant</h2>
+        <p>It checks agent-deck, connects itself read-only, saves its own config and tests it. It asks you before anything it does.</p>
+        <pre id="setup-line"></pre>
+        <div class="row"><button id="copy-setup">Copy</button><span class="status" id="setup-status"></span></div>
+      </section>
+
+      <section class="card">
+        <h2>Or: make the block yourself</h2>
+        <p class="muted">Tick what it may do, copy the block into your assistant, then test.</p>
+        <div class="scopes" id="scopes"></div>
+        <details id="more">
+          <summary>Assistant and name (optional)</summary>
+          <div class="row">
+            <label for="kind">Assistant</label>
+            <select id="kind"></select>
+            <label for="name">Name</label>
+            <input type="text" id="name" placeholder="default: the assistant" maxlength="64" />
+          </div>
+        </details>
+        <div class="row">
+          <button class="primary" id="copy">Copy</button>
+          <button id="test" disabled>Test</button>
+          <span class="status" id="status" role="status"></span>
+        </div>
+        <pre id="block" hidden></pre>
+      </section>
+
+      <section class="card">
+        <h2>Connected assistants</h2>
+        <div id="tokens" class="muted">Loading...</div>
+        <p class="muted">Revoke one with <code>agent-deck connect revoke NAME</code>. Every call is logged: <code>agent-deck connect audit</code>.</p>
+      </section>
+    </main>
+    <script src="/static/connect.js"></script>
+  </body>
+</html>

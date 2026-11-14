@@ -53,4 +53,4 @@ Conversational setup (recommended for first-time use):
   # Then inside Claude Code in an agent-deck session, ask:
   # "Use the watcher-creator skill to set up a GitHub watcher"
 
-Full reference: https://github.com/asheshgoplani/agent-deck#watchers
+Full reference: https://github.com/asheshgoplani/agent-deck/blob/main/docs/guide/conductor.md#watchers

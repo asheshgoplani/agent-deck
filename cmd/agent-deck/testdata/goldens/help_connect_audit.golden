@@ -1,0 +1,9 @@
+Usage: agent-deck connect audit [--name N] [-n 50] [--json]
+
+Show recent assistant calls, allowed and refused. Message bodies are never logged.
+  -json
+    	Output as JSON
+  -n int
+    	Number of entries (default 50)
+  -name string
+    	Only calls by this token name

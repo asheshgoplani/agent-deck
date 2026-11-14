@@ -1,0 +1,5 @@
+Usage: agent-deck connect revoke <name>
+
+Delete an assistant token. A running server refuses it on its next call.
+  -json
+    	Output as JSON

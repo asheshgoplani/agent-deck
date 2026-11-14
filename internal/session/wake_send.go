@@ -236,7 +236,7 @@ func wakeSendOpt(o wakeOpts, parent *Instance, profile, line, nonce string, ids 
 		o.resolved, o.socket = true, ridesPiSocket(parent)
 	}
 	if !o.socket {
-		err := sendWakeNudgeNoWait(profile, parent.ID, line)
+		err := sendWakeNudgeTyped(parent, profile, line)
 		return wakeOutcome{Via: "tmux", Accepted: err == nil}, err
 	}
 	if res := wakeBudgetCheck(profile, parent); res.Action == costs.BudgetActionStop {
@@ -309,7 +309,7 @@ func wakeDispatch(legs *legTracker, parent *Instance, profile, message string) e
 			wakeNudgeGoroutineGate()
 			_, err = wakeSendOpt(wakeOpts{legs: legs, resolved: true, socket: true}, parent, profile, message, comms.NewID(time.Now()), inboxDoorbellIDs(parent.ID, message))
 		} else {
-			err = sendWakeNudgeNoWait(profile, parent.ID, message)
+			err = sendWakeNudgeTyped(parent, profile, message)
 		}
 		if err != nil {
 			commsLog.Warn("wake_nudge_dispatch_failed", slog.String("parent", parent.ID), slog.String("error", err.Error()))
@@ -322,7 +322,7 @@ func wakeDispatch(legs *legTracker, parent *Instance, profile, message string) e
 // fallback runs in the foreground too, as the process exits when this returns.
 func wakeNudgeRoute(parent *Instance, profile, message string) error {
 	if !ridesPiSocket(parent) {
-		return sendWakeNudgeNoWait(profile, parent.ID, message)
+		return sendWakeNudgeTyped(parent, profile, message)
 	}
 	_, err := wakeSendOpt(wakeOpts{foreground: true}, parent, profile, message, comms.NewID(time.Now()), inboxDoorbellIDs(parent.ID, message))
 	return err
@@ -506,7 +506,7 @@ func typedDoorbell(o wakeOpts, origin string, parent *Instance, profile, line, n
 		SpoolCommsWakeOutcome(parent.ID, origin, "tmux", "", line, nonce, "", false, ids)
 	}
 	if o.foreground {
-		if err := sendWakeNudgeNoWait(profile, parent.ID, line); err != nil {
+		if err := sendWakeNudgeTyped(parent, profile, line); err != nil {
 			return wakeOutcome{Refused: true}, err
 		}
 		record()
@@ -519,7 +519,7 @@ func typedDoorbell(o wakeOpts, origin string, parent *Instance, profile, line, n
 	legs.Add(1)
 	go func() {
 		defer legs.Done()
-		if err := sendWakeNudgeNoWait(profile, parent.ID, line); err != nil {
+		if err := sendWakeNudgeTyped(parent, profile, line); err != nil {
 			commsLog.Warn("wake_nudge_dispatch_failed", slog.String("parent", parent.ID), slog.String("error", err.Error()))
 			return
 		}

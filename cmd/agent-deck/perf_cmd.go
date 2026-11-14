@@ -38,6 +38,7 @@ var cliTimedSubcommands = map[string][]string{
 	"inbox":     {"drain", "export", "writer-status"},
 	"msg":       {"read", "peek", "ack", "export", "stats"},
 	"accounts":  {"list", "switch"},
+	"connect":   {"list", "revoke", "audit", "serve", "test"},
 }
 
 // cliUntimed are commands that run until the user leaves them (servers,
@@ -45,7 +46,7 @@ var cliTimedSubcommands = map[string][]string{
 var cliUntimed = map[string]bool{
 	"web": true, "daemon": true, "notify-daemon": true, "mcp-proxy": true, "watcher": true,
 	"cli.session.attach": true, "cli.remote.attach": true, "cli.events.follow": true,
-	"cli.session.wait": true, "cli.conductor.start": true,
+	"cli.session.wait": true, "cli.conductor.start": true, "cli.connect.serve": true,
 }
 
 // cliTimingOp names the timed operation of one CLI invocation, built only

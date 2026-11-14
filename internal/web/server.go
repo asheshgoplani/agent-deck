@@ -87,6 +87,10 @@ type Server struct {
 	annotationLoader annotationLoader
 	annotationReader *stateDBAnnotationReader
 
+	// assistant serves /mcp, /api/assistant/v1/ and the /connect form
+	// (handlers_assistant.go). nil until SetAssistantService.
+	assistant *assistantWiring
+
 	// inFlight counts requests inside a handler, excluding the event
 	// streams (see trackInFlight). It is what Idle reports for the
 	// headless self-restart.

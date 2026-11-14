@@ -1532,7 +1532,7 @@ func printWatcherHelp() {
 	fmt.Println("  # Then inside Claude Code in an agent-deck session, ask:")
 	fmt.Println("  # \"Use the watcher-creator skill to set up a GitHub watcher\"")
 	fmt.Println()
-	fmt.Println("Full reference: https://github.com/asheshgoplani/agent-deck#watchers")
+	fmt.Println("Full reference: https://github.com/asheshgoplani/agent-deck/blob/main/docs/guide/conductor.md#watchers")
 }
 
 func watcherClientsPathForDisplay() string {
