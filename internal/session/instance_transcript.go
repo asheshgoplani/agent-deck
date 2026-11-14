@@ -101,18 +101,13 @@ func (i *Instance) codexRolloutTail() ([]string, error) {
 	return TranscriptTailLines(path, 50)
 }
 
-// scanCodexRolloutBackward offers the rollout's records to visit, newest
-// first, until visit reports it is done. The byte window widens up to
-// codexTurnGenerationScanMaxBytes; each wider pass starts again from the
+// scanCodexRolloutBackwardBounded offers the rollout's records to visit,
+// newest first, until visit reports it is done. The byte window starts at
+// initial and widens up to maxScan; each wider pass starts again from the
 // newest record, so newVisit returns a fresh visitor for every pass. It
-// reports whether a visitor finished.
-func scanCodexRolloutBackward(path string, newVisit func() func(codexRolloutRecord) bool) (bool, error) {
-	return scanCodexRolloutBackwardBounded(path, codexTurnGenerationInitialScanBytes, codexTurnGenerationScanMaxBytes, newVisit)
-}
-
-// scanCodexRolloutBackwardBounded is scanCodexRolloutBackward with an explicit
-// starting window and ceiling, for the callers that need a wider finite read
-// than the default (see codexAcceptanceGeneration in the CLI: a turn that has
+// reports whether a visitor finished. The ceiling is explicit because some
+// callers need a wider finite read than the default
+// (codexTurnGenerationScanMaxBytes; see codexAcceptanceGeneration in the CLI: a turn that has
 // been emitting output for an hour pushes its own turn-start record many MiB
 // back from EOF, and the default ceiling then reports "no turn" instead of the
 // real newest turn).
@@ -242,8 +237,16 @@ func codexUserInputEncoding(record codexRolloutRecord) string {
 // record types, turn ids and timestamps are read. A turn start beyond the
 // scan window, or a newer turn, reports false.
 func codexTurnTookInputSinceFromRollout(path, turnID string, since time.Time) (bool, error) {
+	return codexTurnTookInputSinceFromRolloutWithin(path, turnID, since, codexTurnGenerationScanMaxBytes)
+}
+
+// codexTurnTookInputSinceFromRolloutWithin is codexTurnTookInputSinceFromRollout
+// with an explicit backward-scan ceiling. A caller that located turnID with a
+// wider ceiling must read its inputs with the same one: the turn start sits
+// just as far back, and a narrower window never reaches it and reports false.
+func codexTurnTookInputSinceFromRolloutWithin(path, turnID string, since time.Time, maxScan int64) (bool, error) {
 	took := false
-	_, err := scanCodexRolloutBackward(path, func() func(codexRolloutRecord) bool {
+	_, err := scanCodexRolloutBackwardBounded(path, codexTurnGenerationInitialScanBytes, maxScan, func() func(codexRolloutRecord) bool {
 		// Newest first: the last time kept per encoding is the opening input.
 		inputs := map[string][]time.Time{}
 		return func(record codexRolloutRecord) bool {
@@ -347,6 +350,19 @@ func (i *Instance) LatestCodexTurnGenerationWithBudget(maxScanBytes int64) (stri
 // input recorded at or after since, beyond its opening input. Like
 // LatestCodexTurnGeneration it never reads prompt or response content.
 func (i *Instance) CodexTurnTookInputSince(generation string, since time.Time) (bool, error) {
+	return i.CodexTurnTookInputSinceWithBudget(generation, since, codexTurnGenerationScanMaxBytes)
+}
+
+// CodexTurnTookInputSinceWithBudget is CodexTurnTookInputSince with an explicit
+// backward-scan ceiling. A caller that read generation with
+// LatestCodexTurnGenerationWithBudget passes the same budget here: a running
+// turn whose start is beyond the default ceiling is otherwise found by the
+// one reader and reported as taking no input by the other. A non-positive
+// budget keeps the default.
+func (i *Instance) CodexTurnTookInputSinceWithBudget(generation string, since time.Time, maxScanBytes int64) (bool, error) {
+	if maxScanBytes <= 0 {
+		maxScanBytes = codexTurnGenerationScanMaxBytes
+	}
 	turnID, found := strings.CutPrefix(generation, i.CodexSessionID+":")
 	if i.CodexSessionID == "" || !found || turnID == "" {
 		return false, nil
@@ -355,7 +371,7 @@ func (i *Instance) CodexTurnTookInputSince(generation string, since time.Time) (
 	if err != nil {
 		return false, err
 	}
-	return codexTurnTookInputSinceFromRollout(path, turnID, since)
+	return codexTurnTookInputSinceFromRolloutWithin(path, turnID, since, maxScanBytes)
 }
 
 // GetLastResponseBestEffortChecked is the collision-aware variant of
