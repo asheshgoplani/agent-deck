@@ -58,6 +58,8 @@ agent-deck add [path] [options]
 | `--hint key=value` | Durable recall hint (repeatable; single-valued per key, see `session annotate`) |
 | `--tag <tag>` | Recall tag (repeatable) |
 | `--ticket <id>` / `--why <text>` | Shorthands for `--hint ticket=` / `--hint why=` |
+| `--yolo` | Enable YOLO mode (Gemini, Codex, Hermes: auto-approve all; Kimi: Ask When Needed) |
+| `--auto` | Kimi: start in Never Ask mode (auto-approve everything) |
 
 ```bash
 agent-deck add -t "My Project" -c claude .
