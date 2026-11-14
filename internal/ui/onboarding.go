@@ -908,7 +908,7 @@ func (o *OnboardingOverlay) checkSections(width int) dialogSections {
 	indent := strings.Repeat(" ", 2+nameW+1)
 
 	var s dialogSections
-	s.head = []string{title.Render("Agent Deck · quick check"), ""}
+	s.head = []string{withBrandMark(title.Render("Agent Deck · quick check"), width), ""}
 
 	if o.tmuxFound {
 		v := o.tmuxVersion

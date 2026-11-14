@@ -474,7 +474,7 @@ func renderAccountsCompactLine(usage []session.AccountUsage) string {
 }
 
 // assembleHeaderLeft composes the header bar's left-hand content (logo,
-// title, and the base + optional stats segments) and reports whether the
+// one space, title, and the base + optional stats segments) and reports whether the
 // result plus the version badge fits within width. The logo and title are
 // NEVER dropped or truncated — they, and the caller-appended version badge,
 // must always survive.
@@ -511,7 +511,7 @@ func assembleHeaderLeft(logo, title, statsBase, statsBaseCompact, statsSep strin
 				parts = append(parts, s)
 			}
 		}
-		return lipgloss.JoinHorizontal(lipgloss.Left, logo, "  ", title, "  ", strings.Join(parts, statsSep))
+		return lipgloss.JoinHorizontal(lipgloss.Left, logo, " ", title, "  ", strings.Join(parts, statsSep))
 	}
 	fits := func(left string) bool {
 		// Mirrors the header bar's own padding budget: 2 border/padding
