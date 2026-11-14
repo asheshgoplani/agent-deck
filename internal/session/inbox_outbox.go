@@ -797,10 +797,11 @@ func (n *TransitionNotifier) wakeCommittedInbox(parent *Instance, event Transiti
 	// not on a poll. Best-effort and non-fatal: a dropped nudge is harmless
 	// because this same record is still drained on the parent's next turn.
 	//
-	// Issue #3131: count the wake only when a line was typed. A record the
-	// gate withholds (not a wake target, busy, debounced, send failed) is
-	// counted as gated, so `inbox stats` never reports a wake that did not
-	// happen.
+	// Issue #3131: count the wake only when a wake send was dispatched. A
+	// record the gate withholds (not a wake target, busy, debounced, the
+	// dispatch failed) is counted as gated. A dispatched send runs detached
+	// and can still refuse in the parent's pane (typed text in the input box,
+	// an open menu); that refusal is logged, not counted here.
 	if n.fireWakeNudge(parent, event) {
 		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsUrgent++ })
 		return

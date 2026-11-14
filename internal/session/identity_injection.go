@@ -435,7 +435,7 @@ func (i *Instance) BuildIdentityPrompt() string {
 		b.WriteString("Questions and progress do not reach your parent either. To ask it something, use `agent-deck session send <parent-id> \"...\"` with the parent session id above.\n")
 	} else {
 		b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
-		b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
+		b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that makes the record urgent. An urgent record wakes an idle parent that is a conductor, that sent you the message you are answering, or that set `[inbox] wake_parents`; any other parent reads it on its next turn. Anything else you print is delivered as progress on its next turn.\n")
 	}
 	if i.fanoutHintApplies() {
 		b.WriteString("\n## Working style\n")
@@ -452,6 +452,11 @@ func (i *Instance) BuildIdentityPrompt() string {
 func (i *Instance) turnsReportedToParent() bool {
 	return instanceAcceptsTransitionEvents(i) && GetNotificationsSettings().GetTransitionEventsEnabled()
 }
+
+// TurnsReportedToParent is turnsReportedToParent for callers outside the
+// package: `launch` tags a kickoff only for a child whose turns reach its
+// parent (issue #3131).
+func (i *Instance) TurnsReportedToParent() bool { return i.turnsReportedToParent() }
 
 // identityNoOpNoticeRule is the child-side form of the conductor's no-op
 // notice rule: an acknowledgement or a status ping that needs no
