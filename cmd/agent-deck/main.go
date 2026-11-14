@@ -40,6 +40,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	"github.com/asheshgoplani/agent-deck/internal/termbg"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -959,6 +960,13 @@ func main() {
 		// Same rows and words as the TUI quick check page (check_text.go).
 		fmt.Fprint(os.Stderr, outerTmuxRefusalText(tmuxVersionLine(), Version))
 		exitCLI(1)
+	}
+
+	// Ask the terminal for its background colour now, before the TUI owns
+	// the terminal. Only the TUI renders adaptive colours; every other
+	// command skips the query (#3105, see internal/termbg).
+	if !webHeadless {
+		termbg.DetectForTUI()
 	}
 
 	// Startup reviver scan (v1.7.8, REPORT-D). Fire-and-forget — rebuilds

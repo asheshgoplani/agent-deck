@@ -51,6 +51,9 @@ func handleDoctor(args []string) {
 	// codex session made here is content detection only.
 	codexConfig := getCodexConfigPath()
 	codexHooks := codexHooksStateForConfig(codexConfig)
+	// pi extension for this host's pi agent dir: without it every pi session
+	// made here is pane detection only, startup included (#3098).
+	piHooks := piHooksStateForAgentDir(session.PiAgentDir())
 	// Profile store roots: which data root is active and whether a second
 	// one holds profiles too (stray XDG store incidents, 2026-09-19/20).
 	storeRoots, storeRootsErr := session.StoreRootReport()
@@ -72,12 +75,13 @@ func handleDoctor(args []string) {
 				State  string `json:"state"`
 				Config string `json:"config"`
 			} `json:"codex_hooks"`
+			PiHooks    piHooksReport                 `json:"pi_hooks"`
 			StoreRoots *session.StoreRootSelection   `json:"store_roots,omitempty"`
 			StoreError string                        `json:"store_roots_error,omitempty"`
 			IndicMarks *tmux.IndicZeroWidthMarksInfo `json:"tmux_indic_zero_width_marks,omitempty"`
 			Telemetry  string                        `json:"telemetry"`
 			ShadowedBy []update.ShadowCopy           `json:"shadowed_by"`
-		}{AccountSlots: slots, Health: runtimeHealth, IndicMarks: indicMarks, Telemetry: telemetryDoctorLine(), ShadowedBy: shadowed}
+		}{AccountSlots: slots, Health: runtimeHealth, IndicMarks: indicMarks, Telemetry: telemetryDoctorLine(), ShadowedBy: shadowed, PiHooks: piHooks}
 		report.CodexHooks.State = codexHooks
 		report.CodexHooks.Config = codexConfig
 		if storeRootsErr != nil {
@@ -94,6 +98,7 @@ func handleDoctor(args []string) {
 	fmt.Print(health.Format(runtimeHealth))
 	fmt.Print(formatStoreRoots(storeRoots, storeRootsErr))
 	fmt.Printf("Codex notify %s\n", codexHooksLine(codexHooks, codexConfig))
+	fmt.Printf("pi %s\n", piHooksLine(piHooks))
 	fmt.Printf("Telemetry: %s\n", telemetryDoctorLine())
 	if len(shadowed) == 0 {
 		fmt.Println("agent-deck on PATH: OK (no older copy shadows this binary)")
