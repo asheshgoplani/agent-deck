@@ -1,5 +1,6 @@
 {
   "account": "",
+  "archived": false,
   "auto_name": false,
   "can_fork": false,
   "can_restart": true,

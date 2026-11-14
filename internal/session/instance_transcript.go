@@ -107,6 +107,16 @@ func (i *Instance) codexRolloutTail() ([]string, error) {
 // newest record, so newVisit returns a fresh visitor for every pass. It
 // reports whether a visitor finished.
 func scanCodexRolloutBackward(path string, newVisit func() func(codexRolloutRecord) bool) (bool, error) {
+	return scanCodexRolloutBackwardBounded(path, codexTurnGenerationInitialScanBytes, codexTurnGenerationScanMaxBytes, newVisit)
+}
+
+// scanCodexRolloutBackwardBounded is scanCodexRolloutBackward with an explicit
+// starting window and ceiling, for the callers that need a wider finite read
+// than the default (see codexAcceptanceGeneration in the CLI: a turn that has
+// been emitting output for an hour pushes its own turn-start record many MiB
+// back from EOF, and the default ceiling then reports "no turn" instead of the
+// real newest turn).
+func scanCodexRolloutBackwardBounded(path string, initial, maxScan int64, newVisit func() func(codexRolloutRecord) bool) (bool, error) {
 	f, err := os.Open(path) // #nosec G304 -- codexRolloutPath resolves one exact, non-symlink rollout
 	if err != nil {
 		return false, err
@@ -121,7 +131,13 @@ func scanCodexRolloutBackward(path string, newVisit func() func(codexRolloutReco
 	if size == 0 {
 		return false, nil
 	}
-	scanBytes := min(size, codexTurnGenerationInitialScanBytes)
+	if initial <= 0 {
+		initial = codexTurnGenerationInitialScanBytes
+	}
+	if maxScan < initial {
+		maxScan = initial
+	}
+	scanBytes := min(size, initial)
 	for {
 		offset := size - scanBytes
 		data := make([]byte, int(scanBytes))
@@ -167,10 +183,10 @@ func scanCodexRolloutBackward(path string, newVisit func() func(codexRolloutReco
 			}
 		}
 
-		if offset == 0 || scanBytes == codexTurnGenerationScanMaxBytes {
+		if offset == 0 || scanBytes == maxScan {
 			return false, nil
 		}
-		scanBytes = min(size, min(scanBytes*2, codexTurnGenerationScanMaxBytes))
+		scanBytes = min(size, min(scanBytes*2, maxScan))
 	}
 }
 
@@ -180,8 +196,17 @@ func isCodexTurnStart(record codexRolloutRecord) bool {
 }
 
 func latestCodexTurnIDFromRollout(path string) (string, error) {
+	return latestCodexTurnIDFromRolloutWithin(path, codexTurnGenerationScanMaxBytes)
+}
+
+// latestCodexTurnIDFromRolloutWithin is latestCodexTurnIDFromRollout with an
+// explicit backward-scan ceiling. An empty result with a nil error means "no
+// turn start was found within the ceiling", which callers must treat as
+// UNKNOWABLE rather than as "this thread has no turn": see
+// ReconcileCodexSubmissionMarker.
+func latestCodexTurnIDFromRolloutWithin(path string, maxScan int64) (string, error) {
 	turnID := ""
-	_, err := scanCodexRolloutBackward(path, func() func(codexRolloutRecord) bool {
+	_, err := scanCodexRolloutBackwardBounded(path, codexTurnGenerationInitialScanBytes, maxScan, func() func(codexRolloutRecord) bool {
 		return func(record codexRolloutRecord) bool {
 			if !isCodexTurnStart(record) {
 				return false
@@ -280,13 +305,29 @@ func parseCodexLastAssistantMessage(lines []string, sessionID string) (*Response
 }
 
 // LatestCodexTurnGeneration returns the newest durable turn-start identity in
-// the exact rollout bound to this instance. It never derives identity from
-// prompt or response content.
+// the exact rollout bound to this instance, as
+// "<codex session id>:<turn id>". It never derives identity from prompt or
+// response content.
 //
 // A thread the pane's live Codex process owns but has not yet written a
 // rollout for (fresh composer, no turn started) has no turn generation yet, so
-// it reports "" without error, like an empty rollout.
+// it reports "" without error, like an empty rollout. The same "" also comes
+// back when the newest turn start sits beyond the default backward ceiling —
+// a turn that has been emitting output for a long time pushes its own
+// turn-start record far from EOF — so callers that must not confuse the two
+// use LatestCodexTurnGenerationWithBudget.
 func (i *Instance) LatestCodexTurnGeneration() (string, error) {
+	return i.LatestCodexTurnGenerationWithBudget(codexTurnGenerationScanMaxBytes)
+}
+
+// LatestCodexTurnGenerationWithBudget is LatestCodexTurnGeneration with an
+// explicit backward-scan ceiling, for callers that must not mistake a
+// long-running turn (whose own turn-start record can be many MiB from EOF) for
+// a thread with no turn at all. A non-positive budget keeps the default.
+func (i *Instance) LatestCodexTurnGenerationWithBudget(maxScanBytes int64) (string, error) {
+	if maxScanBytes <= 0 {
+		maxScanBytes = codexTurnGenerationScanMaxBytes
+	}
 	path, err := i.codexRolloutPath()
 	if errors.Is(err, errNoExactContextArtifact) && i.LiveCodexThreadID() == i.CodexSessionID {
 		return "", nil
@@ -294,7 +335,7 @@ func (i *Instance) LatestCodexTurnGeneration() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	turnID, err := latestCodexTurnIDFromRollout(path)
+	turnID, err := latestCodexTurnIDFromRolloutWithin(path, maxScanBytes)
 	if err != nil || turnID == "" {
 		return "", err
 	}

@@ -320,7 +320,11 @@ func (s *Session) SendKeysChunkedChecked(content string, before func() error) er
 //   - single-line, ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to
 //     fit any line discipline, so nothing is inspected and nothing costs
 //     extra. This is the overwhelming majority of sends and is byte-for-byte
-//     unchanged.
+//     unchanged — EXCEPT on a session whose composer needs framing
+//     (Session.SetFramePastes, today only Codex): that body takes the paste
+//     transport below, because an unframed burst is still being ingested when
+//     the submitting Enter arrives and such a composer inserts that Enter as
+//     a newline instead of submitting.
 //
 //   - multi-line, any size: the paste transport (issue #1855). A body with
 //     embedded LFs cannot go out as `send-keys -l`: the bytes arrive intact
@@ -368,7 +372,7 @@ func (s *Session) sendKeysChunkedToTargetChecked(target, content string, before 
 		content = strings.ReplaceAll(content, "\r\n", "\n")
 		content = strings.ReplaceAll(content, "\r", "\n")
 	}
-	if len(content) <= canonicalSafeBytes && !strings.Contains(content, "\n") {
+	if len(content) <= canonicalSafeBytes && !strings.Contains(content, "\n") && !s.framesPastesForSend() {
 		if err := beforeKeyBatch(before); err != nil {
 			return err
 		}

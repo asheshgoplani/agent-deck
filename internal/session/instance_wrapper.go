@@ -692,6 +692,9 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 		return
 	}
 	i.tmuxSession.SetPreEnterDelay(preEnterDelayForTool(i.Tool))
+	// A composer that ingests a typed burst character by character needs the
+	// body framed; see framePasteForTool.
+	i.tmuxSession.SetFramePastes(framePasteForTool(i.Tool))
 
 	// Merge built-in defaults with any user config overrides/extras
 	raw := MergeToolPatterns(i.Tool)

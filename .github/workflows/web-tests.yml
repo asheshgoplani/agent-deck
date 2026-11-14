@@ -108,7 +108,7 @@ jobs:
       - name: Build fixture binary
         working-directory: .
         env:
-          GOTOOLCHAIN: go1.26.10
+          GOTOOLCHAIN: go1.26.11
         run: go build -o tests/web/.tmp/web-fixture ./tests/web/fixtures/cmd/web-fixture/
 
       - name: Run Playwright e2e
@@ -143,5 +143,5 @@ jobs:
           go-version-file: go.mod
       - name: Run TestParity_*
         env:
-          GOTOOLCHAIN: go1.26.10
+          GOTOOLCHAIN: go1.26.11
         run: go test ./internal/web/ -run TestParity -race -count=1

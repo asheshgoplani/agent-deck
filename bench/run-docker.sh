@@ -10,7 +10,7 @@ if [ "$runner_uid" = 0 ]; then
  printf '%s\n' 'Run the benchmark from a non-root account.' >&2
  exit 1
 fi
-image=${BENCH_IMAGE:-agentdeck-bench:go1.26.10}
+image=${BENCH_IMAGE:-agentdeck-bench:go1.26.11}
 if [ -z "${BENCH_IMAGE:-}" ]; then
  docker build -t "$image" -f bench/Dockerfile .
 fi

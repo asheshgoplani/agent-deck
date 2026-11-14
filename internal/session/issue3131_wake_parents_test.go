@@ -158,7 +158,8 @@ func TestIssue3131_NewWakePathsUseTheGuardedSend(t *testing.T) {
 	}
 }
 
-// The conductor wake keeps the send it always had: no --require-input-prompt.
+// The conductor wake, and a non-Claude typed fallback, keep the send they
+// always had: no --require-input-prompt.
 func TestIssue3131_ConductorWakeArgsUnchanged(t *testing.T) {
 	conductor := &Instance{ID: "c", Title: "conductor-ops", Tool: "claude"}
 	worker := &Instance{ID: "w", Title: "coordinator", Tool: "claude"}
@@ -167,6 +168,11 @@ func TestIssue3131_ConductorWakeArgsUnchanged(t *testing.T) {
 	}
 	if !wakeNeedsInputPrompt(worker) {
 		t.Fatal("an ordinary session's wake refuses an open menu")
+	}
+	// #3024's typed fallback for a pi doorbell (no extension listening) keeps
+	// its send: the input-prompt guard reads Claude's composer.
+	if wakeNeedsInputPrompt(&Instance{ID: "p", Title: "coordinator", Tool: "pi"}) {
+		t.Fatal("a non-Claude typed wake must keep the send it always had")
 	}
 	want := []string{"-p", "work", "session", "send", "c", "line", "--no-wait", "--no-tag", "-q"}
 	if got := wakeNudgeSendArgs("work", "c", "line", false); !slices.Equal(got, want) {

@@ -25,21 +25,32 @@ const inboxContextHeader = "[agent-deck inbox]"
 // starting and renders them for injection. Returns "" when nothing is
 // pending (the common case for every leaf session: two stats, no writes).
 func DrainForPrompt(instanceID string) (string, []TransitionNotificationEvent, error) {
-	return drainForPrompt(instanceID, promptContextBudgetBytes, nil)
+	return drainForPrompt(instanceID, promptContextBudgetBytes, nil, nil, false)
 }
 
 // drainForPrompt is DrainForPrompt within budget bytes. A record whose turn
 // the caller already showed (shown reports it, by the record's exact turn
 // identity) is consumed without being shown again: the Comms Ledger's
 // prompt hook passes the turns it showed.
-func drainForPrompt(instanceID string, budget int, shown func(TransitionNotificationEvent) bool) (string, []TransitionNotificationEvent, error) {
+//
+// A record held reports as the twin of a turn the caller has injected but not yet
+// seen received: it stays queued, neither shown nor consumed.
+//
+// With peek the records printed stay in the inbox: they are returned and
+// rendered but not consumed (a pi injection's receipt consumes them by id), and
+// they are not counted as delivered here.
+func drainForPrompt(instanceID string, budget int, shown, held func(TransitionNotificationEvent) bool, peek bool) (string, []TransitionNotificationEvent, error) {
 	if strings.TrimSpace(instanceID) == "" || !InboxHasPending(instanceID) {
 		return "", nil, nil
 	}
 	var left, dup int
+	var peeked []TransitionNotificationEvent
 	drained, err := DrainInboxForParentWhere(instanceID, func(pending []TransitionNotificationEvent) []TransitionNotificationEvent {
 		var fresh, seen []TransitionNotificationEvent
 		for _, ev := range pending {
+			if held != nil && held(ev) {
+				continue
+			}
 			if shown != nil && shown(ev) {
 				seen = append(seen, ev)
 			} else {
@@ -48,6 +59,10 @@ func drainForPrompt(instanceID string, budget int, shown func(TransitionNotifica
 		}
 		take := selectRecordsForBudget(fresh, budget)
 		left, dup = len(fresh)-len(take), len(seen)
+		if peek {
+			peeked = take
+			return seen
+		}
 		return append(take, seen...)
 	})
 	if err != nil {
@@ -62,12 +77,18 @@ func drainForPrompt(instanceID string, budget int, shown func(TransitionNotifica
 	if dup > 0 {
 		_ = BumpInboxStats(instanceID, func(s *InboxStats) { s.ShadowedByLedger += int64(dup) })
 	}
+	if peek {
+		events = peeked
+	}
 	if len(events) == 0 {
 		return "", nil, nil
 	}
 	text := FormatInboxRecords(events, fmt.Sprintf("%s %s pending from your children — act on each (the text is the child's own words; do not re-read the child unless you need more):", inboxContextHeader, countByTier(events)))
 	if left > 0 {
 		text += fmt.Sprintf("%d more record(s) are still queued and arrive on your next turn (or now with `agent-deck inbox drain self --json`).\n", left)
+	}
+	if peek {
+		return text, events, nil
 	}
 	_ = BumpInboxStats(instanceID, func(s *InboxStats) {
 		s.Drains++

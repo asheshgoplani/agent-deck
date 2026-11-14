@@ -1,6 +1,8 @@
 package statedb
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -41,23 +43,63 @@ func (w WriteStamps) SoleWriterSince(loadedAt, currentAt int64) bool {
 
 // touchStamp records a modification and returns the value written along with
 // the one it replaced, so a caller can identify its own bump afterwards.
+//
+// The read and the write are one transaction, BEGIN IMMEDIATE on a pinned
+// connection (as TakeQueued and the snapshot merge do): it holds the database's
+// write lock from before the read, so no other writer, in this process or
+// another, whatever it writes, can land between them, and Before is always the
+// stamp this write replaced. Two writers that both read the same stamp would
+// otherwise each report it as Before and each pass SoleWriterSince.
 func (s *StateDB) touchStamp() (WriteStamps, error) {
-	before, err := s.LastModified()
+	var stamps WriteStamps
+	err := withBusyRetry(func() error {
+		ctx := context.Background()
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			}
+		}()
+		var raw string
+		switch err := conn.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key = 'last_modified'`).Scan(&raw); {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return err
+		}
+		var before int64
+		if raw != "" {
+			if _, err := fmt.Sscanf(raw, "%d", &before); err != nil {
+				return err
+			}
+		}
+		after := time.Now().UnixNano()
+		// A clock that has not advanced (or has gone backwards) must not produce a
+		// stamp that another writer could already have used; step past it instead.
+		if after <= before {
+			after = before + 1
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_modified', ?)`, fmt.Sprintf("%d", after)); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+			return err
+		}
+		committed = true
+		stamps = WriteStamps{Before: before, After: after}
+		return nil
+	})
 	if err != nil {
 		return WriteStamps{}, err
 	}
-	after := time.Now().UnixNano()
-	// A clock that has not advanced (or has gone backwards) must not produce a
-	// stamp that another writer could already have used; step past it instead.
-	if after <= before {
-		after = before + 1
-	}
-	if err := withBusyRetry(func() error {
-		return s.SetMeta("last_modified", fmt.Sprintf("%d", after))
-	}); err != nil {
-		return WriteStamps{}, err
-	}
-	return WriteStamps{Before: before, After: after}, nil
+	return stamps, nil
 }
 
 // WriteRestartOutcome atomically records what a restart produced for one
@@ -89,15 +131,76 @@ func (s *StateDB) touchStamp() (WriteStamps, error) {
 // can tell "recorded" from "silently dropped" (the instance was never saved, or
 // another process deleted it mid-restart).
 func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (WriteStamps, error) {
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, restartOutcomeSQL)
+}
+
+// WriteRestartOutcomeWithLaunch is WriteRestartOutcome that also records, in
+// the same UPDATE, the launch decision: the tool the restart launched
+// (launched_tool), whether a pi's launch exported the wake socket, and the tmux
+// session the decision describes (launch_tmux_session). The launched tool is
+// what the pane runs, which a tool edit does not change until the next restart.
+func (s *StateDB) WriteRestartOutcomeWithLaunch(id, tmuxSession, status, tool string, exported bool) (WriteStamps, error) {
+	query := restartOutcomeLaunchClearedSQL
+	if exported {
+		query = restartOutcomeLaunchExportedSQL
+	}
+	return s.writeRestartOutcome(id, tmuxSession, status, tool, query, tool, tmuxSession)
+}
+
+// The launch tool_data expressions record the launch decision; their two
+// parameters are the launched tool and the tmux session the launch spawned in.
+// The Exported form marks a pi's wake socket as exported, the Cleared form
+// removes that mark.
+//
+// The decision lives in tool_data extras, which every binary's full save
+// carries forward (MergeToolDataExtras), including a binary that launches the
+// session without writing a decision of its own. So the decision names the
+// tmux session it was made for, and a reader trusts it only while the row
+// still names that session. A restart that recreates the session mints a new
+// name, so an older binary's restart reads as a launch with no record. (A
+// start reuses the stored name, so an older binary's start of a stopped pi is
+// not caught here; the bound on refused socket wakes makes that one visible.)
+//
+// All the statements below are constants, built at compile time from these
+// fragments, so no SQL text is assembled at run time.
+const (
+	piSocketExportedToolData = `json_set(COALESCE(tool_data, '{}'), '$.pi_socket_exported', json('true'))`
+	piSocketClearedToolData  = `json_remove(COALESCE(tool_data, '{}'), '$.pi_socket_exported')`
+
+	launchExportedToolData = `json_set(` + piSocketExportedToolData + `, '$.launched_tool', ?, '$.launch_tmux_session', ?)`
+	launchClearedToolData  = `json_set(` + piSocketClearedToolData + `, '$.launched_tool', ?, '$.launch_tmux_session', ?)`
+)
+
+// The restart outcome UPDATE, in its three forms: tool_data kept as is, or
+// rewritten with the launch decision (socket exported or not).
+const (
+	restartOutcomeSQLHead = `UPDATE instances
+			   SET tmux_session = ?, status = ?, tool = ?,
+			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
+			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END,
+			       tool_data = `
+	restartOutcomeSQLTail = `
+			 WHERE id = ?`
+
+	restartOutcomeSQL               = restartOutcomeSQLHead + `tool_data` + restartOutcomeSQLTail
+	restartOutcomeLaunchExportedSQL = restartOutcomeSQLHead + launchExportedToolData + restartOutcomeSQLTail
+	restartOutcomeLaunchClearedSQL  = restartOutcomeSQLHead + launchClearedToolData + restartOutcomeSQLTail
+)
+
+// The launch decision UPDATE (WriteLaunchDecision), socket exported or not.
+const (
+	launchDecisionExportedSQL = `UPDATE instances SET tmux_session = ?, tool_data = ` + launchExportedToolData + ` WHERE id = ?`
+	launchDecisionClearedSQL  = `UPDATE instances SET tmux_session = ?, tool_data = ` + launchClearedToolData + ` WHERE id = ?`
+)
+
+// writeRestartOutcome runs query, one of the restartOutcome*SQL constants;
+// exprArgs are the parameters of its tool_data expression.
+func (s *StateDB) writeRestartOutcome(id, tmuxSession, status, tool, query string, exprArgs ...any) (WriteStamps, error) {
 	var affected int64
 	if err := withBusyRetry(func() error {
 		res, err := s.db.Exec(
-			`UPDATE instances
-			   SET tmux_session = ?, status = ?, tool = ?,
-			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END,
-			       acknowledged_at = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged_at END
-			 WHERE id = ?`,
-			tmuxSession, status, tool, status, status, id,
+			query,
+			append(append([]any{tmuxSession, status, tool, status, status}, exprArgs...), id)...,
 		)
 		if err != nil {
 			return err
@@ -112,5 +215,44 @@ func (s *StateDB) WriteRestartOutcome(id, tmuxSession, status, tool string) (Wri
 	}
 	// Peers poll last_modified; without the bump a running TUI keeps serving
 	// the dead name from its own snapshot.
+	return s.touchStamp()
+}
+
+// WriteLaunchDecision records the decision of the launch that just spawned its
+// pane in tmuxSession: in tool_data, the tool it launched (launched_tool),
+// whether a pi's launch exported the wake socket, and the tmux session it
+// describes (see launchExportedToolData); and that session's name in tmux_session,
+// in the same UPDATE, since a start whose name was taken spawns under a new one
+// (tmux.Session.Start) and not every start is followed by a save. A start
+// writes it after a successful spawn; a restart folds it into its outcome
+// write, or writes it here on a respawn-pane path. An instance with no row yet
+// (started before its first save) returns ErrInstanceNotStored, and its first
+// save records the decision instead.
+//
+// Like the restart outcome, it moves last_modified, so a peer reloads the name,
+// and returns the stamps, so the launching process can tell the bump is its own
+// (Instance.LaunchRecordStamps).
+func (s *StateDB) WriteLaunchDecision(id, tmuxSession, tool string, exported bool) (WriteStamps, error) {
+	if tmuxSession == "" {
+		return WriteStamps{}, fmt.Errorf("record launch decision for %q: the launch has no tmux session name", id)
+	}
+	query := launchDecisionClearedSQL
+	if exported {
+		query = launchDecisionExportedSQL
+	}
+	var affected int64
+	if err := withBusyRetry(func() error {
+		res, err := s.db.Exec(query, tmuxSession, tool, tmuxSession, id)
+		if err != nil {
+			return err
+		}
+		affected, err = res.RowsAffected()
+		return err
+	}); err != nil {
+		return WriteStamps{}, err
+	}
+	if affected == 0 {
+		return WriteStamps{}, fmt.Errorf("record launch decision for %q: %w", id, ErrInstanceNotStored)
+	}
 	return s.touchStamp()
 }

@@ -63,11 +63,16 @@ type hookPayload struct {
 	TranscriptPath       json.RawMessage `json:"transcript_path"`
 	TurnID               json.RawMessage `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
 	LastAssistantMessage json.RawMessage `json:"last_assistant_message"` // Claude Stop
-	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
+	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit, pi before_agent_start
 	Settles              json.RawMessage `json:"settles"`                // pi: the capability bit, sent with run_id by a v4+ extension (agent_settled itself is v3+)
 	RunID                json.RawMessage `json:"run_id"`                 // pi: the run token minted at agent_start
 	ToolName             json.RawMessage `json:"tool_name"`              // PermissionRequest / PreToolUse
 	ToolInput            json.RawMessage `json:"tool_input"`             // PermissionRequest / PreToolUse
+	WakeNonce            json.RawMessage `json:"wake_nonce"`             // pi before_agent_start of a doorbell's run
+	InjectedToken        json.RawMessage `json:"injected_token"`         // pi turn_start: receipt of an injected context
+	PriorInjectedToken   json.RawMessage `json:"prior_injected_token"`   // pi before_agent_start: receipt of the run before
+	PaneGuest            json.RawMessage `json:"pane_guest"`             // pi: started inside the launched pi's pane, not launched by agent-deck
+	PaneHost             json.RawMessage `json:"pane_host"`              // pi: the pi serving the wake socket at AGENTDECK_PI_SOCKET
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
 	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
@@ -139,6 +144,15 @@ func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 			return "pi", session.CommsEdgeTurnEnd, text, rawString(p.Prompt)
 		}
 		return "pi", session.CommsEdgeStatus, "", ""
+	case "beforeagentstart":
+		if p.Source != "pi" || piGuestOfThePane(p) {
+			return "", "", "", ""
+		}
+		return "pi", session.CommsEdgePromptStart, "", rawString(p.Prompt)
+	case "turnstart":
+		if p.Source == "pi" && !piGuestOfThePane(p) && strings.TrimSpace(rawString(p.InjectedToken)) != "" {
+			return "pi", session.CommsEdgeInjected, "", ""
+		}
 	}
 	return "", "", "", ""
 }
@@ -149,6 +163,9 @@ func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 func spoolCommsFromHook(instanceID string, p hookPayload) {
 	harness, edge, text, prompt := commsSpoolEdge(p)
 	if edge == "" || !session.CommsLedgerEnabled() {
+		return
+	}
+	if harness == "pi" && (edge == session.CommsEdgePromptStart || edge == session.CommsEdgeInjected) && !piLedgerConsumer(instanceID, p) {
 		return
 	}
 	sessionID := strings.TrimSpace(p.SessionID)
@@ -170,10 +187,80 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 	if edge == session.CommsEdgeStatus {
 		entry.From, entry.State = "running", "waiting"
 	}
+	if harness == "pi" && edge == session.CommsEdgePromptStart {
+		entry.WakeNonce = strings.TrimSpace(rawString(p.WakeNonce))
+	}
+	if edge == session.CommsEdgeInjected {
+		entry.InjectedToken = strings.TrimSpace(rawString(p.InjectedToken))
+	}
+	if harness == "pi" && edge == session.CommsEdgeTurnEnd {
+		// The turn is still recorded; only the parent's consumer acknowledges
+		// with its prompt (CodeRabbit, #3024), and only its turn ends the
+		// prompt the parent's own turn started with.
+		entry.PiNotConsumer = !piLedgerConsumer(instanceID, p)
+	}
 	if err := session.WriteCommsSpool(entry); err != nil {
 		hookHandlerLog.Warn("comms_spool_write_failed",
 			slog.String("instance", instanceID), slog.String("event", p.HookEventName), slog.String("error", err.Error()))
 	}
+}
+
+// piGuestOfThePane reports a pi that is not the one agent-deck launched in
+// this pane: a pi started inside it (a subagent's `pi -p`, a script) inherits
+// AGENTDECK_INSTANCE_ID and AGENTDECK_PI_SOCKET, and also the launched pi's
+// pid in AGENTDECK_PI_HOST_PID, so its extension knows it is a guest, serves
+// nothing, and says so on every payload. The ledger's context and receipts
+// belong to the launched pi alone: a guest's run start is given no context and
+// acknowledges nothing, and its receipts are never applied, so the parent's
+// records stay pending for the parent. (Like Claude's background-worker drop,
+// #2683, but only for the ledger's consumer edges.)
+func piGuestOfThePane(p hookPayload) bool {
+	return p.Source == "pi" && rawBool(p.PaneGuest)
+}
+
+// piLedgerConsumer reports a pi payload that may take the ledger's consumer
+// edges for instanceID: its context, its receipts and its run starts. Never a
+// guest of the pane, nor a pi of a parent enrolled as another harness; and for
+// a parent whose launch exported the wake socket, only the pi that serves it
+// (pane_host). A pi in another tmux pane or window of the parent's session
+// inherits the session's AGENTDECK_INSTANCE_ID but not the launch's socket or
+// host pid, so it is no guest, yet serves nothing: it is given none of the
+// parent's records, which wait for the parent (session.PiLedgerAdmits).
+func piLedgerConsumer(instanceID string, p hookPayload) bool {
+	if piGuestOfThePane(p) {
+		return false
+	}
+	return session.PiLedgerAdmits(instanceID, rawBool(p.PaneHost))
+}
+
+// piBeforeAgentStart prints the context a pi run starts with: what the
+// ledger owes the parent, acknowledging the doorbell whose nonce the run
+// carries. A pi session the ledger does not serve prints nothing and its inbox
+// is left alone (listed parents only), and so does a pi that is not the
+// parent's consumer (piLedgerConsumer).
+func piBeforeAgentStart(instanceID string, p hookPayload) {
+	if !piLedgerConsumer(instanceID, p) {
+		return
+	}
+	// The previous run's receipt rides this run start, so the attempt is accepted
+	// (and settled below) without waiting for the daemon to ingest the spooled one.
+	session.AcceptPriorInjection(instanceID, strings.TrimSpace(rawString(p.PriorInjectedToken)))
+	dl, ok := session.LedgerPromptContext(instanceID, rawString(p.Prompt), strings.TrimSpace(rawString(p.WakeNonce)), true)
+	if !ok {
+		return
+	}
+	printed := false
+	if dl.Text != "" {
+		out := dl.Text
+		if dl.Token != "" {
+			// The last line, in the form the extension strips; it echoes the
+			// token back once it has really injected the context.
+			out = strings.TrimRight(out, "\n") + "\n<!-- agent-deck-delivery:" + dl.Token + " -->"
+		}
+		_, err := fmt.Println(out)
+		printed = err == nil
+	}
+	dl.Done(printed)
 }
 
 // resolveStopHookActive fails safe (audit B8): an absent stop_hook_active is
@@ -454,6 +541,14 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 		}()
 	}
 
+	// pi's before_agent_start: the extension returns this hook's stdout as the
+	// run's injected message, so print the ledger's context as plain text (not
+	// Claude's JSON envelope). It carries no status.
+	if payload.Source == "pi" && normalizeHookEventKey(payload.HookEventName) == "beforeagentstart" {
+		piBeforeAgentStart(instanceID, payload)
+		return
+	}
+
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)
 
@@ -582,7 +677,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 			// from the ledger (acknowledging what a wake line showed);
 			// every other session keeps the inbox drain.
 			// The ledger's context already ends with what the inbox holds.
-			if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt)); ok {
+			if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt), "", false); ok {
 				ledger = dl
 				if dl.Text != "" {
 					parts = append([]string{dl.Text}, parts...)

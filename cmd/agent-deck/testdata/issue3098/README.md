@@ -25,7 +25,7 @@ dir=cmd/agent-deck/testdata/issue3098
 out=$(mktemp -d)
 docker build -t deck-repro-3098 "$dir"
 docker run --rm -v "$PWD:/src:ro" -v "$out:/out" -w /src -e GOFLAGS=-buildvcs=false \
-  golang:1.26.10-bookworm go build -o /out/agent-deck ./cmd/agent-deck
+  golang:1.26.11-bookworm go build -o /out/agent-deck ./cmd/agent-deck
 python3 skills/agent-deck/scripts/repro/run.py --image deck-repro-3098 \
   --binary "$out/agent-deck" --script "$dir/repro.sh" --fixtures "$dir/fixtures" \
   --out "$out/run"
