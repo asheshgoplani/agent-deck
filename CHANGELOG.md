@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixes
 
+- A Claude session that shows "Not logged in · Please run /login" after `/logout` is now held as an auth failure (auth-401) instead of showing as idle or model-unavailable; reported by Sharjeel.
 - `session send` now sees the Codex 0.167 approval picker as a menu, so a send can no longer confirm it by accident (#3088).
 - A session on an account slot no longer picks up the newest conversation of the default Claude dir when its own session id is empty at start or restart.
 - A Claude session with two or more channels (for example telegram and discord) gets its messages again, and a commented-out `TELEGRAM_STATE_DIR` line no longer turns telegram on (#3091).

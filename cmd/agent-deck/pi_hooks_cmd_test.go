@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/comms"
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -110,7 +113,7 @@ func TestHandlePiHooks_StatusReportsDrift(t *testing.T) {
 		t.Errorf("status with drift = %q, want OUTDATED", out)
 	}
 	// An outdated extension cannot serve the socket, whatever pi is.
-	if want := "Socket: off (extension is v0, current v5)\n"; !strings.Contains(out, want) {
+	if want := "Socket: off (extension is v0, current v6)\n"; !strings.Contains(out, want) {
 		t.Errorf("status with drift lacks %q:\n%s", want, out)
 	}
 }
@@ -354,6 +357,60 @@ func TestPiHooksStatus_EqualsFormsAreAProfile(t *testing.T) {
 			t.Errorf("status %s lacks %q (the flagged profile's path, not AGENTDECK_PROFILE's):\n%s", form, want, out)
 		}
 	}
+}
+
+// Max ask: a permanent refusal stops socket wakes for a parent's records, and
+// that is invisible unless status says so. pi-hooks status names the parent's
+// reason: "socket wakes stopped: <reason>". A parent whose wakes work shows no
+// such line.
+func TestPiHooksStatus_SurfacesWhenAPermanentRefusalStoppedSocketWakes(t *testing.T) {
+	stoppedLine := func(out string) string {
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(strings.ToLower(l), "socket wakes stopped") {
+				return l
+			}
+		}
+		return ""
+	}
+	t.Run("stopped", func(t *testing.T) {
+		r, _ := enrolPiParent(t, "shipped the build")
+		setupPiHooksTest(t)
+		// What the send leg leaves after a permanent refusal: the records' wake
+		// tries consumed, and a failed socket wake record naming the reason.
+		if _, err := r.Do(piParentID, func(p comms.Pass) ([]events.Cursor, error) {
+			var cs []events.Cursor
+			for _, e := range p.Pending {
+				cs = append(cs, e.Cursor)
+			}
+			p.File.NoteWakeFailed(cs)
+			p.File.NoteWakeFailed(cs)
+			return nil, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		l, err := comms.Open("default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		if _, _, err := l.Commit(comms.Record{Kind: comms.KindWake, From: "agent-deck", To: []string{piParentID}, Via: "socket",
+			State: comms.StateFailed, Err: "bad_request", Trigger: "ledger", Text: "wake", TRecord: time.Now().UnixMilli()}); err != nil {
+			t.Fatal(err)
+		}
+		out := captureStdout(t, func() { handlePiHooks([]string{"status"}) })
+		line := stoppedLine(out)
+		if line == "" || !strings.Contains(line, "bad_request") {
+			t.Errorf("status does not say socket wakes stopped, with the reason:\n%s", out)
+		}
+	})
+	t.Run("working", func(t *testing.T) {
+		_, _ = enrolPiParent(t, "shipped the build")
+		setupPiHooksTest(t)
+		out := captureStdout(t, func() { handlePiHooks([]string{"status"}) })
+		if line := stoppedLine(out); line != "" {
+			t.Errorf("a parent whose wakes work shows %q", line)
+		}
+	})
 }
 
 // `pi-hooks status` probes pi on the launch's PATH, not this process's: a pi
