@@ -54,7 +54,7 @@ var authFailureBannerPatterns = []string{
 func IsAuthFailureContent(tool, content string) bool {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "claude":
-		return scanClaudeBannerLines(content, authFailureBannerPatterns)
+		return scanClaudeBannerLines(content, authFailureBannerPatterns) || hasClaudeSyntheticAuthReply(content)
 	case "deepseek":
 		return scanDeepSeekCredentialLines(content)
 	default:
