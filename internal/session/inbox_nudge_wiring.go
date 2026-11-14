@@ -83,14 +83,15 @@ func (w *wakeNudgeWiring) nudge(parent *Instance, targetKind, profile, message s
 // result: a nil wiring, a non-conductor/busy parent, or a send error are all
 // swallowed (the durable record still drains on the next turn/heartbeat). A
 // panic in the injected probe/send is recovered so a wake bug can never take
-// down the producer.
-func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNotificationEvent) {
+// down the producer. It reports whether a wake line was actually sent.
+func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNotificationEvent) (woke bool) {
 	w := n.wake
 	if w == nil || w.nudger == nil || parent == nil {
-		return
+		return false
 	}
 	defer func() {
 		if r := recover(); r != nil {
+			woke = false
 			commsLog.Warn("wake_nudge_panic_recovered",
 				slog.String("parent", parent.ID), slog.Any("panic", r))
 		}
@@ -106,13 +107,14 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 		// the operator can see WHY a pane wasn't woken without it being an error.
 		commsLog.Warn("wake_nudge_send_failed",
 			slog.String("parent", parent.ID), slog.String("error", err.Error()))
-		return
+		return false
 	}
 	if sent {
 		// Comms Ledger measurement: one wake record per machine wake, so
 		// `msg stats` compares this path with the ledger's own.
 		SpoolCommsWake(parent.ID, "inbox", "tmux", line, "")
 	}
+	return sent
 }
 
 // parentIsNudgeableIdle reports whether parent is safe to wake with a send-keys
