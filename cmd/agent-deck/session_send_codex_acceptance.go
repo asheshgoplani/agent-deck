@@ -332,6 +332,24 @@ func acquireCodexAcceptanceWhenReady(
 	}
 }
 
+// acquireCodexAcceptanceForSend is acquireCodexAcceptanceWhenReady wired to
+// one instance. The readiness baseline must come from the same reader as the
+// fence (codexAcceptanceGeneration): with the 8 MiB default reader, a turn
+// start between 8 and 64 MiB from EOF read as "" for the baseline but as the
+// real turn for the fence, so every pass looked like a turn that began after
+// the baseline and the send was refused at the deadline.
+func acquireCodexAcceptanceForSend(
+	inst *session.Instance,
+	deadline time.Time,
+	lockWait time.Duration,
+	waitReady func(time.Duration) error,
+) (guard *codexAcceptanceGuard, readyErr, guardErr error) {
+	return acquireCodexAcceptanceWhenReady(deadline, lockWait, waitReady,
+		func() (string, error) { return codexAcceptanceGeneration(inst) },
+		func(d time.Duration) (*codexAcceptanceGuard, error) { return acquireCodexAcceptanceGuard(inst, d) },
+	)
+}
+
 // codexAcceptanceGenerationScanBytes is the backward budget the acceptance
 // path allows when it locates the newest turn start in a rollout.
 //

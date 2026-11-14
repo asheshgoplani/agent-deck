@@ -108,13 +108,6 @@ func (m *CodexSubmissionMarker) updatePhase(phase string, now time.Time) error {
 	return nil
 }
 
-// ReconcileCodexSubmissionMarker resolves a crashed or completed prior sender
-// while the matching acceptance lock is held. A different exact generation is
-// assigned to that prior attempt and makes its marker safe to remove. Codex
-// starts no turn for input sent while a turn runs (issue #2836), so
-// tookInputSince (nil for none) may instead show that the unchanged turn took
-// up user input recorded after the attempt began. Without either, delivery
-// remains unknowable and all later sends fail closed.
 // ErrCodexGenerationUndeterminable reports that the newest turn start in the
 // exact rollout could not be located, so the persisted marker can neither be
 // confirmed nor cleared. It is deliberately distinct from an invalid marker:
@@ -122,7 +115,13 @@ func (m *CodexSubmissionMarker) updatePhase(phase string, now time.Time) error {
 // caller must never present it as evidence that the marker is corrupt.
 var ErrCodexGenerationUndeterminable = errors.New("current Codex turn generation is not determinable")
 
-// ReconcileCodexSubmissionMarker decides what a persisted marker means now.
+// ReconcileCodexSubmissionMarker resolves a crashed or completed prior sender
+// while the matching acceptance lock is held. A different exact generation is
+// assigned to that prior attempt and makes its marker safe to remove. Codex
+// starts no turn for input sent while a turn runs (issue #2836), so
+// tookInputSince (nil for none) may instead show that the unchanged turn took
+// up user input recorded after the attempt began. Without either, delivery
+// remains unknowable and all later sends fail closed.
 //
 // currentGeneration is the instance's current accepted-turn generation, or ""
 // when the newest turn start was not found within the caller's backward-scan
