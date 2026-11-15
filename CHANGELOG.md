@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixes
+
+- A standing-order or heartbeat wake that Claude Code hands over as a paste (inside a `<pasted_content>` wrapper) still counts as an unattended turn: its permission prompts are denied with a `NEED:`, and an order wake still cannot change orders. Inbox and heartbeat wakes in a paste are also tiered as wakes, not as human prompts.
+
 ### Documentation
 
 - The assistant docs and the config reference now say that `[web].mutations_enabled = false` makes assistant tokens read-only only on `agent-deck web`; `agent-deck connect serve` (stdio) is limited by the token's scopes.

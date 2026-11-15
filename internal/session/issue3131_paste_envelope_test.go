@@ -28,6 +28,34 @@ func TestIssue3131_PastedEnvelopeClassifiesAsSend(t *testing.T) {
 	}
 }
 
+// A wake agent-deck typed (inbox, heartbeat) is multi-line too, so it can
+// reach the transcript or the hook inside the same wrapper. It is still a
+// wake on both classifiers, by the same leading-wrapper rule as the envelope.
+func TestIssue3131_PastedWakeClassifiesAsInbox(t *testing.T) {
+	prompts := []string{
+		"<pasted_content id=\"p1\">\n[INBOX] 2 new records\nchild done\n</pasted_content id=\"p1\">",
+		"<pasted_content id=\"p2\">\n[HEARTBEAT] [ops] Status: 1 waiting.\nmore\n</pasted_content id=\"p2\">",
+	}
+	for _, prompt := range prompts {
+		f := classifyTranscriptTail([]string{fxUser("u", prompt, nil), fxAssistantText("a", "reply")})
+		if f.Trigger != TurnTriggerInbox {
+			t.Errorf("classifyTranscriptTail(%q) = %q; want inbox", prompt, f.Trigger)
+		}
+		if gotT, _ := commsPromptTrigger(prompt); gotT != TurnTriggerInbox {
+			t.Errorf("commsPromptTrigger(%q) = %q; want inbox", prompt, gotT)
+		}
+	}
+	// A wake prefix on a later line of a paste, or after typed text, is not a wake.
+	for _, prompt := range []string{
+		"<pasted_content id=\"p3\">\nlog:\n[HEARTBEAT] x\n</pasted_content id=\"p3\">",
+		"look\n<pasted_content id=\"p4\">\n[INBOX] x\n</pasted_content id=\"p4\">",
+	} {
+		if gotT, _ := commsPromptTrigger(prompt); gotT != TurnTriggerHuman {
+			t.Errorf("commsPromptTrigger(%q) = %q; want human", prompt, gotT)
+		}
+	}
+}
+
 // Only a LEADING wrapper whose first non-empty line is the envelope counts. A
 // person who pastes text that merely contains an envelope further down (a log,
 // a copied transcript) is still a human prompt.

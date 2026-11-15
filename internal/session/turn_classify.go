@@ -87,6 +87,29 @@ func SendEnvelope(senderID string) string {
 // arrived as a paste (a long `session send --message-file`, issue #3131).
 const pastedContentTag = "<pasted_content"
 
+// unwrapLeadingPastedContent trims text and, when it starts with a
+// <pasted_content …> wrapper, returns what follows the wrapper's opening tag
+// (trimmed). ok is false only for a malformed leading wrapper: a tag name
+// that merely starts with "pasted_content", or an opening tag that never
+// closes on its own line. Text without a leading wrapper comes back trimmed
+// with ok true. The closing tag is left in place; callers only read the
+// first line.
+func unwrapLeadingPastedContent(text string) (inner string, ok bool) {
+	text = strings.TrimSpace(text)
+	rest, found := strings.CutPrefix(text, pastedContentTag)
+	if !found {
+		return text, true
+	}
+	if rest == "" || (rest[0] != '>' && rest[0] != ' ' && rest[0] != '\t') {
+		return "", false
+	}
+	end := strings.IndexByte(rest, '>')
+	if end < 0 || strings.ContainsRune(rest[:end], '\n') {
+		return "", false
+	}
+	return strings.TrimSpace(rest[end+1:]), true
+}
+
 // parseSendEnvelope reports whether a prompt starts with a send envelope and
 // returns the sender. The envelope must be the prompt's first non-empty line,
 // or the first non-empty line inside a LEADING <pasted_content …> wrapper. A
@@ -94,16 +117,9 @@ const pastedContentTag = "<pasted_content"
 // something else, is not a send: a person who pastes text that merely
 // contains an envelope further down is still a human prompt.
 func parseSendEnvelope(text string) (ok bool, fromID string) {
-	text = strings.TrimSpace(text)
-	if rest, found := strings.CutPrefix(text, pastedContentTag); found {
-		if rest == "" || (rest[0] != '>' && rest[0] != ' ' && rest[0] != '\t') {
-			return false, ""
-		}
-		end := strings.IndexByte(rest, '>')
-		if end < 0 || strings.ContainsRune(rest[:end], '\n') {
-			return false, ""
-		}
-		text = strings.TrimSpace(rest[end+1:])
+	text, ok = unwrapLeadingPastedContent(text)
+	if !ok {
+		return false, ""
 	}
 	rest, found := strings.CutPrefix(text, sendEnvelopePrefix)
 	if !found {
