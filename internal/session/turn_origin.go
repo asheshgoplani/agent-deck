@@ -32,12 +32,20 @@ const turnOriginSuffix = ".turn-origin"
 var orderWakeRe = regexp.MustCompile(`^\[ORDER ([a-z0-9][a-z0-9_-]{0,62})\]`)
 
 // TurnOriginForPrompt classifies a prompt: "order:<name>", "heartbeat" or ""
-// for an attended turn. A leading send envelope line is skipped.
+// for an attended turn. A leading send envelope line is skipped, and so is a
+// leading <pasted_content …> wrapper, by the same rule parseSendEnvelope
+// applies: Claude Code may store a multi-line prompt (every order wake) as a
+// paste (issue #3131). The wrapper may sit outside or inside the envelope.
 func TurnOriginForPrompt(prompt string) string {
-	p := strings.TrimSpace(prompt)
+	p, ok := unwrapLeadingPastedContent(prompt)
+	if !ok {
+		return ""
+	}
 	if HasSendEnvelope(p) {
-		if _, rest, ok := strings.Cut(p, "\n"); ok {
-			p = strings.TrimSpace(rest)
+		if _, rest, found := strings.Cut(p, "\n"); found {
+			if p, ok = unwrapLeadingPastedContent(rest); !ok {
+				return ""
+			}
 		}
 	}
 	if m := orderWakeRe.FindStringSubmatch(p); m != nil {

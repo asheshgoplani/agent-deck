@@ -426,7 +426,13 @@ func PruneCommsSpool(now time.Time) {
 // (inbox, heartbeat, comms ledger). Both trigger classifiers share them.
 var inboxWakePrefixes = []string{"[INBOX", "[HEARTBEAT]", "[agent-deck inbox]", comms.WakePrefix}
 
+// A wake that arrived as a paste is read inside its leading <pasted_content>
+// wrapper, by the same rule as a send envelope (unwrapLeadingPastedContent).
 func hasInboxWakePrefix(text string) bool {
+	text, ok := unwrapLeadingPastedContent(text)
+	if !ok {
+		return false
+	}
 	for _, p := range inboxWakePrefixes {
 		if strings.HasPrefix(text, p) {
 			return true
