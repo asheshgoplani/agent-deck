@@ -92,6 +92,27 @@ func TestKimiYoloShortcutOnExistingSession(t *testing.T) {
 	}
 }
 
+func TestKimiYoloShortcutRestartsIdleSession(t *testing.T) {
+	setXDGTestHome(t)
+	h := NewHome()
+	inst := session.NewInstanceWithTool("kimi-test", t.TempDir(), "kimi")
+	inst.Status = session.StatusIdle
+	if err := inst.SetKimiOptions(&session.KimiOptions{PermissionMode: session.KimiPermissionNeverAsk}); err != nil {
+		t.Fatalf("SetKimiOptions: %v", err)
+	}
+	h.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: inst}}
+	h.cursor = 0
+
+	_, cmd := h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+
+	if cmd == nil {
+		t.Fatal("idle Kimi session was not restarted after permission change")
+	}
+	if got := inst.GetKimiOptions().PermissionMode; got != session.KimiPermissionAlwaysAsk {
+		t.Fatalf("PermissionMode = %q, want always-ask", got)
+	}
+}
+
 func TestKimiYHotkeyTogglesYoloNotAuto(t *testing.T) {
 	setXDGTestHome(t)
 	h := NewHome()
@@ -115,6 +136,10 @@ func TestKimiYHotkeyTogglesYoloNotAuto(t *testing.T) {
 	if got := inst.GetKimiOptions().PermissionMode; got != session.KimiPermissionAlwaysAsk {
 		t.Fatalf("y from never-ask = %q, want always-ask", got)
 	}
+}
+
+func TestKimiYoloShortcutOnRemoteSession(t *testing.T) {
+	t.Skip("remote Kimi permission changes are unsupported: the remote session path forwards KimiPermissionMode only during creation")
 }
 
 func TestKimiYoloSettingPersistsAfterEscape(t *testing.T) {
