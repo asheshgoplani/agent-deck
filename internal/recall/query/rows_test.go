@@ -790,3 +790,24 @@ func TestRowsBeforeSnapshotAppendAndMissingBoundary(t *testing.T) {
 		t.Fatalf("missing row boundary: %v", err)
 	}
 }
+
+// Cursors and agent ids reach ReadRows from the web timeline route, so a
+// path with ".." in either is refused before anything is opened.
+func TestReadRowsRefusesDotDotPaths(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "a.jsonl")
+	if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cursor := encodeRowsCursor(rowsCursor{P: filepath.Join(dir, "sub") + "/../a.jsonl", O: 0})
+	var re *ResyncError
+	if _, err := ReadRows(context.Background(), RowsSource{Harness: "claude"}, RowsOptions{Since: cursor}); !errors.As(err, &re) || re.Reason != "invalid_cursor" {
+		t.Fatalf("cursor with ..: err = %v, want resync invalid_cursor", err)
+	}
+	if _, err := ReadRows(context.Background(), RowsSource{Harness: "claude", Path: target}, RowsOptions{AgentID: "../../a"}); err == nil || !strings.Contains(err.Error(), "invalid agent id") {
+		t.Fatalf("agent with ..: err = %v, want invalid agent id", err)
+	}
+}
