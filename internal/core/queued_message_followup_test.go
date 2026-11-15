@@ -277,9 +277,20 @@ func TestRestartOfQueuedSessionDeliversTheBriefOnce(t *testing.T) {
 	if n := findByTitle(loadStore(t, profile), inst.Title); n == nil || n.QueuedMessage != "" {
 		t.Fatalf("row after restart = %+v, want the brief taken off", n)
 	}
-	// A later stop and start must not deliver it again.
+	// A later stop and start must not deliver it again. The stop is not
+	// instant: Kill and KillAndWait return while the tmux session still
+	// answers has-session (about 2 s here when this is the first tmux test in
+	// the process), and Start refuses a session that still exists ("already
+	// running"). Wait for it to be gone before starting it again.
 	if n := findByTitle(loadStore(t, profile), inst.Title); n != nil {
-		_ = n.Kill()
+		_ = n.KillAndWait()
+		deadline := time.Now().Add(15 * time.Second)
+		for n.Exists() && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if n.Exists() {
+			t.Fatalf("session %q still exists 15 s after Kill", inst.Title)
+		}
 	}
 	if _, res := Invoke[SessionStartOut](context.Background(), testRegistry(t, Deps{}), IDSessionStart, SessionStartIn{Profile: profile, Session: inst.Title, NoWait: true}); res.Err != nil {
 		t.Fatal(res.Err)
