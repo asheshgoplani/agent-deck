@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -68,17 +69,20 @@ func foreignTUIBinary(t *testing.T) string {
 }
 
 // prebuildForeignTUIBinary starts the shared binary's build in the
-// background on a full package run (no -run filter), as CI runs it. On a
-// GitHub runner that build is about a minute of cold compile (CI run
-// 41158827633: TestCrashedSession_TUIOnItsOwnServerShowsError 72 s, of which
-// its subtests are 14.5 s); the session tests run one at a time, so the
-// build overlaps them instead of adding to the shard. The returned func
-// waits for the build and removes the binary; TestMain calls it after m.Run.
+// background when the run can reach a test that needs it: a full package run,
+// or a -run filter that matches one of foreignTUIBinaryTests (CI's session
+// shards run with -run '^Test[A-C]' and '^Test[D-I]'). On a GitHub runner
+// that build is about a minute of cold compile (CI run 41158827633:
+// TestCrashedSession_TUIOnItsOwnServerShowsError 72 s, of which its subtests
+// are 14.5 s); the session tests run one at a time, so the build overlaps
+// them instead of adding to the shard. A filter that matches none of those
+// tests (a one-test run) skips the build. The returned func waits for the
+// build and removes the binary; TestMain calls it after m.Run.
 func prebuildForeignTUIBinary() func() {
 	if !flag.Parsed() {
 		flag.Parse()
 	}
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+	if f := flag.Lookup("test.run"); f != nil && !runFilterReachesForeignTUIBinaryTest(f.Value.String()) {
 		return func() {}
 	}
 	done := make(chan struct{})
@@ -92,6 +96,61 @@ func prebuildForeignTUIBinary() func() {
 			_ = os.RemoveAll(filepath.Dir(foreignTUIBin))
 		}
 	}
+}
+
+// foreignTUIBinaryTests names every top-level test that calls
+// foreignTUIBinary. TestForeignTUIBinaryTestsListed keeps it complete; a test
+// missing here would still build the binary itself, only without the overlap.
+var foreignTUIBinaryTests = []string{
+	"TestCrashedSession_TUIOnItsOwnServerShowsError",
+	"TestForeignTmuxServer_NestedTUIDoesNotFlipLiveSessionsToError",
+	"TestForeignTmuxServer_UnlistableDefaultServerWritesNothingForHealthySession",
+	"TestPiWakeExtension_AHookHandlerOrphanedBySigkillExitsByItsOwnDeadline",
+}
+
+// runFilterReachesForeignTUIBinaryTest reports whether a -run pattern can
+// select a test in foreignTUIBinaryTests. Only the top-level part of the
+// pattern (before the first '/' outside brackets and parentheses, as the
+// testing package splits it) is matched against the names. An empty pattern
+// runs everything; a pattern that does not compile answers true, so an
+// unexpected filter costs a background build, never a missing one.
+func runFilterReachesForeignTUIBinaryTest(pattern string) bool {
+	if pattern == "" {
+		return true
+	}
+	re, err := regexp.Compile(topLevelRunPattern(pattern))
+	if err != nil {
+		return true
+	}
+	for _, name := range foreignTUIBinaryTests {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// topLevelRunPattern returns the part of a -run pattern that the testing
+// package matches against top-level test names.
+func topLevelRunPattern(pattern string) string {
+	depth := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '[', '(':
+			depth++
+		case ']', ')':
+			if depth > 0 {
+				depth--
+			}
+		case '\\':
+			i++
+		case '/':
+			if depth == 0 {
+				return pattern[:i]
+			}
+		}
+	}
+	return pattern
 }
 
 // startTUIInForeignTmuxServer replays the audit's command: a private tmux
