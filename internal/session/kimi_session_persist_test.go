@@ -112,6 +112,53 @@ func TestKimiUpdateHookStatusBindingContract(t *testing.T) {
 	}
 }
 
+func TestKimiForeignCwdDoesNotRebind(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db := withTempGlobalStateDB(t)
+	workspace := t.TempDir()
+	inst := NewInstanceWithTool("kimi-foreign-cwd", workspace, "kimi")
+	saveKimiRow(t, db, inst)
+	base := time.Now().Add(-time.Minute).Truncate(time.Second)
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "parent", Event: "SessionStart",
+		ClientType: "kimi_code_cli", Cwd: workspace, UpdatedAt: base,
+	})
+	foreign := t.TempDir()
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "nested", Event: "SessionStart",
+		ClientType: "kimi_code_cli", Cwd: foreign, UpdatedAt: base.Add(time.Second),
+	})
+	if inst.KimiSessionID != "parent" {
+		t.Fatalf("foreign-cwd SessionStart rebound identity to %q", inst.KimiSessionID)
+	}
+	if got, _ := persistedKimiBinding(t, db, inst.ID); got != "parent" {
+		t.Fatalf("foreign-cwd SessionStart changed persisted binding to %q", got)
+	}
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "rotated", Event: "SessionStart",
+		ClientType: "kimi_code_cli", Cwd: filepath.Join(workspace, "subdir"), UpdatedAt: base.Add(2 * time.Second),
+	})
+	if inst.KimiSessionID != "rotated" {
+		t.Fatalf("legitimate SessionStart did not rotate binding: %q", inst.KimiSessionID)
+	}
+
+	events := readLifecycleEventsFor(t, inst.ID)
+	if len(events) != 3 {
+		t.Fatalf("lifecycle events = %+v, want bind, reject, rebind", events)
+	}
+	if ev := events[0]; ev.Action != "bind" || ev.OldID != "" || ev.NewID != "parent" || ev.Source != "hook_payload" || ev.HookEvent != "SessionStart" {
+		t.Errorf("bind lifecycle event = %+v", ev)
+	}
+	if ev := events[1]; ev.Action != "reject" || ev.OldID != "parent" || ev.Candidate != "nested" || ev.Reason != "candidate_cwd_outside_instance_paths" {
+		t.Errorf("foreign-cwd reject lifecycle event = %+v", ev)
+	}
+	if ev := events[2]; ev.Action != "rebind" || ev.OldID != "parent" || ev.NewID != "rotated" || ev.Source != "hook_payload" || ev.HookEvent != "SessionStart" {
+		t.Errorf("rebind lifecycle event = %+v", ev)
+	}
+}
+
 func TestKimiStatusFileFlowsThroughWatcherAndBinding(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	hooksDir := GetHooksDir()
