@@ -192,6 +192,67 @@ func TestKimiHookConsentDecisionsAreDurable(t *testing.T) {
 	}
 }
 
+func TestKimiHookInstallFailureIsVisibleAndRetryable(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("KIMI_CODE_HOME", filepath.Join(homeDir, ".kimi-code"))
+	configDir := session.GetKimiConfigDir()
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("default_model = [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := statedb.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	previousDB := statedb.GetGlobal()
+	statedb.SetGlobal(db)
+	t.Cleanup(func() { statedb.SetGlobal(previousDB) })
+
+	home := &Home{confirmDialog: NewConfirmDialog(), pendingKimiHooksPrompt: true}
+	home.confirmInstallKimiHooks()
+	if home.err == nil {
+		t.Fatal("Kimi hook installation failure was not shown in the TUI")
+	}
+	if !home.pendingKimiHooksPrompt {
+		t.Fatal("Kimi hook installation failure cleared the pending consent prompt")
+	}
+	gotMeta, err := db.GetMeta("kimi_hooks_prompted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMeta != "" {
+		t.Fatalf("Kimi consent recorded after failed installation: %q", gotMeta)
+	}
+	home.showPendingHooksPrompt()
+	if !home.confirmDialog.IsVisible() || home.confirmDialog.GetConfirmType() != ConfirmInstallKimiHooks {
+		t.Fatal("Kimi consent prompt did not reappear after failed installation")
+	}
+
+	if err := os.WriteFile(configPath, []byte("default_model = \"kimi-code/k3\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home.confirmInstallKimiHooks()
+	if home.hookWatcher != nil {
+		t.Cleanup(home.hookWatcher.Stop)
+	}
+	gotMeta, err = db.GetMeta("kimi_hooks_prompted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMeta != "accepted" {
+		t.Fatalf("Kimi consent after successful retry = %q, want accepted", gotMeta)
+	}
+}
+
 func TestAcceptedKimiHooksRemovedLaterAreNotReinstalled(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

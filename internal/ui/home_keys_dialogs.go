@@ -1019,12 +1019,14 @@ func (h *Home) declineInstallHermesHooks() tea.Cmd {
 
 func (h *Home) confirmInstallKimiHooks() tea.Cmd {
 	h.confirmDialog.Hide()
-	h.pendingKimiHooksPrompt = false
 	configDir := session.GetKimiConfigDir()
 	if _, err := session.InjectKimiHooks(configDir); err != nil {
 		uiLog.Warn("kimi_hooks_install_failed", slog.String("error", err.Error()))
+		h.setError(fmt.Errorf("failed to install Kimi hooks: %w", err))
+		h.showPendingHooksPrompt()
 		return nil
 	}
+	h.pendingKimiHooksPrompt = false
 	if db := statedb.GetGlobal(); db != nil {
 		_ = db.SetMeta("kimi_hooks_prompted", "accepted")
 	}
