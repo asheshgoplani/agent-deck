@@ -911,7 +911,7 @@ func reconcileTyping(dir string, rec *sendqueue.Record, set func(func(*sendqueue
 // message is not typed into this one's turn. Without evidence it settles
 // typed/submitted with a reason: never landed, and never typed again.
 func watchLanded(profile string, rec *sendqueue.Record, set func(func(*sendqueue.Record)) error) {
-	harness := rowsHarness(rec.Tool)
+	harness := session.RowsHarness(rec.Tool)
 	if !query.SupportsDirectRows(harness) {
 		_ = set(func(r *sendqueue.Record) {
 			r.Settled = true

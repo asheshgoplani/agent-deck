@@ -46,29 +46,6 @@ func registerRowsFlags(fs interface {
 	}
 }
 
-// rowsHarness maps a session tool to the native format the rows reader parses.
-func rowsHarness(tool string) string {
-	switch {
-	case session.IsClaudeCompatible(tool):
-		return "claude"
-	case session.IsCodexCompatible(tool):
-		return "codex"
-	}
-	return tool
-}
-
-// liveTranscriptPath resolves an instance's current native transcript.
-func liveTranscriptPath(inst *session.Instance, peers []*session.Instance) (string, error) {
-	switch rowsHarness(inst.Tool) {
-	case "claude", "codex":
-		if p := session.LiveTranscriptPath(inst, peers); p != "" {
-			return p, nil
-		}
-		return "", fmt.Errorf("session %s has no native transcript on this machine yet", inst.Title)
-	}
-	return "", fmt.Errorf("%w: %s", query.ErrRowsUnsupported, inst.Tool)
-}
-
 var nativeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{7,}$`)
 
 // nativeTranscriptByID finds a Claude or Codex conversation by its native id
@@ -95,15 +72,11 @@ func nativeTranscriptByID(id string) (harness, path string) {
 }
 
 func instanceTarget(inst *session.Instance, peers []*session.Instance, storage *session.Storage) (*rowsTarget, error) {
-	path, err := liveTranscriptPath(inst, peers)
+	src, sess, err := session.LiveRowsSource(inst, peers)
 	if err != nil {
 		return nil, err
 	}
-	h := rowsHarness(inst.Tool)
-	t := &rowsTarget{inst: inst, storage: storage, direct: true}
-	t.src = query.RowsSource{Harness: h, Path: path, Resolve: func() (string, error) { return liveTranscriptPath(inst, peers) }}
-	t.session = query.RowsSession{ID: inst.ID, Harness: h, NativeID: firstNonEmpty(inst.ClaudeSessionID, inst.CodexSessionID), Path: path, Title: inst.Title, Cwd: inst.EffectiveWorkingDir()}
-	return t, nil
+	return &rowsTarget{inst: inst, storage: storage, direct: true, src: src, session: sess}, nil
 }
 
 // resolveRowsTarget resolves <session> without the index first: deck

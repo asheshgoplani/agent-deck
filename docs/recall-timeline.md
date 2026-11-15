@@ -125,6 +125,29 @@ with the number of identities in the window, and backward paging still reparses
 the previously shown suffix. Attached sub-agent children retain their existing
 behavior and can independently contain a large transcript.
 
+### Over HTTP (`agent-deck web`)
+
+`GET /api/sessions/{id}/timeline` answers the same rows v2 object for a deck
+session id, so a web or other HTTP client reads what `recall timeline <id>
+--json` prints. The query parameters are the CLI's flags: `tail`, `limit`,
+`since`, `before` (with `limit`) and `agent`, with the same rules. It reads
+the session's live Claude Code or Codex transcript and never touches the
+index. The route follows the web server's token like every other `/api`
+route and needs `[recall] enabled = true` like the CLI.
+
+The pane `status` the CLI adds is left out: the web menu stream already
+carries session status. A cursor names its transcript, so one issued for
+another file is refused rather than read.
+
+| Status | Code | When |
+| --- | --- | --- |
+| 200 | | the rows v2 object; `turns` is `[]` when nothing changed since the cursor |
+| 400 | `INVALID_REQUEST` | a parameter is not an integer, or the combination is refused (`before` without `limit`) |
+| 404 | `NOT_FOUND` | no such session, or its transcript does not exist on this machine yet |
+| 409 | `RECALL_DISABLED` | `[recall] enabled` is false |
+| 409 | `RESYNC_REQUIRED` | the cursor no longer describes the transcript (rewritten, moved, or not this session's); reload without it |
+| 501 | `NOT_IMPLEMENTED` | the session's tool is not Claude Code or Codex |
+
 Row:
 
 | Field | Meaning |
