@@ -64,6 +64,8 @@ agent-deck kimi-hooks uninstall
 
 Hooks are installed in `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`), preserving existing settings and unrelated hooks. Without them, launch, interactive prompts, and pane-based status still work. Kimi's own session ID is saved from the managed session's hooks and used for exact `kimi --session <id>` restart/resume; agent-deck does not guess from the newest transcript. Model catalog probing is supported: agent-deck asks `kimi provider list --json` for the configured model aliases. Native fork, Recall ingestion, and account switching are not currently supported for Kimi.
 
+For `add` and `launch`, `--yolo` means full auto-approve on Gemini, Codex, and Hermes, but on Kimi it selects the middle Ask When Needed tier: routine work runs while risky actions still ask. Kimi's `--auto` selects Never Ask (full auto-approve), and `--auto` is rejected for other tools. On Kimi, explicitly passing `--yolo=false` or `--auto=false` selects Always Ask.
+
 DeepSeek Harness is the `dsh` binary from [`@deepseek-ai/dsh`](https://github.com/deepseek-ai/deepseek-harness)
 (`npm install -g @deepseek-ai/dsh`). It boots *profiles*: `web` (a browser UI served
 from the pane) and `headless` (answer one task, print it, exit) ship in the box, and

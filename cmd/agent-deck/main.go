@@ -2116,11 +2116,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
-	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
+	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode, kimi)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes; Kimi: Ask When Needed")
+	yoloMode := fs.Bool("yolo", false, "Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
-	autoMode := fs.Bool("auto", false, "Kimi: start in Never Ask mode (auto-approve everything; --auto)")
+	autoMode := fs.Bool("auto", false, "Kimi only: Never Ask (full auto-approve)")
 	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
 	// Socket isolation (v1.7.50+, issue #687). Overrides the installation-

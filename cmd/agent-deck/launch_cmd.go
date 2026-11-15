@@ -139,15 +139,15 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
-	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
+	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode, kimi)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
 	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
 	// Parity with `add` and the New Session dialog: sandbox, permission
 	// controls and the Claude Options rows.
 	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes; Kimi: Ask When Needed")
-	autoMode := fs.Bool("auto", false, "Kimi: start in Never Ask mode (auto-approve everything; --auto)")
+	yoloMode := fs.Bool("yolo", false, "Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)")
+	autoMode := fs.Bool("auto", false, "Kimi only: Never Ask (full auto-approve)")
 	claudeFlags := registerClaudeOptionFlags(fs)
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as

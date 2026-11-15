@@ -15,7 +15,7 @@ Options:
   -assert-done
     	Append a completion-sentinel instruction to the message (default on for -c claude)
   -auto
-    	Kimi: start in Never Ask mode (auto-approve everything; --auto)
+    	Kimi only: Never Ask (full auto-approve)
   -auto-mode
     	Claude: --permission-mode auto for this session (persisted; requires -c claude)
   -b	Create new branch (use with --worktree)
@@ -64,7 +64,7 @@ Options:
   -message-file string
     	Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts
   -model string
-    	Model ID/version to use for this session (claude, codex, gemini, opencode)
+    	Model ID/version to use for this session (claude, codex, gemini, opencode, kimi)
   -new-branch
     	Create new branch
   -no-assert-done
@@ -127,7 +127,7 @@ Options:
   -wrapper string
     	Wrapper command (use {command} to include tool command; auto-generated when --cmd includes extra flags; a known claude/codex subcommand in --cmd runs as-is with no wrapper instead)
   -yolo
-    	Enable YOLO mode for Gemini, Codex or Hermes; Kimi: Ask When Needed
+    	Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)
 
 Examples:
   agent-deck launch . -c claude
