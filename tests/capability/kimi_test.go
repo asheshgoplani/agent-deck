@@ -64,7 +64,7 @@ func setupKimiExecutable(t *testing.T, c *capSandbox) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatalf("create agent-deck config dir: %v", err)
 	}
-	config := fmt.Sprintf("[kimi]\ndefault_model = %q\nyolo_mode = true\nconfig_dir = %q\n", "model with spaces", kimiHome)
+	config := fmt.Sprintf("[kimi]\ndefault_model = %q\npermission_mode = %q\nconfig_dir = %q\n", "model with spaces", session.KimiPermissionAskWhenNeeded, kimiHome)
 	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write Kimi config: %v", err)
 	}
@@ -82,7 +82,7 @@ func readKimiLaunches(t *testing.T, c *capSandbox) []kimiLaunch {
 	}
 	launches := make([]kimiLaunch, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
