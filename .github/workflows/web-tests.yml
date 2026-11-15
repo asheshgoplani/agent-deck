@@ -69,11 +69,22 @@ jobs:
         run: npm run test:unit
 
   e2e:
-    name: playwright (e2e + screenshots)
+    name: playwright (e2e + screenshots) [${{ matrix.shard }}/4]
     # Pinned: ubuntu-latest moved to 26.04, which Playwright's chromium
     # install (--with-deps) does not support yet. Move back once it does.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The suite runs with workers: 1 against one fixture server, so one job
+    # spent ~8-10 min in serial test time. Playwright's own --shard splits
+    # the same test list (every project, every spec) across four runners,
+    # each with its own fixture server; nothing is skipped or selected, and
+    # a spec or project added later lands in a shard by itself. The
+    # "playwright (e2e + screenshots)" job below keeps the old check name
+    # and fails unless every shard passed.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     defaults:
       run:
         working-directory: tests/web
@@ -112,7 +123,7 @@ jobs:
         run: go build -o tests/web/.tmp/web-fixture ./tests/web/fixtures/cmd/web-fixture/
 
       - name: Run Playwright e2e
-        run: npm run test:e2e
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/4
 
       # On failure, upload the screenshot diffs and HTML report so reviewers
       # can see what changed without reproducing locally.
@@ -120,7 +131,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: tests/web/playwright-report
           retention-days: 14
 
@@ -128,9 +139,26 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: playwright-screenshots
+          name: playwright-screenshots-${{ matrix.shard }}
           path: tests/web/e2e-output
           retention-days: 14
+
+  # Same check name as the single e2e job had before the split, so anything
+  # that watches it still sees one result. Fails unless every shard passed
+  # (a failed, skipped or cancelled shard fails it).
+  e2e-gate:
+    name: playwright (e2e + screenshots)
+    needs: e2e
+    # !cancelled(): a superseded run (cancel-in-progress) stays cancelled
+    # instead of reporting a red gate; any other shard outcome reaches it.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Gate on shard results
+        run: |
+          echo "e2e shards: ${{ needs.e2e.result }}"
+          [ "${{ needs.e2e.result }}" = "success" ] || { echo "An e2e shard failed, was cancelled or did not run."; exit 1; }
 
   parity-go:
     name: go parity (web vs mutator)
