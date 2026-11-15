@@ -58,7 +58,7 @@ func InjectKimiHooks(configDir string) (bool, error) {
 	}
 	defer lock.Release()
 
-	raw, err := readKimiConfig(configPath)
+	raw, data, err := readKimiConfig(configPath)
 	if err != nil {
 		return false, err
 	}
@@ -66,22 +66,20 @@ func InjectKimiHooks(configDir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	seen := make(map[string]int, len(kimiHookEvents))
-	updated := make([]any, 0, len(hooks)+len(kimiHookEvents))
+	seen := make(map[string]bool, len(kimiHookEvents))
+	managed := make([]any, 0, len(kimiHookEvents))
 	changed := false
 	for _, value := range hooks {
 		hook, ok := value.(map[string]any)
 		if !ok {
-			updated = append(updated, value)
 			continue
 		}
 		event, _ := hook["event"].(string)
 		command, _ := hook["command"].(string)
 		if !isAgentDeckKimiHookCommand(command) || !slices.Contains(kimiHookEvents, event) {
-			updated = append(updated, value)
 			continue
 		}
-		if _, duplicate := seen[event]; duplicate {
+		if seen[event] {
 			changed = true
 			continue
 		}
@@ -90,12 +88,12 @@ func InjectKimiHooks(configDir string) (bool, error) {
 			hook["command"] = wantCommand
 			changed = true
 		}
-		seen[event] = len(updated)
-		updated = append(updated, value)
+		seen[event] = true
+		managed = append(managed, value)
 	}
 	for _, event := range kimiHookEvents {
-		if _, ok := seen[event]; !ok {
-			updated = append(updated, map[string]any{
+		if !seen[event] {
+			managed = append(managed, map[string]any{
 				"event":   event,
 				"command": kimiHookCommandForEvent(event),
 			})
@@ -105,8 +103,11 @@ func InjectKimiHooks(configDir string) (bool, error) {
 	if !changed {
 		return false, nil
 	}
-	raw["hooks"] = updated
-	if err := writeKimiConfig(configPath, raw); err != nil {
+	data, err = replaceAgentDeckKimiHooks(data, managed)
+	if err != nil {
+		return false, err
+	}
+	if err := writeKimiConfig(configPath, data); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -126,38 +127,21 @@ func RemoveKimiHooks(configDir string) (bool, error) {
 	}
 	defer lock.Release()
 
-	raw, err := readKimiConfig(configPath)
+	raw, data, err := readKimiConfig(configPath)
 	if err != nil {
 		return false, err
 	}
-	hooks, err := kimiConfigHooks(raw)
-	if err != nil {
+	if _, err := kimiConfigHooks(raw); err != nil {
 		return false, err
 	}
-	kept := make([]any, 0, len(hooks))
-	removed := false
-	for _, value := range hooks {
-		hook, ok := value.(map[string]any)
-		if !ok {
-			kept = append(kept, value)
-			continue
-		}
-		command, _ := hook["command"].(string)
-		if isAgentDeckKimiHookCommand(command) {
-			removed = true
-			continue
-		}
-		kept = append(kept, value)
+	data, removed, err := stripAgentDeckKimiHooks(data, false)
+	if err != nil {
+		return false, err
 	}
 	if !removed {
 		return false, nil
 	}
-	if len(kept) == 0 {
-		delete(raw, "hooks")
-	} else {
-		raw["hooks"] = kept
-	}
-	if err := writeKimiConfig(configPath, raw); err != nil {
+	if err := writeKimiConfig(configPath, data); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -186,7 +170,7 @@ func ResolveKimiConfigDir(configured string) string {
 }
 
 func CheckKimiHooksInstalled(configDir string) bool {
-	raw, err := readKimiConfig(filepath.Join(configDir, "config.toml"))
+	raw, _, err := readKimiConfig(filepath.Join(configDir, "config.toml"))
 	if err != nil {
 		return false
 	}
@@ -194,22 +178,22 @@ func CheckKimiHooksInstalled(configDir string) bool {
 	return err == nil && kimiHooksAlreadyInstalled(hooks)
 }
 
-func readKimiConfig(configPath string) (map[string]any, error) {
+func readKimiConfig(configPath string) (map[string]any, []byte, error) {
 	raw := make(map[string]any)
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return raw, nil
+			return raw, nil, nil
 		}
-		return nil, fmt.Errorf("read Kimi config.toml: %w", err)
+		return nil, nil, fmt.Errorf("read Kimi config.toml: %w", err)
 	}
 	if len(data) == 0 {
-		return raw, nil
+		return raw, data, nil
 	}
 	if err := toml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parse Kimi config.toml: %w", err)
+		return nil, nil, fmt.Errorf("parse Kimi config.toml: %w", err)
 	}
-	return raw, nil
+	return raw, data, nil
 }
 
 func kimiConfigHooks(raw map[string]any) ([]any, error) {
@@ -255,12 +239,131 @@ func kimiHookPresent(hooks []any, event string) bool {
 	return false
 }
 
-func writeKimiConfig(configPath string, raw map[string]any) error {
-	var out bytes.Buffer
-	if err := toml.NewEncoder(&out).Encode(raw); err != nil {
-		return fmt.Errorf("marshal Kimi config.toml: %w", err)
+type kimiHookBlock struct {
+	start   int
+	end     int
+	event   string
+	command string
+}
+
+func findKimiHookBlocks(data []byte) ([]kimiHookBlock, error) {
+	var blocks []kimiHookBlock
+	start := -1
+	commentStart := -1
+	flush := func(boundary int) error {
+		if start < 0 {
+			return nil
+		}
+		end := boundary
+		if commentStart >= 0 {
+			end = commentStart
+		}
+		var parsed struct {
+			Hooks []struct {
+				Event   string `toml:"event"`
+				Command string `toml:"command"`
+			} `toml:"hooks"`
+		}
+		if err := toml.Unmarshal(data[start:end], &parsed); err != nil {
+			return fmt.Errorf("parse Kimi config.toml: %w", err)
+		}
+		if len(parsed.Hooks) != 1 {
+			return fmt.Errorf("parse Kimi config.toml: hooks must be an array of tables")
+		}
+		blocks = append(blocks, kimiHookBlock{
+			start:   start,
+			end:     end,
+			event:   parsed.Hooks[0].Event,
+			command: parsed.Hooks[0].Command,
+		})
+		start = -1
+		commentStart = -1
+		return nil
 	}
-	if err := atomicfile.WriteFile(configPath, out.Bytes(), 0o600); err != nil {
+
+	offset := 0
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		lineStart := offset
+		offset += len(line)
+		if tableName, ok := tomlTableName(line); ok {
+			switch {
+			case tableName == "hooks":
+				if err := flush(lineStart); err != nil {
+					return nil, err
+				}
+				start = lineStart
+			case !strings.HasPrefix(tableName, "hooks."):
+				if err := flush(lineStart); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if start < 0 {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "#"):
+			if commentStart < 0 {
+				commentStart = lineStart
+			}
+		case trimmed != "":
+			commentStart = -1
+		}
+	}
+	if err := flush(len(data)); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
+func stripAgentDeckKimiHooks(data []byte, knownEventsOnly bool) ([]byte, bool, error) {
+	blocks, err := findKimiHookBlocks(data)
+	if err != nil {
+		return nil, false, err
+	}
+	var out bytes.Buffer
+	out.Grow(len(data))
+	last := 0
+	removed := false
+	for _, block := range blocks {
+		if !isAgentDeckKimiHookCommand(block.command) || knownEventsOnly && !slices.Contains(kimiHookEvents, block.event) {
+			continue
+		}
+		out.Write(data[last:block.start])
+		last = block.end
+		removed = true
+	}
+	if !removed {
+		return data, false, nil
+	}
+	out.Write(data[last:])
+	return out.Bytes(), true, nil
+}
+
+func replaceAgentDeckKimiHooks(data []byte, hooks []any) ([]byte, error) {
+	base, _, err := stripAgentDeckKimiHooks(data, true)
+	if err != nil {
+		return nil, err
+	}
+	var encoded bytes.Buffer
+	if err := toml.NewEncoder(&encoded).Encode(struct {
+		Hooks []any `toml:"hooks"`
+	}{Hooks: hooks}); err != nil {
+		return nil, fmt.Errorf("marshal Kimi hooks: %w", err)
+	}
+
+	out := make([]byte, 0, len(base)+encoded.Len()+1)
+	out = append(out, base...)
+	if len(base) > 0 && base[len(base)-1] != '\n' {
+		out = append(out, '\n')
+	}
+	out = append(out, encoded.Bytes()...)
+	return out, nil
+}
+
+func writeKimiConfig(configPath string, data []byte) error {
+	if err := atomicfile.WriteFile(configPath, data, 0o600); err != nil {
 		return fmt.Errorf("write Kimi config.toml: %w", err)
 	}
 	return nil

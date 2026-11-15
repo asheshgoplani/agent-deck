@@ -3,11 +3,59 @@ package session_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func TestKimiHookLifecyclePreservesConfigText(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	original := []byte(`# API key lives in env
+telemetry = false
+default_model = "kimi-code/k3" # keep this model note
+
+[providers."managed:kimi-code"]
+api_key = "test-credential-sentinel" # do not reformat
+type = "kimi"
+
+[[hooks]]
+event = "Notification"
+command = "notify-send Kimi" # user hook, not agent-deck
+
+[ui]
+theme = "dark"
+`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	installed, err := session.InjectKimiHooks(dir)
+	if err != nil || !installed {
+		t.Fatalf("InjectKimiHooks = %v, %v", installed, err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), string(original)) {
+		t.Fatalf("install changed existing config text:\n%s", data)
+	}
+
+	removed, err := session.RemoveKimiHooks(dir)
+	if err != nil || !removed {
+		t.Fatalf("RemoveKimiHooks = %v, %v", removed, err)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("uninstall did not restore original config bytes:\n got:\n%s\nwant:\n%s", data, original)
+	}
+}
 
 func TestKimiHookLifecyclePreservesConfigAndOnlyRemovesOwnedCommands(t *testing.T) {
 	dir := t.TempDir()
