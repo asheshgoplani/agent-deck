@@ -26,7 +26,6 @@ const (
 	SettingGeminiYoloMode
 	SettingCodexYoloMode
 	SettingHermesYoloMode
-	SettingKimiDefaultModel
 	SettingKimiPermissionMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
@@ -63,7 +62,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 42
+const settingsCount = 41
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -87,7 +86,6 @@ type SettingsPanel struct {
 	geminiYoloMode      bool
 	codexYoloMode       bool
 	hermesYoloMode      bool
-	kimiDefaultModel    string
 	kimiPermissionMode  string
 	checkForUpdates     bool
 	autoUpdate          bool
@@ -323,7 +321,6 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.hermesYoloMode = config.Hermes.YoloMode
 
 	// Kimi settings
-	s.kimiDefaultModel = config.Kimi.DefaultModel
 	s.kimiPermissionMode = config.Kimi.PermissionMode
 
 	// Update settings
@@ -479,11 +476,11 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	// Hermes settings
 	config.Hermes.YoloMode = s.hermesYoloMode
 
-	// Kimi settings
+	// Kimi settings. default_model is TOML-only, like the other providers:
+	// the panel preserves it from originalConfig instead of editing it.
 	if s.originalConfig != nil {
 		config.Kimi = s.originalConfig.Kimi
 	}
-	config.Kimi.DefaultModel = s.kimiDefaultModel
 	config.Kimi.PermissionMode = s.kimiPermissionMode
 
 	// Update settings
@@ -922,8 +919,7 @@ func (s *SettingsPanel) toggleValue() bool {
 
 // isTextSetting returns true if current setting uses text input
 func (s *SettingsPanel) isTextSetting() bool {
-	setting := SettingType(s.cursor)
-	return setting == SettingClaudeConfigDir || setting == SettingKimiDefaultModel
+	return SettingType(s.cursor) == SettingClaudeConfigDir
 }
 
 // startTextEdit begins text editing for current setting
@@ -931,9 +927,6 @@ func (s *SettingsPanel) startTextEdit() {
 	switch SettingType(s.cursor) {
 	case SettingClaudeConfigDir:
 		s.textBuffer = s.claudeConfigDir
-		s.editingText = true
-	case SettingKimiDefaultModel:
-		s.textBuffer = s.kimiDefaultModel
 		s.editingText = true
 	}
 }
@@ -948,8 +941,6 @@ func (s *SettingsPanel) handleTextEdit(msg tea.KeyMsg) (*SettingsPanel, tea.Cmd,
 		switch SettingType(s.cursor) {
 		case SettingClaudeConfigDir:
 			s.claudeConfigDir = s.textBuffer
-		case SettingKimiDefaultModel:
-			s.kimiDefaultModel = s.textBuffer
 		}
 		s.editingText = false
 		return s, nil, true
@@ -1135,19 +1126,6 @@ func (s *SettingsPanel) View() string {
 	// KIMI
 	content.WriteString(sectionStyle.Render("KIMI"))
 	content.WriteString("\n")
-
-	line = "Default model: "
-	if s.editingText && s.cursor == int(SettingKimiDefaultModel) {
-		line += "[" + s.textBuffer + "|]"
-	} else if s.kimiDefaultModel == "" {
-		line += dimStyle.Render("Kimi default")
-	} else {
-		line += s.kimiDefaultModel
-	}
-	if s.cursor == int(SettingKimiDefaultModel) {
-		line = highlightStyle.Render(line)
-	}
-	content.WriteString(gutter(SettingKimiDefaultModel) + labelStyle.Render(line) + "\n")
 
 	// Permission mode radio
 	line = "Permission mode: " + s.renderRadioGroup(kimiPermissionModeLabels, kimiPermissionIndex(s.kimiPermissionMode), s.cursor == int(SettingKimiPermissionMode))
@@ -1475,40 +1453,39 @@ func (s *SettingsPanel) View() string {
 			16, // SettingGeminiYoloMode
 			19, // SettingCodexYoloMode
 			22, // SettingHermesYoloMode
-			26, // SettingKimiDefaultModel
-			27, // SettingKimiPermissionMode
-			29, // SettingCheckForUpdates
-			30, // SettingAutoUpdate
-			31, // SettingAutoInstall
-			32, // SettingAutoRestart
-			35, // SettingLogMaxSize
-			35, // SettingLogMaxLines (shares line with LogMaxSize)
-			36, // SettingRemoveOrphans
-			39, // SettingGlobalSearchEnabled
-			40, // SettingSearchTier
-			41, // SettingRecentDays
-			44, // SettingShowOutput
-			45, // SettingShowAnalytics
-			46, // SettingShowNotes
-			47, // SettingNotesOutputSplit
-			50, // SettingMaintenanceEnabled
-			53, // SettingStatsEnabled
-			54, // SettingStatsRefresh
-			55, // SettingStatsFormat
-			57, // SettingStatsShowCPU (row with RAM, Disk)
-			57, // SettingStatsShowRAM
-			57, // SettingStatsShowDisk
-			58, // SettingStatsShowNetwork (row with GPU, Load)
-			58, // SettingStatsShowGPU
-			58, // SettingStatsShowLoad
-			61, // SettingSyncTitle (SESSIONS section, after stats)
-			64, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
-			65, // SettingShowPaneTitles (DISPLAY section, after timestamps)
-			68, // SettingShowOnlyInstalledTools (TOOL PICKER section)
-			69, // SettingVisibleTools
-			72, // SettingEmbeddedTerminal (INTERFACE section)
-			73, // SettingSidebarDensity
-			78, // SettingPrivacy (PRIVACY section)
+			26, // SettingKimiPermissionMode
+			28, // SettingCheckForUpdates
+			29, // SettingAutoUpdate
+			30, // SettingAutoInstall
+			31, // SettingAutoRestart
+			34, // SettingLogMaxSize
+			34, // SettingLogMaxLines (shares line with LogMaxSize)
+			35, // SettingRemoveOrphans
+			38, // SettingGlobalSearchEnabled
+			39, // SettingSearchTier
+			40, // SettingRecentDays
+			43, // SettingShowOutput
+			44, // SettingShowAnalytics
+			45, // SettingShowNotes
+			46, // SettingNotesOutputSplit
+			49, // SettingMaintenanceEnabled
+			52, // SettingStatsEnabled
+			53, // SettingStatsRefresh
+			54, // SettingStatsFormat
+			56, // SettingStatsShowCPU (row with RAM, Disk)
+			56, // SettingStatsShowRAM
+			56, // SettingStatsShowDisk
+			57, // SettingStatsShowNetwork (row with GPU, Load)
+			57, // SettingStatsShowGPU
+			57, // SettingStatsShowLoad
+			60, // SettingSyncTitle (SESSIONS section, after stats)
+			63, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			64, // SettingShowPaneTitles (DISPLAY section, after timestamps)
+			67, // SettingShowOnlyInstalledTools (TOOL PICKER section)
+			68, // SettingVisibleTools
+			71, // SettingEmbeddedTerminal (INTERFACE section)
+			72, // SettingSidebarDensity
+			77, // SettingPrivacy (PRIVACY section)
 		}
 		cursorLine := rowOf[cursorToLine[s.cursor]]
 

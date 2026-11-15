@@ -323,26 +323,21 @@ func TestSettingsPanel_KimiOptions(t *testing.T) {
 	panel.SetSize(100, 60)
 
 	view := panel.View()
-	for _, want := range []string{"KIMI", "Default model", "Permission mode", "Never Ask"} {
+	for _, want := range []string{"KIMI", "Permission mode", "Never Ask"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Settings view missing %q: %q", want, view)
 		}
 	}
+	// default_model is TOML-only, like the other providers: the panel no
+	// longer surfaces it.
+	if strings.Contains(view, "Default model") {
+		t.Fatalf("Settings view must not expose Kimi default model (TOML-only): %q", view)
+	}
 
 	panel.cursor = int(SettingKimiPermissionMode)
 	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
-	panel.cursor = int(SettingKimiDefaultModel)
-	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	for range len("configured-model") {
-		panel.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-	}
-	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("session-model")})
-	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 	config := panel.GetConfig()
-	if config.Kimi.DefaultModel != "session-model" {
-		t.Fatalf("Kimi.DefaultModel = %q, want session-model", config.Kimi.DefaultModel)
-	}
 	if config.Kimi.PermissionMode != session.KimiPermissionAskWhenNeeded {
 		t.Fatal("Kimi.PermissionMode != ask-when-needed, want true")
 	}

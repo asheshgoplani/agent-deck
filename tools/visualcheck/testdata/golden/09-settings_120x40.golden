@@ -27,12 +27,12 @@
                            │    [ ] YOLO mode - Auto-approve all tool calls                 │
                            │                                                                │
                            │  KIMI                                                          │
-                           │    Default model: Kimi default                                 │
-                           │    [ ] YOLO mode - Auto-approve routine work                   │
+                           │    Permission mode: >Always Ask   Ask When Needed   Never Ask  │
                            │                                                                │
                            │  UPDATES                                                       │
                            │    [x] Check for updates on startup                            │
                            │    [ ] Offer to install on startup                             │
+                           │    [x] Install updates automatically                           │
                            │    ▼ more below                                                │
                            │  j/k Navigate  Space Toggle                                    │
                            │  h/l Adjust  Enter Edit  Esc Close                             │
