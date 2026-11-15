@@ -101,13 +101,10 @@ func (i *Instance) buildKimiCommand(baseCommand string) string {
 	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
 		shellescape.Quote(i.ID), shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
 
-	cmd := GetToolCommand("kimi")
-	if (baseCommand != "kimi" && baseCommand != "") || cmd != "kimi" {
-		if baseCommand != "kimi" && baseCommand != "" {
-			cmd = baseCommand
-		}
-		return envPrefix + cmd
+	if baseCommand != "kimi" && baseCommand != "" {
+		return envPrefix + baseCommand
 	}
+	cmd := GetToolCommand("kimi")
 
 	opts := i.GetKimiOptions()
 	if i.KimiSessionID != "" {
@@ -124,14 +121,14 @@ func (i *Instance) buildKimiCommand(baseCommand string) string {
 			cmd += " --model " + shellescape.Quote(model)
 		}
 	}
-	mode := KimiPermissionAlwaysAsk
+	mode := ""
 	if config != nil {
-		mode = NormalizeKimiPermissionMode(config.Kimi.PermissionMode)
+		mode = config.Kimi.PermissionMode
 	}
 	if opts != nil && strings.TrimSpace(opts.PermissionMode) != "" {
 		mode = opts.PermissionMode
 	}
-	switch mode {
+	switch NormalizeKimiPermissionMode(mode) {
 	case KimiPermissionAskWhenNeeded:
 		cmd += " --yolo"
 	case KimiPermissionNeverAsk:

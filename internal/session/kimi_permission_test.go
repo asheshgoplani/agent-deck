@@ -109,3 +109,20 @@ func TestKimiSessionAskWhenNeededReachesResumeCommand(t *testing.T) {
 		t.Fatalf("per-session ask-when-needed missing from resume command: %q", command)
 	}
 }
+
+func TestBuildKimiCommandNormalizesSessionPermissionMode(t *testing.T) {
+	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{PermissionMode: "never-ask"}})
+	defer restore()
+
+	inst := &Instance{Tool: "kimi"}
+	if err := inst.SetKimiOptions(&KimiOptions{PermissionMode: " ask-when-needed "}); err != nil {
+		t.Fatalf("SetKimiOptions: %v", err)
+	}
+	command := inst.buildKimiCommand("kimi")
+	if !strings.HasSuffix(command, "kimi --yolo") {
+		t.Fatalf("buildKimiCommand() = %q, want normalized per-session --yolo", command)
+	}
+	if strings.Count(command, "--yolo") != 1 || strings.Contains(command, "--auto") {
+		t.Fatalf("buildKimiCommand() = %q, want exactly one normalized permission flag", command)
+	}
+}

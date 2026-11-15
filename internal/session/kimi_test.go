@@ -178,15 +178,25 @@ func TestBuildKimiCommandConfiguredCommand(t *testing.T) {
 	restore := resetUserConfigCache(t, &UserConfig{Kimi: KimiSettings{Command: "/opt/kimi --custom", DefaultModel: "k2.5", PermissionMode: "ask-when-needed"}})
 	defer restore()
 
-	inst := &Instance{Tool: "kimi", KimiSessionID: "native-id"}
-	got := inst.buildKimiCommand("kimi")
-	if !strings.HasSuffix(got, "/opt/kimi --custom") {
-		t.Fatalf("configured command = %q", got)
+	tests := []struct {
+		name      string
+		sessionID string
+		want      string
+	}{
+		{name: "fresh", want: "/opt/kimi --custom --model k2.5 --yolo"},
+		{name: "resume", sessionID: "native-id", want: "/opt/kimi --custom --session native-id --yolo"},
 	}
-	for _, forbidden := range []string{"--session", "--model", "--yolo", "--auto"} {
-		if strings.Contains(got, forbidden) {
-			t.Errorf("configured command %q contains derived flag %q", got, forbidden)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := &Instance{Tool: "kimi", KimiSessionID: tt.sessionID}
+			got := inst.buildKimiCommand("kimi")
+			if !strings.HasSuffix(got, tt.want) {
+				t.Fatalf("configured command = %q, want suffix %q", got, tt.want)
+			}
+			if tt.sessionID != "" && strings.Contains(got, "--model") {
+				t.Errorf("configured resume command %q reapplied --model", got)
+			}
+		})
 	}
 }
 
