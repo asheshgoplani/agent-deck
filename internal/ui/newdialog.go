@@ -1092,6 +1092,14 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 	}
 	d.updateToolOptions()
 
+	if rs.Tool == "kimi" {
+		permissionMode := session.KimiPermissionAlwaysAsk
+		if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
+			permissionMode = userConfig.Kimi.PermissionMode
+		}
+		d.kimiOptions.SetDefaults(permissionMode)
+	}
+
 	// Apply tool-specific options
 	if len(rs.ToolOptions) > 0 && string(rs.ToolOptions) != "{}" {
 		switch {

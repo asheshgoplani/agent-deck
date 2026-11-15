@@ -1,12 +1,66 @@
 package ui
 
 import (
+	"encoding/json"
+	"slices"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
+
+func TestKimiRecentSessionPreviewResetsPermissionMode(t *testing.T) {
+	home := setXDGTestHome(t)
+	writeXDGTestConfig(t, home, "[kimi]\npermission_mode = \"ask-when-needed\"\n")
+
+	savedNeverAsk, err := session.MarshalToolOptions(&session.KimiOptions{
+		PermissionMode: session.KimiPermissionNeverAsk,
+	})
+	if err != nil {
+		t.Fatalf("MarshalToolOptions: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		toolOptions json.RawMessage
+	}{
+		{name: "empty"},
+		{name: "empty object", toolOptions: json.RawMessage(`{}`)},
+		{name: "undecodable", toolOptions: json.RawMessage(`{"tool":"kimi","options":{"permission_mode":123}}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewNewDialog()
+			d.Show()
+
+			d.previewRecentSession(&statedb.RecentSessionRow{
+				Tool:        "kimi",
+				ToolOptions: savedNeverAsk,
+			})
+			if got := d.GetKimiOptions().PermissionMode; got != session.KimiPermissionNeverAsk {
+				t.Fatalf("saved permission mode = %q, want never-ask", got)
+			}
+			if !slices.Contains(d.GetKimiOptions().ToArgs(), "--auto") {
+				t.Fatal("saved never-ask options should produce --auto")
+			}
+
+			d.previewRecentSession(&statedb.RecentSessionRow{
+				Tool:        "kimi",
+				ToolOptions: tt.toolOptions,
+			})
+
+			opts := d.GetKimiOptions()
+			if got := opts.PermissionMode; got != session.KimiPermissionAskWhenNeeded {
+				t.Fatalf("permission mode = %q, want configured default ask-when-needed", got)
+			}
+			if slices.Contains(opts.ToArgs(), "--auto") {
+				t.Fatalf("submission args = %v, want no --auto", opts.ToArgs())
+			}
+		})
+	}
+}
 
 func TestKimiYoloShortcutFromToolRow(t *testing.T) {
 	setXDGTestHome(t)
