@@ -74,7 +74,7 @@ func (s *Session) prepareFrame(content string) string {
 		s.lastBackgroundWork, s.lastBackgroundBlocked = BackgroundWork{}, false
 		return trimKimiToCurrentTurn(content)
 	}
-	if !s.isClaudeTool() {
+	if !strings.EqualFold(tool, "claude") {
 		s.lastBackgroundWork, s.lastBackgroundBlocked = BackgroundWork{}, false
 		return content
 	}
