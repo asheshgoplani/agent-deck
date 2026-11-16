@@ -170,7 +170,7 @@ Row:
 | `kind` | `user`, `assistant`, `thinking`, `tool`, `bash`, `edit`, `read`, `subagent`, `todo`, `question`, `skill`, `command`, `system`, `compaction`, `turn_end`, `other` |
 | `ts` | Native timestamp (for an absorbed queued message: when Claude absorbed it) |
 | `title` | The one line a client shows: tool description, `Edit <path>`, `/command args`, `Worked for 7s`, `Context compacted · 844.0k → 19.0k`, first line of a hook or system injection, the question |
-| `body` | Full text: prose, thinking, system body, sub-agent prompt; for a tool row its output (capped at 32 KiB, `meta.truncated`) |
+| `body` | Full text: prose, thinking, system body, sub-agent prompt; for a tool row its output (capped at 32 KiB, `meta.truncated`; also set when Pi truncated a direct shell command's output itself) |
 | `summary` | The terminal's `⎿` wording: `Read 120 lines`, `Added 3 lines, removed 1 line`, `Backgrounded agent`, `Done (4 tool uses)`, `2 of 5 done`, `Which? → A`, `Exit code 2`, `… +12 lines` |
 | `detail` | The dim mono line: command, path or pattern, sub-agent type |
 | `tool_id` | Native tool call id on tool rows |
