@@ -51,7 +51,7 @@ func (s *Server) handleSessionTimeline(w http.ResponseWriter, r *http.Request, s
 	src, sess, err := session.LiveRowsSource(inst, peers)
 	switch {
 	case errors.Is(err, query.ErrRowsUnsupported):
-		writeAPIError(w, http.StatusNotImplemented, ErrCodeNotImplemented, "timeline is available for Claude Code and Codex sessions only")
+		writeAPIError(w, http.StatusNotImplemented, ErrCodeNotImplemented, "timeline is available for Claude Code, Codex and Pi sessions only")
 		return
 	case errors.Is(err, session.ErrNoNativeTranscript):
 		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())

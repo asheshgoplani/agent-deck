@@ -41,8 +41,8 @@ func registerRowsFlags(fs interface {
 }) rowsFlags {
 	return rowsFlags{
 		v1:         fs.Bool("v1", false, "Slice-6 output (turns with role/kind/text, turn frames) instead of rows"),
-		transcript: fs.String("transcript", "", "Read this Claude Code JSONL or Codex rollout instead of a session's"),
-		harness:    fs.String("harness", "", "With --transcript: claude or codex"),
+		transcript: fs.String("transcript", "", "Read this Claude Code JSONL, Codex rollout or Pi session instead of a session's"),
+		harness:    fs.String("harness", "", "With --transcript: claude, codex or pi"),
 	}
 }
 
@@ -88,7 +88,7 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 	if *f.transcript != "" {
 		h := *f.harness
 		if !query.SupportsDirectRows(h) {
-			return nil, fmt.Errorf("--transcript needs --harness claude or codex")
+			return nil, fmt.Errorf("--transcript needs --harness claude, codex or pi")
 		}
 		return &rowsTarget{direct: true, src: query.RowsSource{Harness: h, Path: *f.transcript}, session: query.RowsSession{Harness: h, Path: *f.transcript}}, nil
 	}
@@ -146,7 +146,7 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 	for _, match := range []func(*session.Instance) bool{
 		func(i *session.Instance) bool { return i.ID == ref },
 		func(i *session.Instance) bool {
-			return ref != "" && (i.ClaudeSessionID == ref || i.CodexSessionID == ref)
+			return ref != "" && (i.ClaudeSessionID == ref || i.CodexSessionID == ref || i.PiSessionID == ref)
 		},
 	} {
 		for _, i := range instances {
@@ -162,12 +162,22 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 	if inst == nil && !strings.HasPrefix(ref, "#") {
 		inst, _, _ = ResolveSession(ref, instances)
 	}
+	// piErr is why a Pi session has no single live document (several files
+	// and no saved identity, or a remote). The index may still know its
+	// conversation; if not, piErr is the answer.
+	var piErr error
 	if inst != nil {
 		t, err := instanceTarget(inst, instances, storage)
-		if err == nil || !errors.Is(err, query.ErrRowsUnsupported) {
+		switch {
+		case err == nil:
+			return t, nil
+		case session.RowsHarness(inst.Tool) == "pi" && errors.Is(err, session.ErrNoNativeTranscript):
+			piErr = err
+		case !errors.Is(err, query.ErrRowsUnsupported):
 			return t, err
 		}
-		// Another harness: the index knows its native source.
+		// Another harness, or a Pi session without one exact document: the
+		// index knows its native source.
 		ref = inst.ID
 	}
 	if h, path := nativeTranscriptByID(ref); path != "" {
@@ -183,10 +193,16 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 		}
 	}
 	if lk.envErr != nil {
+		if piErr != nil {
+			return nil, piErr
+		}
 		return nil, lk.envErr
 	}
 	h, path, sess, err := query.New(lk.env.st, lk.env.stateDB).NativeSource(context.Background(), ref)
 	if err != nil {
+		if piErr != nil && errors.Is(err, query.ErrNotFound) {
+			return nil, piErr
+		}
 		if errors.Is(err, query.ErrNotFound) {
 			return nil, fmt.Errorf("no session, conversation or indexed transcript matches %q", ref)
 		}

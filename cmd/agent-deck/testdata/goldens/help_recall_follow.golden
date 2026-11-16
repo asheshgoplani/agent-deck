@@ -3,12 +3,12 @@ Frames: row, update, remove, status, delivery, resync_required (docs/recall-time
   -after string
     	Resume cursor from timeline or a prior follow frame; 'end' starts at the current end
   -harness string
-    	With --transcript: claude or codex
+    	With --transcript: claude, codex or pi
   -jsonl
     	Stream newline-delimited JSON frames
   -status
     	Also emit status frames (verb, elapsed, tokens, current tool, footer facts) once a second while the session runs
   -transcript string
-    	Read this Claude Code JSONL or Codex rollout instead of a session's
+    	Read this Claude Code JSONL, Codex rollout or Pi session instead of a session's
   -v1
     	Slice-6 output (turns with role/kind/text, turn frames) instead of rows

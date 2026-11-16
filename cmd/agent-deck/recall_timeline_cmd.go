@@ -23,10 +23,10 @@ func handleRecallTimeline(profile string, args []string) {
 	sessions := fs.String("sessions", "", fmt.Sprintf("Comma-separated session ids: one call answers each id's timeline (at most %d; only --tail combines with it)", recallTimelineBatchMax))
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]")
-		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline --json --transcript <file> --harness claude|codex")
+		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline --json --transcript <file> --harness claude|codex|pi")
 		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline --json [--tail N] --sessions <id1>,<id2>,...   (batch: one entry per id, at most 50)")
 		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline <session> --json --v1   (slice-6 turn shape)")
-		fmt.Fprintln(fs.Output(), "<session>: deck session id, title or id prefix; a Claude/Codex conversation id; or #n / any id the index knows.")
+		fmt.Fprintln(fs.Output(), "<session>: deck session id, title or id prefix; a Claude, Codex or Pi conversation id; or #n / any id the index knows.")
 		fmt.Fprintln(fs.Output(), "Rows are parsed from the native transcript directly, whatever the index or its deferral state. Needs [recall] enabled = true.")
 		fs.PrintDefaults()
 	}

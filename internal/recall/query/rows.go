@@ -133,8 +133,201 @@ func (p *rowParser) line(raw []byte) []RowFrame {
 		return p.claude(rec, raw)
 	case "codex":
 		return p.codex(rec, raw)
+	case "pi":
+		return piRecord(rec, raw)
 	}
 	return nil
+}
+
+// piRecordID is a pi record's native id, or a content-keyed fallback so
+// rows without an id keep a stable identity across tail windows.
+func piRecordID(rec map[string]json.RawMessage, ts string, raw []byte) string {
+	if id := timelineString(rec["id"]); id != "" {
+		return id
+	}
+	return "pi:" + ts + ":" + contentHash(string(raw))
+}
+
+// piDropTypes are pi record types that carry no conversation row: the
+// session header, the session name, the thinking-level setting, and
+// extension state (custom), which never enters the model's context.
+var piDropTypes = map[string]bool{"session": true, "session_info": true, "thinking_level_change": true, "custom": true}
+
+// piToolKind maps a pi tool name to its row kind. pi names tools in lower
+// case, so this is the claude map's spelling, not its cases.
+func piToolKind(name string) string {
+	switch strings.ToLower(name) {
+	case "bash", "shell", "terminal", "run_shell_command", "local_shell_call":
+		return "bash"
+	case "edit", "multiedit", "write", "notebookedit", "apply_patch":
+		return "edit"
+	case "read", "grep", "glob", "lsp", "ls", "notebookread":
+		return "read"
+	case "todowrite", "taskcreate", "taskupdate", "tasklist":
+		return "todo"
+	case "agent", "task", "taskoutput", "taskstop", "listagents", "sendmessage":
+		return "subagent"
+	case "skill":
+		return "skill"
+	case "askuserquestion", "enterplanmode", "exitplanmode":
+		return "question"
+	}
+	return "tool"
+}
+
+// piRecord maps one pi session JSONL record onto row frames. Message
+// records carry role user/assistant content parts (text, thinking,
+// toolCall) and toolResult messages; the remaining types are session
+// lifecycle metadata, compaction and model changes.
+func piRecord(rec map[string]json.RawMessage, raw []byte) []RowFrame {
+	typ, ts := timelineString(rec["type"]), timelineString(rec["timestamp"])
+	id := piRecordID(rec, ts, raw)
+	switch typ {
+	case "message":
+		return piMessage(rec, ts, id, raw)
+	case "compaction":
+		row := Row{ID: id, Kind: "compaction", TS: ts, Title: "Context compacted", Body: timelineString(rec["summary"]), RawType: typ}
+		if n, ok := jsonInt(rec["tokensBefore"]); ok && n > 0 {
+			row.Meta = map[string]any{"tokens_before": n}
+		}
+		return []RowFrame{rowFrame(row)}
+	case "model_change":
+		model := firstNonEmptyString(timelineString(rec["modelId"]), timelineString(rec["model"]))
+		if model == "" {
+			return nil
+		}
+		return []RowFrame{rowFrame(Row{ID: id, Kind: "system", TS: ts, Title: "Model changed to " + model, RawType: typ, Meta: map[string]any{"model": model}})}
+	case "branch_summary":
+		summary := timelineString(rec["summary"])
+		if summary == "" {
+			return nil
+		}
+		row := Row{ID: id, Kind: "system", TS: ts, Title: "Branch summary", Body: summary, RawType: typ}
+		if from := timelineString(rec["fromId"]); from != "" {
+			row.Meta = map[string]any{"from_id": from}
+		}
+		return []RowFrame{rowFrame(row)}
+	case "custom_message":
+		text := timelineText(rec["content"])
+		if text == "" {
+			return nil
+		}
+		return []RowFrame{rowFrame(Row{ID: id, Kind: "system", TS: ts, Title: firstNonEmptyString(timelineString(rec["customType"]), typ), Body: text, RawType: typ})}
+	}
+	if piDropTypes[typ] {
+		return nil
+	}
+	return []RowFrame{rowFrame(otherRow(id, ts, typ, raw))}
+}
+
+// piMessage maps a pi message record. A user message's text parts join into
+// one row (as Claude's do); an assistant message's parts stay separate rows
+// so thinking, text and tool calls render distinctly.
+func piMessage(rec map[string]json.RawMessage, ts, id string, raw []byte) []RowFrame {
+	msg := timelineObject(rec["message"])
+	role := timelineString(msg["role"])
+	if role == "toolResult" {
+		row := resultRow(timelineString(msg["toolCallId"]), timelineText(msg["content"]), string(msg["isError"]) == "true")
+		if name := timelineString(msg["toolName"]); name != "" {
+			row.Meta["tool_name"] = name
+		}
+		return []RowFrame{updateFrame(row)}
+	}
+	switch role {
+	case "user", "assistant":
+	case "bashExecution":
+		return []RowFrame{rowFrame(piBashExecutionRow(msg, ts, id))}
+	case "custom":
+		text := timelineText(msg["content"])
+		if text == "" {
+			return nil
+		}
+		return []RowFrame{rowFrame(Row{ID: id, Kind: "system", TS: ts, Title: firstNonEmptyString(timelineString(msg["customType"]), role), Body: text, RawType: "message"})}
+	default:
+		return []RowFrame{rowFrame(otherRow(id, ts, "message:"+role, raw))}
+	}
+	content := msg["content"]
+	if len(content) == 0 || content[0] == '"' {
+		return []RowFrame{rowFrame(Row{ID: id, Kind: role, TS: ts, Body: timelineText(content), RawType: "message"})}
+	}
+	parts := timelineArray(content)
+	if role == "user" {
+		var texts []string
+		for _, part := range parts {
+			if timelineString(timelineObject(part)["type"]) == "text" {
+				texts = append(texts, timelineString(timelineObject(part)["text"]))
+			}
+		}
+		if len(texts) == 0 {
+			return nil
+		}
+		return []RowFrame{rowFrame(Row{ID: id, Kind: "user", TS: ts, Body: strings.Join(texts, "\n"), RawType: "message"})}
+	}
+	var out []RowFrame
+	for i, part := range parts {
+		b := timelineObject(part)
+		partID := id
+		if len(parts) > 1 {
+			partID = fmt.Sprintf("%s#%d", id, i)
+		}
+		switch timelineString(b["type"]) {
+		case "text":
+			out = append(out, rowFrame(Row{ID: partID, Kind: "assistant", TS: ts, Body: timelineString(b["text"]), RawType: "message"}))
+		case "thinking":
+			if thinking := timelineString(b["thinking"]); strings.TrimSpace(thinking) != "" {
+				out = append(out, rowFrame(Row{ID: partID, Kind: "thinking", TS: ts, Title: "Thinking", Body: thinking, RawType: "message"}))
+			}
+		case "toolCall":
+			out = append(out, rowFrame(piToolRow(b, ts, partID)))
+		}
+	}
+	return out
+}
+
+// piBashExecutionRow maps a shell command the person ran directly in pi
+// (role bashExecution, not a model tool call): a finished bash row with its
+// command, output and exit code.
+func piBashExecutionRow(msg map[string]json.RawMessage, ts, id string) Row {
+	command := timelineString(msg["command"])
+	cancelled := string(msg["cancelled"]) == "true"
+	exitCode, hasExit := jsonInt(msg["exitCode"])
+	row := resultRow(id, timelineString(msg["output"]), cancelled || (hasExit && exitCode != 0))
+	row.Kind, row.TS, row.RawType = "bash", ts, "message"
+	row.Title, row.Detail = firstLine(command, 120), command
+	row.Meta["tool_name"] = "bashExecution"
+	if hasExit {
+		row.Meta["exit_code"] = exitCode
+	}
+	if cancelled {
+		row.Meta["cancelled"] = true
+	}
+	return row
+}
+
+// piToolRow builds the unfinished tool row a toolCall part announces; the
+// toolResult message later merges its output into it by call id.
+func piToolRow(b map[string]json.RawMessage, ts, fallbackID string) Row {
+	name := timelineString(b["name"])
+	callID := firstNonEmptyString(timelineString(b["id"]), fallbackID)
+	row := Row{ID: callID, ToolID: callID, Kind: piToolKind(name), TS: ts, Finished: boolPtr(false), RawType: "message", Meta: map[string]any{"tool_name": name}}
+	detail := timelineToolText(name, b["arguments"])
+	switch row.Kind {
+	case "bash":
+		row.Detail = detail
+		row.Title = firstLine(detail, 120)
+	case "edit", "read":
+		row.Detail = detail
+		row.Title = firstLine(name+" "+detail, 160)
+		if row.Kind == "edit" {
+			row.Meta["input"] = rawJSONValue(b["arguments"])
+		}
+	case "subagent":
+		row.Title, row.Body = name, detail
+	default:
+		row.Title = firstNonEmptyString(name, row.Kind)
+		row.Meta["input"] = rawJSONValue(b["arguments"])
+	}
+	return row
 }
 
 func rowFrame(r Row) RowFrame        { return RowFrame{Frame: "row", Row: &r} }
