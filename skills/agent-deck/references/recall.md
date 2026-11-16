@@ -148,7 +148,9 @@ session. Frames: `row`, `update`, `remove`, `status`, `delivery`,
 
 `agent-deck web` serves the same timeline over HTTP at
 `GET /api/sessions/{id}/timeline` (parameters `tail`, `limit`, `since`,
-`before`, `agent`); see `docs/recall-timeline.md`.
+`before`, `agent`), and a remote session's at
+`GET /api/remotes/{name}/sessions/{id}/timeline` (run on the remote over
+SSH); see `docs/recall-timeline.md`.
 
 ### Continue one: `recall open`
 
