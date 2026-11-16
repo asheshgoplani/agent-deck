@@ -1,8 +1,10 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +76,25 @@ func BenchmarkLiveTranscriptPath(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// With several session files and no saved identity, LiveRowsSource says
+// so instead of a bare "no native transcript", and the native id is the
+// session header's when there is one document.
+func TestLiveRowsSourcePiDocuments(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "project")
+	inst := &Instance{ID: "pi-rows", Tool: "pi", Title: "pi rows", ProjectPath: project}
+	first := writePiSessionDoc(t, home, inst.ID, "a.jsonl", "pi-header-id", project)
+	src, sess, err := LiveRowsSource(inst, nil)
+	if err != nil || src.Path != first || sess.NativeID != "pi-header-id" || sess.Harness != "pi" {
+		t.Fatalf("one document: src=%+v sess=%+v err=%v", src, sess, err)
+	}
+	writePiSessionDoc(t, home, inst.ID, "b.jsonl", "pi-other", project)
+	_, _, err = LiveRowsSource(inst, nil)
+	if !errors.Is(err, ErrNoNativeTranscript) || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("two documents: err = %v", err)
 	}
 }

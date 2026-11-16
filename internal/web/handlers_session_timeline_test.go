@@ -309,3 +309,20 @@ func TestSessionTimeline_RequiresToken(t *testing.T) {
 		})
 	}
 }
+
+// A Pi session with two session files and no saved identity has no single
+// transcript: 404 that says why.
+func TestSessionTimeline_PiWithoutOneDocument(t *testing.T) {
+	f := newTimelineFixture(t, "pi", true)
+	f.inst.PiSessionID, f.inst.PiSessionPath = "", ""
+	second := filepath.Join(filepath.Dir(f.path), "2026-11-15T01-00-00-000Z_pi-second.jsonl")
+	header := fmt.Sprintf("{\"type\":\"session\",\"version\":3,\"id\":\"pi-second\",\"cwd\":%q}\n", f.inst.EffectiveWorkingDir())
+	if err := os.WriteFile(second, []byte(header), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rr := f.get(t, "tail=2")
+	wantAPIError(t, rr, http.StatusNotFound, "NOT_FOUND")
+	if !strings.Contains(rr.Body.String(), "ambiguous") {
+		t.Fatalf("message does not say why: %s", rr.Body.String())
+	}
+}

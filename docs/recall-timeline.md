@@ -55,13 +55,22 @@ agent-deck recall timeline --json [--tail N] --sessions <id1>,<id2>,...
 
 Both need `[recall] enabled = true` (exit 2 otherwise) but never need the
 index: `<session>` resolves, without touching recall.db, as a deck session id,
-a Claude/Codex conversation id bound to a deck session, a deck title or id
-prefix, or a conversation id whose file exists under any Claude config dir or
-Codex home. Only then is the index asked (`#n`, card ids, other harnesses).
-The native file is parsed directly, so a session whose source the sweep
-deferred answers at once. Claude Code, Codex and Pi are read and streamed
-directly; Gemini, OpenCode and Hermes come from the index as v1 turns
-mapped onto rows (`source: "index"`) and are streamed with `--v1`.
+a Claude, Codex or Pi conversation id bound to a deck session, a deck title
+or id prefix, or a conversation id whose file exists under any Claude config
+dir or Codex home. Only then is the index asked (`#n`, card ids, other
+harnesses). The native file is parsed directly, so a session whose source the
+sweep deferred answers at once. Claude Code, Codex and Pi are read and
+streamed directly; Gemini, OpenCode and Hermes come from the index as v1
+turns mapped onto rows (`source: "index"`) and are streamed with `--v1`.
+
+A Pi deck session is read from its exact session document: the saved Pi
+session id and path, or the single session file in its own
+`~/.pi/agent-deck/<id>` directory. With several files and no saved identity
+(after `/new` or `/resume` in Pi), or on a remote, the CLI asks the index
+instead, and says which when the index has nothing either. Rows follow the
+file in order, so a Pi session branched with `/tree` shows every branch; a
+`branch_summary` record becomes a `system` row titled "Branch summary" where
+the branch was left. Following only the active branch is not done yet.
 
 Timeline:
 

@@ -162,12 +162,22 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 	if inst == nil && !strings.HasPrefix(ref, "#") {
 		inst, _, _ = ResolveSession(ref, instances)
 	}
+	// piErr is why a Pi session has no single live document (several files
+	// and no saved identity, or a remote). The index may still know its
+	// conversation; if not, piErr is the answer.
+	var piErr error
 	if inst != nil {
 		t, err := instanceTarget(inst, instances, storage)
-		if err == nil || !errors.Is(err, query.ErrRowsUnsupported) {
+		switch {
+		case err == nil:
+			return t, nil
+		case session.RowsHarness(inst.Tool) == "pi" && errors.Is(err, session.ErrNoNativeTranscript):
+			piErr = err
+		case !errors.Is(err, query.ErrRowsUnsupported):
 			return t, err
 		}
-		// Another harness: the index knows its native source.
+		// Another harness, or a Pi session without one exact document: the
+		// index knows its native source.
 		ref = inst.ID
 	}
 	if h, path := nativeTranscriptByID(ref); path != "" {
@@ -183,10 +193,16 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 		}
 	}
 	if lk.envErr != nil {
+		if piErr != nil {
+			return nil, piErr
+		}
 		return nil, lk.envErr
 	}
 	h, path, sess, err := query.New(lk.env.st, lk.env.stateDB).NativeSource(context.Background(), ref)
 	if err != nil {
+		if piErr != nil && errors.Is(err, query.ErrNotFound) {
+			return nil, piErr
+		}
 		if errors.Is(err, query.ErrNotFound) {
 			return nil, fmt.Errorf("no session, conversation or indexed transcript matches %q", ref)
 		}

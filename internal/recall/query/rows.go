@@ -149,8 +149,9 @@ func piRecordID(rec map[string]json.RawMessage, ts string, raw []byte) string {
 }
 
 // piDropTypes are pi record types that carry no conversation row: the
-// session header, the session name, and the thinking-level setting.
-var piDropTypes = map[string]bool{"session": true, "session_info": true, "thinking_level_change": true}
+// session header, the session name, the thinking-level setting, and
+// extension state (custom), which never enters the model's context.
+var piDropTypes = map[string]bool{"session": true, "session_info": true, "thinking_level_change": true, "custom": true}
 
 // piToolKind maps a pi tool name to its row kind. pi names tools in lower
 // case, so this is the claude map's spelling, not its cases.
@@ -196,6 +197,16 @@ func piRecord(rec map[string]json.RawMessage, raw []byte) []RowFrame {
 			return nil
 		}
 		return []RowFrame{rowFrame(Row{ID: id, Kind: "system", TS: ts, Title: "Model changed to " + model, RawType: typ, Meta: map[string]any{"model": model}})}
+	case "branch_summary":
+		summary := timelineString(rec["summary"])
+		if summary == "" {
+			return nil
+		}
+		row := Row{ID: id, Kind: "system", TS: ts, Title: "Branch summary", Body: summary, RawType: typ}
+		if from := timelineString(rec["fromId"]); from != "" {
+			row.Meta = map[string]any{"from_id": from}
+		}
+		return []RowFrame{rowFrame(row)}
 	case "custom_message":
 		text := timelineText(rec["content"])
 		if text == "" {
@@ -263,7 +274,9 @@ func piMessage(rec map[string]json.RawMessage, ts, id string, raw []byte) []RowF
 		case "text":
 			out = append(out, rowFrame(Row{ID: partID, Kind: "assistant", TS: ts, Body: timelineString(b["text"]), RawType: "message"}))
 		case "thinking":
-			out = append(out, rowFrame(Row{ID: partID, Kind: "thinking", TS: ts, Title: "Thinking", Body: timelineString(b["thinking"]), RawType: "message"}))
+			if thinking := timelineString(b["thinking"]); strings.TrimSpace(thinking) != "" {
+				out = append(out, rowFrame(Row{ID: partID, Kind: "thinking", TS: ts, Title: "Thinking", Body: thinking, RawType: "message"}))
+			}
 		case "toolCall":
 			out = append(out, rowFrame(piToolRow(b, ts, partID)))
 		}

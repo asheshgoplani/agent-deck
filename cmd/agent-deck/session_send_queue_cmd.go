@@ -921,6 +921,18 @@ func watchLanded(profile string, rec *sendqueue.Record, set func(func(*sendqueue
 		})
 		return
 	}
+	// A Pi session whose exact session document cannot be resolved (several
+	// files and no saved identity, or a remote) will not grow one while the
+	// worker waits: settle now so later sends are not held for the window.
+	if harness == "pi" && rec.TranscriptPath == "" && liveTranscriptForID(profile, rec.SessionID) == "" {
+		_ = set(func(r *sendqueue.Record) {
+			r.Settled = true
+			if r.Reason == "" {
+				r.Reason = "no Pi session document to confirm landing"
+			}
+		})
+		return
+	}
 	sentAt, _ := time.Parse(time.RFC3339Nano, rec.SentAt)
 	landBy := time.Now().Add(sendLandWindow())
 	for time.Now().Before(landBy) {

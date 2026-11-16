@@ -126,10 +126,7 @@ func LiveTranscriptPath(inst *Instance, peers []*Instance) string {
 	case IsCodexCompatible(inst.Tool):
 		return CodexLiveRolloutPath(inst, peers)
 	case inst.Tool == "pi":
-		if !inst.TranscriptIsResolvableLocally() {
-			return ""
-		}
-		artifact, err := resolveExactPiSessionArtifact(inst)
+		artifact, err := piSessionDocument(inst)
 		if err != nil {
 			return ""
 		}
