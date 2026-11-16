@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -20,9 +21,23 @@ type fakeRemoteRunner struct {
 	args   []string
 	stdout string
 	err    error
+	// started and hold, when set, park the read until hold closes or the
+	// request's deadline passes.
+	started chan struct{}
+	hold    chan struct{}
 }
 
-func (f *fakeRemoteRunner) RunReadIO(_ context.Context, _ io.Reader, stdout, _ io.Writer, unsupported []byte, _ bool, args ...string) error {
+func (f *fakeRemoteRunner) RunReadIO(ctx context.Context, _ io.Reader, stdout, _ io.Writer, unsupported []byte, _ bool, args ...string) error {
+	if f.hold != nil {
+		f.started <- struct{}{}
+		select {
+		case <-f.hold:
+			_, err := io.WriteString(stdout, f.stdout)
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	f.args = args
 	if f.stdout == "unsupported" {
 		_, _ = stdout.Write(unsupported)
@@ -37,7 +52,8 @@ func (f *fakeRemoteRunner) RunReadIO(_ context.Context, _ io.Reader, stdout, _ i
 func newRemoteTimelineServer(t *testing.T, runner *fakeRemoteRunner, online bool) *Server {
 	t.Helper()
 	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{snapshot: session.RemoteFleetSnapshot{
-		Remotes: []session.RemoteFleetRemote{{Name: "mac", Online: online, Sessions: []session.RemoteSessionInfo{{ID: "remote-1", Tool: "claude"}, {ID: "codex-1", Tool: "codex"}}}},
+		ObservedAt: time.Now(),
+		Remotes:    []session.RemoteFleetRemote{{Name: "mac", Online: online, Sessions: []session.RemoteSessionInfo{{ID: "remote-1", Tool: "claude"}, {ID: "codex-1", Tool: "codex"}}}},
 	}}})
 	srv.remoteTimelineRunner = func(name string) (remoteTimelineRunner, error) {
 		if name != "mac" {
@@ -128,7 +144,7 @@ func TestRemoteSessionTimeline_Errors(t *testing.T) {
 		{name: "remote without recall timeline", path: "/api/remotes/mac/sessions/remote-1/timeline", stdout: "unsupported", status: http.StatusNotImplemented, code: "NOT_IMPLEMENTED"},
 		{name: "recall off on the remote", path: "/api/remotes/mac/sessions/remote-1/timeline", stdout: `{"success":false,"error":"recall is off: set [recall] enabled = true in config.toml (docs/recall.md); hints and 'session annotate' work without it","code":"INVALID_OPERATION"}`, runErr: true, status: http.StatusServiceUnavailable, code: "RECALL_DISABLED"},
 		{name: "stale cursor", path: "/api/remotes/mac/sessions/remote-1/timeline?since=dGhyb3VnaA", stdout: `{"success":false,"error":"recall rows: resync required (source_moved)","code":"RESYNC_REQUIRED"}`, runErr: true, status: http.StatusConflict, code: "RESYNC_REQUIRED"},
-		{name: "no transcript on the remote", path: "/api/remotes/mac/sessions/remote-1/timeline", stdout: `{"success":false,"error":"session remote has no native transcript on this machine yet","code":"NOT_FOUND"}`, runErr: true, status: http.StatusNotFound, code: "NOT_FOUND"},
+		{name: "no transcript on the remote", path: "/api/remotes/mac/sessions/remote-1/timeline", stdout: `{"success":false,"error":"open /home/someone/.claude/projects/p/s.jsonl: no such file or directory","code":"NOT_FOUND"}`, runErr: true, status: http.StatusNotFound, code: "NOT_FOUND"},
 		{name: "ssh failure", path: "/api/remotes/mac/sessions/remote-1/timeline", runErr: true, status: http.StatusBadGateway, code: "INTERNAL_ERROR"},
 		{name: "answer for another session", path: "/api/remotes/mac/sessions/remote-1/timeline", stdout: `{"schema":"agent-deck.recall.rows/v2","session":{"id":"remote-9"},"turns":[]}`, status: http.StatusBadGateway, code: "INTERNAL_ERROR"},
 		{name: "answer that is not a timeline", path: "/api/remotes/mac/sessions/remote-1/timeline", stdout: "hello", status: http.StatusBadGateway, code: "INTERNAL_ERROR"},
@@ -141,6 +157,9 @@ func TestRemoteSessionTimeline_Errors(t *testing.T) {
 			}
 			rr := getRemoteTimeline(newRemoteTimelineServer(t, runner, !tc.offline), tc.path)
 			wantAPIError(t, rr, tc.status, tc.code)
+			if strings.Contains(rr.Body.String(), "/home/") {
+				t.Fatalf("a remote path reached the client: %s", rr.Body.String())
+			}
 		})
 	}
 }
@@ -155,4 +174,52 @@ func TestRemoteSessionTimeline_MethodAndToken(t *testing.T) {
 	rr = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, newLocalRequest(http.MethodGet, "/api/remotes/mac/sessions/remote-1/timeline", nil))
 	wantAPIError(t, rr, http.StatusUnauthorized, "UNAUTHORIZED")
+}
+
+// Each remote serves a few reads at once. The next one is refused with 429
+// instead of opening another SSH connection, and a slot frees when a read ends.
+func TestRemoteSessionTimeline_InFlightCap(t *testing.T) {
+	runner := &fakeRemoteRunner{stdout: remoteTimelineAnswer(t, "remote-1"), started: make(chan struct{}), hold: make(chan struct{})}
+	srv := newRemoteTimelineServer(t, runner, true)
+	path := "/api/remotes/mac/sessions/remote-1/timeline"
+	done := make(chan *httptest.ResponseRecorder, remoteTimelineInFlight)
+	for i := 0; i < remoteTimelineInFlight; i++ {
+		go func() { done <- getRemoteTimeline(srv, path) }()
+		<-runner.started
+	}
+	rr := getRemoteTimeline(srv, path)
+	wantAPIError(t, rr, http.StatusTooManyRequests, "RATE_LIMITED")
+	if rr.Header().Get("Retry-After") == "" {
+		t.Fatal("429 without Retry-After")
+	}
+	close(runner.hold)
+	for i := 0; i < remoteTimelineInFlight; i++ {
+		if rr := <-done; rr.Code != http.StatusOK {
+			t.Fatalf("held read: %d %s", rr.Code, rr.Body.String())
+		}
+	}
+	runner.hold, runner.started = nil, nil
+	if rr := getRemoteTimeline(srv, path); rr.Code != http.StatusOK {
+		t.Fatalf("after the reads ended: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A read that runs past its deadline is a 504, so a client can tell slow
+// from broken.
+func TestRemoteSessionTimeline_Timeout(t *testing.T) {
+	old := remoteTimelineTimeout
+	remoteTimelineTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { remoteTimelineTimeout = old })
+	runner := &fakeRemoteRunner{started: make(chan struct{}, 1), hold: make(chan struct{})}
+	rr := getRemoteTimeline(newRemoteTimelineServer(t, runner, true), "/api/remotes/mac/sessions/remote-1/timeline")
+	wantAPIError(t, rr, http.StatusGatewayTimeout, "INTERNAL_ERROR")
+}
+
+// Before the first fleet scan a remote session is not known yet, which is
+// not the same as gone.
+func TestRemoteSessionTimeline_BeforeFirstScan(t *testing.T) {
+	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{}})
+	srv.remoteTimelineRunner = func(string) (remoteTimelineRunner, error) { return &fakeRemoteRunner{}, nil }
+	rr := getRemoteTimeline(srv, "/api/remotes/mac/sessions/remote-1/timeline")
+	wantAPIError(t, rr, http.StatusServiceUnavailable, "REMOTE_OFFLINE")
 }

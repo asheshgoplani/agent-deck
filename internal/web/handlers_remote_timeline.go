@@ -38,11 +38,17 @@ func configuredRemoteTimelineRunner(name string) (remoteTimelineRunner, error) {
 
 var errRemoteNotConfigured = errors.New("remote is not configured")
 
+// remoteTimelineTimeout bounds one remote read (a var so tests can shorten it).
+var remoteTimelineTimeout = 30 * time.Second
+
 const (
 	// remoteTimelineMaxBytes bounds one remote answer. A page of rows fits
 	// far below it; a larger answer is refused, not buffered.
 	remoteTimelineMaxBytes = 8 << 20
-	remoteTimelineTimeout  = 30 * time.Second
+	// remoteTimelineInFlight is how many timeline reads one remote serves at
+	// once. Each is its own SSH connection plus the capability probe, so a
+	// client polling several chats or stuck retrying cannot pile them up.
+	remoteTimelineInFlight = 3
 )
 
 // remoteTimelineID is what a deck session id looks like. It keeps an id
@@ -117,8 +123,14 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeNotImplemented, "remote fleet is unavailable")
 		return
 	}
+	fleet := s.remoteFleet.Snapshot()
+	if fleet.ObservedAt.IsZero() {
+		// Right after start, before the first scan: not a missing session.
+		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeRemoteOffline, "remotes not scanned yet")
+		return
+	}
 	known, online, tool := false, false, ""
-	for _, remote := range s.remoteFleet.Snapshot().Remotes {
+	for _, remote := range fleet.Remotes {
 		if remote.Name != name {
 			continue
 		}
@@ -155,6 +167,16 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	slots := s.remoteTimelineSlot(name)
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeAPIError(w, http.StatusTooManyRequests, ErrCodeRateLimited, "too many timeline reads in flight for this remote")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), remoteTimelineTimeout)
 	defer cancel()
 	stdout := &cappedWriter{max: remoteTimelineMaxBytes}
@@ -162,6 +184,10 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 	runErr := runner.RunReadIO(ctx, nil, stdout, stderr, remoteTimelineUnsupported, false, remoteTimelineArgs(id, opts)...)
 	if stdout.capped {
 		writeAPIError(w, http.StatusBadGateway, ErrCodeInternalError, "remote answer was too large")
+		return
+	}
+	if runErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && r.Context().Err() == nil {
+		writeAPIError(w, http.StatusGatewayTimeout, ErrCodeInternalError, "remote timeline read timed out")
 		return
 	}
 	if runErr != nil {
@@ -179,6 +205,22 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, timeline)
+}
+
+// remoteTimelineSlot is the in-flight semaphore for one remote. Only names
+// the fleet scan lists get here, so the map stays as small as the config.
+func (s *Server) remoteTimelineSlot(name string) chan struct{} {
+	s.remoteTimelineMu.Lock()
+	defer s.remoteTimelineMu.Unlock()
+	if s.remoteTimelineSlots == nil {
+		s.remoteTimelineSlots = make(map[string]chan struct{})
+	}
+	slots, ok := s.remoteTimelineSlots[name]
+	if !ok {
+		slots = make(chan struct{}, remoteTimelineInFlight)
+		s.remoteTimelineSlots[name] = slots
+	}
+	return slots
 }
 
 // remoteTimelineArgs is the remote command line. Every value was validated
@@ -220,7 +262,8 @@ func writeRemoteTimelineFailure(w http.ResponseWriter, out []byte) {
 	case strings.HasPrefix(failure.Error, "recall is off"):
 		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeRecallDisabled, "recall is off on the remote: set [recall] enabled = true in its config.toml")
 	case failure.Code == ErrCodeNotFound:
-		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, failure.Error)
+		// The remote's text can carry an absolute path on that host.
+		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "remote session or transcript not found")
 	default:
 		writeAPIError(w, http.StatusBadGateway, ErrCodeInternalError, "remote timeline read failed")
 	}

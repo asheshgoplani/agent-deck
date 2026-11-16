@@ -78,7 +78,10 @@ type Server struct {
 	// remoteTimelineRunner opens a remote's runner for the remote timeline
 	// route; nil means the configured SSH runner. Tests inject a fake.
 	remoteTimelineRunner func(name string) (remoteTimelineRunner, error)
-	mutationLimiter      *rate.Limiter
+	// remoteTimelineSlots caps in-flight remote timeline reads per remote.
+	remoteTimelineMu    sync.Mutex
+	remoteTimelineSlots map[string]chan struct{}
+	mutationLimiter     *rate.Limiter
 
 	// hookStatusLoader returns the latest hook payload for every instance
 	// whose hook file is present on disk. Defaults to defaultLoadHookStatuses
