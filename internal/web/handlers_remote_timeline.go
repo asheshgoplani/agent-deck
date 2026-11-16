@@ -117,7 +117,7 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeNotImplemented, "remote fleet is unavailable")
 		return
 	}
-	known, online := false, false
+	known, online, tool := false, false, ""
 	for _, remote := range s.remoteFleet.Snapshot().Remotes {
 		if remote.Name != name {
 			continue
@@ -125,7 +125,7 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 		online = remote.Online
 		for _, inst := range remote.Sessions {
 			if inst.ID == id {
-				known = true
+				known, tool = true, inst.Tool
 			}
 		}
 	}
@@ -135,6 +135,10 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 	}
 	if !online {
 		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeRemoteOffline, "remote is offline")
+		return
+	}
+	if opts.AgentID != "" && session.RowsHarness(tool) != "claude" {
+		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "agent is supported for Claude Code sessions only")
 		return
 	}
 	newRunner := s.remoteTimelineRunner

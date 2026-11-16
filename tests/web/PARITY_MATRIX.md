@@ -73,6 +73,9 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Manual refresh | `internal/ui/home.go:6590` (`ctrl+r`) | MISSING | N/A | N/A | Force reload session list from disk |
 | Jump mode | `internal/ui/home.go:6406` (`space` key) | MISSING | N/A | N/A | Vimium-style hint navigation |
 | Attach session | `internal/ui/home.go:5744` (`enter` key) | MISSING | N/A | N/A | PTY attach via tmux; web uses WS for streaming |
+| **CONVERSATION** |
+| Read session timeline | N/A (CLI `recall timeline <id> --json`) | GET `/api/sessions/{id}/timeline` | N/A (read-only, `query.ReadRows`) | `handlers_session_timeline_test.go` | The CLI's `agent-deck.recall.rows/v2` object with its paging (`since`, `before` with `limit`, `tail`, `agent`); follows `[recall] enabled`. Claude, Codex and Pi sessions. |
+| Read remote session timeline | N/A (CLI `remote <name> recall timeline <id> --json`) | GET `/api/remotes/{name}/sessions/{id}/timeline` | N/A (read-only, the remote's `recall timeline` over `SSHRunner.RunReadIO`) | `handlers_remote_timeline_test.go` | Same object and paging as the local route, for a session the remote fleet scan lists; 503 `REMOTE_OFFLINE` while the remote is offline. |
 | **WORKTREE OPERATIONS** |
 | Finish worktree | `internal/ui/home.go:6038` (`W`/`shift+w`) | POST `/api/sessions/{id}/worktree/finish` | `FinishWorktree` | `issue1126_worktree_finish_test.go`, `tests/web/e2e/worktree-finish.spec.js` | Merge + cleanup; body accepts `into`, `noMerge`, `keepBranch`, `force` (mirrors CLI flags). Issue #1126. |
 | **COST TRACKING** |

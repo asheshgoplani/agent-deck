@@ -37,7 +37,7 @@ func (f *fakeRemoteRunner) RunReadIO(_ context.Context, _ io.Reader, stdout, _ i
 func newRemoteTimelineServer(t *testing.T, runner *fakeRemoteRunner, online bool) *Server {
 	t.Helper()
 	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{snapshot: session.RemoteFleetSnapshot{
-		Remotes: []session.RemoteFleetRemote{{Name: "mac", Online: online, Sessions: []session.RemoteSessionInfo{{ID: "remote-1", Tool: "claude"}}}},
+		Remotes: []session.RemoteFleetRemote{{Name: "mac", Online: online, Sessions: []session.RemoteSessionInfo{{ID: "remote-1", Tool: "claude"}, {ID: "codex-1", Tool: "codex"}}}},
 	}}})
 	srv.remoteTimelineRunner = func(name string) (remoteTimelineRunner, error) {
 		if name != "mac" {
@@ -124,6 +124,7 @@ func TestRemoteSessionTimeline_Errors(t *testing.T) {
 		{name: "cursor with a shell character", path: "/api/remotes/mac/sessions/remote-1/timeline?since=a%3Bb", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "before without limit", path: "/api/remotes/mac/sessions/remote-1/timeline?before=YmVmb3Jl", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "agent with a path", path: "/api/remotes/mac/sessions/remote-1/timeline?agent=..%2Fx", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
+		{name: "agent on a Codex session", path: "/api/remotes/mac/sessions/codex-1/timeline?agent=agent-1", stdout: `{"success":false,"error":"recall rows: --agent is supported for Claude Code sidechains only","code":"INVALID_OPERATION"}`, runErr: true, status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "remote without recall timeline", path: "/api/remotes/mac/sessions/remote-1/timeline", stdout: "unsupported", status: http.StatusNotImplemented, code: "NOT_IMPLEMENTED"},
 		{name: "recall off on the remote", path: "/api/remotes/mac/sessions/remote-1/timeline", stdout: `{"success":false,"error":"recall is off: set [recall] enabled = true in config.toml (docs/recall.md); hints and 'session annotate' work without it","code":"INVALID_OPERATION"}`, runErr: true, status: http.StatusServiceUnavailable, code: "RECALL_DISABLED"},
 		{name: "stale cursor", path: "/api/remotes/mac/sessions/remote-1/timeline?since=dGhyb3VnaA", stdout: `{"success":false,"error":"recall rows: resync required (source_moved)","code":"RESYNC_REQUIRED"}`, runErr: true, status: http.StatusConflict, code: "RESYNC_REQUIRED"},
