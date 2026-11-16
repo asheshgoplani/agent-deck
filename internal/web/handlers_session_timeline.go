@@ -109,7 +109,7 @@ func loadTimelineSession(service *SessionDataService, id string) (*session.Insta
 
 // timelineAgentID is what a Claude Code sub-agent id looks like; anything
 // else in the agent parameter is refused before it names a file.
-var timelineAgentID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var timelineAgentID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // timelineOptions reads the CLI's paging flags from the query string and
 // rejects combinations query.ValidateRowsOptions refuses.
@@ -117,7 +117,7 @@ func timelineOptions(r *http.Request) (query.RowsOptions, error) {
 	q := r.URL.Query()
 	opts := query.RowsOptions{Since: q.Get("since"), Before: q.Get("before"), AgentID: q.Get("agent")}
 	if opts.AgentID != "" && !timelineAgentID.MatchString(opts.AgentID) {
-		return opts, errors.New("agent must be a sub-agent id (letters, digits, '-' and '_')")
+		return opts, errors.New("agent must be a sub-agent id (up to 128 letters, digits, '-' and '_')")
 	}
 	for _, p := range []struct {
 		name string

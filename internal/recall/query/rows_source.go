@@ -131,9 +131,14 @@ func (e *ResyncError) Error() string { return "recall rows: resync required: " +
 // (the web timeline route passes it through), so its path is untrusted:
 // when the source has a path, the cursor must name it and the source's own
 // path is opened; only a source without one (a follow by cursor alone)
-// opens the cursor's path.
+// opens the cursor's path, and then a path with ".." is refused, the
+// traversal check CodeQL go/path-injection recognises. A trusted source
+// path may hold ".." inside a name (a home folder like a..b).
 func cursorPath(src RowsSource, c rowsCursor) (string, error) {
 	if src.Path == "" {
+		if strings.Contains(c.P, "..") {
+			return "", &ResyncError{"invalid_cursor"}
+		}
 		return c.P, nil
 	}
 	if c.P != src.Path {
@@ -145,11 +150,6 @@ func cursorPath(src RowsSource, c rowsCursor) (string, error) {
 // openAtCursor opens path, the cursor's file from cursorPath, and checks
 // that the bytes before the cursor are the ones it was issued for.
 func openAtCursor(path string, c rowsCursor) (*os.File, os.FileInfo, error) {
-	// A path with ".." is refused, the traversal check CodeQL
-	// go/path-injection recognises for the cursor-only case.
-	if strings.Contains(path, "..") {
-		return nil, nil, &ResyncError{"invalid_cursor"}
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, &ResyncError{"source_missing"}
@@ -602,7 +602,11 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 	}
 	path, err := cursorPath(src, c)
 	if err != nil {
-		return resync("source_moved")
+		var re *ResyncError
+		if !errors.As(err, &re) {
+			return err
+		}
+		return resync(re.Reason)
 	}
 	f, opened, err := openAtCursor(path, c)
 	if err != nil {

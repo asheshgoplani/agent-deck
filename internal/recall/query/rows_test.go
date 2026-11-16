@@ -811,3 +811,39 @@ func TestReadRowsRefusesDotDotPaths(t *testing.T) {
 		t.Fatalf("agent with ..: err = %v, want invalid agent id", err)
 	}
 }
+
+// A trusted source path may hold ".." inside a name (a home folder like
+// a..b). Its own cursors keep paging and following.
+func TestReadRowsPagesSourceWithDotDotInAName(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "my..home")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "conversation.jsonl")
+	var b strings.Builder
+	for i := 0; i < 4; i++ {
+		b.WriteString(`{"type":"user","uuid":"u` + string(rune('0'+i)) + `","message":{"role":"user","content":[{"type":"text","text":"q"}]}}` + "\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := RowsSource{Harness: "claude", Path: path}
+	tail, err := ReadRows(context.Background(), src, RowsOptions{Tail: 2})
+	if err != nil || len(tail.Turns) != 2 {
+		t.Fatalf("tail: %d rows, err %v", len(tail.Turns), err)
+	}
+	if _, err := ReadRows(context.Background(), src, RowsOptions{Since: tail.ThroughCursor}); err != nil {
+		t.Fatalf("since own cursor: %v", err)
+	}
+	older, err := ReadRows(context.Background(), src, RowsOptions{Before: tail.BeforeCursor, Limit: 2})
+	if err != nil || len(older.Turns) != 2 {
+		t.Fatalf("before own cursor: %d rows, err %v", len(older.Turns), err)
+	}
+	c, err := decodeRowsCursor(tail.ThroughCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := cursorPath(src, c); err != nil || got != path {
+		t.Fatalf("follow path = %q, %v; want %q", got, err, path)
+	}
+}

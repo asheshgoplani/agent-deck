@@ -221,12 +221,13 @@ func TestSessionTimeline_Errors(t *testing.T) {
 		name, tool, path, query string
 		noTranscript            bool
 		status                  int
-		code                    string
+		code, message           string
 	}{
-		{name: "unknown session", tool: "claude", path: "/api/sessions/nope/timeline", status: http.StatusNotFound, code: "NOT_FOUND"},
+		{name: "unknown session", tool: "claude", path: "/api/sessions/nope/timeline", status: http.StatusNotFound, code: "NOT_FOUND", message: "session not found"},
 		{name: "tool without direct rows", tool: "shell", status: http.StatusNotImplemented, code: "NOT_IMPLEMENTED"},
-		{name: "no transcript yet", tool: "claude", noTranscript: true, status: http.StatusNotFound, code: "NOT_FOUND"},
-		{name: "unknown agent", tool: "claude", query: "agent=nosuchagent", status: http.StatusNotFound, code: "NOT_FOUND"},
+		{name: "no transcript yet", tool: "claude", noTranscript: true, status: http.StatusNotFound, code: "NOT_FOUND", message: "no native transcript"},
+		{name: "unknown agent", tool: "claude", query: "agent=nosuchagent", status: http.StatusNotFound, code: "NOT_FOUND", message: "transcript not found"},
+		{name: "agent too long", tool: "claude", query: "agent=" + strings.Repeat("a", 5000), status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "agent on codex", tool: "codex", query: "agent=abc", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "agent with a path", tool: "claude", query: "agent=..%2F..%2Fx", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
 		{name: "before without limit", tool: "claude", query: "before=x", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
@@ -254,6 +255,9 @@ func TestSessionTimeline_Errors(t *testing.T) {
 			rr := httptest.NewRecorder()
 			f.srv.Handler().ServeHTTP(rr, newLocalRequest(http.MethodGet, target, nil))
 			wantAPIError(t, rr, tc.status, tc.code)
+			if !strings.Contains(rr.Body.String(), tc.message) {
+				t.Fatalf("body %s does not say %q", rr.Body.String(), tc.message)
+			}
 		})
 	}
 	t.Run("post", func(t *testing.T) {
