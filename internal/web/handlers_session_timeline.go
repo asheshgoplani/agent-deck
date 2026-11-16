@@ -4,19 +4,12 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
-
-// ErrCodeRecallDisabled answers the timeline route while [recall] enabled
-// is false, the same gate `agent-deck recall timeline` applies.
-const ErrCodeRecallDisabled = "RECALL_DISABLED"
-
-// ErrCodeResyncRequired answers a since/before cursor that no longer
-// describes the session's transcript. The client reloads without a cursor.
-const ErrCodeResyncRequired = "RESYNC_REQUIRED"
 
 // handleSessionTimeline is GET /api/sessions/{id}/timeline, the HTTP form
 // of `agent-deck recall timeline <id> --json`. It answers the same
@@ -30,7 +23,7 @@ func (s *Server) handleSessionTimeline(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 	if cfg, _ := session.LoadUserConfig(); cfg == nil || !cfg.Recall.GetEnabled() {
-		writeAPIError(w, http.StatusConflict, ErrCodeRecallDisabled, "recall is off: set [recall] enabled = true in config.toml (docs/recall.md)")
+		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeRecallDisabled, "recall is off: set [recall] enabled = true in config.toml (docs/recall.md)")
 		return
 	}
 	opts, err := timelineOptions(r)
@@ -38,7 +31,15 @@ func (s *Server) handleSessionTimeline(w http.ResponseWriter, r *http.Request, s
 		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		return
 	}
-	inst, peers, err := s.loadTimelineSession(sessionID)
+	// `agent-deck web` wraps its SessionDataService in a MemoryMenuData
+	// (cmd/agent-deck/main.go), which does not expose the instances, so the
+	// route opens the server's profile itself. Tests set a
+	// SessionDataService with fake storage instead.
+	service, ok := s.menuData.(*SessionDataService)
+	if !ok {
+		service = NewSessionDataService(s.cfg.Profile)
+	}
+	inst, peers, err := loadTimelineSession(service, sessionID)
 	if err != nil {
 		if errors.Is(err, errTimelineSessionNotFound) {
 			writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "session not found")
@@ -50,13 +51,17 @@ func (s *Server) handleSessionTimeline(w http.ResponseWriter, r *http.Request, s
 	src, sess, err := session.LiveRowsSource(inst, peers)
 	switch {
 	case errors.Is(err, query.ErrRowsUnsupported):
-		writeAPIError(w, http.StatusNotImplemented, ErrCodeNotImplemented, "timeline is not available for "+inst.Tool+" sessions")
+		writeAPIError(w, http.StatusNotImplemented, ErrCodeNotImplemented, "timeline is available for Claude Code and Codex sessions only")
 		return
 	case errors.Is(err, session.ErrNoNativeTranscript):
 		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
 		return
 	case err != nil:
-		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to resolve the session transcript")
+		return
+	}
+	if opts.AgentID != "" && src.Harness != "claude" {
+		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "agent is supported for Claude Code sessions only")
 		return
 	}
 	timeline, err := query.ReadRows(r.Context(), src, opts)
@@ -84,11 +89,7 @@ var errTimelineSessionNotFound = errors.New("session not found")
 
 // loadTimelineSession loads the session and its profile peers, which
 // resolving a Codex rollout needs to skip threads bound to other sessions.
-func (s *Server) loadTimelineSession(id string) (*session.Instance, []*session.Instance, error) {
-	service, ok := s.menuData.(*SessionDataService)
-	if !ok {
-		service = NewSessionDataService(s.cfg.Profile)
-	}
+func loadTimelineSession(service *SessionDataService, id string) (*session.Instance, []*session.Instance, error) {
 	storage, _, err := service.resolveAndOpenStorage()
 	if err != nil {
 		return nil, nil, err
@@ -106,11 +107,18 @@ func (s *Server) loadTimelineSession(id string) (*session.Instance, []*session.I
 	return nil, nil, errTimelineSessionNotFound
 }
 
+// timelineAgentID is what a Claude Code sub-agent id looks like; anything
+// else in the agent parameter is refused before it names a file.
+var timelineAgentID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 // timelineOptions reads the CLI's paging flags from the query string and
 // rejects combinations query.ValidateRowsOptions refuses.
 func timelineOptions(r *http.Request) (query.RowsOptions, error) {
 	q := r.URL.Query()
 	opts := query.RowsOptions{Since: q.Get("since"), Before: q.Get("before"), AgentID: q.Get("agent")}
+	if opts.AgentID != "" && !timelineAgentID.MatchString(opts.AgentID) {
+		return opts, errors.New("agent must be a sub-agent id (letters, digits, '-' and '_')")
+	}
 	for _, p := range []struct {
 		name string
 		dst  *int

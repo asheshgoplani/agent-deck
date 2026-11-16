@@ -135,6 +135,10 @@ the session's live Claude Code or Codex transcript and never touches the
 index. The route follows the web server's token like every other `/api`
 route and needs `[recall] enabled = true` like the CLI.
 
+Without `tail` or `since` the route reads the whole transcript on every
+request, as the CLI does. A web client should always send one of them: `tail`
+for the first screen, then `since` with the returned `through_cursor`.
+
 The pane `status` the CLI adds is left out: the web menu stream already
 carries session status. A cursor names its transcript, so one issued for
 another file is refused rather than read.
@@ -142,11 +146,12 @@ another file is refused rather than read.
 | Status | Code | When |
 | --- | --- | --- |
 | 200 | | the rows v2 object; `turns` is `[]` when nothing changed since the cursor |
-| 400 | `INVALID_REQUEST` | a parameter is not an integer, or the combination is refused (`before` without `limit`) |
-| 404 | `NOT_FOUND` | no such session, or its transcript does not exist on this machine yet |
-| 409 | `RECALL_DISABLED` | `[recall] enabled` is false |
-| 409 | `RESYNC_REQUIRED` | the cursor no longer describes the transcript (rewritten, moved, or not this session's); reload without it |
-| 501 | `NOT_IMPLEMENTED` | the session's tool is not Claude Code or Codex |
+| 400 | `INVALID_REQUEST` | a parameter is not an integer or is negative, the combination is refused (`before` without `limit`), `agent` is not a sub-agent id, or `agent` is set on a session that is not Claude Code |
+| 404 | `NOT_FOUND` | no such session, its transcript does not exist on this machine yet, or no sub-agent sidechain matches `agent` |
+| 409 | `RESYNC_REQUIRED` | the cursor is malformed or no longer describes the transcript (rewritten, moved, or not this session's); reload without it |
+| 500 | `INTERNAL_ERROR` | the session data or the transcript could not be read |
+| 501 | `NOT_IMPLEMENTED` | the session's tool is not Claude Code or Codex; the CLI falls back to the index for those, the route does not |
+| 503 | `RECALL_DISABLED` | `[recall] enabled` is false |
 
 Row:
 

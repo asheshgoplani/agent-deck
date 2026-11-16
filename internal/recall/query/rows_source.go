@@ -127,14 +127,26 @@ type ResyncError struct{ Reason string }
 
 func (e *ResyncError) Error() string { return "recall rows: resync required: " + e.Reason }
 
-// openAtCursor opens the cursor's file and checks that the bytes before the
-// cursor are the ones it was issued for.
-func openAtCursor(c rowsCursor) (*os.File, os.FileInfo, error) {
-	// A cursor can come from a client (the web timeline route passes it
-	// through), so its path is untrusted. ReadRows refuses one that is not
-	// the source's own path; a path with ".." is refused here as well, the
-	// traversal check CodeQL go/path-injection recognises.
-	path := c.P
+// cursorPath is the file a cursor resumes. A cursor can come from a client
+// (the web timeline route passes it through), so its path is untrusted:
+// when the source has a path, the cursor must name it and the source's own
+// path is opened; only a source without one (a follow by cursor alone)
+// opens the cursor's path.
+func cursorPath(src RowsSource, c rowsCursor) (string, error) {
+	if src.Path == "" {
+		return c.P, nil
+	}
+	if c.P != src.Path {
+		return "", &ResyncError{"source_moved"}
+	}
+	return src.Path, nil
+}
+
+// openAtCursor opens path, the cursor's file from cursorPath, and checks
+// that the bytes before the cursor are the ones it was issued for.
+func openAtCursor(path string, c rowsCursor) (*os.File, os.FileInfo, error) {
+	// A path with ".." is refused, the traversal check CodeQL
+	// go/path-injection recognises for the cursor-only case.
 	if strings.Contains(path, "..") {
 		return nil, nil, &ResyncError{"invalid_cursor"}
 	}
@@ -353,10 +365,11 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		if err != nil {
 			return tl, &ResyncError{"invalid_cursor"}
 		}
-		if src.Path != "" && c.P != src.Path {
-			return tl, &ResyncError{"source_moved"}
+		path, err := cursorPath(src, c)
+		if err != nil {
+			return tl, err
 		}
-		file, info, err := openAtCursor(c)
+		file, info, err := openAtCursor(path, c)
 		if err != nil {
 			return tl, err
 		}
@@ -587,10 +600,11 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 	if err != nil {
 		return resync("invalid_cursor")
 	}
-	if src.Path != "" && c.P != src.Path {
+	path, err := cursorPath(src, c)
+	if err != nil {
 		return resync("source_moved")
 	}
-	f, opened, err := openAtCursor(c)
+	f, opened, err := openAtCursor(path, c)
 	if err != nil {
 		var re *ResyncError
 		if errors.As(err, &re) {

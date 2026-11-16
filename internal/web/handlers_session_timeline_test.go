@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -173,17 +174,27 @@ func TestSessionTimeline_MatchesRecallTimeline(t *testing.T) {
 	}
 }
 
-func TestSessionTimeline_RecallOff(t *testing.T) {
-	f := newTimelineFixture(t, "claude", false)
-	f.appendTurns(t, 0, 1)
-	rr := f.get(t, "")
-	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "RECALL_DISABLED") {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+// wantAPIError fails unless rr is an API error with this status and code.
+func wantAPIError(t *testing.T, rr *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	var body struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if rr.Code != status || body.Error.Code != code {
+		t.Fatalf("got %d %q, want %d %q: %s", rr.Code, body.Error.Code, status, code, rr.Body.String())
 	}
 }
 
-// A cursor carries its transcript path. One issued for another file must
-// not read that file through this session's route.
+func TestSessionTimeline_RecallOff(t *testing.T) {
+	f := newTimelineFixture(t, "claude", false)
+	f.appendTurns(t, 0, 1)
+	wantAPIError(t, f.get(t, ""), http.StatusServiceUnavailable, "RECALL_DISABLED")
+}
+
+// A cursor carries its transcript path. One issued for another file, or
+// naming any other path, must not read that file through this session's
+// route.
 func TestSessionTimeline_RejectsCursorForAnotherFile(t *testing.T) {
 	other := newTimelineFixture(t, "claude", true)
 	other.appendTurns(t, 0, 2)
@@ -191,61 +202,67 @@ func TestSessionTimeline_RejectsCursorForAnotherFile(t *testing.T) {
 
 	f := newTimelineFixture(t, "claude", true)
 	f.appendTurns(t, 0, 2)
-	rr := f.get(t, "since="+url.QueryEscape(foreign))
-	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "RESYNC_REQUIRED") {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	wantAPIError(t, f.get(t, "since="+url.QueryEscape(foreign)), http.StatusConflict, "RESYNC_REQUIRED")
+
+	passwd := base64.RawURLEncoding.EncodeToString([]byte(`{"v":2,"p":"/etc/passwd","o":1,"a":"x"}`))
+	for _, q := range []string{"since=" + passwd, "limit=2&before=" + passwd} {
+		rr := f.get(t, q)
+		wantAPIError(t, rr, http.StatusConflict, "RESYNC_REQUIRED")
+		if !strings.Contains(rr.Body.String(), "source_moved") {
+			t.Fatalf("%s: want source_moved: %s", q, rr.Body.String())
+		}
 	}
-	rr = f.get(t, "since=not-a-cursor")
-	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "RESYNC_REQUIRED") {
-		t.Fatalf("bad cursor: status = %d, body = %s", rr.Code, rr.Body.String())
-	}
+	wantAPIError(t, f.get(t, "since=not-a-cursor"), http.StatusConflict, "RESYNC_REQUIRED")
+	wantAPIError(t, f.get(t, "before=garbage&limit=2"), http.StatusConflict, "RESYNC_REQUIRED")
 }
 
 func TestSessionTimeline_Errors(t *testing.T) {
-	t.Run("unknown session", func(t *testing.T) {
-		f := newTimelineFixture(t, "claude", true)
-		rr := httptest.NewRecorder()
-		f.srv.Handler().ServeHTTP(rr, newLocalRequest(http.MethodGet, "/api/sessions/nope/timeline", nil))
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-		}
-	})
-	t.Run("tool without direct rows", func(t *testing.T) {
-		f := newTimelineFixture(t, "shell", true)
-		if rr := f.get(t, ""); rr.Code != http.StatusNotImplemented {
-			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-		}
-	})
-	t.Run("no transcript yet", func(t *testing.T) {
-		f := newTimelineFixture(t, "claude", true)
-		if err := os.Remove(f.path); err != nil {
-			t.Fatal(err)
-		}
-		if rr := f.get(t, ""); rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-		}
-	})
-	t.Run("before without limit", func(t *testing.T) {
-		f := newTimelineFixture(t, "claude", true)
-		if rr := f.get(t, "before=x"); rr.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-		}
-	})
-	t.Run("non-integer tail", func(t *testing.T) {
-		f := newTimelineFixture(t, "claude", true)
-		if rr := f.get(t, "tail=ten"); rr.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-		}
-	})
+	for _, tc := range []struct {
+		name, tool, path, query string
+		noTranscript            bool
+		status                  int
+		code                    string
+	}{
+		{name: "unknown session", tool: "claude", path: "/api/sessions/nope/timeline", status: http.StatusNotFound, code: "NOT_FOUND"},
+		{name: "tool without direct rows", tool: "shell", status: http.StatusNotImplemented, code: "NOT_IMPLEMENTED"},
+		{name: "no transcript yet", tool: "claude", noTranscript: true, status: http.StatusNotFound, code: "NOT_FOUND"},
+		{name: "unknown agent", tool: "claude", query: "agent=nosuchagent", status: http.StatusNotFound, code: "NOT_FOUND"},
+		{name: "agent on codex", tool: "codex", query: "agent=abc", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
+		{name: "agent with a path", tool: "claude", query: "agent=..%2F..%2Fx", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
+		{name: "before without limit", tool: "claude", query: "before=x", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
+		{name: "non-integer tail", tool: "claude", query: "tail=ten", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
+		{name: "negative tail", tool: "claude", query: "tail=-1", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
+		{name: "negative limit", tool: "claude", query: "limit=-1", status: http.StatusBadRequest, code: "INVALID_REQUEST"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTimelineFixture(t, tc.tool, true)
+			if f.path != "" {
+				f.appendTurns(t, 0, 1)
+			}
+			if tc.noTranscript {
+				if err := os.Remove(f.path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			target := tc.path
+			if target == "" {
+				target = "/api/sessions/" + f.inst.ID + "/timeline"
+			}
+			if tc.query != "" {
+				target += "?" + tc.query
+			}
+			rr := httptest.NewRecorder()
+			f.srv.Handler().ServeHTTP(rr, newLocalRequest(http.MethodGet, target, nil))
+			wantAPIError(t, rr, tc.status, tc.code)
+		})
+	}
 	t.Run("post", func(t *testing.T) {
 		f := newTimelineFixture(t, "claude", true)
 		rr := httptest.NewRecorder()
 		req := newLocalRequest(http.MethodPost, "/api/sessions/"+f.inst.ID+"/timeline", nil)
 		req.Header.Set("Origin", "http://localhost")
 		f.srv.Handler().ServeHTTP(rr, req)
-		if rr.Code == http.StatusOK {
-			t.Fatalf("POST answered 200: %s", rr.Body.String())
-		}
+		wantAPIError(t, rr, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED")
 	})
 }
 
@@ -254,7 +271,28 @@ func TestSessionTimeline_RequiresToken(t *testing.T) {
 	f := newTimelineFixture(t, "claude", true)
 	f.appendTurns(t, 0, 1)
 	f.srv.cfg.Token = "secret"
-	if rr := f.get(t, ""); rr.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	for _, tc := range []struct {
+		name, auth string
+		status     int
+	}{
+		{"missing", "", http.StatusUnauthorized},
+		{"wrong", "Bearer nope", http.StatusUnauthorized},
+		{"right", "Bearer secret", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := newLocalRequest(http.MethodGet, "/api/sessions/"+f.inst.ID+"/timeline?tail=1", nil)
+			if tc.auth != "" {
+				req.Header.Set("Authorization", tc.auth)
+			}
+			f.srv.Handler().ServeHTTP(rr, req)
+			if tc.status == http.StatusOK {
+				if tl := decodeTimeline(t, rr); tl.Schema != query.RowsSchema || len(tl.Turns) != 1 {
+					t.Fatalf("rows = %+v", tl)
+				}
+				return
+			}
+			wantAPIError(t, rr, tc.status, "UNAUTHORIZED")
+		})
 	}
 }
