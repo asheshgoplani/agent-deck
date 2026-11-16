@@ -382,6 +382,21 @@ func TestPR5_IdentityPromptExplainsEnvelope(t *testing.T) {
 	}
 }
 
+func TestPR5_IdentityPromptPiSenderNeedsExplicitReply(t *testing.T) {
+	for _, tool := range []string{"claude", "pi"} {
+		t.Run(tool, func(t *testing.T) {
+			inst := &Instance{ID: "receiver-1", Title: "receiver", Tool: tool}
+			got := inst.BuildIdentityPrompt()
+			if !strings.Contains(got, "For a Pi sender, reply explicitly with `agent-deck session send <id> \"answer\"`") {
+				t.Fatalf("identity must give Pi senders an explicit return path:\n%s", got)
+			}
+			if tool == "pi" && strings.Contains(got, "reply by answering normally, the sender is notified") {
+				t.Fatal("Pi attribution must not promise automatic reply routing")
+			}
+		})
+	}
+}
+
 func TestPR5_TagSendsConfigDefaultsOn(t *testing.T) {
 	var nilCfg *UserConfig
 	off := false

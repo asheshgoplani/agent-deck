@@ -1859,7 +1859,7 @@
       ],
       "checks": {
         "must": [
-          "externally verifiable|shell command",
+          "externally verifiable",
           "drop|remove|reject|refuse|cut|split|keep (only )?the measurable"
         ],
         "must_not": []

@@ -415,9 +415,12 @@ func (i *Instance) BuildIdentityPrompt() string {
 		// This session's turns are never reported, so an answer reaches
 		// nobody unless it is sent back explicitly.
 		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; this session's turns are not reported, so reply with `agent-deck session send <id> \"answer\"`.\n")
+	} else if i.Tool == "pi" {
+		b.WriteString("- Messages from other agent-deck sessions can start with `[agent-deck from:<id>]`; use that id to return your answer with `agent-deck session send <id> \"answer\"`.\n")
 	} else {
 		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.\n")
 	}
+	b.WriteString("- For a Pi sender, reply explicitly with `agent-deck session send <id> \"answer\"`; source attribution alone does not guarantee an automatic reply.\n")
 	b.WriteString(identityNoOpNoticeRule)
 	b.WriteString("- `agent-deck session output <id-or-title>` — read another session's last response\n")
 	b.WriteString("- `agent-deck launch <path> -t \"Title\" -c claude --message \"prompt\"` — spawn a child session linked to you as its parent (`-no-parent` for a peer)\n")
