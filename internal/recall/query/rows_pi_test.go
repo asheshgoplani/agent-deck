@@ -173,3 +173,41 @@ func TestRowsPiFindLanded(t *testing.T) {
 		t.Fatal("unrelated text must not land")
 	}
 }
+
+// Pi records CodeRabbit flagged on #3159: a custom_message whose content is
+// a block array, shell commands run directly in pi (role bashExecution), a
+// custom role message, and a role this parser does not know.
+func TestRowsPiDirectShellCustomContentAndUnknownRoles(t *testing.T) {
+	path := t.TempDir() + "/pi.jsonl"
+	lines := `{"type":"session","version":3,"id":"pi-x","cwd":"/p"}
+{"type":"custom_message","id":"cm1","customType":"reviewer","content":[{"type":"text","text":"Review required"},{"type":"image","data":"AA==","mimeType":"image/png"}],"display":true}
+{"type":"message","id":"b1","message":{"role":"bashExecution","command":"ls notes","output":"a.md\nb.md","exitCode":0,"cancelled":false,"truncated":false,"timestamp":1}}
+{"type":"message","id":"b2","message":{"role":"bashExecution","command":"false","output":"","exitCode":1,"cancelled":false,"truncated":false,"timestamp":2}}
+{"type":"message","id":"c1","message":{"role":"custom","customType":"note","content":"from an extension","display":true,"timestamp":3}}
+{"type":"message","id":"x1","message":{"role":"brandNewRole","timestamp":4}}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := readRowsT(t, "pi", path, RowsOptions{})
+	cm, ok := rowByID(rows, "cm1")
+	if !ok || cm.Kind != "system" || cm.Title != "reviewer" || cm.Body != "Review required" {
+		t.Errorf("array custom_message: %+v", cm)
+	}
+	ok1, ok := rowByID(rows, "b1")
+	if !ok || ok1.Kind != "bash" || ok1.Detail != "ls notes" || ok1.Body != "a.md\nb.md" || ok1.Finished == nil || !*ok1.Finished || ok1.IsError == nil || *ok1.IsError || ok1.Meta["exit_code"] != 0 {
+		t.Errorf("direct shell row: %+v", ok1)
+	}
+	failed, ok := rowByID(rows, "b2")
+	if !ok || failed.IsError == nil || !*failed.IsError || failed.Meta["exit_code"] != 1 {
+		t.Errorf("failed direct shell row: %+v", failed)
+	}
+	custom, ok := rowByID(rows, "c1")
+	if !ok || custom.Kind != "system" || custom.Title != "note" || custom.Body != "from an extension" {
+		t.Errorf("custom role row: %+v", custom)
+	}
+	unknown, ok := rowByID(rows, "x1")
+	if !ok || unknown.Kind != "other" || unknown.RawType != "message:brandNewRole" {
+		t.Errorf("unknown role row: %+v", unknown)
+	}
+}
