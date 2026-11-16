@@ -522,6 +522,12 @@ func printCodexHooksUsage(w io.Writer) {
 
 func handleCodexHooksInstall() {
 	configPath := getCodexConfigPath()
+	lock, err := session.AcquireConfigFileLockTimeout(configPath, time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error locking codex config: %v\n", err)
+		exitCLI(1)
+	}
+	defer lock.Release()
 	content, err := readFileOrEmpty(configPath)
 	if err != nil {
 		// Never treat an unreadable config as empty: the write below would replace it.
@@ -589,6 +595,18 @@ func handleCodexHooksInstall() {
 
 func handleCodexHooksUninstall() {
 	configPath := getCodexConfigPath()
+	// Nothing to remove without a config file. Check before locking so a no-op
+	// uninstall does not create config.toml.lock or the codex dir.
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		fmt.Println("No agent-deck Codex hook found to remove.")
+		return
+	}
+	lock, err := session.AcquireConfigFileLockTimeout(configPath, time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error locking codex config: %v\n", err)
+		exitCLI(1)
+	}
+	defer lock.Release()
 	content, err := readFileOrEmpty(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading codex config: %v\n", err)
