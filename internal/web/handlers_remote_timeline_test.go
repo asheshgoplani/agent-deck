@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,8 +52,28 @@ func (f *fakeRemoteRunner) RunReadIO(ctx context.Context, _ io.Reader, stdout, _
 	return f.err
 }
 
+// setLocalRecall points HOME at a fresh config with [recall] enabled set.
+func setLocalRecall(t *testing.T, on bool) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+	cfgPath, err := session.GetUserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(fmt.Sprintf("[recall]\nenabled = %t\n", on)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newRemoteTimelineServer(t *testing.T, runner *fakeRemoteRunner, online bool) *Server {
 	t.Helper()
+	setLocalRecall(t, true)
 	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{snapshot: session.RemoteFleetSnapshot{
 		ObservedAt: time.Now(),
 		Remotes:    []session.RemoteFleetRemote{{Name: "mac", Online: online, Sessions: []session.RemoteSessionInfo{{ID: "remote-1", Tool: "claude"}, {ID: "codex-1", Tool: "codex"}}}},
@@ -218,8 +241,22 @@ func TestRemoteSessionTimeline_Timeout(t *testing.T) {
 // Before the first fleet scan a remote session is not known yet, which is
 // not the same as gone.
 func TestRemoteSessionTimeline_BeforeFirstScan(t *testing.T) {
+	setLocalRecall(t, true)
 	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{}})
 	srv.remoteTimelineRunner = func(string) (remoteTimelineRunner, error) { return &fakeRemoteRunner{}, nil }
 	rr := getRemoteTimeline(srv, "/api/remotes/mac/sessions/remote-1/timeline")
 	wantAPIError(t, rr, http.StatusServiceUnavailable, "REMOTE_OFFLINE")
+}
+
+// Recall off on this machine closes the route too, before any SSH: turning
+// it off means no transcript content goes out through this server.
+func TestRemoteSessionTimeline_LocalRecallOff(t *testing.T) {
+	runner := &fakeRemoteRunner{stdout: "{}"}
+	srv := newRemoteTimelineServer(t, runner, true)
+	setLocalRecall(t, false)
+	rr := getRemoteTimeline(srv, "/api/remotes/mac/sessions/remote-1/timeline")
+	wantAPIError(t, rr, http.StatusServiceUnavailable, "RECALL_DISABLED")
+	if runner.args != nil {
+		t.Fatalf("the remote was asked: %v", runner.args)
+	}
 }

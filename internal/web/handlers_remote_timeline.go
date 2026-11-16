@@ -104,6 +104,12 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "method not allowed")
 		return
 	}
+	// Both sides must have recall on: turning it off here means no transcript
+	// content leaves through this server, local or remote.
+	if cfg, _ := session.LoadUserConfig(); cfg == nil || !cfg.Recall.GetEnabled() {
+		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeRecallDisabled, "recall is off on this machine: set [recall] enabled = true in config.toml (docs/recall.md)")
+		return
+	}
 	if !remoteTimelineID.MatchString(id) {
 		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "remote session not found")
 		return

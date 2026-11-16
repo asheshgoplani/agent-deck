@@ -159,8 +159,11 @@ recall timeline <id> --json` over that remote's SSH runner, with the same
 query parameters, and answers its rows v2 object without the pane `status`.
 The session must be one the remote fleet scan (`GET /api/remotes`) lists.
 Cursors are passed through as they are, so `since` and `before` page the
-remote's transcript. What the remote can read decides the rest: its own
-`[recall] enabled`, its harnesses, and its version. Each request is one SSH
+remote's transcript. Recall must be on at both ends: with `[recall] enabled`
+false on this machine the route answers 503 before any SSH, so turning recall
+off here means no transcript leaves through this server. What the remote can
+read decides the rest: its own `[recall] enabled`, its harnesses, and its
+version. Each request is one SSH
 round trip, so poll it no faster than the remote list. A remote serves three
 of these reads at once; the next one gets 429 until one ends.
 
@@ -174,7 +177,7 @@ of these reads at once; the next one gets 429 until one ends.
 | 501 | `NOT_IMPLEMENTED` | the remote's agent-deck has no `recall timeline` with these flags; update it |
 | 502 | `INTERNAL_ERROR` | SSH failed, the answer was not this session's timeline, or it was over 8 MB |
 | 503 | `REMOTE_OFFLINE` | the fleet scan sees the remote offline, or has not finished its first scan since the server started |
-| 503 | `RECALL_DISABLED` | `[recall] enabled` is false on the remote |
+| 503 | `RECALL_DISABLED` | `[recall] enabled` is false on this machine or on the remote |
 | 504 | `INTERNAL_ERROR` | the remote did not answer within 30 seconds |
 
 Row:
