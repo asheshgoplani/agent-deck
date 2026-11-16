@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 )
 
 func writePiSessionDoc(t *testing.T, home, instID, name, id, cwd string) string {
@@ -93,6 +95,10 @@ func TestLiveRowsSourcePiDocuments(t *testing.T) {
 		t.Fatalf("one document: src=%+v sess=%+v err=%v", src, sess, err)
 	}
 	writePiSessionDoc(t, home, inst.ID, "b.jsonl", "pi-other", project)
+	// A follow that started on one document learns it is no longer the only one.
+	if _, err := src.Resolve(); !errors.Is(err, query.ErrSourceUnresolved) {
+		t.Fatalf("follow resolve after a second document: err = %v", err)
+	}
 	_, _, err = LiveRowsSource(inst, nil)
 	if !errors.Is(err, ErrNoNativeTranscript) || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("two documents: err = %v", err)
