@@ -23,11 +23,13 @@ function isMobileDevice() {
 }
 
 // Build WebSocket URL for a session (same pattern as app.js wsURLForSession)
-function wsURLForSession(sessionId, token) {
+function wsURLForSession(sessionId, token, ignoreSize) {
   const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const url = new URL(
     wsProto + '://' + window.location.host + '/ws/session/' + encodeURIComponent(sessionId)
   )
+  // A phone attaches with ignore-size so it never shrinks the shared window.
+  if (ignoreSize) url.searchParams.set('ignore-size', '1')
   if (token) url.searchParams.set('token', token)
   return url.toString()
 }
@@ -319,7 +321,7 @@ export function TerminalPanel() {
       ctx.wsReconnectEnabled = true
       wsStateSignal.value = 'connecting'
 
-      const ws = new WebSocket(wsURLForSession(sessionId, token))
+      const ws = new WebSocket(wsURLForSession(sessionId, token, mobile))
       ws.binaryType = 'arraybuffer'
       ctx.ws = ws
 

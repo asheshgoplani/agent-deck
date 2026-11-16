@@ -118,6 +118,12 @@ only fire while the tab is unfocused. The switch is hidden when the server runs
 without `--push` or the browser has no Push API. Push needs a secure context:
 `http://127.0.0.1` or `localhost`, or HTTPS (for example Tailscale Serve).
 
+On a touch-only device (a phone, or a tablet without a mouse) the session
+terminal is a cropped view of the shared tmux window: it does not resize the
+window for desktop viewers of the same session. This needs tmux 3.2 or newer
+on the session's socket. On an older tmux the touch device sizes the window
+like any other viewer.
+
 The browser UI includes the live Command Center, session terminal, costs, archive, and settings views. See [Command Center](../../docs/COMMAND-CENTER.md) for the fleet view; use `--read-only` when browser clients should not mutate sessions.
 
 ## Fleet board: semantic status

@@ -69,7 +69,34 @@ type tmuxPTYBridge struct {
 // Tests replace it to observe which tmux target a terminal attaches to.
 var attachTmuxPTYBridge = newTmuxPTYBridge
 
+// attachSizeIgnoringTmuxPTYBridge is the constructor for phone terminals
+// (`?ignore-size=1`): the client attaches with `-f ignore-size`, so its small
+// viewport never resizes the window other viewers of the session share.
+var attachSizeIgnoringTmuxPTYBridge = func(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter) (*tmuxPTYBridge, error) {
+	return newTmuxPTYBridgeWithSizePolicy(tmuxSession, tmuxSocketName, sessionID, writer, true)
+}
+
+// socketSupportsAttachIgnoreSize is tmux.SupportsAttachIgnoreSize. Tests
+// replace it to stand in for a tmux older than 3.2.
+var socketSupportsAttachIgnoreSize = tmux.SupportsAttachIgnoreSize
+
+// bridgeAttachCommand is the bridge's attach command. A phone terminal adds
+// `-f ignore-size` when the socket's tmux has it (3.2+). On an older or
+// unknown tmux it attaches as before and sizes the window like any viewer,
+// since that tmux rejects the flag and the attach would fail.
+func bridgeAttachCommand(tmuxSession, tmuxSocketName string, ignoreSize bool) *exec.Cmd {
+	cmd := tmuxAttachCommand(tmuxSession, tmuxSocketName)
+	if ignoreSize && socketSupportsAttachIgnoreSize(tmuxSocketName) {
+		cmd.Args = append(cmd.Args, "-f", "ignore-size")
+	}
+	return cmd
+}
+
 func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter) (*tmuxPTYBridge, error) {
+	return newTmuxPTYBridgeWithSizePolicy(tmuxSession, tmuxSocketName, sessionID, writer, false)
+}
+
+func newTmuxPTYBridgeWithSizePolicy(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter, ignoreSize bool) (*tmuxPTYBridge, error) {
 	if tmuxSession == "" {
 		return nil, fmt.Errorf("tmux session name is required")
 	}
@@ -84,7 +111,7 @@ func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsC
 		return nil, fmt.Errorf("%w: %s", ErrTmuxSessionNotFound, tmuxSession)
 	}
 
-	cmd := tmuxAttachCommand(tmuxSession, tmuxSocketName)
+	cmd := bridgeAttachCommand(tmuxSession, tmuxSocketName, ignoreSize)
 
 	// The web client is one more viewer of a possibly shared session: size
 	// the window to whoever is using it (internal/tmux sharedview.go), with
@@ -191,14 +218,16 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 
 	// Resize the local PTY master. This sends SIGWINCH to the tmux attach
 	// process. Because the attach client (see tmuxAttachCommand) is no longer
-	// flagged `-f ignore-size`, the tmux server now uses this client's PTY
+	// flagged `-f ignore-size` (except phone terminals, `?ignore-size=1`), the
+	// tmux server now uses this client's PTY
 	// size as its declared geometry and re-arbitrates the window dimensions
 	// per the window's `window-size` policy (`latest`: the window follows the
 	// client that most recently attached or typed; see internal/tmux
 	// sharedview.go). The previous `tmux resize-window` call here was removed
 	// because it implicitly flipped the window to `window-size=manual` and
 	// pinned it to the web viewport, which dragged native attached clients
-	// (Ghostty, iTerm) along with it.
+	// (Ghostty, iTerm) along with it. A phone client attached with
+	// `-f ignore-size` resizes only its own view; the window keeps its size.
 	if err := pty.Setsize(b.ptmx, &pty.Winsize{
 		Rows: uint16(rows), // #nosec G115 -- terminal rows fits in uint16; PTY ABI enforces this
 		Cols: uint16(cols), // #nosec G115 -- terminal cols fits in uint16; PTY ABI enforces this
@@ -328,7 +357,9 @@ func tmuxAttachCommand(sessionName, socketName string) *exec.Cmd {
 	// attach). Previously we passed `-f ignore-size` together with a manual
 	// `tmux resize-window` call in (*tmuxPTYBridge).Resize; the manual
 	// resize-window flipped the window to `window-size=manual` and pinned it
-	// to the web viewport for ALL attached clients (Ghostty, iTerm).
+	// to the web viewport for ALL attached clients (Ghostty, iTerm). Phone
+	// terminals (`?ignore-size=1`) add `-f ignore-size` again, alone, in
+	// bridgeAttachCommand: they watch the window without sizing it.
 	// `-u` forces UTF-8 output regardless of the daemon's locale. Same class of
 	// bug as the TERM handling below: when the web daemon runs under launchd/
 	// systemd its environment carries no LANG/LC_*, so tmux treats this client as
