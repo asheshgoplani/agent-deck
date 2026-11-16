@@ -1082,7 +1082,7 @@ index_rate_limit = 20       # Files/second for indexing
 
 ## [recall] Section
 
-Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...` and the TUI `G` key), one machine-global `recall.db` in the data dir beside `profiles/` covering Claude (every profile), Codex, pi, Gemini, OpenCode and Hermes.
+Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...` and the TUI `G` key), one machine-global `recall.db` in the data dir beside `profiles/` covering Claude (every profile), Codex, pi, Gemini, OpenCode and Hermes. It also gates the web timeline route `GET /api/sessions/{id}/timeline`, which reads transcripts without the index.
 
 ```toml
 [recall]

@@ -15,6 +15,12 @@ const (
 	ErrCodeNotImplemented   = "NOT_IMPLEMENTED"
 	ErrCodeReadOnly         = "READ_ONLY"
 	ErrCodeFileLinkRefused  = "FILE_LINK_REFUSED"
+	// ErrCodeRecallDisabled: the timeline route while [recall] enabled is
+	// false, the gate `agent-deck recall timeline` applies.
+	ErrCodeRecallDisabled = "RECALL_DISABLED"
+	// ErrCodeResyncRequired: a since/before cursor that no longer describes
+	// the session's transcript; the client reloads without it.
+	ErrCodeResyncRequired = "RESYNC_REQUIRED"
 )
 
 // CreateSessionRequest is the body for POST /api/sessions.

@@ -127,10 +127,30 @@ type ResyncError struct{ Reason string }
 
 func (e *ResyncError) Error() string { return "recall rows: resync required: " + e.Reason }
 
-// openAtCursor opens the cursor's file and checks that the bytes before the
-// cursor are the ones it was issued for.
-func openAtCursor(c rowsCursor) (*os.File, os.FileInfo, error) {
-	f, err := os.Open(c.P)
+// cursorPath is the file a cursor resumes. A cursor can come from a client
+// (the web timeline route passes it through), so its path is untrusted:
+// when the source has a path, the cursor must name it and the source's own
+// path is opened; only a source without one (a follow by cursor alone)
+// opens the cursor's path, and then a path with ".." is refused, the
+// traversal check CodeQL go/path-injection recognises. A trusted source
+// path may hold ".." inside a name (a home folder like a..b).
+func cursorPath(src RowsSource, c rowsCursor) (string, error) {
+	if src.Path == "" {
+		if strings.Contains(c.P, "..") {
+			return "", &ResyncError{"invalid_cursor"}
+		}
+		return c.P, nil
+	}
+	if c.P != src.Path {
+		return "", &ResyncError{"source_moved"}
+	}
+	return src.Path, nil
+}
+
+// openAtCursor opens path, the cursor's file from cursorPath, and checks
+// that the bytes before the cursor are the ones it was issued for.
+func openAtCursor(path string, c rowsCursor) (*os.File, os.FileInfo, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, &ResyncError{"source_missing"}
 	}
@@ -345,10 +365,11 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		if err != nil {
 			return tl, &ResyncError{"invalid_cursor"}
 		}
-		if src.Path != "" && c.P != src.Path {
-			return tl, &ResyncError{"source_moved"}
+		path, err := cursorPath(src, c)
+		if err != nil {
+			return tl, err
 		}
-		file, info, err := openAtCursor(c)
+		file, info, err := openAtCursor(path, c)
 		if err != nil {
 			return tl, err
 		}
@@ -511,6 +532,12 @@ func ClaudeSidechainPath(transcript, agentID string) string {
 // claudeSidechainRows reads one sub-agent transcript. Child ids are
 // prefixed with the agent id so they never collide with the parent's.
 func claudeSidechainRows(ctx context.Context, transcript, agentID string) ([]Row, error) {
+	// agentID can come from a client (the web timeline route's agent
+	// parameter). ClaudeSidechainPath keeps only its base name; refusing
+	// ".." is the traversal check CodeQL go/path-injection recognises.
+	if strings.Contains(agentID, "..") {
+		return nil, fmt.Errorf("recall rows: invalid agent id %q", agentID)
+	}
 	f, err := os.Open(ClaudeSidechainPath(transcript, agentID))
 	if err != nil {
 		return nil, err
@@ -573,10 +600,15 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 	if err != nil {
 		return resync("invalid_cursor")
 	}
-	if src.Path != "" && c.P != src.Path {
-		return resync("source_moved")
+	path, err := cursorPath(src, c)
+	if err != nil {
+		var re *ResyncError
+		if !errors.As(err, &re) {
+			return err
+		}
+		return resync(re.Reason)
 	}
-	f, opened, err := openAtCursor(c)
+	f, opened, err := openAtCursor(path, c)
 	if err != nil {
 		var re *ResyncError
 		if errors.As(err, &re) {

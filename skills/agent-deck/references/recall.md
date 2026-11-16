@@ -146,6 +146,10 @@ index state; `--agent <id>` picks one Claude sub-agent sidechain and
 session. Frames: `row`, `update`, `remove`, `status`, `delivery`,
 `resync_required`.
 
+`agent-deck web` serves the same timeline over HTTP at
+`GET /api/sessions/{id}/timeline` (parameters `tail`, `limit`, `since`,
+`before`, `agent`); see `docs/recall-timeline.md`.
+
 ### Continue one: `recall open`
 
 ```bash

@@ -154,6 +154,13 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Timeline sub-route: GET /api/sessions/{id}/timeline, the HTTP form
+	// of `agent-deck recall timeline <id> --json`.
+	if action == "timeline" {
+		s.handleSessionTimeline(w, r, sessionID)
+		return
+	}
+
 	// Worktree sub-route: POST /api/sessions/{id}/worktree/finish
 	// (issue #1126 — closes the "Finish worktree" MISSING row in
 	// tests/web/PARITY_MATRIX.md, mirrors TUI W/shift+w + CLI

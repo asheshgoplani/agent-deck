@@ -192,7 +192,7 @@ func harnessUsage(profile string) (map[string]time.Time, map[string]int) {
 		return last, count
 	}
 	for _, inst := range instances {
-		name := rowsHarness(inst.Tool)
+		name := session.RowsHarness(inst.Tool)
 		count[name]++
 		t := inst.LastAccessedAt
 		if t.IsZero() {
