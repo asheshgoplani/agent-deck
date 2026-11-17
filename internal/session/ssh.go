@@ -3235,6 +3235,11 @@ type RemoteSessionInfo struct {
 	// "" — see LastActivity below.
 	LastActivityAt string `json:"last_activity_at,omitempty"`
 
+	// WaitingSince is the remote's `list --json` waiting_since: when a
+	// waiting session's status changed to waiting (its state.db stamp).
+	// "" when not waiting, not recorded, or the remote is too old to send it.
+	WaitingSince string `json:"waiting_since,omitempty"`
+
 	// Viewers are the terminals attached to the session on the remote (its
 	// `list --json` viewers field): the "who else is viewing" indicator for
 	// a remote row. nil means the remote did not say (an agent-deck older

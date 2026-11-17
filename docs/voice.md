@@ -32,7 +32,7 @@ Sessions whose status is `waiting`, longest first, across every local profile an
  "errors":[{"host":"box1","error":"timeout"}]}
 ```
 
-`reason` is one line from the substate (and its detail for limits). `since` and `waiting_seconds` come only from an explicit `waiting_since` in the host's `list --json`; no host reports it yet, so they are empty/0 for now (last activity is not used: it can be the creation time and would order sessions wrongly). Sessions without it sort after those with it, then by title.
+`reason` is one line from the substate (and its detail for limits). `since` and `waiting_seconds` come from `waiting_since` in each host's `list --json`: the time the session's status changed to `waiting`, recorded in that profile's `state.db` (table `status_changes`, kept by triggers on every status write, so it holds the time of whichever agent-deck process wrote the change, such as the TUI or the notify daemon). Last activity is not used: it can be the creation time and would order sessions wrongly. A session with no recorded change to waiting (one that has waited since before an upgrade to this version), or with a `waiting_since` in the future (a skewed remote clock), has `since: ""` and `waiting_seconds: 0` and sorts after the others; ties go by title, then id. A remote that runs an older agent-deck sends no `waiting_since`, so its sessions sort last.
 
 **Profiles.** Local: every profile on this machine. A remote is asked for its configured profile only (`[remotes.<name>] profile`, default `default`); sessions in the remote's other profiles are not listed.
 
