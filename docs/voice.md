@@ -16,7 +16,7 @@ Reads the voice daemon's state file (`$CLAUDE_VOICE_STATE_DIR`, else `~/.claude/
  "target":{"id":"…","title":"…","host":"","profile":"default"},"source":"","from":"local","updatedAt":"2026-11-17T23:00:01Z"}
 ```
 
-- `phase` is one of six words, defined in `internal/voicestate` (`PhaseListening`, `PhaseHearing`, `PhaseThinking`, `PhaseSpeaking`, `PhaseResting`, `PhaseOff`). The daemon's raw words map to them with `voicestate.MapPhase`: `transcribing` is `hearing`; `muted`, `paused` (call) and `meeting` are `resting` (the mic is not taking commands), and `extra` says which: `muted`, `call`, `meeting`, or `""` for a plain rest. `muted` is also its own boolean.
+- `phase` is one of six words, defined in `internal/voicestate` (`PhaseListening`, `PhaseHearing`, `PhaseThinking`, `PhaseSpeaking`, `PhaseResting`, `PhaseOff`). The daemon's raw words map to them with `voicestate.MapPhase`: `transcribing` is `hearing`; `muted`, `paused` (call) and `meeting` are `resting` (the mic is not taking commands), and `extra` says which: `muted`, `call`, `meeting`, or `""` for a plain rest. `muted` is also its own boolean, and `extra` comes from the raw phase only: a call or meeting rest while also muted has `extra` `call` or `meeting` and `muted: true`; the plain line then says both (`voice: resting (call, muted)`).
 - `on` is false whenever `phase` is `off`; there is never `on:true` with `off`.
 - `from` is `local` (current.json), `mirror` (mirror.json) or `none`. `target.host` is `""` for this machine, else the remote name.
 - `source` (mac, glasses, phone) is empty until the daemon's state file carries it.
@@ -36,6 +36,6 @@ Sessions whose status is `waiting`, longest first, across every local profile an
 
 **Profiles.** Local: every profile on this machine. A remote is asked for its configured profile only (`[remotes.<name>] profile`, default `default`); sessions in the remote's other profiles are not listed.
 
-**Errors.** `errors` entries carry fixed words: `timeout`, `unreachable` (remote could not be asked), `bad-reply`, `failed` (local). A remote is `host: "<name>"`; this machine is `host: ""` plus `profile`. Raw ssh text is never shown. `--timeout` is 0 to 3 s. Plain text prints one line per session (`title [host]: reason, waiting 2m`); errors go to stderr.
+**Errors.** `errors` entries carry fixed words: `timeout`; `unreachable` (a remote that could not be asked: ssh failed, or its agent-deck is missing or exited non-zero); `bad-reply` (the reply was not a session list); `failed` (a local profile that could not be listed, or a source that crashed, local or remote). A remote is `host: "<name>"`; this machine is `host: ""` plus `profile`. Raw ssh text is never shown. `--timeout` is more than 0 and at most 3 s. Plain text prints one line per session (`title [host]: reason, waiting 2m`); errors go to stderr.
 
 The Go entry point is `needsme.Collect(ctx, needsme.Options{Sources: needsme.DefaultSources(self, profile)})` in `internal/needsme`.

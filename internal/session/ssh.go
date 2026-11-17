@@ -1283,6 +1283,10 @@ func (r *SSHRunner) recordStatsSupport(supported bool) {
 
 // parseRemoteSessions decodes `list --json` output; empty or non-JSON output
 // (an older remote, or "No sessions found") is an empty list, not an error.
+// ErrRemoteSessionsParse marks a remote `list --json` reply that is not
+// valid JSON (callers test it with errors.Is, never by the message text).
+var ErrRemoteSessionsParse = errors.New("failed to parse remote sessions")
+
 func parseRemoteSessions(output []byte) ([]RemoteSessionInfo, error) {
 	trimmed := bytes.TrimSpace(output)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
@@ -1290,7 +1294,7 @@ func parseRemoteSessions(output []byte) ([]RemoteSessionInfo, error) {
 	}
 	var sessions []RemoteSessionInfo
 	if err := json.Unmarshal(trimmed, &sessions); err != nil {
-		return nil, fmt.Errorf("failed to parse remote sessions: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrRemoteSessionsParse, err)
 	}
 	// The remote's titles and groups are rendered in the TUI; an older or
 	// compromised remote may send them with control characters.
