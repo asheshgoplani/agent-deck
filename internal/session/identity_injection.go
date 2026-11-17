@@ -415,8 +415,15 @@ func (i *Instance) BuildIdentityPrompt() string {
 		// This session's turns are never reported, so an answer reaches
 		// nobody unless it is sent back explicitly.
 		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; this session's turns are not reported, so reply with `agent-deck session send <id> \"answer\"`.\n")
+	} else if i.Tool == "pi" {
+		b.WriteString("- Messages from other agent-deck sessions can start with `[agent-deck from:<id>]`; use that id to return your answer with `agent-deck session send <id> \"answer\"`.\n")
 	} else {
 		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.\n")
+		// The promise above holds for a Claude-compatible sender only: the
+		// envelope carries an id and nothing else, so name the lookup that
+		// tells this receiver the sender is Pi and needs an explicit reply
+		// (a review finding: an unreachable rule is not a rule).
+		b.WriteString("- A Pi sender gets no automatic reply: check the sender with `agent-deck session show <id> --json` (its `tool`), and when it is `pi` answer explicitly with `agent-deck session send <id> \"answer\"`.\n")
 	}
 	b.WriteString(identityNoOpNoticeRule)
 	b.WriteString("- `agent-deck session output <id-or-title>` — read another session's last response\n")
