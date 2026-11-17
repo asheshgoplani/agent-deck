@@ -253,7 +253,7 @@ func RetryDeadLetter(id string) (string, error) {
 	}
 	parent := resolveParentNotificationTarget(child, byID)
 	if parent == nil {
-		target := strings.TrimSpace(child.ParentSessionID)
+		target := child.ReportTargetID()
 		if target == "" {
 			target = entry.event.TargetSessionID
 		}

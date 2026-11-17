@@ -810,8 +810,8 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 func (d *TransitionDaemon) wakeForInfoDigests(profile string, byID map[string]*Instance, statuses map[string]string) {
 	parents := map[string]bool{}
 	for _, inst := range byID {
-		if inst != nil && inst.ParentSessionID != "" {
-			parents[inst.ParentSessionID] = true
+		if target := inst.ReportTargetID(); target != "" {
+			parents[target] = true
 		}
 	}
 	now := time.Now()

@@ -265,7 +265,7 @@ func judgeFreshStart(inst *Instance, to string, ts time.Time, substate string) (
 // committed again, pending or consumed, is not written twice.
 func (d *TransitionDaemon) emitFreshStartBoot(inst *Instance, event TransitionNotificationEvent, tok freshStartToken, selfConductor bool) TransitionNotificationEvent {
 	event.DeliveryResult = transitionDeliveryDropped
-	if selfConductor || strings.TrimSpace(inst.ParentSessionID) == "" {
+	if selfConductor || inst.ReportTargetID() == "" {
 		return event
 	}
 	event.Tier = TurnTierInfo

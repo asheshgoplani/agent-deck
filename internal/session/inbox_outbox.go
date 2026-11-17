@@ -24,8 +24,8 @@ import (
 const (
 	deadLetterReasonUnresolvable  = "unresolvable"   // generic / parent found but not live
 	deadLetterReasonChildMissing  = "child_removed"  // child gone between commit and resolve
-	deadLetterReasonParentMissing = "parent_removed" // ParentSessionID set but parent not in this profile (removed or cross-profile)
-	deadLetterReasonOrphan        = "orphan"         // child has no ParentSessionID (logged once via orphan log)
+	deadLetterReasonParentMissing = "parent_removed" // report target (launcher or parent) set but not in this profile (removed or cross-profile)
+	deadLetterReasonOrphan        = "orphan"         // child has no report target: no launcher, no parent (logged once via orphan log)
 	deadLetterReasonNoNotify      = "no_notify"      // child opted out — intentional, not a failure
 	deadLetterReasonSelfConductor = "self_conductor" // top-level/self-pointing conductor — intentional
 )
@@ -640,7 +640,7 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 // child that is in the registry and accepts transition events. A nil parent
 // comes with the terminal reason.
 func (n *TransitionNotifier) resolveInboxParent(event TransitionNotificationEvent, child *Instance, byID map[string]*Instance) (*Instance, string) {
-	parentID := strings.TrimSpace(child.ParentSessionID)
+	parentID := child.ReportTargetID()
 	// Top-level (or self-pointing) conductor self-suppress (issue #824 cause
 	// B): the root is not an orphan, drop silently. The same predicate decides
 	// what the cursor export ships (remote_talkback.go).
@@ -685,7 +685,7 @@ func replySenderFor(event TransitionNotificationEvent, child, parent *Instance, 
 		return nil
 	}
 	alreadyHoldsRecord := sender.ID == child.ID ||
-		sender.ID == strings.TrimSpace(child.ParentSessionID) ||
+		sender.ID == child.ReportTargetID() ||
 		(parent != nil && sender.ID == parent.ID)
 	if alreadyHoldsRecord {
 		return nil

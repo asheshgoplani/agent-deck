@@ -2795,6 +2795,10 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	if parentInstance != nil {
 		newInstance.SetParentWithPath(parentInstance.ID, parentInstance.ProjectPath)
 	}
+	// Issue #3165: see launch; `add` from a sub-session reports to it too.
+	if launchedBy != nil {
+		newInstance.SetReportsTo(launchedBy.ID)
+	}
 
 	// Suppress transition notifications if requested
 	if *noTransitionNotify {
@@ -3149,6 +3153,9 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		jsonData["parent_id"] = parentInstance.ID
 		jsonData["parent_title"] = parentInstance.Title
 	}
+	if launchedBy != nil {
+		jsonData["reports_to"] = launchedBy.ID
+	}
 	if len(sessionHints) > 0 {
 		jsonData["hints"] = sessionHints
 	}
@@ -3373,6 +3380,7 @@ func buildListJSONRows(profileName string, instances, all []*session.Instance, c
 	type sessionJSON struct {
 		ID                string `json:"id"`
 		ParentSessionID   string `json:"parent_session_id,omitempty"`
+		ReportsTo         string `json:"reports_to,omitempty"`
 		ParentProjectPath string `json:"parent_project_path,omitempty"`
 		Title             string `json:"title"`
 		Path              string `json:"path"`
@@ -3452,6 +3460,7 @@ func buildListJSONRows(profileName string, instances, all []*session.Instance, c
 		sj := sessionJSON{
 			ID:                inst.ID,
 			ParentSessionID:   inst.ParentSessionID,
+			ReportsTo:         inst.ReportsTo,
 			ParentProjectPath: parentProjectPath,
 			Title:             inst.Title,
 			Path:              inst.ProjectPath,

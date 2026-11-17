@@ -377,7 +377,7 @@ func isSelfSuppressedConductor(inst *Instance) bool {
 	if inst == nil {
 		return false
 	}
-	parent := strings.TrimSpace(inst.ParentSessionID)
+	parent := inst.ReportTargetID()
 	return (parent == "" || parent == inst.ID) && isConductorSession(inst)
 }
 
@@ -423,7 +423,7 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 		return event
 	}
 	// Conductor self-suppression is applied DOWNSTREAM in resolveParentIDForInbox
-	// (inbox_outbox.go), which keys on the child's actual ParentSessionID: only a
+	// (inbox_outbox.go), which keys on the child's actual report target (ReportTargetID): only a
 	// TOP-LEVEL/self-pointing conductor (empty/self parent) is dropped silently
 	// (deadLetterReasonSelfConductor). A conductor-TITLED child that has a real
 	// parent (e.g. a conductor-named worker) is a legitimate delivery and MUST NOT
@@ -489,7 +489,7 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) (
 	}
 
 	// Conductor self-suppression is applied DOWNSTREAM in resolveParentIDForInbox
-	// (keyed on the child's real ParentSessionID): a TOP-LEVEL/self conductor is
+	// (keyed on the child's real report target): a TOP-LEVEL/self conductor is
 	// dropped silently; a conductor-TITLED child with a real parent is delivered.
 	// The title alone (the only data available here) cannot distinguish the two —
 	// the removed pre-filter dropped both, silently killing legitimate parented
@@ -521,7 +521,7 @@ func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance)
 	if child == nil {
 		return nil
 	}
-	parentID := strings.TrimSpace(child.ParentSessionID)
+	parentID := child.ReportTargetID()
 	if parentID == "" || parentID == child.ID {
 		return nil
 	}

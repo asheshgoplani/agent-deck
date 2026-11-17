@@ -400,6 +400,9 @@ func (i *Instance) BuildIdentityPrompt() string {
 	fmt.Fprintf(&b, "- host: %s\n", identityField(i.hostLabel()))
 	fmt.Fprintf(&b, "- account: %s\n", identityField(i.Account))
 	fmt.Fprintf(&b, "- parent session id: %s\n", i.identityParentField())
+	if line := i.identityReportsToLine(); line != "" {
+		b.WriteString(line)
+	}
 	fmt.Fprintf(&b, "- project path: %s\n", identityField(i.ProjectPath))
 	if strings.TrimSpace(i.WorktreeBranch) != "" {
 		fmt.Fprintf(&b, "- worktree branch: %s\n", identityField(i.WorktreeBranch))
@@ -490,6 +493,9 @@ func (i *Instance) BuildPrimerPrompt() string {
 	fmt.Fprintf(&b, "- title: %s\n", identityField(i.Title))
 	fmt.Fprintf(&b, "- tool: %s\n", identityField(i.Tool))
 	fmt.Fprintf(&b, "- parent session id: %s\n", i.identityParentField())
+	if line := i.identityReportsToLine(); line != "" {
+		b.WriteString(line)
+	}
 	if i.fanoutHintApplies() {
 		b.WriteString(FanoutHint + "\n")
 		b.WriteString(identityPrecedenceNote)
@@ -584,9 +590,24 @@ func identityField(s string) string {
 // root session explicitly rather than showing a bare "(none)".
 func (i *Instance) identityParentField() string {
 	if strings.TrimSpace(i.ParentSessionID) == "" {
+		if i.identityReportsToLine() != "" {
+			return "(none)"
+		}
 		return "(none: this is a root session)"
 	}
 	return identityField(i.ParentSessionID)
+}
+
+// identityReportsToLine is the "reports to" line for a session launched from
+// inside a sub-session (issue #3165), or "" for every other session. That
+// launcher is the "parent" the rest of the block talks about: it receives
+// this session's records.
+func (i *Instance) identityReportsToLine() string {
+	r := strings.TrimSpace(i.ReportsTo)
+	if r == "" || r == i.ID {
+		return ""
+	}
+	return fmt.Sprintf("- reports to: %s (the session that launched you; it is your parent for records and questions below)\n", identityField(r))
 }
 
 // identityOneLine replaces every control character (newline, tab, escape,
