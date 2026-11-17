@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -99,7 +100,7 @@ func renderBlocks(out *bytes.Buffer, lines []string) {
 		case reATX.MatchString(line):
 			m := reATX.FindStringSubmatch(line)
 			n := len(m[1])
-			tag := "h" + string(rune('0'+n))
+			tag := "h" + strconv.Itoa(n)
 			out.WriteString("<" + tag + ">" + inline(m[2]) + "</" + tag + ">\n")
 			i++
 		case reHR.MatchString(line):
@@ -401,13 +402,13 @@ func inline(s string) string {
 			return m
 		}
 		codes = append(codes, "<code>"+html.EscapeString(strings.TrimSpace(parts[2]))+"</code>")
-		return "\x00" + string(rune('A'+len(codes)-1)) + "\x00"
+		return "\x00" + strconv.Itoa(len(codes)-1) + "\x00"
 	})
 	s = html.EscapeString(s)
 	var links []string
 	hold := func(h string) string {
 		links = append(links, h)
-		return "\x01" + string(rune('A'+len(links)-1)) + "\x01"
+		return "\x01" + strconv.Itoa(len(links)-1) + "\x01"
 	}
 	s = reImage.ReplaceAllStringFunc(s, func(m string) string {
 		p := reImage.FindStringSubmatch(m)
@@ -430,10 +431,10 @@ func inline(s string) string {
 	})
 	s = emphasis(s)
 	for k := len(links) - 1; k >= 0; k-- {
-		s = strings.ReplaceAll(s, "\x01"+string(rune('A'+k))+"\x01", links[k])
+		s = strings.ReplaceAll(s, "\x01"+strconv.Itoa(k)+"\x01", links[k])
 	}
 	for k := len(codes) - 1; k >= 0; k-- {
-		s = strings.ReplaceAll(s, "\x00"+string(rune('A'+k))+"\x00", codes[k])
+		s = strings.ReplaceAll(s, "\x00"+strconv.Itoa(k)+"\x00", codes[k])
 	}
 	return s
 }
