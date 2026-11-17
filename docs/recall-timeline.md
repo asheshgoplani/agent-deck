@@ -176,7 +176,7 @@ of these reads at once; the next one gets 429 until one ends.
 | 429 | `RATE_LIMITED` | three reads of this remote are already in flight; retry after `Retry-After` |
 | 501 | `NOT_IMPLEMENTED` | the remote's agent-deck has no `recall timeline` with these flags; update it |
 | 502 | `INTERNAL_ERROR` | SSH failed, the answer was not this session's timeline, or it was over 8 MB |
-| 503 | `REMOTE_OFFLINE` | the fleet scan sees the remote offline, or has not finished its first scan since the server started |
+| 503 | `REMOTE_OFFLINE` | the fleet scan sees the remote offline, even when it lists none of the remote's sessions yet, or has not finished its first scan since the server started |
 | 503 | `RECALL_DISABLED` | `[recall] enabled` is false on this machine or on the remote |
 | 504 | `INTERNAL_ERROR` | the remote did not answer within 30 seconds |
 
