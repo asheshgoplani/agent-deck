@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,14 +17,19 @@ var t0 = time.Date(2026, 11, 17, 23, 0, 0, 0, time.UTC)
 // fakeDeck is the saved session list (testdata/sessions.json) behind the
 // Deck interface: no tmux, no ssh, no agent-deck state.
 type fakeDeck struct {
-	t        *testing.T
-	sessions []Session
-	replies  map[string]string // id -> last reply
-	errs     []HostError
-	sent     []sentMsg
-	shown    []string
-	lists    int  // Sessions / NeedsMe calls
-	noList   bool // fail the test when the desk lists sessions
+	t         *testing.T
+	sessions  []Session
+	replies   map[string]string // id -> last reply
+	errs      []HostError
+	sent      []sentMsg
+	shown     []string
+	lists     int      // Sessions / NeedsMe calls
+	acts      []string // "stop <id>"
+	launched  []LaunchSpec
+	hits      []SearchHit
+	searchErr error
+	children  map[string][]Session
+	noList    bool // fail the test when the desk lists sessions
 }
 
 type sentMsg struct{ id, host, msg string }
@@ -170,4 +176,44 @@ func (d *fakeDeck) Lookup(_ context.Context, s Session) (Session, bool, error) {
 		}
 	}
 	return Session{}, false, nil
+}
+
+func (d *fakeDeck) Act(_ context.Context, s Session, verb string) error {
+	d.acts = append(d.acts, verb+" "+s.ID)
+	for i := range d.sessions {
+		if d.sessions[i].ID == s.ID {
+			switch verb {
+			case "stop":
+				d.sessions[i].Status = "stopped"
+			case "archive":
+				d.sessions[i].Archived = true
+			}
+		}
+	}
+	return nil
+}
+
+func (d *fakeDeck) Launch(_ context.Context, spec LaunchSpec) (Session, error) {
+	d.launched = append(d.launched, spec)
+	return Session{ID: "n1000001-1700000099", Title: spec.Title, Group: spec.Group, Host: spec.Host, Profile: spec.Profile}, nil
+}
+
+func (d *fakeDeck) Search(_ context.Context, q string) ([]SearchHit, error) {
+	if d.searchErr != nil {
+		return nil, d.searchErr
+	}
+	var out []SearchHit
+	for _, h := range d.hits {
+		if strings.Contains(strings.ToLower(h.Snippet), strings.ToLower(q)) {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
+func (d *fakeDeck) Children(_ context.Context, s Session) ([]Session, error) {
+	if s.Host != "" {
+		return nil, ErrUnsupported
+	}
+	return d.children[s.ID], nil
 }

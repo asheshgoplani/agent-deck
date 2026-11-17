@@ -234,7 +234,7 @@ var completionTree = []completionNode{
 		args: map[string][]argKind{"show": {argAgent}},
 	},
 	{name: "watcher", subs: []string{"import", "create", "start", "stop", "list", "status", "test", "routes", "install-skill"}},
-	{name: "voice", subs: []string{"state", "do"}},
+	{name: "voice", subs: []string{"state", "do", "home"}},
 	{name: "needs-me"},
 	{name: "openclaw", subs: []string{"sync", "bridge", "status", "list", "send"}},
 	{name: "oc", subs: []string{"sync", "bridge", "status", "list", "send"}},
