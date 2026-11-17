@@ -22,42 +22,48 @@ type resolution struct {
 	Choices []Session // ambiguous: his candidates, best first
 	Person  string    // other: whose
 	Sure    bool      // ambiguous: false = look-alikes only ("Did you mean ...?")
+	// Phonetic: the one session was found by sound only; the line names it
+	Phonetic bool
 }
 
 // how a spoken word met a title word
 const (
-	wordNone = iota
-	wordSimilar
+	wordNone     = iota
+	wordSimilar  // edit distance only: a look-alike, always asked
+	wordPhonetic // sounds the same ("resipee buk" / "recipe book"): accepted only when unique
 	wordSure
 )
 
 type scored struct {
 	s     Session
-	sure  bool
+	level int     // weakest word: wordSure, wordPhonetic or wordSimilar
 	score float64 // fit + live bonus: orders his candidates
 	fit   float64 // how well the words fit the name, no status bonus
 	base  float64
 	exact int
 }
 
-// sessionWords are the folded words of a session's group path and title.
-func sessionWords(s Session) []string {
-	var out []string
+// sessionWords are the words of a session's group path and title: folded
+// for comparing, roman for the phonetic key.
+func sessionWords(s Session) (folded, roman []string) {
 	for _, w := range splitWords(s.Group + " " + s.Title) {
-		out = append(out, w.folded)
+		folded = append(folded, w.folded)
+		roman = append(roman, w.roman)
 	}
-	return out
+	return folded, roman
 }
 
 // wordMeets says how one spoken word meets a session's words. Sure: equal,
 // one a prefix of the other (4 letters or more: "conductors"/"conductor"),
-// or, for a word heard in Devanagari, the same consonant skeleton.
-// Similar: the switch matcher's edit-distance rule. A spoken word with a
-// digit must be equal (the switch number rule: "0956" is not "0955").
-func wordMeets(w string, deva bool, sw []string) int {
+// or, for a word heard in Devanagari, the same vowel classes. Phonetic: the
+// same sound key ("kichan"/"kitchen", "vedar"/"weather"). Similar: the
+// switch matcher's edit-distance rule. A spoken word with a digit must be
+// equal (the switch number rule: "0956" is not "0955").
+func wordMeets(w, roman string, deva bool, sw, sr []string) int {
 	digit := strings.IndexFunc(w, func(r rune) bool { return r >= '0' && r <= '9' }) >= 0
 	best := wordNone
-	for _, x := range sw {
+	pk := phoneticKey(roman)
+	for i, x := range sw {
 		if w == x {
 			return wordSure
 		}
@@ -70,8 +76,12 @@ func wordMeets(w string, deva bool, sw []string) int {
 		if deva && utf8.RuneCountInString(w) >= 3 && vowelClass(w) == vowelClass(x) {
 			return wordSure
 		}
+		if len(pk) >= 2 && pk == phoneticKey(sr[i]) && vowelCompatible(roman, sr[i]) {
+			best = max(best, wordPhonetic)
+			continue
+		}
 		if sessionmatch.Similar(w, x) || (utf8.RuneCountInString(w) >= 4 && skeleton(w) == skeleton(x)) {
-			best = wordSimilar
+			best = max(best, wordSimilar)
 		}
 	}
 	return best
@@ -80,10 +90,11 @@ func wordMeets(w string, deva bool, sw []string) int {
 // coverage checks that EVERY spoken word is in the session's title or group
 // (CONTRACT.md section 4 rule 1). Two spoken words may also make one title
 // word ("mac app" -> "macapp"). It returns ok=false when a word is missing,
-// and sure=false when a word only looks like a title word.
-func coverage(words []string, deva []bool, s Session) (ok, sure bool, exact int) {
-	sw := sessionWords(s)
-	sure = true
+// and the weakest level any word met its title word at.
+func coverage(q nameQuery, s Session) (ok bool, level int, exact int) {
+	sw, sr := sessionWords(s)
+	level = wordSure
+	words := q.words
 	for i := 0; i < len(words); i++ {
 		if i+1 < len(words) {
 			joined := words[i] + words[i+1]
@@ -92,44 +103,43 @@ func coverage(words []string, deva []bool, s Session) (ok, sure bool, exact int)
 				i++
 				continue
 			}
-			if (deva[i] || deva[i+1]) && utf8.RuneCountInString(joined) >= 4 && vowelClassIn(sw, joined) {
+			if (q.deva[i] || q.deva[i+1]) && utf8.RuneCountInString(joined) >= 4 && vowelClassIn(sw, joined) {
 				i++
 				continue
 			}
-			if (deva[i] || deva[i+1]) && utf8.RuneCountInString(joined) >= 4 && skeletonIn(sw, joined) {
-				sure = false // "मैक ऐप" reads like "macapp": asked, never silent
+			if pk := phoneticKey(q.roman[i] + q.roman[i+1]); len(pk) >= 3 && phoneticIn(sr, pk, q.roman[i]) {
+				level = min(level, wordPhonetic) // "mac app" / "मैक ऐप" -> macapp
 				i++
 				continue
 			}
 		}
-		switch wordMeets(words[i], deva[i], sw) {
+		switch m := wordMeets(words[i], q.roman[i], q.deva[i], sw, sr); m {
 		case wordNone:
-			return false, false, 0
-		case wordSimilar:
-			sure = false
-		default:
+			return false, wordNone, 0
+		case wordSure:
 			if containsWord(sw, words[i]) {
 				exact++
 			}
+		default:
+			level = min(level, m)
 		}
 	}
-	return true, sure, exact
+	return true, level, exact
 }
 
-func vowelClassIn(list []string, w string) bool {
-	vc := vowelClass(w)
+func phoneticIn(list []string, key, spoken string) bool {
 	for _, x := range list {
-		if vowelClass(x) == vc {
+		if phoneticKey(x) == key && vowelCompatible(spoken, x) {
 			return true
 		}
 	}
 	return false
 }
 
-func skeletonIn(list []string, w string) bool {
-	sk := skeleton(w)
+func vowelClassIn(list []string, w string) bool {
+	vc := vowelClass(w)
 	for _, x := range list {
-		if skeleton(x) == sk {
+		if vowelClass(x) == vc {
 			return true
 		}
 	}
@@ -165,7 +175,7 @@ func resolve(p nameQuery, all []Session, cfg Config) resolution {
 		if kind == ownerNobody {
 			continue
 		}
-		ok, sure, exact := coverage(p.words, p.deva, s)
+		ok, level, exact := coverage(p, s)
 		if !ok {
 			continue
 		}
@@ -179,7 +189,7 @@ func resolve(p nameQuery, all []Session, cfg Config) resolution {
 		if s.Status == "running" || s.Status == "waiting" {
 			score += sessionmatch.ActiveBonus
 		}
-		sc := scored{s: s, sure: sure, score: score, fit: fit, base: base, exact: exact}
+		sc := scored{s: s, level: level, score: score, fit: fit, base: base, exact: exact}
 		if kind == ownerOther {
 			others = append(others, sc)
 		} else {
@@ -188,16 +198,16 @@ func resolve(p nameQuery, all []Session, cfg Config) resolution {
 	}
 	order := func(xs []scored) {
 		sort.SliceStable(xs, func(i, j int) bool {
-			if xs[i].sure != xs[j].sure {
-				return xs[i].sure
+			if xs[i].level != xs[j].level {
+				return xs[i].level > xs[j].level
 			}
 			return xs[i].score > xs[j].score
 		})
 	}
 	order(mine)
 	order(others)
-	sureMine, likeMine := split(mine)
-	sureOther, _ := split(others)
+	sureMine, phonMine, likeMine := split(mine)
+	sureOther, phonOther, _ := split(others)
 
 	// Someone else's session that fits the spoken name better than any of
 	// his (by the words alone, not by status): refused by name.
@@ -217,8 +227,16 @@ func resolve(p nameQuery, all []Session, cfg Config) resolution {
 			return resolution{Kind: resolvedOne, Session: top.s}
 		}
 		return resolution{Kind: resolvedAmbiguous, Choices: sessionsOf(sureMine), Sure: true}
-	case len(likeMine) > 0:
-		return resolution{Kind: resolvedAmbiguous, Choices: sessionsOf(likeMine), Sure: false}
+	case len(phonMine) == 1 && len(likeMine) == 0 && len(phonOther) == 0:
+		// sounds like exactly one of his sessions and nothing else is close
+		// ("gaarden plaanar" -> garden-planner): accepted; the line names it
+		return resolution{Kind: resolvedOne, Session: phonMine[0].s, Phonetic: true}
+	case len(phonMine)+len(likeMine) > 0:
+		return resolution{Kind: resolvedAmbiguous, Choices: sessionsOf(append(append([]scored{}, phonMine...), likeMine...)), Sure: false}
+	}
+	if len(phonOther) > 0 {
+		_, who := cfg.ownerOf(phonOther[0].s)
+		return resolution{Kind: resolvedOther, Session: phonOther[0].s, Person: who}
 	}
 	if len(others) > 0 {
 		_, who := cfg.ownerOf(others[0].s)
@@ -240,7 +258,7 @@ func findAll(p nameQuery, all []Session, cfg Config) resolution {
 		if p.host != "" && !strings.EqualFold(s.Host, p.host) {
 			continue
 		}
-		if ok, sure, _ := coverage(p.words, p.deva, s); ok && sure {
+		if ok, level, _ := coverage(p, s); ok && level == wordSure {
 			hits = append(hits, scored{s: s})
 		}
 	}
@@ -266,15 +284,18 @@ func bestFit(xs []scored) float64 {
 	return b
 }
 
-func split(xs []scored) (sure, like []scored) {
+func split(xs []scored) (sure, phonetic, like []scored) {
 	for _, x := range xs {
-		if x.sure {
+		switch x.level {
+		case wordSure:
 			sure = append(sure, x)
-		} else {
+		case wordPhonetic:
+			phonetic = append(phonetic, x)
+		default:
 			like = append(like, x)
 		}
 	}
-	return sure, like
+	return sure, phonetic, like
 }
 
 func sessionsOf(xs []scored) []Session {

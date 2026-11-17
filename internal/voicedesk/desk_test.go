@@ -55,7 +55,7 @@ func TestIntentTable(t *testing.T) {
 		{"macapp redesign ka status kya hai", IntentStatus, LangHI, idMacapp, "", "", true},
 		{"phone build kya kar raha hai", IntentStatus, LangHI, idPhone, "", "", true},
 		{"boxone wala tailscale fix ka status batao", IntentStatus, LangHI, idTsFix, "", "", true},
-		{"मैक ऐप का स्टेटस क्या है", IntentStatus, LangHI, "", RefusedAmbiguous, "choice", true}, // Devanagari look-alike: asked
+		{"मैक ऐप का स्टेटस क्या है", IntentStatus, LangHI, idMacapp, "", "", true}, // sounds like one session only: accepted, named
 		// read
 		{"Read proactive audit", IntentRead, LangEN, idAudit, "", "", true},
 		{"what did deck conductor say", IntentRead, LangEN, idConductor, "", "", true},

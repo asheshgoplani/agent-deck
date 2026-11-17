@@ -320,3 +320,88 @@ func vowelClass(folded string) string {
 	}
 	return b.String()
 }
+
+// phoneticKey is the sound of a Roman word as the listener may spell it:
+// "recipe"/"resipee", "kitchen"/"kichan", "weather"/"vedar",
+// "dashboard"/"daishbord", "music"/"myoozik" give the same key. Consonants
+// only (vowel length and quality fold away), c before e/i/y = s else k,
+// q = k, x = ks, z = s, w = v, ph = f, sh = s, tch = ch, t = d, aspirates
+// and h, y dropped, doubled letters once.
+func phoneticKey(roman string) string {
+	s := strings.ToLower(toRoman(roman))
+	s = strings.NewReplacer("tion", "shan", "sion", "shan").Replace(s) // station / steshan
+	r := strings.NewReplacer("tch", "C", "ch", "C", "sch", "sk", "ck", "k", "ph", "f", "sh", "s", "x", "ks", "q", "k", "z", "s", "w", "v")
+	s = r.Replace(s)
+	rs := []rune(s)
+	var b []rune
+	for i, c := range rs {
+		switch {
+		case c == 'c':
+			if i+1 < len(rs) && strings.ContainsRune("eiy", rs[i+1]) {
+				c = 's'
+			} else {
+				c = 'k'
+			}
+		case c == 'd':
+			c = 't'
+		case c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u' || c == 'y' || c == 'h':
+			continue
+		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
+			continue
+		}
+		if len(b) > 0 && b[len(b)-1] == c {
+			continue
+		}
+		b = append(b, c)
+	}
+	return string(b)
+}
+
+// firstVowel is the class of a word's first vowel sound: A (a, o, u), E,
+// I, or AI (ai, ay, ei, ey, and an English long i as in "timer").
+func firstVowel(roman string, english bool) string {
+	s := strings.ToLower(toRoman(roman))
+	rs := []rune(s)
+	i := 0
+	for i < len(rs) && !(strings.ContainsRune("aeiou", rs[i]) || (rs[i] == 'y' && i > 0)) {
+		i++
+	}
+	if i >= len(rs) {
+		return ""
+	}
+	j := i
+	for j < len(rs) && strings.ContainsRune("aeiouy", rs[j]) {
+		j++
+	}
+	run := string(rs[i:j])
+	switch {
+	case strings.Contains(run, "ai") || strings.Contains(run, "ay") || strings.Contains(run, "ei") || strings.Contains(run, "ey"):
+		return "AI"
+	case english && (run == "i" || run == "a") && j+1 < len(rs) && strings.ContainsRune("ei", rs[j+1]) && !strings.ContainsRune("aeiouyh", rs[j]):
+		return "AI" // a long i or a: timer, line, station, basic
+	case strings.HasPrefix(run, "ea"), strings.HasPrefix(run, "e"):
+		return "E"
+	case strings.HasPrefix(run, "i"), run == "y":
+		return "I"
+	case strings.HasPrefix(run, "y"):
+		return firstVowel(string(rs[i+1:]), english)
+	}
+	return "A"
+}
+
+// vowelCompatible: the spoken word's first vowel can be the title word's.
+// Same class, E/I (Hindi blurs them), AI for an English a (मैक, डैश) or
+// for e/ey and a long i. "टोस्टर" (A) is not "tester" (E); "बोलिंग" (A) is
+// not "billing" (I).
+func vowelCompatible(spoken, title string) bool {
+	a, b := firstVowel(spoken, false), firstVowel(title, true)
+	if a == "" || b == "" || a == b {
+		return true
+	}
+	pair := a + "/" + b
+	switch pair {
+	case "E/I", "I/E", "AI/A", "A/AI", "AI/E", "E/AI", "AI/I", "I/AI":
+		return true
+	}
+	return false
+}
