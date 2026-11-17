@@ -21,6 +21,9 @@ type Deck interface {
 	Sessions(ctx context.Context) ([]Session, []HostError)
 	// NeedsMe lists the waiting sessions, longest-waiting first.
 	NeedsMe(ctx context.Context) ([]Session, []HostError)
+	// Lookup reads one session again (only its own host), for the check
+	// right before acting on a yes. ok=false: it is gone.
+	Lookup(ctx context.Context, s Session) (found Session, ok bool, err error)
 	// LastReply is the text of the session's last reply.
 	LastReply(ctx context.Context, s Session) (string, error)
 	// Send delivers a message into the session.
@@ -29,10 +32,11 @@ type Deck interface {
 	Show(ctx context.Context, s Session) error
 }
 
-// HostError is one host that did not answer.
+// HostError is one host (or one local profile, Host "") that did not answer.
 type HostError struct {
-	Host  string `json:"host"`
-	Error string `json:"error"`
+	Host    string `json:"host"`
+	Profile string `json:"profile,omitempty"`
+	Error   string `json:"error"`
 }
 
 // Request is one `voice do` call.
@@ -89,6 +93,15 @@ type Then struct {
 	Action string `json:"action"` // switch
 	Target Ref    `json:"target"`
 }
+
+// Errors a Deck returns for a send.
+var (
+	// ErrUnconfirmed: the text may have reached the session, it was not
+	// confirmed (time ran out, or the send said so). Never said as a failure.
+	ErrUnconfirmed = errors.New("send not confirmed")
+	// ErrMenuOpen: the session shows a menu or question; nothing was typed.
+	ErrMenuOpen = errors.New("session is at a menu")
+)
 
 // Refusal reasons.
 const (
@@ -166,6 +179,15 @@ func scrub(r *Result) (hit bool) {
 		r.Say = saySecretReply
 		hit = true
 	}
+	if r.Say == saySecretTell || r.Say == saySecretReply {
+		hit = true
+	}
+	defer func() {
+		if hit {
+			// on any secret, nothing of that text is shown
+			r.Show = Show{Kind: "none", Items: []ShowItem{}}
+		}
+	}()
 	if r.Confirm != nil && HasSecret(r.Confirm.Prompt) {
 		r.Confirm.Prompt = saySecretReply
 		hit = true
@@ -251,6 +273,14 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 		}
 	}
 	if kind == AnswerNone {
+		// a short sentence that is neither an answer nor a desk command
+		// ("okay then", "wait what") is asked again once instead of being
+		// typed into the session he is on; anything longer is fresh
+		if len(strings.Fields(req.Sentence)) <= 3 && Parse(req.Sentence).Intent == IntentNone && !d.isLate(req, p) {
+			if r, ok := d.reask(req, p, lang, ""); ok {
+				return r, true, nil
+			}
+		}
 		return Result{}, false, nil // dropped; fresh sentence
 	}
 	if kind == AnswerNo {
@@ -260,14 +290,7 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 	}
 	// timing: hard TTL always; the 10 s answer window by the caller's
 	// measured delay, else by the token's age
-	age := d.now().Sub(p.CreatedAt)
-	late := age > HardTTL || age < 0 // a clock that went back is not trusted
-	if req.HasAnswerDelay {
-		late = late || req.AnswerDelayMs > AnswerWindow.Milliseconds()
-	} else {
-		late = late || age > AnswerWindow
-	}
-	if late {
+	if d.isLate(req, p) { // a clock that went back is not trusted either
 		r := d.base(answerIntent(kind), lang, req.DryRun)
 		refuse(&r, RefusedExpired, sayTooLate)
 		return r, true, nil
@@ -281,21 +304,70 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 			idx = 0
 		}
 		if idx < 0 || idx >= len(p.Choices) {
+			if r, ok := d.reask(req, p, lang, fmt.Sprintf("There are only %s.", lowerCount(len(p.Choices)))); ok {
+				return r, true, nil
+			}
 			r := d.base(IntentChoice, lang, req.DryRun)
-			refuse(&r, RefusedAmbiguous, fmt.Sprintf("There are only %s.", lowerCount(len(p.Choices))))
+			r.Say = sayCancelled
 			return r, true, nil
 		}
 		r, err := d.chosen(ctx, req, p, p.Choices[idx], lang)
 		return r, true, err
 	}
 	// a yes to a choice question with several options, or a choice to a
-	// yes question: not an answer to this question
-	r := d.base(answerIntent(kind), lang, req.DryRun)
-	refuse(&r, RefusedAmbiguous, "I need the first, the second or a name.")
-	if p.Kind == "yes" {
-		r.Say = "Please say yes or no."
+	// yes question: the question stays open once, else it is cancelled
+	if r, ok := d.reask(req, p, lang, ""); ok {
+		return r, true, nil
 	}
+	r := d.base(answerIntent(kind), lang, req.DryRun)
+	r.Say = sayCancelled
 	return r, true, nil
+}
+
+func (d *Desk) isLate(req Request, p Pending) bool {
+	age := d.now().Sub(p.CreatedAt)
+	late := age > HardTTL || age < 0
+	if req.HasAnswerDelay {
+		return late || req.AnswerDelayMs > AnswerWindow.Milliseconds()
+	}
+	return late || age > AnswerWindow
+}
+
+// reask keeps a question open once more under a new token: "Please say yes
+// or no." / "First or second?". The second miss cancels it.
+func (d *Desk) reask(req Request, p Pending, lang, lead string) (Result, bool) {
+	if p.Retries >= 1 {
+		return Result{}, false
+	}
+	p.Retries++
+	r := d.base(p.Intent, lang, req.DryRun)
+	again := "Please say yes or no."
+	if p.Kind == "choice" {
+		ord := []string{"first", "second", "third"}
+		names := make([]string, 0, len(p.Choices))
+		for i := range p.Choices {
+			if i < len(ord) {
+				names = append(names, ord[i])
+			}
+		}
+		again = "Say " + strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1] + "."
+		if len(names) == 1 {
+			again = "Please say yes or no."
+		}
+	}
+	if lead != "" {
+		again = lead + " " + again
+	}
+	r.Say = again
+	if p.Target != nil {
+		t := *p.Target
+		r.Target = &t
+	}
+	rr, err := d.pend(req, r, p, again)
+	if err != nil {
+		return Result{}, false
+	}
+	return rr, true
 }
 
 func answerIntent(kind string) string {
@@ -335,24 +407,30 @@ func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Re
 		refuse(&r, RefusedExpired, sayTooLate)
 		return r, nil
 	}
-	s := Session{ID: p.Target.ID, Title: p.Target.Title, Host: p.Target.Host, Profile: p.Target.Profile}
+	s := Session{ID: p.Target.ID, Title: p.Target.Title, Host: p.Target.Host, Profile: p.Target.Profile, Tool: p.Target.Tool}
 	r := d.base(IntentConfirmYes, lang, req.DryRun)
 	t := s.Ref()
 	r.Target = &t
 	// the session may have changed in the seconds since the question
-	if why, say := d.recheck(ctx, s, p.Action == actionSend); why != "" {
+	fresh, why, say := d.recheckFresh(ctx, s, p.Action == actionSend)
+	if why != "" {
 		refuse(&r, why, say)
 		return r, nil
 	}
+	s.Title, s.Status, s.Substate, s.Tool = fresh.Title, fresh.Status, fresh.Substate, fresh.Tool
+	t = s.Ref()
+	r.Target = &t
 	switch p.Action {
 	case actionSend:
+		var err error
 		if !req.DryRun {
-			if err := d.Deck.Send(ctx, s, p.Message); err != nil {
-				r.Say = "Could not send to " + spokenTitle(s.Title, s.Host) + "."
-				return r, nil
-			}
+			err = d.Deck.Send(ctx, s, p.Message)
 		}
-		r.Say = "Sent to " + spokenTitle(s.Title, s.Host) + "."
+		var why string
+		r.Say, why = sendLine(err, spokenTitle(s.Title, s.Host))
+		if why != "" {
+			r.Refused = &why
+		}
 	case actionSwitch:
 		d.switchTo(ctx, req, &r, s)
 	default:
@@ -363,28 +441,69 @@ func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Re
 
 // recheck looks the session up again before acting on a yes: gone,
 // archived, no longer his, or (for a send) stopped or failed -> refused.
-func (d *Desk) recheck(ctx context.Context, s Session, sending bool) (why, say string) {
-	all, _ := d.sessions(ctx)
+// recheckFresh looks the one session up again before acting on a yes (its
+// own host only): gone, archived, no longer his, or (for a send) stopped,
+// failed or at a menu -> refused. It returns the session as it is now, so
+// the line names it by its current title.
+func (d *Desk) recheckFresh(ctx context.Context, s Session, sending bool) (Session, string, string) {
 	name := spokenTitle(s.Title, s.Host)
-	for _, x := range all {
-		if x.ID != s.ID || x.Host != s.Host {
-			continue
-		}
-		if x.Archived {
-			return RefusedNotFound, name + " is archived, nothing sent."
-		}
-		if k, who := d.Config.ownerOf(x); k != ownerMine {
-			if k == ownerOther {
-				return RefusedOtherPerson, otherLine(who)
-			}
-			return RefusedNotFound, name + " is not yours, nothing sent."
-		}
-		if sending && (x.Status == "stopped" || x.Status == "error") {
-			return RefusedUnsafe, name + " is " + statusWords(x.Status) + ", nothing sent."
-		}
-		return "", ""
+	nothing := ", nothing done."
+	if sending {
+		nothing = ", nothing sent."
 	}
-	return RefusedNotFound, name + " is gone, nothing sent."
+	x, ok, err := d.Deck.Lookup(ctx, s)
+	if err != nil {
+		where := "this machine"
+		if s.Host != "" {
+			where = s.Host
+		}
+		return s, RefusedNotFound, "I cannot reach " + where + nothing
+	}
+	if !ok {
+		return s, RefusedNotFound, name + " is gone" + nothing
+	}
+	x.Title = cleanTitle(x.Title)
+	name = spokenTitle(x.Title, x.Host)
+	if x.Archived {
+		return x, RefusedNotFound, name + " is archived" + nothing
+	}
+	if k, who := d.Config.ownerOf(x); k != ownerMine {
+		if k == ownerOther {
+			return x, RefusedOtherPerson, otherLine(who)
+		}
+		return x, RefusedNotFound, name + " is not yours" + nothing
+	}
+	if sending {
+		switch {
+		case x.Status == "stopped" || x.Status == "error":
+			return x, RefusedUnsafe, name + isStatus(x.Status) + nothing
+		case atMenu(x):
+			return x, RefusedUnsafe, sayAtMenu(name)
+		}
+	}
+	return x, "", ""
+}
+
+// atMenu: the session shows a permission menu or a question. Typed text
+// and Enter would answer it, so nothing is sent by voice.
+func atMenu(s Session) bool { return s.Substate == "interactive-menu" }
+
+func sayAtMenu(name string) string {
+	return capitalize(name) + " is asking a question; answer it on screen first."
+}
+
+// sendLine says what happened to a send: never a false failure, never a
+// false success.
+func sendLine(err error, name string) (say, refusedWhy string) {
+	switch {
+	case err == nil:
+		return "Sent to " + name + ".", ""
+	case errors.Is(err, ErrMenuOpen):
+		return sayAtMenu(name), RefusedUnsafe
+	case errors.Is(err, ErrUnconfirmed):
+		return "I am not sure it was sent; check " + name + ".", ""
+	}
+	return "Could not send to " + name + ".", ""
 }
 
 func (d *Desk) switchTo(ctx context.Context, req Request, r *Result, s Session) {
@@ -450,6 +569,11 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 		}
 		return r, nil
 	}
+	// talk in a soft desk form is decided from the words, before any
+	// listing (no ssh for "read the file and fix the bug")
+	if q0 := newNameQuery(p.Name, nil); p.Soft && talkLike(q0.words) {
+		return notMine(p.Lang), nil
+	}
 	all, _ := d.sessions(ctx)
 	q := newNameQuery(p.Name, hostsOf(all))
 	var res resolution
@@ -460,7 +584,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	}
 	// "status of the build", "test ko bolo ki ...": a name of only coding
 	// nouns is talk unless it says a session's whole title
-	if genericOnly(q.words) && (res.Kind == resolvedOne || res.Kind == resolvedAmbiguous) && !saysWholeTitle(q, res) {
+	if genericOnlyQ(q) && (res.Kind == resolvedOne || res.Kind == resolvedAmbiguous) && !saysWholeTitle(q, res) {
 		return notMine(p.Lang), nil
 	}
 	switch res.Kind {
@@ -468,7 +592,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 		refuse(&r, RefusedOtherPerson, otherLine(res.Person))
 		return r, nil
 	case resolvedNotFound:
-		if p.Soft || talkLike(q.words) {
+		if p.Soft || talkLike(q.words) || anyCodeNoun(q.words, q.roman) {
 			return notMine(p.Lang), nil
 		}
 		refuse(&r, RefusedNotFound, "I found no session of yours called "+strings.TrimSpace(q.raw)+".")
@@ -558,7 +682,7 @@ func (d *Desk) withTarget(ctx context.Context, req Request, p Parsed, s Session,
 	name := spokenTitle(s.Title, s.Host)
 	switch p.Intent {
 	case IntentStatus:
-		line := name + " is " + statusWords(s.Status)
+		line := name + isStatus(s.Status)
 		if a := ago(s.LastActivity, d.now()); a != "" {
 			if s.Status == "running" {
 				line += ", " + a + " in"
@@ -621,26 +745,35 @@ func (d *Desk) withTarget(ctx context.Context, req Request, p Parsed, s Session,
 // unless it goes to the session he is on and holds no risky word.
 func (d *Desk) tell(ctx context.Context, req Request, r Result, p Parsed, s Session, picked bool) (Result, error) {
 	name := spokenTitle(s.Title, s.Host)
-	msg := strings.TrimSpace(p.Message)
+	msg := cleanMessage(p.Message)
+	if msg == "" {
+		return notMine(p.Lang), nil
+	}
 	if HasSecret(msg) {
 		refuse(&r, RefusedUnsafe, saySecretTell)
 		return r, nil
 	}
 	switch s.Status {
 	case "stopped", "error":
-		refuse(&r, RefusedUnsafe, name+" is "+statusWords(s.Status)+", nothing sent.")
+		refuse(&r, RefusedUnsafe, name+isStatus(s.Status)+", nothing sent.")
+		return r, nil
+	}
+	if atMenu(s) {
+		refuse(&r, RefusedUnsafe, sayAtMenu(name))
 		return r, nil
 	}
 	onIt := req.On != "" && req.On == s.ID
 	// after a choice the message was never read back: always ask
 	if onIt && !risky(msg) && !picked {
+		var err error
 		if !req.DryRun {
-			if err := d.Deck.Send(ctx, s, msg); err != nil {
-				r.Say = "Could not send to " + name + "."
-				return r, nil
-			}
+			err = d.Deck.Send(ctx, s, msg)
 		}
-		r.Say = "Sent to " + name + "."
+		var why string
+		r.Say, why = sendLine(err, name)
+		if why != "" {
+			r.Refused = &why
+		}
 		return r, nil
 	}
 	spoken := firstSentences(msg, 3, 200)
@@ -679,23 +812,32 @@ func items(ss []Session, now time.Time) []ShowItem {
 }
 
 func unreachable(errs []HostError) string {
-	if len(errs) == 0 {
-		return ""
-	}
-	hosts := make([]string, 0, len(errs))
+	var hosts, profiles []string
 	for _, e := range errs {
-		if e.Host != "" {
+		switch {
+		case e.Host != "":
 			hosts = append(hosts, e.Host)
+		case e.Profile != "":
+			profiles = append(profiles, "profile "+e.Profile)
+		default:
+			profiles = append(profiles, "this machine")
 		}
 	}
-	if len(hosts) == 0 {
+	sort.Strings(hosts)
+	sort.Strings(profiles)
+	all := append(profiles, hosts...)
+	switch len(all) {
+	case 0:
 		return ""
 	}
-	sort.Strings(hosts)
-	if len(hosts) == 1 {
-		return " " + hosts[0] + " did not answer."
+	first := all[0]
+	if len(profiles) > 0 {
+		first = capitalize(first) // "Profile work", "This machine"; a host keeps its name
 	}
-	return " " + strings.Join(hosts, " and ") + " did not answer."
+	if len(all) == 1 {
+		return " " + first + " did not answer."
+	}
+	return " " + strings.Join(append([]string{first}, all[1:len(all)-1]...), ", ") + " and " + all[len(all)-1] + " did not answer."
 }
 
 func (d *Desk) needsMe(r *Result, rows []Session, errs []HostError) {

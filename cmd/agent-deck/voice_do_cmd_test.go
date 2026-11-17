@@ -120,3 +120,30 @@ func TestVoiceStateSourceUnknownIsEmpty(t *testing.T) {
 		t.Fatalf("code=%d out=%q", code, out)
 	}
 }
+
+// B1 (review): a config.toml that cannot be parsed never falls back to the
+// open default ("everything is his"): the desk refuses, nothing is sent.
+func TestVoiceDoUnreadableConfigRefuses(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	dir := filepath.Join(home, ".config", "agent-deck")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[voice\nowner_groups = [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := runVoiceT(t, "do", "--json", "tell sam notes to say config-broken")
+	if code == 1 {
+		return // refusing as an internal error is also safe
+	}
+	var m map[string]any
+	if code != 0 || json.Unmarshal([]byte(out), &m) != nil {
+		t.Fatalf("code=%d out=%q", code, out)
+	}
+	if m["refused"] != "unsafe" || m["say"] != "I cannot read the voice settings." || m["confirm"] != nil {
+		t.Fatalf("broken config did not refuse: %v", m)
+	}
+}

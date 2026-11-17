@@ -95,7 +95,7 @@ func TestIntentTable(t *testing.T) {
 		{"Tell phone walk to continue", IntentTell, LangEN, "", RefusedNotFound, "", true},
 		{"status of stray session", IntentStatus, LangEN, "", RefusedNotFound, "", true},
 		{"status of audit 0956", IntentStatus, LangEN, "", RefusedNotFound, "", true},
-		{"status of old phone build", IntentStatus, LangEN, "", RefusedNotFound, "", true},
+		{"status of old phone build", IntentNone, LangEN, "", "", "", false}, // holds a coding word and no session: talk (review S1)
 		{"status of voice text", IntentStatus, LangEN, "", RefusedAmbiguous, "choice", true},
 		{"voice text ka status kya hai", IntentStatus, LangHI, "", RefusedAmbiguous, "choice", true},
 		{"status of conductor", IntentStatus, LangEN, "", RefusedAmbiguous, "choice", true},

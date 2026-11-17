@@ -40,6 +40,7 @@ type Pending struct {
 	Target    *Ref      `json:"target,omitempty"`
 	Choices   []Ref     `json:"choices,omitempty"`
 	Message   string    `json:"message,omitempty"`
+	Retries   int       `json:"retries,omitempty"` // a question asked again once
 	CreatedAt time.Time `json:"created_at"`
 	Hash      string    `json:"hash"`
 }
@@ -53,7 +54,7 @@ func (p Pending) binding() string {
 	for _, c := range p.Choices {
 		fmt.Fprintf(h, "%s\x00%s\x00", c.ID, c.Host)
 	}
-	fmt.Fprintf(h, "%s\x00%d", p.Message, p.CreatedAt.UnixNano())
+	fmt.Fprintf(h, "%s\x00%d\x00%d", p.Message, p.Retries, p.CreatedAt.UnixNano())
 	return hex.EncodeToString(h.Sum(nil))
 }
 

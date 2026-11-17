@@ -57,7 +57,7 @@ func DefaultSources(selfPath, fallbackProfile string) []Source {
 				for _, i := range infos {
 					rows = append(rows, Row{ID: i.ID, Title: i.Title, Group: i.Group, Profile: rc.GetProfile(),
 						Status: i.Status, Substate: i.Substate, SubstateDetail: i.SubstateDetail,
-						LastActivityAt: i.LastActivityAt, CreatedAt: i.CreatedAt, Archived: i.Archived})
+						LastActivityAt: i.LastActivityAt, CreatedAt: i.CreatedAt, Archived: i.Archived, Tool: i.Tool})
 				}
 				return rows, nil
 			}})

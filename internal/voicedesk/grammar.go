@@ -196,7 +196,7 @@ var grammar = func() []pattern {
 	)
 	// list
 	add(IntentList, LangEN, false,
-		"list [all] [my] sessions", "list all", "what|which sessions do i have [running]",
+		"list [all] [my] sessions", "what|which sessions do i have [running]",
 		"what are my sessions", "show my sessions", "show all my sessions",
 	)
 	add(IntentList, LangHI, false,
@@ -324,7 +324,7 @@ func Parse(sentence string) Parsed {
 			out.Words = foldedWords(nameWords)
 		}
 		if c.hasMsg {
-			out.Message = strings.TrimSpace(strings.TrimRight(cut(ws[c.msg.from:c.msg.to])+tailPunct(sentence, ws[c.msg.to-1].end), " "))
+			out.Message = cleanMessage(cut(ws[c.msg.from:c.msg.to]) + tailPunct(sentence, ws[c.msg.to-1].end))
 		}
 		return out
 	}
@@ -389,11 +389,58 @@ var codeNouns = foldSet("file", "files", "function", "functions", "method", "cla
 	"compiler", "linter", "lint", "pipeline", "ci", "job", "jobs", "deploy", "deployment", "migration", "schema",
 	"user", "users", "output", "result", "results", "change", "changes", "diff", "repo", "project", "folder",
 	"directory", "step", "steps", "stack", "trace", "message", "terminal", "shell", "command", "loop", "new", "old",
-	"latest", "last", "first", "current", "this", "that", "everything", "all", "anything", "something", "is", "iss", "us", "ye", "yeh", "wo", "woh", "wala", "wali")
+	"latest", "last", "first", "current", "this", "that", "everything", "all", "anything", "something",
+	"bild", "yujar", "yuzar", "fail", "kod", "sarvar", "ep", "aip",
+	"git", "logger", "logging", "class", "classes", "component", "components", "module", "modules", "request",
+	"requests", "pull", "push", "merge", "service", "worker", "handler", "controller", "router", "store",
+	"cache", "queue", "hook", "hooks", "type", "types", "struct", "interface", "variable", "env", "token", "is", "iss", "us", "ye", "yeh", "wo", "woh", "wala", "wali")
 
 // talkLike: an unmatched name that is more than three content words, holds
 // a clause marker, or is only coding nouns. Such a sentence goes on to the
 // session he is on (handled:false) instead of "I found no session called".
+// isCodeNoun: an ordinary coding word, also as the listener spells it
+// ("यूजर" -> "yoojar" sounds like "user", "बिल्ड" like "build").
+func isCodeNoun(folded, roman string) bool {
+	if codeNouns[folded] {
+		return true
+	}
+	if len([]rune(roman)) < 4 {
+		return false
+	}
+	k := phoneticKey(roman)
+	if len(k) < 3 {
+		return false
+	}
+	for _, w := range codeSounds[k] {
+		if firstVowel(roman, false) == firstVowel(w, true) {
+			return true
+		}
+	}
+	return false
+}
+
+var codeSounds = func() map[string][]string {
+	m := map[string][]string{}
+	for w := range codeNouns {
+		if len(w) >= 4 {
+			k := phoneticKey(w)
+			m[k] = append(m[k], w)
+		}
+	}
+	return m
+}()
+
+// anyCodeNoun: one of the name's words is an ordinary coding word. An
+// unknown name like that is talk ("tell git to ignore the build folder").
+func anyCodeNoun(words, roman []string) bool {
+	for i, w := range words {
+		if isCodeNoun(w, roman[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 func talkLike(words []string) bool {
 	content := 0
 	allCode := true
@@ -410,20 +457,4 @@ func talkLike(words []string) bool {
 		}
 	}
 	return content > 3 || (content > 0 && allCode)
-}
-
-// genericOnly: every content word of the name is an ordinary coding noun
-// ("the build", "tests", "config file").
-func genericOnly(words []string) bool {
-	content := 0
-	for _, w := range words {
-		if nameNoise[w] {
-			continue
-		}
-		if !codeNouns[w] {
-			return false
-		}
-		content++
-	}
-	return content > 0
 }

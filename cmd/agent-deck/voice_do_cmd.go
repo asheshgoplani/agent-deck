@@ -137,8 +137,10 @@ func runVoiceDo(profile string, args []string, stdout, stderr io.Writer) int {
 	// Not mine: decided from the words alone, before any config, state or
 	// session listing, so the caller types the sentence on at once.
 	if a.pending == "" && voicedesk.Parse(a.sentence).Intent == voicedesk.IntentNone {
-		return writeVoiceDo(stdout, stderr, voicedesk.Result{Handled: false, Intent: voicedesk.IntentNone,
+		code := writeVoiceDo(stdout, stderr, voicedesk.Result{Handled: false, Intent: voicedesk.IntentNone,
 			Lang: voicedesk.Parse(a.sentence).Lang, Show: voicedesk.Show{Kind: "none", Items: []voicedesk.ShowItem{}}, DryRun: a.dryRun}, a.jsonOut)
+		sweepVoicePending(profile) // after the answer is out: removes only questions older than 60 s
+		return code
 	}
 	resolved, err := session.ResolveProfileForStorageQuiet(profile)
 	if err != nil {
@@ -154,16 +156,30 @@ func runVoiceDo(profile string, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		self = os.Args[0]
 	}
-	cfg := voicedesk.Config{}
-	if uc, err := session.LoadUserConfig(); err == nil && uc != nil {
-		cfg = voiceDeskConfig(uc.Voice)
+	desk0 := voicedesk.FileStore{Dir: filepath.Join(profDir, "voice", "pending")}
+	desk0.Sweep() // an unanswered question never outlives 60 s by much
+	// The owner rules come from config.toml. A config that cannot be read
+	// never falls back to the open default ("everything is his"): the desk
+	// refuses to act at all.
+	uc, cfgErr := session.LoadUserConfig()
+	if cfgErr != nil || uc == nil {
+		p := voicedesk.Parse(a.sentence)
+		why := voicedesk.RefusedUnsafe
+		intent := p.Intent
+		if intent == voicedesk.IntentNone {
+			intent = voicedesk.IntentConfirmYes // an answer to a pending question
+		}
+		return writeVoiceDo(stdout, stderr, voicedesk.Result{Handled: true, Intent: intent, Lang: p.Lang,
+			Say: "I cannot read the voice settings.", Show: voicedesk.Show{Kind: "none", Items: []voicedesk.ShowItem{}},
+			Refused: &why, DryRun: a.dryRun}, a.jsonOut)
 	}
+	cfg := voiceDeskConfig(uc.Voice)
 	// --on absent means on no session (the daemon's own id can be null):
 	// every tell then needs the yes. The voice state is never guessed from.
 	on := a.on
 	desk := &voicedesk.Desk{
 		Deck:   &cliVoiceDeck{self: self, profile: resolved, from: a.from},
-		Store:  voicedesk.FileStore{Dir: filepath.Join(profDir, "voice", "pending")},
+		Store:  desk0,
 		Config: cfg,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), voiceDoTimeout)
@@ -236,16 +252,12 @@ func (d *cliVoiceDeck) Sessions(ctx context.Context) ([]voicedesk.Session, []voi
 	for range srcs {
 		g := <-ch
 		if g.err != nil {
-			host := g.src.Host
-			if host == "" {
-				host = "local:" + g.src.Profile
-			}
-			errs = append(errs, voicedesk.HostError{Host: host, Error: "unreachable"})
+			errs = append(errs, voicedesk.HostError{Host: g.src.Host, Profile: g.src.Profile, Error: "unreachable"})
 			continue
 		}
 		for _, r := range g.rows {
 			s := voicedesk.Session{ID: r.ID, Title: r.Title, Group: r.Group, Profile: r.Profile, Host: g.src.Host,
-				Status: r.Status, Substate: r.Substate, Archived: r.Archived}
+				Status: r.Status, Substate: r.Substate, Archived: r.Archived, Tool: r.Tool}
 			if r.Profile == "" {
 				s.Profile = g.src.Profile
 			}
@@ -267,7 +279,7 @@ func (d *cliVoiceDeck) NeedsMe(ctx context.Context) ([]voicedesk.Session, []voic
 	}
 	errs := make([]voicedesk.HostError, 0, len(res.Errors))
 	for _, e := range res.Errors {
-		errs = append(errs, voicedesk.HostError{Host: e.Host, Error: e.Error})
+		errs = append(errs, voicedesk.HostError{Host: e.Host, Profile: e.Profile, Error: e.Error})
 	}
 	return out, errs
 }
@@ -315,14 +327,75 @@ func (d *cliVoiceDeck) LastReply(ctx context.Context, s voicedesk.Session) (stri
 	return v.Content, nil
 }
 
+// Send types the message through `session send` with the product's own
+// guard (--require-input-prompt: nothing is typed unless an input prompt is
+// visible, so a menu is never answered by voice). Its own time budget is
+// what is left of the call. A send whose outcome is not known (time ran
+// out after it started, or the send could not confirm) is ErrUnconfirmed,
+// never a failure: he must not repeat a message that landed.
 func (d *cliVoiceDeck) Send(ctx context.Context, s voicedesk.Session, message string) error {
-	source := "voice:" + d.from
+	var args []string
 	if s.Host != "" {
-		_, err := d.run(ctx, message, "remote", s.Host, "send", s.ID, "--message-file", "-", "--no-wait", "-q")
-		return err
+		args = []string{"remote", s.Host, "send", s.ID, "--message-file", "-", "--no-wait", "-q"}
+	} else {
+		args = []string{"-p", d.profileOf(s), "session", "send", s.ID, "--message-file", "-", "--no-wait", "--no-tag", "-q",
+			"--source", "voice:" + d.from}
 	}
-	_, err := d.run(ctx, message, "-p", d.profileOf(s), "session", "send", s.ID, "--message-file", "-", "--no-wait", "--no-tag", "-q", "--source", source)
-	return err
+	// an agent tool shows an input prompt; a plain shell never does (its
+	// open menus are caught by the substate check before the send)
+	if s.Tool != "shell" {
+		args = append(args, "--require-input-prompt")
+	}
+	cmd := exec.CommandContext(ctx, d.self, args...) //nolint:gosec // G204: re-exec of this binary with fixed verbs; the message goes on stdin
+	cmd.Env = childenv.ForSelfReexec("AGENTDECK_INSTANCE_ID")
+	cmd.Stdin = strings.NewReader(message)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	text := strings.ToLower(errb.String() + out.String())
+	switch {
+	case err == nil && (strings.Contains(text, "unconfirmed") || strings.Contains(text, "not confirmed") || strings.Contains(text, "unverified")):
+		return voicedesk.ErrUnconfirmed
+	case err == nil:
+		return nil
+	case strings.Contains(text, "no keys typed") || strings.Contains(text, "menu_open") || strings.Contains(text, "input prompt unavailable"):
+		return voicedesk.ErrMenuOpen
+	case ctx.Err() != nil:
+		return voicedesk.ErrUnconfirmed // killed mid-way: it may have landed
+	case strings.Contains(text, "not found") || strings.Contains(text, "not running") || strings.Contains(text, "unknown flag") || strings.Contains(text, "flag provided but not defined"):
+		return fmt.Errorf("session send refused")
+	}
+	return voicedesk.ErrUnconfirmed
+}
+
+// Lookup reads the one session again from its own host only (one local
+// profile's list, or one remote's), for the check right before a yes acts.
+func (d *cliVoiceDeck) Lookup(ctx context.Context, s voicedesk.Session) (voicedesk.Session, bool, error) {
+	profile := d.profileOf(s)
+	for _, src := range d.sources() {
+		if src.Host != s.Host || (s.Host == "" && src.Profile != profile) {
+			continue
+		}
+		c, cancel := context.WithTimeout(ctx, needsme.DefaultTimeout)
+		rows, err := src.Fetch(c)
+		cancel()
+		if err != nil {
+			return voicedesk.Session{}, false, err
+		}
+		for _, r := range rows {
+			if r.ID != s.ID {
+				continue
+			}
+			x := voicedesk.Session{ID: r.ID, Title: r.Title, Group: r.Group, Profile: r.Profile, Host: s.Host,
+				Status: r.Status, Substate: r.Substate, Archived: r.Archived, Tool: r.Tool}
+			if x.Profile == "" {
+				x.Profile = src.Profile
+			}
+			return x, true, nil
+		}
+		return voicedesk.Session{}, false, nil
+	}
+	return voicedesk.Session{}, false, nil
 }
 
 // Show asks the Mac app to show a local session (the switch command's
@@ -340,4 +413,22 @@ func (d *cliVoiceDeck) Show(ctx context.Context, s voicedesk.Session) error {
 	}
 	_, _, err := deliverSwitch(dl, s.ID, 300*time.Millisecond)
 	return err
+}
+
+// sweepVoicePending removes unanswered questions older than 60 s, so a heard
+// message never stays on disk long. It only deletes; it creates nothing.
+func sweepVoicePending(profile string) {
+	resolved, err := session.ResolveProfileForStorageQuiet(profile)
+	if err != nil {
+		return
+	}
+	dir, err := session.GetProfileDir(resolved)
+	if err != nil {
+		return
+	}
+	pending := filepath.Join(dir, "voice", "pending")
+	if _, err := os.Stat(pending); err != nil {
+		return
+	}
+	voicedesk.FileStore{Dir: pending}.Sweep()
 }
