@@ -162,6 +162,33 @@ another file is refused rather than read.
 | 501 | `NOT_IMPLEMENTED` | the session's tool is not Claude Code, Codex or Pi; the CLI falls back to the index for those, the route does not |
 | 503 | `RECALL_DISABLED` | `[recall] enabled` is false |
 
+`GET /api/remotes/{name}/sessions/{id}/timeline` is the same read for a
+session on a configured remote: the server runs the remote's `agent-deck
+recall timeline <id> --json` over that remote's SSH runner, with the same
+query parameters, and answers its rows v2 object without the pane `status`.
+The session must be one the remote fleet scan (`GET /api/remotes`) lists.
+Cursors are passed through as they are, so `since` and `before` page the
+remote's transcript. Recall must be on at both ends: with `[recall] enabled`
+false on this machine the route answers 503 before any SSH, so turning recall
+off here means no transcript leaves through this server. What the remote can
+read decides the rest: its own `[recall] enabled`, its harnesses, and its
+version. Each request is one SSH
+round trip, so poll it no faster than the remote list. A remote serves three
+of these reads at once; the next one gets 429 until one ends.
+
+| Status | Code | When |
+| --- | --- | --- |
+| 200 | | the remote's rows v2 object |
+| 400 | `INVALID_REQUEST` | as above (`agent` on a session that is not Claude Code included), or a cursor that is not base64url |
+| 404 | `NOT_FOUND` | the fleet scan does not list the remote or the session, the remote is not configured, or the remote answers not found (with a fixed message, never the remote's own text) |
+| 409 | `RESYNC_REQUIRED` | the remote refused the cursor; reload without it |
+| 429 | `RATE_LIMITED` | three reads of this remote are already in flight; retry after `Retry-After` |
+| 501 | `NOT_IMPLEMENTED` | the remote's agent-deck has no `recall timeline` with these flags; update it |
+| 502 | `INTERNAL_ERROR` | SSH failed, the answer was not this session's timeline, or it was over 8 MB |
+| 503 | `REMOTE_OFFLINE` | the fleet scan sees the remote offline, even when it lists none of the remote's sessions yet, or has not finished its first scan since the server started |
+| 503 | `RECALL_DISABLED` | `[recall] enabled` is false on this machine or on the remote |
+| 504 | `INTERNAL_ERROR` | the remote did not answer within 30 seconds |
+
 Row:
 
 | Field | Meaning |

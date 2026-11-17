@@ -70,12 +70,18 @@ type Server struct {
 	menuSubscribersMu sync.Mutex
 	menuSubscribers   map[chan struct{}]struct{}
 
-	costStore       *costs.Store
-	mutator         SessionMutator
-	skills          SkillsService
-	mcpMgr          MCPManager
-	remoteFleet     RemoteFleetLoader
-	mutationLimiter *rate.Limiter
+	costStore   *costs.Store
+	mutator     SessionMutator
+	skills      SkillsService
+	mcpMgr      MCPManager
+	remoteFleet RemoteFleetLoader
+	// remoteTimelineRunner opens a remote's runner for the remote timeline
+	// route; nil means the configured SSH runner. Tests inject a fake.
+	remoteTimelineRunner func(name string) (remoteTimelineRunner, error)
+	// remoteTimelineSlots caps in-flight remote timeline reads per remote.
+	remoteTimelineMu    sync.Mutex
+	remoteTimelineSlots map[string]chan struct{}
+	mutationLimiter     *rate.Limiter
 
 	// hookStatusLoader returns the latest hook payload for every instance
 	// whose hook file is present on disk. Defaults to defaultLoadHookStatuses
@@ -168,6 +174,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/session/", s.handleSessionByID)
 	mux.HandleFunc("/api/sessions", s.handleSessionsCollection)
 	mux.HandleFunc("/api/remotes", s.handleRemotes)
+	mux.HandleFunc("/api/remotes/", s.handleRemoteSessionRoute)
 	// /api/sessions/undelete is a collection-level action (Chrome-style
 	// ctrl+z undo). Register before the subtree pattern so Go 1.22+
 	// ServeMux precedence routes it cleanly instead of treating
