@@ -7,6 +7,57 @@ import (
 	"testing"
 )
 
+func TestKimiForeignCwdSidecarDoesNotReplaceParent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_INSTANCE_ID", "kimi-foreign-sidecar")
+	t.Setenv("AGENTDECK_TOOL", "kimi")
+	t.Setenv("AGENTDECK_HOOK_GENERATION", "current")
+	workspace := t.TempDir()
+	if err := os.MkdirAll(getHooksDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	control, err := json.Marshal(hookGenerationControl{Generation: "current", CwdRoots: []string{workspace}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(getHooksDir(), "kimi-foreign-sidecar.generation.json"), control, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, event := range []struct {
+		sessionID string
+		cwd       string
+	}{
+		{sessionID: "parent", cwd: workspace},
+		{sessionID: "nested", cwd: t.TempDir()},
+	} {
+		payload, err := json.Marshal(map[string]any{
+			"hook_event_name": "SessionStart",
+			"session_id":      event.sessionID,
+			"client_type":     "kimi_code_cli",
+			"cwd":             event.cwd,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runHookHandlerWith(t, string(payload))
+	}
+
+	var owned struct {
+		ID string `json:"id"`
+	}
+	ownedData, err := os.ReadFile(filepath.Join(getHooksDir(), "kimi-foreign-sidecar.kimi-session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(ownedData, &owned); err != nil {
+		t.Fatal(err)
+	}
+	if owned.ID != "parent" {
+		t.Fatalf("foreign nested Kimi replaced owned session ID with %q", owned.ID)
+	}
+}
+
 func TestKimiSessionIdentitySurvivesLaterEventsAndInitialMessage(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENTDECK_INSTANCE_ID", "kimi-pending")

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,13 +76,50 @@ func TestPruneHermesAbandonedScopeMovesOrRemovesKimiOwnedSession(t *testing.T) {
 	}
 }
 
+func TestKimiOwnedSessionRejectsForeignCwdOnRestart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db := withTempGlobalStateDB(t)
+	workspace := t.TempDir()
+	inst := NewInstanceWithTool("kimi-foreign-restart", workspace, "kimi")
+	saveKimiRow(t, db, inst)
+	path := filepath.Join(GetHooksDir(), inst.ID+kimiOwnedSessionSuffix)
+	writeRecord := func(sessionID, cwd string) {
+		t.Helper()
+		data, err := json.Marshal(kimiOwnedSession{ID: sessionID, Cwd: cwd, At: time.Now().UnixNano()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeRecord("foreign", t.TempDir())
+	inst.prepareKimiResume()
+	if inst.KimiSessionID != "" {
+		t.Fatalf("restart adopted foreign Kimi session %q", inst.KimiSessionID)
+	}
+	if got, _ := persistedKimiBinding(t, db, inst.ID); got != "" {
+		t.Fatalf("restart persisted foreign Kimi session %q", got)
+	}
+
+	writeRecord("owned", filepath.Join(workspace, "subdir"))
+	inst.prepareKimiResume()
+	if inst.KimiSessionID != "owned" {
+		t.Fatalf("restart ignored owned Kimi session: %q", inst.KimiSessionID)
+	}
+}
+
 func TestKimiOwnedSessionColdResumeRotationAndFreshClear(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	db := withTempGlobalStateDB(t)
 	inst := NewInstanceWithTool("kimi-owned-resume", t.TempDir(), "kimi")
 	saveKimiRow(t, db, inst)
 
-	if err := WriteKimiOwnedSessionID(inst.ID, " native-first "); err != nil {
+	if err := WriteKimiOwnedSessionID(inst.ID, " native-first ", inst.ProjectPath, inst.hermesCwdRoots()); err != nil {
 		t.Fatalf("WriteKimiOwnedSessionID: %v", err)
 	}
 	inst.prepareKimiResume()
@@ -95,7 +133,7 @@ func TestKimiOwnedSessionColdResumeRotationAndFreshClear(t *testing.T) {
 		t.Fatalf("cold resume command = %q", command)
 	}
 
-	if err := WriteKimiOwnedSessionID(inst.ID, "native-rotated"); err != nil {
+	if err := WriteKimiOwnedSessionID(inst.ID, "native-rotated", inst.ProjectPath, inst.hermesCwdRoots()); err != nil {
 		t.Fatalf("rotate owned session: %v", err)
 	}
 	inst.prepareKimiResume()

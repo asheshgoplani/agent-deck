@@ -1091,7 +1091,7 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 		eventKey := normalizeHookEventKey(statusFile.Event)
 		kimiEvent := statusFile.ClientType == "kimi_code_cli"
 		if mutateAnchor && statusFile.kimiOwnedSessionID != "" {
-			if err := session.WriteKimiOwnedSessionID(instanceID, statusFile.kimiOwnedSessionID); err != nil {
+			if err := session.WriteKimiOwnedSessionID(instanceID, statusFile.kimiOwnedSessionID, statusFile.Cwd, hermesCwdRoots); err != nil {
 				hookHandlerLog.Warn("kimi_owned_session_write_failed",
 					slog.String("instance", instanceID),
 					slog.String("error", err.Error()),

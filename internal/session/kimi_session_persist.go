@@ -17,11 +17,12 @@ const toolDataKimiSessionIDKey = "kimi_session_id"
 const kimiOwnedSessionSuffix = ".kimi-session"
 
 type kimiOwnedSession struct {
-	ID string `json:"id"`
-	At int64  `json:"at"`
+	ID  string `json:"id"`
+	Cwd string `json:"cwd,omitempty"`
+	At  int64  `json:"at"`
 }
 
-func WriteKimiOwnedSessionID(instanceID, sessionID string) error {
+func WriteKimiOwnedSessionID(instanceID, sessionID, cwd string, cwdRoots []string) error {
 	if !hermesHookInstanceIDPattern.MatchString(instanceID) || strings.Contains(instanceID, "..") {
 		return fmt.Errorf("invalid instance id %q", instanceID)
 	}
@@ -29,11 +30,15 @@ func WriteKimiOwnedSessionID(instanceID, sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("empty Kimi session id")
 	}
-	path := filepath.Join(hermesHookScope(instanceID, false), instanceID+kimiOwnedSessionSuffix)
-	if current, ok := readKimiOwnedSession(path); ok && current.ID == sessionID {
+	cwd = strings.TrimSpace(cwd)
+	if cwd != "" && len(cwdRoots) > 0 && !pathUnderAny(cwd, cwdRoots) {
 		return nil
 	}
-	return atomicHermesJSON(path, kimiOwnedSession{ID: sessionID, At: time.Now().UnixNano()})
+	path := filepath.Join(hermesHookScope(instanceID, false), instanceID+kimiOwnedSessionSuffix)
+	if current, ok := readKimiOwnedSession(path); ok && current.ID == sessionID && current.Cwd == cwd {
+		return nil
+	}
+	return atomicHermesJSON(path, kimiOwnedSession{ID: sessionID, Cwd: cwd, At: time.Now().UnixNano()})
 }
 
 func readKimiOwnedSession(path string) (kimiOwnedSession, bool) {
@@ -56,6 +61,10 @@ func (i *Instance) kimiOwnedSession() (kimiOwnedSession, bool) {
 	sandboxed := i.IsSandboxed()
 	for _, dir := range []string{hermesHookScope(i.ID, sandboxed), hermesHookScope(i.ID, !sandboxed)} {
 		if record, ok := readKimiOwnedSession(filepath.Join(dir, i.ID+kimiOwnedSessionSuffix)); ok {
+			if i.hermesHookCwdIsForeign(record.Cwd) {
+				sessionLog.Warn("kimi_owned_session_cwd_foreign", slog.String("instance_id", i.ID), slog.String("candidate", record.ID))
+				continue
+			}
 			return record, true
 		}
 	}
