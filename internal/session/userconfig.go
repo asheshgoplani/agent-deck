@@ -1262,6 +1262,11 @@ type VoiceSettings struct {
 	OwnerGroups []string `toml:"owner_groups,omitempty"`
 	// OwnerProfiles are profiles whose every session is the owner's.
 	OwnerProfiles []string `toml:"owner_profiles,omitempty"`
+	// Home is the session "Jarvis" talks to by default and "go home"
+	// returns to: a session id or title. Empty: the profile's conductor
+	// session. Read by `agent-deck voice home --json` (and the "home" field
+	// of `voice state --json`), so the daemon, phone and Mac app agree.
+	Home string `toml:"home,omitempty"`
 	// People are other people whose sessions the deck can see.
 	People map[string]VoicePerson `toml:"people,omitempty"`
 }
