@@ -79,6 +79,33 @@ func TestKimiHookLifecycleRestoresMissingTrailingNewline(t *testing.T) {
 	}
 }
 
+func TestKimiHookUninstallPreservesBlankLineBeforeUserHook(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	original := []byte(`[[hooks]]
+event = "SessionStart"
+command = "agent-deck hook-handler"
+
+[[hooks]]
+event = "Notification"
+command = "notify-send Kimi"
+`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := session.RemoveKimiHooks(dir); err != nil || !removed {
+		t.Fatalf("RemoveKimiHooks = %v, %v", removed, err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "\n[[hooks]]\nevent = \"Notification\"\ncommand = \"notify-send Kimi\"\n"
+	if string(data) != want {
+		t.Fatalf("uninstall removed the user hook's preceding blank line:\n got %q\nwant %q", data, want)
+	}
+}
+
 func TestKimiHookLifecyclePreservesConfigAndOnlyRemovesOwnedCommands(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")

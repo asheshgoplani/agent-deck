@@ -307,11 +307,11 @@ func findKimiHookBlocks(data []byte) ([]kimiHookBlock, error) {
 		}
 		trimmed := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(trimmed, "#"):
+		case trimmed == "", strings.HasPrefix(trimmed, "#"):
 			if commentStart < 0 {
 				commentStart = lineStart
 			}
-		case trimmed != "":
+		default:
 			commentStart = -1
 		}
 	}
