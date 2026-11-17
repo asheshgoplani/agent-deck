@@ -198,6 +198,12 @@ export const fileLinkHostSignal = signal('')
 // handoff: new signals are APPENDED AT THE TAIL to preserve clean merges.
 export const sessionsLoadedSignal = signal(false)
 
+// Set when the server answers 401 to the boot menu load: the server was
+// started with --token/--token-file and this page has no token ('missing') or
+// a wrong one ('rejected'). App.js then shows a sign-in screen instead of a
+// shell that looks like an empty deck. null = no auth problem seen.
+export const authRequiredSignal = signal(null)
+
 // PR-B: profiles list from GET /api/profiles, hydrated once on AppShell mount.
 // Shape: { current: string, profiles: string[] }. The Topbar reads this to
 // build the profile dropdown (replacing hardcoded options).
