@@ -138,10 +138,6 @@ func TestKimiYHotkeyTogglesYoloNotAuto(t *testing.T) {
 	}
 }
 
-func TestKimiYoloShortcutOnRemoteSession(t *testing.T) {
-	t.Skip("remote Kimi permission changes are unsupported: the remote session path forwards KimiPermissionMode only during creation")
-}
-
 func TestKimiYoloSettingPersistsAfterEscape(t *testing.T) {
 	home := setXDGTestHome(t)
 	writeXDGTestConfig(t, home, "[kimi]\npermission_mode = \"always-ask\"\n")

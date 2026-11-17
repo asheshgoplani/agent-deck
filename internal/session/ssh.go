@@ -2760,8 +2760,9 @@ type RemoteAddOptions struct {
 	ExtraArgs []string
 	// Yolo enables YOLO mode for Gemini or Codex (--yolo).
 	Yolo bool
-	// KimiPermissionMode forwards a Kimi session's permission mode as --yolo
-	// (ask-when-needed) or --auto (never-ask). Empty = remote default.
+	// KimiPermissionMode forwards a Kimi session's permission mode as
+	// --yolo=false (always-ask), --yolo (ask-when-needed), or --auto
+	// (never-ask). Empty = remote default.
 	KimiPermissionMode string
 	// WorktreeBranch creates the session in a git worktree for this branch on
 	// the server (-w); the branch is created there when it does not exist.
@@ -2860,6 +2861,8 @@ func remoteAddArgs(o RemoteAddOptions) ([]string, error) {
 		args = append(args, "--yolo")
 	}
 	switch o.KimiPermissionMode {
+	case KimiPermissionAlwaysAsk:
+		args = append(args, "--yolo=false")
 	case KimiPermissionAskWhenNeeded:
 		args = append(args, "--yolo")
 	case KimiPermissionNeverAsk:

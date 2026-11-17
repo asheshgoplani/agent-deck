@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -144,6 +145,14 @@ func TestRemoteCreationKimiPermissionMode(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(args, " "), "--yolo") {
 		t.Fatalf("ask-when-needed lost --yolo: %v", args)
+	}
+
+	args, err = remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: KimiPermissionAlwaysAsk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(args, "--yolo=false") || slices.Contains(args, "--auto") {
+		t.Fatalf("always-ask must override a permissive remote default with --yolo=false: %v", args)
 	}
 
 	args, err = remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: ""})
