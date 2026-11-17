@@ -680,13 +680,14 @@ func (h *Home) statusWorkerLoop(base time.Duration, sweep func(), process func(s
 			// Self-triggered update - runs even when TUI is paused
 			sweepStart := time.Now()
 			sweep()
-			h.runPendingHookPass()
 			timer.Reset(nextStatusInterval(time.Since(sweepStart), base, maxStatusInterval))
 			// Coalesce a queued immediate request after full sweep.
 			select {
 			case <-h.statusTrigger:
 			default:
 			}
+			// After the drain: a hook pass the drain swallowed still runs.
+			h.runPendingHookPass()
 
 		case req := <-h.statusTrigger:
 			// Explicit trigger from TUI (for immediate updates)

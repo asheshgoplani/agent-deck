@@ -66,7 +66,7 @@ complete -c agent-deck -f -n "__agent_deck_at conductor '' 2" -a "setup teardown
 complete -c agent-deck -f -n "__agent_deck_at agents '' 2" -a "adopt list show"
 complete -c agent-deck -f -n "__agent_deck_at agent '' 2" -a "adopt list show"
 complete -c agent-deck -f -n "__agent_deck_at watcher '' 2" -a "import create start stop list status test routes install-skill"
-complete -c agent-deck -f -n "__agent_deck_at voice '' 2" -a "state"
+complete -c agent-deck -f -n "__agent_deck_at voice '' 2" -a "state relay mirror-in"
 complete -c agent-deck -f -n "__agent_deck_at openclaw '' 2" -a "sync bridge status list send"
 complete -c agent-deck -f -n "__agent_deck_at oc '' 2" -a "sync bridge status list send"
 complete -c agent-deck -f -n "__agent_deck_at remote '' 2" -a "add remove destroy list sessions drain attach rename update"

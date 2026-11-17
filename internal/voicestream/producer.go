@@ -159,6 +159,10 @@ func RunExclusive(ctx context.Context, profile string, p *Producer) error {
 	for {
 		release, err := tryLock(path)
 		if err == nil {
+			if ctx.Err() != nil {
+				release() // stopped while waiting: publish nothing
+				return nil
+			}
 			p.reset()
 			p.Run(ctx)
 			release()

@@ -100,7 +100,7 @@ func Off(reason, origin string, now time.Time) StateEvent {
 // FromState maps a polled state (nil = no live voice) to a frame.
 // origin names the daemon's machine for a local current.json.
 func FromState(s *voicestate.State, origin, reason string, now time.Time) StateEvent {
-	if s == nil || !s.On {
+	if s == nil || !s.On || s.PhaseWord() == voicestate.PhaseOff {
 		return Off(reason, origin, now)
 	}
 	e := StateEvent{

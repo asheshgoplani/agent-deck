@@ -41,3 +41,21 @@ Sessions whose status is `waiting`, longest first, across every local profile an
 **Errors.** `errors` entries carry fixed words: `timeout`; `unreachable` (a remote that could not be asked: ssh failed, or its agent-deck is missing or exited non-zero); `bad-reply` (the reply was not a session list); `failed` (a local profile that could not be listed, or a source that crashed, local or remote). A remote is `host: "<name>"`; this machine is `host: ""` plus `profile`. Raw ssh text is never shown. `--timeout` is more than 0 and at most 3 s. Plain text prints one line per session (`title [host]: reason, waiting 2m`); errors go to stderr.
 
 The Go entry point is `needsme.Collect(ctx, needsme.Options{Sources: needsme.DefaultSources(self, profile)})` in `internal/needsme`. Voice uses `needsme.ProfileSources(self, profile)` instead: the current profile only, plus the remotes. Voice never lists or targets a session of another local profile.
+
+
+## voice relay (live state on every host)
+
+```
+agent-deck voice relay --to <remote>[,<remote>...] --self <name>
+```
+
+Runs on the machine of the voice daemon. Every change of the voice state (phase, mic target, mute and the other
+flags) goes on this host's event bus as a `voice.state` frame and, over one ssh link per remote, to `agent-deck
+voice mirror-in` on each named remote, which writes that host's `mirror.json` and publishes the same frame there.
+`--self` is this machine's name in those remotes' own `[remotes.<name>]` config (a target on this machine is shown
+under it there). Heard and spoken text never leaves this machine. A dead daemon reaches every host as `off`.
+
+Followers: `agent-deck events follow --kind voice.`, `agent-deck remote <name> events follow --jsonl --kind voice.`,
+and `GET /events/state` on `agent-deck web` (server-sent events with resume by cursor). Frame fields, the `host`
+rule and the web route: [events.md](events.md).
+

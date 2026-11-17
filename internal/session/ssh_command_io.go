@@ -255,9 +255,10 @@ func ownedSSHInput(input io.Reader) (*os.File, func(), error) {
 
 // RunStdinStreamIO owns one dedicated connection for a long-lived command
 // that reads its input from stdin (the voice relay's `voice mirror-in`).
-// Unlike RunFollowIO the remote command keeps the real stdin. Keepalives
-// (sshServerAliveOpts) bound a dead link; WaitDelay bounds the stdin copy
-// after the remote side died. No retries: the caller reconnects.
+// Unlike RunFollowIO (whose wrapper starts the command with </dev/null) the
+// remote command keeps the real stdin. Keepalives (sshServerAliveOpts) bound
+// a dead link; ownedSSHInput's copier ends when the caller closes stdin. No
+// retries: the caller reconnects.
 func (r *SSHRunner) RunStdinStreamIO(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return err
