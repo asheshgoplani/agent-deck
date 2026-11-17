@@ -274,6 +274,7 @@ agent-deck web [options]
 | `--push-vapid-subject` | VAPID subject for push (default: `mailto:agentdeck@localhost`) |
 | `--push-test-every` | Send a test push at this interval (e.g. `10s`; `0` disables) |
 | `--no-tui` | Headless: run only the HTTP server, no TUI |
+| `--stream-remotes` | Comma-separated remotes whose `session.status` frames `GET /events/state` also carries, with `host` (followed over ssh) |
 
 ```bash
 agent-deck web
