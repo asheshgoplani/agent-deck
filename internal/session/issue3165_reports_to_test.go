@@ -197,14 +197,15 @@ func TestIssue3165_IdentityBlockNamesTheLauncher(t *testing.T) {
 }
 
 // A nested worker whose coordinator is gone falls back to its tree parent,
-// as before issue #3165; a top-level worker dead-letters as parent_removed.
+// as before issue #3165; a top-level worker lands in the unowned ledger as
+// parent_removed, like any child of a removed parent.
 func TestIssue3165_GoneLauncherFallsBackToTheTreeParent(t *testing.T) {
 	for _, tc := range []struct {
 		name, profile, parent string
 		wantRoot              bool
 	}{
 		{"nested worker reaches the root", "_test-3165-gone-nested", "root-3165", true},
-		{"top-level worker dead-letters", "_test-3165-gone-top", "", false},
+		{"top-level worker goes to the unowned ledger", "_test-3165-gone-top", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, _ := issue3165Fleet()
@@ -223,8 +224,11 @@ func TestIssue3165_GoneLauncherFallsBackToTheTreeParent(t *testing.T) {
 				}
 				return
 			}
-			if res.DeliveryResult == transitionDeliveryCommitted || res.DeadLetterReason != deadLetterReasonParentMissing || len(got) != 0 {
-				t.Fatalf("delivery %q reason %q root records %d; want parent_removed and no copy", res.DeliveryResult, res.DeadLetterReason, len(got))
+			// Same as a child whose parent was removed: the unowned ledger
+			// holds it as parent_removed, and the root gets no copy.
+			unowned := readInboxLines(t, UnownedInboxID)
+			if len(got) != 0 || len(unowned) != 1 || unowned[0].DeadLetterReason != deadLetterReasonParentMissing {
+				t.Fatalf("root records %d, unowned %+v; want no root copy and one parent_removed unowned record", len(got), unowned)
 			}
 		})
 	}
