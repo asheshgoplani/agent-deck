@@ -167,7 +167,7 @@ _agent_deck_completion() {
             ;;
         voice)
             if ((cword == start + 1)); then
-                COMPREPLY=($(compgen -W state -- "$cur"))
+                COMPREPLY=($(compgen -W 'state do' -- "$cur"))
                 return 0
             fi
             sub=${words[start+1]}

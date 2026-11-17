@@ -2,6 +2,7 @@
 
 ```
 agent-deck voice state [--json]
+agent-deck voice do [--json] [--dry-run] [--from …] [--on <id>] [--pending <token>] [--answer-delay-ms <n>] "<sentence>"
 agent-deck needs-me [--json] [--timeout 3s]
 ```
 
@@ -39,3 +40,7 @@ Sessions whose status is `waiting`, longest first, across every local profile an
 **Errors.** `errors` entries carry fixed words: `timeout`, `unreachable` (remote could not be asked), `bad-reply`, `failed` (local). A remote is `host: "<name>"`; this machine is `host: ""` plus `profile`. Raw ssh text is never shown. `--timeout` is 0 to 3 s. Plain text prints one line per session (`title [host]: reason, waiting 2m`); errors go to stderr.
 
 The Go entry point is `needsme.Collect(ctx, needsme.Options{Sources: needsme.DefaultSources(self, profile)})` in `internal/needsme`.
+
+## voice do
+
+The voice desk: one heard sentence in, one deck action and the short line to speak out. See [voice-desk.md](voice-desk.md).
