@@ -716,7 +716,7 @@ func noTurnSince(path string, offset int64) bool {
 // child last reported stays the reference for later flips.
 func (d *TransitionDaemon) emitRestartBoot(inst *Instance, event TransitionNotificationEvent, tok restartToken, selfConductor bool) TransitionNotificationEvent {
 	event.DeliveryResult = transitionDeliveryDropped
-	if selfConductor || strings.TrimSpace(inst.ParentSessionID) == "" {
+	if selfConductor || inst.ReportTargetID() == "" {
 		return event
 	}
 	tool := tok.Tool
@@ -971,7 +971,7 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 			// error, which no path reports: tell the parent now, with it.
 			if banner := paneErrorText(restartPaneSubstate(inst)); banner != "" {
 				d.spendRestartToken(id)
-				if strings.TrimSpace(inst.ParentSessionID) != "" && !isSelfSuppressedConductor(inst) {
+				if inst.ReportTargetID() != "" && !isSelfSuppressedConductor(inst) {
 					if d.emitRestartError(inst, TransitionNotificationEvent{
 						ChildSessionID: inst.ID, ChildTitle: inst.Title, Profile: profile,
 						FromStatus: string(StatusRunning), ToStatus: string(StatusError), Timestamp: now,
@@ -1028,7 +1028,7 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 				}
 			}
 		}
-		if strings.TrimSpace(inst.ParentSessionID) == "" || isSelfSuppressedConductor(inst) {
+		if inst.ReportTargetID() == "" || isSelfSuppressedConductor(inst) {
 			continue
 		}
 		event := TransitionNotificationEvent{
@@ -1153,7 +1153,7 @@ func (d *TransitionDaemon) sweepRestartBanners(profile string, byID map[string]*
 		rs.mu.Lock()
 		delete(rs.banner, id)
 		rs.mu.Unlock()
-		if banner == "" || strings.TrimSpace(inst.ParentSessionID) == "" || isSelfSuppressedConductor(inst) {
+		if banner == "" || inst.ReportTargetID() == "" || isSelfSuppressedConductor(inst) {
 			continue
 		}
 		result := d.emitRestartError(inst, TransitionNotificationEvent{

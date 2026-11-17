@@ -810,8 +810,8 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 func (d *TransitionDaemon) wakeForInfoDigests(profile string, byID map[string]*Instance, statuses map[string]string) {
 	parents := map[string]bool{}
 	for _, inst := range byID {
-		if inst != nil && inst.ParentSessionID != "" {
-			parents[inst.ParentSessionID] = true
+		if target := inst.reportTargetIDIn(byID); target != "" {
+			parents[target] = true
 		}
 	}
 	now := time.Now()
@@ -1243,7 +1243,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		_, emitTurnOwns := instanceTurnFacts(inst)
 		if repeat, counted := checkDoneRepeat(id, profile, sig, "", true, !emitTurnOwns, at); repeat {
 			if counted {
-				_ = BumpInboxStats(statsParentFor(inst), func(s *InboxStats) { s.DoneRepeats++ })
+				_ = BumpInboxStats(statsParentForIn(inst, byID), func(s *InboxStats) { s.DoneRepeats++ })
 			}
 			d.rememberDone(profile, id, sig)
 			continue

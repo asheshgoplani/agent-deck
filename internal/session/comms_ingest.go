@@ -254,7 +254,7 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		RemoveCommsSpoolEntry(e)
 		return true
 	case CommsEdgeStatus:
-		return d.commitCommsStatus(l, profile, inst, e)
+		return d.commitCommsStatus(l, profile, inst, byID, e)
 	case CommsEdgeWake, CommsEdgeCall:
 		return commitCommsMeasure(l, profile, inst, e)
 	case CommsEdgeSend, CommsEdgeDelivery:
@@ -276,7 +276,7 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	rec := comms.Record{
 		Kind:    comms.KindTurn,
 		From:    inst.ID,
-		To:      []string{statsParentFor(inst)},
+		To:      []string{statsParentForIn(inst, byID)},
 		Profile: profile,
 		Tool:    commsToolName(inst),
 		TSignal: e.TSignal,
@@ -551,7 +551,7 @@ func (d *TransitionDaemon) commsInboxOnlyEdge(inst *Instance, from, to string, a
 // or, when either signal is empty, within the 90 s short window. That rule
 // mirrors what the inbox records; it is not what makes a replay safe. Two
 // distinct edges are never folded by a time bucket.
-func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, inst *Instance, e CommsSpoolEntry) bool {
+func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, inst *Instance, byID map[string]*Instance, e CommsSpoolEntry) bool {
 	if last, ok := l.LastStatus(inst.ID); ok && last.State == e.State && last.Ref == e.From {
 		window := defaultOutputHashDedupTTL
 		if last.TH == "" || e.TH == "" {
@@ -565,7 +565,7 @@ func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, in
 	rec := comms.Record{
 		Kind:    comms.KindStatus,
 		From:    inst.ID,
-		To:      []string{statsParentFor(inst)},
+		To:      []string{statsParentForIn(inst, byID)},
 		Profile: profile,
 		Tool:    commsToolName(inst),
 		State:   e.State,
@@ -660,7 +660,7 @@ func commitCommsSend(l *comms.Ledger, profile string, target *Instance, byID map
 	switch e.Edge {
 	case CommsEdgeSend:
 		to := []string{target.ID}
-		for _, observer := range []string{parentOf(byID[from]), parentOf(target)} {
+		for _, observer := range []string{parentOf(byID[from], byID), parentOf(target, byID)} {
 			if observer != "" && observer != from && observer != target.ID && !containsID(to, observer) {
 				to = append(to, observer)
 			}
@@ -713,11 +713,14 @@ func commitCommsSend(l *comms.Ledger, profile string, target *Instance, byID map
 	return true
 }
 
-func parentOf(inst *Instance) string {
+// parentOf is the session that follows inst's exchanges: its report target
+// against the registry, so a removed launcher falls back to the tree parent
+// as the inbox does (issue #3165).
+func parentOf(inst *Instance, byID map[string]*Instance) string {
 	if inst == nil {
 		return ""
 	}
-	return strings.TrimSpace(inst.ParentSessionID)
+	return inst.reportTargetIDIn(byID)
 }
 
 func containsID(list []string, id string) bool {

@@ -356,6 +356,10 @@ func handleSessionCurrent(profileArg string, args []string) {
 	if instData.IsConductor {
 		jsonData["is_conductor"] = true
 	}
+	// Issue #3165: the launcher this session reports to, when it has one.
+	if instData.ReportsTo != "" {
+		jsonData["reports_to"] = instData.ReportsTo
+	}
 	if instData.WorktreeBranch != "" {
 		jsonData["worktree_branch"] = instData.WorktreeBranch
 	}

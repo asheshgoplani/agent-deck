@@ -69,7 +69,7 @@ agent-deck add -t "Quick" -c claude --attach .   # create → start → drop int
 ```
 
 Notes:
-- Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed. When the calling session is itself a sub-session, the new session starts top-level by default; set `[launch] nest_under_parent = true` to link it under the caller's parent instead (applies to `add` and `launch`, see config-reference.md).
+- Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed. When the calling session is itself a sub-session, the new session starts top-level by default; set `[launch] nest_under_parent = true` to link it under the caller's parent instead (applies to `add` and `launch`, see config-reference.md). Either way, when the calling sub-session is a Claude session, the new session reports to it (`reports_to`, shown by `session show --json`, `list --json` and the `launch --json`/`add --json` result): its completions, questions, errors and turns go to the caller's inbox and wake it under the same rules as a parent, the caller lists it in `session children`, and the kickoff carries the caller's `[agent-deck from:<id>]` envelope. The caller's own parent gets no copy, unless the caller is later removed, when a nested session's records fall back to its tree parent. A shell or non-Claude sub-session records no `reports_to`. `--no-parent` asks for an explicit peer, and a peer reports to nobody: it records no `reports_to`, so a coordinator that wants its workers' results must not pass it; `--no-transition-notify` keeps the link but sends no records. `session set-parent` and `session unset-parent` drop `reports_to`.
 - `--attach` does create → start → attach in one step. Without an interactive terminal (or with `--json`) it exits non-zero with a clear error, leaving the session created and started so you can attach later.
 - `--parent` and `--no-parent` are mutually exclusive.
 - Explicit `-g/--group` overrides inherited parent group.
@@ -719,7 +719,7 @@ Exit codes: `0` done (with `--verify`, every graded group agreed within toleranc
 agent-deck session children [id|title] [--json] [-q] [--follow] [--until-done] [--interval <dur>] [--heartbeat <dur>]
 ```
 
-List a session's sub-sessions with live status and last completion history. Completion fields (`done_status`, `done_summary`, `done_at`) describe the last asserted completion; live `status` (running/waiting/idle/error/queued) determines the current turn — a session can show completion history and still be `running` again. Defaults to the current session. Read-only: never clears the inbox, so poll it as often as you like.
+List a session's sub-sessions, plus the sessions that report to it (launched from inside a sub-session), with live status and last completion history. A row's `reports_to` (in `--json`) names the session that launched it and receives its records; a nested worker shows under both its tree parent and its launcher. Completion fields (`done_status`, `done_summary`, `done_at`) describe the last asserted completion; live `status` (running/waiting/idle/error/queued) determines the current turn — a session can show completion history and still be `running` again. Defaults to the current session. Read-only: never clears the inbox, so poll it as often as you like.
 
 `--follow` streams JSONL events instead of a single snapshot: `snapshot` (initial per-child state), `added`, `status` (from/to transition), `done` (completion sentinel), `removed`, `error`, plus a periodic `heartbeat` (default 60s, `--heartbeat 0` disables). `--until-done` exits 0 once every child either needs input or is terminal (waiting, idle with completion history, error, or stopped). `--interval` tunes the poll cadence backing `--follow` (default 2s).
 
@@ -812,6 +812,8 @@ agent-deck mcp attach my-session recall && agent-deck session restart my-session
 agent-deck session set-parent <session> <parent>
 agent-deck session unset-parent <session>
 ```
+
+Both drop `reports_to`. `unset-parent` also detaches a top-level worker that only reports to the sub-session that launched it, and says which link it cleared; it refuses a session with neither link.
 
 ### session switch-account
 

@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	PromptSuggestionsChildrenOff = "children-off" // off for parented sessions, Claude's own setting for root sessions
+	PromptSuggestionsChildrenOff = "children-off" // off for parented sessions and sessions that report to a launcher, Claude's own setting for root sessions
 	PromptSuggestionsOn          = "on"           // never touch the env; Claude's own setting decides
 	PromptSuggestionsOff         = "off"          // always start with suggestions disabled
 
@@ -87,7 +87,9 @@ func (i *Instance) PromptSuggestionsDisabled() bool {
 	case PromptSuggestionsOn:
 		return false
 	default:
-		return i.ParentSessionID != ""
+		// A child is a parented session or one that reports to the
+		// session that launched it (issue #3165).
+		return i.ReportTargetID() != ""
 	}
 }
 

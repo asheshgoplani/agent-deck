@@ -142,10 +142,11 @@ func TestLaunchParent_DanglingParentStartsTopLevelWithNote(t *testing.T) {
 	orphan.SetParentWithPath("gone-0001", "/proj/gone")
 	setCaller(t, orphan.ID)
 	p, by, note, err := selectLaunchParent("", false, nestOn, append(f.all, orphan))
-	if p != nil || by != nil || err != nil {
-		t.Fatalf("dangling parent: got parent=%v err=%v, want top-level and no error", p, err)
+	// Issue #3165: top-level, but reporting to the calling sub-session.
+	if p != nil || by != orphan || err != nil {
+		t.Fatalf("dangling parent: got parent=%v launched-by=%s err=%v, want top-level reporting to the caller", p, titleOf(by), err)
 	}
-	for _, want := range []string{orphan.ID, "gone-0001", "--no-parent"} {
+	for _, want := range []string{orphan.ID, "gone-0001", "reporting to"} {
 		if !strings.Contains(note, want) {
 			t.Fatalf("note %q must mention %q", note, want)
 		}
@@ -499,21 +500,24 @@ func TestLaunchParent_DefaultOffKeepsTheOldRule(t *testing.T) {
 		name, caller string
 		noParent     bool
 		want         *session.Instance
+		// wantBy is the launcher the new session reports to (issue #3165):
+		// the calling sub-session, unless --no-parent asked for a peer.
+		wantBy *session.Instance
 	}{
-		{"sub-session caller", f.child.ID, false, nil},
-		{"sub-session caller --no-parent", f.child.ID, true, nil},
-		{"dangling-parent caller", orphan.ID, false, nil},
-		{"two-level caller", deep.ID, false, nil},
-		{"top-level caller", f.parent.ID, false, f.parent},
-		{"top-level caller --no-parent", f.parent.ID, true, nil},
-		{"no identity", "", false, nil},
-		{"stale id --no-parent", "stale-9999", true, nil},
+		{"sub-session caller", f.child.ID, false, nil, f.child},
+		{"sub-session caller --no-parent", f.child.ID, true, nil, nil},
+		{"dangling-parent caller", orphan.ID, false, nil, orphan},
+		{"two-level caller", deep.ID, false, nil, deep},
+		{"top-level caller", f.parent.ID, false, f.parent, nil},
+		{"top-level caller --no-parent", f.parent.ID, true, nil, nil},
+		{"no identity", "", false, nil, nil},
+		{"stale id --no-parent", "stale-9999", true, nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setCaller(t, tc.caller)
 			p, by, note, err := selectLaunchParent("", tc.noParent, nestOff, all)
-			if err != nil || p != tc.want || by != nil || note != "" {
-				t.Fatalf("got parent=%s launched-by=%s note=%q err=%v, want parent=%s and nothing else", titleOf(p), titleOf(by), note, err, titleOf(tc.want))
+			if err != nil || p != tc.want || by != tc.wantBy || note != "" {
+				t.Fatalf("got parent=%s launched-by=%s note=%q err=%v, want parent=%s launched-by=%s and no note", titleOf(p), titleOf(by), note, err, titleOf(tc.want), titleOf(tc.wantBy))
 			}
 		})
 	}
@@ -537,8 +541,9 @@ func TestLaunchParent_DefaultOffNoParentSkipsTheTmuxProbe(t *testing.T) {
 }
 
 // The record `add` writes from inside a sub-session with no config is the
-// v1.16.23 record: no parent link, folder-derived group, no parent or
-// launched-by hint, no note.
+// v1.16.23 record (no parent link, folder-derived group, no parent hint, no
+// note) plus, since issue #3165, the launcher it reports to: reports_to and
+// the launched-by hint name the calling sub-session.
 func TestLaunchParent_AddDefaultOffSubsessionCallerIsTopLevel(t *testing.T) {
 	home, cwd, profile := setupAddDefaultPathTest(t)
 	parentPath := filepath.Join(home, "parent-project")
@@ -562,8 +567,8 @@ func TestLaunchParent_AddDefaultOffSubsessionCallerIsTopLevel(t *testing.T) {
 	if _, ok := hints[hintKeyParent]; ok {
 		t.Fatalf("hints %v carry a parent", hints)
 	}
-	if _, ok := hints[hintKeyLaunchedBy]; ok {
-		t.Fatalf("hints %v carry launched-by", hints)
+	if hints[hintKeyLaunchedBy] != f.child.ID || helper.ReportsTo != f.child.ID {
+		t.Fatalf("hints %v reports_to %q, want launched-by and reports_to = %s", hints, helper.ReportsTo, f.child.ID)
 	}
 	if strings.Contains(stderr, f.parent.Title) || strings.Contains(stderr, "linked under") {
 		t.Fatalf("stderr %q carries a parent note", stderr)
