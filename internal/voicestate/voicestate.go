@@ -94,6 +94,12 @@ type State struct {
 	Daemon       Daemon  `json:"daemon"`
 	From         string  `json:"from"`
 	UpdatedAt    int64   `json:"updatedAt"`
+	// ClientSource is which client holds the mic (mac, glasses, phone),
+	// when the daemon says so (plan 2.3: an added field, may be absent).
+	ClientSource string `json:"source"`
+	// Relative marks a mirror.json written by `agent-deck voice relay`:
+	// target.remote is already named from this host ("" = this host).
+	Relative bool `json:"relative"`
 
 	// Source is the file this state was read from (SourceCurrent or
 	// SourceMirror). Not part of the file.
@@ -118,6 +124,8 @@ type fileCache struct {
 	present   bool
 	mtime     time.Time
 	size      int64
+	ino       uint64 // tmp + rename gives every write a new inode
+	ctime     int64  // ns; set by the kernel on every rename or write
 	raw       []byte
 	changedAt time.Time // reader's clock: when it first saw this content
 	state     *State    // nil when unparseable
@@ -168,7 +176,11 @@ func (r *Reader) refresh(c *fileCache, path string, now time.Time) {
 		*c = fileCache{}
 		return
 	}
-	if c.present && fi.ModTime().Equal(c.mtime) && fi.Size() == c.size {
+	// mtime and size alone miss a rewrite of the same size within one coarse
+	// mtime tick (a voice switch to a session whose title has the same
+	// length): the inode and ctime of the renamed file tell it apart.
+	ino, ctime := statIdentity(fi)
+	if c.present && fi.ModTime().Equal(c.mtime) && fi.Size() == c.size && ino == c.ino && ctime == c.ctime {
 		return
 	}
 	fi, raw, err := readStateFile(path)
@@ -178,6 +190,7 @@ func (r *Reader) refresh(c *fileCache, path string, now time.Time) {
 	}
 	first := !c.present
 	c.present, c.mtime, c.size = true, fi.ModTime(), fi.Size()
+	c.ino, c.ctime = statIdentity(fi)
 	if !first && bytes.Equal(raw, c.raw) {
 		return // touched, not changed: the content's age keeps running
 	}
@@ -212,6 +225,7 @@ func (s *State) sanitize() {
 	s.TTS, s.STT = cleanLabel(s.TTS), cleanLabel(s.STT)
 	s.TTSEffective, s.STTEffective = cleanLabel(s.TTSEffective), cleanLabel(s.STTEffective)
 	s.From = cleanLabel(s.From)
+	s.ClientSource = cleanLabel(s.ClientSource)
 	// An unknown phase or older-daemon mode is drawn as-is (Words).
 	s.Phase, s.Mode = cleanLabel(s.Phase), cleanLabel(s.Mode)
 }
@@ -231,6 +245,15 @@ func cleanLabel(v string) string {
 		n++
 	}
 	return b.String()
+}
+
+// statIdentity is the inode and change time of fi (zero when unknown).
+func statIdentity(fi os.FileInfo) (uint64, int64) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0
+	}
+	return uint64(st.Ino), statCtimeNs(st) //nolint:unconvert // Ino is uint32 on some platforms
 }
 
 // acceptable is a state file the reader may read: a regular file (not a
@@ -319,7 +342,10 @@ func (r *Reader) liveMirror(now time.Time) *State {
 	}
 	out := *s
 	out.Source = SourceMirror
-	out.Target.Remote = "" // the mirror is on the box the target lives on
+	if !s.Relative {
+		// An older mirror sits on the box the target lives on.
+		out.Target.Remote = ""
+	}
 	return &out
 }
 

@@ -1177,6 +1177,10 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	// keeps a screenful fresh within a few passes while bounding the worst case
 	// (large group expanded => visible ≈ fleet) to a constant per pass.
 	const visibleStatusBatchSize = 4
+	if req.hookPass {
+		h.processHookPass()
+		return
+	}
 	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
 		return
 	}

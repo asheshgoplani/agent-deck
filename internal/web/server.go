@@ -58,6 +58,8 @@ func (c Config) confirmLinkOpen() bool {
 
 // Server wraps an HTTP server for Agent Deck web mode.
 type Server struct {
+	stateServerFields
+
 	cfg         Config
 	httpServer  *http.Server
 	menuData    MenuDataLoader
@@ -185,6 +187,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/push/unsubscribe", s.handlePushUnsubscribe)
 	mux.HandleFunc("/api/push/presence", s.handlePushPresence)
 	mux.HandleFunc("/events/menu", s.handleMenuEvents)
+	mux.HandleFunc("/events/state", s.handleStateEvents)
 	mux.HandleFunc("/ws/session/", s.handleSessionWS)
 
 	// Feature routes (command center, costs, system, skills, MCPs) register
@@ -251,7 +254,9 @@ func (s *Server) Start() error {
 	if s.push != nil {
 		s.push.Start(s.baseCtx)
 	}
+	s.startVoiceProducer()
 	err := s.listenAndServe()
+	s.stopVoiceProducer()
 	if s.hookWatcher != nil {
 		s.hookWatcher.Stop()
 		s.hookWatcher = nil
