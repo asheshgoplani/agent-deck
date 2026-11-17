@@ -538,6 +538,8 @@ func moveOwnedSessionsFromAbandonedScope(instanceID, dir string) {
 				continue
 			}
 		}
-		_ = os.Remove(src)
+		if _, err := os.Stat(dst); err == nil {
+			_ = os.Remove(src)
+		}
 	}
 }
