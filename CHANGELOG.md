@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `agent-deck needs-me [--json]` lists the sessions waiting for you, longest first, across every local profile and every configured remote (a host that does not answer in 3 s is listed under `errors`). `agent-deck voice state [--json]` reports the voice daemon's phase (`listening`, `hearing`, `thinking`, `speaking`, `resting`, `off`) and the session the mic is on. Both are read-only; see `docs/voice.md`.
+
 ### Fixes
 
 - A standing-order or heartbeat wake that Claude Code hands over as a paste (inside a `<pasted_content>` wrapper) still counts as an unattended turn: its permission prompts are denied with a `NEED:`, and an order wake still cannot change orders. Inbox and heartbeat wakes in a paste are also tiered as wakes, not as human prompts.
