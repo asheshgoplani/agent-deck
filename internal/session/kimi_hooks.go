@@ -250,6 +250,54 @@ type kimiHookBlock struct {
 	command string
 }
 
+func scanKimiMultilineString(line, state string) string {
+	for pos := 0; pos < len(line); {
+		if state != "" {
+			if state == `"""` && line[pos] == '\\' {
+				pos += 2
+				continue
+			}
+			if strings.HasPrefix(line[pos:], state) {
+				pos += len(state)
+				state = ""
+				continue
+			}
+			pos++
+			continue
+		}
+		switch line[pos] {
+		case '#':
+			return state
+		case '\'', '"':
+			quote := line[pos]
+			delimiter := `'''`
+			if quote == '"' {
+				delimiter = `"""`
+			}
+			if strings.HasPrefix(line[pos:], delimiter) {
+				state = delimiter
+				pos += len(delimiter)
+				continue
+			}
+			pos++
+			for pos < len(line) {
+				if quote == '"' && line[pos] == '\\' {
+					pos += 2
+					continue
+				}
+				if line[pos] == quote {
+					pos++
+					break
+				}
+				pos++
+			}
+		default:
+			pos++
+		}
+	}
+	return state
+}
+
 func findKimiHookBlocks(data []byte) ([]kimiHookBlock, error) {
 	var blocks []kimiHookBlock
 	start := -1
@@ -286,10 +334,13 @@ func findKimiHookBlocks(data []byte) ([]kimiHookBlock, error) {
 	}
 
 	offset := 0
+	multiline := ""
 	for _, line := range strings.SplitAfter(string(data), "\n") {
 		lineStart := offset
 		offset += len(line)
-		if tableName, ok := tomlTableName(line); ok {
+		inMultiline := multiline != ""
+		multiline = scanKimiMultilineString(line, multiline)
+		if tableName, ok := tomlTableName(line); ok && !inMultiline {
 			switch {
 			case tableName == "hooks":
 				if err := flush(lineStart); err != nil {
@@ -302,7 +353,7 @@ func findKimiHookBlocks(data []byte) ([]kimiHookBlock, error) {
 				}
 			}
 		}
-		if start < 0 {
+		if start < 0 || inMultiline {
 			continue
 		}
 		trimmed := strings.TrimSpace(line)

@@ -106,6 +106,45 @@ command = "notify-send Kimi"
 	}
 }
 
+func TestKimiHookLifecyclePreservesMultilineCommandStrings(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		delimiter string
+	}{
+		{name: "literal", delimiter: "'''"},
+		{name: "basic", delimiter: `"""`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.toml")
+			original := []byte("[[hooks]]\nevent = \"Notification\"\ncommand = " + tc.delimiter + "\nprintf first\n[[hooks]]\n[x]\nprintf last\n" + tc.delimiter + "\n")
+			if err := os.WriteFile(configPath, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if installed, err := session.InjectKimiHooks(dir); err != nil || !installed {
+				t.Fatalf("InjectKimiHooks = %v, %v", installed, err)
+			}
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(string(data), string(original)) {
+				t.Fatalf("install changed multiline user command:\n got %q\nwant prefix %q", data, original)
+			}
+			if removed, err := session.RemoveKimiHooks(dir); err != nil || !removed {
+				t.Fatalf("RemoveKimiHooks = %v, %v", removed, err)
+			}
+			data, err = os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != string(original) {
+				t.Fatalf("uninstall did not restore multiline user command:\n got %q\nwant %q", data, original)
+			}
+		})
+	}
+}
+
 func TestKimiHookLifecyclePreservesConfigAndOnlyRemovesOwnedCommands(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
