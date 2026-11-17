@@ -264,6 +264,42 @@ func TestSessionsCollectionPOSTForwardsModelID(t *testing.T) {
 	}
 }
 
+func TestSessionsCollectionPOSTCreatesKimiSession(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotTool, gotModel string
+	srv.mutator = &fakeMutator{
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+			gotTool = tool
+			gotModel = modelID
+			return "kimi-id", nil
+		},
+	}
+
+	body := strings.NewReader(`{"title":"Kimi web","tool":"kimi","projectPath":"/tmp","modelId":"kimi-code/kimi-for-coding"}`)
+	req := newLocalRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if gotTool != "kimi" {
+		t.Fatalf("tool = %q, want kimi", gotTool)
+	}
+	if gotModel != "kimi-code/kimi-for-coding" {
+		t.Fatalf("modelID = %q, want kimi-code/kimi-for-coding", gotModel)
+	}
+	if !strings.Contains(rr.Body.String(), `"sessionId":"kimi-id"`) {
+		t.Fatalf("expected Kimi session id in response, got: %s", rr.Body.String())
+	}
+}
+
 func TestSessionsCollectionPOSTForwardsReasoningEffort(t *testing.T) {
 	srv := NewServer(Config{
 		ListenAddr:   "127.0.0.1:0",
