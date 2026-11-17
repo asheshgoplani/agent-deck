@@ -565,3 +565,68 @@ func (d *cliVoiceDeck) Children(ctx context.Context, s voicedesk.Session) ([]voi
 	}
 	return kids, nil
 }
+
+// To-dos go through `agent-deck todo` (branch feat/todos). A binary without
+// it answers with no JSON: the desk then says to-dos are not available.
+type voiceTodoItem struct {
+	ID     string  `json:"id"`
+	Text   string  `json:"text"`
+	DoneAt *string `json:"done_at"`
+}
+
+func (it voiceTodoItem) desk() voicedesk.Todo {
+	return voicedesk.Todo{ID: it.ID, Text: it.Text, Done: it.DoneAt != nil && *it.DoneAt != ""}
+}
+
+func (d *cliVoiceDeck) todoRun(ctx context.Context, v any, args ...string) error {
+	out, err := d.run(ctx, "", append([]string{"todo"}, args...)...)
+	if jerr := json.Unmarshal(bytes.TrimSpace(out), v); jerr != nil {
+		if err != nil || len(bytes.TrimSpace(out)) == 0 || !bytes.HasPrefix(bytes.TrimSpace(out), []byte("{")) {
+			return voicedesk.ErrUnsupported
+		}
+		return jerr
+	}
+	return nil
+}
+
+func (d *cliVoiceDeck) TodoAdd(ctx context.Context, text string) (voicedesk.Todo, error) {
+	var v struct {
+		Status string         `json:"status"`
+		Todo   *voiceTodoItem `json:"todo"`
+	}
+	if err := d.todoRun(ctx, &v, "add", "--source", "voice", "--json", "--", text); err != nil {
+		return voicedesk.Todo{}, err
+	}
+	if v.Todo == nil {
+		return voicedesk.Todo{}, errors.New("todo add: " + v.Status)
+	}
+	return v.Todo.desk(), nil
+}
+
+func (d *cliVoiceDeck) TodoList(ctx context.Context) ([]voicedesk.Todo, error) {
+	var v struct {
+		Todos []voiceTodoItem `json:"todos"`
+	}
+	if err := d.todoRun(ctx, &v, "list", "--json"); err != nil {
+		return nil, err
+	}
+	out := make([]voicedesk.Todo, 0, len(v.Todos))
+	for _, it := range v.Todos {
+		out = append(out, it.desk())
+	}
+	return out, nil
+}
+
+func (d *cliVoiceDeck) TodoDone(ctx context.Context, id string) (voicedesk.Todo, error) {
+	var v struct {
+		Status string         `json:"status"`
+		Todo   *voiceTodoItem `json:"todo"`
+	}
+	if err := d.todoRun(ctx, &v, "done", "--json", "--", id); err != nil {
+		return voicedesk.Todo{}, err
+	}
+	if v.Todo == nil {
+		return voicedesk.Todo{}, errors.New("todo done: " + v.Status)
+	}
+	return v.Todo.desk(), nil
+}
