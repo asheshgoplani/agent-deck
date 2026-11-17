@@ -439,3 +439,129 @@ func sweepVoicePending(profile string) {
 	}
 	voicedesk.FileStore{Dir: pending}.Sweep()
 }
+
+// Act runs stop / restart / archive through `session <verb>` (local) or
+// `remote <name> session <verb>` (forwarded by the remote allowlist).
+func (d *cliVoiceDeck) Act(ctx context.Context, s voicedesk.Session, verb string) error {
+	switch verb {
+	case "stop", "restart", "archive":
+	default:
+		return fmt.Errorf("voice never runs %q", verb)
+	}
+	var out []byte
+	var err error
+	if s.Host != "" {
+		out, err = d.run(ctx, "", "remote", s.Host, "session", verb, s.ID, "--json")
+	} else {
+		out, err = d.run(ctx, "", "-p", d.profileOf(s), "session", verb, s.ID, "--json")
+	}
+	if err != nil {
+		return err
+	}
+	var v struct {
+		Success *bool `json:"success"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(out), &v) == nil && v.Success != nil && !*v.Success {
+		return fmt.Errorf("session %s did not succeed", verb)
+	}
+	return nil
+}
+
+// Launch starts a session with `launch -t <title> -g <group> --json`; the
+// path and tool come from the group's defaults as for a typed launch.
+func (d *cliVoiceDeck) Launch(ctx context.Context, spec voicedesk.LaunchSpec) (voicedesk.Session, error) {
+	args := []string{"launch", "-t", spec.Title, "--json"}
+	if spec.Group != "" {
+		args = append(args, "-g", spec.Group)
+	}
+	if spec.Host != "" {
+		args = append([]string{"remote", spec.Host}, args...)
+	} else {
+		profile := spec.Profile
+		if profile == "" {
+			profile = d.profile
+		}
+		args = append([]string{"-p", profile}, args...)
+	}
+	out, err := d.run(ctx, "", args...)
+	var v struct {
+		Success bool   `json:"success"`
+		ID      string `json:"id"`
+		Title   string `json:"title"`
+		Group   string `json:"group"`
+		Error   string `json:"error"`
+	}
+	if jerr := json.Unmarshal(bytes.TrimSpace(out), &v); jerr != nil || !v.Success {
+		if err == nil {
+			err = errors.New("launch did not succeed")
+		}
+		return voicedesk.Session{}, err
+	}
+	return voicedesk.Session{ID: v.ID, Title: v.Title, Group: v.Group, Host: spec.Host, Profile: spec.Profile}, nil
+}
+
+// Search is `recall search --json --limit 5` (plus --all-remotes when
+// remotes are configured; a remote that does not answer leaves the local
+// hits).
+func (d *cliVoiceDeck) Search(ctx context.Context, query string) ([]voicedesk.SearchHit, error) {
+	args := []string{"-p", d.profile, "recall", "search", "--json", "--limit", "5"}
+	if uc, err := session.LoadUserConfig(); err == nil && uc != nil && len(uc.Remotes) > 0 {
+		args = append(args, "--all-remotes")
+	}
+	args = append(args, "--", query)
+	out, err := d.run(ctx, "", args...)
+	var v struct {
+		Success *bool  `json:"success"`
+		Error   string `json:"error"`
+		Hits    []struct {
+			Title   string `json:"title"`
+			DeckID  string `json:"deck_id"`
+			Remote  string `json:"remote"`
+			Snippet string `json:"snippet"`
+		} `json:"hits"`
+	}
+	if jerr := json.Unmarshal(bytes.TrimSpace(out), &v); jerr != nil {
+		if err == nil {
+			err = jerr
+		}
+		return nil, err
+	}
+	if v.Success != nil && !*v.Success {
+		if strings.Contains(v.Error, "recall is off") {
+			return nil, voicedesk.ErrSearchOff
+		}
+		return nil, errors.New("recall search failed")
+	}
+	hits := make([]voicedesk.SearchHit, 0, len(v.Hits))
+	for _, h := range v.Hits {
+		hits = append(hits, voicedesk.SearchHit{Title: h.Title, DeckID: h.DeckID, Host: h.Remote, Snippet: h.Snippet})
+	}
+	return hits, nil
+}
+
+// Children is `session children <id> --json` (this machine only: the
+// remote allowlist does not forward children).
+func (d *cliVoiceDeck) Children(ctx context.Context, s voicedesk.Session) ([]voicedesk.Session, error) {
+	if s.Host != "" {
+		return nil, voicedesk.ErrUnsupported
+	}
+	out, err := d.run(ctx, "", "-p", d.profileOf(s), "session", "children", s.ID, "--json")
+	if err != nil {
+		return nil, err
+	}
+	var v struct {
+		Children []struct {
+			ID     string `json:"id"`
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		} `json:"children"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &v); err != nil {
+		return nil, err
+	}
+	kids := make([]voicedesk.Session, 0, len(v.Children))
+	for _, c := range v.Children {
+		kids = append(kids, voicedesk.Session{ID: c.ID, Title: c.Title, Status: c.Status, Profile: d.profileOf(s)})
+	}
+	return kids, nil
+}

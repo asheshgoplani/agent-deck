@@ -93,6 +93,21 @@ two or more of his sessions asks which one ("tell conductor to …", "status of 
 name ("tell phone walk to continue", "tell zephyr to stop", a name with a number) answers "I found no session of
 yours called …"; it is never typed into the session as plain text.
 
+## Phase 2: acting on sessions
+
+| Intent | English | Roman Hindi | Does (after a yes where marked) |
+|---|---|---|---|
+| `launch` | "start a new session called X in G", "launch a new session named X" | "ek nayi session shuru karo naam X", "G mein nayi session shuru karo naam X" | yes: `launch -t x -g G` (or on a remote) |
+| `stop` / `restart` / `archive` | "stop X", "restart X", "archive X" | "X band karo", "X restart karo", "X archive karo" | yes: `session stop|restart|archive` |
+| plural | "stop all workers" | "sab workers band karo" | lists first, at most five per yes |
+| `search` | "where did we talk about X", "search what was said about X" | "X ki baat kahan hui thi" | `recall search` (read-only; needs `[recall] enabled`) |
+| `workers` | "what are X's workers doing" | "X ke workers kya kar rahe hain" | `session children` (this machine) |
+| `next` | "take me to the next one" | "agla wala kholo" | switch to the first waiting session he is not on |
+| `refuse` | "delete the X session" | "X session delete karo" | nothing: voice never deletes, pushes or pays |
+
+Every launch, stop, restart and archive is read back and needs a yes within 10 s; the yes re-checks each session.
+An unknown name after stop/restart/archive is not the desk's ("stop listening" belongs to the voice daemon).
+
 ## Safety
 
 1. **Only the owner's sessions** (`[voice]` in config.toml, see the config reference). Another person's session is
