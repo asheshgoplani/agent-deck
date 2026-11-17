@@ -662,6 +662,9 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	case IntentNext, IntentSearch, IntentLaunch, IntentTodoAdd, IntentTodoList, IntentTodoDone:
 		return d.runPhase2(ctx, req, r, p)
 	}
+	if p.Intent == IntentOpenPage && p.Name == "" {
+		return d.openPageOn(ctx, req, r, p)
+	}
 	// talk in a soft desk form is decided from the words, before any
 	// listing (no ssh for "read the file and fix the bug")
 	if q0 := newNameQuery(p.Name, nil); p.Soft && talkLike(q0.words) {
@@ -849,6 +852,8 @@ func (d *Desk) withTarget(ctx context.Context, req Request, p Parsed, s Session,
 		return d.pend(req, r, Pending{Profile: req.Profile, Kind: "yes", Action: actionSwitch, Intent: IntentFind, Lang: p.Lang, Target: &t}, prompt)
 	case IntentStop, IntentRestart, IntentArchive, IntentWorkers, IntentRefuse:
 		return d.withTargetPhase2(ctx, req, r, p, s)
+	case IntentOpenPage:
+		return d.openPage(ctx, req, r, p, s)
 	default:
 		return r, errors.New("intent without a target: " + p.Intent)
 	}

@@ -192,7 +192,12 @@ func runVoiceDo(profile string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "voice do: %v\n", err) // never the sentence
 		return 1
 	}
-	return writeVoiceDo(stdout, stderr, res, a.jsonOut)
+	code := writeVoiceDo(stdout, stderr, res, a.jsonOut)
+	if f, ok := stdout.(*os.File); ok {
+		_ = f.Sync()
+	}
+	publishVoiceResult(self, resolved, a.from, res)
+	return code
 }
 
 func writeVoiceDo(stdout, stderr io.Writer, res voicedesk.Result, asJSON bool) int {
@@ -629,4 +634,92 @@ func (d *cliVoiceDeck) TodoDone(ctx context.Context, id string) (voicedesk.Todo,
 		return voicedesk.Todo{}, errors.New("todo done: " + v.Status)
 	}
 	return v.Todo.desk(), nil
+}
+
+// OpenPage opens the newest page a session made on his phone and Mac app:
+// `open --last --session <id> --json` (branch feat/open-phone, planned
+// interface: {status: opened|queued, where, session, title, path}; exit 2 =
+// the session has no page). A binary without --last answers unsupported.
+func (d *cliVoiceDeck) OpenPage(ctx context.Context, s voicedesk.Session) (voicedesk.Page, error) {
+	if s.Host != "" {
+		return voicedesk.Page{}, voicedesk.ErrUnsupported
+	}
+	cmd := exec.CommandContext(ctx, d.self, "-p", d.profileOf(s), "open", "--last", "--session", s.ID, "--json", "--wait", "500ms") //nolint:gosec // G204: re-exec of this binary with fixed verbs
+	cmd.Env = childenv.ForSelfReexec("AGENTDECK_INSTANCE_ID")
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	var v struct {
+		Status    string `json:"status"`
+		Where     string `json:"where"`
+		Path      string `json:"path"`
+		PageID    string `json:"page_id"`
+		PageTitle string `json:"page_title"`
+	}
+	jerr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &v)
+	var ee *exec.ExitError
+	switch {
+	case jerr == nil && (v.Status == "opened" || v.Status == "queued"):
+		where := v.Where
+		if v.Status == "queued" {
+			where = "queued"
+		}
+		title := strings.TrimSpace(v.PageTitle)
+		if title == "" {
+			title = d.pageTitle(ctx, s, v.PageID, v.Path)
+		}
+		return voicedesk.Page{Title: title, Path: v.Path, Where: where}, nil
+	case errors.As(err, &ee) && ee.ExitCode() == 2 && strings.Contains(errb.String()+out.String(), "flag provided but not defined"):
+		return voicedesk.Page{}, voicedesk.ErrUnsupported
+	case errors.As(err, &ee) && ee.ExitCode() == 2:
+		return voicedesk.Page{}, voicedesk.ErrNoPage
+	case err != nil:
+		return voicedesk.Page{}, err
+	}
+	return voicedesk.Page{}, errors.New("open --last: unexpected answer")
+}
+
+// publishVoiceResult hands a handled, real (not dry-run) result to the
+// event stream as voice.result through `voice result-publish` (branch
+// feat/voice-state-stream), so every screen shows the same answer. Best
+// effort, bounded: a binary without it, or a slow bus, never changes the
+// result. The heard sentence is never in the result; say and the confirm
+// token are dropped by the publisher.
+func publishVoiceResult(self, profile, from string, res voicedesk.Result) {
+	if !res.Handled || res.DryRun {
+		return
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, self, "-p", profile, "voice", "result-publish", "--from", from) //nolint:gosec // G204: re-exec of this binary with fixed verbs
+	cmd.Env = childenv.ForSelfReexec("AGENTDECK_INSTANCE_ID")
+	cmd.Stdin = bytes.NewReader(b)
+	_ = cmd.Run()
+}
+
+// pageTitle is the page's own title from `open --list` (the --last answer
+// carries the session's title), else its file name without the extension.
+func (d *cliVoiceDeck) pageTitle(ctx context.Context, s voicedesk.Session, pageID, path string) string {
+	out, err := d.run(ctx, "", "-p", d.profileOf(s), "open", "--list", "--session", s.ID, "--json")
+	if err == nil {
+		var v struct {
+			Pages []struct {
+				ID    string `json:"id"`
+				Title string `json:"title"`
+			} `json:"pages"`
+		}
+		if json.Unmarshal(bytes.TrimSpace(out), &v) == nil {
+			for _, p := range v.Pages {
+				if p.ID == pageID && strings.TrimSpace(p.Title) != "" {
+					return strings.TrimSpace(p.Title)
+				}
+			}
+		}
+	}
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
