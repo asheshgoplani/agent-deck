@@ -46,6 +46,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
 - [[macapp] Section](#macapp-section)
+- [[voice] Section](#voice-section)
 - [[browser] Section](#browser-section)
 - [[ask] Section](#ask-section)
 - [[feedback] Section](#feedback-section)
@@ -1381,6 +1382,34 @@ status_events = false      # Status owners publish session.status and session.tu
 | `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the Mac app's own frames (`macapp.open`, `macapp.open.ack`, `macapp.switch`, `macapp.switch.ack`, `macapp.browser.response`, `macapp.app.focus`, `macapp.ask.seen`); `macapp.ask` and `macapp.ask.ack` are never admitted (only `agent-deck ask` publishes them); `macapp.browser.request` also needs [`[browser] enabled`](#browser-section). Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
 | `transcript_events` | bool | `false` | The notify daemon publishes a `session.transcript` frame whenever a live session's native transcript grows. Restart required. |
 | `status_events` | bool | `false` | Every status owner (TUI poller, notify daemon) publishes `session.status` and `session.turn` frames on each status transition. |
+
+## [voice] Section
+
+Owner rules of the voice desk (`agent-deck voice do`, [docs/voice-desk.md](../../../docs/voice-desk.md)):
+whose sessions a spoken command may reach. Read on every `voice do` call; no restart.
+
+```toml
+[voice]
+owner_groups   = ["team/alex"]   # his groups, each with its subgroups
+owner_profiles = ["work"]        # every session of these profiles is his
+
+[voice.people.sam]               # someone else whose sessions the deck can see
+groups   = ["team/sam"]
+profiles = []
+names    = ["samuel"]            # other spoken names; the key "sam" is always one
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `owner_groups` | list of group paths | `[]` | The owner's groups. A group covers its subgroups. |
+| `owner_profiles` | list of profiles | `[]` | Profiles whose every session is the owner's. |
+| `people.<name>.groups` | list of group paths | `[]` | Another person's groups. Their sessions are refused by name ("That is Sam's session."), never acted on. |
+| `people.<name>.profiles` | list of profiles | `[]` | Profiles that are wholly that person's. |
+| `people.<name>.names` | list of strings | `[]` | Other spoken names of that person; a spoken name holding one is refused even when no session matches. |
+
+With both owner lists empty, every session not listed under a person counts as the owner's. With an owner list set, a
+session in nobody's list is not a voice target at all. The most specific rule wins (a longer group path beats a
+shorter one, a group beats a whole profile); a tie between the owner and a person goes to the person.
 
 ## [browser] Section
 

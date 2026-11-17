@@ -4817,7 +4817,7 @@ func printHelp() {
 	fmt.Println("  web              Start TUI with web UI server running alongside")
 	fmt.Println("  connect          Connect an assistant bot (Hermes, Claude, ChatGPT, Telegram...) with a scoped token")
 	fmt.Println("  needs-me         Sessions waiting for you, all profiles + remotes [--json] (docs/voice.md)")
-	fmt.Println("  voice            Voice desk: voice state [--json] (docs/voice.md)")
+	fmt.Println("  voice            Voice desk: voice do \"<sentence>\" [--json], voice state [--json] (docs/voice-desk.md)")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  provider         List and test sandbox providers (remote add --provider)")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")

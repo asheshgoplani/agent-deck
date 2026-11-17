@@ -349,6 +349,10 @@ type UserConfig struct {
 	// Macapp holds the switches for the Mac app surface (docs/macapp-core.md).
 	Macapp MacappSettings `toml:"macapp,omitempty"`
 
+	// Voice holds the voice desk's owner rules (`agent-deck voice do`,
+	// docs/voice.md): whose sessions a spoken command may reach.
+	Voice VoiceSettings `toml:"voice,omitempty"`
+
 	// Browser holds the `agent-deck browser` opt-in (docs/macapp-browser.md).
 	Browser BrowserSettings `toml:"browser,omitempty"`
 
@@ -1237,6 +1241,39 @@ type RemoteAttachSettings struct {
 // PasteImagesEnabled reports the [remote] paste_images setting (default true).
 func (s RemoteAttachSettings) PasteImagesEnabled() bool {
 	return s.PasteImages == nil || *s.PasteImages
+}
+
+// VoiceSettings is the [voice] section: the owner rules of the voice desk.
+//
+//	[voice]
+//	owner_groups   = ["team/alex"]   # his groups, each with its subgroups
+//	owner_profiles = ["work"]        # every session of these profiles is his
+//	[voice.people.sam]                # someone else: never a voice target
+//	groups   = ["team/sam"]
+//	profiles = []
+//	names    = ["samuel"]           # other spoken names besides "sam"
+//
+// Default (both owner lists empty): every session that is not listed under
+// a person counts as the owner's. A session in another person's group is
+// refused by name; with owner lists set, a session in nobody's list is not
+// a voice target at all.
+type VoiceSettings struct {
+	// OwnerGroups are the owner's group paths (a group and everything below).
+	OwnerGroups []string `toml:"owner_groups,omitempty"`
+	// OwnerProfiles are profiles whose every session is the owner's.
+	OwnerProfiles []string `toml:"owner_profiles,omitempty"`
+	// People are other people whose sessions the deck can see.
+	People map[string]VoicePerson `toml:"people,omitempty"`
+}
+
+// VoicePerson is one other person in [voice.people.<name>].
+type VoicePerson struct {
+	// Groups are their group paths (with subgroups).
+	Groups []string `toml:"groups,omitempty"`
+	// Profiles are profiles that are wholly theirs.
+	Profiles []string `toml:"profiles,omitempty"`
+	// Names are other spoken names for them (the key is always one).
+	Names []string `toml:"names,omitempty"`
 }
 
 type RemoteConfig struct {
