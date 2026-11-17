@@ -125,7 +125,6 @@ type fileCache struct {
 	mtime     time.Time
 	size      int64
 	ino       uint64 // tmp + rename gives every write a new inode
-	ctime     int64  // ns; set by the kernel on every rename or write
 	raw       []byte
 	changedAt time.Time // reader's clock: when it first saw this content
 	state     *State    // nil when unparseable
@@ -178,9 +177,10 @@ func (r *Reader) refresh(c *fileCache, path string, now time.Time) {
 	}
 	// mtime and size alone miss a rewrite of the same size within one coarse
 	// mtime tick (a voice switch to a session whose title has the same
-	// length): the inode and ctime of the renamed file tell it apart.
-	ino, ctime := statIdentity(fi)
-	if c.present && fi.ModTime().Equal(c.mtime) && fi.Size() == c.size && ino == c.ino && ctime == c.ctime {
+	// length). The daemon writes tmp + rename, so the inode tells it apart;
+	// an identical stat in place is still not re-read.
+	ino := statInode(fi)
+	if c.present && fi.ModTime().Equal(c.mtime) && fi.Size() == c.size && ino == c.ino {
 		return
 	}
 	fi, raw, err := readStateFile(path)
@@ -190,7 +190,7 @@ func (r *Reader) refresh(c *fileCache, path string, now time.Time) {
 	}
 	first := !c.present
 	c.present, c.mtime, c.size = true, fi.ModTime(), fi.Size()
-	c.ino, c.ctime = statIdentity(fi)
+	c.ino = statInode(fi)
 	if !first && bytes.Equal(raw, c.raw) {
 		return // touched, not changed: the content's age keeps running
 	}
@@ -247,13 +247,13 @@ func cleanLabel(v string) string {
 	return b.String()
 }
 
-// statIdentity is the inode and change time of fi (zero when unknown).
-func statIdentity(fi os.FileInfo) (uint64, int64) {
+// statInode is the inode of fi (0 when unknown).
+func statInode(fi os.FileInfo) uint64 {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, 0
+		return 0
 	}
-	return uint64(st.Ino), statCtimeNs(st) //nolint:unconvert // Ino is uint32 on some platforms
+	return uint64(st.Ino) //nolint:unconvert // Ino is uint32 on some platforms
 }
 
 // acceptable is a state file the reader may read: a regular file (not a
