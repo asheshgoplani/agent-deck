@@ -122,6 +122,13 @@ func walkRoots(patterns []string) []string {
 // metacharacter. A directory-only pattern returns the directory itself; a file
 // pattern returns the directory that holds the file.
 //
+// The walk root treats a pattern with a separator in the middle as anchored at
+// the repository root, which is the gitignore rule. The matcher is looser: it
+// also accepts the same relative path under any parent (sub/config/local.json
+// for config/local.json). Such a nested path is no longer discovered. Git
+// ignores it through a different rule, so the anchored reading is the useful
+// one, and it is what makes the narrow walk possible.
+//
 // ok is false when the pattern can match at any depth: a bare name, a negation,
 // or one whose first path segment contains a glob.
 func staticWalkRoot(pattern string) (string, bool) {
@@ -167,15 +174,32 @@ func pruneNestedRoots(roots []string) []string {
 		// A full walk already covers every other root.
 		return []string{"."}
 	}
-	kept := roots[:1]
-	for _, root := range roots[1:] {
-		last := kept[len(kept)-1]
-		if root == last || strings.HasPrefix(root, last+"/") {
-			continue
+	var kept []string
+	for _, root := range roots {
+		nested := false
+		for _, ancestor := range kept {
+			if root == ancestor || strings.HasPrefix(root, ancestor+"/") {
+				nested = true
+				break
+			}
 		}
-		kept = append(kept, root)
+		if !nested {
+			kept = append(kept, root)
+		}
 	}
 	return kept
+}
+
+// insideNestedRepo reports whether root or one of its parents, up to but
+// excluding the repository root, holds a .git entry. Such a root lives in a
+// nested worktree or submodule, which the walk must not read.
+func insideNestedRepo(rootFS fs.FS, root string) bool {
+	for dir := root; dir != "." && dir != "/" && dir != ""; dir = path.Dir(dir) {
+		if _, err := fs.Stat(rootFS, path.Join(dir, ".git")); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // walkIncludeRoots collects the paths under roots that match matcher. It stops
@@ -184,6 +208,9 @@ func walkIncludeRoots(rootFS fs.FS, roots []string, matcher *ignore.GitIgnore) (
 	var candidates []string
 	for _, root := range roots {
 		if _, err := fs.Stat(rootFS, root); err != nil {
+			continue
+		}
+		if insideNestedRepo(rootFS, root) {
 			continue
 		}
 		err := fs.WalkDir(rootFS, root, func(p string, d fs.DirEntry, err error) error {
