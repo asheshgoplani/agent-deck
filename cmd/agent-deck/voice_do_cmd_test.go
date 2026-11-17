@@ -92,3 +92,31 @@ func TestVoiceDoHelpWordIsASentence(t *testing.T) {
 		}
 	}
 }
+
+// --on absent is "on no session": the desk never takes the mic's session
+// from the voice state, so a tell asks first even while the voice state
+// names that session.
+func TestVoiceDoOnAbsentIsNone(t *testing.T) {
+	a, err := parseVoiceDoArgs([]string{"--json", "tell", "x", "to", "go"})
+	if err != nil || a.on != "" {
+		t.Fatalf("parsed %+v %v", a, err)
+	}
+	src, err := os.ReadFile("voice_do_cmd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "voicestate.") {
+		t.Fatal("voice do reads the voice state to guess --on")
+	}
+}
+
+// voice state: a daemon that does not say where the mic is gives source "".
+func TestVoiceStateSourceUnknownIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_VOICE_STATE_DIR", dir)
+	code, out, _ := runVoiceT(t, "state", "--json")
+	var m map[string]any
+	if code != 0 || json.Unmarshal([]byte(out), &m) != nil || m["source"] != "" {
+		t.Fatalf("code=%d out=%q", code, out)
+	}
+}

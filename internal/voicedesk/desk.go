@@ -364,7 +364,7 @@ func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Re
 // recheck looks the session up again before acting on a yes: gone,
 // archived, no longer his, or (for a send) stopped or failed -> refused.
 func (d *Desk) recheck(ctx context.Context, s Session, sending bool) (why, say string) {
-	all, _ := d.Deck.Sessions(ctx)
+	all, _ := d.sessions(ctx)
 	name := spokenTitle(s.Title, s.Host)
 	for _, x := range all {
 		if x.ID != s.ID || x.Host != s.Host {
@@ -401,7 +401,7 @@ func (d *Desk) switchTo(ctx context.Context, req Request, r *Result, s Session) 
 func (d *Desk) chosen(ctx context.Context, req Request, p Pending, c Ref, lang string) (Result, error) {
 	s := Session{ID: c.ID, Title: c.Title, Host: c.Host, Profile: c.Profile}
 	// refresh status etc. from the deck when the session is still there
-	all, _ := d.Deck.Sessions(ctx)
+	all, _ := d.sessions(ctx)
 	found := false
 	for _, x := range all {
 		if x.ID == c.ID && x.Host == c.Host && !x.Archived {
@@ -437,11 +437,11 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	r := d.base(p.Intent, p.Lang, req.DryRun)
 	switch p.Intent {
 	case IntentNeedsMe:
-		rows, errs := d.Deck.NeedsMe(ctx)
+		rows, errs := d.needsMeRows(ctx)
 		d.needsMe(&r, d.Config.mine(rows), errs)
 		return r, nil
 	case IntentOverview, IntentList:
-		all, errs := d.Deck.Sessions(ctx)
+		all, errs := d.sessions(ctx)
 		mine := d.Config.mine(all)
 		if p.Intent == IntentOverview {
 			d.overview(&r, mine, errs)
@@ -450,7 +450,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 		}
 		return r, nil
 	}
-	all, _ := d.Deck.Sessions(ctx)
+	all, _ := d.sessions(ctx)
 	q := newNameQuery(p.Name, hostsOf(all))
 	var res resolution
 	if p.Intent == IntentFind {

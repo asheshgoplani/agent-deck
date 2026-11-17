@@ -19,7 +19,6 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/needsme"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/voicedesk"
-	"github.com/asheshgoplani/agent-deck/internal/voicestate"
 )
 
 const voiceDoUsage = `  agent-deck voice do [--json] [--dry-run] [--from mac|glasses|phone|text] [--on <session id>]
@@ -42,7 +41,6 @@ const voiceDoTimeout = 7 * time.Second
 type voiceDoArgs struct {
 	jsonOut, dryRun bool
 	from, on        string
-	onSet           bool // --on given, even empty ("" = on no session)
 	pending         string
 	delayMs         int64
 	hasDelay        bool
@@ -94,7 +92,7 @@ func parseVoiceDoArgs(args []string) (voiceDoArgs, error) {
 					return a, fmt.Errorf("--from must be mac, glasses, phone or text")
 				}
 			case "on":
-				a.on, a.onSet = strings.TrimSpace(v), true
+				a.on = strings.TrimSpace(v)
 			case "pending":
 				a.pending = strings.TrimSpace(v)
 			case "answer-delay-ms":
@@ -160,12 +158,9 @@ func runVoiceDo(profile string, args []string, stdout, stderr io.Writer) int {
 	if uc, err := session.LoadUserConfig(); err == nil && uc != nil {
 		cfg = voiceDeskConfig(uc.Voice)
 	}
+	// --on absent means on no session (the daemon's own id can be null):
+	// every tell then needs the yes. The voice state is never guessed from.
 	on := a.on
-	if !a.onSet {
-		if v := voicestate.NewView(voicestate.NewReader(voicestate.DefaultDir()).Poll(), time.Now()); v.On && v.Target != nil {
-			on = v.Target.ID
-		}
-	}
 	desk := &voicedesk.Desk{
 		Deck:   &cliVoiceDeck{self: self, profile: resolved, from: a.from},
 		Store:  voicedesk.FileStore{Dir: filepath.Join(profDir, "voice", "pending")},

@@ -1,6 +1,7 @@
 package voicedesk
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -165,4 +166,39 @@ func (c Config) mine(all []Session) []Session {
 		}
 	}
 	return out
+}
+
+// micMarker is the voice daemon's title prefix for the session that has
+// the mic ("🎙 garden planner"). It is never part of a name: the desk
+// strips it everywhere (say, show, target, matching) and pairs a session
+// with the voice state by id only.
+const micMarker = "🎙"
+
+// cleanTitle drops the mic marker (with or without the emoji variation
+// selector) and the spaces around it.
+func cleanTitle(t string) string {
+	t = strings.TrimSpace(t)
+	for strings.HasPrefix(t, micMarker) {
+		t = strings.TrimPrefix(t, micMarker)
+		t = strings.TrimPrefix(t, "️")
+		t = strings.TrimSpace(t)
+	}
+	return t
+}
+
+func cleanAll(ss []Session) []Session {
+	for i := range ss {
+		ss[i].Title = cleanTitle(ss[i].Title)
+	}
+	return ss
+}
+
+func (d *Desk) sessions(ctx context.Context) ([]Session, []HostError) {
+	ss, errs := d.Deck.Sessions(ctx)
+	return cleanAll(ss), errs
+}
+
+func (d *Desk) needsMeRows(ctx context.Context) ([]Session, []HostError) {
+	ss, errs := d.Deck.NeedsMe(ctx)
+	return cleanAll(ss), errs
 }
