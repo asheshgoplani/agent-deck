@@ -22,27 +22,34 @@ const (
 
 // Pending actions.
 const (
-	actionSend   = "send"   // yes -> send Message to Target
-	actionSwitch = "switch" // yes -> show Target, move the mic
-	actionChoose = "choose" // choice -> continue Intent with the chosen session
+	actionSend    = "send"   // yes -> send Message to Target
+	actionSwitch  = "switch" // yes -> show Target, move the mic
+	actionChoose  = "choose" // choice -> continue Intent with the chosen session
+	actionStop    = "stop"   // yes -> stop Target or Targets
+	actionRestart = "restart"
+	actionArchive = "archive"
+	actionLaunch  = "launch" // yes -> start Launch
 )
 
 // Pending is one question the desk asked and waits on. It is stored under
 // the profile's state dir, single-use, bound to the profile and to the
 // exact action by Hash.
 type Pending struct {
-	Token     string    `json:"token"`
-	Profile   string    `json:"profile"`
-	Kind      string    `json:"kind"`   // yes | choice
-	Action    string    `json:"action"` // send | switch | choose
-	Intent    string    `json:"intent"` // the intent the question belongs to
-	Lang      string    `json:"lang"`
-	Target    *Ref      `json:"target,omitempty"`
-	Choices   []Ref     `json:"choices,omitempty"`
-	Message   string    `json:"message,omitempty"`
-	Retries   int       `json:"retries,omitempty"` // a question asked again once
-	CreatedAt time.Time `json:"created_at"`
-	Hash      string    `json:"hash"`
+	Token     string      `json:"token"`
+	Profile   string      `json:"profile"`
+	Kind      string      `json:"kind"`   // yes | choice
+	Action    string      `json:"action"` // send | switch | choose
+	Intent    string      `json:"intent"` // the intent the question belongs to
+	Lang      string      `json:"lang"`
+	Target    *Ref        `json:"target,omitempty"`
+	Choices   []Ref       `json:"choices,omitempty"`
+	Message   string      `json:"message,omitempty"`
+	Targets   []Ref       `json:"targets,omitempty"` // stop/restart/archive all: at most 5
+	Left      int         `json:"left,omitempty"`    // how many more fit but were not asked
+	Launch    *LaunchSpec `json:"launch,omitempty"`
+	Retries   int         `json:"retries,omitempty"` // a question asked again once
+	CreatedAt time.Time   `json:"created_at"`
+	Hash      string      `json:"hash"`
 }
 
 func (p Pending) binding() string {
@@ -54,7 +61,13 @@ func (p Pending) binding() string {
 	for _, c := range p.Choices {
 		fmt.Fprintf(h, "%s\x00%s\x00", c.ID, c.Host)
 	}
-	fmt.Fprintf(h, "%s\x00%d\x00%d", p.Message, p.Retries, p.CreatedAt.UnixNano())
+	for _, c := range p.Targets {
+		fmt.Fprintf(h, "t%s\x00%s\x00", c.ID, c.Host)
+	}
+	if p.Launch != nil {
+		fmt.Fprintf(h, "l%s\x00%s\x00%s\x00%s\x00", p.Launch.Title, p.Launch.Group, p.Launch.Host, p.Launch.Profile)
+	}
+	fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d", p.Message, p.Left, p.Retries, p.CreatedAt.UnixNano())
 	return hex.EncodeToString(h.Sum(nil))
 }
 

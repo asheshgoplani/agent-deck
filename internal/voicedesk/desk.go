@@ -30,7 +30,39 @@ type Deck interface {
 	Send(ctx context.Context, s Session, message string) error
 	// Show asks the screen (the Mac app) to show the session.
 	Show(ctx context.Context, s Session) error
+
+	// Phase 2.
+	// Act runs a lifecycle verb (stop | restart | archive) on a session.
+	Act(ctx context.Context, s Session, verb string) error
+	// Launch starts a new session.
+	Launch(ctx context.Context, spec LaunchSpec) (Session, error)
+	// Search searches what was said (recall).
+	Search(ctx context.Context, query string) ([]SearchHit, error)
+	// Children lists a session's workers.
+	Children(ctx context.Context, s Session) ([]Session, error)
 }
+
+// LaunchSpec is a new session.
+type LaunchSpec struct {
+	Title   string `json:"title"`
+	Group   string `json:"group"`
+	Host    string `json:"host"`
+	Profile string `json:"profile"`
+}
+
+// SearchHit is one conversation that mentions the words.
+type SearchHit struct {
+	Title   string `json:"title"`
+	DeckID  string `json:"deck_id"`
+	Host    string `json:"host"`
+	Snippet string `json:"snippet"`
+}
+
+// Errors a Deck returns for a capability that is not there.
+var (
+	ErrUnsupported = errors.New("not supported")
+	ErrSearchOff   = errors.New("search is off")
+)
 
 // HostError is one host (or one local profile, Host "") that did not answer.
 type HostError struct {
@@ -115,6 +147,7 @@ const (
 // Spoken lines that are fixed.
 const (
 	sayTooLate     = "Too late, nothing sent."
+	sayTooLateDone = "Too late, nothing done."
 	sayCancelled   = "Cancelled."
 	saySecretReply = "There is a secret in this reply, read it on screen."                                 //nolint:gosec // G101: a spoken line, not a credential
 	saySecretTell  = "There is a secret in this message, so I will not send it by voice. Type it instead." //nolint:gosec // G101: a spoken line, not a credential
@@ -293,7 +326,11 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 	// measured delay, else by the token's age
 	if d.isLate(req, p) { // a clock that went back is not trusted either
 		r := d.base(answerIntent(kind), lang, req.DryRun)
-		refuse(&r, RefusedExpired, sayTooLate)
+		say := sayTooLate
+		if p.Action != actionSend {
+			say = sayTooLateDone // stop, restart, archive, launch, switch
+		}
+		refuse(&r, RefusedExpired, say)
 		return r, true, nil
 	}
 	switch {
@@ -403,6 +440,9 @@ func choiceByName(sentence string, choices []Ref) int {
 
 // act carries out a confirmed action.
 func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Result, error) {
+	if p.Action == actionLaunch || len(p.Targets) > 0 {
+		return d.actPhase2(ctx, req, p, lang)
+	}
 	if p.Target == nil {
 		r := d.base(IntentConfirmYes, lang, req.DryRun)
 		refuse(&r, RefusedExpired, sayTooLate)
@@ -434,6 +474,8 @@ func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Re
 		}
 	case actionSwitch:
 		d.switchTo(ctx, req, &r, s)
+	case actionStop, actionRestart, actionArchive:
+		d.lifecycle(ctx, req, &r, p.Action, []Session{s})
 	default:
 		refuse(&r, RefusedExpired, sayTooLate)
 	}
@@ -569,6 +611,8 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 			d.list(&r, mine, errs)
 		}
 		return r, nil
+	case IntentNext, IntentSearch, IntentLaunch:
+		return d.runPhase2(ctx, req, r, p)
 	}
 	// talk in a soft desk form is decided from the words, before any
 	// listing (no ssh for "read the file and fix the bug")
@@ -577,6 +621,9 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	}
 	all, _ := d.sessions(ctx)
 	q := newNameQuery(p.Name, hostsOf(all))
+	if p.All {
+		return d.many(ctx, req, r, p, q, all)
+	}
 	var res resolution
 	if p.Intent == IntentFind {
 		res = findAll(q, all, d.Config)
@@ -736,6 +783,8 @@ func (d *Desk) withTarget(ctx context.Context, req Request, p Parsed, s Session,
 		r.Say = prompt
 		r.Show = Show{Kind: "sessions", Items: items([]Session{s}, d.now())}
 		return d.pend(req, r, Pending{Profile: req.Profile, Kind: "yes", Action: actionSwitch, Intent: IntentFind, Lang: p.Lang, Target: &t}, prompt)
+	case IntentStop, IntentRestart, IntentArchive, IntentWorkers, IntentRefuse:
+		return d.withTargetPhase2(ctx, req, r, p, s)
 	default:
 		return r, errors.New("intent without a target: " + p.Intent)
 	}
