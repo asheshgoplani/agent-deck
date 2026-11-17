@@ -30,7 +30,8 @@ func (inst *Instance) ReportTargetID() string {
 // longer registered (removed, archived away) falls back to the tree parent,
 // so a nested worker whose coordinator is gone still reaches the root, as it
 // did before issue #3165. A top-level worker with a gone launcher keeps the
-// launcher id and dead-letters as parent_removed, like a gone parent.
+// launcher id and lands in the unowned ledger as parent_removed, like a
+// child of a removed parent.
 func (inst *Instance) reportTargetIDIn(byID map[string]*Instance) string {
 	target := inst.ReportTargetID()
 	if inst == nil || byID == nil || target == "" || byID[target] != nil {

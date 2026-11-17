@@ -72,8 +72,8 @@ With `nest_under_parent` on, the root gets no copy: it launched the
 coordinator, not the worker, and cannot act on the result (the reporter's
 lean, and the brief's "no duplicate" rule). If the launcher is no longer
 registered, a nested worker's records fall back to its tree parent
-(`reportTargetIDIn`), as before this change; a top-level worker dead-letters
-as `parent_removed`, like any child of a removed parent.
+(`reportTargetIDIn`), as before this change; a top-level worker's records go
+to the unowned ledger as `parent_removed`, like any child of a removed parent.
 
 ### 3. Kickoff tag
 
