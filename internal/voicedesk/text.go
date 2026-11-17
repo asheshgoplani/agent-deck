@@ -107,9 +107,12 @@ func fold(s string) string {
 	if s == "" {
 		return s
 	}
+	for strings.Contains(s, "hh") { // "padhho", "chhota"
+		s = strings.ReplaceAll(s, "hh", "h")
+	}
 	r := strings.NewReplacer(
 		// aspiration is written or dropped at will ("padho"/"parho", "dhoondo"/"doondo")
-		"dh", "d", "th", "t", "bh", "b", "kh", "k", "gh", "g", "jh", "j",
+		"rh", "d", "dh", "d", "th", "t", "bh", "b", "kh", "k", "gh", "g", "jh", "j", // rh: ड़/ढ़ heard as "parho"
 		"aa", "a", "ee", "i", "ii", "i", "oo", "u", "uu", "u",
 		"ph", "f", "ck", "k", "q", "k", "w", "v", "z", "j", "x", "ks",
 		"ou", "o", "au", "o", "ai", "e", "ei", "e", "y", "i",

@@ -15,8 +15,8 @@ const (
 // punctuation is gone and a leading wake name is dropped.
 var (
 	yesAnswers = foldPhrases("yes", "yes send", "yes send it", "haan", "haan bhejo", "haan ji", "ji haan",
-		"send it", "bhej do", "yes switch", "हाँ", "हां", "हाँ भेजो", "हां भेजो", "हाँ जी", "जी हाँ", "भेज दो")
-	noAnswers = foldPhrases("no", "cancel", "nahin", "nahi", "rehne do", "mat bhejo", "नहीं", "नहि", "रहने दो", "मत भेजो")
+		"send it", "bhej do", "yes switch", "haa", "han", "haa bhejo", "han bhejo", "haan bhej do", "bhejdo", "han ji", "ji han", "हाँ", "हां", "हाँ भेजो", "हां भेजो", "हाँ जी", "जी हाँ", "भेज दो")
+	noAnswers = foldPhrases("no", "cancel", "nahin", "nahi", "nahee", "rehne do", "rahne do", "mat bhejo", "नहीं", "नहि", "रहने दो", "मत भेजो")
 	// ordinal answers, value = index
 	choiceAnswers = map[string]int{}
 )
@@ -59,15 +59,52 @@ func classifyAnswer(sentence string) (kind string, index int) {
 	switch {
 	case t == "":
 		return AnswerNone, -1
-	case yesAnswers[t]:
+	case inAnswers(t, yesAnswers):
 		return AnswerYes, -1
-	case noAnswers[t]:
+	case inAnswers(t, noAnswers):
 		return AnswerNo, -1
 	}
-	if i, ok := choiceAnswers[t]; ok {
-		return AnswerChoice, i
+	for form, i := range choiceAnswers {
+		if answerEqual(t, form) {
+			return AnswerChoice, i
+		}
 	}
 	return AnswerNone, -1
+}
+
+func inAnswers(t string, set map[string]bool) bool {
+	if set[t] {
+		return true
+	}
+	for form := range set {
+		if answerEqual(t, form) {
+			return true
+		}
+	}
+	return false
+}
+
+// answerEqual: the whole sentence is the answer, word for word; a word of
+// four letters or more may be spelled another way the listener writes it
+// ("rahne"/"rehne", "pahla"/"pehla", "bhejdo"/"bhej do" is listed). Short
+// words must be equal: "ho" is never "haan".
+func answerEqual(t, form string) bool {
+	if t == form {
+		return true
+	}
+	a, b := strings.Fields(t), strings.Fields(form)
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] == b[i] {
+			continue
+		}
+		if len(a[i]) < 4 || len(b[i]) < 4 || skeleton(a[i]) != skeleton(b[i]) || phoneticKey(a[i]) != phoneticKey(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // Risky words in a tell message (CONTRACT.md section 4 rule 3). Any of them
