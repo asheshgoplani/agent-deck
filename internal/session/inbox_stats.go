@@ -248,7 +248,15 @@ func ResetInboxStats(parentID string) error {
 // resolution has run: the session the child reports to (its launcher, else its
 // registered parent), else the unowned ledger.
 func statsParentFor(inst *Instance) string {
-	if target := inst.ReportTargetID(); target != "" {
+	return statsParentForIn(inst, nil)
+}
+
+// statsParentForIn is statsParentFor against a registry, so it agrees with
+// the inbox: a nested worker whose launcher is no longer registered is
+// counted (and its ledger records addressed) under its tree parent
+// (reportTargetIDIn). A nil registry keeps the stored target.
+func statsParentForIn(inst *Instance, byID map[string]*Instance) string {
+	if target := inst.reportTargetIDIn(byID); target != "" {
 		return target
 	}
 	return UnownedInboxID

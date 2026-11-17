@@ -835,6 +835,8 @@ agent-deck session set-parent <session> <parent>
 agent-deck session unset-parent <session>
 ```
 
+Both drop `reports_to`. `unset-parent` also detaches a top-level worker that only reports to the sub-session that launched it, and says which link it cleared; it refuses a session with neither link.
+
 ### session switch-account
 
 ```bash

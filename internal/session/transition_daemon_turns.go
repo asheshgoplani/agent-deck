@@ -106,7 +106,7 @@ func (d *TransitionDaemon) emitTurnInner(profile string, inst *Instance, byID ma
 	} else {
 		event.LastOutputHash = transitionEventOutputHash(inst)
 	}
-	statsParent := statsParentFor(inst)
+	statsParent := statsParentForIn(inst, byID)
 	selfConductor := isSelfSuppressedConductor(inst)
 
 	// Issue #2792: the old process's exit and the resumed one's arrival at
