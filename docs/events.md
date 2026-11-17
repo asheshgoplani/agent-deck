@@ -61,7 +61,7 @@ Frame data for the session kinds (`session_id` is the agent-deck session id):
 | `queue.released` | `{id, state, outcome, reason}` (`outcome` as `session queue release --json` reports it) |
 | `queue.cancelled` | `{id, state: "cancelled"}` |
 | `session.trigger` | a fire: `{trigger_id, source, kind, outcome, health}` (`session_id` is the receiving session, `""` for a dead target); a mute change: `{trigger_id, mute: "muted"\|"unmuted"}`; a scan: `{scan: "<units found>"}`. Clients refetch `triggers --json` on any of them. |
-| `voice.state` | `{host, on, phase, extra, rawPhase, phaseSince, phaseSinceMs, muted, micReleased, hibernating, fallingBack, target: {id, title, host, profile} \| null, source, from, origin, reason, updatedAt}`. `phase` is one of listening, hearing, thinking, speaking, resting, off (`voicestate.MapPhase`); `extra` is muted, call or meeting when the daemon's own word was folded into resting; `reason` is start, change or expired (expired = published as `off`). `session_id` is the target when it is a session of this host (`target.host == ""`). Never carries heard or spoken text. |
+| `voice.state` | `{host, on, phase, extra, rawPhase, phaseSince, phaseSinceMs, muted, micReleased, hibernating, fallingBack, target: {id, title, host, profile} \| null, source, from, origin, reason, updatedAt}`. `phase` is one of listening, hearing, thinking, speaking, resting, off (`voicestate.MapPhase`); `extra` is muted, call or meeting when the daemon's own word was folded into resting; `reason` is start, change, expired or stopped (both published as `off`). `session_id` is the target when it is a session of this host (`target.host == ""`). Never carries heard or spoken text. |
 | `voice.result` | `{host, intent, target, show: {kind, items: [{id, title, host, status, line}]}, confirm: {kind, prompt, expiresMs} \| null, refused, from, at}` |
 | `tmux.output` | none: `session_id` is the tmux session name; the frame has no `data` key (never `"data": null`) |
 
@@ -99,7 +99,7 @@ title.
 
 ### Voice state across hosts
 
-`agent-deck voice relay [--to <remote>,...] [--self <name>]` runs on the
+`agent-deck voice relay --to <remote>,... --self <name>` runs on the
 machine of the voice daemon. It publishes `voice.state` there and keeps one
 ssh link per stream host to `agent-deck voice mirror-in`, which writes that
 host's `mirror.json` (schema `claude-code-voice.mirror/v1`, `"relative":
@@ -109,7 +109,14 @@ change plus a refresh every 5 s. The TUI badge reads `mirror.json`, so it
 lights up on every stream host. A dead daemon reaches every host as `off`
 within one poll (50 ms) plus the link; a relay that goes away leaves the
 mirror to expire after its heartbeat window (3 beats + 5 s), and the
-receiver (or `agent-deck web`) then publishes `off`.
+receiver (or `agent-deck web`) then publishes `off`. Both flags are
+required: `--to` because session titles and ids go there, `--self` because
+a target on the daemon's machine is shown under that name on each stream
+host (its `[remotes.<name>]`). A producer that stops while the voice is on
+publishes `off` with reason `stopped`; another process holding the lock
+next republishes the live state at once (`reason: start`). `agent-deck web`
+also runs a producer, in read-only mode too (it publishes state, it changes
+nothing).
 
 ### Web door: `GET /events/state`
 
@@ -120,9 +127,11 @@ list of `session.*` and `voice.*` kinds; default `session.status,voice.`) and
 `{cursor, host, voice}` (the newest cursor and the voice state now); then one
 event per matching frame: `id: <cursor>`, `event: <kind>`, `data: <the
 canonical frame>`. Reconnecting with the last id resumes with nothing missed
-and nothing repeated. A cursor older than the retained log gets `event:
-reset` `{reason: "cursor-too-old", cursor}` and the stream continues from
-the newest frame. `: keepalive` every 15 s.
+and nothing repeated; `hello.voice` is the state now, the replayed frames
+after it are older. A cursor older than the retained log, or newer than
+the log ever reached, gets `event: reset` `{reason: "cursor-too-old" |
+"cursor-ahead", cursor, voice}` and the stream continues from the newest
+frame. `: keepalive` every 15 s.
 
 ## On-disk layout
 

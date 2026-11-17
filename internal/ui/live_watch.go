@@ -133,6 +133,13 @@ func (h *Home) processHookPass() {
 	if h.hookWatcher == nil {
 		return
 	}
+	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
+		// The user is scrolling: no probes now; the worker retries after
+		// its next pass or sweep.
+		h.hookPending.Store(true)
+		return
+	}
+	h.hookPending.Store(false)
 	if h.hookPassSeen == nil {
 		h.hookPassSeen = make(map[string]time.Time)
 	}
@@ -141,7 +148,9 @@ func (h *Home) processHookPass() {
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
 	var changed []*session.Instance
+	live := make(map[string]struct{}, len(instances))
 	for _, inst := range instances {
+		live[inst.ID] = struct{}{}
 		if !session.HookStatusTool(inst.Tool) || !h.isPolledByMe(inst.ID) {
 			continue
 		}
@@ -157,6 +166,11 @@ func (h *Home) processHookPass() {
 			changed = append(changed, inst)
 		}
 	}
+	for id := range h.hookPassSeen {
+		if _, ok := live[id]; !ok {
+			delete(h.hookPassSeen, id)
+		}
+	}
 	if len(changed) == 0 {
 		return
 	}
@@ -166,4 +180,12 @@ func (h *Home) processHookPass() {
 	h.cachedStatusCounts.valid.Store(false)
 	h.publishWebSessionStates(instances)
 	h.refreshSessionRenderSnapshot(instances)
+}
+
+// runPendingHookPass runs a hook pass the UI asked for while the worker was
+// busy. Status worker goroutine only.
+func (h *Home) runPendingHookPass() {
+	if h.hookPending.Load() {
+		h.processHookPass()
+	}
 }

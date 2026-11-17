@@ -13,6 +13,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/voicestate"
 	"github.com/asheshgoplani/agent-deck/internal/voicestream"
 )
@@ -33,6 +34,16 @@ var defaultStateKinds = []string{"session.status", "voice."}
 // a door to every kind on the bus (tmux output, ask dialogs).
 var stateKindsAllowed = []string{"session.", "voice."}
 
+// stateResetFrame tells a client its cursor cannot be resumed: re-read the
+// snapshot (voice is the state now) and continue from Cursor.
+type stateResetFrame struct {
+	Reason string                 `json:"reason"`
+	Cursor uint64                 `json:"cursor"`
+	Voice  voicestream.StateEvent `json:"voice"`
+}
+
+// stateHello opens every stream. Voice is the state now; on a resume the
+// replayed frames that follow are older than it.
 type stateHello struct {
 	Cursor uint64                 `json:"cursor"`
 	Host   string                 `json:"host"`
@@ -101,6 +112,9 @@ func parseStateAfter(r *http.Request) (events.Cursor, bool, error) {
 func (s *Server) stateBus() (*events.Bus, error) {
 	s.stateBusMu.Lock()
 	defer s.stateBusMu.Unlock()
+	if s.stateBusClosed {
+		return nil, errors.New("server stopping")
+	}
 	if s.stateBusHandle != nil {
 		return s.stateBusHandle, nil
 	}
@@ -119,10 +133,7 @@ func (s *Server) stateBus() (*events.Bus, error) {
 }
 
 func (s *Server) stateProfile() string {
-	if s.cfg.Profile == "" {
-		return "default"
-	}
-	return s.cfg.Profile
+	return session.GetEffectiveProfile(s.cfg.Profile)
 }
 
 func (s *Server) handleStateEvents(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +184,14 @@ func (s *Server) handleStateEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	if !resume {
 		after = end
+	} else if after > end {
+		// A cursor this log never reached (another host's or profile's, or
+		// a log that was re-created): waiting for it would hide every frame
+		// until the log catches up. Start over from now instead.
+		if err := writeSSEEvent(w, flusher, "reset", stateResetFrame{Reason: "cursor-ahead", Cursor: uint64(end), Voice: s.currentVoiceEvent()}); err != nil {
+			return
+		}
+		after = end
 	}
 
 	ctx := r.Context()
@@ -198,12 +217,12 @@ func (s *Server) handleStateEvents(w http.ResponseWriter, r *http.Request) {
 		if done {
 			return
 		}
-		if next == stateReset {
+		if next == stateNeedsReset {
 			end, _, err := bus.Ends()
 			if err != nil {
 				return
 			}
-			if err := writeSSEEvent(w, flusher, "reset", map[string]any{"reason": "cursor-too-old", "cursor": uint64(end)}); err != nil {
+			if err := writeSSEEvent(w, flusher, "reset", stateResetFrame{Reason: "cursor-too-old", Cursor: uint64(end), Voice: s.currentVoiceEvent()}); err != nil {
 				return
 			}
 			after = end
@@ -215,11 +234,11 @@ func (s *Server) handleStateEvents(w http.ResponseWriter, r *http.Request) {
 
 const (
 	stateEnd = iota
-	stateReset
+	stateNeedsReset
 )
 
 // pumpStateFrames writes frames until the client goes, the subscription
-// ends, or the cursor is too old (stateReset).
+// ends, or the cursor is too old (stateResetFrame).
 func (s *Server) pumpStateFrames(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, sub *events.Subscription,
 	kinds []string, heartbeat *time.Ticker, after *events.Cursor) (int, bool) {
 	frames := sub.Frames()
@@ -234,7 +253,7 @@ func (s *Server) pumpStateFrames(ctx context.Context, w http.ResponseWriter, flu
 		case f, ok := <-frames:
 			if !ok {
 				if errors.Is(sub.Err(), events.ErrCursorTooOld) {
-					return stateReset, false
+					return stateNeedsReset, false
 				}
 				return stateEnd, true
 			}
@@ -282,6 +301,7 @@ func (s *Server) stopVoiceProducer() {
 	}
 	s.voiceProdWG.Wait()
 	s.stateBusMu.Lock()
+	s.stateBusClosed = true
 	if s.stateBusHandle != nil {
 		_ = s.stateBusHandle.Close()
 		s.stateBusHandle = nil
@@ -300,6 +320,7 @@ func mergeDone(a, b context.Context) (context.Context, context.CancelFunc) {
 type stateServerFields struct {
 	stateBusMu      sync.Mutex
 	stateBusHandle  *events.Bus
+	stateBusClosed  bool
 	voiceProdCancel context.CancelFunc
 	voiceProdWG     sync.WaitGroup
 }

@@ -329,7 +329,10 @@ type Home struct {
 	// hookPassSeen is the hook sample time processHookPass last applied per
 	// session; owned by the status worker goroutine.
 	hookPassSeen map[string]time.Time
-	voiceNow     func() time.Time
+	// hookPending: a hook change not yet applied; the status worker runs a
+	// hook pass after its current pass or sweep (live_watch.go).
+	hookPending atomic.Bool
+	voiceNow    func() time.Time
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -4751,11 +4754,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A hook wrote a status file: apply it now instead of on the next
 		// full sweep, so state.db and the session.status frame follow
 		// within the hook watcher's debounce (live_watch.go).
+		h.hookPending.Store(true)
 		select {
 		case h.statusTrigger <- statusUpdateRequest{hookPass: true}:
 		default:
-			// Worker busy: hookChanged stays pending for the next signal;
-			// the full sweep is the backstop.
+			// Worker busy: it runs the pending hook pass when it is done.
 		}
 		return h, listenForHookChange(h.hookChanged)
 

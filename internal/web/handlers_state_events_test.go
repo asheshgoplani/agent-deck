@@ -152,6 +152,9 @@ func TestStateEvents_RelayToSSE_ScriptedRun(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: profile})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	// As deployed: the web server's own producer contends with the
+	// receiver's for the profile's producer lock (one publishes).
+	srv.startVoiceProducer()
 	t.Cleanup(srv.stopVoiceProducer)
 
 	evs := make(chan sseEvent, 1024)
@@ -382,5 +385,34 @@ func TestStateEvents_RequiresToken(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("query token on a stream: %d, want 200", resp.StatusCode)
+	}
+}
+
+// A resume cursor the log never reached gets a reset (with the voice
+// state now) instead of a silent wait for the log to catch up.
+func TestStateEvents_CursorAheadResets(t *testing.T) {
+	t.Setenv("CLAUDE_VOICE_STATE_DIR", t.TempDir())
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "_test"})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	defer srv.stopVoiceProducer()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	evs := make(chan sseEvent, 16)
+	sseClient(t, ctx, ts.URL+"/events/state", "999999999", evs)
+	var names []string
+	for len(names) < 2 {
+		select {
+		case ev := <-evs:
+			names = append(names, ev.event)
+			if ev.event == "reset" && !strings.Contains(string(ev.data), `"reason":"cursor-ahead"`) {
+				t.Fatalf("reset data %s", ev.data)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("events so far %v, want hello then reset", names)
+		}
+	}
+	if names[0] != "hello" || names[1] != "reset" {
+		t.Fatalf("events %v, want [hello reset]", names)
 	}
 }
