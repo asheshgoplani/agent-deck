@@ -13,7 +13,10 @@ type SessionStartIn struct {
 	Profile string `json:"profile" doc:"Profile whose store holds the session"`
 	Session string `json:"session" doc:"Session id, id prefix, title or path"`
 	Message string `json:"message,omitempty" doc:"Initial message to send once the agent is ready"`
-	Yolo    bool   `json:"yolo,omitempty" doc:"Enable YOLO mode for Gemini, Codex or Hermes sessions"`
+	Yolo    bool   `json:"yolo,omitempty" doc:"Enable YOLO mode for Gemini, Codex, Hermes or Kimi sessions"`
+	YoloSet bool   `json:"yolo_set,omitempty" doc:"Whether the user explicitly set --yolo, including false"`
+	Auto    bool   `json:"auto,omitempty" doc:"Enable Never Ask mode for Kimi sessions"`
+	AutoSet bool   `json:"auto_set,omitempty" doc:"Whether the user explicitly set --auto, including false"`
 	NoWait  bool   `json:"no_wait,omitempty" doc:"Return once the process is spawned instead of waiting for the tool's session id"`
 }
 
@@ -57,6 +60,11 @@ func (deps Deps) sessionStart(ctx context.Context, in SessionStartIn) (SessionSt
 	}
 	if deps.ApplyYolo != nil {
 		if err := deps.ApplyYolo(inst, in.Yolo); err != nil {
+			return SessionStartOut{}, &Error{Code: CodeInvalid, Message: err.Error(), Cause: err}
+		}
+	}
+	if deps.ApplyKimiPermissions != nil {
+		if err := deps.ApplyKimiPermissions(inst, in.Yolo, in.Auto, in.YoloSet, in.AutoSet); err != nil {
 			return SessionStartOut{}, &Error{Code: CodeInvalid, Message: err.Error(), Cause: err}
 		}
 	}
