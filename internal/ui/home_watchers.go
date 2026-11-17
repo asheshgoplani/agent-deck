@@ -66,6 +66,15 @@ func (h *Home) Init() tea.Cmd {
 		cmds = append(cmds, cmd)
 	}
 
+	// Live voice badge and hook-driven status (live_watch.go).
+	if h.voiceReader != nil && homeBackgroundWorkersEnabled {
+		h.voiceWatch = startVoiceWatch(h.voiceReader, voiceWatchInterval)
+		cmds = append(cmds, listenForVoice(h.voiceWatch))
+	}
+	if h.hookChanged != nil {
+		cmds = append(cmds, listenForHookChange(h.hookChanged))
+	}
+
 	// Start listening for storage changes
 	if h.storageWatcher != nil {
 		cmds = append(cmds, listenForReloads(h.storageWatcher))

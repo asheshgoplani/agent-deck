@@ -321,7 +321,15 @@ type Home struct {
 	// badge words use (nil = time.Now).
 	voiceReader *voicestate.Reader
 	voiceState  *voicestate.State
-	voiceNow    func() time.Time
+	// voiceWatch owns voiceReader once Init started it (live_watch.go);
+	// the tick then leaves the reader alone.
+	voiceWatch *voiceWatch
+	// hookChanged is signalled by the hook watcher (live_watch.go).
+	hookChanged chan struct{}
+	// hookPassSeen is the hook sample time processHookPass last applied per
+	// session; owned by the status worker goroutine.
+	hookPassSeen map[string]time.Time
+	voiceNow     func() time.Time
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -4735,6 +4743,22 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case voiceStateMsg:
+		h.voiceState = msg.st
+		return h, listenForVoice(h.voiceWatch)
+
+	case hookChangedMsg:
+		// A hook wrote a status file: apply it now instead of on the next
+		// full sweep, so state.db and the session.status frame follow
+		// within the hook watcher's debounce (live_watch.go).
+		select {
+		case h.statusTrigger <- statusUpdateRequest{hookPass: true}:
+		default:
+			// Worker busy: hookChanged stays pending for the next signal;
+			// the full sweep is the backstop.
+		}
+		return h, listenForHookChange(h.hookChanged)
+
 	case watcherEventMsg:
 		// Refresh watcher panel data on new events and re-register listener.
 		// The watcher host's relay already dispatched the event to its
@@ -4791,7 +4815,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 🎙 voice badge: stat the voice state file, re-read it only when
 		// it changed (voice_badge.go). Local file, no network; any error
 		// reads as no voice.
-		h.refreshVoiceState()
+		if h.voiceWatch == nil {
+			h.refreshVoiceState()
+		}
 
 		var remoteFetchCmd tea.Cmd
 		var remoteLatencyCmd tea.Cmd
@@ -7431,6 +7457,8 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		if h.hookWatcher != nil {
 			h.hookWatcher.Stop()
 		}
+		// Stop the voice badge watcher (live_watch.go)
+		h.voiceWatch.Stop()
 		// Close OpenCode SSE watcher (issue #1614)
 		if h.sseWatcher != nil {
 			h.sseWatcher.Stop()
