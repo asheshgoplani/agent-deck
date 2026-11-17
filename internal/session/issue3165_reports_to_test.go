@@ -298,3 +298,24 @@ func TestIssue3165_TUIPromoteClearsTheLauncher(t *testing.T) {
 		t.Fatalf("after promote parent=%q reports_to=%q, want both cleared", worker.ParentSessionID, worker.ReportsTo)
 	}
 }
+
+// A top-level worker that reports to a launcher is a child for
+// prompt_suggestions = children-off, like a parented worker (owner ruling on
+// issue #3165). A root session without one keeps suggestions on.
+func TestIssue3165_ChildrenOffCoversReportsToWorkers(t *testing.T) {
+	identityTestEnv(t)
+	restore := resetUserConfigCache(t, &UserConfig{})
+	defer restore()
+
+	worker := promptSuggestionInstance("")
+	worker.SetReportsTo("coord-3165")
+	if !worker.PromptSuggestionsDisabled() {
+		t.Fatal("a worker that reports to a launcher keeps prompt suggestions on under children-off")
+	}
+	if !strings.Contains(worker.buildClaudeCommand("claude"), promptSuggestionOffExport) {
+		t.Fatal("the worker's launch command lacks the prompt-suggestion off export")
+	}
+	if promptSuggestionInstance("").PromptSuggestionsDisabled() {
+		t.Fatal("a root session lost prompt suggestions")
+	}
+}

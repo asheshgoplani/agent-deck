@@ -94,6 +94,13 @@ coordinator, and under the coordinator. The root keeps its polling surfaces
 (`--follow --until-done`, the fleet block) for nested workers. The children
 context hook and `--follow` use the same helper.
 
+### 4b. Prompt suggestions
+
+Owner ruling: a session with `reports_to` counts as a child for
+`prompt_suggestions = children-off` (`PromptSuggestionsDisabled` keys on
+`ReportTargetID`), so a top-level worker starts with suggestions off like a
+parented one.
+
 ### 5. Changing the link
 
 `session set-parent`, `session unset-parent` and the TUI's promote, demote
@@ -105,14 +112,11 @@ fence (`--expected-parent`) accepts the tree parent or the report target.
 
 ## `--no-parent` from a sub-session
 
-The reporter counted 41 `-no-parent` launches from sub-sessions, noting it
-"doesn't change the outcome". It records no `reports_to`. The identity block
-documents `-no-parent` as "for a peer", and a peer reports to nobody,
-the same as `--no-parent` from a top-level session. Routing it to the
-launcher would leave no way to start an unlinked session from a coordinator.
-Those launches were made when the flag made no difference; a coordinator
-that wants the result now just drops the flag. This is listed as an open
-question for the owner.
+Owner ruling: `--no-parent` stays as built. It is an explicit request for a
+peer, and a peer reports to nobody, the same as `--no-parent` from a
+top-level session; it records no `reports_to`. The reporter's 41
+`-no-parent` launches were made when the flag made no difference; a
+coordinator that wants its workers' results drops the flag.
 
 ## `--no-transition-notify`
 
@@ -124,8 +128,8 @@ but no records are sent, exactly as for a muted tree child.
 - Multi-level parent links (tree view, `set-parent`, cascade remove).
 - The Codex-parent wake (the issue's second ask): a typed wake into a non-Claude
   pane remains off. That is a separate wake-policy decision.
-- `prompt_suggestions = children-off` still keys on the tree link, as its
-  docs say: a top-level `reports_to` worker keeps suggestions on.
+- Non-Claude launchers (Codex, other harnesses, shell sub-sessions) record no
+  `reports_to`; supporting them is a follow-up, together with the Codex wake.
 - The web UI and TUI tree still show tree links only.
 
 ## Tests

@@ -778,7 +778,7 @@ SSH and Docker-sandboxed sessions get the block too: claude/pi/omp as inline `--
 
 Precedence, most specific first: the session override (`agent-deck session set <id> prompt-suggestions children-off|on|off`, empty clears it) > `[profiles.<active-profile>.claude].prompt_suggestions` > `[launch].prompt_suggestions` > `children-off`. A malformed value at any layer is ignored and the next layer decides. Changes take effect on the session's next start or restart. `agent-deck config set launch.prompt_suggestions off` writes the global key.
 
-`children-off` keys on the parent link alone. A worker launched with `--no-parent`, or one a sub-session launches while `[launch] nest_under_parent = false` (it becomes a top-level session), is a root session and keeps suggestions on; set `off` globally or per profile if you want those off too. The per-session override is not copied to a fork or to a cross-harness switch target: the new session follows the profile, `[launch]` and `children-off` rules.
+`children-off` treats a session as a child when it has a parent link or reports to the session that launched it (`reports_to`, set when a Claude sub-session launches it, with `[launch] nest_under_parent` on or off). A worker launched with `--no-parent`, or one a shell or non-Claude sub-session launches while `nest_under_parent = false`, is a root session and keeps suggestions on; set `off` globally or per profile if you want those off too. The per-session override is not copied to a fork or to a cross-harness switch target: the new session follows the profile, `[launch]` and `children-off` rules.
 
 ```toml
 [launch]
