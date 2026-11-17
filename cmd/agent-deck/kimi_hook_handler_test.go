@@ -123,3 +123,18 @@ func TestHookPayloadDecodesKimiClientType(t *testing.T) {
 		t.Fatalf("client_type = %q, want kimi_code_cli", payload.ClientType)
 	}
 }
+
+func TestKimiSessionStartReal241Fixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "kimi_session_start_2.4.1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload hookPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.HookEventName != "SessionStart" || payload.SessionID != "session_redacted" ||
+		payload.ClientType != "kimi_code_cli" || payload.Source != "startup" || payload.Cwd != "/redacted/project" {
+		t.Fatalf("real Kimi 2.4.1 SessionStart decoded as %+v", payload)
+	}
+}
