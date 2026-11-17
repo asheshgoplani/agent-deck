@@ -100,13 +100,14 @@ func (f *remoteStatusForwarder) once(ctx context.Context) error {
 // forward republishes one remote frame line.
 func (f *remoteStatusForwarder) forward(line []byte) {
 	fr, err := events.ParseFrameLine(line)
-	if err != nil || fr.Kind != "session.status" {
+	if err != nil || uint64(fr.Cursor) <= f.since {
 		return
 	}
-	if uint64(fr.Cursor) <= f.since {
-		return
-	}
+	// Every frame read moves the resume point, whatever its kind.
 	f.since = uint64(fr.Cursor)
+	if fr.Kind != "session.status" {
+		return
+	}
 	if fr.TS < f.startTS {
 		return // the remote's history, replayed on the first connect
 	}
