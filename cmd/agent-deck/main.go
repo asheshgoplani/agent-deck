@@ -676,6 +676,12 @@ func main() {
 		case "openclaw", "oc":
 			handleOpenClaw(profile, args[1:])
 			return
+		case "voice":
+			handleVoice(profile, args[1:])
+			return
+		case "needs-me":
+			handleNeedsMe(profile, args[1:])
+			return
 		case "remote":
 			handleRemote(profile, args[1:])
 			return
@@ -5033,6 +5039,8 @@ func printHelp() {
 	fmt.Println("  recall           Search every Claude conversation on this machine (docs/recall.md)")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
 	fmt.Println("  connect          Connect an assistant bot (Hermes, Claude, ChatGPT, Telegram...) with a scoped token")
+	fmt.Println("  needs-me         Sessions waiting for you, all profiles + remotes [--json] (docs/voice.md)")
+	fmt.Println("  voice            Voice desk: voice state [--json] (docs/voice.md)")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  provider         List and test sandbox providers (remote add --provider)")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
