@@ -47,16 +47,17 @@ const (
 
 // ConfirmDialog handles confirmation for destructive actions
 type ConfirmDialog struct {
-	visible     bool
-	confirmType ConfirmType
-	targetID    string // Session ID or group path
-	targetName  string // Display name
-	width       int
-	height      int
-	mcpCount    int  // Number of running MCPs (for quit confirmation)
-	sandboxed   bool // Whether the session uses a Docker sandbox.
-	worktree    bool // Whether the session has an associated git worktree.
-	hookEvents  []string
+	visible        bool
+	confirmType    ConfirmType
+	targetID       string // Session ID or group path
+	targetName     string // Display name
+	width          int
+	height         int
+	mcpCount       int  // Number of running MCPs (for quit confirmation)
+	sandboxed      bool // Whether the session uses a Docker sandbox.
+	worktree       bool // Whether the session has an associated git worktree.
+	hookEvents     []string
+	hookInstallErr string
 
 	remoteName string // Remote name for remote session confirmations.
 
@@ -544,8 +545,13 @@ func (c *ConfirmDialog) ShowInstallKimiHooks(configPath string, events []string)
 	c.targetID = configPath
 	c.targetName = ""
 	c.hookEvents = append(c.hookEvents[:0], events...)
+	c.hookInstallErr = ""
 	c.buttonCount = 2
 	c.focusedButton = 1
+}
+
+func (c *ConfirmDialog) SetHookInstallError(message string) {
+	c.hookInstallErr = message
 }
 
 // GetPendingSession returns the pending session creation data
@@ -576,6 +582,7 @@ func (c *ConfirmDialog) Hide() {
 	c.noticeTitle = ""
 	c.noticeBody = ""
 	c.hookEvents = nil
+	c.hookInstallErr = ""
 }
 
 // IsVisible returns whether the dialog is visible
@@ -944,6 +951,9 @@ func (c *ConfirmDialog) View() string {
 		title = "Kimi Code Hooks"
 		warning = "Agent-deck can install Kimi lifecycle hooks\nfor real-time status detection (instant green/yellow/gray)."
 		details = fmt.Sprintf("Config: %s\nCommand: agent-deck hook-handler\nEvents: %s\nKimi runs this command with your user permissions and sends each event as JSON on stdin.\nExisting settings and hooks are preserved.", c.targetID, strings.Join(c.hookEvents, ", "))
+		if c.hookInstallErr != "" {
+			details += "\n\n" + c.hookInstallErr
+		}
 		borderColor = ColorAccent
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Install", ColorGreen, c.focusedButton == 0), "  ",

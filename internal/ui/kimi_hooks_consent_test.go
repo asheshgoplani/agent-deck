@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
@@ -222,6 +224,12 @@ func TestKimiHookInstallFailureIsVisibleAndRetryable(t *testing.T) {
 	if home.err == nil {
 		t.Fatal("Kimi hook installation failure was not shown in the TUI")
 	}
+	view := home.confirmDialog.View()
+	compactView := strings.ReplaceAll(strings.Join(strings.Fields(plain(view)), ""), "│", "")
+	compactErr := strings.Join(strings.Fields(home.err.Error()), "")
+	if !strings.Contains(compactView, compactErr) {
+		t.Fatalf("reopened consent dialog hid the persistent installation failure %q:\n%s", home.err, view)
+	}
 	if !home.pendingKimiHooksPrompt {
 		t.Fatal("Kimi hook installation failure cleared the pending consent prompt")
 	}
@@ -250,6 +258,38 @@ func TestKimiHookInstallFailureIsVisibleAndRetryable(t *testing.T) {
 	}
 	if gotMeta != "accepted" {
 		t.Fatalf("Kimi consent after successful retry = %q, want accepted", gotMeta)
+	}
+}
+
+func TestKimiHookPromptEscapeMeansLater(t *testing.T) {
+	db, err := statedb.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	previousDB := statedb.GetGlobal()
+	statedb.SetGlobal(db)
+	t.Cleanup(func() { statedb.SetGlobal(previousDB) })
+
+	home := &Home{confirmDialog: NewConfirmDialog(), pendingKimiHooksPrompt: true}
+	home.showPendingHooksPrompt()
+	home.handleConfirmDialogKey(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if home.confirmDialog.IsVisible() {
+		t.Fatal("Esc did not dismiss the Kimi consent prompt")
+	}
+	if !home.pendingKimiHooksPrompt {
+		t.Fatal("Esc cleared the pending Kimi consent prompt instead of postponing it")
+	}
+	gotMeta, err := db.GetMeta("kimi_hooks_prompted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMeta != "" {
+		t.Fatalf("Esc recorded a durable Kimi consent decision: %q", gotMeta)
 	}
 }
 

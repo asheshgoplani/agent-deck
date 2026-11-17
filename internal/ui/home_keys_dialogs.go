@@ -533,6 +533,9 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case ConfirmInstallHermesHooks:
 				return h, h.declineInstallHermesHooks()
 			case ConfirmInstallKimiHooks:
+				if msg.String() == "esc" {
+					return h, h.laterInstallKimiHooks()
+				}
 				return h, h.declineInstallKimiHooks()
 			default:
 				if msg.String() == "esc" {
@@ -1024,6 +1027,7 @@ func (h *Home) confirmInstallKimiHooks() tea.Cmd {
 		uiLog.Warn("kimi_hooks_install_failed", slog.String("error", err.Error()))
 		h.setError(fmt.Errorf("failed to install Kimi hooks: %w", err))
 		h.showPendingHooksPrompt()
+		h.confirmDialog.SetHookInstallError(h.err.Error())
 		return nil
 	}
 	h.pendingKimiHooksPrompt = false
@@ -1049,6 +1053,11 @@ func (h *Home) declineInstallKimiHooks() tea.Cmd {
 		_ = db.SetMeta("kimi_hooks_prompted", "declined")
 	}
 	h.showPendingHooksPrompt()
+	return nil
+}
+
+func (h *Home) laterInstallKimiHooks() tea.Cmd {
+	h.confirmDialog.Hide()
 	return nil
 }
 
