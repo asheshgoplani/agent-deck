@@ -89,13 +89,13 @@ func TestRelativeRemote(t *testing.T) {
 // reads as no voice at once.
 func TestWriteMirror_RoundTrip(t *testing.T) {
 	src, _, srcDir := newTestReader(t, map[int]bool{4242: true})
-	replaceAt(t, srcDir, "current.json", liveCurrent(1), time.Now())
+	replaceAt(t, srcDir, "current.json", strings.ReplaceAll(liveCurrent(1), `"remote":"innobox"`, `"remote":"box-a"`), time.Now())
 	st := src.Poll()
 	if st == nil {
 		t.Fatal("fixture not live")
 	}
 	dst := t.TempDir()
-	if err := WriteMirror(dst, MirrorFor(st, "innobox", "laptop", time.Now().UnixMilli())); err != nil {
+	if err := WriteMirror(dst, MirrorFor(st, "box-a", "laptop", time.Now().UnixMilli())); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dst, "mirror.json"))
@@ -113,7 +113,7 @@ func TestWriteMirror_RoundTrip(t *testing.T) {
 	if got == nil || got.Source != SourceMirror || got.Target.SessionID != "cf9a73f3-1789471273" || got.Target.Remote != "" || got.From != "laptop" {
 		t.Fatalf("mirror read back as %+v", got)
 	}
-	if err := WriteMirror(dst, MirrorFor(nil, "innobox", "laptop", time.Now().UnixMilli())); err != nil {
+	if err := WriteMirror(dst, MirrorFor(nil, "box-a", "laptop", time.Now().UnixMilli())); err != nil {
 		t.Fatal(err)
 	}
 	if got := NewReader(dst).Poll(); got != nil {
