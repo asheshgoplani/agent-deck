@@ -3,6 +3,8 @@ package ui
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,6 +59,62 @@ func TestKimiRecentSessionPreviewResetsPermissionMode(t *testing.T) {
 			}
 			if slices.Contains(opts.ToArgs(), "--auto") {
 				t.Fatalf("submission args = %v, want no --auto", opts.ToArgs())
+			}
+		})
+	}
+}
+
+func TestKimiNewSessionNormalizesPermissionMode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		raw      string
+		want     string
+		wantArgs []string
+	}{
+		{name: "whitespace", raw: " never-ask ", want: session.KimiPermissionNeverAsk, wantArgs: []string{"--auto"}},
+		{name: "empty", want: session.KimiPermissionAlwaysAsk},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := setXDGTestHome(t)
+			writeXDGTestConfig(t, home, "[kimi]\npermission_mode = "+strconv.Quote(tc.raw)+"\n")
+			d := NewNewDialog()
+			d.SetDefaultTool("kimi")
+			d.Show()
+
+			opts := d.GetKimiOptions()
+			if opts.PermissionMode != tc.want || !slices.Equal(opts.ToArgs(), tc.wantArgs) {
+				t.Fatalf("permission options = %+v, args = %v; want mode %q, args %v", opts, opts.ToArgs(), tc.want, tc.wantArgs)
+			}
+			if !strings.Contains(plain(d.kimiOptions.View()), ">"+kimiPermissionModeLabels[kimiPermissionIndex(tc.want)]) {
+				t.Fatalf("normalized mode %q is not the displayed selection:\n%s", tc.want, d.kimiOptions.View())
+			}
+		})
+	}
+}
+
+func TestKimiRecentSessionNormalizesPermissionMode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		raw      string
+		want     string
+		wantArgs []string
+	}{
+		{name: "whitespace", raw: " never-ask ", want: session.KimiPermissionNeverAsk, wantArgs: []string{"--auto"}},
+		{name: "empty", want: session.KimiPermissionAlwaysAsk},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setXDGTestHome(t)
+			raw, err := session.MarshalToolOptions(&session.KimiOptions{PermissionMode: tc.raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := NewNewDialog()
+			d.Show()
+			d.previewRecentSession(&statedb.RecentSessionRow{Tool: "kimi", ToolOptions: raw})
+
+			opts := d.GetKimiOptions()
+			if opts.PermissionMode != tc.want || !slices.Equal(opts.ToArgs(), tc.wantArgs) {
+				t.Fatalf("permission options = %+v, args = %v; want mode %q, args %v", opts, opts.ToArgs(), tc.want, tc.wantArgs)
 			}
 		})
 	}

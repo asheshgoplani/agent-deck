@@ -35,18 +35,12 @@ func NewKimiOptionsPanel() *KimiOptionsPanel {
 }
 
 func (p *KimiOptionsPanel) SetDefaults(mode string) {
-	if mode == "" {
-		mode = session.KimiPermissionAlwaysAsk
-	}
-	p.mode = mode
+	p.mode = session.NormalizeKimiPermissionMode(mode)
 }
 
 func (p *KimiOptionsPanel) SetFromOptions(opts *session.KimiOptions) {
 	if opts != nil {
-		p.mode = opts.PermissionMode
-		if p.mode == "" {
-			p.mode = session.KimiPermissionAlwaysAsk
-		}
+		p.SetDefaults(opts.PermissionMode)
 	}
 }
 
