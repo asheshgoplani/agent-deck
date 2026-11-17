@@ -23,10 +23,11 @@ type childRow struct {
 	// BackgroundWork is the in-flight background work keeping the child
 	// running (issue #2473); omitted otherwise. Not part of the --follow diff.
 	BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
-	// ReportsTo marks a child listed because it reports to this session
-	// (launched from inside a sub-session, issue #3165) rather than through
-	// a parent link. Not part of the --follow diff.
-	ReportsTo bool `json:"reports_to,omitempty"`
+	// ReportsTo is the launcher this child reports to (issue #3165), when it
+	// has one: this session for a worker it launched from inside a
+	// sub-session, another session for a nested worker its launcher hears
+	// from. Not part of the --follow diff.
+	ReportsTo string `json:"reports_to,omitempty"`
 }
 
 // followEvent is one JSONL line on the --follow stream. Consumers key off
@@ -102,7 +103,7 @@ func buildChildRows(kids []*session.Instance, sampling childRowsSampling) []chil
 		if sampling == sampleChildPanes {
 			_ = k.Substate() // before Status: see buildListJSON
 		}
-		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status), BackgroundWork: k.BackgroundWorkJSON(), ReportsTo: strings.TrimSpace(k.ReportsTo) != ""}
+		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status), BackgroundWork: k.BackgroundWorkJSON(), ReportsTo: launcherOf(k)}
 		if e, ok := session.ReadLedgerEntry(k.ID); ok {
 			row.DoneStatus = e.Status
 			row.DoneSummary = e.Summary
@@ -302,4 +303,13 @@ func runChildrenFollow(profile, parentID string, interval, heartbeat time.Durati
 		}
 		time.Sleep(interval)
 	}
+}
+
+// launcherOf is the launcher k reports to, or "" when it reports to its
+// tree parent (or nobody).
+func launcherOf(k *session.Instance) string {
+	if r := strings.TrimSpace(k.ReportsTo); r != "" && r != k.ID {
+		return r
+	}
+	return ""
 }

@@ -437,5 +437,5 @@ func parentInstanceFor(inst *Instance, byID map[string]*Instance) *Instance {
 	if inst == nil || inst.ReportTargetID() == "" || byID == nil {
 		return nil
 	}
-	return byID[inst.ReportTargetID()]
+	return byID[inst.reportTargetIDIn(byID)]
 }

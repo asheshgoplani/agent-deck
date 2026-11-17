@@ -604,8 +604,8 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	}
 	// Issue #3165: launched from inside a sub-session, the new session
 	// reports to that launcher whether or not it is nested under the root.
-	if launchedBy != nil {
-		newInstance.SetReportsTo(launchedBy.ID)
+	if reportsTo := reportsToLauncher(launchedBy); reportsTo != nil {
+		newInstance.SetReportsTo(reportsTo.ID)
 	}
 
 	if *noTransitionNotify {
@@ -1074,8 +1074,8 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if parentInstance != nil {
 		jsonData["parent_id"] = parentInstance.ID
 	}
-	if launchedBy != nil {
-		jsonData["reports_to"] = launchedBy.ID
+	if newInstance.ReportsTo != "" {
+		jsonData["reports_to"] = newInstance.ReportsTo
 	}
 	if len(sessionHints) > 0 {
 		jsonData["hints"] = sessionHints

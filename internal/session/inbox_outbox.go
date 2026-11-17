@@ -640,7 +640,7 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 // child that is in the registry and accepts transition events. A nil parent
 // comes with the terminal reason.
 func (n *TransitionNotifier) resolveInboxParent(event TransitionNotificationEvent, child *Instance, byID map[string]*Instance) (*Instance, string) {
-	parentID := child.ReportTargetID()
+	parentID := child.reportTargetIDIn(byID)
 	// Top-level (or self-pointing) conductor self-suppress (issue #824 cause
 	// B): the root is not an orphan, drop silently. The same predicate decides
 	// what the cursor export ships (remote_talkback.go).

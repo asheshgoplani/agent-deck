@@ -521,7 +521,7 @@ func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance)
 	if child == nil {
 		return nil
 	}
-	parentID := child.ReportTargetID()
+	parentID := child.reportTargetIDIn(byID)
 	if parentID == "" || parentID == child.ID {
 		return nil
 	}

@@ -2796,8 +2796,8 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		newInstance.SetParentWithPath(parentInstance.ID, parentInstance.ProjectPath)
 	}
 	// Issue #3165: see launch; `add` from a sub-session reports to it too.
-	if launchedBy != nil {
-		newInstance.SetReportsTo(launchedBy.ID)
+	if reportsTo := reportsToLauncher(launchedBy); reportsTo != nil {
+		newInstance.SetReportsTo(reportsTo.ID)
 	}
 
 	// Suppress transition notifications if requested
@@ -3153,8 +3153,8 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		jsonData["parent_id"] = parentInstance.ID
 		jsonData["parent_title"] = parentInstance.Title
 	}
-	if launchedBy != nil {
-		jsonData["reports_to"] = launchedBy.ID
+	if newInstance.ReportsTo != "" {
+		jsonData["reports_to"] = newInstance.ReportsTo
 	}
 	if len(sessionHints) > 0 {
 		jsonData["hints"] = sessionHints

@@ -26,6 +26,22 @@ func (inst *Instance) ReportTargetID() string {
 	return strings.TrimSpace(inst.ParentSessionID)
 }
 
+// reportTargetIDIn is ReportTargetID against a registry: a launcher that is no
+// longer registered (removed, archived away) falls back to the tree parent,
+// so a nested worker whose coordinator is gone still reaches the root, as it
+// did before issue #3165. A top-level worker with a gone launcher keeps the
+// launcher id and dead-letters as parent_removed, like a gone parent.
+func (inst *Instance) reportTargetIDIn(byID map[string]*Instance) string {
+	target := inst.ReportTargetID()
+	if inst == nil || byID == nil || target == "" || byID[target] != nil {
+		return target
+	}
+	if parent := strings.TrimSpace(inst.ParentSessionID); parent != "" && parent != target && byID[parent] != nil {
+		return parent
+	}
+	return target
+}
+
 // SetReportsTo records the launcher a new session reports to.
 func (inst *Instance) SetReportsTo(id string) {
 	inst.ReportsTo = strings.TrimSpace(id)

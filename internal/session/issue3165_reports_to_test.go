@@ -195,3 +195,102 @@ func TestIssue3165_IdentityBlockNamesTheLauncher(t *testing.T) {
 		t.Fatalf("a session without a launcher has a reports-to line:\n%s", b)
 	}
 }
+
+// A nested worker whose coordinator is gone falls back to its tree parent,
+// as before issue #3165; a top-level worker dead-letters as parent_removed.
+func TestIssue3165_GoneLauncherFallsBackToTheTreeParent(t *testing.T) {
+	for _, tc := range []struct {
+		name, profile, parent string
+		wantRoot              bool
+	}{
+		{"nested worker reaches the root", "_test-3165-gone-nested", "root-3165", true},
+		{"top-level worker dead-letters", "_test-3165-gone-top", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := issue3165Fleet()
+			worker := issue3165Worker("wrk-3165", tc.parent, "coord-gone")
+			seedNotifyInstances(t, tc.profile, root, worker)
+			n := NewTransitionNotifier()
+			t.Cleanup(n.Close)
+			res := n.NotifyFinished(TransitionNotificationEvent{
+				ChildSessionID: worker.ID, ChildTitle: worker.Title, Profile: tc.profile,
+				DoneStatus: "ok", DoneSummary: "done", Timestamp: time.Now(),
+			})
+			got := readInboxLines(t, root.ID)
+			if tc.wantRoot {
+				if res.DeliveryResult != transitionDeliveryCommitted || len(got) != 1 {
+					t.Fatalf("delivery %q, root inbox %d records; want the root to get it", res.DeliveryResult, len(got))
+				}
+				return
+			}
+			if res.DeliveryResult == transitionDeliveryCommitted || res.DeadLetterReason != deadLetterReasonParentMissing || len(got) != 0 {
+				t.Fatalf("delivery %q reason %q root records %d; want parent_removed and no copy", res.DeliveryResult, res.DeadLetterReason, len(got))
+			}
+		})
+	}
+}
+
+// Per-parent config overrides and the digest index follow the report target.
+func TestIssue3165_ParentInstanceForIsTheLauncher(t *testing.T) {
+	root, coord := issue3165Fleet()
+	worker := issue3165Worker("wrk-3165", root.ID, coord.ID)
+	byID := map[string]*Instance{root.ID: root, coord.ID: coord, worker.ID: worker}
+	if got := parentInstanceFor(worker, byID); got != coord {
+		t.Fatalf("parentInstanceFor = %v, want the coordinator", got)
+	}
+	delete(byID, coord.ID)
+	if got := parentInstanceFor(worker, byID); got != root {
+		t.Fatalf("with the coordinator gone parentInstanceFor = %v, want the root", got)
+	}
+}
+
+// A top-level conductor that reports to a launcher is a reporting child, not
+// a self-suppressed root conductor.
+func TestIssue3165_ConductorWithALauncherIsNotSelfSuppressed(t *testing.T) {
+	c := &Instance{ID: "cond-1", Title: "conductor-x", Tool: "claude"}
+	if !isSelfSuppressedConductor(c) {
+		t.Fatal("a top-level conductor must stay self-suppressed")
+	}
+	c.SetReportsTo("coord-3165")
+	if isSelfSuppressedConductor(c) {
+		t.Fatal("a conductor with a launcher is suppressed")
+	}
+}
+
+// session current reads LoadLite; it must see reports_to too.
+func TestIssue3165_LoadLiteCarriesReportsTo(t *testing.T) {
+	root, coord := issue3165Fleet()
+	worker := issue3165Worker("wrk-3165", "", coord.ID)
+	profile := "_test-3165-lite"
+	seedNotifyInstances(t, profile, root, coord, worker)
+	st, err := NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rows, _, err := st.LoadLite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.ID == worker.ID {
+			if r.ReportsTo != coord.ID {
+				t.Fatalf("LoadLite reports_to = %q, want %q", r.ReportsTo, coord.ID)
+			}
+			return
+		}
+	}
+	t.Fatal("worker not loaded")
+}
+
+// Moving a session in the TUI (promote, demote) drops the launcher link like
+// the CLI's set-parent and unset-parent do.
+func TestIssue3165_TUIPromoteClearsTheLauncher(t *testing.T) {
+	root, coord := issue3165Fleet()
+	worker := issue3165Worker("wrk-3165", root.ID, coord.ID)
+	tree := NewGroupTreeWithGroups([]*Instance{root, coord, worker}, nil)
+	tree.PromoteSession(worker)
+	if worker.ParentSessionID != "" || worker.ReportsTo != "" {
+		t.Fatalf("after promote parent=%q reports_to=%q, want both cleared", worker.ParentSessionID, worker.ReportsTo)
+	}
+}

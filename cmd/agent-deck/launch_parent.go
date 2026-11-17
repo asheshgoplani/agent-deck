@@ -135,12 +135,24 @@ func findInstanceByID(instances []*session.Instance, id string) *session.Instanc
 	return nil
 }
 
+// reportsToLauncher is the launcher a new session reports to (issue #3165):
+// launchedBy when it is a Claude-compatible session, else nil. Only those
+// drain an inbox at prompt time and can be woken; a shell sub-session is a
+// person at a prompt, and another harness would hold records nobody reads,
+// so those launches keep the old routing (tree parent or none).
+func reportsToLauncher(launchedBy *session.Instance) *session.Instance {
+	if launchedBy == nil || !session.IsClaudeCompatible(launchedBy.Tool) {
+		return nil
+	}
+	return launchedBy
+}
+
 // launchReportTarget is the session a new session's records go to: the
-// launcher when launch recorded one (issue #3165), else the tree parent. A
-// kickoff is tagged only when the caller is this session.
+// launcher when it reports to one, else the tree parent. A kickoff is tagged
+// only when the caller is this session.
 func launchReportTarget(parent, launchedBy *session.Instance) *session.Instance {
-	if launchedBy != nil {
-		return launchedBy
+	if r := reportsToLauncher(launchedBy); r != nil {
+		return r
 	}
 	return parent
 }
