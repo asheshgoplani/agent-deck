@@ -164,9 +164,9 @@ wait
 After getting the response, remove the consultation session:
 
 ```bash
-agent-deck remove "Consult Codex"
+agent-deck remove --force "Consult Codex"   # --force: the session is still idle with a live process
 # Or remove multiple at once:
-agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
+agent-deck remove --force "Codex Review" && agent-deck remove --force "Gemini Arch"
 ```
 
 ## Peer (Root) Sessions vs Sub-Agents

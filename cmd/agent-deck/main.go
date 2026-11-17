@@ -3548,15 +3548,22 @@ func handleRemove(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	force := fs.Bool("force", false, "Kill and remove a session that is still running/waiting/idle (destructive)")
 
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck remove <id|title>")
+		fmt.Println("Usage: agent-deck remove <id|title> [--force]")
 		fmt.Println()
-		fmt.Println("Remove a session by ID or title.")
+		fmt.Println("Remove a session by ID or title: kills its process, removes its")
+		fmt.Println("worktree and deletes it from the registry. A session that is still")
+		fmt.Println("running, waiting or idle with a live process is refused (exit 1)")
+		fmt.Println("unless --force is given, the same guard as 'session remove'.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck remove abc12345")
-		fmt.Println("  agent-deck remove \"My Project\"")
+		fmt.Println("  agent-deck remove \"My Project\" --force   # also when it is running")
 		fmt.Println("  agent-deck -p work remove abc12345   # Remove from 'work' profile")
 	}
 
@@ -3575,6 +3582,7 @@ func handleRemove(profile string, args []string) {
 		}
 		exitCLI(1)
 	}
+	rejectExtraRemoveArgs(out, fs)
 
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
@@ -3591,6 +3599,7 @@ func handleRemove(profile string, args []string) {
 		}
 		exitCLI(1)
 	}
+	refuseRunningRemoval(out, inst, *force)
 
 	removedID := inst.ID
 	removedTitle := inst.Title

@@ -79,8 +79,8 @@ preflight() {
 pre_cleanup() {
     agent-deck session stop   "$SESSION_A_TITLE" >/dev/null 2>&1 || true
     agent-deck session stop   "$SESSION_B_TITLE" >/dev/null 2>&1 || true
-    agent-deck remove          "$SESSION_A_TITLE" >/dev/null 2>&1 || true
-    agent-deck remove          "$SESSION_B_TITLE" >/dev/null 2>&1 || true
+    agent-deck remove --force          "$SESSION_A_TITLE" >/dev/null 2>&1 || true
+    agent-deck remove --force          "$SESSION_B_TITLE" >/dev/null 2>&1 || true
     agent-deck group delete    "$GROUP_A"         >/dev/null 2>&1 || true
     agent-deck group delete    "$GROUP_B"         >/dev/null 2>&1 || true
 }
@@ -90,8 +90,8 @@ cleanup() {
     set +e
     agent-deck session stop "$SESSION_A_TITLE" >/dev/null 2>&1 || true
     agent-deck session stop "$SESSION_B_TITLE" >/dev/null 2>&1 || true
-    agent-deck remove       "$SESSION_A_TITLE" >/dev/null 2>&1 || true
-    agent-deck remove       "$SESSION_B_TITLE" >/dev/null 2>&1 || true
+    agent-deck remove --force       "$SESSION_A_TITLE" >/dev/null 2>&1 || true
+    agent-deck remove --force       "$SESSION_B_TITLE" >/dev/null 2>&1 || true
     agent-deck group delete "$GROUP_A"         >/dev/null 2>&1 || true
     agent-deck group delete "$GROUP_B"         >/dev/null 2>&1 || true
     if [ -n "$BACKUP_FILE" ] && [ -f "$BACKUP_FILE" ]; then

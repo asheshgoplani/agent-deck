@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -32,7 +33,9 @@ func handleSessionRemove(profile string, args []string) {
 		fmt.Println("       agent-deck session remove --all-errored [options]")
 		fmt.Println()
 		fmt.Println("Remove a session from the registry. By default only stopped or")
-		fmt.Println("errored sessions may be removed; use --force to bypass.")
+		fmt.Println("errored sessions, or an idle one with no live process (e.g. never")
+		fmt.Println("started), may be removed; use --force to bypass. 'remove' uses the")
+		fmt.Println("same guard.")
 		fmt.Println()
 		fmt.Println("This is registry-only by default: Claude transcripts under")
 		fmt.Println("~/.claude/projects/ are preserved. Pass --prune-worktree to also")
@@ -65,6 +68,7 @@ func handleSessionRemove(profile string, args []string) {
 		out.Error("usage: session remove <id|title> OR --all-errored", ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
+	rejectExtraRemoveArgs(out, fs)
 
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
@@ -76,16 +80,7 @@ func handleSessionRemove(profile string, args []string) {
 		return
 	}
 
-	if !*force && !isRemovableStatus(inst.Status) {
-		out.Error(
-			fmt.Sprintf(
-				"session '%s' is in state '%s'; only stopped/error sessions may be removed without --force",
-				inst.Title, inst.Status,
-			),
-			ErrCodeInvalidOperation,
-		)
-		exitCLI(1)
-	}
+	refuseRunningRemoval(out, inst, *force)
 
 	// Always kill the tmux scope + its process tree before deleting the
 	// registry row (issue #59, v1.7.68). Previously Kill() was only
@@ -131,6 +126,50 @@ func handleSessionRemove(profile string, args []string) {
 // from the registry without --force.
 func isRemovableStatus(s session.Status) bool {
 	return s == session.StatusStopped || s == session.StatusError
+}
+
+// needsForceToRemove reports whether removing inst would kill a session that
+// may still be working. Stopped and errored rows never need --force. An idle
+// row needs it only while its tmux session is alive: a session that was added
+// but never started (or whose pane is gone) reads idle and has nothing to
+// kill. Running, waiting, starting and queued rows always need it.
+func needsForceToRemove(inst *session.Instance) bool {
+	if isRemovableStatus(inst.Status) {
+		return false
+	}
+	if inst.Status == session.StatusIdle {
+		return inst.Exists()
+	}
+	return true
+}
+
+// refuseRunningRemoval is the one guard `remove`/`rm` and `session remove`
+// share: without --force a session that needsForceToRemove is refused with
+// exit 1 and the same text on both commands.
+func refuseRunningRemoval(out *CLIOutput, inst *session.Instance, force bool) {
+	if force || !needsForceToRemove(inst) {
+		return
+	}
+	out.Error(
+		fmt.Sprintf(
+			"session '%s' is in state '%s' and may still be working; stop it first or pass --force to kill and remove it",
+			inst.Title, inst.Status,
+		),
+		ErrCodeInvalidOperation,
+	)
+	exitCLI(1)
+}
+
+// rejectExtraRemoveArgs refuses a second positional argument instead of
+// silently ignoring it (`remove a b` used to remove only a).
+func rejectExtraRemoveArgs(out *CLIOutput, fs *flag.FlagSet) {
+	if fs.NArg() > 1 {
+		out.Error(
+			fmt.Sprintf("remove takes one session, got %d arguments: %s", fs.NArg(), strings.Join(fs.Args(), " ")),
+			ErrCodeInvalidOperation,
+		)
+		exitCLI(1)
+	}
 }
 
 // removedSessionRow is the {id,title} payload emitted for each removed session.

@@ -33,7 +33,7 @@ agent-deck add --sandbox-image myregistry/custom:v1 .
 agent-deck try auth-refactor --sandbox
 
 # Remove session (auto-cleans container)
-agent-deck remove <session>
+agent-deck remove <session>   # add --force while it is still running
 ```
 
 **Note:** The TUI sandbox checkbox is always visible. Docker availability is checked at session start time — if Docker is not installed or the daemon is not running, the session will report an error.
