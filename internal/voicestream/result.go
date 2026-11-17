@@ -1,6 +1,9 @@
 package voicestream
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
@@ -29,17 +32,70 @@ type ResultConfirm struct {
 	ExpiresMs int64  `json:"expiresMs"`
 }
 
+// ResultThen is the desk's follow-up for the caller (CONTRACT section 2):
+// "switch" = the mic is about to move to Target. Screens may show
+// "Switching to <title>…" until a voice.state frame names that target.
+type ResultThen struct {
+	Action string  `json:"action"`
+	Target *Target `json:"target"`
+}
+
 // ResultEvent is the data of a voice.result frame (FRAME.md). It never
-// carries the heard sentence or the spoken line.
+// carries the heard sentence, the spoken line or the confirm token.
 type ResultEvent struct {
 	Host    string         `json:"host"`
 	Intent  string         `json:"intent"`
 	Target  *Target        `json:"target"`
 	Show    ResultShow     `json:"show"`
 	Confirm *ResultConfirm `json:"confirm"`
+	Then    *ResultThen    `json:"then"`
 	Refused *string        `json:"refused"`
 	From    string         `json:"from"`
 	At      string         `json:"at"`
+}
+
+// deskResult is the part of `voice do --json` (CONTRACT section 2) a
+// frame may carry. "say" and the heard sentence are not decoded at all;
+// confirm.token is dropped.
+type deskResult struct {
+	Handled bool       `json:"handled"`
+	Intent  string     `json:"intent"`
+	Target  *Target    `json:"target"`
+	Show    ResultShow `json:"show"`
+	Confirm *struct {
+		Kind      string `json:"kind"`
+		Prompt    string `json:"prompt"`
+		ExpiresMs int64  `json:"expiresMs"`
+	} `json:"confirm"`
+	Then    *ResultThen `json:"then"`
+	Refused *string     `json:"refused"`
+	DryRun  bool        `json:"dryRun"`
+}
+
+// ErrNotPublishable: a result that is not handled or is a dry run puts
+// nothing on the screens.
+var ErrNotPublishable = errors.New("result not handled or a dry run: nothing to show")
+
+// ResultFromDesk maps the desk's result JSON to a voice.result frame:
+// intent, target, show, confirm (without its token), then, refused.
+// from is the client (mac, glasses, phone, text). The caller has already
+// redacted secrets from show and the confirm prompt.
+func ResultFromDesk(raw []byte, from string) (ResultEvent, error) {
+	var d deskResult
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return ResultEvent{}, fmt.Errorf("decoding desk result: %w", err)
+	}
+	if !d.Handled || d.DryRun {
+		return ResultEvent{}, ErrNotPublishable
+	}
+	r := ResultEvent{Intent: d.Intent, Target: d.Target, Show: d.Show, Then: d.Then, Refused: d.Refused, From: from}
+	if d.Confirm != nil {
+		r.Confirm = &ResultConfirm{Kind: d.Confirm.Kind, Prompt: d.Confirm.Prompt, ExpiresMs: d.Confirm.ExpiresMs}
+	}
+	if r.Then != nil && r.Then.Action == "" {
+		r.Then = nil
+	}
+	return r, nil
 }
 
 // SessionID is the frame's session_id: the target when it is on this host.
