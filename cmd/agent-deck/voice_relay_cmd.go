@@ -50,6 +50,9 @@ func runVoiceRelay(profile string, args []string, stdout, stderr io.Writer) int 
 	self := fs.String("self", "", "this machine's name as the remotes' configs name it (required: a target on this machine is shown under it there)")
 	dir := fs.String("dir", "", "voice state dir (default: $CLAUDE_VOICE_STATE_DIR or ~/.claude/voice)")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() > 0 {
@@ -228,6 +231,9 @@ func runVoiceMirrorIn(profile string, args []string, stdout, stderr io.Writer) i
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", "", "voice state dir (default: $CLAUDE_VOICE_STATE_DIR or ~/.claude/voice)")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	vdir := *dir
