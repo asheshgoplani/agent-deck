@@ -16,7 +16,8 @@ Run commands: agent-deck remote <name> <command> [arguments]
   A forwarded follow runs until its stdin closes, then exits 0. Stdin from /dev/null (</dev/null,
   a background job of a non-interactive shell) ends it within seconds with no output: hold a pipe open.
   worktree list/info/cleanup, mcp list/attach, skill list/attached/attach/detach, group list/reorder,
-  limits [--json] (read-only: the remote's own accounts and 5h/7d windows)
+  limits [--json] (read-only: the remote's own accounts and 5h/7d windows),
+  voice state [--json] (read-only: the remote's voice state snapshot)
 
 Commands:
   add <name> <user@host>    Add a remote agent-deck instance
