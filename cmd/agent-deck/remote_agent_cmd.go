@@ -402,7 +402,7 @@ func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func() (string, 
 		}
 		refresh, cached := session.CLIStatusCandidates(instances)
 		session.RefreshInstancesForCLIStatus(refresh)
-		l, err := buildListJSON(storage.Profile(), instances, cached)
+		l, err := buildListJSONStamped(storage.Profile(), instances, cached, listStatusStamps(storage))
 		if err != nil {
 			return "", "", err
 		}

@@ -199,9 +199,12 @@ func Collect(ctx context.Context, opts Options) Result {
 			seen[key] = true
 			s := Session{ID: r.ID, Title: r.Title, Group: r.Group, Profile: profile, Host: src.Host,
 				Status: "waiting", Substate: r.Substate, Reason: Reason(r.Substate, r.SubstateDetail)}
-			// Only an explicit waiting_since counts. last_activity_at can be
-			// the creation time, which would give a wrong wait and order.
-			if t, ok := parseTime(r.WaitingSince); ok {
+			// Only an explicit waiting_since counts (`list --json` writes it
+			// from state.db's status-change stamp). last_activity_at can be
+			// the creation time, which would give a wrong wait and order. A
+			// time in the future (a skewed or hostile remote clock) is
+			// unknown, so it can never sort a session first.
+			if t, ok := parseTime(r.WaitingSince); ok && !t.After(now().Add(time.Minute)) {
 				s.Since = r.WaitingSince
 				if w := int64(now().Sub(t) / time.Second); w > 0 {
 					s.WaitingSeconds = w

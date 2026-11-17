@@ -50,13 +50,7 @@ func DefaultSources(selfPath, fallbackProfile string) []Source {
 				if err != nil {
 					return nil, remoteFetchError(err)
 				}
-				rows := make([]Row, 0, len(infos))
-				for _, i := range infos {
-					rows = append(rows, Row{ID: i.ID, Title: i.Title, Group: i.Group, Profile: rc.GetProfile(),
-						Status: i.Status, Substate: i.Substate, SubstateDetail: i.SubstateDetail,
-						LastActivityAt: i.LastActivityAt, CreatedAt: i.CreatedAt, Archived: i.Archived})
-				}
-				return rows, nil
+				return remoteRows(infos, rc.GetProfile()), nil
 			}})
 		}
 	}
@@ -121,4 +115,15 @@ func remoteFetchError(err error) error {
 		return ErrBadReply
 	}
 	return err
+}
+
+// remoteRows turns a remote's session list into rows for Collect.
+func remoteRows(infos []session.RemoteSessionInfo, profile string) []Row {
+	rows := make([]Row, 0, len(infos))
+	for _, i := range infos {
+		rows = append(rows, Row{ID: i.ID, Title: i.Title, Group: i.Group, Profile: profile,
+			Status: i.Status, Substate: i.Substate, SubstateDetail: i.SubstateDetail,
+			LastActivityAt: i.LastActivityAt, WaitingSince: i.WaitingSince, CreatedAt: i.CreatedAt, Archived: i.Archived})
+	}
+	return rows
 }
