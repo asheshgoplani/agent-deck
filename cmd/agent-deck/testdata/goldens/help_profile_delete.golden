@@ -1,1 +1,5 @@
-Usage: agent-deck profile delete <name>
+Usage: agent-deck profile delete <name> [--yes] [--json]
+
+Delete a profile and all its sessions. Refuses while any of its sessions
+is running (stop them first). Asks for confirmation unless --yes is given;
+with --json and no --yes it returns an error instead of asking.
