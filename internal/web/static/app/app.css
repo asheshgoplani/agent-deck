@@ -96,7 +96,16 @@ body[data-rail="hidden"] .rightrail { display: none; }
 }
 .top-search .kbd { font-family: var(--mono); font-size: 10.5px; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; }
 
-.top-tabs { display: flex; gap: 2px; margin-left: auto; flex: 0 0 auto; flex-wrap: nowrap; }
+/* The strip may shrink below its content width (between the phone layout and
+   a wide desktop it does not fit next to the brand and the search box); the
+   tabs that do not fit are then reached by scrolling the strip sideways
+   instead of running past the window edge. */
+.top-tabs {
+  display: flex; gap: 2px; margin-left: auto; flex: 0 1 auto; flex-wrap: nowrap;
+  min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.top-tabs::-webkit-scrollbar { display: none; }
+.top-tab { flex: 0 0 auto; white-space: nowrap; }
 .top-tab {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 10px; border-radius: var(--radius);
@@ -117,7 +126,11 @@ body[data-rail="hidden"] .rightrail { display: none; }
   flex: 0 0 auto;
 }
 .top-mid { flex: 1 1 auto; min-width: 0; overflow: hidden; }
-.top-search { flex: 0 1 420px; min-width: 0; }
+/* The search box gives up its width before the tabs do (large shrink
+   factor); min-width keeps its icon and ⌘K label, and overflow clips the
+   placeholder rather than letting the label spill onto the tabs. */
+.top-search { flex: 0 100 420px; min-width: 84px; overflow: hidden; }
+.top-search .kbd { flex: 0 0 auto; }
 @media (max-width: 1180px) {
   .top-tab .badge { display: none; }
   .top-tab span.lbl-long { display: none; }
@@ -155,12 +168,16 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .side-head .spacer { flex: 1; }
 .side-head button { margin: 0; }
 
+/* The input has a large intrinsic width; without min-width it pushed the
+   last chips past the rail's right edge, over the main pane, where they could
+   not be clicked. It now shrinks to 80px, and on a rail narrower than that
+   the chips wrap onto a second line instead of overflowing. */
 .side-filter {
   padding: 8px 12px; border-bottom: 1px solid var(--border);
-  display: flex; gap: 6px; align-items: center;
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
 }
 .side-filter input {
-  flex: 1; height: 28px;
+  flex: 1 1 80px; min-width: 80px; height: 28px;
   background: var(--bg); border: 1px solid var(--border);
   color: var(--text); border-radius: var(--radius);
   padding: 0 8px; font: inherit; font-size: 12px;
