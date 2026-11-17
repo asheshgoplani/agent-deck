@@ -135,6 +135,16 @@ the log ever reached, gets `event: reset` `{reason: "cursor-too-old" |
 "cursor-ahead", cursor, voice}` and the stream continues from the newest
 frame. `: keepalive` every 15 s.
 
+`agent-deck web --stream-remotes <remote>[,<remote>]` also puts those
+remotes' own `session.status` frames on this host's bus, followed over ssh
+(`remote <name> events follow --kind session.status`, resumed by cursor
+after a drop), with `data.host` = the remote's name and `data.remote_cursor`
+= its cursor there. So one `/events/state` stream carries local and remote
+status in one cursor order. A remote's history before the server started is
+not replayed; frames that already carry a host are not forwarded again (two
+hosts that stream each other never loop); a remote's `voice.state` is not
+forwarded (each host has its own, from the relay).
+
 ## On-disk layout
 
 `<data-dir>/bus/<profile>/`, with the data root resolved through

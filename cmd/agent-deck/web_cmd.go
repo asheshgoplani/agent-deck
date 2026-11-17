@@ -44,6 +44,7 @@ type webCommandOptions struct {
 	pushVAPIDSubject string
 	pushTestEvery    time.Duration
 	noTUI            bool
+	streamRemotes    string
 }
 
 type stringValues []string
@@ -67,6 +68,7 @@ func parseWebCommandOptions(args []string) (webCommandOptions, error) {
 	fs.StringVar(&options.pushVAPIDSubject, "push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
 	fs.DurationVar(&options.pushTestEvery, "push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
 	fs.BoolVar(&options.noTUI, "no-tui", false, "Run in headless mode (HTTP server only, no bubbletea TUI)")
+	fs.StringVar(&options.streamRemotes, "stream-remotes", "", "Comma-separated remotes whose session.status frames GET /events/state also carries, with data.host (followed over ssh)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck web [options]")
@@ -176,6 +178,11 @@ func buildWebServerFromOptions(profile string, options webCommandOptions, menuDa
 		PushVAPIDSubject:    resolvedPushSubject,
 		PushTestInterval:    options.pushTestEvery,
 	})
+	if names, err := streamRemoteNames(options.streamRemotes); err != nil {
+		return nil, err
+	} else if len(names) > 0 {
+		server.SetRemoteStatusStream(names, webRemoteStatusRunner)
+	}
 
 	if mutator != nil {
 		server.SetMutator(mutator)
@@ -336,4 +343,39 @@ func extractNoTuiFlag(args []string) (bool, []string) {
 		}
 	}
 	return noTui, remaining
+}
+
+// streamRemoteNames checks --stream-remotes against the configured remotes.
+func streamRemoteNames(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading config for --stream-remotes: %w", err)
+	}
+	var names []string
+	for _, n := range strings.Split(raw, ",") {
+		if n = strings.TrimSpace(n); n == "" {
+			continue
+		}
+		if _, ok := cfg.Remotes[n]; !ok {
+			return nil, fmt.Errorf("--stream-remotes: remote %q not found", n)
+		}
+		names = append(names, n)
+	}
+	return names, nil
+}
+
+// webRemoteStatusRunner is the ssh runner for one --stream-remotes name.
+func webRemoteStatusRunner(name string) web.RemoteStatusRunner {
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		return nil
+	}
+	rc, ok := cfg.Remotes[name]
+	if !ok {
+		return nil
+	}
+	return session.NewSSHRunner(name, rc)
 }
