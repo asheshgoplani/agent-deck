@@ -74,6 +74,10 @@ lean, and the brief's "no duplicate" rule). If the launcher is no longer
 registered, a nested worker's records fall back to its tree parent
 (`reportTargetIDIn`), as before this change; a top-level worker's records go
 to the unowned ledger as `parent_removed`, like any child of a removed parent.
+Where the daemon has the registry in scope, the comms ledger and the stats
+bucket use the same fallback (`statsParentForIn`, `parentOf`): the turn and
+status records' recipient and a send's observers name the tree parent, not
+the removed launcher.
 
 ### 3. Kickoff tag
 
@@ -105,7 +109,10 @@ parented one.
 
 `session set-parent`, `session unset-parent` and the TUI's promote, demote
 and move-up paths clear `reports_to`: a link the
-user picks replaces the one launch recorded. A cleared value is written as an
+user picks replaces the one launch recorded. A default (top-level) worker has
+`reports_to` but no tree parent; `unset-parent` and promote detach it from its
+launcher, and `unset-parent` refuses only a session with neither link. Its
+output says which link it cleared. A cleared value is written as an
 explicit empty string so the extras merge does not carry it forward. A
 cross-harness switch copies it to the replacement. The conditional archive
 fence (`--expected-parent`) accepts the tree parent or the report target.

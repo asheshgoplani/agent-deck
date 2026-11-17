@@ -1072,7 +1072,9 @@ func handleSessionUnsetParent(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session unset-parent <session>")
 		fmt.Println()
-		fmt.Println("Remove the sub-session link from a session.")
+		fmt.Println("Remove the sub-session link from a session, and the launcher it")
+		fmt.Println("reports to (reports_to), so nobody receives its records.")
+		fmt.Println("A top-level worker that only reports to a launcher is detached too.")
 		fmt.Println("The session will remain in its current group.")
 		fmt.Println()
 		fmt.Println("Options:")
@@ -1107,19 +1109,31 @@ func handleSessionUnsetParent(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
-	// Check if it's actually a sub-session
-	if !inst.IsSubSession() {
-		out.Error(fmt.Sprintf("session '%s' is not a sub-session", inst.Title), ErrCodeInvalidOperation)
+	// Refuse only a session with neither link: a top-level worker that
+	// reports to its launcher (issue #3165) has no tree parent, and
+	// unset-parent is how it is detached.
+	formerReportsTo := inst.ReportsTo
+	if !inst.IsSubSession() && formerReportsTo == "" {
+		out.Error(fmt.Sprintf("session '%s' is not a sub-session and reports to no launcher", inst.Title), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 
-	// Get parent title for output
-	var parentTitle string
-	for _, other := range instances {
-		if other.ID == inst.ParentSessionID {
-			parentTitle = other.Title
-			break
+	// Get parent and launcher titles for output
+	titleOf := func(id string) string {
+		if id == "" {
+			return ""
 		}
+		for _, other := range instances {
+			if other.ID == id {
+				return other.Title
+			}
+		}
+		return id
+	}
+	parentTitle := titleOf(inst.ParentSessionID)
+	launcherTitle := ""
+	if formerReportsTo != inst.ParentSessionID {
+		launcherTitle = titleOf(formerReportsTo)
 	}
 
 	// Clear parent, and the launcher link with it (issue #3165): unlinking
@@ -1134,13 +1148,21 @@ func handleSessionUnsetParent(profile string, args []string) {
 		exitCLI(1)
 	}
 
+	msg := fmt.Sprintf("Removed sub-session link from '%s' (was linked to '%s')", inst.Title, parentTitle)
+	switch {
+	case parentTitle == "" && launcherTitle != "":
+		msg = fmt.Sprintf("Removed reports-to link from '%s' (was reporting to '%s')", inst.Title, launcherTitle)
+	case launcherTitle != "":
+		msg = fmt.Sprintf("Removed sub-session link from '%s' (was linked to '%s', reporting to '%s')", inst.Title, parentTitle, launcherTitle)
+	}
 	out.Success(
-		fmt.Sprintf("Removed sub-session link from '%s' (was linked to '%s')", inst.Title, parentTitle),
+		msg,
 		map[string]interface{}{
-			"success":       true,
-			"session_id":    inst.ID,
-			"session_title": inst.Title,
-			"former_parent": parentTitle,
+			"success":           true,
+			"session_id":        inst.ID,
+			"session_title":     inst.Title,
+			"former_parent":     parentTitle,
+			"former_reports_to": launcherTitle,
 		},
 	)
 }
