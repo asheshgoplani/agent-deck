@@ -388,6 +388,9 @@ func stripAgentDeckKimiHooks(data []byte, knownEventsOnly bool) ([]byte, bool, e
 		start := block.start
 		if start > last && start > 0 && data[start-1] == '\n' {
 			start--
+			if start > last && data[start-1] == '\r' {
+				start--
+			}
 		}
 		out.Write(data[last:start])
 		last = block.end
@@ -412,12 +415,17 @@ func replaceAgentDeckKimiHooks(data []byte, hooks []any) ([]byte, error) {
 		return nil, fmt.Errorf("marshal Kimi hooks: %w", err)
 	}
 
-	out := make([]byte, 0, len(base)+encoded.Len()+1)
+	lineEnding := []byte("\n")
+	if bytes.Contains(data, []byte("\r\n")) {
+		lineEnding = []byte("\r\n")
+	}
+	encodedHooks := bytes.ReplaceAll(encoded.Bytes(), []byte("\n"), lineEnding)
+	out := make([]byte, 0, len(base)+len(encodedHooks)+len(lineEnding))
 	out = append(out, base...)
 	if len(base) > 0 {
-		out = append(out, '\n')
+		out = append(out, lineEnding...)
 	}
-	out = append(out, encoded.Bytes()...)
+	out = append(out, encodedHooks...)
 	return out, nil
 }
 

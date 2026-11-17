@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,6 +143,42 @@ func TestKimiHookLifecyclePreservesMultilineCommandStrings(t *testing.T) {
 				t.Fatalf("uninstall did not restore multiline user command:\n got %q\nwant %q", data, original)
 			}
 		})
+	}
+}
+
+func TestKimiHookLifecyclePreservesCRLF(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	original := []byte("default_model = \"kimi-code/k3\"\r\n\r\n[[hooks]]\r\nevent = \"Notification\"\r\ncommand = \"notify-send Kimi\"\r\n")
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if installed, err := session.InjectKimiHooks(dir); err != nil || !installed {
+		t.Fatalf("InjectKimiHooks = %v, %v", installed, err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(data, original) {
+		t.Fatalf("install changed CRLF user content: got %q", data)
+	}
+	appended := data[len(original):]
+	if bareLF := bytes.Contains(bytes.ReplaceAll(appended, []byte("\r\n"), nil), []byte("\n")); bareLF {
+		t.Fatalf("managed hooks contain non-CRLF line endings: %q", appended)
+	}
+	if !bytes.Contains(appended, []byte("\r\n[[hooks]]\r\n")) {
+		t.Fatalf("managed hooks do not use CRLF: %q", appended)
+	}
+	if removed, err := session.RemoveKimiHooks(dir); err != nil || !removed {
+		t.Fatalf("RemoveKimiHooks = %v, %v", removed, err)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, original) {
+		t.Fatalf("uninstall did not restore CRLF user content:\n got %q\nwant %q", data, original)
 	}
 }
 
