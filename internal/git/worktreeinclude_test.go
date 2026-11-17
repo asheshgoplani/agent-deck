@@ -555,6 +555,36 @@ func TestProcessWorktreeInclude_SymlinkedRootDoesNotBlockOtherIncludes(t *testin
 	}
 }
 
+// A "." root must win even when another root sorts before it. A leading "-"
+// sorts below "." in byte order, so the list has to be checked as a whole.
+func TestWalkRootsFullWalkWithDotRootSortedLast(t *testing.T) {
+	got := walkRoots([]string{"/build/", "-dash/x"})
+	want := []string{"."}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("walkRoots() = %q, want %q", got, want)
+	}
+}
+
+// The previous repository-wide walk never read .git, so a root inside it must
+// not be walked now.
+func TestWalkIncludeRoots_SkipsGitDirectoryRoot(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFile(t, filepath.Join(repoDir, ".git", "info", "exclude"), "SECRET")
+	writeFile(t, filepath.Join(repoDir, ".git", "hooks", "pre-commit"), "#!/bin/sh")
+
+	for _, pattern := range []string{".git/info/exclude", ".git/hooks/pre-commit"} {
+		matcher := ignore.CompileIgnoreLines(pattern)
+		rec := &recordingFS{fsys: os.DirFS(repoDir)}
+		candidates, err := walkIncludeRoots(rec, walkRoots([]string{pattern}), matcher)
+		if err != nil {
+			t.Fatalf("pattern %q: unexpected error: %v", pattern, err)
+		}
+		if len(candidates) != 0 {
+			t.Errorf("pattern %q: candidates = %q, want none", pattern, candidates)
+		}
+	}
+}
+
 // A pattern with a separator in the middle is anchored at the repository root,
 // as gitignore specifies. The matcher would also accept the same relative path
 // under a subdirectory; this test records that the narrowed walk does not

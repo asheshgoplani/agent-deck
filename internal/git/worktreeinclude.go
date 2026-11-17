@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -170,8 +171,10 @@ func pruneNestedRoots(roots []string) []string {
 		return nil
 	}
 	sort.Strings(roots)
-	if roots[0] == "." {
-		// A full walk already covers every other root.
+	if slices.Contains(roots, ".") {
+		// A full walk already covers every other root. Check the whole list:
+		// names that start below "." in byte order (for example "-dash") sort
+		// before it.
 		return []string{"."}
 	}
 	var kept []string
@@ -200,6 +203,13 @@ func insideNestedRepo(rootFS fs.FS, root string) bool {
 		}
 	}
 	return false
+}
+
+// isGitDirectoryRoot reports whether root is the repository's .git directory or
+// a path inside it. The previous repository-wide walk never read .git, and a
+// copy under it would land on the new worktree's .git file.
+func isGitDirectoryRoot(root string) bool {
+	return root == ".git" || strings.HasPrefix(root, ".git/")
 }
 
 // pathCrossesSymlink reports whether root or one of its parents is a symbolic
@@ -240,6 +250,9 @@ func pathCrossesSymlink(rootFS fs.FS, root string) bool {
 func walkIncludeRoots(rootFS fs.FS, roots []string, matcher *ignore.GitIgnore) ([]string, error) {
 	var candidates []string
 	for _, root := range roots {
+		if isGitDirectoryRoot(root) {
+			continue
+		}
 		if _, err := fs.Stat(rootFS, root); err != nil {
 			continue
 		}
