@@ -391,6 +391,10 @@ func resolveExactPiSessionArtifact(inst *Instance) (piSessionArtifact, error) {
 		}
 		path := filepath.Join(dir, entry.Name())
 		info, statErr := os.Lstat(path)
+		if errors.Is(statErr, os.ErrNotExist) {
+			// Gone since ReadDir: not a candidate, and not a reason to fail.
+			continue
+		}
 		if statErr != nil {
 			return piSessionArtifact{}, fmt.Errorf("inspect Pi session artifact: %w", statErr)
 		}
@@ -401,6 +405,9 @@ func resolveExactPiSessionArtifact(inst *Instance) (piSessionArtifact, error) {
 		// the historical session.jsonl fixture/installation shape compatible,
 		// but never apply that exception to generated filenames.
 		id, headerErr := readValidatedPiSessionHeader(path, inst.EffectiveWorkingDir(), entry.Name() == "session.jsonl")
+		if errors.Is(headerErr, os.ErrNotExist) {
+			continue
+		}
 		if headerErr != nil {
 			return piSessionArtifact{}, headerErr
 		}

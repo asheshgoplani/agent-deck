@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -41,9 +42,30 @@ func TestRowsLookupPiWithoutOneDocument(t *testing.T) {
 		}
 	}
 	lk := &rowsLookup{profile: "_test", instances: []*session.Instance{inst}, inBatch: true}
-	defer lk.close()
 	_, err = lk.resolve(inst.ID)
 	if err == nil || !strings.Contains(err.Error(), "ambiguous Pi context artifacts") {
 		t.Fatalf("err = %v, want the ambiguous Pi documents reason", err)
+	}
+
+	// A single-id lookup whose index cannot be opened still answers with
+	// the Pi reason instead of exiting on the index error.
+	dbPath, err := recall.DBPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lk.close()
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.RemoveAll(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(dbPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	single := &rowsLookup{profile: "_test", instances: []*session.Instance{inst}}
+	defer single.close()
+	_, err = single.resolve(inst.ID)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous Pi context artifacts") {
+		t.Fatalf("single lookup err = %v, want the ambiguous Pi documents reason", err)
 	}
 }

@@ -19,7 +19,9 @@ import (
 // RowsSource is a native transcript read directly, never through the Recall
 // index: the session's Claude Code JSONL or Codex rollout. Resolve, when
 // set, re-resolves the live path (Codex re-creates its rollout after the
-// trust prompt); follow emits resync_required when the answer changes.
+// trust prompt); follow emits resync_required when the answer changes, or
+// when Resolve fails with ErrSourceUnresolved. Other Resolve errors are
+// treated as transient and the follow keeps reading.
 type RowsSource struct {
 	Harness string
 	Path    string
@@ -81,6 +83,11 @@ func ValidateRowsOptions(opts RowsOptions) error {
 // ErrRowsUnsupported is returned for a harness whose native format the rows
 // reader does not stream directly.
 var ErrRowsUnsupported = errors.New("recall rows: harness is not read directly")
+
+// ErrSourceUnresolved, from RowsSource.Resolve, means the session no longer
+// resolves to one native file (a Pi session that gained a second session
+// document without a saved identity). Follow answers resync_required.
+var ErrSourceUnresolved = errors.New("recall rows: source no longer resolves to one file")
 
 // SupportsDirectRows reports whether ReadRows/FollowRows read the harness's
 // native file without the index.
@@ -686,7 +693,11 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 		}
 		if src.Resolve != nil && now.Sub(lastResolveAt) >= 2*time.Second {
 			lastResolveAt = now
-			if live, err := src.Resolve(); err == nil && live != "" && live != c.P {
+			live, err := src.Resolve()
+			if errors.Is(err, ErrSourceUnresolved) {
+				return resync("source_unresolved")
+			}
+			if err == nil && live != "" && live != c.P {
 				return resync("source_moved")
 			}
 		}
