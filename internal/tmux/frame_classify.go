@@ -87,6 +87,7 @@ func (s *Session) prepareFrame(content string) string {
 var (
 	kimiSubmittedPromptRe = regexp.MustCompile(`^\s*❯\s+`)
 	kimiComposerRe        = regexp.MustCompile(`^\s*│ >`)
+	kimiApprovalPromptRe  = regexp.MustCompile(`(?m)^\s*▶ Run this command\?\s*$`)
 )
 
 func trimKimiToCurrentTurn(content string) string {
@@ -110,6 +111,33 @@ func trimKimiToCurrentTurn(content string) string {
 		return content
 	}
 	return strings.Join(lines[submitted+1:], "\n")
+}
+
+// kimiApprovalOutranksBusy reports whether the latest Kimi approval panel
+// follows the retry/generation evidence still visible above it. A later busy
+// line keeps its priority; submitted prompt glyphs are not turn boundaries.
+func (s *Session) kimiApprovalOutranksBusy(content string) bool {
+	if inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand()) != "kimi" {
+		return false
+	}
+	approvals := kimiApprovalPromptRe.FindAllStringIndex(content, -1)
+	if len(approvals) == 0 {
+		return false
+	}
+	approvalAt := approvals[len(approvals)-1][0]
+	patterns := s.resolvedPatterns
+	if patterns == nil {
+		patterns = defaultResolvedPatternsForTool("kimi")
+	}
+	if patterns != nil {
+		for _, re := range patterns.BusyRegexps {
+			matches := re.FindAllStringIndex(content, -1)
+			if len(matches) > 0 && matches[len(matches)-1][0] > approvalAt {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // claudeFooterRe matches the mode line under Claude's input box, the last line

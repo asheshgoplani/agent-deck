@@ -44,6 +44,50 @@ func TestKimiRealFrameClassification(t *testing.T) {
 	}
 }
 
+func TestKimiCurrentApprovalOutranksEarlierRetry(t *testing.T) {
+	approval := "  ● Running a command · $ printf permission-approved\n" +
+		"  ▶ Run this command?\n" +
+		"  ▶ 1. Approve once\n" +
+		"    2. Approve for this session\n" +
+		"    3. Reject\n" +
+		"  ↑/↓ select · 1/2/3 choose · ↵ confirm\n"
+	retry := "  🌘 Retrying (3/10) · APIConnectionError · in 2s\n"
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "later submitted turn with composer",
+			content: " ❯ first\n" + retry +
+				" ❯ permission please\n" + approval +
+				" ╭────────────────────────────────╮\n" +
+				" │ >                              │\n" +
+				" ╰────────────────────────────────╯\n",
+		},
+		{
+			name:    "no composer to delimit the current turn",
+			content: " ❯ first\n" + retry + " ❯ permission please\n" + approval,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyPaneFrame("kimi", tc.content); got != FrameWaiting {
+				t.Fatalf("current approval after historical retry = %q, want waiting", got)
+			}
+		})
+	}
+}
+
+func TestKimiHistoricalApprovalDoesNotOutrankLaterRetry(t *testing.T) {
+	content := " ❯ permission please\n" +
+		"  ▶ Run this command?\n" +
+		"  ▶ 1. Approve once\n" +
+		"    2. Reject\n" +
+		"  🌘 Retrying (3/10) · APIConnectionError · in 2s\n"
+	if got := ClassifyPaneFrame("kimi", content); got != FrameActive {
+		t.Fatalf("historical approval before current retry = %q, want active", got)
+	}
+}
+
 func TestKimiHistoricalRetryDoesNotOutliveSubmittedTurn(t *testing.T) {
 	content := " ❯ first\n" +
 		"  🌘 Retrying (3/10) · APIConnectionError · in 2s\n" +
