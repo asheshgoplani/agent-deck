@@ -2,6 +2,7 @@ package needsme
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -38,13 +39,13 @@ func TestReason(t *testing.T) {
 
 func TestCollectFiltersSortsAndAnnotates(t *testing.T) {
 	local := Source{Profile: "default", Fetch: ok(
-		Row{ID: "a", Title: "alpha", Group: "team/alex", Profile: "default", Status: "waiting", Substate: "interactive-menu", LastActivityAt: ago(2 * time.Minute)},
+		Row{ID: "a", Title: "alpha", Group: "team/alex", Profile: "default", Status: "waiting", Substate: "interactive-menu", WaitingSince: ago(2 * time.Minute)},
 		Row{ID: "b", Title: "busy", Status: "running"},
 		Row{ID: "c", Title: "old", Status: "waiting", Archived: true},
 		Row{ID: "d", Title: "unknown-since", Status: "waiting"},
 	)}
 	remote := Source{Host: "box1", Fetch: ok(
-		Row{ID: "r", Title: "remote-one", Status: "waiting", LastActivityAt: ago(10 * time.Minute), Substate: "idle-at-empty-prompt"},
+		Row{ID: "r", Title: "remote-one", Status: "waiting", WaitingSince: ago(10 * time.Minute), Substate: "idle-at-empty-prompt"},
 	)}
 	res := Collect(context.Background(), Options{Sources: []Source{local, remote}, Now: fixed})
 	if res.Count != 3 || len(res.Sessions) != 3 {
@@ -71,11 +72,16 @@ func TestCollectFiltersSortsAndAnnotates(t *testing.T) {
 }
 
 func TestCollectErrorsAreEntriesNotFailures(t *testing.T) {
-	good := Source{Fetch: ok(Row{ID: "a", Title: "a", Status: "waiting", LastActivityAt: ago(time.Minute)})}
-	bad := Source{Host: "deckbox", Fetch: func(context.Context) ([]Row, error) { return nil, errors.New("ssh: connection refused") }}
+	good := Source{Fetch: ok(Row{ID: "a", Title: "a", Status: "waiting", WaitingSince: ago(time.Minute)})}
+	bad := Source{Host: "box1", Fetch: func(context.Context) ([]Row, error) {
+		return nil, errors.New("ssh command failed: exit status 255: ssh: connect to host 10.1.2.3 port 22: Connection refused")
+	}}
 	res := Collect(context.Background(), Options{Sources: []Source{good, bad}, Now: fixed})
-	if res.Count != 1 || len(res.Errors) != 1 || res.Errors[0].Host != "deckbox" || !strings.Contains(res.Errors[0].Error, "refused") {
+	if res.Count != 1 || len(res.Errors) != 1 || res.Errors[0] != (HostError{Host: "box1", Error: "unreachable"}) {
 		t.Fatalf("res = %+v", res)
+	}
+	if b, _ := json.Marshal(res.Errors); strings.Contains(string(b), "10.1.2.3") || strings.Contains(string(b), "ssh") {
+		t.Errorf("raw ssh text leaked: %s", b)
 	}
 }
 
@@ -90,7 +96,7 @@ func TestCollectPerHostTimeout(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("took %v", time.Since(start))
 	}
-	if res.Count != 1 || len(res.Errors) != 1 || res.Errors[0].Host != "slow" || res.Errors[0].Error != "timeout" {
+	if res.Count != 1 || len(res.Errors) != 1 || res.Errors[0] != (HostError{Host: "slow", Error: "timeout"}) {
 		t.Fatalf("res = %+v", res)
 	}
 }
@@ -137,5 +143,51 @@ func TestLine(t *testing.T) {
 	s.WaitingSeconds = 7300
 	if got, want := Line(s), "b: waiting for you, waiting 2h"; got != want {
 		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+func TestCollectIgnoresLastActivityForSince(t *testing.T) {
+	// last_activity_at can be the creation time; it must never become "since".
+	src := Source{Fetch: ok(
+		Row{ID: "a", Title: "a", Status: "waiting", LastActivityAt: ago(5 * time.Hour), CreatedAt: ago(9 * time.Hour)},
+		Row{ID: "b", Title: "b", Status: "waiting", WaitingSince: ago(time.Minute)},
+	)}
+	res := Collect(context.Background(), Options{Sources: []Source{src}, Now: fixed})
+	if res.Sessions[0].ID != "b" || res.Sessions[0].WaitingSeconds != 60 {
+		t.Fatalf("order = %+v", res.Sessions)
+	}
+	if a := res.Sessions[1]; a.Since != "" || a.WaitingSeconds != 0 {
+		t.Errorf("a = %+v", a)
+	}
+}
+
+func TestCollectLocalErrorsNameProfileNotHost(t *testing.T) {
+	timeoutSrc := func(p string) Source {
+		return Source{Profile: p, Fetch: func(ctx context.Context) ([]Row, error) { <-ctx.Done(); return nil, ctx.Err() }}
+	}
+	res := Collect(context.Background(), Options{Sources: []Source{timeoutSrc("work"), timeoutSrc("play"),
+		{Profile: "bulk", Fetch: func(context.Context) ([]Row, error) { return nil, ErrBadReply }},
+		{Host: "local", Fetch: func(context.Context) ([]Row, error) { return nil, ErrBadReply }},
+	}, Timeout: 50 * time.Millisecond, Now: fixed})
+	got := map[HostError]bool{}
+	for _, e := range res.Errors {
+		got[e] = true
+	}
+	for _, w := range []HostError{
+		{Host: "", Profile: "work", Error: "timeout"}, {Host: "", Profile: "play", Error: "timeout"},
+		{Host: "", Profile: "bulk", Error: "bad-reply"}, {Host: "local", Error: "bad-reply"},
+	} {
+		if !got[w] {
+			t.Errorf("missing %+v in %+v", w, res.Errors)
+		}
+	}
+}
+
+func TestLineForErrors(t *testing.T) {
+	if got := ErrorLine(HostError{Host: "box1", Error: "timeout"}); got != "box1: timeout" {
+		t.Errorf("got %q", got)
+	}
+	if got := ErrorLine(HostError{Profile: "work", Error: "failed"}); got != "this machine (profile work): failed" {
+		t.Errorf("got %q", got)
 	}
 }

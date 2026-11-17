@@ -75,3 +75,42 @@ func TestNewViewLiveLocalAndMirror(t *testing.T) {
 		t.Errorf("empty target must be null")
 	}
 }
+
+func TestPhaseExtra(t *testing.T) {
+	cases := map[string]string{"muted": ExtraMuted, "paused": ExtraCall, "meeting": ExtraMeeting,
+		"resting": "", "listening": "", "transcribing": "", "": "", "bogus": ""}
+	for in, want := range cases {
+		if got := PhaseExtra(in); got != want {
+			t.Errorf("PhaseExtra(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNewViewOnIsFalseWhenPhaseIsOff(t *testing.T) {
+	now := time.Date(2026, 11, 17, 23, 0, 0, 0, time.UTC)
+	// the plugin reports raw phase "off" while still on
+	v := NewView(&State{On: true, Phase: "off", Source: SourceCurrent, Target: Target{Title: "a", SessionID: "x"}}, now)
+	if v.On || v.Phase != PhaseOff || v.Target != nil || v.From != "none" {
+		t.Fatalf("view = %+v", v)
+	}
+}
+
+func TestNewViewExtra(t *testing.T) {
+	now := time.Date(2026, 11, 17, 23, 0, 0, 0, time.UTC)
+	for raw, want := range map[string]string{"paused": "call", "meeting": "meeting", "muted": "muted", "resting": "", "listening": ""} {
+		v := NewView(&State{On: true, Phase: raw, Source: SourceCurrent}, now)
+		if v.Extra != want {
+			t.Errorf("raw %q: extra = %q, want %q", raw, v.Extra, want)
+		}
+		if raw == "paused" || raw == "meeting" || raw == "muted" {
+			if v.Phase != PhaseResting {
+				t.Errorf("raw %q: phase = %q", raw, v.Phase)
+			}
+		}
+	}
+	// an older daemon that says muted only through mode
+	v := NewView(&State{On: true, Mode: "muted", Source: SourceCurrent}, now)
+	if v.Phase != PhaseResting || !v.Muted || v.Extra != ExtraMuted {
+		t.Errorf("mode muted: %+v", v)
+	}
+}

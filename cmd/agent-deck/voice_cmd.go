@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/voicestate"
 )
 
@@ -85,6 +86,9 @@ func runVoiceState(_ string, args []string, stdout, stderr io.Writer) int {
 		switch a {
 		case "--json", "-json":
 			asJSON = true
+		case "--help", "-h":
+			fmt.Fprintln(stdout, "Usage: agent-deck voice state [--json]")
+			return 0
 		default:
 			fmt.Fprintf(stderr, "voice state: unknown argument %q\n\n", a)
 			writeVoiceUsage(stderr)
@@ -102,21 +106,28 @@ func runVoiceState(_ string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, string(b))
 		return 0
 	}
-	v := voicestate.NewView(st, now)
+	fmt.Fprintln(stdout, voiceStateLine(voicestate.NewView(st, now)))
+	return 0
+}
+
+// voiceStateLine is the plain-text form; free text from the state file is
+// cleaned of control characters first.
+func voiceStateLine(v voicestate.View) string {
 	if !v.On {
-		fmt.Fprintln(stdout, "voice: off")
-		return 0
+		return "voice: off"
 	}
 	line := "voice: " + v.Phase
-	if v.Muted {
+	switch {
+	case v.Extra != "":
+		line += " (" + v.Extra + ")"
+	case v.Muted:
 		line += " (muted)"
 	}
 	if v.Target != nil {
-		line += " on " + v.Target.Title
+		line += " on " + termtext.Clean(v.Target.Title)
 		if v.Target.Host != "" {
-			line += " [" + v.Target.Host + "]"
+			line += " [" + termtext.Clean(v.Target.Host) + "]"
 		}
 	}
-	fmt.Fprintln(stdout, strings.TrimSpace(line))
-	return 0
+	return strings.TrimSpace(line)
 }

@@ -7,6 +7,7 @@ type View struct {
 	On         bool        `json:"on"`
 	Phase      string      `json:"phase"`
 	PhaseSince string      `json:"phaseSince"`
+	Extra      string      `json:"extra"` // muted|call|meeting|"": why phase is resting
 	Muted      bool        `json:"muted"`
 	Target     *ViewTarget `json:"target"`
 	Source     string      `json:"source"`
@@ -24,13 +25,16 @@ type ViewTarget struct {
 
 // NewView builds the contract object from a polled state (nil = no live voice).
 func NewView(s *State, now time.Time) View {
-	if s == nil || !s.On {
+	// A state whose mapped phase is "off" is no live voice: never on:true
+	// together with phase "off".
+	if s == nil || !s.On || s.PhaseWord() == PhaseOff {
 		return View{Phase: PhaseOff, From: "none", UpdatedAt: rfc3339(now)}
 	}
 	v := View{
 		On:         true,
 		Phase:      s.PhaseWord(),
-		Muted:      s.Muted,
+		Extra:      s.Extra(),
+		Muted:      s.Muted || s.Extra() == ExtraMuted,
 		From:       "local",
 		UpdatedAt:  rfc3339(now),
 		PhaseSince: "",

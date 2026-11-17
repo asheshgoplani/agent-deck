@@ -38,3 +38,30 @@ func (s *State) PhaseWord() string {
 	}
 	return MapPhase(s.phase())
 }
+
+const (
+	ExtraMuted   = "muted"
+	ExtraCall    = "call"
+	ExtraMeeting = "meeting"
+)
+
+// PhaseExtra says why a raw phase became "resting".
+func PhaseExtra(raw string) string {
+	switch raw {
+	case "muted":
+		return ExtraMuted
+	case "paused":
+		return ExtraCall
+	case "meeting":
+		return ExtraMeeting
+	}
+	return ""
+}
+
+// Extra is PhaseExtra for a polled state ("" for nil or not on).
+func (s *State) Extra() string {
+	if s == nil || !s.On {
+		return ""
+	}
+	return PhaseExtra(s.phase())
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -31,19 +32,28 @@ func runNeedsMe(_ string, args []string, stdout, stderr io.Writer, sources func(
 	fs := flag.NewFlagSet("needs-me", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "Output as JSON")
-	timeout := fs.Duration("timeout", needsme.DefaultTimeout, "Time budget per host (local profile or remote)")
+	timeout := fs.Duration("timeout", needsme.DefaultTimeout, "Time budget per host (local profile or remote), at most 3s")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: agent-deck needs-me [--json] [--timeout 3s]")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Sessions waiting for you, longest first: every local profile plus every configured")
 		fmt.Fprintln(stderr, "remote, asked in parallel. An unreachable host is listed under errors, never a failure.")
 		fmt.Fprintln(stderr, "Plain text prints one line per session. Read-only.")
+		fmt.Fprintln(stderr, "A remote is asked for its configured profile only; local: every profile.")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		if err == nil {
-			fs.Usage()
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
 		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fs.Usage()
+		return 2
+	}
+	if *timeout <= 0 || *timeout > needsme.DefaultTimeout {
+		fmt.Fprintf(stderr, "needs-me: --timeout must be above 0 and at most %s\n", needsme.DefaultTimeout)
 		return 2
 	}
 	var srcs []needsme.Source
@@ -68,6 +78,6 @@ func writeNeedsMe(stdout, stderr io.Writer, res needsme.Result, asJSON bool) {
 		fmt.Fprintln(stdout, needsme.Line(s))
 	}
 	for _, e := range res.Errors {
-		fmt.Fprintf(stderr, "warning: %s: %s\n", e.Host, e.Error)
+		fmt.Fprintf(stderr, "warning: %s\n", needsme.ErrorLine(e))
 	}
 }
