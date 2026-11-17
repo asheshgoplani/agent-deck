@@ -334,7 +334,11 @@ func stripAgentDeckKimiHooks(data []byte, knownEventsOnly bool) ([]byte, bool, e
 		if !isAgentDeckKimiHookCommand(block.command) || knownEventsOnly && !slices.Contains(kimiHookEvents, block.event) {
 			continue
 		}
-		out.Write(data[last:block.start])
+		start := block.start
+		if start > last && start > 0 && data[start-1] == '\n' {
+			start--
+		}
+		out.Write(data[last:start])
 		last = block.end
 		removed = true
 	}
@@ -359,7 +363,7 @@ func replaceAgentDeckKimiHooks(data []byte, hooks []any) ([]byte, error) {
 
 	out := make([]byte, 0, len(base)+encoded.Len()+1)
 	out = append(out, base...)
-	if len(base) > 0 && base[len(base)-1] != '\n' {
+	if len(base) > 0 {
 		out = append(out, '\n')
 	}
 	out = append(out, encoded.Bytes()...)

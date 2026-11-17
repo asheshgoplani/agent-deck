@@ -57,6 +57,28 @@ theme = "dark"
 	}
 }
 
+func TestKimiHookLifecycleRestoresMissingTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	original := []byte(`default_model = "kimi-code/k3"`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if installed, err := session.InjectKimiHooks(dir); err != nil || !installed {
+		t.Fatalf("InjectKimiHooks = %v, %v", installed, err)
+	}
+	if removed, err := session.RemoveKimiHooks(dir); err != nil || !removed {
+		t.Fatalf("RemoveKimiHooks = %v, %v", removed, err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("uninstall did not restore missing trailing newline: got %q, want %q", data, original)
+	}
+}
+
 func TestKimiHookLifecyclePreservesConfigAndOnlyRemovesOwnedCommands(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
