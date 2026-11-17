@@ -6745,9 +6745,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 				if toggled {
 					h.saveInstances()
-					if inst.GetStatusThreadSafe() == session.StatusRunning ||
-						inst.GetStatusThreadSafe() == session.StatusWaiting ||
-						inst.GetStatusThreadSafe() == session.StatusIdle {
+					status := inst.GetStatusThreadSafe()
+					if status == session.StatusRunning || status == session.StatusWaiting ||
+						(inst.Tool == "kimi" && status == session.StatusIdle) {
 						h.resumingSessions[inst.ID] = time.Now()
 						return h, h.restartSession(inst)
 					}

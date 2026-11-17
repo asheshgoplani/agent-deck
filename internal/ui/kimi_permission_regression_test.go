@@ -113,6 +113,38 @@ func TestKimiYoloShortcutRestartsIdleSession(t *testing.T) {
 	}
 }
 
+func TestNonKimiYoloShortcutSavesIdleSessionForNextStart(t *testing.T) {
+	for _, tool := range []string{"gemini", "codex", "hermes"} {
+		t.Run(tool, func(t *testing.T) {
+			setXDGTestHome(t)
+			h := NewHome()
+			inst := session.NewInstanceWithTool(tool+"-test", t.TempDir(), tool)
+			inst.Status = session.StatusIdle
+			h.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: inst}}
+
+			_, cmd := h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+
+			if cmd != nil {
+				t.Fatal("idle non-Kimi session restarted instead of saving the setting for its next start")
+			}
+			switch tool {
+			case "gemini":
+				if inst.GeminiYoloMode == nil || !*inst.GeminiYoloMode {
+					t.Fatal("Gemini YOLO setting was not saved")
+				}
+			case "codex":
+				if opts := inst.GetCodexOptions(); opts == nil || opts.YoloMode == nil || !*opts.YoloMode {
+					t.Fatal("Codex YOLO setting was not saved")
+				}
+			case "hermes":
+				if opts := inst.GetHermesOptions(); opts == nil || opts.YoloMode == nil || !*opts.YoloMode {
+					t.Fatal("Hermes YOLO setting was not saved")
+				}
+			}
+		})
+	}
+}
+
 func TestKimiYHotkeyTogglesYoloNotAuto(t *testing.T) {
 	setXDGTestHome(t)
 	h := NewHome()
