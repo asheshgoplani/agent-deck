@@ -300,7 +300,7 @@ hooks_enabled = true
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `command` | string | `"kimi"` | Binary or invocation to launch. A noncanonical custom command is passed through without derived `--session`, `--model`, `--yolo`, or `--auto` flags, so wrappers retain control of their arguments. Standard agent-deck instance/profile/tool environment is still supplied for hooks. |
+| `command` | string | `"kimi"` | Binary or invocation to launch. A configured custom command still receives derived `--session`, `--model`, `--yolo`, or `--auto` flags as applicable. Standard agent-deck instance/profile/tool environment is still supplied for hooks. |
 | `config_dir` | string | `""` | Explicit Kimi data root, exported as `KIMI_CODE_HOME`. Empty preserves the ambient `KIMI_CODE_HOME` or Kimi's own `~/.kimi-code` default. The root contains configuration, native sessions, and credentials; do not share it unintentionally. |
 | `env_file` | string | `""` | Environment file sourced for Kimi sessions only, after global `[shell].env_files`. It may contain credentials or routing variables; restrict its permissions and never commit secrets. See [Path Resolution](#path-resolution). |
 | `default_model` | string | `""` | Model alias passed as `--model` for fresh sessions only. Empty uses Kimi's configured default. Existing conversations resume without this flag. |
