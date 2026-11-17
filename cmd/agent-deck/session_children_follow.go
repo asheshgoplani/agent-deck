@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -22,6 +23,10 @@ type childRow struct {
 	// BackgroundWork is the in-flight background work keeping the child
 	// running (issue #2473); omitted otherwise. Not part of the --follow diff.
 	BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
+	// ReportsTo marks a child listed because it reports to this session
+	// (launched from inside a sub-session, issue #3165) rather than through
+	// a parent link. Not part of the --follow diff.
+	ReportsTo bool `json:"reports_to,omitempty"`
 }
 
 // followEvent is one JSONL line on the --follow stream. Consumers key off
@@ -90,7 +95,7 @@ func buildChildRows(kids []*session.Instance, sampling childRowsSampling) []chil
 		if sampling == sampleChildPanes {
 			_ = k.Substate() // before Status: see buildListJSON
 		}
-		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status), BackgroundWork: k.BackgroundWorkJSON()}
+		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status), BackgroundWork: k.BackgroundWorkJSON(), ReportsTo: strings.TrimSpace(k.ReportsTo) != ""}
 		if e, ok := session.ReadLedgerEntry(k.ID); ok {
 			row.DoneStatus = e.Status
 			row.DoneSummary = e.Summary

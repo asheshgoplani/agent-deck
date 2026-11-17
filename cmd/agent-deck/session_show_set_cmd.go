@@ -162,6 +162,10 @@ func handleSessionShow(profile string, args []string) {
 	if archivedAt := inst.ArchivedAtThreadSafe(); !archivedAt.IsZero() {
 		jsonData["archived_at"] = archivedAt
 	}
+	// Issue #3165: the launcher this session reports to, when it has one.
+	if inst.ReportsTo != "" {
+		jsonData["reports_to"] = inst.ReportsTo
+	}
 	// Durable queued sends, the same entries as `session queue list --json`.
 	if *jsonOutput {
 		queue, err := sessionQueueEntries(storage, inst.ID)
@@ -965,6 +969,9 @@ func handleSessionSetParent(profile string, args []string) {
 	// Set parent (with project path for --add-dir access). Group is only
 	// rewritten on explicit --inherit-group opt-in; see #786.
 	inst.SetParentWithPath(parentInst.ID, parentInst.ProjectPath)
+	// A parent the user links explicitly replaces the launcher launch
+	// recorded (issue #3165): records go to the parent named here.
+	inst.ClearReportsTo()
 	if *inheritGroup {
 		inst.GroupPath = parentInst.GroupPath
 	}
@@ -1115,8 +1122,10 @@ func handleSessionUnsetParent(profile string, args []string) {
 		}
 	}
 
-	// Clear parent
+	// Clear parent, and the launcher link with it (issue #3165): unlinking
+	// means nobody receives this session's records.
 	inst.ClearParent()
+	inst.ClearReportsTo()
 
 	// Save
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)

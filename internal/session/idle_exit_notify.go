@@ -2,7 +2,6 @@ package session
 
 import (
 	"os"
-	"strings"
 	"time"
 )
 
@@ -189,7 +188,7 @@ func (d *TransitionDaemon) savedRowDeliberate(profile, id string) bool {
 // its own record (keyed by when it died), so it never folds into the turn
 // the parent already has.
 func (d *TransitionDaemon) emitIdleExit(profile string, inst *Instance, from, to string, now time.Time) {
-	if inst == nil || strings.TrimSpace(inst.ParentSessionID) == "" || isSelfSuppressedConductor(inst) {
+	if inst == nil || inst.ReportTargetID() == "" || isSelfSuppressedConductor(inst) {
 		return
 	}
 	event := TransitionNotificationEvent{

@@ -55,6 +55,8 @@ type InstanceData struct {
 	// ConductorName mirrors Instance.ConductorName, the stable conductor key.
 	// Lives in the tool_data extras zone (conductor_identity.go).
 	ConductorName string `json:"conductor_name,omitempty"`
+	// ReportsTo mirrors Instance.ReportsTo (tool_data extras zone, issue #3165).
+	ReportsTo string `json:"reports_to,omitempty"`
 	// SubcommandPassthrough mirrors Instance.SubcommandPassthrough (#1821).
 	// Persisted via the tool_data extras zone (see
 	// WriteSubcommandPassthroughToToolData), not a dedicated SQL column, so
@@ -1194,6 +1196,8 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// Stable conductor identity (conductor_identity.go). Never cleared, so an
 	// empty value leaves the stored key to MergeToolDataExtras.
 	toolData = WriteConductorNameToToolData(toolData, inst.storedConductorName())
+	// Issue #3165: the launcher this session reports to.
+	toolData = WriteReportsToToToolData(toolData, inst.ReportsTo, inst.reportsToCleared)
 	// #2260: the per-session context-level override lives in the same extras
 	// zone so a restart from any process honours `session set ... context-level`.
 	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
@@ -1414,6 +1418,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			LaunchedTool:              rowLaunchedTool(r),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
+			ReportsTo:                 ReadReportsToFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			QueuedMessage:             ReadQueuedMessageFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
@@ -1564,6 +1569,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			LaunchedTool:              rowLaunchedTool(r),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
+			ReportsTo:                 ReadReportsToFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			QueuedMessage:             ReadQueuedMessageFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
@@ -1914,6 +1920,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			LaunchedTool:                 instData.LaunchedTool,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
 			ConductorName:                instData.ConductorName,
+			ReportsTo:                    instData.ReportsTo,
 			ContextLevel:                 instData.ContextLevel,
 			QueuedMessage:                instData.QueuedMessage,
 			PromptSuggestions:            instData.PromptSuggestions,

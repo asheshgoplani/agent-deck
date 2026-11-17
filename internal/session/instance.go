@@ -140,6 +140,17 @@ type Instance struct {
 	IsConductor        bool    `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
 	NoTransitionNotify bool    `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch for this session
 
+	// ReportsTo is the session that launched this one from inside a
+	// sub-session (issue #3165). Parent links stay one level deep, so that
+	// launcher cannot be the tree parent; it is where this session's records
+	// (turns, completions, questions, errors) go instead of the tree parent.
+	// Empty for every other session. Read it through ReportTargetID.
+	// Persisted in the tool_data extras zone (reports_to.go).
+	ReportsTo string `json:"reports_to,omitempty"`
+	// reportsToCleared makes the next save write an explicit empty
+	// reports_to, so the extras merge does not carry the old value forward.
+	reportsToCleared bool
+
 	// ConductorName is the stable conductor key ([conductors.<name>],
 	// meta.json), stamped by `conductor setup` and persisted in the tool_data
 	// extras zone. The title is display-only and may be decorated or renamed.

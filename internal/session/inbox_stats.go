@@ -245,10 +245,11 @@ func ResetInboxStats(parentID string) error {
 }
 
 // statsParentFor picks the stats bucket for a child's turn before parent
-// resolution has run: the child's registered parent, else the unowned ledger.
+// resolution has run: the session the child reports to (its launcher, else its
+// registered parent), else the unowned ledger.
 func statsParentFor(inst *Instance) string {
-	if inst == nil || strings.TrimSpace(inst.ParentSessionID) == "" {
-		return UnownedInboxID
+	if target := inst.ReportTargetID(); target != "" {
+		return target
 	}
-	return inst.ParentSessionID
+	return UnownedInboxID
 }

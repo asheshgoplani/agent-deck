@@ -717,7 +717,7 @@ func parentOf(inst *Instance) string {
 	if inst == nil {
 		return ""
 	}
-	return strings.TrimSpace(inst.ParentSessionID)
+	return inst.ReportTargetID()
 }
 
 func containsID(list []string, id string) bool {

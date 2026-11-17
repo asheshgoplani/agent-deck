@@ -344,6 +344,7 @@ func ExecuteCrossHarnessSwitch(ctx context.Context, cfg *UserConfig, source *Ins
 		target.Order = source.Order
 		target.ParentSessionID = source.ParentSessionID
 		target.ParentProjectPath = source.ParentProjectPath
+		target.ReportsTo = source.ReportsTo
 		target.NoTransitionNotify = source.NoTransitionNotify
 		// Keep an unready destination out of the default active list. The target
 		// remains durable and directly addressable for recovery, while the source

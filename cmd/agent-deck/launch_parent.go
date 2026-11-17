@@ -37,14 +37,21 @@ func launchParentErrorParts(err error) (message, code string) {
 // top-level. When it is a sub-session, the result depends on
 // nestUnderParent ([launch] nest_under_parent, off by default):
 //
-//   - off: the new session starts top-level, with no note; --no-parent is
-//     silent and does not look for a caller at all.
+//   - off: the new session starts top-level, with no note, and launchedBy is
+//     the calling sub-session; --no-parent is silent and does not look for a
+//     caller at all.
 //   - on: the sub-session's own parent is used instead, with a one-line note,
 //     and launchedBy is the calling sub-session. One hop, never a walk; a
 //     parent that is itself a sub-session is an error naming both ids, and a
 //     parent that no longer exists starts the session top-level with a note,
 //     as --no-parent does. From a sub-session, --no-parent's note says where
 //     the session would have landed.
+//
+// launchedBy is set exactly when the caller is a sub-session that launch
+// could not use as the parent (issue #3165). The new session reports to it
+// (Instance.ReportsTo): its records go to the session that launched it, not
+// to the tree parent or nowhere. noParent never sets it: --no-parent asks for
+// a peer, and a peer reports to nobody.
 //
 // noParent means top-level and is honoured from every caller. A caller id
 // that resolves to nothing is an error, except with noParent.
@@ -89,17 +96,19 @@ func selectLaunchParent(explicit string, noParent, nestUnderParent bool, instanc
 		return caller, nil, "", nil
 	}
 	if !nestUnderParent {
-		return nil, nil, "", nil
+		return nil, caller, "", nil
 	}
 	return underParent(caller, instances)
 }
 
 // underParent returns the parent of sub-session inst, with inst as the
-// launcher, under the one-hop rule.
+// launcher, under the one-hop rule. A parent that no longer exists still
+// returns inst as the launcher: the session starts top-level and reports to
+// inst.
 func underParent(inst *session.Instance, instances []*session.Instance) (parent, launchedBy *session.Instance, note string, err error) {
 	parent = findInstanceByID(instances, inst.ParentSessionID)
 	if parent == nil {
-		return nil, nil, fmt.Sprintf("parent %s of sub-session %s (%s) does not exist; started top-level as --no-parent does", inst.ParentSessionID, inst.Title, inst.ID), nil
+		return nil, inst, fmt.Sprintf("parent %s of sub-session %s (%s) does not exist; started top-level, reporting to %s", inst.ParentSessionID, inst.Title, inst.ID, inst.Title), nil
 	}
 	if parent.IsSubSession() {
 		return nil, nil, "", &launchParentError{
@@ -124,4 +133,14 @@ func findInstanceByID(instances []*session.Instance, id string) *session.Instanc
 		}
 	}
 	return nil
+}
+
+// launchReportTarget is the session a new session's records go to: the
+// launcher when launch recorded one (issue #3165), else the tree parent. A
+// kickoff is tagged only when the caller is this session.
+func launchReportTarget(parent, launchedBy *session.Instance) *session.Instance {
+	if launchedBy != nil {
+		return launchedBy
+	}
+	return parent
 }

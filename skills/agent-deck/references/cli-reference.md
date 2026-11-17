@@ -69,7 +69,7 @@ agent-deck add -t "Quick" -c claude --attach .   # create → start → drop int
 ```
 
 Notes:
-- Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed. When the calling session is itself a sub-session, the new session starts top-level by default; set `[launch] nest_under_parent = true` to link it under the caller's parent instead (applies to `add` and `launch`, see config-reference.md).
+- Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed. When the calling session is itself a sub-session, the new session starts top-level by default; set `[launch] nest_under_parent = true` to link it under the caller's parent instead (applies to `add` and `launch`, see config-reference.md). Either way the new session reports to the calling sub-session (`reports_to`, shown by `session show --json`, `list --json` and the `launch --json`/`add --json` result): its completions, questions, errors and turns go to the caller's inbox and wake it under the same rules as a parent, the caller lists it in `session children`, and the kickoff carries the caller's `[agent-deck from:<id>]` envelope. The caller's own parent gets no copy. `--no-parent` asks for a peer and records no `reports_to`; `--no-transition-notify` keeps the link but sends no records. `session set-parent` and `session unset-parent` drop `reports_to`.
 - `--attach` does create → start → attach in one step. Without an interactive terminal (or with `--json`) it exits non-zero with a clear error, leaving the session created and started so you can attach later.
 - `--parent` and `--no-parent` are mutually exclusive.
 - Explicit `-g/--group` overrides inherited parent group.
@@ -719,7 +719,7 @@ Exit codes: `0` done (with `--verify`, every graded group agreed within toleranc
 agent-deck session children [id|title] [--json] [-q] [--follow] [--until-done] [--interval <dur>] [--heartbeat <dur>]
 ```
 
-List a session's sub-sessions with live status and last completion history. Completion fields (`done_status`, `done_summary`, `done_at`) describe the last asserted completion; live `status` (running/waiting/idle/error/queued) determines the current turn — a session can show completion history and still be `running` again. Defaults to the current session. Read-only: never clears the inbox, so poll it as often as you like.
+List the sessions that report to a session with live status and last completion history: its sub-sessions, plus sessions it launched from inside a sub-session (marked `"reports_to": true` in `--json`). A sub-session that reports to the session that launched it is listed there, not under its tree parent. Completion fields (`done_status`, `done_summary`, `done_at`) describe the last asserted completion; live `status` (running/waiting/idle/error/queued) determines the current turn — a session can show completion history and still be `running` again. Defaults to the current session. Read-only: never clears the inbox, so poll it as often as you like.
 
 `--follow` streams JSONL events instead of a single snapshot: `snapshot` (initial per-child state), `added`, `status` (from/to transition), `done` (completion sentinel), `removed`, `error`, plus a periodic `heartbeat` (default 60s, `--heartbeat 0` disables). `--until-done` exits 0 once every child either needs input or is terminal (waiting, idle with completion history, error, or stopped). `--interval` tunes the poll cadence backing `--follow` (default 2s).
 

@@ -37,8 +37,9 @@ const (
 	hintKeyOutcome  = "outcome"
 	hintKeyNote     = "note"
 	hintKeyParent   = "parent"
-	// hintKeyLaunchedBy names the sub-session that issued a launch the
-	// [launch] nest_under_parent rule linked under that sub-session's parent.
+	// hintKeyLaunchedBy names the sub-session that issued a launch it could
+	// not be the parent of: the launched session reports to it (issue #3165,
+	// Instance.ReportsTo), top-level or under that sub-session's parent.
 	hintKeyLaunchedBy = "launched-by"
 )
 

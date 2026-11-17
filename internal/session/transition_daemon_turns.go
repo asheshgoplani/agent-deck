@@ -182,7 +182,7 @@ func (d *TransitionDaemon) emitTurnInner(profile string, inst *Instance, byID ma
 		// Comms Ledger: the same edge, spooled after the inbox record so a
 		// ledger problem can never delay or lose the parent's wake.
 		d.commsStatusEdge(inst, from, to, event.Timestamp)
-		if IsClaudeCompatible(inst.Tool) && strings.TrimSpace(inst.ParentSessionID) != "" {
+		if IsClaudeCompatible(inst.Tool) && inst.ReportTargetID() != "" {
 			// A Claude turn with no identity (interrupted, no text) reaches
 			// the inbox only; the ledger gets the same edge so a parent it
 			// delivers to misses nothing the inbox would have shown.
@@ -347,7 +347,7 @@ func (d *TransitionDaemon) emitTurnInner(profile string, inst *Instance, byID ma
 	if facts.HasDone {
 		d.noteDoneEmitted(profile, inst, facts.Done, facts.UUID, event.Timestamp)
 	}
-	if (staleFlip || to == string(StatusError)) && strings.TrimSpace(inst.ParentSessionID) != "" {
+	if (staleFlip || to == string(StatusError)) && inst.ReportTargetID() != "" {
 		// Urgent only to the inbox (its own inputs: a flip into the error
 		// status, an observed flip with a stale transcript): the ledger,
 		// whose spooled turn cannot see either, gets the edge as a status
@@ -430,11 +430,12 @@ func (d *TransitionDaemon) rememberDone(profile, childID string, sig DoneSignal)
 	d.lastDone[profile][childID] = sig
 }
 
-// parentInstanceFor resolves the registered parent for config overrides, or
+// parentInstanceFor resolves the session inst reports to (its launcher, else
+// its registered parent; issue #3165) for config overrides, or
 // nil when the parent is not in this pass's registry.
 func parentInstanceFor(inst *Instance, byID map[string]*Instance) *Instance {
-	if inst == nil || inst.ParentSessionID == "" || byID == nil {
+	if inst == nil || inst.ReportTargetID() == "" || byID == nil {
 		return nil
 	}
-	return byID[inst.ParentSessionID]
+	return byID[inst.ReportTargetID()]
 }
