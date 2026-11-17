@@ -65,6 +65,56 @@ There is no separate connected-app registry: absence of the correlated ack
 triggers the launch fallback. A connected app that handles the request in time
 never receives a duplicate URL-scheme delivery.
 
+## On the phone
+
+The same `agent-deck open` also puts the page on the session's page list, which
+the phone app shows in the session's Pages panel (through the phone gateway, which
+runs `open --list` / `open --show` on the host). Nothing changes for the Mac app.
+
+- A file joins the list only when it is under the session's project path or a
+  `[web] file_link_roots` entry, with the rules of `agent-deck file read`:
+  absolute, symlinks resolved, opened through `os.Root`, regular files only.
+  A project path that is `/`, contains the home directory, or is at or inside
+  `~/.ssh` or the deck's config or data directory is not a root. Any other file
+  still opens in the Mac app and stays off the phone.
+- URLs always join the list (`kind: "url"`); the phone opens them in its browser.
+- The list lives in `<data dir>/pages/<profile>/<session id>.json`: metadata only,
+  newest 50, one entry per file or URL (opening it again moves it to the top).
+  Each addition also commits `page.opened` on the profile bus.
+- Content is read from disk at every request, so a saved follow-up edit shows on
+  refresh. HTML is served as written, with its relative assets (img, srcset,
+  poster, script src, stylesheet links, CSS `url()` and `@import`, a style
+  attribute's `url()`) inlined as `data:` URIs; every asset is checked against the
+  roots again and skipped when outside, missing or too big. Markdown is rendered
+  to one phone-sized HTML document (light and dark, wide tables and code scroll);
+  raw HTML in Markdown is shown as text and only `http(s)`, `mailto` and relative
+  links are kept. Text is shown in `<pre>`, an image in `<img>`.
+- Limits: page file 4 MiB, one asset 8 MiB, whole document 12 MiB.
+
+```sh
+agent-deck open notes.md --json
+# {"status":"queued","where":"phone","session":"<id>","title":"<title>","path":"/abs/notes.md","url":"",
+#  "page_id":"<16 hex>","kind":"markdown","phone":"shown","elapsed_ms":41}
+agent-deck open --last --session <id> --json      # re-open the newest page; exit 2 + {"code":"no_page"} when none
+agent-deck open --list --session <id> --json      # {"session","title","pages":[{id,kind,title,name,path,url,opened_at}]}
+agent-deck open --show <page-id> --session <id> --json
+# {"id","kind","title","name","url","html","bytes","inlined","skipped","modified_at"}
+```
+
+`status` is `opened` when the Mac app acknowledged, else `queued`. `where` is
+`both` (acknowledged and on the phone list), `phone` (on the list, the Mac app
+not yet), or `mac` (a file outside the roots: `phone` is `outside_roots`).
+Refusals under `--json` are `{"error","code"}` with code `not_found`,
+`outside_roots`, `too_large`, `no_page` or `session_not_found`. Text output
+without `--json` is unchanged.
+
+The web server serves the same with the token auth of the other session routes:
+`GET /api/sessions/{id}/open-pages` (the list) and
+`GET /api/sessions/{id}/open-pages/{page-id}` (the HTML document, under a CSP
+`sandbox allow-scripts` without `allow-same-origin`, so a page's scripts get an
+opaque origin and cannot read the deck's cookies or call its API;
+`?format=json` returns the `--show --json` object).
+
 ## Remote page folders
 
 ```sh
