@@ -31,6 +31,7 @@ func (a *patternAdder) add(intent, lang string, soft, all bool, specs ...string)
 func grammarEarly() []pattern {
 	var a patternAdder
 	grammarTodos(&a)
+	grammarOpenPage(&a)
 	// workers of a session
 	a.add(IntentWorkers, LangEN, true,
 		false,
