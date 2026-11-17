@@ -17,7 +17,7 @@ Exit codes: 0 = a result was printed (handled or not, refused or not), 2 = usage
 | `--json` | Print one JSON object (below) and nothing else on stdout. |
 | `--dry-run` | Parse, resolve and apply the safety rules; never send, never switch, never store a question. `dryRun:true`. |
 | `--from` | Where the sentence came from (`text` by default). |
-| `--on` | The session the mic is on. Without it the desk uses the live voice state's target, else none. |
+| `--on` | The session the mic is on. Absent means none (the daemon's own id can be null): every `tell` then needs a yes. The desk never guesses it from the voice state. |
 | `--pending` | The token of the question the desk asked last; the sentence is the answer. |
 | `--answer-delay-ms` | Silence between the end of speaking the question and the start of the answer. |
 
@@ -87,7 +87,8 @@ Forms that overlap with plain talk or with the voice daemon's own commands ("rea
    plus a high-entropy check). A reply with one: "There is a secret in this reply, read it on screen.", and nothing of
    it in `show`. A message with one is not sent by voice.
 5. **Short**: one sentence (two for a status); lists speak three names.
-6. **No logs**: the desk writes no heard or spoken text to any log. Pending questions live in
+6. **The mic marker is not a name**: the voice daemon's "🎙 " title prefix is stripped from everything the desk says, shows, returns as `target` or matches.
+7. **No logs**: the desk writes no heard or spoken text to any log. Pending questions live in
    `<profile dir>/voice/pending/<token>.json` (0600, directory 0700) only until answered or 60 s old.
 
 ## How it acts
