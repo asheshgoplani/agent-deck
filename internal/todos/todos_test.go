@@ -129,6 +129,20 @@ func TestDoneUndoRemoveFlow(t *testing.T) {
 	}
 }
 
+func TestDoneBareNumberIsOnlyAnID(t *testing.T) {
+	s, _ := newTestStore(t)
+	mustAdd(t, s, "call 12 people")
+	if _, _, err := s.Done("12"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Done(12) err = %v, want ErrNotFound (no item 12)", err)
+	}
+	if open, _, _ := s.Counts(); open != 1 {
+		t.Fatal("Done(12) ticked off an item by its text")
+	}
+	if it, _, err := s.Done("12 people"); err != nil || it.ID != "1" {
+		t.Fatalf("Done(12 people) = %+v %v", it, err)
+	}
+}
+
 func TestDoneAmbiguousNeverGuesses(t *testing.T) {
 	s, _ := newTestStore(t)
 	mustAdd(t, s, "call the bank about the card")

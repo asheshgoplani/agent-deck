@@ -54,34 +54,6 @@ const (
 	todoExitAmbiguous = 3
 )
 
-// Statuses of a todo --json result.
-const (
-	todoStatusAdded       = "added"
-	todoStatusDone        = "done"
-	todoStatusAlreadyDone = "already_done"
-	todoStatusReopened    = "reopened"
-	todoStatusAlreadyOpen = "already_open"
-	todoStatusRemoved     = "removed"
-	todoStatusNotFound    = "not_found"
-	todoStatusAmbiguous   = "ambiguous"
-	todoStatusError       = "error"
-)
-
-type todoResult struct {
-	Status     string       `json:"status"`
-	Todo       *todos.Item  `json:"todo,omitempty"`
-	Open       *int         `json:"open,omitempty"`
-	Query      string       `json:"query,omitempty"`
-	Candidates []todos.Item `json:"candidates,omitempty"`
-	Error      string       `json:"error,omitempty"`
-}
-
-type todoListResult struct {
-	Todos []todos.Item `json:"todos"`
-	Open  int          `json:"open"`
-	Done  int          `json:"done"`
-}
-
 // todoEnv is what runTodo needs from the outside world.
 type todoEnv struct {
 	store   func() (*todos.Store, error)
@@ -143,7 +115,7 @@ func todoFlagSet(name, usage string, args []string, out, errOut io.Writer) (*fla
 // todoFail prints err (as JSON with --json) and returns 1.
 func todoFail(jsonOut bool, out, errOut io.Writer, err error) int {
 	if jsonOut {
-		_ = json.NewEncoder(out).Encode(todoResult{Status: todoStatusError, Error: err.Error()})
+		_ = json.NewEncoder(out).Encode(todos.Result{Status: todos.StatusError, Error: err.Error()})
 	}
 	fmt.Fprintf(errOut, "Error: todo: %v\n", err)
 	return 1
@@ -158,14 +130,6 @@ func todoEmit(jsonOut bool, out io.Writer, v any, text string) int {
 	}
 	fmt.Fprintln(out, text)
 	return 0
-}
-
-func openCount(store *todos.Store) *int {
-	open, _, err := store.Counts()
-	if err != nil {
-		return nil
-	}
-	return &open
 }
 
 func runTodoAdd(args []string, out, errOut io.Writer, env todoEnv) int {
@@ -190,7 +154,7 @@ func runTodoAdd(args []string, out, errOut io.Writer, env todoEnv) int {
 	if err != nil {
 		return todoFail(*jsonOut, out, errOut, err)
 	}
-	res := todoResult{Status: todoStatusAdded, Todo: &it, Open: openCount(store)}
+	res := todos.Result{Status: todos.StatusAdded, Todo: &it, Open: store.OpenCount()}
 	env.publish(todos.Change{Action: todos.ActionAdd, Todo: it, Open: derefInt(res.Open), By: it.Source})
 	return todoEmit(*jsonOut, out, res, fmt.Sprintf("Added %s: %s", it.ID, it.Text))
 }
@@ -218,17 +182,14 @@ func runTodoList(args []string, out, errOut io.Writer, env todoEnv) int {
 	if err != nil {
 		return todoFail(*jsonOut, out, errOut, err)
 	}
-	items, err := store.List(*all)
-	if err != nil {
-		return todoFail(*jsonOut, out, errOut, err)
-	}
-	open, done, err := store.Counts()
+	res, err := store.ListResult(*all)
 	if err != nil {
 		return todoFail(*jsonOut, out, errOut, err)
 	}
 	if *jsonOut {
-		return todoEmit(true, out, todoListResult{Todos: items, Open: open, Done: done}, "")
+		return todoEmit(true, out, res, "")
 	}
+	items := res.Todos
 	if len(items) == 0 {
 		fmt.Fprintln(out, "No open to-dos.")
 		return 0
@@ -285,7 +246,7 @@ func runTodoChange(action string, args []string, out, errOut io.Writer, env todo
 	var amb *todos.AmbiguousError
 	switch {
 	case errors.As(err, &amb):
-		res := todoResult{Status: todoStatusAmbiguous, Query: query, Candidates: amb.Candidates}
+		res := todos.Result{Status: todos.StatusAmbiguous, Query: query, Candidates: amb.Candidates}
 		if *jsonOut {
 			_ = json.NewEncoder(out).Encode(res)
 		} else {
@@ -297,7 +258,7 @@ func runTodoChange(action string, args []string, out, errOut io.Writer, env todo
 		return todoExitAmbiguous
 	case errors.Is(err, todos.ErrNotFound):
 		if *jsonOut {
-			_ = json.NewEncoder(out).Encode(todoResult{Status: todoStatusNotFound, Query: query})
+			_ = json.NewEncoder(out).Encode(todos.Result{Status: todos.StatusNotFound, Query: query})
 		} else {
 			fmt.Fprintf(errOut, "No to-do matches %q (agent-deck todo list shows them)\n", query)
 		}
@@ -305,19 +266,19 @@ func runTodoChange(action string, args []string, out, errOut io.Writer, env todo
 	case err != nil:
 		return todoFail(*jsonOut, out, errOut, err)
 	}
-	res := todoResult{Todo: &it, Open: openCount(store)}
+	res := todos.Result{Todo: &it, Open: store.OpenCount()}
 	var text string
 	switch {
 	case action == "done" && changed:
-		res.Status, text = todoStatusDone, fmt.Sprintf("Done %s: %s", it.ID, it.Text)
+		res.Status, text = todos.StatusDone, fmt.Sprintf("Done %s: %s", it.ID, it.Text)
 	case action == "done":
-		res.Status, text = todoStatusAlreadyDone, fmt.Sprintf("Already done %s: %s", it.ID, it.Text)
+		res.Status, text = todos.StatusAlreadyDone, fmt.Sprintf("Already done %s: %s", it.ID, it.Text)
 	case action == "undo" && changed:
-		res.Status, text = todoStatusReopened, fmt.Sprintf("Reopened %s: %s", it.ID, it.Text)
+		res.Status, text = todos.StatusReopened, fmt.Sprintf("Reopened %s: %s", it.ID, it.Text)
 	case action == "undo":
-		res.Status, text = todoStatusAlreadyOpen, fmt.Sprintf("Already open %s: %s", it.ID, it.Text)
+		res.Status, text = todos.StatusAlreadyOpen, fmt.Sprintf("Already open %s: %s", it.ID, it.Text)
 	default:
-		res.Status, text = todoStatusRemoved, fmt.Sprintf("Removed %s: %s", it.ID, it.Text)
+		res.Status, text = todos.StatusRemoved, fmt.Sprintf("Removed %s: %s", it.ID, it.Text)
 	}
 	if changed {
 		env.publish(todos.Change{Action: action, Todo: it, Open: derefInt(res.Open), By: todos.SourceCLI})

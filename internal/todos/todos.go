@@ -366,8 +366,8 @@ func indexOf(f *file, id string) int {
 	return -1
 }
 
-// Done ticks off the item named by query: an id, or words of its text
-// (Match). changed is false when the item was already done.
+// Done ticks off the item named by query: an id (a bare number is only
+// ever an id), or words of its text (Match). changed is false when the item was already done.
 func (s *Store) Done(query string) (it Item, changed bool, err error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -376,9 +376,12 @@ func (s *Store) Done(query string) (it Item, changed bool, err error) {
 	err = s.update(func(f *file) (bool, error) {
 		i := -1
 		if IsID(query) {
-			i = indexOf(f, query)
-		}
-		if i < 0 {
+			// A bare number is an id and only an id: "done 12" never ticks
+			// off "call 12 people" when item 12 does not exist.
+			if i = indexOf(f, query); i < 0 {
+				return false, ErrNotFound
+			}
+		} else {
 			idx, merr := matchIndex(f.Items, query)
 			if merr != nil {
 				return false, merr
