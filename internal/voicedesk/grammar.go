@@ -390,7 +390,8 @@ var codeNouns = foldSet("file", "files", "function", "functions", "method", "cla
 	"user", "users", "output", "result", "results", "change", "changes", "diff", "repo", "project", "folder",
 	"directory", "step", "steps", "stack", "trace", "message", "terminal", "shell", "command", "loop", "new", "old",
 	"latest", "last", "first", "current", "this", "that", "everything", "all", "anything", "something",
-	"bild", "yujar", "yuzar", "fail", "kod", "sarvar", "ep", "aip",
+	"bild", "yujar", "yuzar", "yusar", "yuzar", "fail", "fael", "kod", "sarvar", "ep", "aip", "lint", "eror", "erar",
+	"test", "tests", "testa", "kami", "brench", "brainch", "dipla", "deploy", "databes", "kveri", "endpoint", "modyul",
 	"git", "logger", "logging", "class", "classes", "component", "components", "module", "modules", "request",
 	"requests", "pull", "push", "merge", "service", "worker", "handler", "controller", "router", "store",
 	"cache", "queue", "hook", "hooks", "type", "types", "struct", "interface", "variable", "env", "token", "is", "iss", "us", "ye", "yeh", "wo", "woh", "wala", "wali")
@@ -400,41 +401,19 @@ var codeNouns = foldSet("file", "files", "function", "functions", "method", "cla
 // session he is on (handled:false) instead of "I found no session called".
 // isCodeNoun: an ordinary coding word, also as the listener spells it
 // ("यूजर" -> "yoojar" sounds like "user", "बिल्ड" like "build").
-func isCodeNoun(folded, roman string) bool {
-	if codeNouns[folded] {
-		return true
-	}
-	if len([]rune(roman)) < 4 {
-		return false
-	}
-	k := phoneticKey(roman)
-	if len(k) < 3 {
-		return false
-	}
-	for _, w := range codeSounds[k] {
-		if firstVowel(roman, false) == firstVowel(w, true) {
-			return true
-		}
-	}
-	return false
+func isCodeNoun(folded, roman string, deva bool) bool {
+	// exact (folded) only: matching coding words by sound took names for
+	// them ("aardar"/"ऑर्डर" sounded like "router"); the listener's
+	// Devanagari spellings of coding words are listed instead
+	_, _ = roman, deva
+	return codeNouns[folded]
 }
-
-var codeSounds = func() map[string][]string {
-	m := map[string][]string{}
-	for w := range codeNouns {
-		if len(w) >= 4 {
-			k := phoneticKey(w)
-			m[k] = append(m[k], w)
-		}
-	}
-	return m
-}()
 
 // anyCodeNoun: one of the name's words is an ordinary coding word. An
 // unknown name like that is talk ("tell git to ignore the build folder").
-func anyCodeNoun(words, roman []string) bool {
-	for i, w := range words {
-		if isCodeNoun(w, roman[i]) {
+func anyCodeNoun(q nameQuery) bool {
+	for i, w := range q.words {
+		if isCodeNoun(w, q.roman[i], q.deva[i]) {
 			return true
 		}
 	}

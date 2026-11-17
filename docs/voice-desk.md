@@ -63,14 +63,23 @@ name are dropped; Roman and Devanagari spellings are folded before comparing (`i
 
 A host can be named: "status of conductor on boxone", "boxone wala conductor ka status batao".
 
-Answers (only with `--pending`, and only as the whole sentence): yes = "yes", "yes send", "yes send it", "haan",
-"haan bhejo", "haan ji", "ji haan", "send it", "bhej do" (and Devanagari forms); no = "no", "cancel", "nahin", "nahi",
-"rehne do", "mat bhejo"; also "okay", "yeah", "sure", "theek hai", "ji", "bhejo", Urdu-script ہاں / نہیں and the
-listener's spellings of these (a word of four letters or more may be spelled another way: "rahne do"); a sentence
-ending in "?" ("yes?") is not an answer; choice = "first", "second", "third", "the first", "pehla", "doosra", "teesra", or a session's
-name. A short sentence (three words or fewer) that is neither an answer nor a desk command keeps the question open
-once ("Please say yes or no.", new token in `confirm`), so it is not typed into the session; a second miss, or a
-longer sentence, drops the token and is handled as a fresh sentence.
+### Answers to a question (the one list for every caller)
+
+Only with `--pending`, and only as the whole sentence (case, punctuation and a leading wake name ignored). The voice
+daemon, the phone and the Mac app use this list; `internal/voicedesk/answer.go` is its source.
+
+| Answer | English | Roman Hindi | Devanagari / Urdu |
+|---|---|---|---|
+| yes | yes, yes send, yes send it, yes please, yes switch, yes do it, send it, okay, ok, ok send, okay send it, yeah, yep, sure, go ahead, do it | haan, haa, han, haan ji, han ji, ji haan, ji han, ji, haan bhejo, haa bhejo, haan bhej do, bhej do, bhejdo, bhejo, haan haan, theek hai, thik hai, kar do, haan kar do | हाँ, हां, हाँ भेजो, हां भेजो, हाँ जी, जी हाँ, भेज दो; ہاں, جی ہاں, ہاں بھیجو, ہاں جی |
+| no | no, cancel, no thanks, nope, stop it | nahin, nahi, nahee, rehne do, rahne do, mat bhejo, mat karo, nahin bhejo | नहीं, नहि, रहने दो, मत भेजो; نہیں, رہنے دو, مت بھیجو |
+| choice | first, the first, first one, the first one; second …; third … | pehla, pehla wala, pehli, pehli wali; doosra, dusra, doosra wala, doosri; teesra, tisra, teesra wala, teesri | पहला, पहली, पहला वाला; दूसरा, दूसरी; तीसरा, तीसरी |
+
+Also: a session's name answers a choice question; a word of four letters or more may be spelled the way the
+listener writes it ("rahne do", "pahla"); a short word must be exact ("ho" is never "haan"). Not answers: a sentence
+ending in "?" ("yes?"), a yes inside a longer sentence ("yes I think so, also …"). A short sentence (three words or
+fewer) that is neither an answer nor a desk command keeps the question open once ("Please say yes or no.", new
+token in `confirm`), so it is not typed into the session; a second miss, or a longer sentence, drops the token and
+is handled as a fresh sentence.
 
 Forms that overlap with plain talk or with the voice daemon's own commands ("read this", "what is he doing",
 "find the bug in the parser") come back `handled:false` when the name is not a session. So does any desk form whose
