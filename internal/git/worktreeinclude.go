@@ -47,6 +47,7 @@ func ProcessWorktreeInclude(repoDir, worktreePath string, stderr io.Writer) erro
 		return nil
 	}
 
+	patterns = anchorPatterns(patterns)
 	matcher := ignore.CompileIgnoreLines(patterns...)
 
 	candidates, err := findCandidates(repoDir, patterns, matcher)
@@ -95,6 +96,35 @@ func parseWorktreeInclude(r io.Reader) ([]string, error) {
 	return patterns, scanner.Err()
 }
 
+// anchorPatterns applies the gitignore anchor rule to every pattern. A pattern
+// with a separator in the middle is relative to the repository root, so it gets
+// a leading "/", which the matcher treats as an anchor. Without this step the
+// matcher also accepts the same relative path under any parent, and whether
+// such a nested file is copied would depend on whether another pattern forced a
+// full walk.
+func anchorPatterns(patterns []string) []string {
+	anchored := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		anchored = append(anchored, anchorPattern(pattern))
+	}
+	return anchored
+}
+
+// anchorPattern returns pattern with a leading "/" when gitignore anchors it at
+// the repository root. Bare names and names with only a trailing separator keep
+// matching at any depth. A leading "/**/" is harmless: the matcher strips it.
+func anchorPattern(pattern string) string {
+	negate := strings.HasPrefix(pattern, "!")
+	body := strings.TrimPrefix(pattern, "!")
+	if strings.HasPrefix(body, "/") || !strings.Contains(strings.TrimSuffix(body, "/"), "/") {
+		return pattern
+	}
+	if negate {
+		return "!/" + body
+	}
+	return "/" + body
+}
+
 // findCandidates returns the repository-relative paths that match patterns.
 func findCandidates(repoDir string, patterns []string, matcher *ignore.GitIgnore) ([]string, error) {
 	return walkIncludeRoots(os.DirFS(repoDir), walkRoots(patterns), matcher)
@@ -123,12 +153,9 @@ func walkRoots(patterns []string) []string {
 // metacharacter. A directory-only pattern returns the directory itself; a file
 // pattern returns the directory that holds the file.
 //
-// The walk root treats a pattern with a separator in the middle as anchored at
-// the repository root, which is the gitignore rule. The matcher is looser: it
-// also accepts the same relative path under any parent (sub/config/local.json
-// for config/local.json). Such a nested path is no longer discovered. Git
-// ignores it through a different rule, so the anchored reading is the useful
-// one, and it is what makes the narrow walk possible.
+// A pattern with a separator in the middle is anchored at the repository root,
+// which is the gitignore rule. anchorPatterns applies the same rule to the
+// matcher, so the walk and the matcher agree and the narrow walk is valid.
 //
 // ok is false when the pattern can match at any depth: a bare name, a negation,
 // or one whose first path segment contains a glob.

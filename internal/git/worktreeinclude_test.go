@@ -423,6 +423,28 @@ func TestWalkRoots(t *testing.T) {
 	}
 }
 
+func TestAnchorPatterns(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string
+	}{
+		{".env", ".env"},
+		{"*.env", "*.env"},
+		{"config/", "config/"},
+		{"config/local.json", "/config/local.json"},
+		{"/config/local.json", "/config/local.json"},
+		{"config/*/local.json", "/config/*/local.json"},
+		{"**/x.env", "/**/x.env"},
+		{"!config/local.json", "!/config/local.json"},
+		{"!sub/.env", "!/sub/.env"},
+	}
+	for _, tt := range tests {
+		if got := anchorPattern(tt.pattern); got != tt.want {
+			t.Errorf("anchorPattern(%q) = %q, want %q", tt.pattern, got, tt.want)
+		}
+	}
+}
+
 // recordingFS records every path the walk opens, so a test can prove the walk
 // stayed inside the pattern roots.
 type recordingFS struct {
@@ -615,6 +637,67 @@ func TestProcessWorktreeInclude_AnchoredPatternSkipsNestedMatch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "config", "local.json")); !os.IsNotExist(err) {
 		t.Errorf("nested sub/config/local.json must not be copied (err=%v)", err)
+	}
+}
+
+// Anchoring must not depend on the other patterns. A bare ".env" forces a full
+// walk, and the anchored pattern must still reject the nested match on that
+// walk.
+func TestProcessWorktreeInclude_MixedPatternsKeepAnchoring(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "config/local.json\nsub/config/\n.env\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "config", "local.json"), `{"root": true}`)
+	writeFile(t, filepath.Join(repoDir, "sub", "config", "local.json"), `{"nested": true}`)
+	writeFile(t, filepath.Join(repoDir, ".env"), "ROOT=1")
+	writeFile(t, filepath.Join(repoDir, "sub", ".env"), "NESTED=1")
+
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "config/local.json\n.env\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, want := range []string{"config/local.json", "sub/.env"} {
+		if _, err := os.Stat(filepath.Join(worktreeDir, want)); err != nil {
+			t.Errorf("expected %s to be copied: %v", want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "config", "local.json")); !os.IsNotExist(err) {
+		t.Errorf("nested sub/config/local.json must not be copied (err=%v)", err)
+	}
+}
+
+// A "**" pattern keeps matching at any depth after the anchor step.
+func TestProcessWorktreeInclude_DoubleStarMatchesAnyDepth(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "*.env\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "sub", "x.env"), "DEEP=1")
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "**/x.env\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "x.env")); err != nil {
+		t.Errorf("expected sub/x.env to be copied: %v", err)
 	}
 }
 
