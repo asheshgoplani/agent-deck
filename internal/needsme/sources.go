@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -18,11 +19,17 @@ import (
 // agent-deck binary to run for local profiles; fallbackProfile is used when
 // no profile directory exists yet.
 func DefaultSources(selfPath, fallbackProfile string) []Source {
-	profiles, _ := session.ListProfiles()
-	if len(profiles) == 0 {
+	profiles, perr := session.ListProfiles()
+	var srcs []Source
+	if perr != nil {
+		// One unreadable profile directory must not hide the others: ask
+		// every readable one and report the failure.
+		profiles = readableProfiles()
+		srcs = append(srcs, Source{Fetch: func(context.Context) ([]Row, error) { return nil, errFailed }})
+	}
+	if len(profiles) == 0 && perr == nil {
 		profiles = []string{fallbackProfile}
 	}
-	var srcs []Source
 	for _, p := range profiles {
 		p := p
 		srcs = append(srcs, Source{Profile: p, Fetch: func(ctx context.Context) ([]Row, error) {
@@ -41,6 +48,9 @@ func DefaultSources(selfPath, fallbackProfile string) []Source {
 			srcs = append(srcs, Source{Host: n, Profile: rc.GetProfile(), Fetch: func(ctx context.Context) ([]Row, error) {
 				infos, _, err := session.NewSSHRunner(n, rc).FetchSessions(ctx)
 				if err != nil {
+					if strings.Contains(err.Error(), "failed to parse remote sessions") {
+						return nil, ErrBadReply
+					}
 					return nil, err
 				}
 				rows := make([]Row, 0, len(infos))
@@ -64,11 +74,7 @@ func runList(ctx context.Context, self, profile string) ([]Row, error) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return nil, fmt.Errorf("%s", msg)
+		return nil, errFailed
 	}
 	out := bytes.TrimSpace(stdout.Bytes())
 	if len(out) == 0 || out[0] != '[' {
@@ -76,10 +82,37 @@ func runList(ctx context.Context, self, profile string) ([]Row, error) {
 	}
 	var rows []Row
 	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("unreadable list output")
+		return nil, ErrBadReply
 	}
 	for i := range rows {
 		rows[i].Profile = profile
 	}
 	return rows, nil
+}
+
+// readableProfiles lists the profile directories that can be read, for when
+// session.ListProfiles failed on one of them.
+func readableProfiles() []string {
+	dir, err := session.GetProfilesDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		for _, f := range []string{"state.db", "sessions.json"} {
+			if _, err := os.Stat(filepath.Join(dir, e.Name(), f)); err == nil {
+				out = append(out, e.Name())
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }

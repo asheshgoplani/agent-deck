@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/needsme"
+	"github.com/asheshgoplani/agent-deck/internal/voicestate"
 )
 
 func runVoiceT(t *testing.T, args ...string) (int, string, string) {
@@ -85,16 +86,16 @@ func TestVoiceStateLive(t *testing.T) {
 
 func TestWriteNeedsMe(t *testing.T) {
 	res := needsme.Result{Count: 1, Sessions: []needsme.Session{{Title: "alpha", Host: "box1", Reason: "asks a question", WaitingSeconds: 130}},
-		Errors: []needsme.HostError{{Host: "deckbox", Error: "timeout"}}}
+		Errors: []needsme.HostError{{Host: "box1", Error: "timeout"}, {Profile: "work", Error: "failed"}}}
 	var out, errb bytes.Buffer
 	writeNeedsMe(&out, &errb, res, true)
 	var back needsme.Result
-	if err := json.Unmarshal(out.Bytes(), &back); err != nil || back.Count != 1 || len(back.Errors) != 1 || errb.Len() != 0 {
+	if err := json.Unmarshal(out.Bytes(), &back); err != nil || back.Count != 1 || len(back.Errors) != 2 || errb.Len() != 0 {
 		t.Fatalf("json: %v %q %q", err, out.String(), errb.String())
 	}
 	out.Reset()
 	writeNeedsMe(&out, &errb, res, false)
-	if out.String() != "alpha [box1]: asks a question, waiting 2m\n" || !strings.Contains(errb.String(), "deckbox: timeout") {
+	if out.String() != "alpha [box1]: asks a question, waiting 2m\n" || !strings.Contains(errb.String(), "box1: timeout") || !strings.Contains(errb.String(), "this machine (profile work): failed") {
 		t.Errorf("text: %q / %q", out.String(), errb.String())
 	}
 	out.Reset()
@@ -113,5 +114,60 @@ func TestNeedsMeFlags(t *testing.T) {
 	code := runNeedsMe("default", []string{"--json"}, &out, &errb, func() []needsme.Source { return nil })
 	if code != 0 || !strings.Contains(out.String(), `"count":0`) || !strings.Contains(out.String(), `"sessions":[]`) {
 		t.Errorf("empty json: code=%d %q", code, out.String())
+	}
+}
+
+func TestVoiceAndNeedsMeAreRegistered(t *testing.T) {
+	for _, c := range []string{"voice", "needs-me"} {
+		if !commandRegistry[c] {
+			t.Errorf("%s missing from commandRegistry", c)
+		}
+		if _, rest := extractProfileFlag([]string{c, "-p", "x"}); len(rest) != 3 {
+			t.Errorf("%s: -p after the command was swallowed: %v", c, rest)
+		}
+	}
+	code, _, _ := runVoiceT(t, "state", "-p", "nosuchprofile", "--json")
+	if code != 2 {
+		t.Errorf("voice state -p x must be a usage error, code = %d", code)
+	}
+}
+
+func TestVoiceStateLineStripsControlCharacters(t *testing.T) {
+	v := voicestate.View{On: true, Phase: "listening", Target: &voicestate.ViewTarget{Title: "al\x1bpha\nx\a", Host: "bo\x1bx"}}
+	got := voiceStateLine(v)
+	if strings.ContainsAny(got, "\x1b\a\n") {
+		t.Errorf("control characters in %q", got)
+	}
+	if !strings.Contains(got, "alpha") {
+		t.Errorf("title lost: %q", got)
+	}
+}
+
+func TestVoiceStateLineOff(t *testing.T) {
+	if got := voiceStateLine(voicestate.View{Phase: "off"}); got != "voice: off" {
+		t.Errorf("got %q", got)
+	}
+	if got := voiceStateLine(voicestate.View{On: true, Phase: "resting", Extra: "call"}); got != "voice: resting (call)" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestNeedsMeHelpAndTimeoutRange(t *testing.T) {
+	var out, errb bytes.Buffer
+	none := func() []needsme.Source { return nil }
+	if code := runNeedsMe("default", []string{"--help"}, &out, &errb, none); code != 0 {
+		t.Errorf("--help code = %d", code)
+	}
+	for _, bad := range []string{"0", "-1s", "10s"} {
+		errb.Reset()
+		if code := runNeedsMe("default", []string{"--timeout", bad}, &out, &errb, none); code != 2 || !strings.Contains(errb.String(), "timeout") {
+			t.Errorf("--timeout %s: code=%d err=%q", bad, code, errb.String())
+		}
+	}
+	if code := runNeedsMe("default", []string{"--timeout", "2s"}, &out, &errb, none); code != 0 {
+		t.Errorf("--timeout 2s code = %d", code)
+	}
+	if code, _, _ := runVoiceT(t, "state", "--help"); code != 0 {
+		t.Errorf("voice state --help code = %d", code)
 	}
 }

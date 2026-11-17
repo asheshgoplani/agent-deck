@@ -25,9 +25,11 @@ type Row struct {
 	Status         string `json:"status"`
 	Substate       string `json:"substate"`
 	SubstateDetail string `json:"substate_detail"`
-	LastActivityAt string `json:"last_activity_at"`
-	CreatedAt      string `json:"created_at"`
-	Archived       bool   `json:"archived"`
+	LastActivityAt string `json:"last_activity_at"` // not used for ordering
+	// WaitingSince is when the session began waiting, when the host says so.
+	WaitingSince string `json:"waiting_since"`
+	CreatedAt    string `json:"created_at"`
+	Archived     bool   `json:"archived"`
 }
 
 // Source is one place to ask: a local profile or a remote host.
@@ -60,8 +62,9 @@ type Session struct {
 
 // HostError is a host that could not be asked.
 type HostError struct {
-	Host  string `json:"host"`
-	Error string `json:"error"`
+	Host    string `json:"host"`
+	Profile string `json:"profile,omitempty"`
+	Error   string `json:"error"`
 }
 
 // Result is the `needs-me --json` object.
@@ -150,7 +153,7 @@ func Collect(ctx context.Context, opts Options) Result {
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						done <- fetched{err: fmt.Errorf("internal error")}
+						done <- fetched{err: errFailed}
 					}
 				}()
 				rows, err := src.Fetch(cctx)
@@ -174,18 +177,11 @@ func Collect(ctx context.Context, opts Options) Result {
 	for i, src := range opts.Sources {
 		f := out[i]
 		if f.err != nil {
-			host := src.Host
-			if host == "" {
-				host = "local"
+			e := HostError{Host: src.Host, Error: errorWord(src, f.err)}
+			if src.Host == "" {
+				e.Profile = src.Profile
 			}
-			msg := cleanDetail(f.err.Error())
-			if errors.Is(f.err, context.DeadlineExceeded) {
-				msg = "timeout"
-			}
-			if src.Host == "" && src.Profile != "" && msg != "timeout" {
-				msg = "profile " + src.Profile + ": " + msg
-			}
-			res.Errors = append(res.Errors, HostError{Host: host, Error: msg})
+			res.Errors = append(res.Errors, e)
 			continue
 		}
 		for _, r := range f.rows {
@@ -203,8 +199,10 @@ func Collect(ctx context.Context, opts Options) Result {
 			seen[key] = true
 			s := Session{ID: r.ID, Title: r.Title, Group: r.Group, Profile: profile, Host: src.Host,
 				Status: "waiting", Substate: r.Substate, Reason: Reason(r.Substate, r.SubstateDetail)}
-			if t, ok := parseTime(r.LastActivityAt); ok {
-				s.Since = r.LastActivityAt
+			// Only an explicit waiting_since counts. last_activity_at can be
+			// the creation time, which would give a wrong wait and order.
+			if t, ok := parseTime(r.WaitingSince); ok {
+				s.Since = r.WaitingSince
 				if w := int64(now().Sub(t) / time.Second); w > 0 {
 					s.WaitingSeconds = w
 				}
@@ -254,4 +252,35 @@ func Line(s Session) string {
 		fmt.Fprintf(&b, ", waiting %ds", w)
 	}
 	return b.String()
+}
+
+// ErrBadReply marks a host that answered with something unreadable.
+var ErrBadReply = errors.New("bad-reply")
+
+var errFailed = errors.New("failed")
+
+// errorWord maps a fetch error to one fixed word; raw text (addresses, user
+// names) never reaches the output.
+func errorWord(src Source, err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, ErrBadReply):
+		return "bad-reply"
+	case errors.Is(err, errFailed) || src.Host == "":
+		return "failed"
+	}
+	return "unreachable"
+}
+
+// ErrorLine is the plain-text line for an errors entry.
+func ErrorLine(e HostError) string {
+	where := e.Host
+	if where == "" {
+		where = "this machine"
+		if e.Profile != "" {
+			where += " (profile " + e.Profile + ")"
+		}
+	}
+	return where + ": " + e.Error
 }
