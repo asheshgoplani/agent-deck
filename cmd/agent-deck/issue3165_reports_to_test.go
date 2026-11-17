@@ -64,7 +64,7 @@ func TestIssue3165_DanglingParentCallerStillReportsToTheLauncher(t *testing.T) {
 	}
 }
 
-func TestIssue3165_ChildrenListsReportsToWorkersAndTheRootDoesNot(t *testing.T) {
+func TestIssue3165_ChildrenListsReportsToWorkersMarkedWithTheirLauncher(t *testing.T) {
 	f := newParentFixture()
 	topWorker := session.NewInstanceWithGroupAndTool("TopWorker", "/proj/w1", "g", "claude")
 	topWorker.ID = "wrk-0001"
@@ -79,18 +79,21 @@ func TestIssue3165_ChildrenListsReportsToWorkersAndTheRootDoesNot(t *testing.T) 
 	if len(coord) != 2 || coord[0] != topWorker || coord[1] != nestedWorker {
 		t.Fatalf("coordinator children = %v, want both workers", ids(coord))
 	}
+	// The root still lists its tree children, the nested worker included,
+	// and its row says the records go to the coordinator.
 	root := childrenOf(f.parent.ID, all)
-	if len(root) != 1 || root[0] != f.child {
-		t.Fatalf("root children = %v, want only the coordinator (the nested worker reports elsewhere)", ids(root))
+	if len(root) != 2 || root[0] != f.child || root[1] != nestedWorker {
+		t.Fatalf("root children = %v, want the coordinator and the nested worker", ids(root))
 	}
 	for _, r := range buildChildRows(coord, cachedChildStatus) {
-		if !r.ReportsTo {
-			t.Fatalf("row %s is not marked reports_to", r.ID)
+		if r.ReportsTo != f.child.ID {
+			t.Fatalf("row %s reports_to %q, want the coordinator", r.ID, r.ReportsTo)
 		}
 	}
+	want := map[string]string{f.child.ID: "", nestedWorker.ID: f.child.ID}
 	for _, r := range buildChildRows(root, cachedChildStatus) {
-		if r.ReportsTo {
-			t.Fatalf("tree child %s marked reports_to", r.ID)
+		if r.ReportsTo != want[r.ID] {
+			t.Fatalf("root row %s reports_to %q, want %q", r.ID, r.ReportsTo, want[r.ID])
 		}
 	}
 	if got := childrenOf("", all); len(got) != 0 {
@@ -172,5 +175,32 @@ func TestIssue3165_AddFromShellRecordsNoLauncher(t *testing.T) {
 	}
 	if _, ok := hints[hintKeyLaunchedBy]; ok {
 		t.Fatalf("shell add carries launched-by: %v", hints)
+	}
+}
+
+// Only a Claude-compatible launcher is reported to: it drains its inbox at
+// prompt time and can be woken. A shell sub-session is a person at a prompt
+// and another harness would hold records nobody reads, so those keep the old
+// routing (the tree parent under nest_under_parent, else none).
+func TestIssue3165_OnlyAClaudeLauncherIsReportedTo(t *testing.T) {
+	root := &session.Instance{ID: "root-1", Tool: "claude"}
+	for _, tc := range []struct {
+		tool string
+		want bool
+	}{{"claude", true}, {"shell", false}, {"codex", false}} {
+		by := &session.Instance{ID: "coord-1", Tool: tc.tool, ParentSessionID: "root-1"}
+		if got := reportsToLauncher(by) != nil; got != tc.want {
+			t.Fatalf("%s launcher reported to = %v, want %v", tc.tool, got, tc.want)
+		}
+		wantTarget := root
+		if tc.want {
+			wantTarget = by
+		}
+		if got := launchReportTarget(root, by); got != wantTarget {
+			t.Fatalf("%s launcher: report target %s, want %s", tc.tool, got.ID, wantTarget.ID)
+		}
+	}
+	if reportsToLauncher(nil) != nil {
+		t.Fatal("no launcher reported to")
 	}
 }

@@ -1023,6 +1023,7 @@ func (t *GroupTree) MoveSessionUp(inst *Instance) {
 		// the slice entry immediately before the parent so the renderer
 		// shows it as a top-level peer just above the parent's block.
 		inst.ClearParent()
+		inst.ClearReportsTo() // issue #3165: a moved session reports to its new place
 		s := group.Sessions[currentIdx]
 		group.Sessions = append(group.Sessions[:currentIdx], group.Sessions[currentIdx+1:]...)
 		if parentIdx > currentIdx {
@@ -1078,6 +1079,7 @@ func (t *GroupTree) MoveSessionDown(inst *Instance) {
 		// pointer is enough — the renderer will place it as a top-level
 		// peer immediately after the parent's block.
 		inst.ClearParent()
+		inst.ClearReportsTo() // issue #3165: a moved session reports to its new place
 	default:
 		return
 	}
@@ -1100,6 +1102,7 @@ func (t *GroupTree) PromoteSession(inst *Instance) {
 		return
 	}
 	inst.ClearParent()
+	inst.ClearReportsTo() // issue #3165
 	for i, s := range group.Sessions {
 		s.Order = i
 	}
@@ -1142,6 +1145,7 @@ func (t *GroupTree) DemoteSession(inst *Instance) {
 
 	parent := group.Sessions[prevTopIdx]
 	inst.SetParentWithPath(parent.ID, parent.ProjectPath)
+	inst.ClearReportsTo() // issue #3165: the new parent receives its records
 
 	insertIdx := prevTopIdx + 1
 	for i := prevTopIdx + 1; i < len(group.Sessions); i++ {

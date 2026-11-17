@@ -36,6 +36,12 @@ sub-session that cannot be the parent, on both paths:
 | sub-session, `--no-parent` | any | none | none |
 | any, `--parent X` | any | X (or the single-level error) | none |
 
+Only a Claude-compatible launcher is recorded as `reports_to`
+(`reportsToLauncher`): those drain an inbox at prompt time and can be woken.
+A shell sub-session is a person at a prompt (the "no change for a human
+shell" rule), and another harness would hold records nobody reads, so those
+launches keep the old routing. The `launched-by` hint is still written.
+
 `launch` and `add` store it as `Instance.ReportsTo` (tool_data extras zone,
 no schema migration; a legacy binary keeps the key on save) and keep writing
 the `launched-by` hint, now on both paths. `launch --json` / `add --json`,
@@ -64,7 +70,10 @@ only, debounced, never over composer text, never into a non-Claude pane, and
 
 With `nest_under_parent` on, the root gets no copy: it launched the
 coordinator, not the worker, and cannot act on the result (the reporter's
-lean, and the brief's "no duplicate" rule).
+lean, and the brief's "no duplicate" rule). If the launcher is no longer
+registered, a nested worker's records fall back to its tree parent
+(`reportTargetIDIn`), as before this change; a top-level worker dead-letters
+as `parent_removed`, like any child of a removed parent.
 
 ### 3. Kickoff tag
 
@@ -78,15 +87,17 @@ for #3131.
 
 ### 4. `session children`
 
-`childrenOf(id)` lists sessions whose report target is `id`: tree children
-plus `reports_to` workers. A `reports_to` worker is marked
-`"reports_to": true` in `--json`. A nested worker that reports to the
-coordinator is not listed under the root. The children context hook and
-`--follow` use the same helper.
+`childrenOf(id)` lists tree children plus sessions whose report target is
+`id`. Each row carries `reports_to`, the launcher id, when the child has one,
+so a nested worker shows under the root (tree) with `reports_to` naming the
+coordinator, and under the coordinator. The root keeps its polling surfaces
+(`--follow --until-done`, the fleet block) for nested workers. The children
+context hook and `--follow` use the same helper.
 
 ### 5. Changing the link
 
-`session set-parent` and `session unset-parent` clear `reports_to`: a link the
+`session set-parent`, `session unset-parent` and the TUI's promote, demote
+and move-up paths clear `reports_to`: a link the
 user picks replaces the one launch recorded. A cleared value is written as an
 explicit empty string so the extras merge does not carry it forward. A
 cross-harness switch copies it to the replacement. The conditional archive
