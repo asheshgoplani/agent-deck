@@ -138,7 +138,9 @@ export function RightRail() {
     `
   }
 
-  const session = sessions.find(s => s.id === selected) || sessions[0]
+  // Only the selected session: with nothing selected the rail says so rather
+  // than describing (and offering actions for) the first session of the list.
+  const session = selected ? sessions.find(s => s.id === selected) : null
 
   if (!session) {
     return html`
