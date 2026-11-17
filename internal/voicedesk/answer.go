@@ -15,8 +15,11 @@ const (
 // punctuation is gone and a leading wake name is dropped.
 var (
 	yesAnswers = foldPhrases("yes", "yes send", "yes send it", "haan", "haan bhejo", "haan ji", "ji haan",
-		"send it", "bhej do", "yes switch", "haa", "han", "haa bhejo", "han bhejo", "haan bhej do", "bhejdo", "han ji", "ji han", "हाँ", "हां", "हाँ भेजो", "हां भेजो", "हाँ जी", "जी हाँ", "भेज दो")
-	noAnswers = foldPhrases("no", "cancel", "nahin", "nahi", "nahee", "rehne do", "rahne do", "mat bhejo", "नहीं", "नहि", "रहने दो", "मत भेजो")
+		"send it", "bhej do", "yes switch", "haa", "han", "haa bhejo", "han bhejo", "haan bhej do", "bhejdo", "han ji", "ji han",
+		"okay", "ok", "yeah", "yep", "sure", "yes please", "go ahead", "theek hai", "thik hai", "ji", "bhejo", "haan haan",
+		"ہاں", "جی ہاں", "ہاں بھیجو", "ہاں جی", "हाँ", "हां", "हाँ भेजो", "हां भेजो", "हाँ जी", "जी हाँ", "भेज दो")
+	noAnswers = foldPhrases("no", "cancel", "nahin", "nahi", "nahee", "rehne do", "rahne do", "mat bhejo",
+		"nope", "no thanks", "mat karo", "nahin bhejo", "stop it", "نہیں", "رہنے دو", "مت بھیجو", "नहीं", "नहि", "रहने दो", "मत भेजो")
 	// ordinal answers, value = index
 	choiceAnswers = map[string]int{}
 )
@@ -55,6 +58,9 @@ func answerText(sentence string) string {
 // (index). Names as a choice are handled by the caller, which knows the
 // candidates.
 func classifyAnswer(sentence string) (kind string, index int) {
+	if strings.HasSuffix(strings.TrimSpace(sentence), "?") {
+		return AnswerNone, -1 // "yes?" is a question back, not consent
+	}
 	t := answerText(sentence)
 	switch {
 	case t == "":

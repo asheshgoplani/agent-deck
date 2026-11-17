@@ -132,7 +132,8 @@ func fold(s string) string {
 	// doubled letters
 	out := make([]rune, 0, len(rs))
 	for i, c := range rs {
-		if i > 0 && rs[i-1] == c {
+		// doubled letters once; digits never ("0955" is not "095")
+		if i > 0 && rs[i-1] == c && !unicode.IsDigit(c) {
 			continue
 		}
 		out = append(out, c)
@@ -332,8 +333,8 @@ func vowelClass(folded string) string {
 // and h, y dropped, doubled letters once.
 func phoneticKey(roman string) string {
 	s := strings.ToLower(toRoman(roman))
-	s = strings.NewReplacer("tion", "shan", "sion", "shan").Replace(s) // station / steshan
-	r := strings.NewReplacer("tch", "C", "ch", "C", "sch", "sk", "ck", "k", "ph", "f", "sh", "s", "x", "ks", "q", "k", "z", "s", "w", "v")
+	s = strings.NewReplacer("tion", "shan", "sion", "shan").Replace(s)                                                                               // station / steshan
+	r := strings.NewReplacer("tch", "C", "ch", "C", "sch", "sk", "ck", "k", "ph", "f", "sh", "s", "x", "ks", "q", "k", "z", "s", "j", "s", "w", "v") // j/z: "myoojik" = music
 	s = r.Replace(s)
 	rs := []rune(s)
 	var b []rune
@@ -352,7 +353,7 @@ func phoneticKey(roman string) string {
 		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
 			continue
 		}
-		if len(b) > 0 && b[len(b)-1] == c {
+		if len(b) > 0 && b[len(b)-1] == c && !unicode.IsDigit(c) {
 			continue
 		}
 		b = append(b, c)
@@ -407,4 +408,21 @@ func vowelCompatible(spoken, title string) bool {
 		return true
 	}
 	return false
+}
+
+// cleanMessage makes a heard message safe to read back and to type: every
+// control character (CR, LF, TAB, ESC, Ctrl-C ...) becomes a space, runs of
+// spaces become one. A spoken sentence has none; a typed one must not turn
+// into keystrokes ("check this\n/clear" would run /clear).
+func cleanMessage(s string) string {
+	s = strings.ToValidUTF8(s, " ")
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			b.WriteRune(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }

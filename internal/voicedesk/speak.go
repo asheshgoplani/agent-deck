@@ -183,3 +183,11 @@ func ensureStop(s string) string {
 	}
 	return s + "."
 }
+
+// isStatus is " is working", " has failed": the verb that fits the status.
+func isStatus(status string) string {
+	if status == "error" {
+		return " has failed"
+	}
+	return " is " + statusWords(status)
+}

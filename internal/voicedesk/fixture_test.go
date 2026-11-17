@@ -162,3 +162,12 @@ func targetID(r Result) string {
 	}
 	return r.Target.ID
 }
+
+func (d *fakeDeck) Lookup(_ context.Context, s Session) (Session, bool, error) {
+	for _, x := range d.sessions {
+		if x.ID == s.ID && x.Host == s.Host {
+			return x, true, nil
+		}
+	}
+	return Session{}, false, nil
+}

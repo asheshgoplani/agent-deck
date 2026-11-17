@@ -17,6 +17,7 @@ type Session struct {
 	Host           string    `json:"host"`
 	Status         string    `json:"status"`
 	Substate       string    `json:"substate,omitempty"`
+	Tool           string    `json:"tool,omitempty"`   // harness: claude, codex, shell ...
 	Reason         string    `json:"reason,omitempty"` // needs-me: why it waits
 	LastActivity   time.Time `json:"last_activity,omitempty"`
 	ParentID       string    `json:"parent_id,omitempty"`
@@ -30,9 +31,12 @@ type Ref struct {
 	Title   string `json:"title"`
 	Host    string `json:"host"`
 	Profile string `json:"profile,omitempty"`
+	Tool    string `json:"-"` // carried to the send guard, not part of the result
 }
 
-func (s Session) Ref() Ref { return Ref{ID: s.ID, Title: s.Title, Host: s.Host, Profile: s.Profile} }
+func (s Session) Ref() Ref {
+	return Ref{ID: s.ID, Title: s.Title, Host: s.Host, Profile: s.Profile, Tool: s.Tool}
+}
 
 // Person is someone else whose sessions are visible to the deck (a shared
 // profile or remote). Their sessions are never a voice target.

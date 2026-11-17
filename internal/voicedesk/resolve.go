@@ -354,3 +354,18 @@ func newNameQuery(name string, hosts []string) nameQuery {
 	}
 	return q
 }
+
+// genericOnlyQ is genericOnly with the listener's spellings ("बिल्ड").
+func genericOnlyQ(q nameQuery) bool {
+	content := 0
+	for i, w := range q.words {
+		if nameNoise[w] {
+			continue
+		}
+		if !isCodeNoun(w, q.roman[i]) {
+			return false
+		}
+		content++
+	}
+	return content > 0
+}

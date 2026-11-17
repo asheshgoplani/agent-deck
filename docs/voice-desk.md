@@ -9,6 +9,9 @@ agent-deck [-p <profile>] voice do [--json] [--dry-run] [--from mac|glasses|phon
                                    [--pending <token>] [--answer-delay-ms <n>] "<sentence>"
 ```
 
+Callers always pass `--` before the sentence (`voice do --json --from mac -- "<sentence>"`), so a sentence that
+starts with `-` is never read as a flag.
+
 Exit codes: 0 = a result was printed (handled or not, refused or not), 2 = usage error, 1 = internal error. Without
 `--json` only the line to speak is printed (nothing when the sentence is not the desk's).
 
@@ -62,11 +65,18 @@ A host can be named: "status of conductor on boxone", "boxone wala conductor ka 
 
 Answers (only with `--pending`, and only as the whole sentence): yes = "yes", "yes send", "yes send it", "haan",
 "haan bhejo", "haan ji", "ji haan", "send it", "bhej do" (and Devanagari forms); no = "no", "cancel", "nahin", "nahi",
-"rehne do", "mat bhejo"; choice = "first", "second", "third", "the first", "pehla", "doosra", "teesra", or a session's
-name. Anything else drops the token and is handled as a fresh sentence.
+"rehne do", "mat bhejo"; also "okay", "yeah", "sure", "theek hai", "ji", "bhejo", Urdu-script ہاں / نہیں and the
+listener's spellings of these (a word of four letters or more may be spelled another way: "rahne do"); a sentence
+ending in "?" ("yes?") is not an answer; choice = "first", "second", "third", "the first", "pehla", "doosra", "teesra", or a session's
+name. A short sentence (three words or fewer) that is neither an answer nor a desk command keeps the question open
+once ("Please say yes or no.", new token in `confirm`), so it is not typed into the session; a second miss, or a
+longer sentence, drops the token and is handled as a fresh sentence.
 
 Forms that overlap with plain talk or with the voice daemon's own commands ("read this", "what is he doing",
-"find the bug in the parser") come back `handled:false` when the name is not a session.
+"find the bug in the parser") come back `handled:false` when the name is not a session. So does any desk form whose
+unknown name holds an ordinary coding word ("tell git to ignore the build folder", "status of the pull request"),
+and a name made only of coding words that does not say a session's whole title ("tell the build to …"). A short
+unknown name in an explicit form ("tell phone walk to continue") answers "I found no session of yours called …".
 
 ## Safety
 
@@ -82,14 +92,27 @@ Forms that overlap with plain talk or with the voice daemon's own commands ("rea
    "mita do", "mail bhej do"). Prompt: "Send to X: <message>. Yes?". A yes more than 10 s after the question
    (`--answer-delay-ms` > 10000, or a token older than 10 s when the flag is absent) sends nothing: "Too late,
    nothing sent.". Tokens die after 60 s whatever the delay says, are single-use (claimed by an atomic rename), and
-   are bound to the profile and to the exact action by a hash. A stopped or failed session is not sent to.
-4. **No secrets spoken or shown**: replies and messages are checked for keys, tokens and passwords (a pattern list
-   plus a high-entropy check). A reply with one: "There is a secret in this reply, read it on screen.", and nothing of
+   are bound to the profile and to the exact action by a hash (an unkeyed hash: it catches a stale or edited file,
+   not someone who can already write the 0700 directory). A stopped or failed session is not sent to. A session
+   that shows a permission menu or question (substate `interactive-menu`) is not sent to: "<title> is asking a
+   question; answer it on screen first."; sends into agent tools also use `session send --require-input-prompt`,
+   so nothing is typed unless an input prompt is visible. The yes re-reads only the target (its own host), and
+   says the title it has now. When a send's outcome is not known (time ran out after it started) the line is "I
+   am not sure it was sent; check <title>.", never a failure or a success that did not happen.
+4. **Unreadable settings refuse.** A `config.toml` that cannot be parsed never falls back to the open default: the
+   desk answers `refused:"unsafe"`, "I cannot read the voice settings.", and acts on nothing.
+5. **The message is cleaned**: every control character (newline, tab, escape, Ctrl-C …) becomes a space before
+   it is read back, stored or sent, so a typed message cannot become keystrokes or a second command line.
+6. **No secrets spoken or shown**: replies and messages are checked for keys, tokens and passwords (a pattern list,
+   a key word followed by a value that is not an ordinary word, and a high-entropy check that leaves identifiers,
+   commit hashes and digests alone). On any hit nothing of the text is in `show`. A reply with one: "There is a secret in this reply, read it on screen.", and nothing of
    it in `show`. A message with one is not sent by voice.
-5. **Short**: one sentence (two for a status); lists speak three names.
-6. **The mic marker is not a name**: the voice daemon's "🎙 " title prefix is stripped from everything the desk says, shows, returns as `target` or matches.
-7. **No logs**: the desk writes no heard or spoken text to any log. Pending questions live in
-   `<profile dir>/voice/pending/<token>.json` (0600, directory 0700) only until answered or 60 s old.
+7. **Short**: one sentence (two for a status); lists speak three names.
+8. **The mic marker is not a name**: the voice daemon's "🎙 " title prefix is stripped from everything the desk says, shows, returns as `target` or matches.
+9. **No logs**: the desk writes no heard or spoken text to any log. Pending questions live in
+   `<profile dir>/voice/pending/<token>.json` (0600, directory 0700) until answered; every `voice do` call (also
+   one that is not the desk's) removes questions older than 60 s. Note: `session send` itself records every sent
+   message in its trigger ledger (`state.db`, `trigger_fires`), for voice sends as for typed ones.
 
 ## How it acts
 
