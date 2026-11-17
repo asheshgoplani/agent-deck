@@ -31,7 +31,7 @@ func init() {
 		voiceSub{
 			name:    "relay",
 			summary: "Publish voice state on the bus and forward it to stream hosts",
-			usage:   "  agent-deck voice relay [--to <remote>[,<remote>...]] [--self <name>] [--dir <voice dir>]",
+			usage:   "  agent-deck voice relay --to <remote>[,<remote>...] --self <name> [--dir <voice dir>]\n           --self is this machine's name in the remotes' own [remotes.<name>] config",
 			run:     runVoiceRelay,
 		},
 		voiceSub{
@@ -46,8 +46,8 @@ func init() {
 func runVoiceRelay(profile string, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("voice relay", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	to := fs.String("to", "", "comma-separated remote names to forward to (default: every configured remote)")
-	self := fs.String("self", "", "this machine's name as the remotes know it (default: $AGENTDECK_HOSTNAME or the short hostname)")
+	to := fs.String("to", "", "comma-separated remote names to forward to (required: session titles and ids go there)")
+	self := fs.String("self", "", "this machine's name as the remotes' configs name it (required: a target on this machine is shown under it there)")
 	dir := fs.String("dir", "", "voice state dir (default: $CLAUDE_VOICE_STATE_DIR or ~/.claude/voice)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -61,8 +61,9 @@ func runVoiceRelay(profile string, args []string, stdout, stderr io.Writer) int 
 		vdir = voicestate.DefaultDir()
 	}
 	name := strings.TrimSpace(*self)
-	if name == "" {
-		name = voicestream.LocalOrigin()
+	if name == "" || strings.TrimSpace(*to) == "" {
+		fmt.Fprintln(stderr, "voice relay: --to and --self are required")
+		return 2
 	}
 	profile = session.GetEffectiveProfile(profile)
 	cfg, err := session.LoadUserConfig()
@@ -71,21 +72,15 @@ func runVoiceRelay(profile string, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	var dests []string
-	if strings.TrimSpace(*to) == "" {
-		for n := range cfg.Remotes {
-			dests = append(dests, n)
+	for _, n := range strings.Split(*to, ",") {
+		if n = strings.TrimSpace(n); n == "" {
+			continue
 		}
-	} else {
-		for _, n := range strings.Split(*to, ",") {
-			if n = strings.TrimSpace(n); n == "" {
-				continue
-			}
-			if _, ok := cfg.Remotes[n]; !ok {
-				fmt.Fprintf(stderr, "voice relay: remote %q not found\n", n)
-				return 2
-			}
-			dests = append(dests, n)
+		if _, ok := cfg.Remotes[n]; !ok {
+			fmt.Fprintf(stderr, "voice relay: remote %q not found\n", n)
+			return 2
 		}
+		dests = append(dests, n)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -186,7 +181,7 @@ func (l *relayLink) session(ctx context.Context) error {
 	runner := session.NewSSHRunner(l.name, l.rc)
 	done := make(chan error, 1)
 	go func() {
-		done <- runner.RunIO(sctx, pr, io.Discard, l.stderr, "voice", "mirror-in")
+		done <- runner.RunStdinStreamIO(sctx, pr, io.Discard, l.stderr, "voice", "mirror-in")
 		_ = pr.Close()
 	}()
 	write := func(m voicestate.Mirror) error {
@@ -240,7 +235,11 @@ func runVoiceMirrorIn(profile string, args []string, stdout, stderr io.Writer) i
 		vdir = voicestate.DefaultDir()
 	}
 	profile = session.GetEffectiveProfile(profile)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	// A hang-up is the relay's link going away (network cut): keep the
+	// mirror's producer up until the mirror expires or a new link takes
+	// over, instead of dying with the connection.
+	signal.Ignore(syscall.SIGHUP)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	defer func() { _ = events.CloseDefault() }()
 	if err := voicestream.MirrorIn(ctx, profile, vdir, os.Stdin, stderr); err != nil {

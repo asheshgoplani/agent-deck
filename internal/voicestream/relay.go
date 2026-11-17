@@ -100,9 +100,14 @@ func MirrorIn(ctx context.Context, profile, dir string, in io.Reader, log io.Wri
 	return mirrorInLoop(ctx, dir, in, log, prod)
 }
 
+// mirrorInLoop's line reader is joined on every return except one: a Read
+// blocked on stdin cannot be interrupted, so that goroutine ends with the
+// process (the CLI exits right after MirrorIn returns).
 func mirrorInLoop(ctx context.Context, dir string, in io.Reader, log io.Writer, prod *Producer) error {
 	var lastWrite time.Time
 	lines := make(chan []byte)
+	rctx, stopReader := context.WithCancel(ctx)
+	defer stopReader()
 	go func() {
 		defer close(lines)
 		sc := bufio.NewScanner(in)
@@ -111,9 +116,12 @@ func mirrorInLoop(ctx context.Context, dir string, in io.Reader, log io.Writer, 
 			b := append([]byte(nil), sc.Bytes()...)
 			select {
 			case lines <- b:
-			case <-ctx.Done():
+			case <-rctx.Done():
 				return
 			}
+		}
+		if err := sc.Err(); err != nil {
+			fmt.Fprintln(log, "voice mirror-in: input ended:", err)
 		}
 	}()
 	for open := true; open; {
@@ -143,7 +151,10 @@ func mirrorInLoop(ctx context.Context, dir string, in io.Reader, log io.Writer, 
 			return nil
 		}
 		if fi, err := os.Stat(path); err == nil && fi.ModTime().After(lastWrite.Add(time.Second)) {
-			return nil // a new receiver owns the file now
+			// A new receiver owns the file now and publishes its own start
+			// frame: no "stopped" in between.
+			prod.StopQuietly()
+			return nil
 		}
 		select {
 		case <-ctx.Done():

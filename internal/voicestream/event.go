@@ -28,6 +28,7 @@ const (
 	ReasonStart   = "start"   // a producer started (or took over) and states what it sees
 	ReasonChange  = "change"  // something a screen draws changed
 	ReasonExpired = "expired" // the daemon died, stopped beating or turned off: published as "off"
+	ReasonStopped = "stopped" // the producer stopped and nobody may follow it: published as "off"
 )
 
 // Target is the session the mic is on. Host "" is the host whose bus

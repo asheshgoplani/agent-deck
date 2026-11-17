@@ -1,10 +1,12 @@
 package voicestream
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,25 +192,79 @@ func TestProducer_NoHeardText(t *testing.T) {
 	}
 }
 
-// Two producers for one profile: only the lock holder publishes; the other
-// takes over when the holder stops.
-func TestRunExclusive_OneProducerPerProfile(t *testing.T) {
-	profile := "_test"
-	path, err := lockPath(profile)
-	if err != nil {
-		t.Fatal(err)
+// Two producers for one profile (receiver and web server on one host):
+// only the lock holder publishes; when it stops it says "off" (stopped),
+// and the other takes over at once with a start frame.
+func TestRunExclusive_HandoverAndStopFrame(t *testing.T) {
+	const profile = "_test"
+	a, b := newRig(t), newRig(t)
+	b.dir = a.dir
+	b.p.Reader = voicestate.NewReader(a.dir)
+	b.p.Reader.PIDAlive = func(int) bool { return true }
+	a.p.Interval, b.p.Interval = 5*time.Millisecond, 5*time.Millisecond
+	a.p.Now, b.p.Now = time.Now, time.Now
+	a.p.Reader.Now, a.p.Reader.PIDAlive = time.Now, func(int) bool { return true }
+	a.now = time.Now()
+	a.write(nil)
+
+	var mu sync.Mutex
+	var order []string
+	record := func(who string) func(kind, sid string, data any) {
+		return func(kind, sid string, data any) {
+			mu.Lock()
+			order = append(order, who+":"+data.(StateEvent).Reason)
+			mu.Unlock()
+		}
 	}
-	release, err := tryLock(path)
-	if err != nil {
-		t.Fatal(err)
+	a.p.Publish, b.p.Publish = record("a"), record("b")
+	actx, stopA := context.WithCancel(context.Background())
+	bctx, stopB := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); _ = RunExclusive(actx, profile, a.p) }()
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(order) == 1 })
+	wg.Add(1)
+	go func() { defer wg.Done(); _ = RunExclusive(bctx, profile, b.p) }()
+	time.Sleep(150 * time.Millisecond)
+	mu.Lock()
+	if len(order) != 1 || order[0] != "a:start" {
+		t.Fatalf("while a holds the lock: %v, want only a:start", order)
 	}
-	if _, err := tryLock(path); err != errLocked {
-		t.Fatalf("second lock: %v, want errLocked", err)
+	mu.Unlock()
+	stopA()
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(order) == 3 })
+	stopB()
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 4 || order[1] != "a:stopped" || order[2] != "b:start" || order[3] != "b:stopped" {
+		t.Fatalf("handover order %v, want [a:start a:stopped b:start b:stopped]", order)
 	}
-	release()
-	release2, err := tryLock(path)
-	if err != nil {
-		t.Fatalf("lock after release: %v", err)
+}
+
+func TestProducer_QuietStopPublishesNothing(t *testing.T) {
+	r := newRig(t)
+	r.write(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	r.p.Interval = time.Millisecond
+	done := make(chan struct{})
+	go func() { r.p.Run(ctx); close(done) }()
+	waitFor(t, func() bool { return len(r.p.Last().Reason) > 0 && r.p.Last().On })
+	r.p.StopQuietly()
+	cancel()
+	<-done
+	if last := r.p.Last(); !last.On {
+		t.Fatalf("quiet stop published %+v", last)
 	}
-	release2()
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met within 2 s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

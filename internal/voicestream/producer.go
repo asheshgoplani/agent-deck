@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,6 +31,10 @@ type Producer struct {
 	Origin   string
 	Interval time.Duration
 	Now      func() time.Time
+
+	// quiet: stop without the "stopped" frame (a receiver handing over to
+	// a newer one, which publishes its own start frame at once).
+	quiet atomic.Bool
 
 	mu      sync.Mutex
 	started bool
@@ -97,8 +102,31 @@ func (p *Producer) reset() {
 	p.mu.Unlock()
 }
 
-// Run steps every Interval until ctx ends. It returns when ctx is done;
-// the caller joins it.
+// StopQuietly makes the end of Run publish nothing.
+func (p *Producer) StopQuietly() { p.quiet.Store(true) }
+
+// stop publishes "off" (reason stopped) when the last frame said the voice
+// is on: with no producer left, an absence of frames must never read as
+// "still listening". A producer that takes the lock over republishes the
+// live state at once (reset).
+func (p *Producer) stop() {
+	if p.quiet.Load() {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.started || !p.last.On {
+		return
+	}
+	ev := Off(ReasonStopped, p.Origin, p.now())
+	p.last, p.lastKey = ev, ev.key()
+	if p.Publish != nil {
+		p.Publish(KindState, "", ev)
+	}
+}
+
+// Run steps every Interval until ctx ends, then publishes the stop frame
+// (see stop). It returns when ctx is done; the caller joins it.
 func (p *Producer) Run(ctx context.Context) {
 	iv := p.Interval
 	if iv <= 0 {
@@ -110,6 +138,7 @@ func (p *Producer) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			p.stop()
 			return
 		case <-t.C:
 			p.Step()
