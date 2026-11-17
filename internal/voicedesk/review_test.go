@@ -25,7 +25,7 @@ func (h *harness) setStatus(id, status string, archived bool) {
 
 // A Devanagari word whose consonants match a title word but whose vowels
 // do not is a look-alike: asked, never silently the target.
-func TestDevanagariLookAlikeAsks(t *testing.T) {
+func TestDevanagariLookAlikeAsksOrNames(t *testing.T) {
 	for _, s := range []string{"टोस्टर का स्टेटस क्या है", "बोलिंग का स्टेटस क्या है"} {
 		t.Run(s, func(t *testing.T) {
 			h := newHarness(t)

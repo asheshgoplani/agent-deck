@@ -317,8 +317,8 @@ func choiceByName(sentence string, choices []Ref) int {
 	}
 	hit := -1
 	for i, c := range choices {
-		ok, sure, _ := coverage(q.words, q.deva, Session{Title: c.Title})
-		if ok && sure {
+		ok, level, _ := coverage(q, Session{Title: c.Title})
+		if ok && level >= wordPhonetic {
 			if hit >= 0 {
 				return -1 // the name fits two choices
 			}
@@ -421,9 +421,7 @@ func (d *Desk) chosen(ctx context.Context, req Request, p Pending, c Ref, lang s
 	}
 	pp := Parsed{Intent: p.Intent, Lang: lang, Message: p.Message}
 	r, err := d.withTarget(ctx, req, pp, s, true)
-	if r.Intent == p.Intent && p.Intent != IntentFind {
-		r.Intent = IntentChoice
-	}
+	r.Intent = IntentChoice // the answer to a choice question (CONTRACT.md 2)
 	return r, err
 }
 
@@ -478,6 +476,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	case resolvedAmbiguous:
 		return d.ask(req, r, p, res)
 	}
+	p.Phonetic = res.Phonetic
 	return d.withTarget(ctx, req, p, res.Session, false)
 }
 
@@ -592,6 +591,10 @@ func (d *Desk) withTarget(ctx context.Context, req Request, p Parsed, s Session,
 			text := Speakable(reply)
 			if text == "" {
 				r.Say = name + "'s last reply is only code, read it on screen."
+			} else if p.Phonetic {
+				// found by sound only: say whose reply it is first
+				r.Say = capitalize(name) + ": " + ensureStop(text)
+				r.Show = Show{Kind: "sessions", Items: []ShowItem{{ID: s.ID, Title: s.Title, Host: s.Host, Status: s.Status, Line: text}}}
 			} else {
 				r.Say = capitalize(ensureStop(text))
 				r.Show = Show{Kind: "sessions", Items: []ShowItem{{ID: s.ID, Title: s.Title, Host: s.Host, Status: s.Status, Line: text}}}
@@ -801,7 +804,7 @@ func saysWholeTitle(q nameQuery, res resolution) bool {
 	for _, s := range cands {
 		all := true
 		for _, tw := range splitWords(s.Title) {
-			if wordMeets(tw.folded, false, q.words) != wordSure {
+			if wordMeets(tw.folded, tw.roman, false, q.words, q.roman) != wordSure {
 				all = false
 				break
 			}

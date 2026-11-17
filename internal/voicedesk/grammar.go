@@ -34,6 +34,8 @@ type Parsed struct {
 	Name    string   // spoken session name ("" when the intent has none)
 	Words   []string // folded words of Name
 	Message string   // tell: the message, as heard
+	// Phonetic: the session was found by sound only (set by the desk)
+	Phonetic bool
 	// Soft: an unknown name is not a refusal but "not mine" (read X,
 	// what is X doing): those forms overlap with the daemon's look phrases
 	// and with plain talk to the session.
@@ -278,7 +280,7 @@ func foldSet(ws ...string) map[string]bool {
 }
 
 // nameNoise is dropped from a captured name before resolving it.
-var nameNoise = foldSet("the", "my", "a", "an", "session", "sessions", "wali", "wala", "wale", "vali", "vala", "ka", "ki", "ke")
+var nameNoise = foldSet("the", "my", "a", "an", "session", "sessions", "seshan", "seshans", "sesan", "सेशन", "सेशन्स", "wali", "wala", "wale", "vali", "vala", "ka", "ki", "ke")
 
 // Parse finds the desk intent of a sentence. It touches nothing outside
 // this package (no session list, no disk): "not mine" is decided here.
