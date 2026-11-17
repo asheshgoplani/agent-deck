@@ -100,9 +100,9 @@ func MirrorIn(ctx context.Context, profile, dir string, in io.Reader, log io.Wri
 	return mirrorInLoop(ctx, dir, in, log, prod)
 }
 
-// mirrorInLoop's line reader is joined on every return except one: a Read
-// blocked on stdin cannot be interrupted, so that goroutine ends with the
-// process (the CLI exits right after MirrorIn returns).
+// mirrorInLoop's line reader is cancelled on every return but not waited
+// for: a Read blocked on stdin cannot be interrupted, so that goroutine ends
+// with the process (the CLI exits right after MirrorIn returns).
 func mirrorInLoop(ctx context.Context, dir string, in io.Reader, log io.Writer, prod *Producer) error {
 	var lastWrite time.Time
 	lines := make(chan []byte)
