@@ -498,6 +498,63 @@ func TestWalkIncludeRoots_SkipsRootInsideNestedRepository(t *testing.T) {
 	}
 }
 
+// A walk root that is a symbolic link must not be walked. git check-ignore
+// rejects a path whose leading component is a link, and the whole copy stage
+// then stops.
+func TestWalkIncludeRoots_SkipsSymlinkedRoot(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFile(t, filepath.Join(repoDir, "real", "local.json"), "LINKED")
+	if err := os.Symlink("real", filepath.Join(repoDir, "config")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	patterns := []string{"config/local.json"}
+	matcher := ignore.CompileIgnoreLines(patterns...)
+
+	rec := &recordingFS{fsys: os.DirFS(repoDir)}
+	candidates, err := walkIncludeRoots(rec, walkRoots(patterns), matcher)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("candidates = %q, want none", candidates)
+	}
+}
+
+// A symlinked pattern root must not stop the other includes: the copy stage
+// runs for the files it can resolve.
+func TestProcessWorktreeInclude_SymlinkedRootDoesNotBlockOtherIncludes(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), ".claude/rules/personal/\nreal/\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, ".claude", "rules", "personal", "rule.md"), "RULE")
+	writeFile(t, filepath.Join(repoDir, "real", "local.json"), `{"linked": true}`)
+	if err := os.Symlink("real", filepath.Join(repoDir, "config")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), ".claude/rules/personal/\nconfig/local.json\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".claude", "rules", "personal", "rule.md")); err != nil {
+		t.Errorf("expected the personal rule to be copied: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "config", "local.json")); !os.IsNotExist(err) {
+		t.Errorf("symlinked root must not be copied (err=%v)", err)
+	}
+}
+
 // A pattern with a separator in the middle is anchored at the repository root,
 // as gitignore specifies. The matcher would also accept the same relative path
 // under a subdirectory; this test records that the narrowed walk does not

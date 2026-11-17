@@ -202,6 +202,39 @@ func insideNestedRepo(rootFS fs.FS, root string) bool {
 	return false
 }
 
+// pathCrossesSymlink reports whether root or one of its parents is a symbolic
+// link. The previous repository-wide walk never descended into a link, and
+// git check-ignore refuses a path whose leading components cross one, so such a
+// root cannot produce a candidate that the copy stage can use.
+func pathCrossesSymlink(rootFS fs.FS, root string) bool {
+	parent := "."
+	for _, segment := range strings.Split(root, "/") {
+		if segment == "" || segment == "." {
+			continue
+		}
+		entries, err := fs.ReadDir(rootFS, parent)
+		if err != nil {
+			return true
+		}
+		found := false
+		for _, entry := range entries {
+			if entry.Name() != segment {
+				continue
+			}
+			found = true
+			if entry.Type()&fs.ModeSymlink != 0 {
+				return true
+			}
+			break
+		}
+		if !found {
+			return true
+		}
+		parent = path.Join(parent, segment)
+	}
+	return false
+}
+
 // walkIncludeRoots collects the paths under roots that match matcher. It stops
 // at repository boundaries and never leaves the given roots.
 func walkIncludeRoots(rootFS fs.FS, roots []string, matcher *ignore.GitIgnore) ([]string, error) {
@@ -210,7 +243,7 @@ func walkIncludeRoots(rootFS fs.FS, roots []string, matcher *ignore.GitIgnore) (
 		if _, err := fs.Stat(rootFS, root); err != nil {
 			continue
 		}
-		if insideNestedRepo(rootFS, root) {
+		if insideNestedRepo(rootFS, root) || pathCrossesSymlink(rootFS, root) {
 			continue
 		}
 		err := fs.WalkDir(rootFS, root, func(p string, d fs.DirEntry, err error) error {
