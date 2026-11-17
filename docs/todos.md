@@ -35,9 +35,9 @@ profile, the same in the CLI, the TUI, the web API (phone gateway, Mac app) and 
 ```
 agent-deck todo add "<text>" [--source s] [--session id] [--json]
 agent-deck todo list [--all] [--json]
-agent-deck todo done <id | words of the text> [--json]
-agent-deck todo undo <id> [--json]
-agent-deck todo remove <id> [--json]
+agent-deck todo done <id | words of the text> [--source s] [--json]
+agent-deck todo undo <id> [--source s] [--json]
+agent-deck todo remove <id> [--source s] [--json]
 ```
 
 `add` joins its words, so `agent-deck todo add call the bank` works too. `--source`
@@ -45,20 +45,29 @@ defaults to `cli`. `list` shows open items oldest first; `--all` adds done items
 
 ### Done by words
 
-`done` with anything but a bare number matches words of the open items' text. The query is
-split into words (letters and digits, lowercased); `the`, `a`, `an`, `my`, `todo` are dropped
-unless nothing else is left. An open item is a candidate when **every** query word matches
-one of its words: the same word, a prefix of it (query word of 3+ letters: `bank` →
-`banks`), or one edit away (both 5+ letters: `dentsit` → `dentist`).
+`done` with anything but a number matches words of the items' text. The query is split
+into words (letters and digits, lowercased); `the`, `a`, `an`, `my`, `todo` and `to-do`
+(or `to do`) are dropped unless nothing else is left. An open item is a candidate when
+**every** query word matches one of its words: the same word, a prefix of it (query word
+of 3+ letters: `bank` → `banks`), or one edit away (both 5+ letters: `dentsit` →
+`dentist`). A one-edit match counts only when another query word matches exactly or by
+prefix, so one word alone never reaches a look-alike (`house` does not tick off
+`buy a horse`; `book dentsit` does tick off `book the dentist`).
 
-- one candidate: it is ticked off;
-- several: when exactly one of them is the whole text (`buy milk` against `buy milk` and
-  `buy milk and bread`) that one wins, otherwise **nothing changes** and the command exits 3
-  with the candidates. It never guesses;
+- an exact match comes first (the item's words equal the query's, in order): one open
+  exact match wins over longer candidates (`buy milk` against `buy milk` and
+  `buy milk and bread`); when no open item is exact but a done one is, the answer is
+  `already_done` for that item, so saying `done pay rent` twice never ticks off
+  `pay rental insurance`;
+- otherwise one candidate is ticked off; several change **nothing** and the command exits
+  3 with the candidates. It never guesses;
 - none: exit 2.
 
-A bare number (`done 12`) is only ever an id: when there is no item 12 it exits 2, even if
-an item's text contains "12". Done items are never matched by words; use the id.
+A number is only ever an id (`12`, `#12`, `12.`): when there is no item 12 it exits 2,
+even if an item's text contains "12". A done item is never a fuzzy candidate.
+
+`--source` on `done`, `undo` and `remove` (default `cli`) is reported as `by` in the
+`todo.changed` event, so the voice desk passes `--source voice`.
 
 ### Exit codes
 
@@ -76,7 +85,7 @@ an item's text contains "12". Done items are never matched by words; use the id.
 | `remove` | `{"status":"removed","todo":item,"open":1}` (the item as it was) |
 | no match | `{"status":"not_found","query":"bank"}` (exit 2) |
 | ambiguous | `{"status":"ambiguous","query":"milk","candidates":[item...]}` (exit 3) |
-| error | `{"status":"error","error":"..."}` (exit 1; the message is also on stderr) |
+| error | `{"status":"error","error":"..."}` (exit 1; also for a bad flag when `--json` was given; the message is on stderr too) |
 
 ## Event
 
@@ -114,4 +123,5 @@ send one. Words matching is CLI and voice only; the API ticks off by id.
 `j`/`k` to move, `x` (or space, enter) to tick off, `a` to add (source `tui`), `tab` to show
 or hide done items (`x` on a done item reopens it), `esc` to close. While open it re-reads
 the list every 2 s, so items added by voice, the phone or the CLI appear on their own.
-Removing is CLI only.
+Writes run off the screen's update loop (they may wait for the file lock), so the TUI never
+freezes on a busy list. Removing is CLI only.

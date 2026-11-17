@@ -58,20 +58,30 @@ func (h *todosPanelHarness) press(keys ...string) {
 		adding := h.panel.adding
 		h.panel, cmd = h.panel.Update(todoKey(k))
 		if k == "enter" || (k == "x" && !adding) {
-			runTodoCmd(cmd)
+			for _, msg := range runTodoCmd(cmd) {
+				if res, ok := msg.(todosPanelResultMsg); ok {
+					h.panel.HandleResult(res)
+				}
+			}
 		}
 	}
 }
 
-func runTodoCmd(cmd tea.Cmd) {
+func runTodoCmd(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
-		return
+		return nil
 	}
 	switch msg := cmd().(type) {
 	case tea.BatchMsg:
+		var out []tea.Msg
 		for _, c := range msg {
-			runTodoCmd(c)
+			out = append(out, runTodoCmd(c)...)
 		}
+		return out
+	case nil:
+		return nil
+	default:
+		return []tea.Msg{msg}
 	}
 }
 
@@ -191,5 +201,35 @@ func TestHomeAltOOpensTodosPanel(t *testing.T) {
 	home = model.(*Home)
 	if home.todosPanel.IsVisible() {
 		t.Fatal("esc did not close the panel")
+	}
+}
+
+// The store write (which may wait up to 10 s for the file lock) runs in a
+// tea.Cmd, never inside Update: Update returns at once and the list only
+// changes when the command runs.
+func TestTodosPanelWritesRunOffTheUpdateLoop(t *testing.T) {
+	h := newTodosPanelHarness(t)
+	if _, err := h.store.Add("call the bank", todos.AddOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	h.panel.Show()
+	var cmd tea.Cmd
+	h.panel, cmd = h.panel.Update(todoKey("x"))
+	if open, _, _ := h.store.Counts(); open != 1 {
+		t.Fatal("x wrote the store inside Update")
+	}
+	if cmd == nil {
+		t.Fatal("x returned no command")
+	}
+	for _, msg := range runTodoCmd(cmd) {
+		if res, ok := msg.(todosPanelResultMsg); ok {
+			h.panel.HandleResult(res)
+		}
+	}
+	if open, _, _ := h.store.Counts(); open != 0 || len(h.pubs) != 1 {
+		t.Fatalf("after the command: open=%d pubs=%v", open, h.pubs)
+	}
+	if !strings.Contains(h.panel.View(), "Done 1") {
+		t.Fatalf("result not shown:\n%s", h.panel.View())
 	}
 }

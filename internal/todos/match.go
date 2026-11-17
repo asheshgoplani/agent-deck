@@ -8,18 +8,23 @@ import (
 // Matching an item by words of its text ("bank" for "call the bank").
 //
 // The query is split into words (letters and digits, lowercased). A few
-// filler words are dropped ("the", "a", "an", "my", "to-do") unless nothing
-// else is left. An open item is a candidate when EVERY remaining query word
-// matches one word of its text: the same word, a prefix of it (query word
-// of 3+ letters: "bank" -> "banks"), or one edit away (both 5+ letters:
-// "dentist" -> "dentsit").
+// filler words are dropped ("the", "a", "an", "my", "todo", "to-do")
+// unless nothing else is left. An open item is a candidate when EVERY
+// remaining query word matches one word of its text: the same word, a
+// prefix of it (query word of 3+ letters: "bank" -> "banks"), or one edit
+// away (both 5+ letters: "dentist" -> "dentsit"). A one-edit match counts
+// only when another query word matches exactly or by prefix, so a single
+// word never reaches a look-alike ("house" is not "horse").
 //
-// Exactly one candidate is the match. Several candidates are ambiguous,
-// with one exception: when exactly one of them is an exact match (its words
-// equal the query's words, in order), that one wins. Done items are never
-// candidates; tick off a done item by id. The match never guesses.
+// An exact match (the item's words equal the query's words, in order)
+// comes first: one open exact match wins over longer candidates, and when
+// no open item is exact but a done one is, that done item is the answer
+// (the caller reports it as already done), so saying "done pay rent"
+// twice never ticks off "pay rental insurance". Otherwise exactly one
+// candidate is the match and several are ambiguous. The match never
+// guesses.
 
-var fillerWords = map[string]bool{"the": true, "a": true, "an": true, "my": true, "todo": true, "to-do": true}
+var fillerWords = map[string]bool{"the": true, "a": true, "an": true, "my": true, "todo": true}
 
 // words splits s into lowercase words of letters and digits.
 func words(s string) []string {
@@ -31,7 +36,12 @@ func words(s string) []string {
 func queryWords(q string) []string {
 	all := words(q)
 	var out []string
-	for _, w := range all {
+	for i := 0; i < len(all); i++ {
+		w := all[i]
+		if w == "to" && i+1 < len(all) && all[i+1] == "do" {
+			i++ // "to-do" and "to do" split into two words
+			continue
+		}
 		if !fillerWords[w] {
 			out = append(out, w)
 		}
@@ -42,18 +52,25 @@ func queryWords(q string) []string {
 	return out
 }
 
-func wordMatches(q, t string) bool {
+// Strength of a word match.
+const (
+	matchNone = iota
+	matchTypo
+	matchStrong // the same word or a prefix
+)
+
+func wordMatch(q, t string) int {
 	if q == t {
-		return true
+		return matchStrong
 	}
 	qn, tn := len([]rune(q)), len([]rune(t))
 	if qn >= 3 && strings.HasPrefix(t, q) {
-		return true
+		return matchStrong
 	}
 	if qn >= 5 && tn >= 5 && withinOneEdit(q, t) {
-		return true
+		return matchTypo
 	}
-	return false
+	return matchNone
 }
 
 // withinOneEdit reports whether a and b differ by at most one insertion,
@@ -103,19 +120,20 @@ func withinOneEdit(a, b string) bool {
 
 func itemMatches(qw []string, text string) bool {
 	tw := words(text)
+	strong := false
 	for _, q := range qw {
-		found := false
+		best := matchNone
 		for _, t := range tw {
-			if wordMatches(q, t) {
-				found = true
-				break
+			if m := wordMatch(q, t); m > best {
+				best = m
 			}
 		}
-		if !found {
+		if best == matchNone {
 			return false
 		}
+		strong = strong || best == matchStrong
 	}
-	return true
+	return strong
 }
 
 func exactMatch(q, text string) bool {
@@ -147,6 +165,27 @@ func matchIndex(items []Item, query string) (int, error) {
 	if len(qw) == 0 {
 		return -1, ErrNotFound
 	}
+	openExact, doneExact := -1, -1
+	nOpenExact := 0
+	for i, it := range items {
+		if !exactMatch(query, it.Text) {
+			continue
+		}
+		if it.Done() {
+			if doneExact < 0 || it.DoneAt.After(*items[doneExact].DoneAt) {
+				doneExact = i
+			}
+			continue
+		}
+		openExact = i
+		nOpenExact++
+	}
+	if nOpenExact == 1 {
+		return openExact, nil
+	}
+	if nOpenExact == 0 && doneExact >= 0 {
+		return doneExact, nil
+	}
 	var cands []int
 	for i, it := range items {
 		if !it.Done() && itemMatches(qw, it.Text) {
@@ -158,19 +197,6 @@ func matchIndex(items []Item, query string) (int, error) {
 		return -1, ErrNotFound
 	case 1:
 		return cands[0], nil
-	}
-	exact := -1
-	for _, i := range cands {
-		if exactMatch(query, items[i].Text) {
-			if exact >= 0 {
-				exact = -2
-				break
-			}
-			exact = i
-		}
-	}
-	if exact >= 0 {
-		return exact, nil
 	}
 	amb := &AmbiguousError{Query: query}
 	for _, i := range cands {

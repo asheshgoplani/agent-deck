@@ -28,7 +28,8 @@ func TestMatch(t *testing.T) {
 		{query: "the bank", wantID: "1"},
 		{query: "call bank", wantID: "1"},
 		{query: "ban", wantID: "1"},                // prefix of 3+ letters
-		{query: "dentsit", wantID: "2"},            // one swap away
+		{query: "dentsit", wantErr: ErrNotFound},   // a typo alone is not enough
+		{query: "book dentsit", wantID: "2"},       // one swap away, next to an exact word
 		{query: "dentist appointmnt", wantID: "2"}, // one deletion away
 		{query: "buy milk", wantID: "3"},           // exact text wins over "buy milk and bread"
 		{query: "milk bread", wantID: "4"},

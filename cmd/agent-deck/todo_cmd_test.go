@@ -156,3 +156,46 @@ func TestTodoListJSONShapeIsStable(t *testing.T) {
 		t.Fatalf("empty list json %s", out)
 	}
 }
+
+func TestTodoCLIFlagErrorsStillPrintJSON(t *testing.T) {
+	for _, args := range [][]string{
+		{"done", "--json", "--bogus", "bank"},
+		{"add", "x", "--json", "--nope"},
+		{"list", "--json", "--all=maybe"},
+	} {
+		h := newTodoHarness(t)
+		code, out, _ := h.run(args...)
+		if code != 1 {
+			t.Fatalf("%v: exit %d, want 1", args, code)
+		}
+		if got := decodeJSONObject(t, out)["status"]; got != "error" {
+			t.Fatalf("%v: status %v, want error: %s", args, got, out)
+		}
+	}
+}
+
+func TestTodoCLIChangeSourceIsTheEventBy(t *testing.T) {
+	h := newTodoHarness(t)
+	h.run("add", "call the bank")
+	h.run("add", "buy milk")
+	steps := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"done", "bank", "--source", "voice"}, "voice"},
+		{[]string{"undo", "1", "--source", "mac"}, "mac"},
+		{[]string{"remove", "2"}, "cli"},
+	}
+	for _, st := range steps {
+		before := len(h.published)
+		if code, out, errOut := h.run(st.args...); code != 0 {
+			t.Fatalf("%v: exit %d %s %s", st.args, code, out, errOut)
+		}
+		if len(h.published) != before+1 || h.published[before].By != st.want {
+			t.Fatalf("%v: published %+v, want by %q", st.args, h.published[before:], st.want)
+		}
+	}
+	if code, _, _ := h.run("done", "1", "--source", "fax"); code != 1 {
+		t.Fatalf("bad --source on done: exit %d, want 1", code)
+	}
+}

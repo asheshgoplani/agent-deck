@@ -16,6 +16,11 @@ import (
 // docs/todos.md): the open items, ticked off with x, added with a, done
 // ones shown with tab. It re-reads the list every todosPanelRefresh while
 // open, so items added by voice, the phone or the CLI appear on their own.
+// Writes and publishes run in tea.Cmds (they may wait for the file lock)
+// and come back as todosPanelResultMsg; the re-read is a lock-free read of
+// a small file and runs in Update. Bubble Tea does not wait for running
+// commands at quit, so a publish still running then is lost (the write
+// itself finished first).
 type TodosPanel struct {
 	visible  bool
 	width    int
@@ -114,16 +119,6 @@ func (p *TodosPanel) selected() *todos.Item {
 	return &p.items[p.cursor]
 }
 
-// publishCmd publishes off the update loop: the bus open and flush do
-// disk work.
-func (p *TodosPanel) publishCmd(c todos.Change) tea.Cmd {
-	publish, profile := p.publish, p.profile
-	return func() tea.Msg {
-		publish(c, profile)
-		return nil
-	}
-}
-
 // HandleTick re-reads the list and schedules the next tick while open.
 func (p *TodosPanel) HandleTick(msg todosPanelTickMsg) tea.Cmd {
 	if p == nil || !p.visible || msg.gen != p.tickGen {
@@ -198,68 +193,63 @@ func (p *TodosPanel) Update(msg tea.Msg) (*TodosPanel, tea.Cmd) {
 	return p, nil
 }
 
+// add saves a new item and publishes the change in a tea.Cmd: the write
+// may wait up to 10 s for the file lock and must never block Update.
 func (p *TodosPanel) add(text string) tea.Cmd {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	store, err := p.open()
-	if err != nil {
-		p.status = "Could not open the list: " + err.Error()
-		return nil
-	}
-	it, err := store.Add(text, todos.AddOptions{Source: todos.SourceTUI})
-	if err != nil {
-		p.status = "Not added: " + err.Error()
-		return nil
-	}
-	p.status = "Added " + it.ID
-	p.refresh()
-	for i, x := range p.items {
-		if x.ID == it.ID {
-			p.cursor = i
+	p.status = "Saving…"
+	open, publish, profile := p.open, p.publish, p.profile
+	return func() tea.Msg {
+		store, err := open()
+		if err != nil {
+			return todosPanelResultMsg{status: "Could not open the list: " + err.Error()}
 		}
+		it, err := store.Add(text, todos.AddOptions{Source: todos.SourceTUI})
+		if err != nil {
+			return todosPanelResultMsg{status: "Not added: " + err.Error()}
+		}
+		publish(todos.Change{Action: todos.ActionAdd, Todo: it, Open: derefTodoCount(store.OpenCount()), By: todos.SourceTUI}, profile)
+		return todosPanelResultMsg{status: "Added " + it.ID, focusID: it.ID}
 	}
-	return p.publishCmd(todos.Change{Action: todos.ActionAdd, Todo: it, Open: derefTodoCount(store.OpenCount()), By: todos.SourceTUI})
 }
 
-// toggle ticks off the selected open item, or reopens a done one.
+// toggle ticks off the selected open item, or reopens a done one, in a
+// tea.Cmd (see add).
 func (p *TodosPanel) toggle() tea.Cmd {
 	sel := p.selected()
 	if sel == nil {
 		return nil
 	}
-	store, err := p.open()
-	if err != nil {
-		p.status = "Could not open the list: " + err.Error()
-		return nil
+	id, wasDone := sel.ID, sel.Done()
+	p.status = "Saving…"
+	open, publish, profile := p.open, p.publish, p.profile
+	return func() tea.Msg {
+		store, err := open()
+		if err != nil {
+			return todosPanelResultMsg{status: "Could not open the list: " + err.Error()}
+		}
+		var (
+			it      todos.Item
+			changed bool
+			action  = todos.ActionDone
+			verb    = "Done "
+		)
+		if wasDone {
+			action, verb = todos.ActionUndo, "Reopened "
+			it, changed, err = store.Undo(id)
+		} else {
+			it, changed, err = store.Done(id)
+		}
+		if err != nil {
+			return todosPanelResultMsg{status: "Not changed: " + err.Error()}
+		}
+		if changed {
+			publish(todos.Change{Action: action, Todo: it, Open: derefTodoCount(store.OpenCount()), By: todos.SourceTUI}, profile)
+		}
+		return todosPanelResultMsg{status: verb + it.ID, focusID: it.ID}
 	}
-	var (
-		it      todos.Item
-		changed bool
-		action  string
-	)
-	if sel.Done() {
-		action = todos.ActionUndo
-		it, changed, err = store.Undo(sel.ID)
-	} else {
-		action = todos.ActionDone
-		it, changed, err = store.Done(sel.ID)
-	}
-	if err != nil {
-		p.status = "Not changed: " + err.Error()
-		p.refresh()
-		return nil
-	}
-	if action == todos.ActionDone {
-		p.status = "Done " + it.ID
-	} else {
-		p.status = "Reopened " + it.ID
-	}
-	p.refresh()
-	if !changed {
-		return nil
-	}
-	return p.publishCmd(todos.Change{Action: action, Todo: it, Open: derefTodoCount(store.OpenCount()), By: todos.SourceTUI})
 }
 
 func derefTodoCount(n *int) int {
@@ -346,4 +336,30 @@ func (p *TodosPanel) View() string {
 		Padding(1, 2).
 		Render(b.String())
 	return lipgloss.Place(p.width, p.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// todosPanelResultMsg is the outcome of a write run off the update loop.
+type todosPanelResultMsg struct {
+	status  string
+	focusID string
+}
+
+// HandleResult shows the outcome of a write and re-reads the list.
+func (p *TodosPanel) HandleResult(msg todosPanelResultMsg) {
+	if p == nil {
+		return
+	}
+	p.status = msg.status
+	if !p.visible {
+		return
+	}
+	p.refresh()
+	if msg.focusID == "" {
+		return
+	}
+	for i, it := range p.items {
+		if it.ID == msg.focusID {
+			p.cursor = i
+		}
+	}
 }

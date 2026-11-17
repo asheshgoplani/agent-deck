@@ -2221,6 +2221,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case todosPanelTickMsg:
 		return h, h.todosPanel.HandleTick(msg)
 
+	case todosPanelResultMsg:
+		h.todosPanel.HandleResult(msg)
+		return h, nil
+
 	case askPollMsg, askSeenMsg, askDeliveredMsg, askCancelledMsg, askTickMsg, askCloseMsg:
 		return h, h.askDialog.HandleMsg(msg, func() bool { return h.canShowAsk(time.Now()) })
 

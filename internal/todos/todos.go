@@ -375,10 +375,11 @@ func (s *Store) Done(query string) (it Item, changed bool, err error) {
 	}
 	err = s.update(func(f *file) (bool, error) {
 		i := -1
-		if IsID(query) {
-			// A bare number is an id and only an id: "done 12" never ticks
-			// off "call 12 people" when item 12 does not exist.
-			if i = indexOf(f, query); i < 0 {
+		if num, ok := numberQuery(query); ok {
+			// A number is an id and only an id ("12", "#12", "12."):
+			// "done 12" never ticks off "call 12 people" when item 12 does
+			// not exist.
+			if i = indexOf(f, num); i < 0 {
 				return false, ErrNotFound
 			}
 		} else {
@@ -399,6 +400,26 @@ func (s *Store) Done(query string) (it Item, changed bool, err error) {
 		return true, nil
 	})
 	return it, changed, err
+}
+
+// numberQuery reports whether every word of q is digits; num is the single
+// number ("" when there are several, which names no id).
+func numberQuery(q string) (num string, ok bool) {
+	ws := words(q)
+	if len(ws) == 0 {
+		return "", false
+	}
+	for _, w := range ws {
+		for _, r := range w {
+			if r < '0' || r > '9' {
+				return "", false
+			}
+		}
+	}
+	if len(ws) == 1 {
+		return ws[0], true
+	}
+	return "", true
 }
 
 // Undo reopens the done item id. changed is false when it was open.

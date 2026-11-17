@@ -22,15 +22,18 @@ events bus of every profile.
 Commands:
   add "<text>" [--source s] [--session id] [--json]   Add an open item
   list [--all] [--json]                                Open items (--all: done ones too)
-  done <id | words of the text> [--json]               Tick an item off
-  undo <id> [--json]                                   Reopen a done item
-  remove <id> [--json]                                 Delete an item
+  done <id | words of the text> [--source s] [--json]  Tick an item off
+  undo <id> [--source s] [--json]                      Reopen a done item
+  remove <id> [--source s] [--json]                    Delete an item
 
---source is one of voice, cli, phone, mac, tui (default cli).
+--source is one of voice, cli, phone, mac, tui (default cli): on add it is
+the item's source; on done, undo and remove it is "by" in the event.
 "done" with words ticks off the one open item whose text has every word
-(exact, a 3+ letter prefix, or one typo away in 5+ letter words). When
-several items match it changes nothing and exits 3 with the candidates;
-it never guesses. An exact match of the whole text wins over longer ones.
+(exact, a 3+ letter prefix, or one typo away in 5+ letter words next to
+another word that matches exactly). When several items match it changes
+nothing and exits 3 with the candidates; it never guesses. An exact match
+of the whole text wins over longer ones, and an exact match of an item
+already done answers already_done. A number (12, #12) is only an id.
 
 Exit codes: 0 ok, 1 error (bad input, unreadable list), 2 no item
 matches, 3 more than one item matches.
@@ -100,6 +103,21 @@ func runTodo(args []string, out, errOut io.Writer, env todoEnv) int {
 	return 1
 }
 
+// todoParseFailed handles a flag parse error: help exits 0; any other
+// error exits 1, as one JSON error object when --json was asked for (the
+// flag package already printed the usage to stderr).
+func todoParseFailed(err error, args []string, out, errOut io.Writer) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	for _, a := range args {
+		if a == "--json" || a == "-json" || a == "--json=true" || a == "-json=true" {
+			return todoFail(true, out, io.Discard, err)
+		}
+	}
+	return 1
+}
+
 func todoFlagSet(name, usage string, args []string, out, errOut io.Writer) (*flag.FlagSet, *bool) {
 	fs := flag.NewFlagSet("todo "+name, flag.ContinueOnError)
 	fs.SetOutput(helpOutput(args, out, errOut))
@@ -137,10 +155,7 @@ func runTodoAdd(args []string, out, errOut io.Writer, env todoEnv) int {
 	source := fs.String("source", todos.SourceCLI, "where the item came from: voice, cli, phone, mac or tui")
 	sessionID := fs.String("session", "", "optional session id the item belongs to")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 1
+		return todoParseFailed(err, args, out, errOut)
 	}
 	text := strings.Join(fs.Args(), " ")
 	if strings.TrimSpace(text) == "" {
@@ -170,10 +185,7 @@ func runTodoList(args []string, out, errOut io.Writer, env todoEnv) int {
 	fs, jsonOut := todoFlagSet("list", "list [--all] [--json]", args, out, errOut)
 	all := fs.Bool("all", false, "include done items")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 1
+		return todoParseFailed(err, args, out, errOut)
 	}
 	if fs.NArg() != 0 {
 		return todoFail(*jsonOut, out, errOut, errors.New("list takes no arguments"))
@@ -211,16 +223,17 @@ func todoLine(it todos.Item) string {
 }
 
 func runTodoChange(action string, args []string, out, errOut io.Writer, env todoEnv) int {
-	usage := action + " <id> [--json]"
+	usage := action + " <id> [--source s] [--json]"
 	if action == "done" {
-		usage = "done <id | words of the text> [--json]"
+		usage = "done <id | words of the text> [--source s] [--json]"
 	}
 	fs, jsonOut := todoFlagSet(action, usage, args, out, errOut)
+	source := fs.String("source", todos.SourceCLI, "who made the change, reported as \"by\" in the todo.changed event: voice, cli, phone, mac or tui")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 1
+		return todoParseFailed(err, args, out, errOut)
+	}
+	if !todos.ValidSource(*source) {
+		return todoFail(*jsonOut, out, errOut, todos.ErrBadSource)
 	}
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if query == "" {
@@ -281,7 +294,7 @@ func runTodoChange(action string, args []string, out, errOut io.Writer, env todo
 		res.Status, text = todos.StatusRemoved, fmt.Sprintf("Removed %s: %s", it.ID, it.Text)
 	}
 	if changed {
-		env.publish(todos.Change{Action: action, Todo: it, Open: derefInt(res.Open), By: todos.SourceCLI})
+		env.publish(todos.Change{Action: action, Todo: it, Open: derefInt(res.Open), By: *source})
 	}
 	return todoEmit(*jsonOut, out, res, text)
 }
