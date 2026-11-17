@@ -1,0 +1,164 @@
+package voicedesk
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"testing"
+	"time"
+)
+
+var t0 = time.Date(2026, 11, 17, 23, 0, 0, 0, time.UTC)
+
+// fakeDeck is the saved session list (testdata/sessions.json) behind the
+// Deck interface: no tmux, no ssh, no agent-deck state.
+type fakeDeck struct {
+	t        *testing.T
+	sessions []Session
+	replies  map[string]string // id -> last reply
+	errs     []HostError
+	sent     []sentMsg
+	shown    []string
+	lists    int  // Sessions / NeedsMe calls
+	noList   bool // fail the test when the desk lists sessions
+}
+
+type sentMsg struct{ id, host, msg string }
+
+func loadFixture(t *testing.T) *fakeDeck {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "sessions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Sessions []struct {
+			Session
+			Minutes int `json:"minutes"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	d := &fakeDeck{t: t, replies: map[string]string{}}
+	for _, r := range raw.Sessions {
+		s := r.Session
+		if r.Minutes > 0 {
+			s.LastActivity = t0.Add(-time.Duration(r.Minutes) * time.Minute)
+			if s.Status == "waiting" {
+				s.WaitingSeconds = int64(r.Minutes * 60)
+			}
+		}
+		d.sessions = append(d.sessions, s)
+	}
+	d.replies["a1000002-1700000002"] = "## Progress\n\nTests are running on the **new** build. I will report when they finish. Then I merge.\n\n```go\nfunc main() {}\n```"
+	d.replies["a1000004-1700000004"] = "The audit found three stale sessions. Two of them are safe to archive. The third needs a look."
+	d.replies["a1000001-1700000001"] = "<speak>Two PRs are open, both green.</speak> Long detail follows here with a table.\n| a | b |\n|---|---|"
+	return d
+}
+
+func (d *fakeDeck) Sessions(context.Context) ([]Session, []HostError) {
+	if d.noList {
+		d.t.Fatalf("the desk listed sessions for a sentence that is not its own")
+	}
+	d.lists++
+	return append([]Session(nil), d.sessions...), d.errs
+}
+
+func (d *fakeDeck) NeedsMe(context.Context) ([]Session, []HostError) {
+	if d.noList {
+		d.t.Fatalf("the desk listed sessions for a sentence that is not its own")
+	}
+	d.lists++
+	var out []Session
+	for _, s := range d.sessions {
+		if s.Status == "waiting" && !s.Archived {
+			out = append(out, s)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].WaitingSeconds > out[j].WaitingSeconds })
+	return out, d.errs
+}
+
+func (d *fakeDeck) LastReply(_ context.Context, s Session) (string, error) {
+	r, ok := d.replies[s.ID]
+	if !ok {
+		return "", nil
+	}
+	return r, nil
+}
+
+func (d *fakeDeck) Send(_ context.Context, s Session, msg string) error {
+	if s.ID == "" {
+		return errors.New("no id")
+	}
+	d.sent = append(d.sent, sentMsg{id: s.ID, host: s.Host, msg: msg})
+	return nil
+}
+
+func (d *fakeDeck) Show(_ context.Context, s Session) error {
+	d.shown = append(d.shown, s.ID)
+	return nil
+}
+
+// fixtureConfig: alex is the owner; sam and robin are other people.
+func fixtureConfig() Config {
+	return Config{
+		OwnerGroups: []string{"team/alex"},
+		People: map[string]Person{
+			"sam":   {Groups: []string{"team/sam"}},
+			"robin": {Groups: []string{"team/robin"}, Names: []string{"rob"}},
+		},
+	}
+}
+
+type harness struct {
+	t     *testing.T
+	deck  *fakeDeck
+	store *MemStore
+	desk  *Desk
+	now   time.Time
+}
+
+func newHarness(t *testing.T) *harness {
+	h := &harness{t: t, deck: loadFixture(t), store: NewMemStore(), now: t0}
+	h.desk = &Desk{Deck: h.deck, Store: h.store, Config: fixtureConfig(), Now: func() time.Time { return h.now }}
+	return h
+}
+
+func (h *harness) do(req Request) Result {
+	h.t.Helper()
+	if req.Profile == "" {
+		req.Profile = "work"
+	}
+	r, err := h.desk.Do(context.Background(), req)
+	if err != nil {
+		h.t.Fatalf("Do(%q): %v", req.Sentence, err)
+	}
+	if r.Handled && r.Say == "" {
+		h.t.Fatalf("Do(%q): handled with an empty say", req.Sentence)
+	}
+	return r
+}
+
+func (h *harness) say(sentence string) Result {
+	h.t.Helper()
+	return h.do(Request{Sentence: sentence})
+}
+
+func refusedOf(r Result) string {
+	if r.Refused == nil {
+		return ""
+	}
+	return *r.Refused
+}
+
+func targetID(r Result) string {
+	if r.Target == nil {
+		return ""
+	}
+	return r.Target.ID
+}

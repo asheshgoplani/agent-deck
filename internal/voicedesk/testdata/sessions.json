@@ -1,0 +1,21 @@
+{
+  "_comment": "Saved session list for the voice desk lane-0 tables: this machine (host \"\") and one remote (boxone). Invented names only: the owner's groups are team/alex, sam and robin are other people.",
+  "sessions": [
+    {"id": "a1000001-1700000001", "title": "conductor-deck-alex", "group": "team/alex", "profile": "work", "host": "", "status": "waiting", "reason": "asks a question", "minutes": 7},
+    {"id": "a1000002-1700000002", "title": "macapp-redesign1", "group": "team/alex/workers", "profile": "work", "host": "", "status": "running", "minutes": 4},
+    {"id": "a1000003-1700000003", "title": "voice-plan-1109", "group": "team/alex/workers", "profile": "work", "host": "", "status": "idle", "minutes": 90},
+    {"id": "a1000004-1700000004", "title": "proactive-audit", "group": "team/alex/workers", "profile": "work", "host": "", "status": "error", "minutes": 30},
+    {"id": "a1000005-1700000005", "title": "phone-build", "group": "team/alex/workers", "profile": "work", "host": "", "status": "waiting", "reason": "waits for input", "minutes": 3},
+    {"id": "a1000006-1700000006", "title": "voice-test", "group": "team/alex/workers", "profile": "work", "host": "", "status": "running", "minutes": 1},
+    {"id": "a1000007-1700000007", "title": "tailscale-notes", "group": "team/alex", "profile": "work", "host": "", "status": "idle", "minutes": 300},
+    {"id": "a1000008-1700000008", "title": "audit-0955", "group": "team/alex/workers", "profile": "work", "host": "", "status": "idle", "minutes": 60},
+    {"id": "a1000009-1700000009", "title": "old-phone-build", "group": "team/alex/workers", "profile": "work", "host": "", "status": "stopped", "archived": true},
+    {"id": "a1000010-1700000010", "title": "release-notes", "group": "team/alex", "profile": "work", "host": "", "status": "stopped", "minutes": 600},
+    {"id": "c1000001-1700000011", "title": "conductor-deck-sam", "group": "team/sam", "profile": "work", "host": "", "status": "running", "minutes": 2},
+    {"id": "c1000002-1700000012", "title": "sam-macdesign", "group": "team/sam", "profile": "work", "host": "", "status": "waiting", "reason": "asks a question", "minutes": 20},
+    {"id": "c1000003-1700000013", "title": "conductor-deck-robin", "group": "team/robin", "profile": "work", "host": "", "status": "idle", "minutes": 5},
+    {"id": "d1000001-1700000014", "title": "stray-session", "group": "misc", "profile": "work", "host": "", "status": "idle", "minutes": 5},
+    {"id": "b1000001-1700000021", "title": "conductor-boxone", "group": "team/alex", "profile": "default", "host": "boxone", "status": "running", "minutes": 12},
+    {"id": "b1000002-1700000022", "title": "tailscale-fix", "group": "team/alex/workers", "profile": "default", "host": "boxone", "status": "waiting", "reason": "asks a question", "minutes": 11}
+  ]
+}
