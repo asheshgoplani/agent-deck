@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -48,10 +48,7 @@ func DefaultSources(selfPath, fallbackProfile string) []Source {
 			srcs = append(srcs, Source{Host: n, Profile: rc.GetProfile(), Fetch: func(ctx context.Context) ([]Row, error) {
 				infos, _, err := session.NewSSHRunner(n, rc).FetchSessions(ctx)
 				if err != nil {
-					if strings.Contains(err.Error(), "failed to parse remote sessions") {
-						return nil, ErrBadReply
-					}
-					return nil, err
+					return nil, remoteFetchError(err)
 				}
 				rows := make([]Row, 0, len(infos))
 				for _, i := range infos {
@@ -115,4 +112,13 @@ func readableProfiles() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// remoteFetchError maps a remote fetch error: a reply that is not valid
+// JSON is ErrBadReply ("bad-reply"); anything else passes through.
+func remoteFetchError(err error) error {
+	if errors.Is(err, session.ErrRemoteSessionsParse) {
+		return ErrBadReply
+	}
+	return err
 }

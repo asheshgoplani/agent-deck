@@ -260,7 +260,10 @@ var ErrBadReply = errors.New("bad-reply")
 var errFailed = errors.New("failed")
 
 // errorWord maps a fetch error to one fixed word; raw text (addresses, user
-// names) never reaches the output.
+// names) never reaches the output. timeout: the source ran out of time;
+// bad-reply: the reply was not a session list; failed: a local source
+// failed, or any source crashed; unreachable: any other remote failure
+// (ssh, a missing agent-deck, a non-zero exit).
 func errorWord(src Source, err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):

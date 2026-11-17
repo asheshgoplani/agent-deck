@@ -171,3 +171,30 @@ func TestNeedsMeHelpAndTimeoutRange(t *testing.T) {
 		t.Errorf("voice state --help code = %d", code)
 	}
 }
+
+// F3: a rest for a call or a meeting while also muted says both.
+func TestVoiceStateLineShowsMuteBesideExtra(t *testing.T) {
+	cases := []struct {
+		v    voicestate.View
+		want string
+	}{
+		{voicestate.View{On: true, Phase: "resting", Extra: "call", Muted: true}, "voice: resting (call, muted)"},
+		{voicestate.View{On: true, Phase: "resting", Extra: "muted", Muted: true}, "voice: resting (muted)"},
+		{voicestate.View{On: true, Phase: "resting", Muted: true}, "voice: resting (muted)"},
+		{voicestate.View{On: true, Phase: "resting", Extra: "meeting"}, "voice: resting (meeting)"},
+	}
+	for _, tc := range cases {
+		if got := voiceStateLine(tc.v); got != tc.want {
+			t.Errorf("voiceStateLine(%+v) = %q, want %q", tc.v, got, tc.want)
+		}
+	}
+}
+
+// F4: the usage line lists every key of voice state --json.
+func TestVoiceStateUsageListsExtra(t *testing.T) {
+	for _, s := range voiceSubs {
+		if s.name == "state" && !strings.Contains(s.usage, "extra") {
+			t.Fatalf("voice state usage lacks extra: %s", s.usage)
+		}
+	}
+}
