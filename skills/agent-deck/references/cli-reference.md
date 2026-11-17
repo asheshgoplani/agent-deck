@@ -846,7 +846,7 @@ agent-deck open report.html                       # from inside a session
 agent-deck open ./site/ --session "My Project"    # a directory opens its index.html
 agent-deck open https://example.com/dashboard
 agent-deck open report.html --browser-profile work --wait 10s  # Browser panel profile; ack wait (default 3s, max 2m)
-agent-deck open notes.md --json                   # {status, where, session, title, path, url, page_id, kind, phone, elapsed_ms}
+agent-deck open notes.md --json                   # {status, where, session, title, path, url, page_id, page_title, name, kind, phone, elapsed_ms}
 agent-deck open --last --session "My Project" --json   # re-open the newest page (exit 2: none)
 agent-deck open --list --session "My Project" --json   # pages of the session, newest first
 agent-deck open --show <page-id> --session "My Project" [--json]  # one self-contained HTML document

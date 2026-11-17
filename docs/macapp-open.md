@@ -94,14 +94,17 @@ runs `open --list` / `open --show` on the host). Nothing changes for the Mac app
 ```sh
 agent-deck open notes.md --json
 # {"status":"queued","where":"phone","session":"<id>","title":"<title>","path":"/abs/notes.md","url":"",
-#  "page_id":"<16 hex>","kind":"markdown","phone":"shown","elapsed_ms":41}
+#  "page_id":"<16 hex>","page_title":"Notes","name":"notes.md","kind":"markdown","phone":"shown","elapsed_ms":41}
 agent-deck open --last --session <id> --json      # re-open the newest page; exit 2 + {"code":"no_page"} when none
 agent-deck open --list --session <id> --json      # {"session","title","pages":[{id,kind,title,name,path,url,opened_at}]}
 agent-deck open --show <page-id> --session <id> --json
 # {"id","kind","title","name","url","html","bytes","inlined","skipped","modified_at"}
 ```
 
-`status` is `opened` when the Mac app acknowledged, else `queued`. `where` is
+`title` is the session's title; `page_title` is the page's own (`<title>`, the
+first `# ` heading of Markdown, else the file name). Opening a file again keeps
+its `page_id` (it moves to the top with the new time), so a phone showing it
+can refresh. `status` is `opened` when the Mac app acknowledged, else `queued`. `where` is
 `both` (acknowledged and on the phone list), `phone` (on the list, the Mac app
 not yet), or `mac` (a file outside the roots: `phone` is `outside_roots`).
 Refusals under `--json` are `{"error","code"}` with code `not_found`,

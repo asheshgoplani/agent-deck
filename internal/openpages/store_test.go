@@ -10,8 +10,13 @@ import (
 func TestRecordListNewestFirstOnePerPath(t *testing.T) {
 	profile := fmt.Sprintf("p%d", time.Now().UnixNano())
 	base := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	var firstA string
 	for i, path := range []string{"/w/a.html", "/w/b.md", "/w/a.html"} {
-		if _, err := Record(profile, Page{SessionID: "sess-1", Path: path, Kind: KindOf(path), OpenedAt: base.Add(time.Duration(i) * time.Minute)}); err != nil {
+		p, err := Record(profile, Page{SessionID: "sess-1", Path: path, Kind: KindOf(path), OpenedAt: base.Add(time.Duration(i) * time.Minute)})
+		if i == 0 {
+			firstA = p.ID
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -24,6 +29,9 @@ func TestRecordListNewestFirstOnePerPath(t *testing.T) {
 	}
 	if len(pages) != 2 || pages[0].Path != "/w/a.html" || pages[1].Path != "/w/b.md" {
 		t.Fatalf("want a.html (reopened) then b.md, got %+v", pages)
+	}
+	if pages[0].ID != firstA || !pages[0].OpenedAt.Equal(base.Add(2*time.Minute)) {
+		t.Fatalf("a re-opened page keeps its id (a viewer refreshing it must not 404) and takes the new time: %+v (first id %s)", pages[0], firstA)
 	}
 	if pages[1].Kind != KindMarkdown || pages[0].Name != "a.html" || !ValidPageID(pages[0].ID) {
 		t.Fatalf("fields: %+v", pages)

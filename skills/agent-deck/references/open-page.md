@@ -42,7 +42,7 @@ phone. Never put secrets in a page.
 
 ```json
 {"status":"opened|queued","where":"mac|phone|both","session":"<id>","title":"<session title>",
- "path":"/abs/file","url":"","page_id":"…","kind":"html|markdown|text|image|url","phone":"shown|outside_roots|url","elapsed_ms":42}
+ "path":"/abs/file","url":"","page_id":"…","page_title":"<the page's own title>","name":"file.html","kind":"html|markdown|text|image|url","phone":"shown|outside_roots|url","elapsed_ms":42}
 ```
 
 `status` is `opened` when the Mac app confirmed it, `queued` when it opens once the app connects.

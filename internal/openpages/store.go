@@ -122,9 +122,6 @@ func Record(profile string, p Page) (Page, error) {
 	if !ValidSessionID(p.SessionID) {
 		return p, ErrInvalidSession
 	}
-	if p.ID == "" {
-		p.ID = NewID()
-	}
 	if p.OpenedAt.IsZero() {
 		p.OpenedAt = time.Now().UTC()
 	}
@@ -154,13 +151,18 @@ func Record(profile string, p Page) (Page, error) {
 	if err != nil {
 		return p, err
 	}
-	// One entry per file or URL: opening it again moves it to the top.
+	// One entry per file or URL: opening it again moves it to the top with
+	// the new time and keeps its id, so a viewer showing it can refresh.
 	kept := pages[:0]
 	for _, old := range pages {
 		if old.Path == p.Path && old.URL == p.URL {
+			p.ID = old.ID
 			continue
 		}
 		kept = append(kept, old)
+	}
+	if p.ID == "" {
+		p.ID = NewID()
 	}
 	pages = append(kept, p)
 	if len(pages) > MaxPerSession {

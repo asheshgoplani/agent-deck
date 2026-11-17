@@ -18,6 +18,8 @@ type openPhoneResult struct {
 	Path      string `json:"path"`
 	URL       string `json:"url"`
 	PageID    string `json:"page_id"`
+	PageTitle string `json:"page_title"`
+	Name      string `json:"name"`
 	Kind      string `json:"kind"`
 	Phone     string `json:"phone"`
 	ElapsedMS *int64 `json:"elapsed_ms"`
@@ -80,13 +82,13 @@ func TestOpenReachesThePhonePageList(t *testing.T) {
 	// 1. HTML page in the project: queued for the Mac app, on the phone list.
 	r, out, code := run("open", page, "--json", "--wait", "0")
 	if code != 0 || r.Status != "queued" || r.Where != "phone" || r.Phone != "shown" || r.Kind != "html" ||
-		r.Session != added.ID || r.Title != "Idea board" || r.Path != page || len(r.PageID) != 16 || r.ElapsedMS == nil {
+		r.Session != added.ID || r.Title != "Idea board" || r.PageTitle != "Idea board" || r.Name != "index.html" || r.Path != page || len(r.PageID) != 16 || r.ElapsedMS == nil {
 		t.Fatalf("open html: %d %+v %s", code, r, out)
 	}
 	htmlID := r.PageID
 	// 2. Markdown page.
 	r, out, code = run("open", notes, "--json", "--wait", "0")
-	if code != 0 || r.Kind != "markdown" || r.Where != "phone" {
+	if code != 0 || r.Kind != "markdown" || r.Where != "phone" || r.PageTitle != "Notes" || r.Name != "notes.md" {
 		t.Fatalf("open md: %d %+v %s", code, r, out)
 	}
 	mdID := r.PageID
@@ -169,6 +171,11 @@ func TestOpenReachesThePhonePageList(t *testing.T) {
 	r, out, code = run("open", "--last", "--json", "--wait", "0")
 	if code != 0 || r.Status != "queued" || r.URL != "https://example.com/plan" || r.Session != added.ID || r.Title != "Idea board" {
 		t.Fatalf("last: %d %+v %s", code, r, out)
+	}
+	// Opening a file again keeps its page id, so a phone showing it can refresh.
+	r, out, code = run("open", page, "--json", "--wait", "0")
+	if code != 0 || r.PageID != htmlID {
+		t.Fatalf("re-open must keep page id %s: %d %+v %s", htmlID, code, r, out)
 	}
 	// --last for a session with no page: exit 2 with code no_page.
 	out, errOut, code := runAgentDeckEnv(t, home, "", []string{"SSH_CONNECTION=test"}, "open", "--last", "--session", empty.ID, "--json")

@@ -107,6 +107,10 @@ func TestRenderMarkdownIsSafeAndPhoneSized(t *testing.T) {
 			t.Fatalf("missing %q in\n%s", want, doc)
 		}
 	}
+	// Table cells keep whole words: the table scrolls inside .tbl instead.
+	if !strings.Contains(doc, "th,td{") || !strings.Contains(doc, "overflow-wrap:normal") {
+		t.Fatalf("table cells must not break words:\n%s", doc)
+	}
 	if strings.Contains(doc, "<script>") || strings.Contains(doc, "javascript:") {
 		t.Fatalf("unsafe markup survived:\n%s", doc)
 	}

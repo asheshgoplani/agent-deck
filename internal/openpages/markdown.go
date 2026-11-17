@@ -53,7 +53,7 @@ hr{border:0;border-top:1px solid var(--line);margin:1.5em 0}
 img{max-width:100%;height:auto}
 .tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;min-width:100%;font-size:.95em}
-th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal}
 th{background:var(--code)}
 `
 

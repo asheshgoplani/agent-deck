@@ -72,7 +72,7 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID, then the calling tmux session)")
 	browserProfile := fs.String("browser-profile", "", "Browser panel profile in the app (optional; letters, digits, '.', '_', '-', at most 64, no leading '.')")
 	wait := fs.Duration("wait", openAckTimeout, "how long to wait for the app to acknowledge before reporting Queued (at most 2m0s)")
-	jsonOut := fs.Bool("json", false, "print one JSON object: {status, where, session, title, path, url, page_id, kind, phone, elapsed_ms}")
+	jsonOut := fs.Bool("json", false, "print one JSON object: {status, where, session, title, path, url, page_id, page_title, name, kind, phone, elapsed_ms}")
 	last := fs.Bool("last", false, "open the newest page this session opened again (exit 2 when it has none)")
 	list := fs.Bool("list", false, "list the pages this session opened, newest first (with --json)")
 	show := fs.String("show", "", "print one opened page as a self-contained HTML document (--json: with metadata)")
@@ -205,13 +205,15 @@ type openResult struct {
 	Path      string `json:"path"`
 	URL       string `json:"url"`
 	PageID    string `json:"page_id"`
+	PageTitle string `json:"page_title"`
+	Name      string `json:"name"`
 	Kind      string `json:"kind"`
 	Phone     string `json:"phone"`
 	ElapsedMS int64  `json:"elapsed_ms"`
 }
 
 func openResultJSON(inst *session.InstanceData, req MacappOpenRequest, page openpages.Page, phone string, acknowledged bool, elapsed time.Duration) openResult {
-	r := openResult{Status: "queued", Session: inst.ID, Title: inst.Title, Path: req.Path, URL: req.URL, PageID: page.ID, Kind: page.Kind, Phone: phone, ElapsedMS: elapsed.Milliseconds()}
+	r := openResult{Status: "queued", Session: inst.ID, Title: inst.Title, Path: req.Path, URL: req.URL, PageID: page.ID, PageTitle: page.Title, Name: page.Name, Kind: page.Kind, Phone: phone, ElapsedMS: elapsed.Milliseconds()}
 	if acknowledged {
 		r.Status = "opened"
 	}
@@ -223,6 +225,11 @@ func openResultJSON(inst *session.InstanceData, req MacappOpenRequest, page open
 		r.Where = "phone"
 	default:
 		r.Where = "mac"
+	}
+	if r.Name == "" && req.Path != "" {
+		// Mac-only (outside the roots): still name the page for the caller.
+		r.Name = filepath.Base(req.Path)
+		r.PageTitle = r.Name
 	}
 	if r.Kind == "" {
 		if req.URL != "" {
