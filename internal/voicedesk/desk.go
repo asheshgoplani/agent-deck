@@ -159,6 +159,7 @@ func (d *Desk) Do(ctx context.Context, req Request) (Result, error) {
 		d.Store.Sweep()
 	}
 	r, err := d.do(ctx, req)
+	r.DryRun = req.DryRun // also on the not-mine paths
 	if scrub(&r) && r.Confirm != nil {
 		// a question whose words held a secret is not asked: a yes to a
 		// prompt he did not hear must not act
@@ -592,7 +593,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 		refuse(&r, RefusedOtherPerson, otherLine(res.Person))
 		return r, nil
 	case resolvedNotFound:
-		if p.Soft || talkLike(q.words) || anyCodeNoun(q.words, q.roman) {
+		if p.Soft || talkLike(q.words) || anyCodeNoun(q) {
 			return notMine(p.Lang), nil
 		}
 		refuse(&r, RefusedNotFound, "I found no session of yours called "+strings.TrimSpace(q.raw)+".")

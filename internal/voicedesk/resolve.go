@@ -362,7 +362,7 @@ func genericOnlyQ(q nameQuery) bool {
 		if nameNoise[w] {
 			continue
 		}
-		if !isCodeNoun(w, q.roman[i]) {
+		if !isCodeNoun(w, q.roman[i], q.deva[i]) {
 			return false
 		}
 		content++

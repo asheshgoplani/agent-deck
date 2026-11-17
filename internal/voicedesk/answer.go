@@ -17,6 +17,7 @@ var (
 	yesAnswers = foldPhrases("yes", "yes send", "yes send it", "haan", "haan bhejo", "haan ji", "ji haan",
 		"send it", "bhej do", "yes switch", "haa", "han", "haa bhejo", "han bhejo", "haan bhej do", "bhejdo", "han ji", "ji han",
 		"okay", "ok", "yeah", "yep", "sure", "yes please", "go ahead", "theek hai", "thik hai", "ji", "bhejo", "haan haan",
+		"do it", "kar do", "haan kar do", "yes do it", "ok send", "okay send it",
 		"ہاں", "جی ہاں", "ہاں بھیجو", "ہاں جی", "हाँ", "हां", "हाँ भेजो", "हां भेजो", "हाँ जी", "जी हाँ", "भेज दो")
 	noAnswers = foldPhrases("no", "cancel", "nahin", "nahi", "nahee", "rehne do", "rahne do", "mat bhejo",
 		"nope", "no thanks", "mat karo", "nahin bhejo", "stop it", "نہیں", "رہنے دو", "مت بھیجو", "नहीं", "नहि", "रहने दो", "मत भेजो")
