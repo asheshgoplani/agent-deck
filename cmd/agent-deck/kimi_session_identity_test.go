@@ -5,7 +5,68 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func TestKimiInitialMessageSessionStartPublishesBinding(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_INSTANCE_ID", "kimi-first-binding")
+	t.Setenv("AGENTDECK_TOOL", "kimi")
+	t.Setenv("AGENTDECK_HOOK_GENERATION", "current")
+	workspace := t.TempDir()
+	if err := os.MkdirAll(getHooksDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	control, err := json.Marshal(hookGenerationControl{Generation: "current", InitialMessagePending: true, CwdRoots: []string{workspace}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(getHooksDir(), "kimi-first-binding.generation.json"), control, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := json.Marshal(hookStatusFile{Status: "running", Event: "agentdeck_spawn_seed", HookGeneration: "current", InitialMessagePending: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusPath := filepath.Join(getHooksDir(), "kimi-first-binding.json")
+	if err := os.WriteFile(statusPath, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"hook_event_name": "SessionStart",
+		"session_id":      "native-first",
+		"client_type":     "kimi_code_cli",
+		"cwd":             workspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runHookHandlerWith(t, string(payload))
+
+	statusData, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statusFile hookStatusFile
+	if err := json.Unmarshal(statusData, &statusFile); err != nil {
+		t.Fatal(err)
+	}
+	if statusFile.Event != "SessionStart" || statusFile.SessionID != "native-first" || !statusFile.InitialMessagePending {
+		t.Fatalf("first SessionStart status = %+v, want binding with initial message pending", statusFile)
+	}
+	status := session.HookStatus{
+		Status: statusFile.Status, SessionID: statusFile.SessionID, Event: statusFile.Event,
+		UpdatedAt: time.Unix(statusFile.Timestamp, 0), Cwd: statusFile.Cwd, ClientType: statusFile.ClientType,
+	}
+	inst := session.NewInstanceWithTool("kimi-first-binding", workspace, "kimi")
+	inst.UpdateHookStatus(&status)
+	if inst.KimiSessionID != "native-first" {
+		t.Fatalf("first SessionStart bound %q, want native-first", inst.KimiSessionID)
+	}
+}
 
 func TestKimiForeignCwdSidecarDoesNotReplaceParent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

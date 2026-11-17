@@ -1099,7 +1099,7 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 			}
 		}
 		// StartWithMessage stays running until the agent-level completion edge.
-		if (eventKey == "onsessionstart" || (kimiEvent && eventKey == "sessionstart")) && control.InitialMessagePending {
+		if eventKey == "onsessionstart" && control.InitialMessagePending {
 			return false
 		}
 		control.NextSequence++
