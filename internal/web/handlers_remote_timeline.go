@@ -135,24 +135,26 @@ func (s *Server) handleRemoteSessionTimeline(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeRemoteOffline, "remotes not scanned yet")
 		return
 	}
-	known, online, tool := false, false, ""
+	listed, known, online, tool := false, false, false, ""
 	for _, remote := range fleet.Remotes {
 		if remote.Name != name {
 			continue
 		}
-		online = remote.Online
+		listed, online = true, remote.Online
 		for _, inst := range remote.Sessions {
 			if inst.ID == id {
 				known, tool = true, inst.Tool
 			}
 		}
 	}
-	if !known {
-		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "remote session not found")
+	// Offline first: a remote whose first scan failed lists no sessions, and
+	// a saved chat on it is unreachable for now, not gone.
+	if listed && !online {
+		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeRemoteOffline, "remote is offline")
 		return
 	}
-	if !online {
-		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeRemoteOffline, "remote is offline")
+	if !known {
+		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "remote session not found")
 		return
 	}
 	if opts.AgentID != "" && session.RowsHarness(tool) != "claude" {

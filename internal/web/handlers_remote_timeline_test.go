@@ -32,7 +32,11 @@ type fakeRemoteRunner struct {
 
 func (f *fakeRemoteRunner) RunReadIO(ctx context.Context, _ io.Reader, stdout, _ io.Writer, unsupported []byte, _ bool, args ...string) error {
 	if f.hold != nil {
-		f.started <- struct{}{}
+		select {
+		case f.started <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		select {
 		case <-f.hold:
 			_, err := io.WriteString(stdout, f.stdout)
@@ -256,6 +260,22 @@ func TestRemoteSessionTimeline_LocalRecallOff(t *testing.T) {
 	setLocalRecall(t, false)
 	rr := getRemoteTimeline(srv, "/api/remotes/mac/sessions/remote-1/timeline")
 	wantAPIError(t, rr, http.StatusServiceUnavailable, "RECALL_DISABLED")
+	if runner.args != nil {
+		t.Fatalf("the remote was asked: %v", runner.args)
+	}
+}
+
+// A remote whose scan failed before it ever listed sessions is offline, so a
+// saved chat on it answers 503, not 404.
+func TestRemoteSessionTimeline_OfflineWithoutSessions(t *testing.T) {
+	setLocalRecall(t, true)
+	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{snapshot: session.RemoteFleetSnapshot{
+		ObservedAt: time.Now(),
+		Remotes:    []session.RemoteFleetRemote{{Name: "mac", Issue: "unavailable", Sessions: []session.RemoteSessionInfo{}}},
+	}}})
+	runner := &fakeRemoteRunner{}
+	srv.remoteTimelineRunner = func(string) (remoteTimelineRunner, error) { return runner, nil }
+	wantAPIError(t, getRemoteTimeline(srv, "/api/remotes/mac/sessions/remote-1/timeline"), http.StatusServiceUnavailable, "REMOTE_OFFLINE")
 	if runner.args != nil {
 		t.Fatalf("the remote was asked: %v", runner.args)
 	}
