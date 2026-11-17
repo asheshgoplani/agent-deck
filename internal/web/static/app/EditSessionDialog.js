@@ -19,6 +19,7 @@ import { menuModelSignal } from './dataModel.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
 import { addToast } from './toasts.js'
+import { backdropDismiss } from './uiState.js'
 import { displayLabelForTool, resolveEditSessionPickerTools } from './pickerTools.js'
 
 // Build PATCH body from form state. Only includes fields that differ from
@@ -142,11 +143,10 @@ export function EditSessionDialog() {
     editSessionDialogSignal.value = null
     setSeededFor(null)
   }
-  const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const submitDisabled = submitting || !title.trim()
 
   return html`
-    <div class="overlay" onClick=${handleBackdropClick} data-testid="edit-session-dialog">
+    <div class="overlay" ...${backdropDismiss(close)} data-testid="edit-session-dialog">
       <form class="dialog" onClick=${e => e.stopPropagation()} onSubmit=${handleSubmit}>
         <div class="dh">
           <span class="kicker">EDIT</span>
