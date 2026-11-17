@@ -99,6 +99,18 @@ func remoteCommandArgs(args []string) ([]string, error) {
 				return nil, err
 			}
 			return append([]string(nil), args...), nil
+		case "voice":
+			// Read-only snapshot of the remote's voice state (`voice state
+			// [--json]`): the Mac app reads it when it starts following a
+			// host. relay, mirror-in and result-publish never travel.
+			if len(args) > 1 && args[1] == "state" {
+				for _, a := range args[2:] {
+					if a != "--json" && a != "-json" {
+						return nil, fmt.Errorf("unsupported option %q for remote voice state (only --json)", a)
+					}
+				}
+				return append([]string(nil), args...), nil
+			}
 		case "recall":
 			// Read-only forwards over the remote's own index; the option
 			// set is closed (remoteRecallOptions) so a delivery (--into),

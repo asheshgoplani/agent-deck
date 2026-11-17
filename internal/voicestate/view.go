@@ -12,7 +12,10 @@ type View struct {
 	Target     *ViewTarget `json:"target"`
 	Source     string      `json:"source"`
 	From       string      `json:"from"`
-	UpdatedAt  string      `json:"updatedAt"`
+	// Origin is the machine of the daemon as frames name it (voice.state
+	// "origin"): a mirror's "from"; "" for this machine's own file or none.
+	Origin    string `json:"origin"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // ViewTarget is the session the mic is on; Host "" means this machine.
@@ -41,6 +44,7 @@ func NewView(s *State, now time.Time) View {
 	}
 	if s.Source == SourceMirror {
 		v.From = "mirror"
+		v.Origin = s.From
 	}
 	if s.UpdatedAt > 0 {
 		v.UpdatedAt = rfc3339(time.UnixMilli(s.UpdatedAt))

@@ -120,3 +120,20 @@ func TestWriteMirror_RoundTrip(t *testing.T) {
 		t.Fatalf("off mirror read as live: %+v", got)
 	}
 }
+
+// voice state --json names the daemon's machine for a mirror (as voice.state
+// frames do) and "" for this machine's own file.
+func TestNewView_Origin(t *testing.T) {
+	now := time.Now()
+	m := NewView(&State{On: true, Phase: "listening", From: "laptop", Source: SourceMirror}, now)
+	if m.Origin != "laptop" || m.From != "mirror" {
+		t.Fatalf("mirror view origin %q from %q", m.Origin, m.From)
+	}
+	l := NewView(&State{On: true, Phase: "listening", From: "laptop", Source: SourceCurrent}, now)
+	if l.Origin != "" || l.From != "local" {
+		t.Fatalf("local view origin %q from %q", l.Origin, l.From)
+	}
+	if off := NewView(nil, now); off.Origin != "" {
+		t.Fatalf("off view origin %q", off.Origin)
+	}
+}
