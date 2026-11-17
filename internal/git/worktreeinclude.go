@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	ignore "github.com/sabhiram/go-gitignore"
@@ -19,6 +22,11 @@ import (
 //
 // Matches Claude Code Desktop behavior:
 // https://code.claude.com/docs/en/worktrees#copy-gitignored-files-into-worktrees
+//
+// The walk starts at the static directory prefix of each pattern, not at the
+// repository root. A narrow pattern such as ".claude/rules/personal/" therefore
+// costs one subtree walk. Repositories with large build output hold millions of
+// ignored entries, and a full walk there takes about a minute.
 func ProcessWorktreeInclude(repoDir, worktreePath string, stderr io.Writer) error {
 	includePath := filepath.Join(repoDir, ".worktreeinclude")
 	f, err := os.Open(includePath)
@@ -40,7 +48,7 @@ func ProcessWorktreeInclude(repoDir, worktreePath string, stderr io.Writer) erro
 
 	matcher := ignore.CompileIgnoreLines(patterns...)
 
-	candidates, err := findCandidates(repoDir, matcher)
+	candidates, err := findCandidates(repoDir, patterns, matcher)
 	if err != nil {
 		return err
 	}
@@ -86,39 +94,131 @@ func parseWorktreeInclude(r io.Reader) ([]string, error) {
 	return patterns, scanner.Err()
 }
 
-func findCandidates(repoDir string, matcher *ignore.GitIgnore) ([]string, error) {
+// findCandidates returns the repository-relative paths that match patterns.
+func findCandidates(repoDir string, patterns []string, matcher *ignore.GitIgnore) ([]string, error) {
+	return walkIncludeRoots(os.DirFS(repoDir), walkRoots(patterns), matcher)
+}
+
+// walkRoots returns the repository-relative directories that hold a possible
+// match. It returns ["."] when any pattern can match at any depth, such as a
+// bare name like ".env" or a pattern whose first segment contains a glob.
+func walkRoots(patterns []string) []string {
+	var roots []string
+	for _, pattern := range patterns {
+		if strings.HasPrefix(pattern, "!") {
+			// A negation cannot add a match, so it cannot widen the walk.
+			continue
+		}
+		root, ok := staticWalkRoot(pattern)
+		if !ok {
+			return []string{"."}
+		}
+		roots = append(roots, root)
+	}
+	return pruneNestedRoots(roots)
+}
+
+// staticWalkRoot returns the deepest directory of a pattern that holds no glob
+// metacharacter. A directory-only pattern returns the directory itself; a file
+// pattern returns the directory that holds the file.
+//
+// ok is false when the pattern can match at any depth: a bare name, a negation,
+// or one whose first path segment contains a glob.
+func staticWalkRoot(pattern string) (string, bool) {
+	if strings.HasPrefix(pattern, "!") {
+		return "", false
+	}
+	anchored := strings.HasPrefix(pattern, "/")
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(pattern, "/"), "/")
+	if trimmed == "" {
+		return "", false
+	}
+	segments := strings.Split(trimmed, "/")
+	globAt := -1
+	for i, segment := range segments {
+		if strings.ContainsAny(segment, "*?[\\") {
+			globAt = i
+			break
+		}
+	}
+	switch {
+	case globAt == 0:
+		return "", false
+	case globAt > 0:
+		return strings.Join(segments[:globAt], "/"), true
+	case len(segments) == 1 && !anchored:
+		// A bare name matches at any depth.
+		return "", false
+	case len(segments) == 1:
+		return ".", true
+	default:
+		return strings.Join(segments[:len(segments)-1], "/"), true
+	}
+}
+
+// pruneNestedRoots removes duplicates and drops any root that sits inside
+// another root.
+func pruneNestedRoots(roots []string) []string {
+	if len(roots) == 0 {
+		return nil
+	}
+	sort.Strings(roots)
+	if roots[0] == "." {
+		// A full walk already covers every other root.
+		return []string{"."}
+	}
+	kept := roots[:1]
+	for _, root := range roots[1:] {
+		last := kept[len(kept)-1]
+		if root == last || strings.HasPrefix(root, last+"/") {
+			continue
+		}
+		kept = append(kept, root)
+	}
+	return kept
+}
+
+// walkIncludeRoots collects the paths under roots that match matcher. It stops
+// at repository boundaries and never leaves the given roots.
+func walkIncludeRoots(rootFS fs.FS, roots []string, matcher *ignore.GitIgnore) ([]string, error) {
 	var candidates []string
-	err := filepath.Walk(repoDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
+	for _, root := range roots {
+		if _, err := fs.Stat(rootFS, root); err != nil {
+			continue
 		}
-		rel, _ := filepath.Rel(repoDir, path)
-		if rel == "." {
-			return nil
-		}
-		if info.IsDir() {
-			if rel == ".git" {
-				return filepath.SkipDir
+		err := fs.WalkDir(rootFS, root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
 			}
-			// Don't descend into nested worktrees or submodules — each has its
-			// own .git entry. Otherwise the walk recurses into agent-deck's own
-			// worktree output dir (e.g. .worktrees/) and copies an ever-growing
-			// nested forest of every other worktree's files into the new one.
-			if path != repoDir {
-				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
-					return filepath.SkipDir
+			if p == "." {
+				return nil
+			}
+			if d.IsDir() {
+				if d.Name() == ".git" {
+					return fs.SkipDir
+				}
+				// Don't descend into nested worktrees or submodules — each has
+				// its own .git entry. Otherwise the walk recurses into
+				// agent-deck's own worktree output dir (e.g. .worktrees/) and
+				// copies an ever-growing nested forest of every other
+				// worktree's files into the new one.
+				if _, statErr := fs.Stat(rootFS, path.Join(p, ".git")); statErr == nil {
+					return fs.SkipDir
 				}
 			}
-		}
-		if matcher.MatchesPath(rel) {
-			candidates = append(candidates, rel)
-			if info.IsDir() {
-				return filepath.SkipDir
+			if matcher.MatchesPath(p) {
+				candidates = append(candidates, p)
+				if d.IsDir() {
+					return fs.SkipDir
+				}
 			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		return nil
-	})
-	return candidates, err
+	}
+	return candidates, nil
 }
 
 func filterGitignored(repoDir string, candidates []string) ([]string, error) {

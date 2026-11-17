@@ -2,11 +2,15 @@ package git
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	ignore "github.com/sabhiram/go-gitignore"
 )
 
 // Behavior: .worktreeinclude with a matching gitignored file copies it to the worktree.
@@ -348,6 +352,144 @@ func TestProcessWorktreeInclude_NoFileIsNoop(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("expected no output, got stderr=%q", stderr.String())
+	}
+}
+
+func TestWalkRoots(t *testing.T) {
+	tests := []struct {
+		name     string
+		patterns []string
+		want     []string
+	}{
+		{
+			name:     "bare name matches at any depth",
+			patterns: []string{".env"},
+			want:     []string{"."},
+		},
+		{
+			name:     "leading glob matches at any depth",
+			patterns: []string{"*.env"},
+			want:     []string{"."},
+		},
+		{
+			name:     "directory pattern prunes to its parent",
+			patterns: []string{".claude/rules/personal/"},
+			want:     []string{".claude/rules"},
+		},
+		{
+			name:     "file pattern prunes to its directory",
+			patterns: []string{"config/local.json"},
+			want:     []string{"config"},
+		},
+		{
+			name:     "anchored file pattern prunes to its directory",
+			patterns: []string{"/config/local.json"},
+			want:     []string{"config"},
+		},
+		{
+			name:     "glob inside a static prefix keeps the prefix",
+			patterns: []string{"config/*/local.json"},
+			want:     []string{"config"},
+		},
+		{
+			name:     "nested roots collapse",
+			patterns: []string{"a/b/c.txt", "a/b/d.txt"},
+			want:     []string{"a/b"},
+		},
+		{
+			name:     "a full walk wins over pruned roots",
+			patterns: []string{"config/x.txt", ".env"},
+			want:     []string{"."},
+		},
+		{
+			name:     "a negation does not widen the walk",
+			patterns: []string{"config/x.txt", "!secret"},
+			want:     []string{"config"},
+		},
+		{
+			name:     "a negation alone keeps no roots",
+			patterns: []string{"!secret"},
+			want:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := walkRoots(tt.patterns)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("walkRoots(%q) = %q, want %q", tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+// recordingFS records every path the walk opens, so a test can prove the walk
+// stayed inside the pattern roots.
+type recordingFS struct {
+	fsys   fs.FS
+	opened []string
+}
+
+func (r *recordingFS) Open(name string) (fs.File, error) {
+	r.opened = append(r.opened, name)
+	return r.fsys.Open(name)
+}
+
+// Regression: a narrow pattern must not walk the rest of the checkout. Large
+// build directories hold millions of entries, and a full walk there takes
+// about a minute (duolingo-android: 7.9M entries, 45s with find).
+func TestWalkIncludeRoots_StaysInsidePatternRoot(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFile(t, filepath.Join(repoDir, ".claude", "rules", "personal", "rule.md"), "RULE")
+	writeFile(t, filepath.Join(repoDir, "build", "output.bin"), "BIG")
+	writeFile(t, filepath.Join(repoDir, "build", "nested", "deep.bin"), "BIG")
+
+	patterns := []string{".claude/rules/personal/"}
+	matcher := ignore.CompileIgnoreLines(patterns...)
+
+	rec := &recordingFS{fsys: os.DirFS(repoDir)}
+	candidates, err := walkIncludeRoots(rec, walkRoots(patterns), matcher)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !reflect.DeepEqual(candidates, []string{".claude/rules/personal/rule.md"}) {
+		t.Errorf("candidates = %q, want [.claude/rules/personal/rule.md]", candidates)
+	}
+	for _, opened := range rec.opened {
+		if opened == "build" || strings.HasPrefix(opened, "build/") {
+			t.Errorf("walk opened %q, which is outside the pattern root", opened)
+		}
+	}
+}
+
+// A bare name matches at any depth, so the walk falls back to the repository
+// root and still finds the file in a subdirectory.
+func TestProcessWorktreeInclude_BareNameMatchesAtAnyDepth(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), ".env\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "sub", ".env"), "NESTED=1")
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), ".env\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(worktreeDir, "sub", ".env"))
+	if err != nil {
+		t.Fatalf("expected sub/.env to be copied: %v", err)
+	}
+	if string(got) != "NESTED=1" {
+		t.Errorf("got %q, want %q", got, "NESTED=1")
 	}
 }
 
