@@ -159,6 +159,36 @@ func TestKimiForeignCwdDoesNotRebind(t *testing.T) {
 	}
 }
 
+func TestKimiForeignCwdRestoresHookStatus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workspace := t.TempDir()
+	inst := NewInstanceWithTool("kimi-foreign-status", workspace, "kimi")
+	base := time.Now().Add(-time.Minute).Truncate(time.Second)
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "parent", Event: "SessionStart",
+		ClientType: "kimi_code_cli", Cwd: workspace, UpdatedAt: base,
+	})
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "nested", Event: "SessionStart",
+		ClientType: "kimi_code_cli", Cwd: t.TempDir(), UpdatedAt: base.Add(time.Second),
+	})
+	evidence := inst.StatusEvidence()
+	if evidence.HookStatus != "waiting" || evidence.HookEvent != "SessionStart" || !evidence.HookAt.Equal(base) {
+		t.Fatalf("foreign Kimi hook status stuck on parent: %+v", evidence)
+	}
+
+	ownedAt := base.Add(2 * time.Second)
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "rotated", Event: "SessionStart",
+		ClientType: "kimi_code_cli", Cwd: filepath.Join(workspace, "subdir"), UpdatedAt: ownedAt,
+	})
+	evidence = inst.StatusEvidence()
+	if inst.KimiSessionID != "rotated" || evidence.HookStatus != "running" || !evidence.HookAt.Equal(ownedAt) {
+		t.Fatalf("owned Kimi update was not applied: id=%q evidence=%+v", inst.KimiSessionID, evidence)
+	}
+}
+
 func TestKimiStatusFileFlowsThroughWatcherAndBinding(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	hooksDir := GetHooksDir()

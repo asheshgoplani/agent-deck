@@ -166,16 +166,16 @@ func (i *Instance) persistKimiSessionBinding(sessionID string, detectedAt time.T
 
 // bindKimiSessionFromHook binds only the managed process's SessionStart payload.
 // Caller holds i.mu.
-func (i *Instance) bindKimiSessionFromHook(sessionID, hookSource, hookEvent, clientType, cwd string, at time.Time) {
+func (i *Instance) bindKimiSessionFromHook(sessionID, hookSource, hookEvent, clientType, cwd string, at time.Time) bool {
 	if sessionID == "" || hookSource != "hook_payload" || hookEvent != "SessionStart" || clientType != "kimi_code_cli" {
-		return
+		return true
 	}
 	if sessionID == i.KimiSessionID {
 		if at.After(i.kimiBoundAt) {
 			i.kimiBoundAt = at
 			i.persistKimiSessionBinding(sessionID, at)
 		}
-		return
+		return true
 	}
 	if i.hermesHookCwdIsForeign(cwd) {
 		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
@@ -183,10 +183,10 @@ func (i *Instance) bindKimiSessionFromHook(sessionID, hookSource, hookEvent, cli
 			Source: hookSource, OldID: i.KimiSessionID, Candidate: sessionID,
 			HookEvent: hookEvent, Reason: "candidate_cwd_outside_instance_paths",
 		})
-		return
+		return false
 	}
 	if i.KimiSessionID != "" && at.Before(i.kimiBoundAt) {
-		return
+		return true
 	}
 	action := "bind"
 	if i.KimiSessionID != "" {
@@ -200,4 +200,5 @@ func (i *Instance) bindKimiSessionFromHook(sessionID, hookSource, hookEvent, cli
 	i.KimiSessionID = sessionID
 	i.kimiBoundAt = at
 	i.persistKimiSessionBinding(sessionID, at)
+	return true
 }
