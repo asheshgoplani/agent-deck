@@ -2970,10 +2970,10 @@
    "name": "kimi-hooks install|uninstall|status",
    "surface": "CLI",
    "automated_test": "",
-   "user_verified": "",
-   "evidence": "",
-   "status": "pending",
-   "notes": "Kimi-specific user-level verification is pending; no Kimi evidence has been captured."
+   "user_verified": "2026-11-18",
+   "evidence": "evidence/cli/ev-CAP-CLI-050-CLI.txt",
+   "status": "verified",
+   "notes": "Real Kimi 2.4.1 in offline Docker: NOT INSTALLED -> install/idempotent reinstall -> INSTALLED; Kimi doctor accepts the config; uninstall -> NOT INSTALLED and doctor remains valid."
   },
   {
    "id": "CAP-TUI-001",
