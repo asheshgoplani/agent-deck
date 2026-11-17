@@ -118,7 +118,11 @@ func TestPiSendSource_RealCLI(t *testing.T) {
 			if body != want+"\r" {
 				t.Errorf("exact pane input = %q, want %q", body, want+"\r")
 			}
-			t.Logf("Pi -> %s: tagged=%v; source envelope and body reached real tmux; exactly one submit", targetTool, receipt.Tagged)
+			// Only claim success when the assertions above actually held: on a red
+			// run this line used to contradict the failure just reported.
+			if !t.Failed() {
+				t.Logf("Pi -> %s: tagged=%v; source envelope and body reached real tmux; exactly one submit", targetTool, receipt.Tagged)
+			}
 		})
 	}
 }
