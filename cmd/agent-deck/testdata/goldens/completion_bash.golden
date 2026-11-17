@@ -167,7 +167,7 @@ _agent_deck_completion() {
             ;;
         voice)
             if ((cword == start + 1)); then
-                COMPREPLY=($(compgen -W 'state relay mirror-in result-publish do' -- "$cur"))
+                COMPREPLY=($(compgen -W 'state relay mirror-in result-publish do home' -- "$cur"))
                 return 0
             fi
             sub=${words[start+1]}

@@ -80,7 +80,7 @@ func handleVoice(profile string, args []string) {
 	}
 }
 
-func runVoiceState(_ string, args []string, stdout, stderr io.Writer) int {
+func runVoiceState(profile string, args []string, stdout, stderr io.Writer) int {
 	asJSON := false
 	for _, a := range args {
 		switch a {
@@ -99,6 +99,9 @@ func runVoiceState(_ string, args []string, stdout, stderr io.Writer) int {
 	st := voicestate.NewReader(voicestate.DefaultDir()).Poll()
 	if asJSON {
 		b, err := json.Marshal(voicestate.NewView(st, now))
+		if err == nil {
+			b, err = withVoiceHome(b, profile)
+		}
 		if err != nil {
 			fmt.Fprintln(stderr, "voice state:", err)
 			return 1
