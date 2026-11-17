@@ -30,6 +30,7 @@ func (a *patternAdder) add(intent, lang string, soft, all bool, specs ...string)
 // ("find where we talked about the invoice").
 func grammarEarly() []pattern {
 	var a patternAdder
+	grammarTodos(&a)
 	// workers of a session
 	a.add(IntentWorkers, LangEN, true,
 		false,

@@ -46,6 +46,8 @@ func (d *Desk) runPhase2(ctx context.Context, req Request, r Result, p Parsed) (
 		return d.search(ctx, r, p)
 	case IntentLaunch:
 		return d.launch(ctx, req, r, p)
+	case IntentTodoAdd, IntentTodoList, IntentTodoDone:
+		return d.runTodo(ctx, req, r, p)
 	}
 	return r, errors.New("not a phase 2 intent: " + p.Intent)
 }

@@ -349,6 +349,17 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 			r.Say = sayCancelled
 			return r, true, nil
 		}
+		if p.Action == actionTodoDone {
+			r := d.base(IntentChoice, lang, req.DryRun)
+			td, ok := d.todos()
+			if !ok {
+				refuse(&r, RefusedExpired, sayTooLateDone)
+				return r, true, nil
+			}
+			c := p.Choices[idx]
+			r, err := d.tickOff(ctx, req, r, td, Todo{ID: c.ID, Text: c.Title})
+			return r, true, err
+		}
 		r, err := d.chosen(ctx, req, p, p.Choices[idx], lang)
 		return r, true, err
 	}
@@ -611,7 +622,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 			d.list(&r, mine, errs)
 		}
 		return r, nil
-	case IntentNext, IntentSearch, IntentLaunch:
+	case IntentNext, IntentSearch, IntentLaunch, IntentTodoAdd, IntentTodoList, IntentTodoDone:
 		return d.runPhase2(ctx, req, r, p)
 	}
 	// talk in a soft desk form is decided from the words, before any
