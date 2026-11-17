@@ -1109,6 +1109,12 @@ type WebSettings struct {
 	// AllowedHosts adds exact HTTP Host names for reverse proxies and Serve.
 	// An entry may include a port; no port allows any port on that host.
 	AllowedHosts []string `toml:"allowed_hosts,omitempty"`
+
+	// StreamRemotes names remotes whose own session.status frames
+	// `agent-deck web` republishes on this host's bus with data.host, so GET
+	// /events/state carries their status too (followed over ssh). Default
+	// empty (off). The --stream-remotes flag, when given, replaces it.
+	StreamRemotes []string `toml:"stream_remotes,omitempty"`
 	// MutationsEnabled controls whether POST/PATCH/DELETE endpoints accept
 	// requests. nil (omitted) defaults to true. Forced off by --read-only.
 	MutationsEnabled *bool `toml:"mutations_enabled,omitempty"`

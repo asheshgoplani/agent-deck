@@ -345,22 +345,36 @@ func extractNoTuiFlag(args []string) (bool, []string) {
 	return noTui, remaining
 }
 
-// streamRemoteNames checks --stream-remotes against the configured remotes.
+// streamRemoteNames is --stream-remotes, else [web] stream_remotes, each
+// checked against the configured remotes.
 func streamRemoteNames(raw string) ([]string, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
 	cfg, err := session.LoadUserConfig()
 	if err != nil {
-		return nil, fmt.Errorf("loading config for --stream-remotes: %w", err)
+		return nil, fmt.Errorf("loading config for stream remotes: %w", err)
+	}
+	return resolveStreamRemotes(raw, cfg)
+}
+
+// resolveStreamRemotes: the flag wins over the config key; an unknown
+// remote name is an error naming where it came from.
+func resolveStreamRemotes(flagValue string, cfg *session.UserConfig) ([]string, error) {
+	source := "--stream-remotes"
+	var raw []string
+	if strings.TrimSpace(flagValue) != "" {
+		raw = strings.Split(flagValue, ",")
+	} else if cfg != nil {
+		raw, source = cfg.Web.StreamRemotes, "[web] stream_remotes"
 	}
 	var names []string
-	for _, n := range strings.Split(raw, ",") {
+	for _, n := range raw {
 		if n = strings.TrimSpace(n); n == "" {
 			continue
 		}
+		if cfg == nil {
+			return nil, fmt.Errorf("%s: remote %q not found", source, n)
+		}
 		if _, ok := cfg.Remotes[n]; !ok {
-			return nil, fmt.Errorf("--stream-remotes: remote %q not found", n)
+			return nil, fmt.Errorf("%s: remote %q not found", source, n)
 		}
 		names = append(names, n)
 	}
