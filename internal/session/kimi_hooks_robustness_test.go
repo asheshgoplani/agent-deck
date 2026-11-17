@@ -43,6 +43,44 @@ func TestKimiHooksMalformedConfigFailsWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestKimiHooksInlineArrayRejectedWithoutMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config string
+	}{
+		{name: "empty", config: "hooks = []\n"},
+		{name: "nonempty", config: "hooks = [{ event = \"SessionStart\", command = \"agent-deck hook-handler\" }]\n"},
+	} {
+		for _, operation := range []string{"install", "uninstall"} {
+			t.Run(tc.name+"/"+operation, func(t *testing.T) {
+				dir := t.TempDir()
+				configPath := filepath.Join(dir, "config.toml")
+				original := []byte(tc.config)
+				if err := os.WriteFile(configPath, original, 0o600); err != nil {
+					t.Fatal(err)
+				}
+
+				var err error
+				if operation == "install" {
+					_, err = session.InjectKimiHooks(dir)
+				} else {
+					_, err = session.RemoveKimiHooks(dir)
+				}
+				if err == nil || !strings.Contains(err.Error(), "inline array") {
+					t.Fatalf("inline array error = %v, want clear rejection", err)
+				}
+				got, readErr := os.ReadFile(configPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if string(got) != string(original) {
+					t.Fatalf("rejected inline array changed config:\n got %q\nwant %q", got, original)
+				}
+			})
+		}
+	}
+}
+
 func TestKimiHooksPreserveSymlink(t *testing.T) {
 	dir := t.TempDir()
 	link := filepath.Join(dir, "config.toml")

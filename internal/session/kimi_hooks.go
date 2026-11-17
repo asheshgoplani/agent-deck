@@ -190,8 +190,12 @@ func readKimiConfig(configPath string) (map[string]any, []byte, error) {
 	if len(data) == 0 {
 		return raw, data, nil
 	}
-	if err := toml.Unmarshal(data, &raw); err != nil {
+	metadata, err := toml.Decode(string(data), &raw)
+	if err != nil {
 		return nil, nil, fmt.Errorf("parse Kimi config.toml: %w", err)
+	}
+	if metadata.Type("hooks") == "Array" {
+		return nil, nil, fmt.Errorf("parse Kimi config.toml: hooks must use [[hooks]] entries, not an inline array")
 	}
 	return raw, data, nil
 }
@@ -363,6 +367,12 @@ func replaceAgentDeckKimiHooks(data []byte, hooks []any) ([]byte, error) {
 }
 
 func writeKimiConfig(configPath string, data []byte) error {
+	if len(data) > 0 {
+		var config map[string]any
+		if err := toml.Unmarshal(data, &config); err != nil {
+			return fmt.Errorf("validate Kimi config.toml: %w", err)
+		}
+	}
 	if err := atomicfile.WriteFile(configPath, data, 0o600); err != nil {
 		return fmt.Errorf("write Kimi config.toml: %w", err)
 	}
