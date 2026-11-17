@@ -220,14 +220,20 @@ var grammar = func() []pattern {
 		"{name} kya kar raha|rahi|rahe hai|hain",
 	)
 	// read
-	add(IntentRead, LangEN, true,
+	// explicit read forms: an unknown short name is "not found"
+	add(IntentRead, LangEN, false,
 		"read [me] [the] [last|latest] reply|answer|message of|from {name}",
 		"read [me] {name} [last|latest] reply|answer|message",
+	)
+	add(IntentRead, LangHI, false,
+		"{name} ka|ki|ke [last|aakhri|akhri] jawab|reply|message padho|sunao|batao",
+	)
+	// bare forms overlap with talk ("read the readme", "what did the tests say")
+	add(IntentRead, LangEN, true,
 		"what did {name} say|reply|answer|write", "what was {name} [last|latest] reply|answer|message",
 		"read out {name}", "read {name}",
 	)
 	add(IntentRead, LangHI, true,
-		"{name} ka|ki|ke [last|aakhri|akhri] jawab|reply|message padho|sunao|batao",
 		"{name} ne kya bola|kaha|likha", "{name} ne kya jawab diya",
 	)
 	// tell
@@ -369,8 +375,10 @@ func tailPunct(sentence string, end int) string {
 var clauseMarkers = foldSet("please", "and", "then", "but", "because", "so", "if", "when", "while", "after", "before",
 	"with", "it", "is", "are", "was", "were", "be", "been", "do", "does", "did", "check", "fix", "run", "make", "see",
 	"look", "try", "tell", "ask", "read", "find", "show", "why", "how", "what", "where", "which", "who", "we", "i",
-	"you", "they", "aur", "phir", "lekin", "kyunki", "ki", "karo", "kar", "kare", "karna", "karke", "hai", "hain",
+	"you", "they", "aur", "phir", "lekin", "kyunki", "ki", "hai", "hain",
 	"tha", "thi", "ho", "hua", "hue", "ruk", "jaye", "jao", "dekho", "batao", "theek", "thik")
+
+// ("kar", "karo" are not markers: "kaar" is how a car is heard)
 
 // Ordinary nouns of coding talk. A name made only of these that matches no
 // session is talk ("tell the build script to skip lint"), not a session.
