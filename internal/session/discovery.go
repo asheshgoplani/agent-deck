@@ -166,8 +166,10 @@ func FilterByQuery(instances []*Instance, query string) []*Instance {
 		"stopped": StatusStopped,
 	}
 
-	// If query matches a status filter exactly, filter by status
-	if status, ok := statusFilters[query]; ok {
+	// If query matches a status filter exactly, filter by status. The help
+	// overlay and tui-reference.md write the words as "/waiting": the search
+	// box is opened with "/", so a second, typed slash is accepted too.
+	if status, ok := statusFilters[strings.TrimPrefix(query, "/")]; ok {
 		return filterByStatus(instances, status)
 	}
 
