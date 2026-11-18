@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -123,8 +124,8 @@ func TestRecallTimelineKindsCLI(t *testing.T) {
 	if len(want) == 0 || !reflect.DeepEqual(gotIDs, want) {
 		t.Fatalf("--kinds user,assistant: %v want %v", gotIDs, want)
 	}
-	if got.NextCursor == nil || *got.NextCursor != full.ThroughCursor {
-		t.Fatalf("next_cursor %v, want the unfiltered through_cursor %q", got.NextCursor, full.ThroughCursor)
+	if got.NextCursor == nil || *got.NextCursor != got.ThroughCursor || cursorPosition(t, *got.NextCursor) != cursorPosition(t, full.ThroughCursor) {
+		t.Fatalf("next_cursor %v, want the unfiltered through_cursor's position %q", got.NextCursor, full.ThroughCursor)
 	}
 	if len(stdout) >= len(mustRead(t, filepath.Join("testdata", "recall-timeline-default", "full.json"))) {
 		t.Fatalf("filtered payload is not smaller: %d bytes", len(stdout))
@@ -180,6 +181,23 @@ func TestRecallTimelineKindsCLI(t *testing.T) {
 			t.Fatalf("help does not document %s: %s %s", flag, stdout, stderr)
 		}
 	}
+}
+
+// cursorPosition is a rows cursor without the dropped-row list a filtered
+// read adds: the file, offset, anchor and parser state it resumes from.
+func cursorPosition(t *testing.T, cursor string) string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		t.Fatalf("cursor %q: %v", cursor, err)
+	}
+	var c map[string]any
+	if err := json.Unmarshal(raw, &c); err != nil {
+		t.Fatalf("cursor %q: %v", cursor, err)
+	}
+	delete(c, "d")
+	b, _ := json.Marshal(c)
+	return string(b)
 }
 
 func mustRead(t *testing.T, path string) []byte {

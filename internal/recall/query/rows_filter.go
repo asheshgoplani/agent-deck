@@ -55,12 +55,68 @@ func (o RowsOptions) keeps(row Row) bool {
 
 func pending(row Row) bool { return row.Finished != nil && !*row.Finished }
 
-// keepsUpdate reports whether an update patch for a row the client already
-// holds may cross the wire. A patch rarely names its row's kind; one that
-// names a kind outside the allowlist is dropped, and the body filter does
-// not apply (a patch carries only the fields that changed).
-func (o RowsOptions) keepsUpdate(patch Row) bool {
+// keepsUpdate reports whether an update patch for a row outside this read
+// may cross the wire. A patch for a row an earlier filtered read dropped
+// (an id in dropped) never does: the client does not hold that row. A patch
+// that names a kind outside the allowlist is dropped too. Other patches are
+// for rows the client holds; the body filter does not apply to them (a
+// patch carries only the fields that changed).
+func (o RowsOptions) keepsUpdate(patch Row, dropped []string) bool {
+	if slices.Contains(dropped, patch.ID) {
+		return false
+	}
 	return len(o.Kinds) == 0 || patch.Kind == "" || slices.Contains(o.Kinds, patch.Kind)
+}
+
+// maxDroppedOpen bounds the dropped open ids a cursor carries. Past it the
+// oldest are forgotten, and their late results may cross the wire again
+// (a client ignores them), which keeps the cursor small.
+const maxDroppedOpen = 64
+
+// open reports whether a row may still change through update patches: a
+// tool call waiting for its result or a message still queued.
+func open(row Row) bool { return pending(row) || (row.Queued != nil && *row.Queued) }
+
+// droppedOpen appends the open rows the filter drops, keeping the newest
+// maxDroppedOpen ids.
+func droppedOpen(ids []string, rows []Row, opts RowsOptions) []string {
+	if !opts.Filtered() {
+		return nil
+	}
+	for _, r := range rows {
+		if open(r) && !opts.keeps(r) && !slices.Contains(ids, r.ID) {
+			ids = append(ids, r.ID)
+		}
+	}
+	if len(ids) > maxDroppedOpen {
+		ids = ids[len(ids)-maxDroppedOpen:]
+	}
+	return ids
+}
+
+// stillDropped is the dropped-open list for the cursor after a resumed
+// read: earlier ids whose rows did not close or vanish in this read, plus
+// the open rows this read dropped.
+func stillDropped(prev []string, set *rowSet, opts RowsOptions) []string {
+	if !opts.Filtered() {
+		return nil
+	}
+	var ids []string
+	for _, id := range prev {
+		if slices.Contains(set.removed, id) {
+			continue
+		}
+		if j, ok := set.updateIdx[id]; ok {
+			u := set.updates[j]
+			closedTool := u.Finished != nil && *u.Finished
+			delivered := u.Queued != nil && !*u.Queued
+			if closedTool || delivered {
+				continue
+			}
+		}
+		ids = append(ids, id)
+	}
+	return droppedOpen(ids, set.list(), opts)
 }
 
 // FilterRows keeps the rows that pass opts' filter, in order. With no
@@ -131,13 +187,13 @@ func (k *keptCounter) touch(s *rowSet, f RowFrame) {
 	k.in[id] = now
 }
 
-func filterUpdates(rows []Row, opts RowsOptions) []Row {
+func filterUpdates(rows []Row, opts RowsOptions, dropped []string) []Row {
 	if !opts.Filtered() || len(rows) == 0 {
 		return rows
 	}
 	var out []Row
 	for _, r := range rows {
-		if opts.keepsUpdate(r) {
+		if opts.keepsUpdate(r, dropped) {
 			out = append(out, r)
 		}
 	}

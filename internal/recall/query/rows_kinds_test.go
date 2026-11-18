@@ -31,6 +31,19 @@ func keepRows(rows []Row, kinds []string, skipEmpty bool) []Row {
 	return out
 }
 
+// samePosition reports whether two cursors resume at the same point of the
+// same file. A filtered cursor also lists the open rows it dropped (D).
+func samePosition(t *testing.T, a, b string) bool {
+	t.Helper()
+	ca, errA := decodeRowsCursor(a)
+	cb, errB := decodeRowsCursor(b)
+	if errA != nil || errB != nil {
+		t.Fatalf("decode cursors: %v %v", errA, errB)
+	}
+	ca.D, cb.D = nil, nil
+	return reflect.DeepEqual(ca, cb)
+}
+
 func idsOf(rows []Row) []string {
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
@@ -71,7 +84,7 @@ func TestRowsKindsFilter(t *testing.T) {
 				if !reflect.DeepEqual(got.Turns, want) {
 					t.Fatalf("%+v: got %v want %v", tc, idsOf(got.Turns), idsOf(want))
 				}
-				if got.NextCursor == "" || got.NextCursor != got.ThroughCursor || got.ThroughCursor != full.ThroughCursor {
+				if got.NextCursor == "" || got.NextCursor != got.ThroughCursor || !samePosition(t, got.ThroughCursor, full.ThroughCursor) {
 					t.Fatalf("%+v: next_cursor %q through %q (unfiltered through %q)", tc, got.NextCursor, got.ThroughCursor, full.ThroughCursor)
 				}
 			}
@@ -425,5 +438,63 @@ func TestRowsSkipEmptyBodyKeepsPendingToolCall(t *testing.T) {
 		if len(done.Turns) != 0 {
 			t.Fatalf("%+v: finished call with no output kept: %v", o, idsOf(done.Turns))
 		}
+	}
+}
+
+// TestRowsKindsDroppedOpenIDsInCursor: a filtered cursor remembers the open
+// rows it dropped (a tool call waiting for its result) so the next --since
+// page can drop their result patches; the id leaves the cursor once the
+// result has been swallowed, the list is bounded, and an unfiltered cursor
+// never carries it.
+func TestRowsKindsDroppedOpenIDsInCursor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	call := func(id string) string {
+		return `{"type":"assistant","uuid":"a` + id + `","message":{"id":"m` + id + `","role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-11-18T10:00:00Z"}` + "\n"
+	}
+	result := func(id string) string {
+		return `{"type":"user","uuid":"r` + id + `","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"out"}]},"timestamp":"2026-11-18T10:00:01Z"}` + "\n"
+	}
+	if err := os.WriteFile(path, []byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"go"},"timestamp":"2026-11-18T09:59:59Z"}`+"\n"+call("toolu_a")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := RowsSource{Harness: "claude", Path: path}
+	kinds := []string{"user", "assistant"}
+	dropped := func(cursor string) []string {
+		c, err := decodeRowsCursor(cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.D
+	}
+	first, err := ReadRows(context.Background(), src, RowsOptions{Kinds: kinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dropped(first.NextCursor); !reflect.DeepEqual(got, []string{"toolu_a"}) {
+		t.Fatalf("open dropped ids after page 1: %v", got)
+	}
+	if plain, _ := ReadRows(context.Background(), src, RowsOptions{}); dropped(plain.ThroughCursor) != nil {
+		t.Fatalf("unfiltered cursor carries dropped ids: %v", dropped(plain.ThroughCursor))
+	}
+	reviewAppend(t, path, result("toolu_a"))
+	next, err := ReadRows(context.Background(), src, RowsOptions{Since: first.NextCursor, Kinds: kinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Updates) != 0 || dropped(next.NextCursor) != nil {
+		t.Fatalf("result patch %v sent, or closed id kept in cursor %v", next.Updates, dropped(next.NextCursor))
+	}
+
+	var many strings.Builder
+	for i := 0; i < maxDroppedOpen+10; i++ {
+		many.WriteString(call(fmt.Sprintf("toolu_%03d", i)))
+	}
+	reviewAppend(t, path, many.String())
+	capped, err := ReadRows(context.Background(), src, RowsOptions{Since: next.NextCursor, Kinds: kinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dropped(capped.NextCursor); len(got) != maxDroppedOpen || got[len(got)-1] != fmt.Sprintf("toolu_%03d", maxDroppedOpen+9) {
+		t.Fatalf("dropped ids not capped to the newest %d: %d ids, last %v", maxDroppedOpen, len(got), got[len(got)-1:])
 	}
 }

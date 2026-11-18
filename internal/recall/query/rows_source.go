@@ -108,6 +108,12 @@ type rowsCursor struct {
 	A string         `json:"a"`
 	S rowParserState `json:"s"`
 	B string         `json:"b,omitempty"` // exclusive row boundary for older-history paging
+	// D lists open rows (a tool call waiting for its result, a queued
+	// message) that a --kinds / --skip-empty-body read dropped. Their later
+	// update patches name no kind, so a resumed filtered read drops patches
+	// for these ids instead of sending them to a client that never held
+	// the row. Only filtered reads set it; an unfiltered cursor is unchanged.
+	D []string `json:"d,omitempty"`
 }
 
 func encodeRowsCursor(c rowsCursor) string {
@@ -375,6 +381,7 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		cursor = opts.Before
 	}
 	var before *rowsCursor
+	var dropped []string
 	if cursor != "" {
 		c, err := decodeRowsCursor(cursor)
 		if err != nil {
@@ -390,6 +397,7 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		}
 		f, size, start, st = file, info.Size(), c.O, c.S
 		set.keepForeign = true
+		dropped = c.D
 		if opts.Before != "" {
 			before = &c
 			size, start = c.O, 0
@@ -440,7 +448,7 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		return tl, err
 	}
 	tl.Turns = FilterRows(set.list(), opts)
-	tl.Updates, tl.Removed = filterUpdates(set.updates, opts), set.removed
+	tl.Updates, tl.Removed = filterUpdates(set.updates, opts, dropped), set.removed
 	if src.Harness == "claude" {
 		tl.Turns = filterChildren(withClaudeSidechains(ctx, src.Path, tl.Turns), opts)
 		tl.Updates = filterChildren(withClaudeSidechains(ctx, src.Path, tl.Updates), opts)
@@ -449,7 +457,7 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 	if err != nil {
 		return tl, err
 	}
-	tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, S: p.st})
+	tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, S: p.st, D: stillDropped(dropped, set, opts)})
 	if opts.Since == "" && len(tl.Turns) > 0 {
 		tl.BeforeCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, B: tl.Turns[0].ID})
 	}
@@ -484,6 +492,7 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 			return tl, err
 		}
 		rows := set.list()
+		drop := droppedOpen(nil, rows, opts)
 		boundaryFound := before == nil || before.B == ""
 		if before != nil && before.B != "" {
 			for i, row := range rows {
@@ -513,7 +522,7 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 				return tl, err
 			}
 			tl.Turns = rows
-			tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, S: p.st})
+			tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, S: p.st, D: drop})
 			if len(rows) > 0 {
 				tl.BeforeCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, B: rows[0].ID})
 			}
