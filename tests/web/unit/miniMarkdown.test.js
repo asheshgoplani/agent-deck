@@ -70,6 +70,15 @@ describe('miniMarkdown conversation constructs', () => {
 })
 
 describe('miniMarkdown list fences and numbering', () => {
+  it.each([
+    ['1.', '  ', '<ol><li>item more</li></ol>'],
+    ['-', ' ', '<ul><li>item more</li></ul>'],
+    ['10.', '   ', '<ol start="10"><li>item more</li></ol>'],
+  ])('keeps adjacent plain text below the content column in a %s item', (marker, indent, expected) => {
+    const c = mount(marker + ' item\n' + indent + 'more')
+    expect(c.firstChild.innerHTML).toBe(expected)
+  })
+
   it('renders a language fence as a code block inside the item', () => {
     const c = mount('- Run:\n  ```sh\n  make build\n    make ci\n  ```')
     const code = c.querySelector('li > pre.markdown-code > code')

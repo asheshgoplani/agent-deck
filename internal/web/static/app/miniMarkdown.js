@@ -167,11 +167,11 @@ function parseList(lines, start, first, depth) {
       items.push(item)
       text = match.text
     } else {
-      if (raw.search(/[^ ]/) < item.contentIndent) break
       text = raw.trimStart()
     }
-    index++
     const marker = fenceMarker(text)
+    if (!match && raw.search(/[^ ]/) < (marker ? item.contentIndent : indent + 1)) break
+    index++
     if (marker) {
       const [block, next] = parseFence(lines, index, marker, item.contentIndent)
       appendItemBlock(item, block)
