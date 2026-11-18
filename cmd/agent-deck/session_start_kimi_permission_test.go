@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,11 +44,12 @@ func TestSessionStartKimiPermissionFlags(t *testing.T) {
 					t.Fatal(err)
 				}
 				argsFile := filepath.Join(home, "kimi-args")
-				if err := os.WriteFile(filepath.Join(binDir, "kimi"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$KIMI_ARGS_FILE\"\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
+				fakeKimi := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellescape.Quote(argsFile) + "\nwhile :; do sleep 1; done\n"
+				if err := os.WriteFile(filepath.Join(binDir, "kimi"), []byte(fakeKimi), 0o755); err != nil {
 					t.Fatal(err)
 				}
 				env := append([]string{}, mode.env...)
-				env = append(env, "PATH="+binDir+":"+os.Getenv("PATH"), "KIMI_ARGS_FILE="+argsFile)
+				env = append(env, "PATH="+binDir+":"+os.Getenv("PATH"))
 
 				addArgs := []string{"add", "-t", "kimi-start", "-c", "kimi", "--no-parent", "--json"}
 				addArgs = append(addArgs, tc.initialArgs...)
@@ -68,7 +70,7 @@ func TestSessionStartKimiPermissionFlags(t *testing.T) {
 					var err error
 					data, err = os.ReadFile(argsFile)
 					return err == nil && len(data) > 0
-				}, 60*time.Second, 10*time.Millisecond, "fake Kimi did not write its arguments")
+				}, 15*time.Second, 10*time.Millisecond, "fake Kimi did not write its arguments")
 				var gotArgs []string
 				if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
 					gotArgs = strings.Split(trimmed, "\n")
