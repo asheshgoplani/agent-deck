@@ -145,7 +145,8 @@ func confirmPrompt(kind, intent string, target *Target) string {
 }
 
 // showWithoutText rebuilds the desk's show from id, title, host and status
-// per item and a known kind: no free text reaches the frame.
+// per item and a known kind: no free text reaches the frame. For to-dos
+// (title is his text) only id and status are kept.
 func showWithoutText(in ResultShow) ResultShow {
 	out := ResultShow{Kind: "none", Items: make([]ResultItem, 0, len(in.Items))}
 	switch in.Kind {
@@ -153,6 +154,11 @@ func showWithoutText(in ResultShow) ResultShow {
 		out.Kind = in.Kind
 	}
 	for _, it := range in.Items {
+		if in.Kind == "todos" {
+			// a to-do's title is his dictated text: id and status only.
+			out.Items = append(out.Items, ResultItem{ID: it.ID, Status: it.Status})
+			continue
+		}
 		out.Items = append(out.Items, ResultItem{ID: it.ID, Title: it.Title, Host: it.Host, Status: it.Status})
 	}
 	return out
