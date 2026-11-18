@@ -30,6 +30,9 @@ type Row struct {
 	WaitingSince string `json:"waiting_since"`
 	CreatedAt    string `json:"created_at"`
 	Archived     bool   `json:"archived"`
+	// Tool is the session's harness (claude, codex, shell ...): the voice
+	// desk guards sends into agent tools against open menus.
+	Tool string `json:"tool,omitempty"`
 }
 
 // Source is one place to ask: a local profile or a remote host.

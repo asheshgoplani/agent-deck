@@ -123,7 +123,7 @@ func remoteRows(infos []session.RemoteSessionInfo, profile string) []Row {
 	for _, i := range infos {
 		rows = append(rows, Row{ID: i.ID, Title: i.Title, Group: i.Group, Profile: profile,
 			Status: i.Status, Substate: i.Substate, SubstateDetail: i.SubstateDetail,
-			LastActivityAt: i.LastActivityAt, WaitingSince: i.WaitingSince, CreatedAt: i.CreatedAt, Archived: i.Archived})
+			LastActivityAt: i.LastActivityAt, WaitingSince: i.WaitingSince, CreatedAt: i.CreatedAt, Archived: i.Archived, Tool: i.Tool})
 	}
 	return rows
 }
