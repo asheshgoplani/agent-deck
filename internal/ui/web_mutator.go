@@ -638,6 +638,14 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 	var postCommits []func()
 
 	m.h.instancesMu.Lock()
+	// The CLI's rename guard, before any field is written: a title another
+	// session holds at the same location is refused (*session.TitleConflictError).
+	if title, ok := updates[session.FieldTitle]; ok {
+		if err := session.CheckTitleConflict(m.h.instances, inst, title); err != nil {
+			m.h.instancesMu.Unlock()
+			return nil, false, err
+		}
+	}
 	for field, value := range updates {
 		oldValue, postCommit, err := session.SetField(inst, field, value, nil)
 		if err != nil {

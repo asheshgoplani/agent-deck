@@ -369,7 +369,12 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, sess
 		// session.MutationError signals client-side bad input; "not found"
 		// signals an unknown id. Everything else is a 500.
 		var mutErr *session.MutationError
+		var titleErr *session.TitleConflictError
 		switch {
+		case errors.As(err, &titleErr):
+			// The title is taken at this session's location: the refusal
+			// `agent-deck rename` gives, with its ALREADY_EXISTS code.
+			writeAPIError(w, http.StatusConflict, ErrCodeAlreadyExists, err.Error())
 		case errors.As(err, &mutErr):
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		case strings.HasPrefix(err.Error(), "session not found"):
