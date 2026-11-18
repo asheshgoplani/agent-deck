@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"os"
 	"os/exec"
+	"runtime"
 	"testing"
 )
 
@@ -19,7 +21,7 @@ func TestRunClipCmdHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := runClipCmd(ctx, "cat", nil, "cancelled clipboard copy")
+	err := runClipCmd(ctx, "cat", nil, nil, "cancelled clipboard copy")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("runClipCmd with a cancelled context = %v, want context.Canceled", err)
 	}
@@ -151,5 +153,59 @@ func TestCopy_FallbackNoMethodAvailable(t *testing.T) {
 	// If we get here, verify the error is about no method
 	if err.Error() != "no clipboard method available (install pbcopy, xclip, xsel, or wl-copy)" {
 		t.Logf("got expected error variant: %v", err)
+	}
+}
+
+// pbcopy decodes stdin by the locale it inherits and falls back to Mac Roman
+// without one, so "ö" pasted as "√∂" when agent-deck ran without LANG set.
+func TestPbcopyEnvForcesUTF8(t *testing.T) {
+	for _, env := range [][]string{nil, {"LC_ALL=C", "LANG=C"}, {"LC_ALL=en_US.UTF-8"}} {
+		got := pbcopyEnv(env)
+		if len(got) == 0 || got[len(got)-1] != "LC_ALL=en_US.UTF-8" {
+			t.Fatalf("pbcopyEnv(%q) = %q, want LC_ALL=en_US.UTF-8 last", env, got)
+		}
+	}
+}
+
+func TestRunClipCmdAppliesEnv(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh on PATH")
+	}
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("AGENTDECK_CLIP_SENTINEL", "kept")
+	err := runClipCmd(context.Background(), "sh", []string{"-c", `test "$LC_ALL" = en_US.UTF-8 && test "$AGENTDECK_CLIP_SENTINEL" = kept`}, pbcopyEnv(os.Environ()), "")
+	if err != nil {
+		t.Fatalf("clipboard command did not see the forced UTF-8 locale and the inherited env: %v", err)
+	}
+}
+
+func TestCopyNativeGivesPbcopyTheUTF8Env(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("pbcopy path is macOS-only")
+	}
+	t.Setenv("LC_ALL", "C")
+	var gotName string
+	var gotEnv []string
+	old := runClipCmdFn
+	runClipCmdFn = func(_ context.Context, name string, _, env []string, _ string) error {
+		gotName, gotEnv = name, env
+		return nil
+	}
+	t.Cleanup(func() { runClipCmdFn = old })
+
+	if _, err := copyNative(context.Background(), "för"); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "pbcopy" || len(gotEnv) == 0 || gotEnv[len(gotEnv)-1] != "LC_ALL=en_US.UTF-8" {
+		t.Fatalf("copyNative ran %q with env tail %q, want pbcopy with LC_ALL=en_US.UTF-8 last", gotName, gotEnv)
+	}
+}
+
+func TestPbcopyEnvLeavesInputUntouched(t *testing.T) {
+	in := make([]string, 1, 2)
+	in[0] = "LANG=C"
+	_ = pbcopyEnv(in)
+	if extra := in[:2][1]; extra != "" {
+		t.Fatalf("pbcopyEnv wrote %q into the caller's backing array", extra)
 	}
 }
