@@ -718,7 +718,7 @@ agent-deck ls  # Alias
 ### remove - Remove session
 
 ```bash
-agent-deck remove <id|title> [--force]   # a running/waiting/live idle session needs --force (exit 1 without), like session remove
+agent-deck remove <id|title> [--force]   # a session whose process is alive needs --force (exit 1 without), like session remove
 agent-deck rm  # Alias
 ```
 

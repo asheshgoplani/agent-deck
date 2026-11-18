@@ -1,13 +1,13 @@
 Usage: agent-deck remove <id|title> [--force]
 
 Remove a session by ID or title: kills its process, removes its
-worktree and deletes it from the registry. A session that is still
-running, waiting or idle with a live process is refused (exit 1)
-unless --force is given, the same guard as 'session remove'.
+worktree and deletes it from the registry. A session whose process
+is still alive (and that is not stopped or errored) is refused
+(exit 1) unless --force is given, the same guard as 'session remove'.
 
 Options:
   -force
-    	Kill and remove a session that is still running/waiting/idle (destructive)
+    	Kill and remove a session whose process is still alive (destructive)
   -json
     	Output as JSON
   -q	Minimal output (short)

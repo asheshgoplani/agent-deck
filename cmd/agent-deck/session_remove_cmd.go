@@ -32,10 +32,10 @@ func handleSessionRemove(profile string, args []string) {
 		fmt.Println("Usage: agent-deck session remove <id|title> [options]")
 		fmt.Println("       agent-deck session remove --all-errored [options]")
 		fmt.Println()
-		fmt.Println("Remove a session from the registry. By default only stopped or")
-		fmt.Println("errored sessions, or an idle one with no live process (e.g. never")
-		fmt.Println("started), may be removed; use --force to bypass. 'remove' uses the")
-		fmt.Println("same guard.")
+		fmt.Println("Remove a session from the registry. A session whose process is still")
+		fmt.Println("alive (and that is not stopped or errored) is refused (exit 1) unless")
+		fmt.Println("--force is given; a row with no live process is removed. 'remove'")
+		fmt.Println("uses the same guard.")
 		fmt.Println()
 		fmt.Println("This is registry-only by default: Claude transcripts under")
 		fmt.Println("~/.claude/projects/ are preserved. Pass --prune-worktree to also")
@@ -59,6 +59,10 @@ func handleSessionRemove(profile string, args []string) {
 	}
 
 	if *allErrored {
+		if fs.NArg() > 0 {
+			out.Error(fmt.Sprintf("--all-errored takes no session argument, got: %s", strings.Join(fs.Args(), " ")), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
 		removeAllErrored(out, storage, instances, groups, *pruneWorktree, *force)
 		return
 	}
@@ -129,18 +133,16 @@ func isRemovableStatus(s session.Status) bool {
 }
 
 // needsForceToRemove reports whether removing inst would kill a session that
-// may still be working. Stopped and errored rows never need --force. An idle
-// row needs it only while its tmux session is alive: a session that was added
-// but never started (or whose pane is gone) reads idle and has nothing to
-// kill. Running, waiting, starting and queued rows always need it.
+// may still be working: its tmux session is alive and it is not stopped or
+// errored. A row whose process is gone (never started, a pane that died, a
+// CLI start whose row kept 'starting') has nothing to kill, whatever status
+// it last stored, so it is removable without --force; refusing it was a dead
+// end because `session stop` answers "not running" for it.
 func needsForceToRemove(inst *session.Instance) bool {
 	if isRemovableStatus(inst.Status) {
 		return false
 	}
-	if inst.Status == session.StatusIdle {
-		return inst.Exists()
-	}
-	return true
+	return inst.Exists()
 }
 
 // refuseRunningRemoval is the one guard `remove`/`rm` and `session remove`
