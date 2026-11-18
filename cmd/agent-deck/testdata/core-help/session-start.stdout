@@ -23,7 +23,7 @@ Options:
   -quiet
     	Minimal output
   -yolo
-    	Enable YOLO mode when starting Gemini, Codex, Hermes or Kimi sessions
+    	Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)
 
 Examples:
   agent-deck session start my-project
