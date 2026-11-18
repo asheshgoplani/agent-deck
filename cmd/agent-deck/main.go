@@ -1998,7 +1998,11 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 	case 0:
 		// A new group: the path `group create` would store for this name, so
 		// the session and the group created for it share one path.
-		if canonical := newGroupPath(groupTree, groupSelector); canonical != "" {
+		canonical, err := newGroupPath(groupTree, groupSelector)
+		if err != nil {
+			return groupSelector, err
+		}
+		if canonical != "" {
 			return canonical, nil
 		}
 		return groupSelector, nil
@@ -2013,8 +2017,10 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 // newGroupPath returns the path a group named by a selector that matches no
 // group gets: session.CanonicalGroupPath, level by level, where a level that
 // matches an existing group's path in another case is that group ("big
-// org/New" lands under an existing "Big-Org").
-func newGroupPath(groupTree *session.GroupTree, selector string) string {
+// org/New" lands under an existing "Big-Org"). A level that matches several
+// existing groups in another case is an error listing them, as for a whole
+// selector, instead of a further group next to them.
+func newGroupPath(groupTree *session.GroupTree, selector string) (string, error) {
 	path := ""
 	for _, level := range strings.Split(session.CanonicalGroupPath(selector), "/") {
 		if level == "" {
@@ -2028,18 +2034,23 @@ func newGroupPath(groupTree *session.GroupTree, selector string) string {
 					folded = append(folded, existing)
 				}
 			}
-			if len(folded) == 1 {
+			switch len(folded) {
+			case 0:
+			case 1:
 				candidate = folded[0]
+			default:
+				sort.Strings(folded)
+				return "", fmt.Errorf("group %q is ambiguous: %s; use the full path", selector, strings.Join(folded, ", "))
 			}
 		}
 		path = candidate
 	}
-	return path
+	return path, nil
 }
 
 // derivedGroupPath returns the group path a new session gets when no group is
 // named and derived is the name taken from its project directory
-// (session.DerivedGroupPath). A group stored under exactly that name is kept:
+// (session.GroupPathForProject). A group stored under exactly that name is kept:
 // older sessions may be in it. Otherwise it is the path `group create` would
 // store, so a directory "My Proj" makes the one group "My-Proj", not that plus
 // a second group at the raw name.

@@ -354,6 +354,13 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		exitCLI(1)
 	}
 	if *startupQuery != "" && queryGroup != "" {
+		if !explicitGroupProvided {
+			// The directory-derived group keeps the directory's name as its
+			// display name, as on the path without a startup query.
+			if raw := session.GroupPathForProject(path); raw != "" && session.CanonicalGroupPath(raw) == session.CanonicalGroupPath(queryGroup) {
+				typedGroup = raw
+			}
+		}
 		sessionGroup = queryGroup
 		explicitGroupProvided = true
 	}
@@ -509,6 +516,14 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	}
 	if parentInstance != nil {
 		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
+		// The group taken from the project directory follows the -g path
+		// rule here too: "My Proj" is the group "My-Proj", named "My Proj",
+		// not a second group at the raw name.
+		if !explicitGroupProvided && cwdDerivedGroup != "" && sessionGroup == cwdDerivedGroup &&
+			(!inheritParentGroup || parentInstance.GroupPath == "") {
+			typedGroup = cwdDerivedGroup
+			sessionGroup = derivedLaunchGroup(profile, cwdDerivedGroup)
+		}
 	}
 
 	// Default title to folder name
