@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 )
 
@@ -107,7 +108,7 @@ func copyNative(ctx context.Context, text string) (string, error) {
 
 	switch p {
 	case platform.PlatformMacOS:
-		return "pbcopy", runClipCmdFn(ctx, "pbcopy", nil, pbcopyEnv(os.Environ()), text)
+		return "pbcopy", runClipCmdFn(ctx, "pbcopy", nil, pbcopyEnv(childenv.ForLaunch("")), text)
 
 	case platform.PlatformWSL1, platform.PlatformWSL2:
 		return "clip.exe", runClipCmd(ctx, "clip.exe", nil, nil, text)

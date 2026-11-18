@@ -172,9 +172,10 @@ func TestRunClipCmdAppliesEnv(t *testing.T) {
 		t.Skip("no sh on PATH")
 	}
 	t.Setenv("LC_ALL", "C")
-	err := runClipCmd(context.Background(), "sh", []string{"-c", `test "$LC_ALL" = en_US.UTF-8`}, pbcopyEnv(os.Environ()), "")
+	t.Setenv("AGENTDECK_CLIP_SENTINEL", "kept")
+	err := runClipCmd(context.Background(), "sh", []string{"-c", `test "$LC_ALL" = en_US.UTF-8 && test "$AGENTDECK_CLIP_SENTINEL" = kept`}, pbcopyEnv(os.Environ()), "")
 	if err != nil {
-		t.Fatalf("clipboard command did not see the forced UTF-8 locale: %v", err)
+		t.Fatalf("clipboard command did not see the forced UTF-8 locale and the inherited env: %v", err)
 	}
 }
 
