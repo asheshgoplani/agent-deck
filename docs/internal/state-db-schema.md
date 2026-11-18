@@ -81,10 +81,14 @@ A `.schema` dump from a freshly initialised database contains these objects:
 | `cost_events` | table | v3 | Anthropic API cost ledger per session |
 | `watchers` | table | v5 | Background watcher definitions (Gmail, Telegram, …) |
 | `watcher_events` | table | v5 | Per-watcher event log with dedup + routing |
+| `status_changes` | table | additive (no version bump) | When each session's status last changed and to what (needs-me `waiting_since`) |
 | `sqlite_sequence` | table | auto | Created by SQLite for the `AUTOINCREMENT` on `watcher_events.id` |
 | `idx_cost_events_session` | index | v3 | Lookup cost events by session |
 | `idx_cost_events_timestamp` | index | v3 | Sort/scan cost events by time |
 | `idx_watcher_events_watcher_created` | index | v5 | Recent events per watcher |
+| `status_changes_after_update` | trigger | additive | Stamps `status_changes` when `instances.status` changes |
+| `status_changes_after_insert` | trigger | additive | Stamps `status_changes` when an inserted row's status differs from its stamp |
+| `status_changes_after_delete` | trigger | additive | Drops the stamp of a deleted `instances` row |
 
 The remaining sections document each user-managed table.
 
@@ -472,6 +476,68 @@ Go mapping: `statedb.WatcherEventRow`.
 
 ---
 
+### `status_changes`
+
+When each session's status last changed, and to what. A fresh process
+(`list --json`, and through it `needs-me`) reads it to tell how long a
+session has been waiting; the tmux tracker's own time is in memory and only
+known to the process that watched the change. Defined in
+`internal/statedb/status_changes.go`, created by `migrateStatusChanges`
+on every `Migrate` with `CREATE ... IF NOT EXISTS`, so it is additive and
+`SchemaVersion` does not move. These are the first SQL triggers in the
+schema.
+
+```sql
+CREATE TABLE status_changes (
+    id         TEXT PRIMARY KEY,
+    status     TEXT NOT NULL,
+    changed_at INTEGER NOT NULL
+);
+CREATE TRIGGER status_changes_after_update
+    AFTER UPDATE OF status ON instances
+    WHEN OLD.status IS NOT NEW.status
+    BEGIN
+        INSERT OR REPLACE INTO status_changes (id, status, changed_at)
+        VALUES (NEW.id, NEW.status, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER));
+    END;
+CREATE TRIGGER status_changes_after_insert
+    AFTER INSERT ON instances
+    WHEN NEW.status IS NOT (SELECT status FROM status_changes WHERE id = NEW.id)
+    BEGIN
+        INSERT OR REPLACE INTO status_changes (id, status, changed_at)
+        VALUES (NEW.id, NEW.status, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER));
+    END;
+CREATE TRIGGER status_changes_after_delete
+    AFTER DELETE ON instances
+    BEGIN
+        DELETE FROM status_changes WHERE id = OLD.id;
+    END;
+```
+
+| Column | Type | Constraints | Meaning | Example |
+|---|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `instances.id` (no foreign key; the delete trigger keeps them in step) | `e88abcdb-...` |
+| `status` | TEXT | NOT NULL | The status the row changed to | `waiting` |
+| `changed_at` | INTEGER | NOT NULL | Unix **milliseconds** of the change, from SQLite's clock in the writing process | `1794966197932` |
+
+No Go code writes this table: the triggers cover every write path on
+`instances` (`WriteStatus`, `WriteStatusIfCurrent`, the batch status
+persist, `WriteRestartOutcome`, the full-row `INSERT OR REPLACE` save and
+the snapshot merge), and an older binary writing the same database fires
+them too. A write that keeps the status keeps the stamp.
+`INSERT OR REPLACE`'s implicit delete fires no delete trigger
+(`recursive_triggers` is off), so the insert trigger's comparison is what
+keeps a full save of an unchanged row from restamping it.
+
+Rows that existed before the table have no stamp until their next status
+change. `list --json` (`core.ListedWaitingSince`) then gives a waiting row
+its last activity time as `waiting_since`, the best time available
+(docs/voice.md). Read with `StateDB.ReadStatusChanges`.
+
+Go mapping: `statedb.StatusStamp` (`Status`, `At`).
+
+---
+
 ### `sqlite_sequence`
 
 Auto-created by SQLite the first time an `AUTOINCREMENT` column is used —
@@ -492,6 +558,7 @@ The numbered ladder lives in `internal/statedb/statedb.go` around the
 | **v5** | Added `watchers`, `watcher_events`, `idx_watcher_events_watcher_created`; later added `watcher_events.triage_session_id` |
 | **v6** | Added `instances.no_transition_notify` |
 | **v7** | Current `SchemaVersion`. Added `instances.tmux_socket_name` (issue #687, v1.7.50) and `groups.max_concurrent` (v1.9.1) |
+| *(additive)* | `status_changes` and its three triggers (`CREATE ... IF NOT EXISTS` on every open; no version bump; a downgraded binary keeps firing the triggers) |
 | **v8** *(in-flight)* | Adds `instances.title_locked` (issue #697, v1.7.52). Re-asserted on every open via `alterMigrations` even when `metadata.schema_version` is still `7` |
 
 Numbered version bumps are recorded by updating
