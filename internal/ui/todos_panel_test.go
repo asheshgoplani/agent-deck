@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -231,5 +232,54 @@ func TestTodosPanelWritesRunOffTheUpdateLoop(t *testing.T) {
 	}
 	if !strings.Contains(h.panel.View(), "Done 1") {
 		t.Fatalf("result not shown:\n%s", h.panel.View())
+	}
+}
+
+// S4: a long list scrolls: the title and the selected row stay on screen
+// and the view never grows past the terminal height.
+func TestTodosPanelLongListScrolls(t *testing.T) {
+	h := newTodosPanelHarness(t)
+	h.panel.SetSize(120, 30)
+	for i := 1; i <= 72; i++ {
+		if _, err := h.store.Add(fmt.Sprintf("item number %d", i), todos.AddOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.panel.Show()
+	for i := 0; i < 46; i++ {
+		h.press("down")
+	}
+	view := h.panel.View()
+	if n := strings.Count(view, "\n") + 1; n > 30 {
+		t.Fatalf("view is %d lines on a 30-line terminal", n)
+	}
+	for _, w := range []string{"To-dos", "> [ ]  47  item number 47", "more above"} {
+		if !strings.Contains(view, w) {
+			t.Fatalf("view lacks %q:\n%s", w, view)
+		}
+	}
+	h.press("x")
+	if it, _ := h.store.List(true); !it[len(it)-1].Done() || it[len(it)-1].ID != "47" {
+		t.Fatalf("x did not tick off the visible selected item 47: %+v", it[len(it)-1])
+	}
+	// Back at the top: the first row shows, the bottom says more below.
+	for i := 0; i < 80; i++ {
+		h.press("k")
+	}
+	view = h.panel.View()
+	if !strings.Contains(view, "> [ ]   1  item number 1") || !strings.Contains(view, "more below") {
+		t.Fatalf("top of the list:\n%s", view)
+	}
+}
+
+// N1: the key the panel was opened with (a rebound [hotkeys] todos) also
+// closes it.
+func TestTodosPanelClosesWithItsOwnKey(t *testing.T) {
+	h := newTodosPanelHarness(t)
+	h.panel.SetCloseKey("ctrl+t")
+	h.panel.Show()
+	h.panel, _ = h.panel.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	if h.panel.IsVisible() {
+		t.Fatal("the rebound key did not close the panel")
 	}
 }

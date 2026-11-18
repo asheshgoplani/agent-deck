@@ -91,6 +91,21 @@ func TestTodoAPITable(t *testing.T) {
 			{method: "GET", path: "/api/todos", wantCode: 200, wantBody: `"done":1`},
 			{method: "GET", path: "/api/todos?all=1", wantCode: 200, wantBody: `"text":"call the bank"`},
 		}},
+		{name: "undo and remove reverse a wrong tap", cfg: Config{Profile: "team-alex", WebMutations: true}, steps: []todoAPIStep{
+			{method: "POST", path: "/api/todos", body: `{"text":"call the bank"}`, wantCode: 201, wantPub: "add"},
+			{method: "POST", path: "/api/todos/1/done", wantCode: 200, wantStatus: "done", wantPub: "done"},
+			{method: "POST", path: "/api/todos/1/undo?source=mac", wantCode: 200, wantStatus: "reopened", wantBody: `"done_at":null`, wantPub: "undo"},
+			{method: "POST", path: "/api/todos/1/undo", wantCode: 200, wantStatus: "already_open"},
+			{method: "POST", path: "/api/todos/1/remove", wantCode: 200, wantStatus: "removed", wantBody: `"open":0`, wantPub: "remove"},
+			{method: "POST", path: "/api/todos/1/remove", wantCode: 404},
+			{method: "POST", path: "/api/todos/1/undo", wantCode: 404},
+			{method: "POST", path: "/api/todos/1/frobnicate", wantCode: 404},
+			{method: "GET", path: "/api/todos/1/undo", wantCode: 405},
+		}},
+		{name: "read-only refuses undo and remove", cfg: Config{ReadOnly: true}, steps: []todoAPIStep{
+			{method: "POST", path: "/api/todos/1/undo", wantCode: 403, wantBody: "READ_ONLY"},
+			{method: "POST", path: "/api/todos/1/remove", wantCode: 403, wantBody: "READ_ONLY"},
+		}},
 		{name: "bad requests", cfg: Config{WebMutations: true}, steps: []todoAPIStep{
 			{method: "POST", path: "/api/todos", body: `{"text":"  "}`, wantCode: 400},
 			{method: "POST", path: "/api/todos", body: `{"text":"x","source":"email"}`, wantCode: 400},

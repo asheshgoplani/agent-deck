@@ -3,6 +3,7 @@ package todos
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func TestPublishWritesTodoChangedOnTheProfileBus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := Change{Action: ActionAdd, Todo: Item{ID: "4", Text: "call the bank", Source: "voice", SessionID: "sess-1"}, Open: 2, By: "voice"}
+	c := NewChange(ActionAdd, Item{ID: "4", Text: "call the bank", Source: "voice", SessionID: "sess-1"}, 2, "voice")
 	got := Publish(c, profile)
 	found := false
 	for _, p := range got {
@@ -42,7 +43,7 @@ func TestPublishWritesTodoChangedOnTheProfileBus(t *testing.T) {
 		if err := json.Unmarshal(f.Data, &data); err != nil {
 			t.Fatal(err)
 		}
-		if data.Action != "add" || data.Todo.ID != "4" || data.Open != 2 || data.By != "voice" {
+		if data.Action != "add" || data.ID != "4" || data.Open != 2 || data.By != "voice" || strings.Contains(string(f.Data), "bank") {
 			t.Fatalf("frame data %s", f.Data)
 		}
 		return

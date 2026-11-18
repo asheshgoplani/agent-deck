@@ -6339,6 +6339,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.todosPanel = NewTodosPanel(h.profile)
 		}
 		h.todosPanel.SetSize(h.width, h.height)
+		h.todosPanel.SetCloseKey(h.actionKey(hotkeyTodos))
 		return h, h.todosPanel.Show()
 
 	case defaultHotkeyBindings[hotkeySessionRef]:

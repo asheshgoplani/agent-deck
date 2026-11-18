@@ -40,11 +40,10 @@ func TestDoneAgainDoesNotTickASimilarItem(t *testing.T) {
 func TestSingleWordTypoIsNotEnough(t *testing.T) {
 	s, _ := newTestStore(t)
 	mustAdd(t, s, "buy a horse")
-	if _, _, err := s.Done("house"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("done house err = %v, want ErrNotFound (one typo alone is not a match)", err)
-	}
-	if it, _, err := s.Done("buy hourse"); err != nil || it.ID != "1" {
-		t.Fatalf("done buy hourse = %+v %v; a typo next to an exact word matches", it, err)
+	for _, q := range []string{"house", "buy hourse"} {
+		if _, _, err := s.Done(q); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("done %q err = %v, want ErrNotFound (a typo is never a match)", q, err)
+		}
 	}
 }
 

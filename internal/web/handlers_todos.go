@@ -15,7 +15,9 @@ import (
 //
 //	GET  /api/todos[?all=1]       todos.ListResult
 //	POST /api/todos               {"text","source"?,"session_id"?} -> 201 todos.Result
-//	POST /api/todos/{id}/done[?source=mac]  todos.Result (done | already_done), 404 unknown id
+//	POST /api/todos/{id}/done[?source=mac]    todos.Result (done | already_done), 404 unknown id
+//	POST /api/todos/{id}/undo[?source=mac]    todos.Result (reopened | already_open), 404 unknown id
+//	POST /api/todos/{id}/remove[?source=mac]  todos.Result (removed), 404 unknown id
 //
 // Reads need the owner token like every /api route. Writes are refused in
 // read-only mode and when web mutations are off, and share the mutation
@@ -39,7 +41,7 @@ type createTodoRequest struct {
 func init() {
 	registerFeatureRoutes(func(s *Server, mux *http.ServeMux) {
 		mux.HandleFunc("/api/todos", s.handleTodos)
-		mux.HandleFunc("/api/todos/{id}/done", s.handleTodoDone)
+		mux.HandleFunc("/api/todos/{id}/{action}", s.handleTodoAction)
 	})
 }
 
@@ -97,24 +99,35 @@ func (s *Server) handleTodos(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, todos.ErrBadSource), errors.Is(err, todos.ErrBadSession):
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 			return
+		case errors.Is(err, todos.ErrNewerVersion):
+			writeAPIError(w, http.StatusConflict, ErrCodeBadRequest, err.Error())
+			return
 		case err != nil:
 			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to save the to-do list")
 			return
 		}
 		res := todos.Result{Status: todos.StatusAdded, Todo: &it, Open: store.OpenCount()}
-		todoPublish(todos.Change{Action: todos.ActionAdd, Todo: it, Open: derefOpen(res.Open), By: it.Source}, s.cfg.Profile)
+		todoPublish(todos.NewChange(todos.ActionAdd, it, derefOpen(res.Open), it.Source), s.cfg.Profile)
 		writeJSON(w, http.StatusCreated, res)
 	default:
 		writeAPIError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (s *Server) handleTodoDone(w http.ResponseWriter, r *http.Request) {
+// handleTodoAction is POST /api/todos/{id}/done|undo|remove: tick off,
+// reopen (a wrong tap on the phone) or delete one item by id.
+func (s *Server) handleTodoAction(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	switch r.PathValue("action") {
+	case todos.ActionDone, todos.ActionUndo, todos.ActionRemove:
+	default:
+		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "no such to-do action")
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "method not allowed")
 		return
@@ -140,19 +153,46 @@ func (s *Server) handleTodoDone(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to open the to-do list")
 		return
 	}
-	it, changed, err := store.Done(id)
+	action := r.PathValue("action")
+	var (
+		it      todos.Item
+		changed bool
+	)
+	switch action {
+	case todos.ActionDone:
+		it, changed, err = store.Done(id)
+	case todos.ActionUndo:
+		it, changed, err = store.Undo(id)
+	case todos.ActionRemove:
+		it, err = store.Remove(id)
+		changed = err == nil
+	}
 	switch {
 	case errors.Is(err, todos.ErrNotFound):
 		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "no to-do with that id")
+		return
+	case errors.Is(err, todos.ErrNewerVersion):
+		writeAPIError(w, http.StatusConflict, ErrCodeBadRequest, err.Error())
 		return
 	case err != nil:
 		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to save the to-do list")
 		return
 	}
-	res := todos.Result{Status: todos.StatusAlreadyDone, Todo: &it, Open: store.OpenCount()}
-	if changed {
+	res := todos.Result{Todo: &it, Open: store.OpenCount()}
+	switch {
+	case action == todos.ActionDone && changed:
 		res.Status = todos.StatusDone
-		todoPublish(todos.Change{Action: todos.ActionDone, Todo: it, Open: derefOpen(res.Open), By: by}, s.cfg.Profile)
+	case action == todos.ActionDone:
+		res.Status = todos.StatusAlreadyDone
+	case action == todos.ActionUndo && changed:
+		res.Status = todos.StatusReopened
+	case action == todos.ActionUndo:
+		res.Status = todos.StatusAlreadyOpen
+	default:
+		res.Status = todos.StatusRemoved
+	}
+	if changed {
+		todoPublish(todos.NewChange(action, it, derefOpen(res.Open), by), s.cfg.Profile)
 	}
 	writeJSON(w, http.StatusOK, res)
 }

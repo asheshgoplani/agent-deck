@@ -18,14 +18,24 @@ const (
 	ActionRemove = "remove"
 )
 
-// Change is the data of a todo.changed frame. Todo is the item after the
-// change (for remove: the item as it was). Open is the number of open
-// items after the change. By is the source of the change (cli, phone, …).
+// Change is the data of a todo.changed frame: the action, the item's id,
+// the number of open items after the change and who made it (cli, phone,
+// voice, ...). It never carries the item's text: the bus log is kept on
+// disk in every profile, and no heard or typed text belongs in a log.
+// Screens refetch the list (`todo list --json`, GET /api/todos).
 type Change struct {
 	Action string `json:"action"`
-	Todo   Item   `json:"todo"`
+	ID     string `json:"id"`
 	Open   int    `json:"open"`
 	By     string `json:"by"`
+
+	// sessionID is the frame's session_id (the item's session, if any).
+	sessionID string
+}
+
+// NewChange is the change event for item it.
+func NewChange(action string, it Item, open int, by string) Change {
+	return Change{Action: action, ID: it.ID, Open: open, By: by, sessionID: it.SessionID}
 }
 
 // flushWait bounds how long Publish waits for each bus to commit.
@@ -60,7 +70,7 @@ func Publish(c Change, extra ...string) []string {
 			_ = bus.Close()
 			continue
 		}
-		if bus.PublishWithID(KindChanged, c.Todo.SessionID, c) != "" && bus.Flush(flushWait) {
+		if bus.PublishWithID(KindChanged, c.sessionID, c) != "" && bus.Flush(flushWait) {
 			done = append(done, p)
 		}
 		_ = bus.Close()

@@ -27,17 +27,19 @@ func TestMatch(t *testing.T) {
 		{query: "BANK!", wantID: "1"},
 		{query: "the bank", wantID: "1"},
 		{query: "call bank", wantID: "1"},
-		{query: "ban", wantID: "1"},                // prefix of 3+ letters
-		{query: "dentsit", wantErr: ErrNotFound},   // a typo alone is not enough
-		{query: "book dentsit", wantID: "2"},       // one swap away, next to an exact word
-		{query: "dentist appointmnt", wantID: "2"}, // one deletion away
-		{query: "buy milk", wantID: "3"},           // exact text wins over "buy milk and bread"
+		{query: "ban", wantErr: ErrNotFound},     // a 3-letter prefix is a look-alike
+		{query: "banks", wantErr: ErrNotFound},   // longer than the word
+		{query: "dentsit", wantErr: ErrNotFound}, // a typo is not a match
+		{query: "book dentsit", wantErr: ErrNotFound},
+		{query: "dentist appointmnt", wantErr: ErrNotFound},
+		{query: "dentist appointment", wantID: "2"},
+		{query: "buy milk", wantID: "3"}, // exact text wins over "buy milk and bread"
 		{query: "milk bread", wantID: "4"},
 		{query: "milk", wantErr: ErrAmbiguous, cands: []string{"3", "4"}},
 		{query: "email sam", wantErr: ErrAmbiguous, cands: []string{"6", "7"}},
 		{query: "sam invoice", wantID: "7"},
-		{query: "rent", wantErr: ErrNotFound}, // done items are not candidates
-		{query: "ba", wantErr: ErrNotFound},   // too short for a prefix
+		{query: "rent", wantID: "5"},        // nothing open matches: the done item (already done)
+		{query: "ba", wantErr: ErrNotFound}, // too short for a prefix
 		{query: "bank loan", wantErr: ErrNotFound},
 		{query: "cat", wantErr: ErrNotFound},
 		{query: "  ", wantErr: ErrNotFound},
@@ -66,27 +68,6 @@ func TestMatch(t *testing.T) {
 				t.Fatalf("Match(%q) = %+v, %v; want id %s", tc.query, got, err, tc.wantID)
 			}
 		})
-	}
-}
-
-func TestWithinOneEdit(t *testing.T) {
-	cases := []struct {
-		a, b string
-		want bool
-	}{
-		{"dentist", "dentist", true},
-		{"dentist", "dentsit", true},
-		{"dentist", "dentis", true},
-		{"dentist", "dentists", true},
-		{"dentist", "dantist", true},
-		{"dentist", "dantest", false},
-		{"dentist", "dentistry", false},
-		{"abc", "cba", false},
-	}
-	for _, tc := range cases {
-		if got := withinOneEdit(tc.a, tc.b); got != tc.want {
-			t.Errorf("withinOneEdit(%q,%q) = %v, want %v", tc.a, tc.b, got, tc.want)
-		}
 	}
 }
 

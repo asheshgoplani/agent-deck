@@ -97,9 +97,9 @@ func TestDoneUndoRemoveFlow(t *testing.T) {
 	if it, changed, err = s.Done(bank.ID); err != nil || changed || !it.Done() {
 		t.Fatalf("second Done = %+v %v %v", it, changed, err)
 	}
-	// A done item is no longer found by words.
-	if _, _, err = s.Done("bank"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Done(bank) on done item err = %v, want ErrNotFound", err)
+	// With nothing open matching, the done item is the answer: already done.
+	if it, changed, err = s.Done("bank"); err != nil || changed || it.ID != bank.ID {
+		t.Fatalf("Done(bank) on done item = %+v %v %v, want already done", it, changed, err)
 	}
 	open, _ := s.List(false)
 	all, _ := s.List(true)

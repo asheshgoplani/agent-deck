@@ -15,9 +15,11 @@ import (
 
 const todoUsage = `Usage: agent-deck todo <command> [flags]
 
-The owner's to-do list: one list per host, shared by every profile
-(docs/todos.md). Every change publishes a todo.changed frame on the
-events bus of every profile.
+The owner's to-do list (docs/todos.md): one list per host, shared by every
+profile on it. It lives on the host the clients read (the deck host); two
+hosts have two separate lists, and nothing syncs them. Every change
+publishes a todo.changed frame {action, id, open, by} (never the text) on
+the events bus of every profile; screens then re-read the list.
 
 Commands:
   add "<text>" [--source s] [--session id] [--json]   Add an open item
@@ -28,12 +30,16 @@ Commands:
 
 --source is one of voice, cli, phone, mac, tui (default cli): on add it is
 the item's source; on done, undo and remove it is "by" in the event.
-"done" with words ticks off the one open item whose text has every word
-(exact, a 3+ letter prefix, or one typo away in 5+ letter words next to
-another word that matches exactly). When several items match it changes
-nothing and exits 3 with the candidates; it never guesses. An exact match
-of the whole text wins over longer ones, and an exact match of an item
-already done answers already_done. A number (12, #12) is only an id.
+"done" with words ticks off the one open item whose text has every word,
+the same word or a prefix of 4+ letters at most 2 letters short ("bank"
+for "banks"; not "car" for "card", "bank" for "bankruptcy" or "maria"
+for "mario"). Words keep their vowel signs (Devanagari too). Filler words
+(the, a, an, my, todo, to-do) are ignored; only filler names nothing. When
+several items match it changes nothing and exits 3 with the candidates;
+it never guesses. An exact match of the whole text wins over longer ones;
+saying it again answers already_done. A number (12, #12) is only an id.
+Text that starts with "-" goes after "--": everything after "--" is text,
+so put flags such as --json before it (todo add --json -- "-5 degrees").
 
 Exit codes: 0 ok, 1 error (bad input, unreadable list), 2 no item
 matches, 3 more than one item matches.
@@ -170,7 +176,7 @@ func runTodoAdd(args []string, out, errOut io.Writer, env todoEnv) int {
 		return todoFail(*jsonOut, out, errOut, err)
 	}
 	res := todos.Result{Status: todos.StatusAdded, Todo: &it, Open: store.OpenCount()}
-	env.publish(todos.Change{Action: todos.ActionAdd, Todo: it, Open: derefInt(res.Open), By: it.Source})
+	env.publish(todos.NewChange(todos.ActionAdd, it, derefInt(res.Open), it.Source))
 	return todoEmit(*jsonOut, out, res, fmt.Sprintf("Added %s: %s", it.ID, it.Text))
 }
 
@@ -294,7 +300,7 @@ func runTodoChange(action string, args []string, out, errOut io.Writer, env todo
 		res.Status, text = todos.StatusRemoved, fmt.Sprintf("Removed %s: %s", it.ID, it.Text)
 	}
 	if changed {
-		env.publish(todos.Change{Action: action, Todo: it, Open: derefInt(res.Open), By: *source})
+		env.publish(todos.NewChange(action, it, derefInt(res.Open), *source))
 	}
 	return todoEmit(*jsonOut, out, res, text)
 }

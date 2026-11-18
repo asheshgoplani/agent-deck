@@ -35,8 +35,11 @@ type TodosPanel struct {
 	profile  string
 
 	// open and publish are swapped by tests.
-	open    func() (*todos.Store, error)
-	publish func(c todos.Change, profile string)
+	open func() (*todos.Store, error)
+	// closeKey is the key that opened the panel ([hotkeys] todos, default
+	// alt+o); it closes it too.
+	closeKey string
+	publish  func(c todos.Change, profile string)
 	// tickGen invalidates ticks from an earlier Show.
 	tickGen int
 }
@@ -83,6 +86,13 @@ func (p *TodosPanel) Hide() {
 		p.visible = false
 		p.adding = false
 		p.input.Blur()
+	}
+}
+
+// SetCloseKey sets the key that opened the panel, which also closes it.
+func (p *TodosPanel) SetCloseKey(key string) {
+	if p != nil {
+		p.closeKey = key
 	}
 }
 
@@ -166,9 +176,11 @@ func (p *TodosPanel) Update(msg tea.Msg) (*TodosPanel, tea.Cmd) {
 		return p, cmd
 	}
 
-	switch key.String() {
-	case "esc", "q", "alt+o":
+	if k := key.String(); k == "esc" || k == "q" || k == "alt+o" || (p.closeKey != "" && k == p.closeKey) {
 		p.Hide()
+		return p, nil
+	}
+	switch key.String() {
 	case "j", "down", "ctrl+n":
 		if p.cursor+1 < len(p.items) {
 			p.cursor++
@@ -210,7 +222,7 @@ func (p *TodosPanel) add(text string) tea.Cmd {
 		if err != nil {
 			return todosPanelResultMsg{status: "Not added: " + err.Error()}
 		}
-		publish(todos.Change{Action: todos.ActionAdd, Todo: it, Open: derefTodoCount(store.OpenCount()), By: todos.SourceTUI}, profile)
+		publish(todos.NewChange(todos.ActionAdd, it, derefTodoCount(store.OpenCount()), todos.SourceTUI), profile)
 		return todosPanelResultMsg{status: "Added " + it.ID, focusID: it.ID}
 	}
 }
@@ -246,7 +258,7 @@ func (p *TodosPanel) toggle() tea.Cmd {
 			return todosPanelResultMsg{status: "Not changed: " + err.Error()}
 		}
 		if changed {
-			publish(todos.Change{Action: action, Todo: it, Open: derefTodoCount(store.OpenCount()), By: todos.SourceTUI}, profile)
+			publish(todos.NewChange(action, it, derefTodoCount(store.OpenCount()), todos.SourceTUI), profile)
 		}
 		return todosPanelResultMsg{status: verb + it.ID, focusID: it.ID}
 	}
@@ -257,6 +269,20 @@ func derefTodoCount(n *int) int {
 		return 0
 	}
 	return *n
+}
+
+// todosPanelChrome is the panel's lines around the rows: border (2),
+// padding (2), title and gap (2), add line (2), status (2), help (2), and
+// the two "more above/below" lines.
+const todosPanelChrome = 14
+
+// visibleRows is how many item rows fit the terminal (at least 3).
+func (p *TodosPanel) visibleRows() int {
+	rows := p.height - todosPanelChrome
+	if rows < 3 {
+		rows = 3
+	}
+	return rows
 }
 
 func (p *TodosPanel) View() string {
@@ -291,7 +317,23 @@ func (p *TodosPanel) View() string {
 		b.WriteString(dim.Render("Nothing on the list."))
 		b.WriteByte('\n')
 	default:
-		for i, it := range p.items {
+		// Show a window of rows that fits the terminal and keeps the
+		// selected row in it; the lines around say what is cut off.
+		rows := p.visibleRows()
+		start := 0
+		if p.cursor >= rows {
+			start = p.cursor - rows + 1
+		}
+		end := start + rows
+		if end > len(p.items) {
+			end = len(p.items)
+		}
+		if start > 0 {
+			b.WriteString(dim.Render(fmt.Sprintf("  ↑ %d more above", start)))
+			b.WriteByte('\n')
+		}
+		for i := start; i < end; i++ {
+			it := p.items[i]
 			cursor := "  "
 			if i == p.cursor {
 				cursor = "> "
@@ -306,6 +348,10 @@ func (p *TodosPanel) View() string {
 				line = dim.Render(line)
 			}
 			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		if end < len(p.items) {
+			b.WriteString(dim.Render(fmt.Sprintf("  ↓ %d more below", len(p.items)-end)))
 			b.WriteByte('\n')
 		}
 	}

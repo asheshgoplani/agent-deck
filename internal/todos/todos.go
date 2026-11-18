@@ -74,6 +74,9 @@ var (
 	ErrBadSource   = fmt.Errorf("source must be one of %s", strings.Join(Sources, ", "))
 	ErrBadSession  = errors.New("session id must be at most 128 letters, digits, '-', '_' or '.'")
 	ErrBadID       = errors.New("to-do id must be a number")
+	// ErrNewerVersion: the file was written by a newer agent-deck; this one
+	// reads it but never rewrites it (that would drop what it does not know).
+	ErrNewerVersion = errors.New("the to-do list was written by a newer agent-deck; update this one to change it")
 )
 
 // AmbiguousError carries the candidates of an ambiguous match.
@@ -133,6 +136,11 @@ func (s *Store) read() (file, error) {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return f, fmt.Errorf("parsing to-do list %s: %w", s.Path(), err)
 	}
+	// Text written by hand or by an older writer is cleaned on the way out,
+	// like text on the way in.
+	for i := range f.Items {
+		f.Items[i].Text = CleanText(f.Items[i].Text)
+	}
 	// Never hand out an id already used, even if next_id was edited down.
 	for _, it := range f.Items {
 		if n, err := strconv.Atoi(it.ID); err == nil && n >= f.NextID {
@@ -145,8 +153,11 @@ func (s *Store) read() (file, error) {
 	return f, nil
 }
 
+// fileVersion is the file format this build writes.
+const fileVersion = 1
+
 func (s *Store) write(f file) error {
-	f.Version = 1
+	f.Version = fileVersion
 	cutoff := s.clock().Add(-DoneRetention)
 	kept := f.Items[:0]
 	for _, it := range f.Items {
@@ -163,7 +174,7 @@ func (s *Store) write(f file) error {
 	if err != nil {
 		return fmt.Errorf("encoding to-do list: %w", err)
 	}
-	if err := atomicfile.WriteFile(s.Path(), append(data, '\n'), 0o600); err != nil {
+	if err := atomicfile.WriteFileDurable(s.Path(), append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("writing to-do list: %w", err)
 	}
 	return nil
@@ -184,6 +195,9 @@ func (s *Store) update(fn func(f *file) (save bool, err error)) error {
 	if err != nil {
 		return err
 	}
+	if f.Version > fileVersion {
+		return ErrNewerVersion
+	}
 	save, err := fn(&f)
 	if err != nil || !save {
 		return err
@@ -192,7 +206,7 @@ func (s *Store) update(fn func(f *file) (save bool, err error)) error {
 }
 
 // CleanText trims the text, folds runs of whitespace (newlines included)
-// into one space and drops other control characters.
+// into one space and drops other control and format characters.
 func CleanText(text string) string {
 	var b strings.Builder
 	space := false
@@ -201,7 +215,10 @@ func CleanText(text string) string {
 		case unicode.IsSpace(r):
 			space = true
 			continue
-		case unicode.IsControl(r) || r == utf8.RuneError:
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError:
+			// Control characters, and format characters such as bidi
+			// overrides (U+202E), zero-width spaces and the BOM, which can
+			// make a screen show something other than the stored text.
 			continue
 		}
 		if space && b.Len() > 0 {
@@ -374,7 +391,7 @@ func (s *Store) Done(query string) (it Item, changed bool, err error) {
 		return Item{}, false, ErrNotFound
 	}
 	err = s.update(func(f *file) (bool, error) {
-		i := -1
+		var i int
 		if num, ok := numberQuery(query); ok {
 			// A number is an id and only an id ("12", "#12", "12."):
 			// "done 12" never ticks off "call 12 people" when item 12 does
