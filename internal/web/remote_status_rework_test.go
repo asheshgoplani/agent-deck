@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -226,5 +227,37 @@ func TestRemoteStatusForwarder_TooOldCursorResyncs(t *testing.T) {
 	}
 	if len(follows) < 2 || !strings.Contains(follows[1], "--since 900") {
 		t.Fatalf("after a too-old cursor the next follow is %v, want --since 900 (re-read from the remote)", follows)
+	}
+}
+
+// G2 (e2e follow-up): a client that connects after the resync was
+// published (a fresh phone, a web restart) gets each followed remote's
+// newest session.link in hello.remotes, so the change made while the
+// server was down reaches it too.
+func TestStateEvents_HelloCarriesRemoteLinks(t *testing.T) {
+	t.Setenv("CLAUDE_VOICE_STATE_DIR", t.TempDir())
+	r := &scriptedRemote{cursor: 7, sessions: []session.RemoteSessionInfo{{ID: "b1", Title: "beta", Status: "waiting"}}}
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "_test_g2"})
+	srv.SetRemoteStatusStream([]string{"box"}, func(string) RemoteStatusRunner { return r })
+	srv.startRemoteStatusForward(srv.remoteFwdNames, srv.remoteFwdRunner)
+	defer srv.stopRemoteStatusForward()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	defer srv.stopVoiceProducer()
+	time.Sleep(500 * time.Millisecond) // the resync is published before this client connects
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	evs := make(chan sseEvent, 16)
+	sseClient(t, ctx, ts.URL+"/events/state", "", evs)
+	select {
+	case ev := <-evs:
+		if ev.event != "hello" {
+			t.Fatalf("first event %q", ev.event)
+		}
+		if !strings.Contains(string(ev.data), `"remotes":[{"host":"box","sessions":[{"id":"b1","status":"waiting","title":"beta"}],"up":true}]`) {
+			t.Fatalf("hello lacks the remote's resync: %s", ev.data)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no hello")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -250,7 +251,12 @@ func (s *Server) startRemoteStatusForward(names []string, runnerFor RemoteStatus
 			continue
 		}
 		f := &remoteStatusForwarder{name: name, runner: r, startTS: now,
-			publish: func(kind, sid string, data any) { events.PublishProfile(profile, kind, sid, data) }}
+			publish: func(kind, sid string, data any) {
+				if link, ok := data.(SessionLinkEvent); ok {
+					s.noteRemoteLink(link)
+				}
+				events.PublishProfile(profile, kind, sid, data)
+			}}
 		s.remoteFwdWG.Add(1)
 		go func() {
 			defer s.remoteFwdWG.Done()
@@ -266,10 +272,37 @@ func (s *Server) stopRemoteStatusForward() {
 	s.remoteFwdWG.Wait()
 }
 
+// noteRemoteLink keeps the newest session.link of one remote for hello.
+func (s *Server) noteRemoteLink(l SessionLinkEvent) {
+	s.remoteLinksMu.Lock()
+	defer s.remoteLinksMu.Unlock()
+	if s.remoteLinksByHost == nil {
+		s.remoteLinksByHost = map[string]SessionLinkEvent{}
+	}
+	s.remoteLinksByHost[l.Host] = l
+}
+
+// remoteLinks is the newest session.link per followed remote, by name.
+func (s *Server) remoteLinks() []SessionLinkEvent {
+	s.remoteLinksMu.Lock()
+	defer s.remoteLinksMu.Unlock()
+	if len(s.remoteLinksByHost) == 0 {
+		return nil
+	}
+	out := make([]SessionLinkEvent, 0, len(s.remoteLinksByHost))
+	for _, l := range s.remoteLinksByHost {
+		out = append(out, l)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
+	return out
+}
+
 // remoteForwardFields is embedded in Server.
 type remoteForwardFields struct {
-	remoteFwdNames  []string
-	remoteFwdRunner RemoteStatusRunnerFor
-	remoteFwdCancel context.CancelFunc
-	remoteFwdWG     sync.WaitGroup
+	remoteLinksMu     sync.Mutex
+	remoteLinksByHost map[string]SessionLinkEvent
+	remoteFwdNames    []string
+	remoteFwdRunner   RemoteStatusRunnerFor
+	remoteFwdCancel   context.CancelFunc
+	remoteFwdWG       sync.WaitGroup
 }
