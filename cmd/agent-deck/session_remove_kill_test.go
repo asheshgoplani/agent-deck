@@ -170,6 +170,26 @@ func setSandboxRowStatus(t *testing.T, sb *harness.Sandbox, id, status string) {
 	}
 }
 
+// killPaneKeepScope makes a live session's pane exit with status 3 while
+// remain-on-exit keeps the dead pane, so the session reads error on every
+// surface and its tmux scope still exists for a remove to kill.
+func killPaneKeepScope(t *testing.T, sb *harness.Sandbox, name string) {
+	t.Helper()
+	sb.Tmux("set-option", "-t", name, "remain-on-exit", "on")
+	sb.Tmux("respawn-pane", "-k", "-t", name+":", "sh -c 'exit 3'")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		out, err := sb.TmuxTry("display-message", "-p", "-t", name+":", "#{pane_dead}")
+		if err == nil && strings.TrimSpace(out) == "1" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pane of %s never died (last %q %v)", name, out, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // startTmuxServer starts an unrelated session so the sandbox tmux server is
 // up: cleanup treats a socket it cannot list as "maybe alive" and never
 // purges from it, so a dead session is only judged dead against a running
@@ -255,6 +275,11 @@ func TestSessionRemove_AllErroredKillsEachRemovedSession(t *testing.T) {
 	idA, nameA, pidA := startLiveShellSession(t, sb, "err-a")
 	idB, nameB, pidB := startLiveShellSession(t, sb, "err-b")
 	idKeep, nameKeep, pidKeep := startLiveShellSession(t, sb, "keep")
+	// --all-errored removes what list shows as error, so these two must be
+	// errored live, not only in the stored row: their command exits 3 and
+	// remain-on-exit keeps the dead pane (and the tmux scope to kill).
+	killPaneKeepScope(t, sb, nameA)
+	killPaneKeepScope(t, sb, nameB)
 	setSandboxRowStatus(t, sb, idA, "error")
 	setSandboxRowStatus(t, sb, idB, "error")
 

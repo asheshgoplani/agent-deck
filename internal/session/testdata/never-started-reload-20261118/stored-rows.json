@@ -1,0 +1,23 @@
+{
+  "_captured": "feature sweep 2026-11-17, cross-surface consistency sandbox: `add` from the CLI, never started, then `list --json` from a second process. The row read idle for the 1.5 s grace period, then error/unknown-exit, and list wrote that error back to storage (row never-started-claude-written-error is that stored row, id and paths redacted). The started rows are the controls: a session that ran keeps its error once its tmux is gone.",
+  "rows": [
+    {"name": "never-started-claude-as-added", "tool": "claude", "status": "idle",
+     "tool_data": {"cross_harness_superseded_by": "", "cross_harness_supersedes": "", "subcommand_passthrough": false, "track_command_exit": false},
+     "want": "idle"},
+    {"name": "never-started-claude-written-error", "tool": "claude", "status": "error",
+     "tool_data": {"cross_harness_superseded_by": "", "cross_harness_supersedes": "", "subcommand_passthrough": false, "track_command_exit": false},
+     "want": "idle"},
+    {"name": "never-started-shell", "tool": "shell", "status": "idle",
+     "tool_data": {"subcommand_passthrough": false, "track_command_exit": false},
+     "want": "idle"},
+    {"name": "started-claude-tmux-gone", "tool": "claude", "status": "idle",
+     "tool_data": {"last_started_at": 1794955191, "launch_tmux_session": "agentdeck_redacted", "launched_tool": "claude", "subcommand_passthrough": false, "track_command_exit": false},
+     "want": "error"},
+    {"name": "started-before-start-stamp-claude-with-conversation", "tool": "claude", "status": "idle",
+     "tool_data": {"claude_session_id": "c-legacy", "subcommand_passthrough": false, "track_command_exit": false},
+     "want": "error"},
+    {"name": "started-before-start-stamp-shell-attached", "tool": "shell", "status": "idle", "last_accessed_ago_seconds": 600,
+     "tool_data": {"subcommand_passthrough": false, "track_command_exit": false},
+     "want": "error"}
+  ]
+}

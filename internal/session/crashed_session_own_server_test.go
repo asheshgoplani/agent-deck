@@ -46,6 +46,9 @@ func startMidTurn(t *testing.T, title, socketName string) *Instance {
 	inst.hookStatus = "running"
 	inst.hookLastUpdate = time.Now()
 	inst.lastStartTime = time.Now().Add(-time.Minute) // past the start grace
+	// The persisted start stamp a real Start() writes: a reloaded row
+	// without it reads as never started.
+	inst.LastStartedAt = inst.lastStartTime
 	inst.mu.Unlock()
 	return inst
 }

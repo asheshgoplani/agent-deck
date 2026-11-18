@@ -56,6 +56,8 @@ func handleSessionRemove(profile string, args []string) {
 	}
 
 	if *allErrored {
+		// Judge "errored" by the status list shows, not the stored one.
+		refreshLiveStatus(instances)
 		removeAllErrored(out, storage, instances, groups, *pruneWorktree, *force)
 		return
 	}
@@ -76,6 +78,8 @@ func handleSessionRemove(profile string, args []string) {
 		return
 	}
 
+	// The guard reads the status list shows, not the stored one.
+	refreshLiveStatus([]*session.Instance{inst})
 	if !*force && !isRemovableStatus(inst.Status) {
 		out.Error(
 			fmt.Sprintf(
