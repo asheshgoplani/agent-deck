@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, waitFor } from '@testing-library/preact'
-import { render } from 'preact'
+import { fireEvent, render, waitFor } from '@testing-library/preact'
 import { html } from 'htm/preact'
 
 const apiPath = '../../../internal/web/static/app/api.js'
@@ -49,9 +48,7 @@ describe('Kimi web session creation', () => {
       groupPath: 'work', groupName: 'work', defaultPath: '/srv/kimi', tool: '', modelId: '',
     }
     const { CreateSessionDialog } = await import('../../../internal/web/static/app/CreateSessionDialog.js')
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    render(html`<${CreateSessionDialog}/>`, container)
+    const { container } = render(html`<${CreateSessionDialog}/>`)
 
     const kimiButton = [...container.querySelectorAll('.seg-btn')]
       .find(button => button.textContent === 'kimi')
@@ -85,9 +82,7 @@ describe('Kimi web session creation', () => {
       groupPath: 'work', groupName: 'work', defaultPath: '/srv/kimi', tool: 'kimi', modelId: '',
     }
     const { CreateSessionDialog } = await import('../../../internal/web/static/app/CreateSessionDialog.js')
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    render(html`<${CreateSessionDialog}/>`, container)
+    const { container } = render(html`<${CreateSessionDialog}/>`)
 
     const permissionSelect = container.querySelector('select[aria-label="Kimi permission mode"]')
     expect(permissionSelect).not.toBeNull()
@@ -125,9 +120,7 @@ describe('Kimi web session status', () => {
       },
     ]
     const { Sidebar } = await import('../../../internal/web/static/app/Sidebar.js')
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    render(html`<${Sidebar}/>`, container)
+    const { container } = render(html`<${Sidebar}/>`)
 
     const row = container.querySelector('[data-row-key="s:kimi-1"]')
     expect(row.querySelector('.titleline .dot').classList.contains('waiting')).toBe(true)
