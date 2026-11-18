@@ -43,7 +43,7 @@ func TestWebMutatorCreatePiSessionRecordsTheSocketLaunch(t *testing.T) {
 			}
 
 			h, storage := newHeadlessHomeForTest(t, fmt.Sprintf("_test_web_pi_socket_%d", time.Now().UnixNano()))
-			id, err := NewWebMutator(h).CreateSession("web-pi", "pi", t.TempDir(), "", "", "")
+			id, err := NewWebMutator(h).CreateSession("web-pi", "pi", t.TempDir(), "", "", "", "")
 			if err != nil {
 				t.Fatalf("CreateSession: %v", err)
 			}

@@ -9,7 +9,7 @@ test.describe('Kimi web session creation', () => {
     expect(res.status()).toBe(204)
   })
 
-  test('fallback picker clicks Kimi and submits its selected model', async ({ page }) => {
+  test('fallback picker submits the selected model and Always Ask permission override', async ({ page }) => {
     await page.route('**/api/settings', async (route) => {
       const response = await route.fetch()
       const body = await response.json()
@@ -41,10 +41,14 @@ test.describe('Kimi web session creation', () => {
     await kimiButton.click()
     await expect(kimiButton).toHaveClass(/on/)
 
-    const modelSelect = dialog.locator('select')
+    const modelSelect = dialog.locator('select').first()
     await expect(modelSelect).toBeVisible()
     await modelSelect.selectOption('kimi-code/kimi-for-coding')
     await expect(modelSelect).toHaveValue('kimi-code/kimi-for-coding')
+    const permissionSelect = dialog.locator('select[aria-label="Kimi permission mode"]')
+    await expect(permissionSelect).toBeVisible()
+    await permissionSelect.selectOption('always-ask')
+    await expect(permissionSelect).toHaveValue('always-ask')
     await dialog.locator('input[placeholder="session-name"]').fill('kimi-browser')
     await dialog.locator('button[type=submit]').click()
     await expect(dialog).toHaveCount(0)
@@ -55,6 +59,7 @@ test.describe('Kimi web session creation', () => {
       projectPath: '/srv/work',
       groupPath: 'work',
       modelId: 'kimi-code/kimi-for-coding',
+      kimiPermissionMode: 'always-ask',
     })
   })
 })

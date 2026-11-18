@@ -43,7 +43,7 @@ describe('Kimi web session creation', () => {
     })
   })
 
-  it('offers Kimi in the fallback picker and submits the selected model', async () => {
+  it('offers Kimi in the fallback picker and omits a permission override by default', async () => {
     const state = await import(statePath)
     state.createSessionDialogSignal.value = {
       groupPath: 'work', groupName: 'work', defaultPath: '/srv/kimi', tool: '', modelId: '',
@@ -76,6 +76,35 @@ describe('Kimi web session creation', () => {
       projectPath: '/srv/kimi',
       groupPath: 'work',
       modelId: 'kimi-code/kimi-for-coding',
+    }))
+  })
+
+  it('submits Always Ask as an explicit Kimi permission override', async () => {
+    const state = await import(statePath)
+    state.createSessionDialogSignal.value = {
+      groupPath: 'work', groupName: 'work', defaultPath: '/srv/kimi', tool: 'kimi', modelId: '',
+    }
+    const { CreateSessionDialog } = await import('../../../internal/web/static/app/CreateSessionDialog.js')
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    render(html`<${CreateSessionDialog}/>`, container)
+
+    const permissionSelect = container.querySelector('select[aria-label="Kimi permission mode"]')
+    expect(permissionSelect).not.toBeNull()
+    fireEvent.input(permissionSelect, { target: { value: 'always-ask' } })
+    await waitFor(() => expect(permissionSelect).toHaveValue('always-ask'))
+    const titleInput = container.querySelector('input[placeholder="session-name"]')
+    fireEvent.input(titleInput, { target: { value: 'kimi-always-ask' } })
+    await waitFor(() => expect(titleInput).toHaveValue('kimi-always-ask'))
+    fireEvent.submit(container.querySelector('form'))
+
+    const { apiFetch } = await import(apiPath)
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('POST', '/api/sessions', {
+      title: 'kimi-always-ask',
+      tool: 'kimi',
+      projectPath: '/srv/kimi',
+      groupPath: 'work',
+      kimiPermissionMode: 'always-ask',
     }))
   })
 })

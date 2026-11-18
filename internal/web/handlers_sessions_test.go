@@ -15,7 +15,7 @@ import (
 // fakeMutator is a test double for SessionMutator that delegates to function fields.
 // If a function field is nil, the method returns an error indicating it is unconfigured.
 type fakeMutator struct {
-	createSessionFn    func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error)
+	createSessionFn    func(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error)
 	startSessionFn     func(id string) error
 	stopSessionFn      func(id string) error
 	restartSessionFn   func(id string) error
@@ -37,11 +37,11 @@ type fakeMutator struct {
 	finishWorktreeFn   func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
 
-func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 	if f.createSessionFn == nil {
 		return "", fmt.Errorf("createSession not configured")
 	}
-	return f.createSessionFn(title, tool, projectPath, groupPath, modelID, reasoningEffort)
+	return f.createSessionFn(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode)
 }
 
 func (f *fakeMutator) StartSession(id string) error {
@@ -216,7 +216,7 @@ func TestSessionsCollectionPOSTCreatesSession(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 			return "new-id", nil
 		},
 	}
@@ -244,7 +244,7 @@ func TestSessionsCollectionPOSTForwardsModelID(t *testing.T) {
 
 	var gotModel string
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 			gotModel = modelID
 			return "new-id", nil
 		},
@@ -273,7 +273,7 @@ func TestSessionsCollectionPOSTCreatesKimiSession(t *testing.T) {
 
 	var gotTool, gotModel string
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 			gotTool = tool
 			gotModel = modelID
 			return "kimi-id", nil
@@ -300,6 +300,53 @@ func TestSessionsCollectionPOSTCreatesKimiSession(t *testing.T) {
 	}
 }
 
+func TestSessionsCollectionPOSTForwardsKimiPermissionMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "explicit always ask",
+			body: `{"title":"Kimi web","tool":"kimi","projectPath":"/tmp","kimiPermissionMode":"always-ask"}`,
+			want: session.KimiPermissionAlwaysAsk,
+		},
+		{
+			name: "omitted override",
+			body: `{"title":"Kimi web","tool":"kimi","projectPath":"/tmp"}`,
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(Config{
+				ListenAddr:   "127.0.0.1:0",
+				WebMutations: true,
+			})
+			srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+			var gotMode string
+			srv.mutator = &fakeMutator{
+				createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
+					gotMode = kimiPermissionMode
+					return "kimi-id", nil
+				},
+			}
+
+			req := newLocalRequest(http.MethodPost, "/api/sessions", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+			}
+			if gotMode != tc.want {
+				t.Fatalf("kimiPermissionMode = %q, want %q", gotMode, tc.want)
+			}
+		})
+	}
+}
+
 func TestSessionsCollectionPOSTForwardsReasoningEffort(t *testing.T) {
 	srv := NewServer(Config{
 		ListenAddr:   "127.0.0.1:0",
@@ -309,7 +356,7 @@ func TestSessionsCollectionPOSTForwardsReasoningEffort(t *testing.T) {
 
 	var gotEffort string
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 			gotEffort = reasoningEffort
 			return "new-id", nil
 		},
@@ -336,7 +383,7 @@ func TestSessionsCollectionPOSTRejectsInvalidReasoningEffort(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 			t.Fatal("mutator called for invalid reasoning effort")
 			return "", nil
 		},
@@ -1314,7 +1361,7 @@ func TestSessionsCollectionPOSTForwardsGroupPath(t *testing.T) {
 
 	var gotGroup string
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 			gotGroup = groupPath
 			return "new-id", nil
 		},
