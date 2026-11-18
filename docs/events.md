@@ -148,7 +148,11 @@ drop, retrying within a second. Each connect publishes `session.link`
 `{host, up: true, sessions: [{id, status, title}]}` with the remote's
 current statuses (a resync: a change made while this server or the link
 was down is not lost), and each drop publishes `session.link {host, up:
-false}` (until the next up, that host's status may be stale). A resume
+false}` (until the next up, that host's status may be stale). The follow
+uses 2 s keepalives (3 missed = gone), so a dead link is said within about
+10 s. The SSE `hello` carries `remotes`, the newest link per remote with
+every status forwarded since applied, so a client connecting late gets the
+current statuses. A resume
 cursor the remote no longer has starts over from its newest cursor with a
 resync. A remote's history before the server started is not replayed; frames that already carry a host are not forwarded again (two
 hosts that stream each other never loop); a remote's `voice.state` is not

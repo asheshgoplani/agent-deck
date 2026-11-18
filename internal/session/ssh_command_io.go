@@ -206,7 +206,7 @@ exec ` + command
 	} else {
 		ready()
 	}
-	sshArgs := append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no"}, r.sshChannelArgs(command)...)
+	sshArgs := r.negotiatedSSHArgs(command)
 	// Literal ssh and validated destination; all remote values shell quoted.
 	cmd := newSSHCommand(streamCtx, sshArgs...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -284,6 +284,32 @@ func (r *SSHRunner) RunStdinStreamIO(ctx context.Context, stdin io.Reader, stdou
 // first value of an option, so these win over the shared 15 s ones) and
 // give up a blackholed connect after 3 s.
 func (r *SSHRunner) stdinStreamSSHArgs(remoteCmd string) []string {
-	return append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no",
-		"-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=3"}, r.sshChannelArgs(remoteCmd)...)
+	args := append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no"}, fastKeepaliveOpts...)
+	return append(args, r.sshChannelArgs(remoteCmd)...)
 }
+
+// fastKeepaliveOpts notice a dead route in about 6 s and give up a
+// blackholed connect after 3 s. ssh takes the first value of an option, so
+// placed first they win over the shared 15 s ones.
+var fastKeepaliveOpts = []string{"-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=3"}
+
+// negotiatedSSHArgs is the argv of RunReadIO / RunPublishIO: its own
+// connection, with the fast keepalive when WithFastKeepalive set it.
+func (r *SSHRunner) negotiatedSSHArgs(command string) []string {
+	args := []string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no"}
+	if r.fastKeepalive {
+		args = append(args, fastKeepaliveOpts...)
+	}
+	return append(args, r.sshChannelArgs(command)...)
+}
+
+// WithFastKeepalive returns a copy of r whose negotiated read and follow
+// channels use the fast keepalive (agent-deck web --stream-remotes).
+func (r *SSHRunner) WithFastKeepalive() *SSHRunner {
+	c := *r
+	c.fastKeepalive = true
+	return &c
+}
+
+// FastKeepalive reports whether WithFastKeepalive set the option.
+func (r *SSHRunner) FastKeepalive() bool { return r.fastKeepalive }

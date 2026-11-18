@@ -174,6 +174,12 @@ type SSHRunner struct {
 	// commandTimeout bounds each remote command; zero means the 30s default.
 	commandTimeout time.Duration
 
+	// fastKeepalive gives the negotiated read/follow channel the voice
+	// relay's keepalive (2 s x 3, connect 3 s) instead of the shared 15 s x
+	// 3, for a stream whose dead link must be noticed in seconds
+	// (WithFastKeepalive).
+	fastKeepalive bool
+
 	// configuredPath is the raw agent_deck_path from config ("" if unset). It
 	// lets ResolveRemotePath decide whether to honor an explicit user path or
 	// probe the remote's real binary location via $PATH (#1171).

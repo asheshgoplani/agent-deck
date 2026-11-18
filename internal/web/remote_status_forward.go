@@ -252,8 +252,13 @@ func (s *Server) startRemoteStatusForward(names []string, runnerFor RemoteStatus
 		}
 		f := &remoteStatusForwarder{name: name, runner: r, startTS: now,
 			publish: func(kind, sid string, data any) {
-				if link, ok := data.(SessionLinkEvent); ok {
-					s.noteRemoteLink(link)
+				switch d := data.(type) {
+				case SessionLinkEvent:
+					s.noteRemoteLink(d)
+				case map[string]any:
+					if to, _ := d["to"].(string); kind == "session.status" && to != "" {
+						s.noteRemoteStatus(name, sid, to)
+					}
 				}
 				events.PublishProfile(profile, kind, sid, data)
 			}}
@@ -280,6 +285,30 @@ func (s *Server) noteRemoteLink(l SessionLinkEvent) {
 		s.remoteLinksByHost = map[string]SessionLinkEvent{}
 	}
 	s.remoteLinksByHost[l.Host] = l
+}
+
+// noteRemoteStatus applies one forwarded status to the stored snapshot, so
+// hello.remotes is the remote's current state, not the last link-up's.
+func (s *Server) noteRemoteStatus(host, id, status string) {
+	s.remoteLinksMu.Lock()
+	defer s.remoteLinksMu.Unlock()
+	l, ok := s.remoteLinksByHost[host]
+	if !ok || !l.Up || id == "" {
+		return
+	}
+	sessions := make([]SessionLinkStatus, 0, len(l.Sessions)+1)
+	found := false
+	for _, st := range l.Sessions {
+		if st.ID == id {
+			st.Status, found = status, true
+		}
+		sessions = append(sessions, st)
+	}
+	if !found {
+		sessions = append(sessions, SessionLinkStatus{ID: id, Status: status})
+	}
+	l.Sessions = sessions
+	s.remoteLinksByHost[host] = l
 }
 
 // remoteLinks is the newest session.link per followed remote, by name.

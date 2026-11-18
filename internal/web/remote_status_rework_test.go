@@ -261,3 +261,52 @@ func TestStateEvents_HelloCarriesRemoteLinks(t *testing.T) {
 		t.Fatal("no hello")
 	}
 }
+
+// L1 (round 2, the reviewer's case): a client connecting after a forwarded
+// change is told the current status in hello.remotes, not the one of the
+// last link-up.
+func TestStateEvents_HelloRemotesFollowsForwardedStatus(t *testing.T) {
+	t.Setenv("CLAUDE_VOICE_STATE_DIR", t.TempDir())
+	now := time.Now().UnixMilli()
+	r := &scriptedRemote{cursor: 7, sessions: []session.RemoteSessionInfo{{ID: "b1", Title: "beta", Status: "running"}}}
+	hold := &holdRemote{scriptedRemote: r, line: statusLine(8, now, "b1", "waiting", "")}
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "_rr2_hello"})
+	srv.SetRemoteStatusStream([]string{"box"}, func(string) RemoteStatusRunner { return hold })
+	srv.startRemoteStatusForward(srv.remoteFwdNames, srv.remoteFwdRunner)
+	defer srv.stopRemoteStatusForward()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	defer srv.stopVoiceProducer()
+	time.Sleep(800 * time.Millisecond) // the resync (running) and the forwarded change (waiting) are both published
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	evs := make(chan sseEvent, 16)
+	sseClient(t, ctx, ts.URL+"/events/state", "", evs)
+	select {
+	case ev := <-evs:
+		if ev.event != "hello" {
+			t.Fatalf("first event %q", ev.event)
+		}
+		if !strings.Contains(string(ev.data), `"sessions":[{"id":"b1","status":"waiting","title":"beta"}]`) {
+			t.Fatalf("a client connecting now must be told b1 is waiting (the forwarded change): %s", ev.data)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no hello")
+	}
+}
+
+// holdRemote: stats and list from the scripted remote; the follow writes
+// one line and stays open.
+type holdRemote struct {
+	*scriptedRemote
+	line string
+}
+
+func (h *holdRemote) RunReadIO(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, u []byte, follow bool, args ...string) error {
+	if len(args) >= 2 && args[0] == "events" && args[1] == "follow" {
+		_, _ = stdout.Write([]byte(h.line + "\n"))
+		<-ctx.Done()
+		return nil
+	}
+	return h.scriptedRemote.RunReadIO(ctx, stdin, stdout, stderr, u, follow, args...)
+}
