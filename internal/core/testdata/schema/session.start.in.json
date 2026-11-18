@@ -9,7 +9,7 @@
       "type": "boolean"
     },
     "auto_set": {
-      "description": "Whether the user explicitly set --auto, including false",
+      "description": "Whether the user explicitly set --auto, including false; implied by auto:true",
       "type": "boolean"
     },
     "message": {

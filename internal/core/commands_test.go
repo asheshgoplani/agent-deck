@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -157,6 +158,43 @@ func TestSessionStartKimiYoloSetSemantics(t *testing.T) {
 			if gotYolo != tt.yolo || gotYoloSet != tt.wantYoloSet || gotAuto || gotAutoSet {
 				t.Fatalf("Kimi permission input = (yolo=%v auto=%v yoloSet=%v autoSet=%v), want (yolo=%v auto=false yoloSet=%v autoSet=false)",
 					gotYolo, gotAuto, gotYoloSet, gotAutoSet, tt.yolo, tt.wantYoloSet)
+			}
+		})
+	}
+}
+
+func TestSessionStartKimiAutoSetSemantics(t *testing.T) {
+	for i, tt := range []struct {
+		name        string
+		fields      string
+		wantAuto    bool
+		wantAutoSet bool
+	}{
+		{name: "true implies explicit", fields: `,"auto":true`, wantAuto: true, wantAutoSet: true},
+		{name: "omitted inherits"},
+		{name: "false without auto_set inherits", fields: `,"auto":false`},
+		{name: "explicit false overrides inheritance", fields: `,"auto":false,"auto_set":true`, wantAutoSet: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := fmt.Sprintf("_core_start_kimi_auto_%d_%d", i, time.Now().UnixNano())
+			inst := session.NewInstanceWithTool("kimi", t.TempDir(), "kimi")
+			inst.SetTmuxSessionForTest(nil)
+			seedStore(t, profile, nil, inst)
+			var gotAuto, gotAutoSet bool
+			deps := Deps{ApplyKimiPermissions: func(_ *session.Instance, _, auto, _, autoSet bool) error {
+				gotAuto, gotAutoSet = auto, autoSet
+				return errors.New("stop after capturing Kimi permissions")
+			}}
+			raw := fmt.Sprintf(`{"profile":%q,"session":"kimi"%s}`, profile, tt.fields)
+			var in SessionStartIn
+			if err := json.Unmarshal([]byte(raw), &in); err != nil {
+				t.Fatal(err)
+			}
+			res := testRegistry(t, deps).Run(context.Background(), IDSessionStart, in)
+			wantCode(t, res.Err, CodeInvalid, "stop after capturing Kimi permissions")
+			if gotAuto != tt.wantAuto || gotAutoSet != tt.wantAutoSet {
+				t.Fatalf("Kimi auto input = (auto=%v autoSet=%v), want (auto=%v autoSet=%v)",
+					gotAuto, gotAutoSet, tt.wantAuto, tt.wantAutoSet)
 			}
 		})
 	}

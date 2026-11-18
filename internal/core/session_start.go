@@ -16,7 +16,7 @@ type SessionStartIn struct {
 	Yolo    bool   `json:"yolo,omitempty" doc:"Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)"`
 	YoloSet bool   `json:"yolo_set,omitempty" doc:"Whether the user explicitly set --yolo, including false; implied by yolo:true"`
 	Auto    bool   `json:"auto,omitempty" doc:"Enable Never Ask mode for Kimi sessions"`
-	AutoSet bool   `json:"auto_set,omitempty" doc:"Whether the user explicitly set --auto, including false"`
+	AutoSet bool   `json:"auto_set,omitempty" doc:"Whether the user explicitly set --auto, including false; implied by auto:true"`
 	NoWait  bool   `json:"no_wait,omitempty" doc:"Return once the process is spawned instead of waiting for the tool's session id"`
 }
 
@@ -64,7 +64,7 @@ func (deps Deps) sessionStart(ctx context.Context, in SessionStartIn) (SessionSt
 		}
 	}
 	if deps.ApplyKimiPermissions != nil {
-		if err := deps.ApplyKimiPermissions(inst, in.Yolo, in.Auto, in.YoloSet || in.Yolo, in.AutoSet); err != nil {
+		if err := deps.ApplyKimiPermissions(inst, in.Yolo, in.Auto, in.YoloSet || in.Yolo, in.AutoSet || in.Auto); err != nil {
 			return SessionStartOut{}, &Error{Code: CodeInvalid, Message: err.Error(), Cause: err}
 		}
 	}
