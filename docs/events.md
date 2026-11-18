@@ -45,18 +45,22 @@ trailing spaces).
 | `internal/watcher/engine.go` | `writerLoop` (new persisted event) | `watcher.event` |
 | `internal/watcher/engine.go` | `healthLoop` (health snapshot) | `watcher.health` |
 | `cmd/agent-deck/session_queue_cmd.go` | the queue worker answered `session queue release` or `cancel` | `queue.released`, `queue.cancelled` |
+| `internal/voicestream` producer: `agent-deck voice relay` (next to the voice daemon), `agent-deck voice mirror-in` (on a stream host, fed by the relay over ssh) and `agent-deck web`; one per profile at a time (lock `voice-producer.lock` in the bus dir) | the voice state changed (phase, extras, mic target, flags), once at producer start, and `off` when the daemon died, stopped beating or turned off | `voice.state` |
+| `voicestream.PublishResult` (the voice desk) | what the desk wants every screen to show (`show`, confirm card without its token) | `voice.result` |
 | `internal/triggers/store.go` (from `session send`, `triggers scan\|mute\|unmute` and the daily rescan in `triggers list`) | a trigger fired, was muted or unmuted, or the unit scan stored a result (docs/triggers.md) | `session.trigger` |
 
 Frame data for the session kinds (`session_id` is the agent-deck session id):
 
 | Kind | `data` |
 |---|---|
-| `session.status` | `{from, to, tool, tmux_session, substate, changed_at}` (`changed_at` RFC 3339, the frame `ts` is the same instant in ms) |
+| `session.status` | `{from, to, tool, tmux_session, substate, changed_at, host}` (`changed_at` RFC 3339, the frame `ts` is the same instant in ms) |
 | `session.turn` | `{phase: "started"}` or `{phase: "ended", to, duration_ms}` (duration measured by the publishing process; omitted when it did not see the start) |
 | `session.transcript` | `{path, bytes_appended, size}` |
 | `queue.released` | `{id, state, outcome, reason}` (`outcome` as `session queue release --json` reports it) |
 | `queue.cancelled` | `{id, state: "cancelled"}` |
 | `session.trigger` | a fire: `{trigger_id, source, kind, outcome, health}` (`session_id` is the receiving session, `""` for a dead target); a mute change: `{trigger_id, mute: "muted"\|"unmuted"}`; a scan: `{scan: "<units found>"}`. Clients refetch `triggers --json` on any of them. |
+| `voice.state` | `{host, on, phase, extra, rawPhase, phaseSince, phaseSinceMs, muted, micReleased, hibernating, fallingBack, target: {id, title, host, profile} \| null, switching: {id, title, host, profile} \| null, source, from, origin, reason, updatedAt}`. `switching` is the session the mic is moving to during a spoken switch (a hint for "Switching to …" only; `target` stays the holder until the switch is done). `origin` is the machine the daemon runs on, in every frame including an `off`. `phase` is one of listening, hearing, thinking, speaking, resting, off (`voicestate.MapPhase`); `extra` is muted, call or meeting when the daemon's own word was folded into resting; `reason` is start, change, expired or stopped (both published as `off`). `session_id` is the target when it is a session of this host (`target.host == ""`). Never carries heard or spoken text. |
+| `voice.result` | `{host, intent, target, show: {kind, items: [{id, title, host, status}]}, confirm: {kind, prompt, expiresMs} \| null, then: {action, target} \| null, refused, from, at}`; `confirm.prompt` is built from the target only, and items carry no text (to-do items carry id and status only; the desk's `line`, his dictated message for a tell or the spoken reply for a read, is dropped) |
 | `tmux.output` | none: `session_id` is the tmux session name; the frame has no `data` key (never `"data": null`) |
 
 A producer that passes nil data publishes a frame without `data`; a stored
@@ -82,6 +86,54 @@ once per second or at close. A normal shutdown drains accepted taps for up to
 two seconds; a held disk lock cannot hold the TUI exit path indefinitely.
 `CloseDefault` returns `ErrCloseTimeout` when that deadline expires and counts
 accepted unwritten frames as drops where the bus handle is available.
+
+### `host`
+
+`session.status`, `voice.state` and `voice.result` carry `data.host`. `""`
+means the frame is about the host whose bus is being followed; a name is a
+remote as that host's config names it (`[remotes.<name>]`). Session ids are
+unique only per host, so a client keys a session by (host, id), never by
+title.
+
+### Voice state across hosts
+
+`agent-deck voice relay --to <remote>,... --self <name>` runs on the
+machine of the voice daemon. It publishes `voice.state` there and keeps one
+ssh link per stream host to `agent-deck voice mirror-in`, which writes that
+host's `mirror.json` (schema `claude-code-voice.mirror/v1`, `"relative":
+true`: `target.remote` is named from that host, `""` = itself) and publishes
+the same frame on its bus. Only the newest state is sent (no queue), every
+change plus a refresh every 5 s. The TUI badge reads `mirror.json`, so it
+lights up on every stream host. A dead daemon reaches every host as `off`
+within one poll (50 ms) plus the link. A relay that stops sends `off` down
+every link before it exits; one that is killed, sleeps or loses its link
+leaves the mirror to expire 11 s after its last write (it refreshes a live
+state every 2 s and pings while off), and the receiver (or `agent-deck web`)
+then publishes `off`. The link uses 2 s keepalives and reconnects within a
+second. An idle relay (no daemon) never overwrites another daemon's live
+mirror. A relay forwards only its own `current.json`, never a mirror. Both flags are
+required: `--to` because session titles and ids go there, `--self` because
+a target on the daemon's machine is shown under that name on each stream
+host (its `[remotes.<name>]`). A producer that stops while the voice is on
+publishes `off` with reason `stopped`; another process holding the lock
+next republishes the live state at once (`reason: start`). `agent-deck web`
+also runs a producer, in read-only mode too (it publishes state, it changes
+nothing).
+
+### Web door: `GET /events/state`
+
+Server-sent events on `agent-deck web`, owner auth as `/events/menu`
+(`?token=` accepted), served in read-only mode too. Query `kind=` (prefix
+list of `session.*` and `voice.*` kinds; default `session.status,voice.`) and
+`after=<cursor>` or the `Last-Event-ID` header. First event `hello`
+`{cursor, host, voice}` (the newest cursor and the voice state now); then one
+event per matching frame: `id: <cursor>`, `event: <kind>`, `data: <the
+canonical frame>`. Reconnecting with the last id resumes with nothing missed
+and nothing repeated; `hello.voice` is the state now, the replayed frames
+after it are older. A cursor older than the retained log, or newer than
+the log ever reached, gets `event: reset` `{reason: "cursor-too-old" |
+"cursor-ahead", cursor, voice}` and the stream continues from the newest
+frame. `: keepalive` every 15 s.
 
 ## On-disk layout
 

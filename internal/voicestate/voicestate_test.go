@@ -42,7 +42,7 @@ func writeAt(t *testing.T, dir, name, body string, mtime time.Time) {
 // liveCurrent is a current.json as runtime.ts writeContract writes it (v1.2).
 func liveCurrent(updatedAt int64) string {
 	return `{"schema":"claude-code-voice.state/v1","on":true,"mode":"listening","muted":false,"hibernating":false,"inCall":null,"micReleased":false,
- "target":{"title":"conductor-inno","sessionId":"cf9a73f3-1789471273","profile":null,"remote":"innobox","pane":"ssh:innobox:%19"},
+ "target":{"title":"conductor-alex","sessionId":"cf9a73f3-1789471273","profile":null,"remote":"box-sam","pane":"ssh:box-sam:%19"},
  "heard":"secret words","spoken":"more words","doing":null,"tts":"local","stt":"qwen3-asr","ttsEffective":"local","sttEffective":"qwen3-asr",
  "daemon":{"pid":4242,"pane":"%59","socket":"/x/pane-59.sock","band":"0.1.6"},"updatedAt":` + itoa(updatedAt) + `,
  "phase":"listening","phaseSince":1794308000000,"wakePhrase":"jarvis","heartbeatMs":10000,"fallingBack":false}`
@@ -57,7 +57,7 @@ func TestReader_LiveCurrentJSON(t *testing.T) {
 	if s == nil {
 		t.Fatal("live current.json read as no voice")
 	}
-	if s.Target.SessionID != "cf9a73f3-1789471273" || s.Target.Remote != "innobox" || s.Phase != "listening" {
+	if s.Target.SessionID != "cf9a73f3-1789471273" || s.Target.Remote != "box-sam" || s.Phase != "listening" {
 		t.Errorf("parsed %+v", s)
 	}
 	if s.Target.Profile != "" {
@@ -281,24 +281,29 @@ func TestReader_NoHeartbeatPIDOnly(t *testing.T) {
 	}
 }
 
-// Re-read on mtime (or size) change only: identical stat means no read.
+// A settled file (written more than the fresh window ago) is not re-read
+// while its stat is identical: polling it costs one stat. A file written
+// within the window is re-read even with an identical stat, because a
+// rewrite in the same coarse mtime tick looks identical
+// (TestReader_InPlaceSameSizeSameTickIsSeen).
 func TestReader_RereadsOnlyOnMtimeChange(t *testing.T) {
 	r, clock, dir := newTestReader(t, map[int]bool{4242: true})
 	body := liveCurrent(1)
-	writeAt(t, dir, "current.json", body, clock.t)
+	settled := clock.t.Add(-10 * time.Second)
+	writeAt(t, dir, "current.json", body, settled)
 	if s := r.Poll(); s == nil || s.Phase != "listening" {
 		t.Fatalf("first read = %+v", s)
 	}
-	// Same size, same mtime, different bytes: the reader must not read it.
+	// Same size, same (old) mtime, different bytes: the reader must not read it.
 	same := strings.Replace(body, `"phase":"listening"`, `"phase":"speaking!"`, 1)
 	if len(same) != len(body) {
 		t.Fatalf("test body sizes differ: %d vs %d", len(same), len(body))
 	}
-	writeAt(t, dir, "current.json", same, clock.t)
+	writeAt(t, dir, "current.json", same, settled)
 	if s := r.Poll(); s == nil || s.Phase != "listening" {
-		t.Errorf("reader re-read an unchanged stat: %+v", s)
+		t.Errorf("reader re-read an unchanged stat of a settled file: %+v", s)
 	}
-	writeAt(t, dir, "current.json", same, clock.t.Add(time.Second))
+	writeAt(t, dir, "current.json", same, clock.t)
 	if s := r.Poll(); s == nil || s.Phase != "speaking!" {
 		t.Errorf("reader missed an mtime change: %+v", s)
 	}
@@ -310,7 +315,7 @@ func liveMirror(heartbeat bool) string {
 		hb = `"heartbeatMs":10000,`
 	}
 	return `{"schema":"claude-code-voice.mirror/v1","on":true,"mode":"speaking","muted":false,"hibernating":false,"micReleased":false,
- "target":{"title":"conductor-inno","sessionId":"cf9a73f3-1789471273","profile":""},` + hb + `
+ "target":{"title":"conductor-alex","sessionId":"cf9a73f3-1789471273","profile":""},` + hb + `
  "phase":"speaking","phaseSince":1794308000000,"wakePhrase":"jarvis","fallingBack":true,"tts":"local","ttsEffective":"qwen","from":"buildmac","updatedAt":1}`
 }
 

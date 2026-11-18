@@ -58,3 +58,7 @@ func busDirFor(profile string) (string, error) {
 	}
 	return filepath.Join(root, profile), nil
 }
+
+// DirFor returns "<data-dir>/bus/<profile>" for a validated profile name,
+// without creating it (for a sidecar file such as a producer lock).
+func DirFor(profile string) (string, error) { return busDirFor(profile) }

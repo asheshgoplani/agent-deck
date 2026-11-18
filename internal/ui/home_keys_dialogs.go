@@ -890,7 +890,7 @@ func (h *Home) applyClaudeHooksDecision(install bool) {
 	}
 	// Start the status file watcher (once; unit tests run without workers).
 	if h.hookWatcher == nil && homeBackgroundWorkersEnabled {
-		hookWatcher, err := session.NewStatusFileWatcher(nil)
+		hookWatcher, err := session.NewStatusFileWatcher(h.hookChangedNotify)
 		if err != nil {
 			uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
 		} else {
@@ -976,7 +976,7 @@ func (h *Home) confirmInstallHermesHooks() tea.Cmd {
 		_ = db.SetMeta("hermes_hooks_prompted", "accepted")
 	}
 	if h.hookWatcher == nil {
-		if hookWatcher, err := session.NewStatusFileWatcher(nil); err != nil {
+		if hookWatcher, err := session.NewStatusFileWatcher(h.hookChangedNotify); err != nil {
 			uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
 		} else {
 			h.hookWatcher = hookWatcher
