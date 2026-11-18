@@ -43,9 +43,7 @@ func CountRunningInGroup(instances []*Instance, groupPath string) int {
 // CountOccupiedInGroup counts the sessions in the group that hold a slot for a
 // queue drain: running ones and starting ones (claimed and still booting).
 // Drains carry the cost of a row left at starting with no status detector to
-// move it on: it holds a drain slot until it is sampled again. Launches do
-// not: ShouldQueue keeps CountRunningInGroup, so such a row never blocks a
-// new launch.
+// move it on: it holds a drain slot until it is sampled again.
 func CountOccupiedInGroup(instances []*Instance, groupPath string) int {
 	n := 0
 	for _, inst := range instances {
@@ -56,10 +54,32 @@ func CountOccupiedInGroup(instances []*Instance, groupPath string) int {
 	return n
 }
 
+// CountLaunchSlotsHeldInGroup counts the sessions in the group that hold a
+// slot against a new launch: running ones, and starting ones whose tmux
+// session is alive. A CLI start stores "starting" and exits, and nothing
+// moves the row to "running" until the session is sampled again, so counting
+// only "running" let every quick start through a cap of 1. The liveness check
+// keeps a stale row (stored starting, pane gone) from blocking a launch.
+func CountLaunchSlotsHeldInGroup(instances []*Instance, groupPath string) int {
+	n := 0
+	for _, inst := range instances {
+		if inst == nil || inst.GroupPath != groupPath {
+			continue
+		}
+		if inst.Status == StatusRunning || (inst.Status == StatusStarting && inst.Exists()) {
+			n++
+		}
+	}
+	return n
+}
+
 // ShouldQueue reports whether a new launch into groupPath must be queued
 // because the group is at its MaxConcurrent cap.
 func ShouldQueue(instances []*Instance, groupPath string, maxConcurrent int) bool {
-	return IsAtCap(CountRunningInGroup(instances, groupPath), maxConcurrent)
+	if maxConcurrent <= 0 {
+		return false // unlimited: no tmux probe
+	}
+	return IsAtCap(CountLaunchSlotsHeldInGroup(instances, groupPath), maxConcurrent)
 }
 
 // FindNextQueued returns the oldest queued instance in the given group, or
