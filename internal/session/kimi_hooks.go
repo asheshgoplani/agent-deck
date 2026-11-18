@@ -385,6 +385,9 @@ func stripAgentDeckKimiHooks(data []byte, knownEventsOnly bool) ([]byte, bool, e
 		if i == len(blocks)-1 && blocks[i].end != len(data) {
 			break
 		}
+		if i < len(blocks)-1 && len(bytes.TrimSpace(data[blocks[i].end:blocks[i+1].start])) > 0 {
+			break
+		}
 		trailingOwnedStart = i
 	}
 	var out bytes.Buffer

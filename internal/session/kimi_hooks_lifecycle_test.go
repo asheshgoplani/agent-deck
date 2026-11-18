@@ -112,6 +112,44 @@ func TestKimiHookUninstallPreservesLineBoundaryWithoutBlankSeparator(t *testing.
 	}
 }
 
+func TestKimiHookUninstallTrailingOwnedRun(t *testing.T) {
+	owned := "[[hooks]]\nevent = \"SessionStart\"\ncommand = \"agent-deck hook-handler\"\n"
+	for _, tc := range []struct {
+		name     string
+		original string
+		want     string
+	}{
+		{
+			name:     "retained table between hooks",
+			original: "# keep\n" + owned + "[mcp]\nenabled = true\n\n" + owned,
+			want:     "# keep\n[mcp]\nenabled = true\n",
+		},
+		{
+			name:     "adjacent appended blocks",
+			original: "# keep\n\n" + owned + "\n" + owned,
+			want:     "# keep\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.toml")
+			if err := os.WriteFile(configPath, []byte(tc.original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if removed, err := session.RemoveKimiHooks(dir); err != nil || !removed {
+				t.Fatalf("RemoveKimiHooks = %v, %v", removed, err)
+			}
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tc.want {
+				t.Fatalf("uninstall changed retained TOML layout: got %q, want %q", data, tc.want)
+			}
+		})
+	}
+}
+
 func TestKimiHookUninstallPreservesBlankLineBeforeUserHook(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
