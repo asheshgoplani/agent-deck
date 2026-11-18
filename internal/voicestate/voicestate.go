@@ -91,9 +91,14 @@ type State struct {
 	TTSEffective string  `json:"ttsEffective"`
 	STTEffective string  `json:"sttEffective"`
 	Target       Target  `json:"target"`
-	Daemon       Daemon  `json:"daemon"`
-	From         string  `json:"from"`
-	UpdatedAt    int64   `json:"updatedAt"`
+	// Switching is the session the mic is moving to during a spoken switch
+	// (daemon contract v1.3, written before its first ssh call); Target
+	// stays the old session until the switch is done. A hint only: never
+	// draw the new session as holding the mic from it. nil = absent.
+	Switching *Target `json:"switching"`
+	Daemon    Daemon  `json:"daemon"`
+	From      string  `json:"from"`
+	UpdatedAt int64   `json:"updatedAt"`
 	// ClientSource is which client holds the mic (mac, glasses, phone),
 	// when the daemon says so (plan 2.3: an added field, may be absent).
 	ClientSource string `json:"source"`

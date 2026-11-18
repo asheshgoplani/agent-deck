@@ -40,6 +40,7 @@ type Mirror struct {
 	STT          string        `json:"stt"`
 	STTEffective string        `json:"sttEffective"`
 	Target       *MirrorTarget `json:"target"`
+	Switching    *MirrorTarget `json:"switching"`
 	ClientSource string        `json:"source,omitempty"`
 	From         string        `json:"from"`
 	UpdatedAt    int64         `json:"updatedAt"`
@@ -79,6 +80,10 @@ func MirrorFor(s *State, dest, self string, nowMs int64) Mirror {
 	if s.Target.SessionID != "" || s.Target.Title != "" {
 		m.Target = &MirrorTarget{Title: s.Target.Title, SessionID: s.Target.SessionID, Profile: s.Target.Profile,
 			Remote: RelativeRemote(s.Target.Remote, dest, self)}
+	}
+	if w := s.Switching; w != nil && (w.SessionID != "" || w.Title != "") {
+		m.Switching = &MirrorTarget{Title: w.Title, SessionID: w.SessionID, Profile: w.Profile,
+			Remote: RelativeRemote(w.Remote, dest, self)}
 	}
 	return m
 }

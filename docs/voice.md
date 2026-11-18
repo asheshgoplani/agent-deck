@@ -20,6 +20,7 @@ Reads the voice daemon's state file (`$CLAUDE_VOICE_STATE_DIR`, else `~/.claude/
 - `on` is false whenever `phase` is `off`; there is never `on:true` with `off`.
 - `from` is `local` (current.json), `mirror` (mirror.json) or `none`. `origin` is the daemon's machine as `voice.state` frames name it (a mirror's `from`); `""` for this machine's own file or no voice. `target.host` is `""` for this machine, else the remote name.
 - `source` (mac, glasses, phone) is empty until the daemon's state file carries it.
+- `switching` is `{id, title, host, profile}` while a spoken switch is under way (the daemon writes it before its first ssh call), else `null`. It is a hint only: `target` is the session that holds the mic.
 - No live voice (no file, `on: false`, dead daemon, stale file) prints `{"on":false,"phase":"off",…,"from":"none"}` and exits 0.
 
 ## needs-me
