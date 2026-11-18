@@ -55,6 +55,27 @@ func TestOpenCode2RemoteCreationCatalog(t *testing.T) {
 	t.Fatal("remote catalog has no opencode2 launcher")
 }
 
+func TestKimiRemoteCreationCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+	catalog, err := buildCreationCatalog("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range catalog.Tools {
+		if tool.Name == "kimi" {
+			if tool.Kind != "kimi" {
+				t.Fatalf("Kimi catalog entry: %+v", tool)
+			}
+			return
+		}
+	}
+	t.Fatal("remote catalog has no Kimi launcher")
+}
+
 func TestRemoteCreationFlagTypes(t *testing.T) {
 	fs := flag.NewFlagSet("fixture", flag.ContinueOnError)
 	fs.Bool("enabled", false, "")
@@ -120,10 +141,10 @@ func TestCreationArgumentNormalization(t *testing.T) {
 func TestCreationOptionPreflightRejectsBeforeEffects(t *testing.T) {
 	fs := flag.NewFlagSet("creation", flag.ContinueOnError)
 	flags := registerClaudeOptionFlags(fs)
-	if err := validateCreationOptions("shell", "", "", "", false, flags, []string{"missing"}, nil, nil, nil); err == nil {
+	if err := validateCreationOptions("shell", "", "", "", false, false, flags, []string{"missing"}, nil, nil, nil); err == nil {
 		t.Fatal("unsupported MCP accepted")
 	}
-	if err := validateCreationOptions("codex", "", "", "invalid", false, flags, nil, nil, nil, nil); err == nil {
+	if err := validateCreationOptions("codex", "", "", "invalid", false, false, flags, nil, nil, nil, nil); err == nil {
 		t.Fatal("invalid effort accepted")
 	}
 }

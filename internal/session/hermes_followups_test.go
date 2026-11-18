@@ -305,6 +305,40 @@ func TestReadHermesDetectedAtFromToolData(t *testing.T) {
 
 // Review S4: a nested hermes outside the entry's directories cannot
 // overwrite the entry's record (the hook checks the seed's cwd roots).
+func TestMoveOwnedSessionsFromAbandonedScopeRetainsSourceOnFailure(t *testing.T) {
+	for _, suffix := range []string{hermesOwnedSessionSuffix, kimiOwnedSessionSuffix} {
+		t.Run(suffix, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			root := GetHooksDir()
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			id := "transfer-failure"
+			src := filepath.Join(root, id+suffix)
+			content := []byte(`{"id":"recoverable"}`)
+			if err := os.WriteFile(src, content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "sandbox"), []byte("blocks MkdirAll"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			moveOwnedSessionsFromAbandonedScope(id, root)
+
+			got, err := os.ReadFile(src)
+			if err != nil {
+				t.Fatalf("source record lost after failed transfer: %v", err)
+			}
+			if string(got) != string(content) {
+				t.Fatalf("source record changed after failed transfer: %q", got)
+			}
+			if _, err := os.Stat(filepath.Join(root, "sandbox", id, id+suffix)); err == nil {
+				t.Fatal("destination unexpectedly exists")
+			}
+		})
+	}
+}
+
 func TestWriteHermesOwnedSessionIDChecksTheCwdRoots(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workspace := t.TempDir()

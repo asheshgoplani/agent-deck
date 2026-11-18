@@ -10,7 +10,7 @@ import (
 func TestNoOperandHelpPreservesExistingFiles(t *testing.T) {
 	parallelSubprocessTest(t)
 	var commands [][]string
-	for _, family := range []string{"hooks", "codex-hooks", "cursor-hooks", "gemini-hooks", "hermes-hooks", "tmux-hooks", "pi-hooks"} {
+	for _, family := range []string{"hooks", "codex-hooks", "cursor-hooks", "gemini-hooks", "hermes-hooks", "tmux-hooks", "pi-hooks", "kimi-hooks"} {
 		for _, action := range []string{"install", "uninstall", "status"} {
 			for _, help := range []string{"help", "--help", "-h"} {
 				commands = append(commands, []string{family, action, help})

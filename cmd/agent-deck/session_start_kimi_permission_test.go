@@ -1,0 +1,85 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"al.essio.dev/pkg/shellescape"
+	"github.com/stretchr/testify/require"
+)
+
+func TestSessionStartKimiPermissionFlags(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	for _, mode := range []struct {
+		name string
+		env  []string
+	}{
+		{name: "registry"},
+		{name: "legacy", env: []string{envCoreRegistry + "=0"}},
+	} {
+		for _, tc := range []struct {
+			name        string
+			initialArgs []string
+			startArgs   []string
+			wantArgs    []string
+		}{
+			{name: "yolo", startArgs: []string{"--yolo"}, wantArgs: []string{"--yolo"}},
+			{name: "explicit false overrides never ask", initialArgs: []string{"--auto"}, startArgs: []string{"--yolo=false"}},
+			{name: "omitted inherits never ask", initialArgs: []string{"--auto"}, wantArgs: []string{"--auto"}},
+			{name: "auto", startArgs: []string{"--auto"}, wantArgs: []string{"--auto"}},
+		} {
+			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
+				home := t.TempDir()
+				work := filepath.Join(home, "proj")
+				binDir := filepath.Join(home, "bin")
+				if err := os.MkdirAll(work, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(binDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				argsFile := filepath.Join(home, "kimi-args")
+				fakeKimi := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellescape.Quote(argsFile) + "\nwhile :; do sleep 1; done\n"
+				if err := os.WriteFile(filepath.Join(binDir, "kimi"), []byte(fakeKimi), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				env := append([]string{}, mode.env...)
+				env = append(env, "PATH="+binDir+":"+os.Getenv("PATH"))
+
+				addArgs := []string{"add", "-t", "kimi-start", "-c", "kimi", "--no-parent", "--json"}
+				addArgs = append(addArgs, tc.initialArgs...)
+				addArgs = append(addArgs, work)
+				stdout, stderr, code := runAgentDeckEnv(t, home, "", env, addArgs...)
+				if code != 0 {
+					t.Fatalf("add failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+				}
+				t.Cleanup(func() { runAgentDeckEnv(t, home, "", env, "session", "stop", "kimi-start") })
+
+				startArgs := append([]string{"session", "start", "kimi-start", "--no-wait"}, tc.startArgs...)
+				stdout, stderr, code = runAgentDeckEnv(t, home, "", env, startArgs...)
+				if code != 0 {
+					t.Fatalf("start failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+				}
+				var data []byte
+				require.Eventually(t, func() bool {
+					var err error
+					data, err = os.ReadFile(argsFile)
+					return err == nil && len(data) > 0
+				}, 15*time.Second, 10*time.Millisecond, "fake Kimi did not write its arguments")
+				var gotArgs []string
+				if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
+					gotArgs = strings.Split(trimmed, "\n")
+				}
+				if !slices.Equal(gotArgs, tc.wantArgs) {
+					t.Fatalf("Kimi argv = %q, want %q", gotArgs, tc.wantArgs)
+				}
+			})
+		}
+	}
+}

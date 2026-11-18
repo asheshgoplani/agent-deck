@@ -25,7 +25,8 @@ func cliSessionStart(profile string, args []string) {
 	messageShort := fs.String("m", "", "Initial message to send once agent is ready (short)")
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
 	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
+	yoloMode := fs.Bool("yolo", false, "Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)")
+	autoMode := fs.Bool("auto", false, "Enable Never Ask mode when starting Kimi sessions")
 	attach := fs.Bool("attach", false, "Attach to the session after starting (requires an interactive terminal)")
 	noWait := fs.Bool("no-wait", false, "Return as soon as the process is spawned instead of waiting up to 3s for the tool's session id (a caller that attaches right away; the id is still captured by hooks)")
 
@@ -67,6 +68,9 @@ func cliSessionStart(profile string, args []string) {
 		Session: fs.Arg(0),
 		Message: initialMessage,
 		Yolo:    *yoloMode,
+		YoloSet: cliFlagWasSet(fs, "yolo"),
+		Auto:    *autoMode,
+		AutoSet: cliFlagWasSet(fs, "auto"),
 		NoWait:  *noWait,
 	}, nil)
 	if res.Err != nil {

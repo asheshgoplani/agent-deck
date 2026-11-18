@@ -38,7 +38,7 @@ const (
 
 // LaunchTools are the agent tools launch_session accepts (-c). A free-form
 // command is never accepted.
-var LaunchTools = []string{"claude", "codex", "gemini", "opencode", "pi", "omp", "copilot", "crush", "cursor", "hermes", "deepseek"}
+var LaunchTools = []string{"claude", "codex", "gemini", "opencode", "pi", "omp", "copilot", "crush", "cursor", "hermes", "deepseek", "kimi"}
 
 // maxMessageBytes bounds a send_message / launch_session message.
 const maxMessageBytes = 64 << 10

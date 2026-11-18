@@ -174,6 +174,20 @@ func TestCreateSessionTool_Hermes(t *testing.T) {
 	}
 }
 
+func TestCreateSessionTool_Kimi(t *testing.T) {
+	tool, command := createSessionTool("kimi")
+	if tool != "kimi" || command != "kimi" {
+		t.Fatalf("createSessionTool(\"kimi\") = (%q, %q), want (\"kimi\", \"kimi\")", tool, command)
+	}
+}
+
+func TestCreateSessionTool_Deepseek(t *testing.T) {
+	tool, command := createSessionTool("deepseek")
+	if tool != "deepseek" || command != "deepseek" {
+		t.Fatalf("createSessionTool(\"deepseek\") = (%q, %q), want (\"deepseek\", \"deepseek\")", tool, command)
+	}
+}
+
 func TestHomeInit(t *testing.T) {
 	home := NewHome()
 	cmd := home.Init()

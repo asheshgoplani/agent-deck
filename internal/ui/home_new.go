@@ -87,6 +87,10 @@ func shouldPromptHermesHooks(installed bool, decision string) bool {
 	return !installed && decision == ""
 }
 
+func shouldPromptKimiHooks(installed bool, decision string) bool {
+	return !installed && decision == ""
+}
+
 // claudeHooksStartup is what the TUI does about Claude hooks at startup.
 type claudeHooksStartup struct {
 	prompt    bool // ask the user to install
@@ -521,6 +525,32 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 				}
 				if installed && h.hookWatcher == nil {
 					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
+						h.hookWatcher = hookWatcher
+						go hookWatcher.Start()
+					}
+				}
+			}
+		}
+	}
+
+	if kimiCmd := strings.TrimSpace(session.GetToolCommand("kimi")); homeBackgroundWorkersEnabled && kimiCmd != "" {
+		if kimiFields := strings.Fields(kimiCmd); len(kimiFields) > 0 {
+			if _, err := exec.LookPath(kimiFields[0]); err == nil {
+				kimiConfigDir := session.GetKimiConfigDir()
+				installed := session.CheckKimiHooksInstalled(kimiConfigDir)
+				if userConfig == nil || userConfig.Kimi.GetHooksEnabled() {
+					decision := ""
+					if db := statedb.GetGlobal(); db != nil {
+						decision, _ = db.GetMeta("kimi_hooks_prompted")
+					}
+					if shouldPromptKimiHooks(installed, decision) {
+						h.pendingKimiHooksPrompt = true
+					}
+				}
+				if installed && h.hookWatcher == nil {
+					if hookWatcher, err := session.NewStatusFileWatcher(nil); err != nil {
+						uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
+					} else {
 						h.hookWatcher = hookWatcher
 						go hookWatcher.Start()
 					}

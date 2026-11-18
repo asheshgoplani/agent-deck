@@ -188,11 +188,11 @@ func (i *Instance) LiveStatusPrior() (status Status, flipPending bool, sampled b
 }
 
 // shouldDebounceTmuxFlipForTool is deliberately narrower than HookStatusTool:
-// pi has hooks (#2222) but is excluded here on purpose, like shell and "".
+// pi has hooks (#2222) but is excluded here on purpose, like shell.
 // The call site in updateStatus explains why.
 func shouldDebounceTmuxFlipForTool(tool string) bool {
 	return tool == "" || IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
-		tool == "gemini" || tool == "hermes" || tool == "cursor"
+		tool == "gemini" || tool == "hermes" || tool == "kimi" || tool == "cursor"
 }
 
 // setCodexGenerationEvidence copies the durable notify edge pair into the

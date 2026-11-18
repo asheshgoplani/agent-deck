@@ -13,7 +13,7 @@ import (
 func TestWebMutatorCreateSessionRecordsItsLaunchedTool(t *testing.T) {
 	skipIfNoTmuxBinaryUI(t)
 	h, storage := newHeadlessHomeForTest(t, fmt.Sprintf("_test_web_launched_tool_%d", time.Now().UnixNano()))
-	id, err := NewWebMutator(h).CreateSession("web-launched", "shell", t.TempDir(), "", "", "")
+	id, err := NewWebMutator(h).CreateSession("web-launched", "shell", t.TempDir(), "", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

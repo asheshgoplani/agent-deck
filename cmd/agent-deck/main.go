@@ -754,6 +754,9 @@ func main() {
 		case "hermes-hooks":
 			handleHermesHooks(args[1:])
 			return
+		case "kimi-hooks":
+			handleKimiHooks(args[1:])
+			return
 		case "cursor-hooks":
 			handleCursorHooks(args[1:])
 			return
@@ -1670,7 +1673,7 @@ var commandRegistry = map[string]bool{
 	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
-	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
+	"hermes-hooks": true, "kimi-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "msg": true, "feedback": true, "whats-new": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true, "completion": true,
@@ -2113,10 +2116,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
-	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
+	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode, kimi)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
+	yoloMode := fs.Bool("yolo", false, "Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
+	autoMode := fs.Bool("auto", false, "Kimi only: Never Ask (full auto-approve)")
 	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
 	// Socket isolation (v1.7.50+, issue #687). Overrides the installation-
@@ -2266,7 +2270,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		exitCLI(1)
 	}
 
-	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, *autoMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
 		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
@@ -2829,6 +2833,10 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	}
 
 	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode, cliFlagWasSet(fs, "yolo", "gemini-yolo")); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		exitCLI(1)
+	}
+	if err := applyCLIKimiPermissionFlags(newInstance, *yoloMode || *geminiYoloMode, *autoMode, cliFlagWasSet(fs, "yolo", "gemini-yolo"), cliFlagWasSet(fs, "auto")); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		exitCLI(1)
 	}
@@ -4804,6 +4812,7 @@ func printHelp() {
 	fmt.Println("  tmux-hooks       Manage the window policy hook on the tmux server")
 	fmt.Println("  pi-hooks         Manage pi (pi-coding-agent) hook integration")
 	fmt.Println("  deepseek         Inspect the DeepSeek Harness (dsh) integration")
+	fmt.Println("  kimi-hooks       Manage Kimi Code hook integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
 	fmt.Println("  usage            Show remaining provider subscription quota")
@@ -4878,6 +4887,9 @@ func printHelp() {
 	fmt.Println("  deepseek status           Show resolved dsh binary, DSH_HOME, profile")
 	fmt.Println("  deepseek profiles         List profiles under $DSH_HOME/profiles")
 	fmt.Println("  deepseek sessions [path]  List dsh sessions recorded for a workspace")
+	fmt.Println("  kimi-hooks install        Install Kimi Code hooks")
+	fmt.Println("  kimi-hooks uninstall      Remove Kimi Code hooks")
+	fmt.Println("  kimi-hooks status         Show Kimi Code hooks install status")
 	fmt.Println()
 	fmt.Println("Group Commands:")
 	fmt.Println("  group list                List all groups")

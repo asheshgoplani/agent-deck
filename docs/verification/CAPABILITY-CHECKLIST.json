@@ -484,6 +484,16 @@
    "daemonish": false
   },
   {
+   "id": "CAP-CLI-050",
+   "area": "CLI",
+   "name": "kimi-hooks install|uninstall|status",
+   "surfaces_raw": "CLI",
+   "surfaces": [
+    "CLI"
+   ],
+   "daemonish": false
+  },
+  {
    "id": "CAP-TUI-001",
    "area": "TUI",
    "name": "Home screen: session list / group tree navigation",
@@ -2953,6 +2963,17 @@
    "evidence": "evidence/cli/ev-CAP-CLI-049-CLI.txt",
    "status": "verified",
    "notes": "ResolveSession verified across all three modes: exact title, ID prefix (>=6 chars), exact path. CLIOutput: --json error shape {success:false,error,code} confirmed; codes NOT_FOUND (exit 2) and AMBIGUO"
+  },
+  {
+   "id": "CAP-CLI-050",
+   "area": "CLI",
+   "name": "kimi-hooks install|uninstall|status",
+   "surface": "CLI",
+   "automated_test": "",
+   "user_verified": "2026-11-18",
+   "evidence": "evidence/cli/ev-CAP-CLI-050-CLI.txt",
+   "status": "verified",
+   "notes": "Real Kimi 2.4.1 in offline Docker: NOT INSTALLED -> install/idempotent reinstall -> INSTALLED; Kimi doctor accepts the config; uninstall -> NOT INSTALLED and doctor remains valid."
   },
   {
    "id": "CAP-TUI-001",

@@ -69,7 +69,12 @@ func ClassifyPaneFrame(tool, content string) FrameVerdict {
 // trim it records whether the frame shows an open menu or an error that
 // outranks that work (s.lastBackgroundBlocked). Caller holds s.mu.
 func (s *Session) prepareFrame(content string) string {
-	if !s.isClaudeTool() {
+	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand())
+	if tool == "kimi" {
+		s.lastBackgroundWork, s.lastBackgroundBlocked = BackgroundWork{}, false
+		return trimKimiToCurrentTurn(content)
+	}
+	if !strings.EqualFold(tool, "claude") {
 		s.lastBackgroundWork, s.lastBackgroundBlocked = BackgroundWork{}, false
 		return content
 	}
@@ -77,6 +82,93 @@ func (s *Session) prepareFrame(content string) string {
 	trimmed := trimClaudeTrailingRoster(content)
 	s.lastBackgroundBlocked = s.backgroundWorkOutrankedLocked(trimmed)
 	return trimmed
+}
+
+var (
+	kimiSubmittedPromptRe = regexp.MustCompile(`^\s*❯\s+`)
+	kimiComposerRe        = regexp.MustCompile(`^\s*│ >`)
+	kimiApprovalPromptRe  = regexp.MustCompile(`(?m)^\s*▶ Run this command\?\s*$`)
+)
+
+func trimKimiToCurrentTurn(content string) string {
+	lines := strings.Split(content, "\n")
+	composer := -1
+	for i, line := range lines {
+		if kimiComposerRe.MatchString(line) {
+			composer = i
+		}
+	}
+	if composer < 0 {
+		return content
+	}
+	submitted := -1
+	for i := 0; i < composer; i++ {
+		if kimiSubmittedPromptRe.MatchString(lines[i]) {
+			submitted = i
+		}
+	}
+	if submitted < 0 {
+		return content
+	}
+	return strings.Join(lines[submitted+1:], "\n")
+}
+
+// kimiApprovalOutranksBusy reports whether the latest Kimi approval panel
+// follows the retry/generation evidence still visible above it. A later busy
+// line keeps its priority; submitted prompt glyphs are not turn boundaries.
+func (s *Session) kimiApprovalOutranksBusy(content string) bool {
+	if inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand()) != "kimi" ||
+		!strings.Contains(content, "▶ Run this command?") {
+		return false
+	}
+	approvalAt := -1
+	for end := len(content); end > 0; {
+		at := strings.LastIndex(content[:end], "▶ Run this command?")
+		if at < 0 {
+			break
+		}
+		lineStart := strings.LastIndex(content[:at], "\n") + 1
+		lineEnd := len(content)
+		if next := strings.IndexByte(content[at:], '\n'); next >= 0 {
+			lineEnd = at + next
+		}
+		if kimiApprovalPromptRe.MatchString(content[lineStart:lineEnd]) {
+			approvalAt = lineStart
+			break
+		}
+		end = at
+	}
+	if approvalAt < 0 {
+		return false
+	}
+	patterns := s.resolvedPatterns
+	if patterns == nil {
+		patterns = defaultResolvedPatternsForTool("kimi")
+	}
+	if patterns != nil {
+		for _, re := range patterns.BusyRegexps {
+			if re.MatchString(content[approvalAt:]) {
+				return false
+			}
+		}
+		lowerContent := strings.ToLower(content[approvalAt:])
+		statusBarLines := lastNLines(content, 3)
+		spinnerChars := defaultSpinnerChars()
+		if len(patterns.SpinnerChars) > 0 {
+			spinnerChars = patterns.SpinnerChars
+		}
+		for _, str := range patterns.BusyStrings {
+			lowerStr := strings.ToLower(str)
+			if !strings.Contains(lowerContent, lowerStr) {
+				continue
+			}
+			if strings.Contains(lowerStr, "interrupt") && !hasInterruptBusyContext(statusBarLines, lowerStr, spinnerChars) {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 // claudeFooterRe matches the mode line under Claude's input box, the last line

@@ -299,6 +299,8 @@ func toolForExecutable(base string) string {
 		return "claude"
 	case "gemini":
 		return "gemini"
+	case "kimi":
+		return "kimi"
 	case "opencode", "opencode2", "open-code":
 		return "opencode"
 	case "codex":

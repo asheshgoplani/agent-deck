@@ -34,10 +34,23 @@ describe('modelOptionsForTool', () => {
     ])
   })
 
+  it('shows friendly Kimi names while preserving model aliases', async () => {
+    const { modelOptionsForTool } = await import(modulePath)
+    expect(modelOptionsForTool('kimi', {})).toEqual([
+      { value: 'kimi-code/k3.1-pro', label: 'K3.1 Pro' },
+      { value: 'kimi-code/k3.1-pro-highspeed', label: 'K3.1 Pro Highspeed' },
+      { value: 'kimi-code/k3', label: 'K3' },
+      { value: 'kimi-code/k3-256k', label: 'K3 256K' },
+      { value: 'kimi-code/kimi-for-coding', label: 'K2.8' },
+      { value: 'kimi-code/kimi-for-coding-highspeed', label: 'K2.7 Highspeed' },
+    ])
+  })
+
   it('falls back to the built-in table without a server entry', async () => {
     const { modelOptionsForTool, MODEL_ID_CATALOG } = await import(modulePath)
     expect(modelOptionsForTool('claude', SERVER)).toBe(MODEL_ID_CATALOG.claude)
     expect(modelOptionsForTool('codex', {})).toBe(MODEL_ID_CATALOG.codex)
+    expect(modelOptionsForTool('kimi', {})).toBe(MODEL_ID_CATALOG.kimi)
     expect(modelOptionsForTool('shell', undefined)).toEqual([])
   })
 })

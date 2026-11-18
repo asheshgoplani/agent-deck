@@ -154,6 +154,7 @@ var builtinAgentTools = map[string]bool{
 	"copilot":  true,
 	"cursor":   true,
 	"hermes":   true,
+	"kimi":     true,
 	"crush":    true,
 	"muse":     true,
 	// pi and omp (Oh My Pi) launch with the same `<env>; AGENTDECK_... pi

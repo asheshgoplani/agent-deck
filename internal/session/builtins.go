@@ -100,5 +100,6 @@ func builtinTools() []builtinTool {
 		{Name: "deepseek", Icon: "🐋", Color: "cyan", detectSubstrings: []string{"deepseek"}, detectTokens: []string{"dsh"}},
 		{Name: "aider", Icon: "🐚", Color: "red"},
 		{Name: "shell", Icon: "🐚"},
+		{Name: "kimi", Icon: "🌙", Color: "purple", detectTokens: []string{"kimi"}, executableOnly: true},
 	}
 }

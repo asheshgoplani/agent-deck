@@ -13,7 +13,7 @@
        │                                                                                    │       
        │      Agent:   shell     claude     gemini     opencode     opencode2               │       
        │               codex     pi     copilot     crush     muse     cursor agent         │       
-       │               hermes     deepseek     omp                                          │       
+       │               hermes     deepseek     omp     kimi                                 │       
        │                                                                                    │       
        │      Path:  > /home/user/project                                                   │       
        │                                                                                    │       

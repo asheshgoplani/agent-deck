@@ -31,9 +31,9 @@ import (
 // The static lists in model_catalog.go and reasoning_effort.go go stale every
 // time a vendor ships a model. Where the installed CLI can list its own models
 // without a billed request, Agent Deck asks it and merges the answer in front
-// of the static list. Codex (`codex debug models`) and OpenCode (`opencode
-// models`, #2664) have such a command; Claude Code and Gemini have no local
-// listing and stay static.
+// of the static list. Codex (`codex debug models`), OpenCode (`opencode
+// models`, #2664) and Kimi (`kimi provider list --json`) have such a command;
+// Claude Code and Gemini have no local listing and stay static.
 //
 // The probe runs on the host that launches the session, with a short timeout.
 // Its result is cached on disk per tool, keyed by the resolved binary path,
@@ -45,7 +45,7 @@ import (
 
 // ModelProbeResult is what a probe learned from an installed CLI.
 type ModelProbeResult struct {
-	// Models lists the selectable model IDs in the CLI's own display order.
+	// Models lists the selectable model IDs in deterministic display order.
 	Models []string `json:"models"`
 	// Efforts maps a model ID to the reasoning efforts that model accepts.
 	// Missing entries mean "no per-model information".
@@ -64,8 +64,8 @@ type modelProber struct {
 	timeout time.Duration
 	// dir is the working directory for the probe; empty means inherited.
 	dir func() string
-	// env is the VAR=value prefix of the configured command, so the probe
-	// sees the same config dir and credentials as the sessions.
+	// env supplies the configured command's VAR=value prefix and any
+	// tool-specific config dir, so the probe sees the sessions' configuration.
 	env func() []string
 }
 
@@ -85,8 +85,15 @@ var openCodeModelProber = modelProber{
 	env: func() []string { return probeEnvFromCommand(GetToolCommand("opencode")) },
 }
 
+// kimiModelProber asks for the configured model aliases. OAuth-managed accounts
+// do not appear in this table, so the static catalog keeps the managed models.
+var kimiModelProber = modelProber{
+	name: "kimi", binary: kimiProbeBinary, args: []string{"provider", "list", "--json"}, parse: parseKimiProviderList,
+	dir: modelProbeHomeDir, env: kimiProbeEnv,
+}
+
 // modelProbers lists the tools that can answer.
-var modelProbers = []modelProber{codexModelProber, openCodeModelProber}
+var modelProbers = []modelProber{codexModelProber, openCodeModelProber, kimiModelProber}
 
 // modelProberFor returns the prober for a tool kind. A switch, not a map
 // lookup, so the returned prober never carries the caller's string.
@@ -96,6 +103,8 @@ func modelProberFor(kind string) (modelProber, bool) {
 		return codexModelProber, true
 	case "opencode":
 		return openCodeModelProber, true
+	case "kimi":
+		return kimiModelProber, true
 	}
 	return modelProber{}, false
 }
@@ -109,6 +118,25 @@ func codexProbeBinary() string {
 // openCodeProbeBinary is the executable of the configured [opencode] command.
 func openCodeProbeBinary() string {
 	return probeBinaryFromCommand(GetToolCommand("opencode"), "opencode")
+}
+
+// kimiProbeBinary is the executable of the configured [kimi] command.
+func kimiProbeBinary() string {
+	return probeBinaryFromCommand(GetToolCommand("kimi"), "kimi")
+}
+
+func kimiProbeEnv() []string {
+	env := probeEnvFromCommand(GetToolCommand("kimi"))
+	cfg, _ := LoadUserConfig()
+	if cfg == nil || strings.TrimSpace(cfg.Kimi.ConfigDir) == "" {
+		return env
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "KIMI_CODE_HOME=") {
+			return env
+		}
+	}
+	return append(env, "KIMI_CODE_HOME="+ExpandPath(strings.TrimSpace(cfg.Kimi.ConfigDir)))
 }
 
 // probeBinaryFromCommand returns the executable of a configured command line.
@@ -574,6 +602,32 @@ func parseOpenCodeModels(data []byte) (*ModelProbeResult, error) {
 	if len(result.Models) == 0 {
 		return nil, errors.New("parse opencode models: no models")
 	}
+	return result, nil
+}
+
+// parseKimiProviderList parses `kimi provider list --json`. Model aliases are
+// keys in an object, so sort them to keep suggestions deterministic.
+func parseKimiProviderList(data []byte) (*ModelProbeResult, error) {
+	var payload struct {
+		Models *map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("parse kimi provider list: %w", err)
+	}
+	if payload.Models == nil {
+		return nil, errors.New("parse kimi provider list: missing models object")
+	}
+	if len(*payload.Models) == 0 {
+		return nil, errors.New("parse kimi provider list: no models")
+	}
+	result := &ModelProbeResult{Models: make([]string, 0, len(*payload.Models))}
+	for id := range *payload.Models {
+		if !probeIDPattern.MatchString(id) {
+			return nil, fmt.Errorf("parse kimi provider list: invalid model alias %q", id)
+		}
+		result.Models = append(result.Models, id)
+	}
+	sort.Strings(result.Models)
 	return result, nil
 }
 

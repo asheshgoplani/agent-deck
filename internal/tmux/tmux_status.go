@@ -958,6 +958,9 @@ func (s *Session) hasBusyIndicator(content string) bool {
 	if s.claudeMenuOutranksBusy(content) {
 		return false
 	}
+	if s.kimiApprovalOutranksBusy(content) {
+		return false
+	}
 	// Always use spinner movement detection regardless of resolvedPatterns
 	return s.hasBusyIndicatorResolved(content)
 }

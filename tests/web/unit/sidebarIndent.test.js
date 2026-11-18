@@ -19,9 +19,8 @@ const sess = (id, groupPath) => ({
   session: { id, title: id, groupPath, tool: 'claude', status: 'idle' },
 })
 
-// Render with the SAME preact instance the components use (vitest.config.js
-// aliases the bare specifier); @testing-library/preact pulls its own copy and
-// the two instances' hook state do not line up.
+// Render directly with the same Preact instance the components use;
+// this suite manages its own containers.
 function mount(vnode) {
   const container = document.createElement('div')
   document.body.appendChild(container)

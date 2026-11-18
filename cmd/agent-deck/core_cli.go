@@ -40,6 +40,7 @@ func coreRegistry() *core.Registry {
 			ApplyYolo: func(inst *session.Instance, enabled bool) error {
 				return applyCLIYoloOverride(inst, enabled)
 			},
+			ApplyKimiPermissions: applyCLIKimiPermissionFlags,
 		}
 		if err := core.RegisterBuiltins(cliRegistry, deps); err != nil {
 			panic(err)

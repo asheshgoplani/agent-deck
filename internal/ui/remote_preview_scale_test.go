@@ -419,7 +419,7 @@ func everyFieldHome(t *testing.T, fixedPollTime time.Time) *Home {
 	t.Helper()
 	home := goldenRemotePreviewHome(t)
 	withControllerVersion(t, "1.16.11")
-	tools := []string{"claude", "codex", "pi", "gemini", "opencode", "aider", "cursor-agent", "amp", "goose", "shell", "kimi", "qwen-code", "copilot-cli"}
+	tools := []string{"claude", "codex", "pi", "gemini", "opencode", "aider", "cursor-agent", "amp", "goose", "shell", "qwen-code", "copilot-cli", "kimi"}
 	var infos []session.RemoteSessionInfo
 	for i, tool := range tools {
 		infos = append(infos, session.RemoteSessionInfo{ID: fmt.Sprintf("r%d", i), Title: tool, Status: []string{"running", "waiting", "idle", "stopped", "error"}[i%5], Tool: tool})

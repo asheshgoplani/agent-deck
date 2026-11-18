@@ -187,11 +187,11 @@ func pruneHermesAbandonedScope(instanceID, dir string) {
 	if _, err := os.Stat(filepath.Join(dir, instanceID+".generation.json")); err == nil {
 		return
 	}
-	// The abandoned scope's own-session record moves to the active scope when
+	// The abandoned scope's own-session records move to the active scope when
 	// that has none (a sandbox toggle must not lose the conversation a later
-	// restart resumes), and is removed otherwise, so it does not outlive the
+	// restart resumes), and are removed otherwise, so they do not outlive the
 	// switch and the sandbox directory can be removed.
-	moveHermesOwnedSessionFromAbandonedScope(instanceID, dir)
+	moveOwnedSessionsFromAbandonedScope(instanceID, dir)
 	lockPath := filepath.Join(dir, instanceID+".lock")
 	f, err := os.OpenFile(lockPath, os.O_RDWR, 0600)
 	if err != nil {
@@ -519,23 +519,27 @@ func GetHermesGatewayURL() string {
 	return DiscoverHermesGatewayURL()
 }
 
-// moveHermesOwnedSessionFromAbandonedScope moves the own-session record out
-// of the abandoned scope dir into the other scope, unless that already holds
-// one, in which case the abandoned record is removed.
-func moveHermesOwnedSessionFromAbandonedScope(instanceID, dir string) {
-	src := filepath.Join(dir, instanceID+hermesOwnedSessionSuffix)
-	if _, err := os.Stat(src); err != nil {
-		return
-	}
+// moveOwnedSessionsFromAbandonedScope moves own-session records out of the
+// abandoned scope dir into the other scope, unless that already holds one, in
+// which case the abandoned record is removed.
+func moveOwnedSessionsFromAbandonedScope(instanceID, dir string) {
 	active := GetHooksDir()
 	if filepath.Clean(dir) == filepath.Clean(GetHooksDir()) {
 		active = filepath.Join(GetHooksDir(), "sandbox", instanceID)
 	}
-	dst := filepath.Join(active, instanceID+hermesOwnedSessionSuffix)
-	if _, err := os.Stat(dst); os.IsNotExist(err) {
-		if err := os.MkdirAll(active, 0700); err == nil && os.Rename(src, dst) == nil {
-			return
+	for _, suffix := range []string{hermesOwnedSessionSuffix, kimiOwnedSessionSuffix} {
+		src := filepath.Join(dir, instanceID+suffix)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(active, instanceID+suffix)
+		if _, err := os.Stat(dst); os.IsNotExist(err) {
+			if err := os.MkdirAll(active, 0700); err == nil && os.Rename(src, dst) == nil {
+				continue
+			}
+		}
+		if _, err := os.Stat(dst); err == nil {
+			_ = os.Remove(src)
 		}
 	}
-	_ = os.Remove(src)
 }

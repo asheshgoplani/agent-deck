@@ -47,7 +47,7 @@ end
 complete -c agent-deck -f -n "test (count (commandline -opc)) -eq 2; and contains -- (commandline -opc)[2] -p --profile" -a "(agent-deck __complete profiles)"
 
 # Top-level commands.
-complete -c agent-deck -f -n "__agent_deck_at '' '' 1" -a "add list ls remove rm rename mv status update launch try accounts web connect debug-dump perf migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox msg session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt provider open switch file costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek"
+complete -c agent-deck -f -n "__agent_deck_at '' '' 1" -a "add list ls remove rm rename mv status update launch try accounts web connect debug-dump perf migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox msg session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt provider open switch file costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek kimi-hooks"
 
 # Subcommands.
 complete -c agent-deck -f -n "__agent_deck_at connect '' 2" -a "list revoke audit serve test any hermes openclaw grok claude chatgpt codex slack telegram mcp http"
@@ -82,6 +82,7 @@ complete -c agent-deck -f -n "__agent_deck_at cursor-hooks '' 2" -a "install uni
 complete -c agent-deck -f -n "__agent_deck_at tmux-hooks '' 2" -a "install uninstall status"
 complete -c agent-deck -f -n "__agent_deck_at pi-hooks '' 2" -a "install uninstall status"
 complete -c agent-deck -f -n "__agent_deck_at deepseek '' 2" -a "status profiles sessions"
+complete -c agent-deck -f -n "__agent_deck_at kimi-hooks '' 2" -a "install uninstall status"
 
 # Dynamic resource-name completion.
 complete -c agent-deck -f -n "__agent_deck_at agent show 3" -a "(agent-deck (__agent_deck_profile_arg) __complete agents)"

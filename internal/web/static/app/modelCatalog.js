@@ -3,8 +3,9 @@
 //
 // GET /api/settings carries `modelCatalog`, built server-side from the same
 // session catalog the TUI dialog and `launch -capabilities` read: the models
-// the installed CLI reports (Codex: `codex debug models`) merged in front of
-// the built-in list. The static tables below are the fallback when the server
+// the installed CLI reports (Codex: `codex debug models`, OpenCode: `opencode
+// models`, Kimi: `kimi provider list --json`) merged in front of the built-in
+// list. The static tables below are the fallback when the server
 // sends no entry for a tool, and they supply display labels for known IDs.
 
 export const CUSTOM_MODEL = '__custom__'
@@ -97,6 +98,14 @@ export const MODEL_ID_CATALOG = {
     { value: 'anthropic/claude-opus-4-8', label: 'Anthropic Claude Opus 4.8' },
     { value: 'anthropic/claude-opus-4-7', label: 'Anthropic Claude Opus 4.7' },
     { value: 'anthropic/claude-haiku-4-5', label: 'Anthropic Claude Haiku 4.5' },
+  ],
+  kimi: [
+    { value: 'kimi-code/k3.1-pro', label: 'K3.1 Pro' },
+    { value: 'kimi-code/k3.1-pro-highspeed', label: 'K3.1 Pro Highspeed' },
+    { value: 'kimi-code/k3', label: 'K3' },
+    { value: 'kimi-code/k3-256k', label: 'K3 256K' },
+    { value: 'kimi-code/kimi-for-coding', label: 'K2.8' },
+    { value: 'kimi-code/kimi-for-coding-highspeed', label: 'K2.7 Highspeed' },
   ],
 }
 

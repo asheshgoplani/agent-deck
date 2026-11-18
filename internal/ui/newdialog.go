@@ -175,6 +175,7 @@ type NewDialog struct {
 	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
 	hermesOptions         *YoloOptionsPanel   // Hermes YOLO panel (concrete for value extraction).
+	kimiOptions           *KimiOptionsPanel   // Kimi permission options (concrete for value extraction).
 	ompOptions            *OMPOptionsPanel    // Full OMP harness controls.
 	toolOptions           OptionsPanel        // Currently active tool options panel (nil if none).
 	focusTargets          []focusTarget       // Ordered list of active focusable elements.
@@ -396,24 +397,25 @@ func isBareFieldLabel(line string) bool {
 
 // dialogSnapshot captures form state so the recent picker can restore on cancel.
 type dialogSnapshot struct {
-	name             string
-	path             string
-	commandCursor    int
-	commandInput     string
-	modelInput       string
-	reasoningEffort  string
-	sandboxEnabled   bool
-	worktreeEnabled  bool
-	worktreeToggled  bool
-	branch           string
-	branchAutoSet    bool
-	claudeOptions    *session.ClaudeOptions
-	geminiYolo       bool
-	codexYolo        bool
-	hermesYolo       bool
-	multiRepoEnabled bool
-	multiRepoPaths   []string
-	conductorCursor  int
+	name               string
+	path               string
+	commandCursor      int
+	commandInput       string
+	modelInput         string
+	reasoningEffort    string
+	sandboxEnabled     bool
+	worktreeEnabled    bool
+	worktreeToggled    bool
+	branch             string
+	branchAutoSet      bool
+	claudeOptions      *session.ClaudeOptions
+	geminiYolo         bool
+	codexYolo          bool
+	hermesYolo         bool
+	kimiPermissionMode string
+	multiRepoEnabled   bool
+	multiRepoPaths     []string
+	conductorCursor    int
 }
 
 // displayCommandPreset returns the visible label for a built-in preset slot.
@@ -434,7 +436,7 @@ func displayCommandPreset(cmd string) string {
 // flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
 // before.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
+	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "kimi"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -547,6 +549,7 @@ func NewNewDialog() *NewDialog {
 		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
 		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
 		hermesOptions:   NewYoloOptionsPanel("Hermes", "YOLO mode - auto-approve all tool calls"),
+		kimiOptions:     NewKimiOptionsPanel(),
 		ompOptions:      NewOMPOptionsPanel(),
 		focusIndex:      0,
 		visible:         false,
@@ -613,6 +616,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.claudeOptions.SetAccount("")    // #924: the account pick is per-session too; #2895 reapplies the default below
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
+	d.kimiOptions.Blur()
 	if d.branchPicker != nil {
 		d.branchPicker.Hide()
 	}
@@ -658,11 +662,13 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
+	d.kimiOptions.SetDefaults(session.KimiPermissionAlwaysAsk)
 	d.ompOptions.SetDefaults(nil)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
 		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
 		d.hermesOptions.SetDefaults(userConfig.Hermes.YoloMode)
+		d.kimiOptions.SetDefaults(userConfig.Kimi.PermissionMode)
 		d.ompOptions.SetDefaults(session.NewOMPOptions(userConfig))
 		d.claudeOptions.SetDefaults(userConfig)
 		// #2895: start on [claude].default_account instead of inherit. Each
@@ -682,7 +688,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		// new session. Overrides the empty value set above; left empty when
 		// no default is configured.
 		if dm := preselectDefaultModel(userConfig, d.GetSelectedCommand()); dm != "" {
-			d.modelInput.SetValue(dm)
+			d.modelInput.SetValue(modelDisplayName(d.GetSelectedCommand(), dm))
 		}
 	}
 	d.branchInput.Placeholder = d.branchPrefix + "branch-name"
@@ -964,7 +970,7 @@ func (d *NewDialog) ApplyHighlightedModelSuggestion() {
 	if d.modelSuggestionActive && d.modelSuggestionCursor > 0 {
 		suggestionIdx := d.modelSuggestionCursor - 1
 		if suggestionIdx < len(d.modelSuggestions) {
-			d.modelInput.SetValue(d.modelSuggestions[suggestionIdx])
+			d.modelInput.SetValue(modelDisplayName(d.GetSelectedCommand(), d.modelSuggestions[suggestionIdx]))
 			d.modelInput.SetCursor(len(d.modelInput.Value()))
 			d.dropUnsupportedReasoningEffort()
 		}
@@ -1005,24 +1011,25 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 	}
 
 	return &dialogSnapshot{
-		name:             d.nameInput.Value(),
-		path:             d.pathInput.Value(),
-		commandCursor:    d.commandCursor,
-		commandInput:     d.commandInput.Value(),
-		modelInput:       d.modelInput.Value(),
-		reasoningEffort:  d.reasoningEffort,
-		sandboxEnabled:   d.sandboxEnabled,
-		worktreeEnabled:  d.worktreeEnabled,
-		worktreeToggled:  d.worktreeToggled,
-		branch:           d.branchInput.Value(),
-		branchAutoSet:    d.branchAutoSet,
-		claudeOptions:    claudeOpts,
-		geminiYolo:       d.geminiOptions.GetYoloMode(),
-		codexYolo:        d.codexOptions.GetYoloMode(),
-		hermesYolo:       d.hermesOptions.GetYoloMode(),
-		multiRepoEnabled: d.multiRepoEnabled,
-		multiRepoPaths:   append([]string{}, d.multiRepoPaths...),
-		conductorCursor:  d.conductorCursor,
+		name:               d.nameInput.Value(),
+		path:               d.pathInput.Value(),
+		commandCursor:      d.commandCursor,
+		commandInput:       d.commandInput.Value(),
+		modelInput:         d.modelInput.Value(),
+		reasoningEffort:    d.reasoningEffort,
+		sandboxEnabled:     d.sandboxEnabled,
+		worktreeEnabled:    d.worktreeEnabled,
+		worktreeToggled:    d.worktreeToggled,
+		branch:             d.branchInput.Value(),
+		branchAutoSet:      d.branchAutoSet,
+		claudeOptions:      claudeOpts,
+		geminiYolo:         d.geminiOptions.GetYoloMode(),
+		codexYolo:          d.codexOptions.GetYoloMode(),
+		hermesYolo:         d.hermesOptions.GetYoloMode(),
+		kimiPermissionMode: d.kimiOptions.GetOptions().PermissionMode,
+		multiRepoEnabled:   d.multiRepoEnabled,
+		multiRepoPaths:     append([]string{}, d.multiRepoPaths...),
+		conductorCursor:    d.conductorCursor,
 	}
 }
 
@@ -1045,6 +1052,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.geminiOptions.SetDefaults(s.geminiYolo)
 	d.codexOptions.SetDefaults(s.codexYolo)
 	d.hermesOptions.SetDefaults(s.hermesYolo)
+	d.kimiOptions.SetDefaults(s.kimiPermissionMode)
 	d.multiRepoEnabled = s.multiRepoEnabled
 	d.multiRepoPaths = append([]string{}, s.multiRepoPaths...)
 	d.multiRepoPathCursor = 0
@@ -1084,6 +1092,14 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 	}
 	d.updateToolOptions()
 
+	if rs.Tool == "kimi" {
+		permissionMode := session.KimiPermissionAlwaysAsk
+		if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
+			permissionMode = userConfig.Kimi.PermissionMode
+		}
+		d.kimiOptions.SetDefaults(permissionMode)
+	}
+
 	// Apply tool-specific options
 	if len(rs.ToolOptions) > 0 && string(rs.ToolOptions) != "{}" {
 		switch {
@@ -1115,6 +1131,17 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 						d.modelInput.SetValue(opts.Model)
 					}
 					d.reasoningEffort = opts.ReasoningEffort
+				}
+			}
+		case rs.Tool == "kimi":
+			var wrapper session.ToolOptionsWrapper
+			if err := json.Unmarshal(rs.ToolOptions, &wrapper); err == nil && wrapper.Tool == "kimi" {
+				var opts session.KimiOptions
+				if err := json.Unmarshal(wrapper.Options, &opts); err == nil {
+					d.kimiOptions.SetFromOptions(&opts)
+					if opts.Model != "" {
+						d.modelInput.SetValue(modelDisplayName(d.GetSelectedCommand(), opts.Model))
+					}
 				}
 			}
 		case rs.Tool == "opencode":
@@ -1171,9 +1198,8 @@ func knownModelIDsForTool(tool string) []string { return session.KnownModelIDsFo
 // (#2388): a configured ID the catalog does not know (a model newer than this
 // build, or one the probed CLI hides) passes through with a logged warning
 // instead of being dropped, so the tool reports a typo itself rather than the
-// session silently launching on the tool default. Today only Claude routes
-// its launch model through this dialog field; the other tools apply their
-// default_model at command-build time.
+// session silently launching on the tool default. Claude and Kimi prefill
+// their configured defaults here; the other tools apply theirs at command-build time.
 func preselectDefaultModel(config *session.UserConfig, tool string) string {
 	if config == nil {
 		return ""
@@ -1182,6 +1208,8 @@ func preselectDefaultModel(config *session.UserConfig, tool string) string {
 	switch {
 	case session.IsClaudeCompatible(tool):
 		configured = config.Claude.DefaultModel
+	case tool == "kimi":
+		configured = config.Kimi.DefaultModel
 	default:
 		return ""
 	}
@@ -1213,7 +1241,8 @@ func (d *NewDialog) filterModelSuggestions() {
 	} else {
 		filtered := make([]string, 0, len(all))
 		for _, modelID := range all {
-			if strings.Contains(strings.ToLower(modelID), query) {
+			display := modelDisplayName(d.GetSelectedCommand(), modelID)
+			if strings.Contains(strings.ToLower(modelID), query) || strings.Contains(strings.ToLower(display), query) {
 				filtered = append(filtered, modelID)
 			}
 		}
@@ -1396,6 +1425,14 @@ func (d *NewDialog) GetHermesYoloMode() bool {
 	return d.hermesOptions.GetYoloMode()
 }
 
+// GetKimiOptions returns the selected Kimi launch options.
+func (d *NewDialog) GetKimiOptions() *session.KimiOptions {
+	if d.GetSelectedCommand() != "kimi" {
+		return nil
+	}
+	return d.kimiOptions.GetOptions()
+}
+
 // IsSandboxEnabled returns whether Docker sandbox mode is enabled.
 func (d *NewDialog) IsSandboxEnabled() bool {
 	return d.sandboxEnabled
@@ -1566,7 +1603,7 @@ func (d *NewDialog) GetLaunchModelID() string {
 	if !d.selectedToolSupportsModel() {
 		return ""
 	}
-	return strings.TrimSpace(d.modelInput.Value())
+	return modelIDFromDisplay(d.GetSelectedCommand(), strings.TrimSpace(d.modelInput.Value()))
 }
 
 // GetLaunchReasoningEffort returns the optional native effort override for
@@ -1672,6 +1709,7 @@ func (d *NewDialog) ResetRemoteDefaults() {
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
+	d.kimiOptions.SetDefaults(session.KimiPermissionAlwaysAsk)
 	d.rebuildFocusTargets()
 }
 
@@ -1813,6 +1851,8 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 		opts.Yolo = d.IsGeminiYoloMode()
 	case command == "hermes":
 		opts.Yolo = d.GetHermesYoloMode()
+	case command == "kimi":
+		opts.KimiPermissionMode = d.GetKimiOptions().PermissionMode
 	}
 	if d.toolKind(command) == "codex" || command == "gemini" || command == "hermes" {
 		value := opts.Yolo
@@ -2109,6 +2149,8 @@ func (d *NewDialog) updateToolOptions() {
 		d.toolOptions = d.codexOptions
 	case cmd == "hermes":
 		d.toolOptions = d.hermesOptions
+	case cmd == "kimi":
+		d.toolOptions = d.kimiOptions
 	case cmd == "omp":
 		d.toolOptions = d.ompOptions
 	default:
@@ -2128,6 +2170,7 @@ func (d *NewDialog) updateFocus() {
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 	d.hermesOptions.Blur()
+	d.kimiOptions.Blur()
 	d.ompOptions.Blur()
 
 	// Reset dropdown and soft-select state when focus changes.
@@ -2908,7 +2951,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		case "y":
 			if !d.isTextInputFocused() {
 				selectedCmd := d.GetSelectedCommand()
-				if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes") && d.toolOptions != nil {
+				if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" || selectedCmd == "kimi") && d.toolOptions != nil {
 					d.toolOptions.Update(msg)
 					return d, nil
 				}
@@ -3712,7 +3755,7 @@ func (d *NewDialog) View() string {
 		// options) and whenever the line would not fit on one row.
 		selectedCmd := d.GetSelectedCommand()
 		extras := []string{"w worktree", "s sandbox"}
-		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" {
+		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" || selectedCmd == "kimi" {
 			extras = append(extras, "y yolo")
 		}
 		if d.firstSession {
@@ -4185,7 +4228,7 @@ func (d *NewDialog) renderModelSuggestionsDropdown() string {
 				style = selectedStyle
 				prefix = "▶ "
 			}
-			b.WriteString(style.Render(prefix + d.modelSuggestions[i]))
+			b.WriteString(style.Render(prefix + modelDisplayName(d.GetSelectedCommand(), d.modelSuggestions[i])))
 		}
 
 		if endIdx < total {
@@ -4291,6 +4334,7 @@ func (d *NewDialog) SetRemoteCreationCatalog(catalog *session.RemoteCreationCata
 	d.codexOptions.SetDefaults(catalog.Defaults["codex_yolo"])
 	d.geminiOptions.SetDefaults(catalog.Defaults["gemini_yolo"])
 	d.hermesOptions.SetDefaults(catalog.Defaults["hermes_yolo"])
+	d.kimiOptions.SetDefaults(catalog.KimiPermissionMode)
 	d.presetCommands = nil
 	if catalog.Legacy {
 		d.presetCommands = buildPresetCommands()

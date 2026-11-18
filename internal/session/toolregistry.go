@@ -328,8 +328,8 @@ func (r *Registry) Match(cmd string) string {
 		// position gets basename treatment — argument paths such as
 		// "copilot --cwd /home/pi" must not flip detection.
 		for _, tok := range bt.detectTokens {
-			// executableOnly tools (muse) match solely on the executable
-			// slot: `echo muse` must not classify. All other tools keep
+			// executableOnly tools match solely on the executable slot:
+			// `echo kimi` must not classify. All other tools keep
 			// the legacy whole-line token match.
 			if bt.executableOnly {
 				if exe != "" && exe == tok {
@@ -561,7 +561,7 @@ func ConfiguredHiddenToolNames() []string {
 }
 
 // pickerPresetOrder matches buildPresetCommands in internal/ui/newdialog.go.
-var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp"}
+var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp", "kimi"}
 
 // PickerToolNames returns tool names for the new-session picker after applying
 // hidden_tools and show_only_installed_tools. The empty command "" is mapped

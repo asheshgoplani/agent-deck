@@ -137,6 +137,15 @@ func staticModelIDsForTool(tool string) []string {
 			"o3-pro",
 			"o3",
 		}
+	case tool == "kimi":
+		return []string{
+			"kimi-code/k3.1-pro",
+			"kimi-code/k3.1-pro-highspeed",
+			"kimi-code/k3",
+			"kimi-code/k3-256k",
+			"kimi-code/kimi-for-coding",
+			"kimi-code/kimi-for-coding-highspeed",
+		}
 	default:
 		return nil
 	}

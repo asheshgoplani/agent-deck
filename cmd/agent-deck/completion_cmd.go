@@ -277,6 +277,7 @@ var completionTree = []completionNode{
 	{name: "tmux-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "pi-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "deepseek", subs: []string{"status", "profiles", "sessions"}},
+	{name: "kimi-hooks", subs: []string{"install", "uninstall", "status"}},
 }
 
 // completionTopLevelNames returns every completable top-level command name,

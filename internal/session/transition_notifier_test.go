@@ -159,6 +159,42 @@ func TestTerminalHookTransitionCandidate(t *testing.T) {
 			hs:   &HookStatus{Status: "running", Event: "turn_start", UpdatedAt: now},
 			want: false,
 		},
+		{
+			name: "kimi stop terminal",
+			tool: "kimi",
+			hs:   &HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: now},
+			want: true,
+		},
+		{
+			name: "kimi interrupt terminal",
+			tool: "kimi",
+			hs:   &HookStatus{Status: "waiting", Event: "Interrupt", UpdatedAt: now},
+			want: true,
+		},
+		{
+			name: "kimi permission request terminal",
+			tool: "kimi",
+			hs:   &HookStatus{Status: "waiting", Event: "PermissionRequest", UpdatedAt: now},
+			want: true,
+		},
+		{
+			name: "kimi stop failure terminal",
+			tool: "kimi",
+			hs:   &HookStatus{Status: "waiting", Event: "StopFailure", UpdatedAt: now},
+			want: true,
+		},
+		{
+			name: "kimi session start ignored",
+			tool: "kimi",
+			hs:   &HookStatus{Status: "waiting", Event: "SessionStart", UpdatedAt: now},
+			want: false,
+		},
+		{
+			name: "kimi post tool ignored",
+			tool: "kimi",
+			hs:   &HookStatus{Status: "running", Event: "PostToolUse", UpdatedAt: now},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
