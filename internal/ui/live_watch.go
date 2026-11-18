@@ -141,7 +141,7 @@ func (h *Home) processHookPass() {
 	}
 	h.hookPending.Store(false)
 	if h.hookPassSeen == nil {
-		h.hookPassSeen = make(map[string]time.Time)
+		h.hookPassSeen = make(map[string]string)
 	}
 	h.instancesMu.RLock()
 	instances := make([]*session.Instance, len(h.instances))
@@ -155,10 +155,14 @@ func (h *Home) processHookPass() {
 			continue
 		}
 		hs := h.hookWatcher.GetHookStatus(inst.ID)
-		if hs == nil || hs.UpdatedAt.Equal(h.hookPassSeen[inst.ID]) {
+		if hs == nil {
 			continue
 		}
-		h.hookPassSeen[inst.ID] = hs.UpdatedAt
+		key := hookSampleKey(hs)
+		if key == h.hookPassSeen[inst.ID] {
+			continue
+		}
+		h.hookPassSeen[inst.ID] = key
 		inst.UpdateHookStatus(hs)
 		before := inst.GetStatusThreadSafe()
 		_ = inst.UpdateStatus()
@@ -188,4 +192,9 @@ func (h *Home) runPendingHookPass() {
 	if h.hookPending.Load() {
 		h.processHookPass()
 	}
+}
+
+// hookSampleKey identifies one hook sample. (Rework shim: its time only.)
+func hookSampleKey(hs *session.HookStatus) string {
+	return hs.UpdatedAt.String()
 }

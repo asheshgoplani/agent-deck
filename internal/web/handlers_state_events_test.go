@@ -2,6 +2,7 @@ package web
 
 import (
 	"bufio"
+	"fmt"
 	"context"
 	"encoding/json"
 	"io"
@@ -414,5 +415,105 @@ func TestStateEvents_CursorAheadResets(t *testing.T) {
 	}
 	if names[0] != "hello" || names[1] != "reset" {
 		t.Fatalf("events %v, want [hello reset]", names)
+	}
+}
+
+// B1 (rework round 1): stopping the server while it is the only producer
+// publishes "off" (reason stopped), so no follower keeps "listening" after
+// agent-deck web stops. main's signal path calls the same stop.
+func TestStateEvents_ShutdownPublishesOff(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_VOICE_STATE_DIR", dir)
+	raw, _ := json.Marshal(map[string]any{"schema": "claude-code-voice.state/v1", "on": true, "mode": "listening", "phase": "listening",
+		"phaseSince": time.Now().UnixMilli(), "heartbeatMs": 10000, "daemon": map[string]any{"pid": os.Getpid()},
+		"target": map[string]any{"title": "alpha", "sessionId": "aaaa1111-1794950000"}, "updatedAt": time.Now().UnixMilli()})
+	if err := os.WriteFile(filepath.Join(dir, "current.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const profile = "_test_b1"
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: profile})
+	w := events.OpenProfile(profile)
+	_ = w.Close()
+	bus, err := events.OpenReader(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sub, err := bus.Subscribe(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := func(what string, ok func(voicestream.StateEvent) bool) {
+		t.Helper()
+		for {
+			select {
+			case f, open := <-sub.Frames():
+				if !open {
+					t.Fatalf("%s: bus closed", what)
+				}
+				var ev voicestream.StateEvent
+				if f.Kind == voicestream.KindState && json.Unmarshal(f.Data, &ev) == nil && ok(ev) {
+					return
+				}
+			case <-ctx.Done():
+				t.Fatalf("%s: no such frame", what)
+			}
+		}
+	}
+	srv.startVoiceProducer()
+	next("start frame", func(ev voicestream.StateEvent) bool { return ev.On })
+	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer scancel()
+	_ = srv.Shutdown(sctx)
+	next("off after Shutdown", func(ev voicestream.StateEvent) bool { return !ev.On && ev.Reason == voicestream.ReasonStopped })
+}
+
+// S9 (rework round 1): a browser EventSource reconnects with the original
+// ?after= in its URL plus Last-Event-ID; the larger cursor wins, so frames
+// the client already has are not replayed.
+func TestStateEvents_LastEventIDBeatsAStaleAfter(t *testing.T) {
+	const profile = "_test_s9"
+	t.Setenv("CLAUDE_VOICE_STATE_DIR", t.TempDir())
+	for i := 0; i < 5; i++ {
+		events.PublishProfile(profile, "session.status", fmt.Sprintf("s%d", i), session.StatusBusEvent{From: "idle", To: "running"})
+	}
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: profile})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	defer srv.stopVoiceProducer()
+	var last uint64
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		b, err := srv.stateBus()
+		if err == nil {
+			if end, _, _ := b.Ends(); end >= 5 {
+				last = uint64(end)
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("frames never reached the bus")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	evs := make(chan sseEvent, 16)
+	// The URL still says after=1; the client has seen everything up to last-1.
+	sseClient(t, ctx, ts.URL+"/events/state?after=1", fmt.Sprint(last-1), evs)
+	for {
+		select {
+		case ev := <-evs:
+			if ev.event == "hello" {
+				continue
+			}
+			if ev.id != fmt.Sprint(last) {
+				t.Fatalf("first replayed frame id %s, want %d (Last-Event-ID %d beats ?after=1)", ev.id, last, last-1)
+			}
+			return
+		case <-time.After(3 * time.Second):
+			t.Fatal("no frame after resume")
+		}
 	}
 }

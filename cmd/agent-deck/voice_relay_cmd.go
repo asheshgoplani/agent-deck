@@ -105,7 +105,7 @@ func runVoiceRelay(profile string, args []string, stdout, stderr io.Writer) int 
 
 	links := make([]*relayLink, 0, len(dests))
 	for _, d := range dests {
-		l := &relayLink{name: d, rc: cfg.Remotes[d], latest: make(chan voicestate.Mirror, 1), stderr: stderr}
+		l := newRelayLink(d, session.NewSSHRunner(d, cfg.Remotes[d]), stderr)
 		links = append(links, l)
 		wg.Add(1)
 		go func() {
@@ -124,16 +124,29 @@ func runVoiceRelay(profile string, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
+// relayStreamRunner is the part of session.SSHRunner a relay link uses.
+type relayStreamRunner interface {
+	RunStdinStreamIO(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error
+}
+
 // relayLink is one stream host: a long-lived `voice mirror-in` over ssh,
 // fed the newest mirror only (an old one is replaced, never queued).
 type relayLink struct {
 	name   string
-	rc     session.RemoteConfig
+	runner relayStreamRunner
 	latest chan voicestate.Mirror
 	stderr io.Writer
 	mu     sync.Mutex
 	last   *voicestate.Mirror
 }
+
+func newRelayLink(name string, runner relayStreamRunner, stderr io.Writer) *relayLink {
+	return &relayLink{name: name, runner: runner, latest: make(chan voicestate.Mirror, 1), stderr: stderr}
+}
+
+// flush waits up to timeout until the newest offered mirror is written.
+// (Rework shim: does not wait.)
+func (l *relayLink) flush(timeout time.Duration) bool { return true }
 
 func (l *relayLink) offer(m voicestate.Mirror) {
 	l.mu.Lock()
@@ -181,10 +194,9 @@ func (l *relayLink) session(ctx context.Context) error {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	pr, pw := io.Pipe()
-	runner := session.NewSSHRunner(l.name, l.rc)
 	done := make(chan error, 1)
 	go func() {
-		done <- runner.RunStdinStreamIO(sctx, pr, io.Discard, l.stderr, "voice", "mirror-in")
+		done <- l.runner.RunStdinStreamIO(sctx, pr, io.Discard, l.stderr, "voice", "mirror-in")
 		_ = pr.Close()
 	}()
 	write := func(m voicestate.Mirror) error {

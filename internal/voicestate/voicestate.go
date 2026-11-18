@@ -349,6 +349,17 @@ func (r *Reader) liveMirror(now time.Time) *State {
 	return &out
 }
 
+// RelayRefresh is how often `voice relay` re-sends an unchanged state.
+const RelayRefresh = 5 * time.Second
+
+// RelayMirrorWindow is how long a relay-written mirror stays live without a
+// new write. (Rework shim: the old effective window at the 10 s beat.)
+const RelayMirrorWindow = 35 * time.Second
+
+// PollCurrent is Poll for this machine's own current.json only.
+// (Rework shim: still Poll.)
+func (r *Reader) PollCurrent() *State { return r.Poll() }
+
 // heartbeatWindow is three missed beats plus 5 s (35 s at the 10 s beat).
 func heartbeatWindow(heartbeatMs int64) time.Duration {
 	return 3*time.Duration(heartbeatMs)*time.Millisecond + 5*time.Second

@@ -32,7 +32,7 @@ func replaceAt(t *testing.T, dir, name, body string, mtime time.Time) {
 func TestReader_SwitchWithinOneMtimeTickIsSeen(t *testing.T) {
 	r, clock, dir := newTestReader(t, map[int]bool{4242: true})
 	a := liveCurrent(1)
-	b := strings.Replace(strings.Replace(a, "cf9a73f3-1789471273", "0b1c2d3e-1789471999", 1), "conductor-inno", "conductor-abcd", 1)
+	b := strings.Replace(strings.Replace(a, "cf9a73f3-1789471273", "0b1c2d3e-1789471999", 1), "conductor-alex", "conductor-abcd", 1)
 	if len(a) != len(b) {
 		t.Fatalf("fixture sizes differ: %d vs %d", len(a), len(b))
 	}
@@ -89,7 +89,7 @@ func TestRelativeRemote(t *testing.T) {
 // reads as no voice at once.
 func TestWriteMirror_RoundTrip(t *testing.T) {
 	src, _, srcDir := newTestReader(t, map[int]bool{4242: true})
-	replaceAt(t, srcDir, "current.json", strings.ReplaceAll(liveCurrent(1), `"remote":"innobox"`, `"remote":"box-a"`), time.Now())
+	replaceAt(t, srcDir, "current.json", strings.ReplaceAll(liveCurrent(1), `"remote":"box-sam"`, `"remote":"box-a"`), time.Now())
 	st := src.Poll()
 	if st == nil {
 		t.Fatal("fixture not live")

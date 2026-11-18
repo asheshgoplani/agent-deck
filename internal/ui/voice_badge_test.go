@@ -25,7 +25,7 @@ func voiceHome(t *testing.T, st *voicestate.State, remotes map[string][]session.
 	forceTrueColorProfile()
 	h := newSeamATestHome()
 	h.width, h.height = 120, 40
-	inst := session.NewInstanceWithTool("conductor-inno", "/tmp/api", "shell")
+	inst := session.NewInstanceWithTool("conductor-alex", "/tmp/api", "shell")
 	inst.Status = session.StatusRunning
 	inst.GroupPath = "work/voice"
 	other := session.NewInstanceWithTool("another one", "/tmp/api", "shell")
@@ -66,13 +66,13 @@ func voiceRemoteRow(t *testing.T, h *Home, rs session.RemoteSessionInfo, listWid
 }
 
 func micLocal(phase string) *voicestate.State {
-	return &voicestate.State{On: true, Phase: phase, Target: voicestate.Target{SessionID: "LOCAL", Title: "conductor-inno"}}
+	return &voicestate.State{On: true, Phase: phase, Target: voicestate.Target{SessionID: "LOCAL", Title: "conductor-alex"}}
 }
 
 func TestVoiceBadge_LocalRow(t *testing.T) {
 	h, inst := voiceHome(t, micLocal("listening"), nil)
 	row, _ := voiceLocalRow(t, h, inst, h.sessionsPaneWidth(), false)
-	if !strings.Contains(row, "conductor-inno 🎙 listening") {
+	if !strings.Contains(row, "conductor-alex 🎙 listening") {
 		t.Errorf("mic row lacks the badge right after the title:\n%s", row)
 	}
 	other := h.instances[1]
@@ -92,12 +92,12 @@ func TestVoiceBadge_NoStateNoBadge(t *testing.T) {
 // local row is never matched by title.
 func TestVoiceBadge_LocalRowNeedsEmptyRemoteAndID(t *testing.T) {
 	st := micLocal("listening")
-	st.Target.Remote = "innobox"
+	st.Target.Remote = "box-sam"
 	h, inst := voiceHome(t, st, nil)
 	if row, _ := voiceLocalRow(t, h, inst, h.sessionsPaneWidth(), false); strings.Contains(row, "🎙") {
 		t.Errorf("remote target lit the local row:\n%s", row)
 	}
-	byTitle := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: "someone-else", Title: "conductor-inno"}}
+	byTitle := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: "someone-else", Title: "conductor-alex"}}
 	h, inst = voiceHome(t, byTitle, nil)
 	if row, _ := voiceLocalRow(t, h, inst, h.sessionsPaneWidth(), false); strings.Contains(row, "🎙") {
 		t.Errorf("matched by title:\n%s", row)
@@ -120,13 +120,13 @@ func TestVoiceBadge_LocalRowProfile(t *testing.T) {
 }
 
 func TestVoiceBadge_RemoteRow(t *testing.T) {
-	rs := session.RemoteSessionInfo{ID: "cf9a73f3-1789471273", Title: "conductor-inno-ashesh", Tool: "claude", Status: "waiting", RemoteName: "innobox"}
+	rs := session.RemoteSessionInfo{ID: "cf9a73f3-1789471273", Title: "conductor-alex-ashesh", Tool: "claude", Status: "waiting", RemoteName: "box-sam"}
 	twin := rs
 	twin.RemoteName = "agentbox"
-	st := &voicestate.State{On: true, Phase: "speaking", Target: voicestate.Target{SessionID: rs.ID, Remote: "innobox"}}
-	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"innobox": {rs}, "agentbox": {twin}})
+	st := &voicestate.State{On: true, Phase: "speaking", Target: voicestate.Target{SessionID: rs.ID, Remote: "box-sam"}}
+	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"box-sam": {rs}, "agentbox": {twin}})
 	row, _ := voiceRemoteRow(t, h, rs, 100)
-	if !strings.Contains(row, "conductor-inno-ashesh 🎙 ▶ speaking") {
+	if !strings.Contains(row, "conductor-alex-ashesh 🎙 ▶ speaking") {
 		t.Errorf("remote mic row lacks the badge:\n%s", row)
 	}
 	if row, _ := voiceRemoteRow(t, h, twin, 100); strings.Contains(row, "🎙") {
@@ -141,10 +141,10 @@ func TestVoiceBadge_RemoteRow(t *testing.T) {
 
 // Two rows fit: no badge.
 func TestVoiceBadge_AmbiguousRemoteNoBadge(t *testing.T) {
-	rs := session.RemoteSessionInfo{ID: "dup", Title: "one", Status: "waiting", RemoteName: "innobox"}
-	rs2 := session.RemoteSessionInfo{ID: "dup", Title: "two", Status: "waiting", RemoteName: "innobox"}
-	st := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: "dup", Remote: "innobox"}}
-	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"innobox": {rs, rs2}})
+	rs := session.RemoteSessionInfo{ID: "dup", Title: "one", Status: "waiting", RemoteName: "box-sam"}
+	rs2 := session.RemoteSessionInfo{ID: "dup", Title: "two", Status: "waiting", RemoteName: "box-sam"}
+	st := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: "dup", Remote: "box-sam"}}
+	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"box-sam": {rs, rs2}})
 	if row, _ := voiceRemoteRow(t, h, rs, 100); strings.Contains(row, "🎙") {
 		t.Errorf("ambiguous target lit a row:\n%s", row)
 	}
@@ -173,9 +173,9 @@ func TestVoiceBadge_NarrowRow(t *testing.T) {
 // and a long title still truncates to keep the glyph (dropped last).
 func TestVoiceBadge_WordsNeverCutTheTitle(t *testing.T) {
 	h, inst := voiceHome(t, micLocal("listening"), nil)
-	inst.Title = "conductor-inno"
+	inst.Title = "conductor-alex"
 	row, _ := voiceLocalRow(t, h, inst, 34, false)
-	if !strings.Contains(row, "conductor-inno 🎙") || strings.Contains(row, "listening") {
+	if !strings.Contains(row, "conductor-alex 🎙") || strings.Contains(row, "listening") {
 		t.Errorf("want the full title and the glyph only:\n%s", row)
 	}
 	inst.Title = strings.Repeat("x", 80)
@@ -229,20 +229,20 @@ func TestVoiceBadge_CollapsedGroupHeader(t *testing.T) {
 }
 
 func TestVoiceBadge_CollapsedRemoteHeader(t *testing.T) {
-	rs := session.RemoteSessionInfo{ID: "cf9a73f3-1789471273", Title: "conductor-inno-ashesh", Status: "waiting", Group: "conductors", RemoteName: "innobox"}
-	st := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: rs.ID, Remote: "innobox"}}
-	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"innobox": {rs}})
+	rs := session.RemoteSessionInfo{ID: "cf9a73f3-1789471273", Title: "conductor-alex-ashesh", Status: "waiting", Group: "conductors", RemoteName: "box-sam"}
+	st := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: rs.ID, Remote: "box-sam"}}
+	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"box-sam": {rs}})
 	render := func(item session.Item) string {
 		var sb strings.Builder
 		h.renderRemoteGroupItem(&sb, item, false, 120)
 		return stripAnsi(sb.String())
 	}
-	host := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "innobox", Path: "remotes/innobox"}
-	sub := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "innobox", Path: "remotes/innobox/conductors", Level: 1}
+	host := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "box-sam", Path: "remotes/box-sam"}
+	sub := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "box-sam", Path: "remotes/box-sam/conductors", Level: 1}
 	if row := render(host); strings.Contains(row, "🎙") {
 		t.Errorf("expanded remote header shows 🎙:\n%s", row)
 	}
-	h.remoteGroupsCollapsed = map[string]bool{"remotes/innobox": true, "remotes/innobox/conductors": true}
+	h.remoteGroupsCollapsed = map[string]bool{"remotes/box-sam": true, "remotes/box-sam/conductors": true}
 	if row := render(host); !strings.Contains(row, "🎙") {
 		t.Errorf("collapsed remote header holding the mic lacks 🎙:\n%s", row)
 	}
@@ -289,7 +289,7 @@ func TestVoiceBadge_WordsNeverCutTitleWithOtherBadges(t *testing.T) {
 	h.triggerBadges = map[string]triggers.Badge{inst.ID: {Count: 3}}
 	for w := 24; w <= 80; w++ {
 		row, _ := voiceLocalRow(t, h, inst, w, false)
-		if strings.Contains(row, "listening") && !strings.Contains(row, "conductor-inno ") {
+		if strings.Contains(row, "listening") && !strings.Contains(row, "conductor-alex ") {
 			t.Errorf("width %d: words cut the title:\n%s", w, row)
 		}
 		if strings.Contains(row, "⚡") && !strings.Contains(row, "🎙") {
@@ -301,11 +301,11 @@ func TestVoiceBadge_WordsNeverCutTitleWithOtherBadges(t *testing.T) {
 // Review finding: on a remote row the voice badge is fitted before the
 // tool, viewers and pending badges, so it is the last one to go.
 func TestVoiceBadge_RemoteRowBadgeDroppedLast(t *testing.T) {
-	rs := session.RemoteSessionInfo{ID: "r1", Title: "conductor-inno", Tool: "claude", Status: "waiting", RemoteName: "innobox"}
-	st := &voicestate.State{On: true, Phase: "speaking", Target: voicestate.Target{SessionID: "r1", Remote: "innobox"}}
-	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"innobox": {rs}})
+	rs := session.RemoteSessionInfo{ID: "r1", Title: "conductor-alex", Tool: "claude", Status: "waiting", RemoteName: "box-sam"}
+	st := &voicestate.State{On: true, Phase: "speaking", Target: voicestate.Target{SessionID: "r1", Remote: "box-sam"}}
+	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"box-sam": {rs}})
 	row, _ := voiceRemoteRow(t, h, rs, 30)
-	if !strings.Contains(row, "conductor-inno 🎙▶") {
+	if !strings.Contains(row, "conductor-alex 🎙▶") {
 		t.Errorf("narrow remote row dropped the voice badge for the tool name:\n%s", row)
 	}
 }
@@ -313,13 +313,13 @@ func TestVoiceBadge_RemoteRowBadgeDroppedLast(t *testing.T) {
 // Review finding: an ungrouped remote session sits under the default group
 // header; the collapsed header must still show 🎙.
 func TestVoiceBadge_CollapsedRemoteDefaultGroup(t *testing.T) {
-	rs := session.RemoteSessionInfo{ID: "r1", Title: "t", Status: "waiting", Group: "", RemoteName: "innobox"}
-	st := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: "r1", Remote: "innobox"}}
-	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"innobox": {rs}})
-	path := "remotes/innobox/" + session.DefaultGroupPath
+	rs := session.RemoteSessionInfo{ID: "r1", Title: "t", Status: "waiting", Group: "", RemoteName: "box-sam"}
+	st := &voicestate.State{On: true, Phase: "listening", Target: voicestate.Target{SessionID: "r1", Remote: "box-sam"}}
+	h, _ := voiceHome(t, st, map[string][]session.RemoteSessionInfo{"box-sam": {rs}})
+	path := "remotes/box-sam/" + session.DefaultGroupPath
 	h.remoteGroupsCollapsed = map[string]bool{path: true}
 	var sb strings.Builder
-	h.renderRemoteGroupItem(&sb, session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "innobox", Path: path, Level: 1}, false, 120)
+	h.renderRemoteGroupItem(&sb, session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "box-sam", Path: path, Level: 1}, false, 120)
 	if !strings.Contains(stripAnsi(sb.String()), "🎙") {
 		t.Errorf("collapsed default-group header lacks 🎙:\n%s", stripAnsi(sb.String()))
 	}
