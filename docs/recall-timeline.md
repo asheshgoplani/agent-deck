@@ -126,9 +126,13 @@ agent-deck recall timeline <session> --json --skip-empty-body --tail 100
   existed.
 - `before_cursor` names the first kept row, so older pages with the same
   filter continue exactly where the last one stopped.
-- In `--since` answers, `updates` that name a kind outside the list are
-  dropped; an update that carries no kind is kept (it names a row by id
-  only, and a client ignores ids it does not hold). `removed` is unchanged.
+- In `--since` answers, `updates` for rows the filter dropped do not cross
+  the wire. A filtered cursor lists the open rows it dropped (a tool call
+  waiting for its result, a queued message; the newest 64), so the result
+  patch that arrives later is dropped too, and the id leaves the cursor once
+  its result has been swallowed. An update that names a kind outside the
+  list is also dropped. Other updates are for rows the client holds and are
+  kept. `removed` is unchanged.
 - Sub-agent children attached to a kept `subagent` row are filtered the
   same way, so a sidechain's dropped kinds do not ride along.
 - Rows read from the index (`source: "index"`) and `--agent` sidechains
