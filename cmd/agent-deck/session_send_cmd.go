@@ -84,7 +84,7 @@ func hookDrivenBusy(inst *session.Instance) (busy, known bool) {
 func handleSessionSend(profile string, args []string) {
 	fs := flag.NewFlagSet("session send", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
-	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	jsonOutput := fs.Bool("json", false, "Output as JSON; on its own (no --wait/--stream/--draft/--no-wait) it delivers through the queue and returns a send_id")
 	quiet := fs.Bool("q", false, "Quiet mode: nothing on a confirmed delivery; one stderr line when delivery is unconfirmed or queued; errors as usual")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
 	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (Claude socket waits share --timeout between observing a fresh turn and its completed reply; returns immediately with wait_outcome=unverified_busy_target/unverified_busy_probe_failed if the target could not be shown idle)")
@@ -136,7 +136,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project \"what is this?\" --image shot.png")
 		fmt.Println("  agent-deck session send my-project --no-wait -- \"-v is the message\"   # text after -- is never a flag")
 		fmt.Println()
-		fmt.Println("--json (without --wait/--stream/--draft/--no-wait) and --queue return a durable")
+		fmt.Println("--json (without --wait/--stream/--draft/--no-wait) and --queue deliver through the queue and return a durable")
 		fmt.Println("  send_id with verdict queued. Claude accepts input while busy; other harnesses wait")
 		fmt.Println("  for idle. send-status and delivery events upgrade the verdict when evidence arrives.")
 		fmt.Println("  The send is watched until its text lands in")
@@ -193,6 +193,11 @@ func handleSessionSend(profile string, args []string) {
 	message, err := resolveMessageInput(strings.Join(remaining[1:], " "), *messageFile, os.Stdin)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+
+	if strings.TrimSpace(message) == "" && len(images) == 0 {
+		out.Error("message is empty: nothing to send", ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 

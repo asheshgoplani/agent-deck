@@ -1422,8 +1422,8 @@ agent-deck health --json --since 1h
 ### inbox - Durable completion/transition records
 
 ```bash
-agent-deck inbox <session-id>                          # summary for a session's inbox
-agent-deck inbox drain [--json] <session-id>            # consume pending completion events
+agent-deck inbox <session-id|title|self>               # legacy form: reads AND clears; resolves the target like drain, unknown target exits 2
+agent-deck inbox drain [--json] [--strict] [<id>|self]  # consume pending completion events
 agent-deck inbox export [--json] [--profile <name>]     # read-only: this profile's records on this host, nothing consumed
 agent-deck inbox export --json --after '<cursor>' [--with-writer]  # read-only: only records newer than the cursor
 agent-deck inbox cursor [--json] [<remote>]             # the remote-talkback cursors this machine keeps

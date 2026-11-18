@@ -5,4 +5,4 @@ Manage Cursor Agent CLI hook integration.
 Commands:
   install      Install agent-deck Cursor hooks
   uninstall    Remove agent-deck Cursor hooks
-  status       Show Cursor hooks install status
+  status       Show Cursor hooks install status (--json for machine output)

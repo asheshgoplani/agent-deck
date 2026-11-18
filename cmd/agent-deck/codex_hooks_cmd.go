@@ -501,7 +501,7 @@ func handleCodexHooks(args []string) {
 	case "uninstall":
 		handleCodexHooksUninstall()
 	case "status":
-		handleCodexHooksStatus()
+		runCodexHooksStatus(hooksStatusWantsJSON(args[1:]))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown codex-hooks subcommand: %s\n", args[0])
 		printCodexHooksUsage(os.Stderr)
@@ -517,7 +517,7 @@ func printCodexHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  install      Install or upgrade agent-deck Codex notify hook")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Codex notify hook")
-	fmt.Fprintln(w, "  status       Show current hook install status")
+	fmt.Fprintln(w, "  status       Show current hook install status (--json for machine output)")
 }
 
 func handleCodexHooksInstall() {
@@ -642,8 +642,18 @@ func handleCodexHooksUninstall() {
 	fmt.Println("No agent-deck Codex hook found to remove.")
 }
 
-func handleCodexHooksStatus() {
+func handleCodexHooksStatus() { runCodexHooksStatus(false) }
+
+func runCodexHooksStatus(asJSON bool) {
 	configPath := getCodexConfigPath()
+	if asJSON {
+		state := codexHooksStateForConfig(configPath)
+		if state == codexHooksNotInstalled {
+			state = "not-installed"
+		}
+		printHooksStatusJSON(hooksStatusJSON{Kind: "codex", State: state, Config: configPath})
+		return
+	}
 	switch codexHooksStateForConfig(configPath) {
 	case codexHooksInstalled:
 		fmt.Println("Status: INSTALLED")
