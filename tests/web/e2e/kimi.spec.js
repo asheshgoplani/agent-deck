@@ -61,5 +61,6 @@ test.describe('Kimi web session creation', () => {
       modelId: 'kimi-code/kimi-for-coding',
       kimiPermissionMode: 'always-ask',
     })
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
   })
 })
