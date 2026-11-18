@@ -6,6 +6,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSessionStartKimiPermissionFlags(t *testing.T) {
@@ -60,10 +63,12 @@ func TestSessionStartKimiPermissionFlags(t *testing.T) {
 				if code != 0 {
 					t.Fatalf("start failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
 				}
-				data, err := os.ReadFile(argsFile)
-				if err != nil {
-					t.Fatal(err)
-				}
+				var data []byte
+				require.Eventually(t, func() bool {
+					var err error
+					data, err = os.ReadFile(argsFile)
+					return err == nil && len(data) > 0
+				}, 60*time.Second, 10*time.Millisecond, "fake Kimi did not write its arguments")
 				var gotArgs []string
 				if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
 					gotArgs = strings.Split(trimmed, "\n")
