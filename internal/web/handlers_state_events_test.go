@@ -2,9 +2,9 @@ package web
 
 import (
 	"bufio"
-	"fmt"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"

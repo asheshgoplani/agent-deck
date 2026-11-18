@@ -332,7 +332,9 @@ type Home struct {
 	// hookPending: a hook change not yet applied; the status worker runs a
 	// hook pass after its current pass or sweep (live_watch.go).
 	hookPending atomic.Bool
-	voiceNow    func() time.Time
+	// statusRepaint: the hook pass changed a status; the UI redraws.
+	statusRepaint chan struct{}
+	voiceNow      func() time.Time
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -4749,6 +4751,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case voiceStateMsg:
 		h.voiceState = msg.st
 		return h, listenForVoice(h.voiceWatch)
+
+	case statusRepaintMsg:
+		return h, listenForStatusRepaint(h.statusRepaint)
 
 	case hookChangedMsg:
 		// A hook wrote a status file: apply it now instead of on the next

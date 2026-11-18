@@ -47,7 +47,10 @@ type Mirror struct {
 
 // RelativeRemote names a target host from the host dest: "" when the
 // target is on dest itself, self (the daemon's host as dest names it) when
-// the target is on the daemon's host, else the name unchanged.
+// the target is on the daemon's host. A third host is named only in the
+// daemon machine's config, so dest cannot know that name: it gets
+// "<self>/<name>", which can never match one of dest's remotes (a remote
+// name has no "/"), so no row there is marked by mistake.
 func RelativeRemote(targetRemote, dest, self string) string {
 	switch targetRemote {
 	case dest:
@@ -55,7 +58,7 @@ func RelativeRemote(targetRemote, dest, self string) string {
 	case "":
 		return self
 	}
-	return targetRemote
+	return self + "/" + targetRemote
 }
 
 // MirrorFor is the mirror of s for the host dest. s nil or off is a mirror
@@ -66,7 +69,10 @@ func MirrorFor(s *State, dest, self string, nowMs int64) Mirror {
 		return m
 	}
 	m.On, m.Mode, m.Phase, m.PhaseSince = true, s.Mode, s.phase(), s.PhaseSince
-	m.WakePhrase, m.HeartbeatMs = s.WakePhrase, s.HeartbeatMs
+	// The mirror's liveness is the relay's refresh (RelayMirrorWindow), not
+	// the daemon's beat: say so for an older reader that only knows
+	// heartbeatMs.
+	m.WakePhrase, m.HeartbeatMs = s.WakePhrase, RelayRefresh.Milliseconds()
 	m.Muted, m.Hibernating, m.MicReleased, m.FallingBack = s.Muted, s.Hibernating, s.MicReleased, s.FallingBack
 	m.TTS, m.TTSEffective, m.STT, m.STTEffective = s.TTS, s.TTSEffective, s.STT, s.STTEffective
 	m.ClientSource = s.ClientSource

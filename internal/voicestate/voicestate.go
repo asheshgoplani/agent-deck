@@ -175,12 +175,14 @@ func (r *Reader) refresh(c *fileCache, path string, now time.Time) {
 		*c = fileCache{}
 		return
 	}
-	// mtime and size alone miss a rewrite of the same size within one coarse
-	// mtime tick (a voice switch to a session whose title has the same
-	// length). The daemon writes tmp + rename, so the inode tells it apart;
-	// an identical stat in place is still not re-read.
+	// An identical stat (mtime, size, inode) does not prove identical
+	// content: a same-size rewrite inside one coarse mtime tick (a switch to
+	// a session whose title has the same length) can match all three, even
+	// across tmp + rename when the filesystem hands the freed inode back. So
+	// a file written within freshReread is re-read and compared byte for
+	// byte (it is a few KB); a settled file costs one stat per poll.
 	ino := statInode(fi)
-	if c.present && fi.ModTime().Equal(c.mtime) && fi.Size() == c.size && ino == c.ino {
+	if c.present && fi.ModTime().Equal(c.mtime) && fi.Size() == c.size && ino == c.ino && now.Sub(fi.ModTime()) >= freshReread {
 		return
 	}
 	fi, raw, err := readStateFile(path)
@@ -334,7 +336,10 @@ func (r *Reader) liveMirror(now time.Time) *State {
 	// No pid to check (the daemon is on the Mac): stale by the file's own
 	// mtime, which the box stamps with its own clock.
 	window := fallbackWindow
-	if s.HeartbeatMs > 0 {
+	switch {
+	case s.Relative:
+		window = RelayMirrorWindow
+	case s.HeartbeatMs > 0:
 		window = heartbeatWindow(s.HeartbeatMs)
 	}
 	if now.Sub(r.mirror.mtime) > window {
@@ -349,16 +354,33 @@ func (r *Reader) liveMirror(now time.Time) *State {
 	return &out
 }
 
-// RelayRefresh is how often `voice relay` re-sends an unchanged state.
-const RelayRefresh = 5 * time.Second
+// freshReread: a file whose mtime is younger than this is re-read even
+// when its stat looks unchanged (see refresh).
+const freshReread = 2 * time.Second
 
-// RelayMirrorWindow is how long a relay-written mirror stays live without a
-// new write. (Rework shim: the old effective window at the 10 s beat.)
-const RelayMirrorWindow = 35 * time.Second
+// RelayRefresh is how often `voice relay` re-sends an unchanged live state.
+const RelayRefresh = 2 * time.Second
 
-// PollCurrent is Poll for this machine's own current.json only.
-// (Rework shim: still Poll.)
-func (r *Reader) PollCurrent() *State { return r.Poll() }
+// RelayMirrorWindow is how long a relay-written mirror ("relative": true)
+// stays live without a new write: three missed refreshes plus 5 s. A
+// stopped relay, a sleeping laptop or a dead link reads as no voice after
+// this, whatever heartbeatMs the mirror carries (it comes over the wire).
+const RelayMirrorWindow = 3*RelayRefresh + 5*time.Second
+
+// PollCurrent is Poll for this machine's own current.json only, never a
+// mirror: what `voice relay` forwards must be its own daemon's state, or two
+// hosts relaying to each other would keep each other's mirror alive.
+func (r *Reader) PollCurrent() *State {
+	if r == nil || r.Dir == "" {
+		return nil
+	}
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	r.refresh(&r.current, filepath.Join(r.Dir, SourceCurrent), now)
+	return r.liveCurrent(now)
+}
 
 // heartbeatWindow is three missed beats plus 5 s (35 s at the 10 s beat).
 func heartbeatWindow(heartbeatMs int64) time.Duration {

@@ -279,8 +279,11 @@ func (r *SSHRunner) RunStdinStreamIO(ctx context.Context, stdin io.Reader, stdou
 	return runSSHCommand(cmd)
 }
 
-// stdinStreamSSHArgs is the argv of RunStdinStreamIO. (Rework shim: the
-// shared keepalives.)
+// stdinStreamSSHArgs is the argv of RunStdinStreamIO: its own connection,
+// and keepalives that notice a dead route in about 6 s (ssh takes the
+// first value of an option, so these win over the shared 15 s ones) and
+// give up a blackholed connect after 3 s.
 func (r *SSHRunner) stdinStreamSSHArgs(remoteCmd string) []string {
-	return append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no"}, r.sshChannelArgs(remoteCmd)...)
+	return append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no",
+		"-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=3"}, r.sshChannelArgs(remoteCmd)...)
 }
