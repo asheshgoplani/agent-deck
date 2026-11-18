@@ -113,3 +113,20 @@ func TestFetchingLinksAreDropped(t *testing.T) {
 		t.Fatalf("DNS prefetch of anchors is turned off:\n%s", doc)
 	}
 }
+
+// Rework 1 (fin-srcdoc): a srcdoc document is parsed like any page, so its
+// links would connect with scripts off; its text goes through the same
+// rewrite (nested too). A speculationrules script is never hashed.
+func TestSrcdocIsRewrittenAndSpeculationRulesNotHashed(t *testing.T) {
+	doc := renderPage(t, `<html><body><iframe srcdoc="&lt;link rel=preconnect href=http://leak.example/a&gt;&lt;p&gt;one&lt;/p&gt;&lt;iframe srcdoc=&quot;&amp;lt;link rel=prefetch href=http://leak.example/b&amp;gt;&quot;&gt;&lt;/iframe&gt;"></iframe>`+
+		`<script type="speculationrules">{"prefetch":[{"source":"list","urls":["http://leak.example/c"]}]}</script></body></html>`)
+	if strings.Contains(doc, "leak.example/a") || strings.Contains(doc, "leak.example/b") {
+		t.Fatalf("a link inside srcdoc survived:\n%s", doc)
+	}
+	if !strings.Contains(doc, "one") {
+		t.Fatalf("the srcdoc text is kept:\n%s", doc)
+	}
+	if ss := scriptSrc(t, doc); ss != "script-src 'none'" {
+		t.Fatalf("speculation rules must not be allowed by hash: %q", ss)
+	}
+}

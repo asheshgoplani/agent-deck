@@ -438,6 +438,14 @@ func (in *inliner) rewriteTag(from string, t xhtml.Token) (string, bool) {
 				t.Attr[i].Val = "about:blank"
 				changed = true
 			}
+			// a srcdoc document is parsed like a page (its links would
+			// connect even with scripts off): the same rewrite, nested too
+			if a.Key == "srcdoc" && (t.Data == "iframe" || t.Data == "frame") {
+				if v := string(in.inlineHTML(from, []byte(a.Val))); v != a.Val {
+					t.Attr[i].Val = v
+					changed = true
+				}
+			}
 		}
 		if changed {
 			return t.String(), true
@@ -534,6 +542,9 @@ func DocumentCSP(doc []byte) string {
 		}
 		if _, i := attr(t, "src"); i >= 0 {
 			continue
+		}
+		if typ, _ := attr(t, "type"); strings.EqualFold(strings.TrimSpace(typ), "speculationrules") {
+			continue // not code, but it could make the engine prefetch: never allowed
 		}
 		if z.Next() != xhtml.TextToken {
 			continue
