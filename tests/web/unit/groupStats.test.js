@@ -124,7 +124,7 @@ describe('archived sessions in group membership', () => {
     ])
   })
 
-  it('groupStats leaves archived sessions out of the total and the fragments', async () => {
+  it('groupStats counts archived sessions in the total and the fragments', async () => {
     const { sessionsSignal, archivedSessionsSignal } = await import(stateModulePath)
     const { groupStats } = await import(groupPanelDataPath)
 
@@ -138,9 +138,9 @@ describe('archived sessions in group membership', () => {
     ]
 
     const stats = groupStats('work')
-    expect(stats.total).toBe(1)
+    expect(stats.total).toBe(3)
     expect(stats.fragments.map((f) => [f.id, f.count])).toEqual([
-      ['running', 1],
+      ['running', 1], ['stopped', 1], ['error', 1],
     ])
   })
 

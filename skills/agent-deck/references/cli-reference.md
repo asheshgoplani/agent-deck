@@ -143,7 +143,7 @@ agent-deck rm  # Alias
 agent-deck status [-v|-q|--json]
 ```
 
-- Default: `2 waiting • 5 running • 3 idle`, then `• N stopped` and `• N error` when not zero. Every status summary (this line, `--json`, `group list`, the TUI header, the web chips and group panel) counts the same five buckets over non-archived sessions; `starting` and `queued` count as idle.
+- Default: `2 waiting • 5 running • 3 idle`, then `• N stopped` and `• N error` when not zero. Every status summary (this line, `--json`, `group list`, the TUI header, the web chips) counts the same five buckets over non-archived sessions; `starting` and `queued` count as idle. The web group panel uses the same buckets but its total also counts the archived rows it lists.
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
 - Archived sessions are not counted or listed: archiving stops the pane on purpose, so their stopped/error status is not news. `list --json` still includes them, each with `"archived": true`.
