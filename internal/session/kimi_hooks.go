@@ -377,19 +377,32 @@ func stripAgentDeckKimiHooks(data []byte, knownEventsOnly bool) ([]byte, bool, e
 	if err != nil {
 		return nil, false, err
 	}
+	owned := func(block kimiHookBlock) bool {
+		return isAgentDeckKimiHookCommand(block.command) && (!knownEventsOnly || slices.Contains(kimiHookEvents, block.event))
+	}
+	trailingOwnedStart := len(blocks)
+	for i := len(blocks) - 1; i >= 0 && owned(blocks[i]); i-- {
+		if i == len(blocks)-1 && blocks[i].end != len(data) {
+			break
+		}
+		trailingOwnedStart = i
+	}
 	var out bytes.Buffer
 	out.Grow(len(data))
 	last := 0
 	removed := false
-	for _, block := range blocks {
-		if !isAgentDeckKimiHookCommand(block.command) || knownEventsOnly && !slices.Contains(kimiHookEvents, block.event) {
+	for i, block := range blocks {
+		if !owned(block) {
 			continue
 		}
 		start := block.start
 		if start > last && start > 0 && data[start-1] == '\n' {
-			start--
-			if start > last && data[start-1] == '\r' {
-				start--
+			separatorStart := start - 1
+			if separatorStart > last && data[separatorStart-1] == '\r' {
+				separatorStart--
+			}
+			if i == trailingOwnedStart || separatorStart > 0 && data[separatorStart-1] == '\n' {
+				start = separatorStart
 			}
 		}
 		out.Write(data[last:start])

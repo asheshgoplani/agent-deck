@@ -80,6 +80,38 @@ func TestKimiHookLifecycleRestoresMissingTrailingNewline(t *testing.T) {
 	}
 }
 
+func TestKimiHookUninstallPreservesLineBoundaryWithoutBlankSeparator(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{
+		{name: "comment", prefix: "# my hooks\n"},
+		{name: "value", prefix: "answer = 42\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.toml")
+			owned := "[[hooks]]\nevent = \"SessionStart\"\ncommand = \"agent-deck hook-handler\"\n"
+			original := []byte(tc.prefix + owned + "[mcp]\nenabled = true\n")
+			if err := os.WriteFile(configPath, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if removed, err := session.RemoveKimiHooks(dir); err != nil || !removed {
+				t.Fatalf("RemoveKimiHooks = %v, %v", removed, err)
+			}
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := tc.prefix + "[mcp]\nenabled = true\n"
+			if string(data) != want {
+				t.Fatalf("uninstall joined adjacent TOML lines: got %q, want %q", data, want)
+			}
+		})
+	}
+}
+
 func TestKimiHookUninstallPreservesBlankLineBeforeUserHook(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
