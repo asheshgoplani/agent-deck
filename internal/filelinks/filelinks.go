@@ -373,3 +373,49 @@ func isText(b []byte, truncated bool) bool {
 	}
 	return utf8.Valid(b)
 }
+
+// WithProjectRoot returns roots plus a session's project directory, when that
+// directory is itself a safe root: absolute, not "/", not containing the home
+// directory, ~/.ssh or the deck's own config and data (the CheckRoots rules),
+// and not inside one of those either. `agent-deck open` uses it so a session
+// may show its own files on the phone without widening file_link_roots.
+func WithProjectRoot(roots []string, project string) []string {
+	out := append([]string(nil), roots...)
+	project = strings.TrimSpace(project)
+	if project == "" || !filepath.IsAbs(project) {
+		return out
+	}
+	project = filepath.Clean(project)
+	sensitive := sensitiveDirs()
+	if tooWide(project, sensitive) != "" || insideSensitive(project, sensitive) {
+		return out
+	}
+	if real, err := filepath.EvalSymlinks(project); err == nil && (tooWide(real, sensitive) != "" || insideSensitive(real, sensitive)) {
+		return out
+	}
+	for _, r := range out {
+		if r == project {
+			return out
+		}
+	}
+	return append(out, project)
+}
+
+// insideSensitive reports whether p is at or below ~/.ssh or the deck's own
+// config or data directory. The home directory itself is not in this test:
+// projects live inside home.
+func insideSensitive(p string, sensitive []string) bool {
+	home, _ := os.UserHomeDir()
+	for _, d := range sensitive {
+		if home != "" && (d == filepath.Clean(home)) {
+			continue
+		}
+		if real, err := filepath.EvalSymlinks(home); err == nil && d == real {
+			continue
+		}
+		if _, ok := within(d, p); ok {
+			return true
+		}
+	}
+	return false
+}

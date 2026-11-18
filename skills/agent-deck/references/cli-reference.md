@@ -846,9 +846,13 @@ agent-deck open report.html                       # from inside a session
 agent-deck open ./site/ --session "My Project"    # a directory opens its index.html
 agent-deck open https://example.com/dashboard
 agent-deck open report.html --browser-profile work --wait 10s  # Browser panel profile; ack wait (default 3s, max 2m)
+agent-deck open notes.md --json                   # {status, where, session, title, path, url, page_id, page_title, name, kind, phone, elapsed_ms}
+agent-deck open --last --session "My Project" --json   # re-open the newest page (exit 2: none)
+agent-deck open --list --session "My Project" --json   # pages of the session, newest first
+agent-deck open --show <page-id> --session "My Project" [--json]  # one self-contained HTML document
 ```
 
-Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`, then the agent-deck session owning the calling tmux session) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within `--wait` (default 3 s), else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. Details: `docs/macapp-open.md`.
+Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`, then the agent-deck session owning the calling tmux session) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within `--wait` (default 3 s), else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. A file under the session's project path or a `[web] file_link_roots` entry, and every URL, also joins the session's page list for the phone app (Pages panel; `where` is `phone` or `both` in `--json`); a file elsewhere stays Mac-only (`"where":"mac","phone":"outside_roots"`). Markdown is rendered for the phone. Details: `docs/macapp-open.md`, how to use it: [open-page.md](open-page.md).
 
 ### ask - Ask the owner for a secret, a choice or a short text
 

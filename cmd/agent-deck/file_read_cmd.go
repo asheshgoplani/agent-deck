@@ -61,6 +61,8 @@ func fileLinkErrorCode(err error) string {
 		return "not_regular"
 	case errors.Is(err, filelinks.ErrTooLarge):
 		return "too_large"
+	case errors.Is(err, filelinks.ErrPrivate):
+		return "private"
 	}
 	return "error"
 }
@@ -86,7 +88,9 @@ func runFileRead(roots []string, args []string, out, diagnostics io.Writer) erro
 	if flags.NArg() != 1 {
 		return errors.New(fileReadUsage)
 	}
-	f, err := filelinks.Open(roots, flags.Arg(0))
+	// the private-name rule (.env, keys, credential data, VCS internals) on
+	// the symlink-resolved path, as GET /api/files
+	f, err := filelinks.OpenReadable(roots, flags.Arg(0))
 	if err != nil {
 		if *jsonOut {
 			_ = json.NewEncoder(out).Encode(fileErrorJSON{Error: err.Error(), Code: fileLinkErrorCode(err)})
