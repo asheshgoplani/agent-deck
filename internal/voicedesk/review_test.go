@@ -104,19 +104,17 @@ func TestFileStoreSweepsOldQuestions(t *testing.T) {
 // session the mic is on: the message is read back first.
 func TestChoiceThenTellReadsBack(t *testing.T) {
 	h := newHarness(t)
-	h.addSession(Session{ID: "e1000011-1700000051", Title: "api-proxy-east", Group: "team/alex", Profile: "work", Status: "idle"})
-	h.addSession(Session{ID: "e1000012-1700000052", Title: "api-proxy-west", Group: "team/alex", Profile: "work", Status: "idle"})
-	ask := h.do(Request{Sentence: "tell api proxy to run tests", On: "e1000011-1700000051"})
+	ask := h.do(Request{Sentence: "tell voice to run tests", On: idVoiceTest})
 	if ask.Confirm == nil || ask.Confirm.Kind != "choice" {
 		t.Fatalf("ask = %+v", ask)
 	}
 	var idx string
 	for i, it := range ask.Show.Items {
-		if it.ID == "e1000011-1700000051" {
+		if it.ID == idVoiceTest {
 			idx = []string{"first", "second", "third"}[i]
 		}
 	}
-	got := h.do(Request{Sentence: idx, On: "e1000011-1700000051", Pending: ask.Confirm.Token, AnswerDelayMs: 600, HasAnswerDelay: true})
+	got := h.do(Request{Sentence: idx, On: idVoiceTest, Pending: ask.Confirm.Token, AnswerDelayMs: 600, HasAnswerDelay: true})
 	if got.Confirm == nil || got.Confirm.Kind != "yes" || len(h.deck.sent) != 0 {
 		t.Fatalf("sent without a read-back: %+v sent=%+v", got, h.deck.sent)
 	}

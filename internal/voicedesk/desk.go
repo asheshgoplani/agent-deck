@@ -599,13 +599,11 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	}
 	// "status of the build", "test ko bolo ki ...": a name of only coding
 	// nouns is talk unless it says a session's whole title
-	if genericOnlyQ(q) && (res.Kind == resolvedOne || res.Kind == resolvedAmbiguous) && !saysWholeTitle(q, res) {
-		return notMine(p.Lang), nil
-	}
-	// one plain word that is only part of several session names ("tell the
-	// deck to shuffle", "conductor se pucho") is talk, not a question; a
-	// whole name, or a word that fits one session, still counts
-	if p.Intent != IntentFind && len(q.words) == 1 && res.Kind == resolvedAmbiguous && res.Sure && len(res.Choices) > 1 && !saysWholeTitle(q, res) {
+	// A tell is never handed on to be typed as plain text (conductor
+	// ruling): one match reads back, several ask which, none is not found.
+	// Other forms may still hand on talk-like or coding-word names.
+	isTell := p.Intent == IntentTell
+	if !isTell && genericOnlyQ(q) && (res.Kind == resolvedOne || res.Kind == resolvedAmbiguous) && !saysWholeTitle(q, res) {
 		return notMine(p.Lang), nil
 	}
 	switch res.Kind {
@@ -613,7 +611,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 		refuse(&r, RefusedOtherPerson, otherLine(res.Person))
 		return r, nil
 	case resolvedNotFound:
-		if p.Soft || (!hasDigitWord(q.words) && (talkLike(q.words) || anyCodeNoun(q))) {
+		if !isTell && (p.Soft || (!hasDigitWord(q.words) && (talkLike(q.words) || anyCodeNoun(q)))) {
 			return notMine(p.Lang), nil
 		}
 		refuse(&r, RefusedNotFound, "I found no session of yours called "+strings.TrimSpace(q.raw)+".")

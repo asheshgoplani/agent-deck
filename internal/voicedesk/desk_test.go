@@ -98,7 +98,7 @@ func TestIntentTable(t *testing.T) {
 		{"status of old phone build", IntentNone, LangEN, "", "", "", false}, // holds a coding word and no session: talk (review S1)
 		{"status of voice text", IntentStatus, LangEN, "", RefusedAmbiguous, "choice", true},
 		{"voice text ka status kya hai", IntentStatus, LangHI, "", RefusedAmbiguous, "choice", true},
-		{"status of conductor", IntentNone, LangEN, "", "", "", false}, // one word, part of two names: talk (re-review S1)
+		{"status of conductor", IntentStatus, LangEN, "", RefusedAmbiguous, "choice", true},
 		{"tell release notes to add the date", IntentTell, LangEN, idRelease, RefusedUnsafe, "", true},
 	}
 	for _, r := range rows {
@@ -497,14 +497,17 @@ func TestLookAlikeAsksThenTellReadsBack(t *testing.T) {
 
 func TestAmbiguousNamesAskAndNeverPick(t *testing.T) {
 	h := newHarness(t)
-	h.addSession(Session{ID: "e1000011-1700000051", Title: "api-proxy-east", Group: "team/alex", Profile: "work", Status: "idle"})
-	h.addSession(Session{ID: "e1000012-1700000052", Title: "api-proxy-west", Group: "team/alex", Profile: "work", Status: "idle"})
-	ask := h.say("tell api proxy to check the build")
+	ask := h.say("tell conductor to check the build")
 	if refusedOf(ask) != RefusedAmbiguous || ask.Confirm == nil || ask.Confirm.Kind != "choice" || len(h.deck.sent) != 0 {
 		t.Fatalf("got %+v", ask)
 	}
-	if ask.Say != "Did you mean api proxy east or api proxy west?" {
+	if ask.Say != "Did you mean conductor deck alex or conductor boxone on boxone?" {
 		t.Errorf("say = %q", ask.Say)
+	}
+	for _, it := range ask.Show.Items {
+		if strings.Contains(it.Title, "sam") || strings.Contains(it.Title, "robin") {
+			t.Errorf("someone else's session offered: %+v", it)
+		}
 	}
 }
 

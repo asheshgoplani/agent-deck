@@ -275,7 +275,9 @@ var deicticNames = foldSet("this", "that", "it", "these", "those", "he", "she", 
 	"me", "us", "you", "ye", "yeh", "ise", "isko", "use", "usko", "wo", "woh", "vo", "voh", "sign", "page",
 	"screen", "everything", "everyone", "everybody", "all", "things", "sab", "kuch", "something", "here", "there",
 	"what", "which", "who", "the", "a", "an", "my", "your", "mera", "meri", "tum", "tumhe", "aap",
-	"user", "users", "customer", "customers", "people", "team", "usko", "unko", "inko", "unhe", "use")
+	"user", "users", "customer", "customers", "people", "team", "usko", "unko", "inko", "unhe", "use",
+	"client", "clients", "mujhe", "mujhko", "sabko", "sabhi", "everyone", "everybody", "anyone", "isko", "ise",
+	"yujar", "yuzar", "yusar", "yujars")
 
 func foldSet(ws ...string) map[string]bool {
 	m := make(map[string]bool, len(ws))
