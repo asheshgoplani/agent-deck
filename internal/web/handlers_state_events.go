@@ -28,7 +28,7 @@ import (
 var stateEventsHeartbeatInterval = 15 * time.Second
 
 // defaultStateKinds is what the stream carries without ?kind=.
-var defaultStateKinds = []string{"session.status", "voice."}
+var defaultStateKinds = []string{"session.status", "session.link", "voice."}
 
 // stateKindsAllowed bounds ?kind=: the stream is for status and voice, not
 // a door to every kind on the bus (tmux output, ask dialogs).

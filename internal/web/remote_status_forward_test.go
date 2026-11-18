@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // fakeRemoteFollow plays one scripted connection per call and records the
@@ -19,7 +21,15 @@ type fakeRemoteFollow struct {
 	script [][]string // lines per connection
 }
 
+func (f *fakeRemoteFollow) FetchSessions(context.Context) ([]session.RemoteSessionInfo, *session.ListStats, error) {
+	return nil, nil, nil
+}
+
 func (f *fakeRemoteFollow) RunReadIO(ctx context.Context, stdin io.Reader, stdout, _ io.Writer, _ []byte, follow bool, args ...string) error {
+	if len(args) >= 2 && args[0] == "events" && args[1] == "stats" {
+		_, err := io.WriteString(stdout, `{"cursor":1}`+"\n") // the remote's history ends at cursor 1
+		return err
+	}
 	f.mu.Lock()
 	n := len(f.calls)
 	f.calls = append(f.calls, append([]string(nil), args...))
@@ -72,6 +82,9 @@ func TestRemoteStatusForwarder_RepublishesWithHost(t *testing.T) {
 	var got []string
 	f := &remoteStatusForwarder{name: "box", runner: fake, startTS: start,
 		publish: func(kind, sid string, data any) {
+			if kind != "session.status" {
+				return // session.link frames: TestRemoteStatusForwarder_LinkFramesResync
+			}
 			raw, _ := json.Marshal(data)
 			mu.Lock()
 			got = append(got, kind+" "+sid+" "+string(raw))
