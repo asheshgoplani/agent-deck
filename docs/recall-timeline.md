@@ -47,10 +47,10 @@ of the background index sweep and meets the two second local append target.
 ## Rows (default, schema `agent-deck.recall.rows/v2`)
 
 ```
-agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]
+agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>] [--kinds a,b] [--skip-empty-body]
 agent-deck recall follow   <session> --after <cursor|end> --jsonl [--status]
 agent-deck recall timeline --json --transcript <file> --harness claude|codex|pi
-agent-deck recall timeline --json [--tail N] --sessions <id1>,<id2>,...
+agent-deck recall timeline --json [--tail N] [--kinds a,b] [--skip-empty-body] --sessions <id1>,<id2>,...
 ```
 
 Both need `[recall] enabled = true` (exit 2 otherwise) but never need the
@@ -92,6 +92,51 @@ changed after a cursor: new rows in `turns`, changes to earlier rows in
 `--limit`/`--since` until the cursor stops moving yields exactly the full
 timeline. `--agent <id>` returns one Claude sub-agent sidechain.
 
+### Only some rows (`--kinds`, `--skip-empty-body`)
+
+A client that shows a conversation as messages, not as a full activity log,
+can ask the owner host to drop the other rows before they are printed, so
+they never cross an SSH link:
+
+```
+agent-deck recall timeline <session> --json --kinds user,assistant --tail 100
+agent-deck recall timeline <session> --json --kinds user,assistant --since <next_cursor>
+agent-deck recall timeline <session> --json --skip-empty-body --tail 100
+```
+
+- `--kinds` keeps only rows whose `kind` is in the comma-separated list:
+  `user`, `assistant`, `thinking`, `tool`, `bash`, `edit`, `read`,
+  `subagent`, `todo`, `question`, `skill`, `command`, `system`,
+  `compaction`, `turn_end`, `other`. An unknown or empty kind is refused
+  with exit 2 (`INVALID_OPERATION`) and the list of valid kinds.
+- `--skip-empty-body` drops rows whose `body` is empty or only whitespace.
+  Both flags can be combined.
+- `--tail N`, `--limit N` and `--before <cursor> --limit N` count rows that
+  are kept: `--kinds user --tail 20` answers the last 20 user rows, however
+  many other rows sit between them.
+- A filtered answer carries `next_cursor`. Resume with
+  `--since <next_cursor>`, never with a cursor built from the last row in
+  `turns`: when the newest rows were filtered out, that row is older than
+  what this read covered, and the next call would fetch the same window
+  again. `next_cursor` equals `through_cursor`, which already covers every
+  row the read passed, kept or not. Without a filter `next_cursor` is
+  absent and the output is byte for byte what it was before the flags
+  existed.
+- `before_cursor` names the first kept row, so older pages with the same
+  filter continue exactly where the last one stopped.
+- In `--since` answers, `updates` that name a kind outside the list are
+  dropped; an update that carries no kind is kept (it names a row by id
+  only, and a client ignores ids it does not hold). `removed` is unchanged.
+- Rows read from the index (`source: "index"`) are filtered the same way;
+  they have no cursor.
+- Filtering runs on the owner host, so `remote <name> recall timeline
+  --kinds ...` and an `ssh <host> agent-deck recall timeline --kinds ...`
+  both carry only the kept rows. `--v1` is refused with a filter.
+
+`agent-deck version --json` lists `recall_timeline_kinds` in `features` on
+cores that filter; an older core rejects `--kinds` as an unknown flag, and
+`remote <name>` reports it as predating `recall timeline --kinds`.
+
 ### First screens in one call (`--sessions`)
 
 `--sessions <id1>,<id2>,...` answers up to 50 sessions in one call, so a
@@ -107,7 +152,7 @@ round trip per session:
 
 Entries follow the input order, and each `timeline` equals the single-id
 answer. One id failing never fails the batch: the call exits 0 once the request
-is valid. Only `--tail` combines with `--sessions`; `--since`, `--before`,
+is valid. Only `--tail`, `--kinds` and `--skip-empty-body` combine with `--sessions`; `--since`, `--before`,
 `--limit`, `--agent`, `--v1`, `--transcript` and a positional `<session>` are
 refused with `INVALID_OPERATION` (exit 2), as are more than 50 ids or an empty
 id. Sessions and the recall index are opened once per call and transcripts are

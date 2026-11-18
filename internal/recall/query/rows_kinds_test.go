@@ -1,0 +1,308 @@
+package query
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// keepRows is the reference filter the tests compare against: the rows a
+// client would keep if it filtered the unfiltered timeline itself.
+func keepRows(rows []Row, kinds []string, skipEmpty bool) []Row {
+	allowed := map[string]bool{}
+	for _, k := range kinds {
+		allowed[k] = true
+	}
+	out := []Row{}
+	for _, r := range rows {
+		if len(kinds) > 0 && !allowed[r.Kind] {
+			continue
+		}
+		if skipEmpty && strings.TrimSpace(r.Body) == "" {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func idsOf(rows []Row) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
+// TestRowsKindsFilter (#3203): --kinds keeps only the listed row kinds and
+// --skip-empty-body drops rows whose body is only whitespace. The filtered
+// answer equals the unfiltered rows filtered by the client, and it carries
+// next_cursor, the pre-filter resume point.
+func TestRowsKindsFilter(t *testing.T) {
+	for _, harness := range []string{"claude", "codex"} {
+		t.Run(harness, func(t *testing.T) {
+			src := RowsSource{Harness: harness, Path: rowsFixture(t, harness)}
+			full, err := ReadRows(context.Background(), src, RowsOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				kinds     []string
+				skipEmpty bool
+			}{
+				{[]string{"user", "assistant"}, false},
+				{[]string{"bash"}, false},
+				{nil, true},
+				{[]string{"user", "assistant", "system"}, true},
+			} {
+				got, err := ReadRows(context.Background(), src, RowsOptions{Kinds: tc.kinds, SkipEmptyBody: tc.skipEmpty})
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := keepRows(full.Turns, tc.kinds, tc.skipEmpty)
+				if len(want) == len(full.Turns) {
+					t.Fatalf("%+v: fixture has nothing to filter", tc)
+				}
+				if !reflect.DeepEqual(got.Turns, want) {
+					t.Fatalf("%+v: got %v want %v", tc, idsOf(got.Turns), idsOf(want))
+				}
+				if got.NextCursor == "" || got.NextCursor != got.ThroughCursor || got.ThroughCursor != full.ThroughCursor {
+					t.Fatalf("%+v: next_cursor %q through %q (unfiltered through %q)", tc, got.NextCursor, got.ThroughCursor, full.ThroughCursor)
+				}
+			}
+		})
+	}
+}
+
+// TestRowsKindsDefaultHasNoNextCursor: with no filter nothing changes, and
+// next_cursor is not serialized at all.
+func TestRowsKindsDefaultHasNoNextCursor(t *testing.T) {
+	tl, err := ReadRows(context.Background(), RowsSource{Harness: "claude", Path: rowsFixture(t, "claude")}, RowsOptions{Tail: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tl.NextCursor != "" {
+		t.Fatalf("unfiltered read set next_cursor %q", tl.NextCursor)
+	}
+	b, _ := json.Marshal(tl)
+	if strings.Contains(string(b), "next_cursor") {
+		t.Fatalf("unfiltered JSON carries next_cursor: %s", b)
+	}
+}
+
+// TestRowsKindsCursorResumesAcrossFilteredRows (#3203 "cursor semantics"):
+// when the newest rows are filtered out, the cursor still moves past them.
+// Resuming from next_cursor returns nothing new (no re-pull of the same
+// window), and after an append returns exactly the new matching row.
+func TestRowsKindsCursorResumesAcrossFilteredRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	lines := `{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"},"timestamp":"2026-11-18T10:00:00Z"}
+{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"hi there"}]},"timestamp":"2026-11-18T10:00:01Z"}
+{"type":"assistant","uuid":"a2","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-11-18T10:00:02Z"}
+{"type":"user","uuid":"r1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"a\nb"}]},"timestamp":"2026-11-18T10:00:03Z"}
+{"type":"system","subtype":"turn_duration","durationMs":1000,"uuid":"s1","timestamp":"2026-11-18T10:00:04Z"}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := RowsSource{Harness: "claude", Path: path}
+	kinds := []string{"user", "assistant"}
+	first, err := ReadRows(context.Background(), src, RowsOptions{Kinds: kinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(first.Turns); !reflect.DeepEqual(got, []string{"u1", "a1"}) {
+		t.Fatalf("first read: %v", got)
+	}
+	if first.NextCursor == "" {
+		t.Fatal("filtered read has no next_cursor")
+	}
+	again, err := ReadRows(context.Background(), src, RowsOptions{Since: first.NextCursor, Kinds: kinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Turns) != 0 || again.NextCursor != first.NextCursor {
+		t.Fatalf("resume re-pulled rows or moved the cursor: %v %q", idsOf(again.Turns), again.NextCursor)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"type":"assistant","uuid":"a3","message":{"id":"m3","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"pwd"}}]},"timestamp":"2026-11-18T10:00:05Z"}
+{"type":"user","uuid":"u2","message":{"role":"user","content":"next"},"timestamp":"2026-11-18T10:00:06Z"}
+`)
+	f.Close()
+	next, err := ReadRows(context.Background(), src, RowsOptions{Since: again.NextCursor, Kinds: kinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(next.Turns); !reflect.DeepEqual(got, []string{"u2"}) {
+		t.Fatalf("after append: %v", got)
+	}
+	for _, u := range next.Updates {
+		if u.Kind != "" && u.Kind != "user" && u.Kind != "assistant" {
+			t.Fatalf("update of a filtered kind crossed the wire: %+v", u)
+		}
+	}
+}
+
+// TestRowsKindsLimitPaging: paging --since/--limit with a filter until the
+// cursor stops yields exactly the filtered full timeline; --limit counts
+// rows that pass the filter.
+func TestRowsKindsLimitPaging(t *testing.T) {
+	for _, harness := range []string{"claude", "codex"} {
+		src := RowsSource{Harness: harness, Path: rowsFixture(t, harness)}
+		opts := RowsOptions{Kinds: []string{"user", "assistant"}}
+		full, err := ReadRows(context.Background(), src, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		set := newRowSet()
+		cursor := ""
+		for page := 0; ; page++ {
+			if page > 100 {
+				t.Fatal("cursor never settled")
+			}
+			tl, err := ReadRows(context.Background(), src, RowsOptions{Since: cursor, Limit: 2, Kinds: opts.Kinds})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tl.Turns) > 2 {
+				t.Fatalf("%s: --limit 2 page has %d rows", harness, len(tl.Turns))
+			}
+			for _, u := range tl.Updates {
+				u := u
+				set.apply(RowFrame{Frame: "update", Row: &u})
+			}
+			for _, id := range tl.Removed {
+				set.apply(RowFrame{Frame: "remove", ID: id})
+			}
+			for _, r := range tl.Turns {
+				if r.Kind != "user" && r.Kind != "assistant" {
+					t.Fatalf("%s: %s row in a filtered page", harness, r.Kind)
+				}
+				r := r
+				set.apply(RowFrame{Frame: "row", Row: &r})
+			}
+			if tl.NextCursor == "" {
+				t.Fatalf("%s: filtered page without next_cursor", harness)
+			}
+			if tl.NextCursor == cursor {
+				break
+			}
+			cursor = tl.NextCursor
+		}
+		if got, want := normalizeRows(t, set.list()), normalizeRows(t, full.Turns); got != want {
+			t.Fatalf("%s: paged %v, full %v", harness, got, want)
+		}
+	}
+}
+
+// TestRowsKindsTailAndBefore: --tail N with a filter answers the last N
+// rows that pass it (not the last N rows, filtered), and --before paging
+// with the same filter walks back through exactly the filtered timeline.
+func TestRowsKindsTailAndBefore(t *testing.T) {
+	for _, harness := range []string{"claude", "codex"} {
+		t.Run(harness, func(t *testing.T) {
+			src := RowsSource{Harness: harness, Path: rowsFixture(t, harness)}
+			// Kinds with at least three rows in each fixture.
+			kinds := map[string][]string{"claude": {"user", "assistant"}, "codex": {"bash", "tool", "system"}}[harness]
+			full, err := ReadRows(context.Background(), src, RowsOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := keepRows(full.Turns, kinds, false)
+			if len(want) < 3 {
+				t.Fatalf("fixture has %d %v rows", len(want), kinds)
+			}
+			tail, err := ReadRows(context.Background(), src, RowsOptions{Tail: 2, Kinds: kinds})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(tail.Turns, want[len(want)-2:]) {
+				t.Fatalf("--tail 2 --kinds %v: %v want %v", kinds, idsOf(tail.Turns), idsOf(want[len(want)-2:]))
+			}
+			if tail.NextCursor == "" || tail.NextCursor != tail.ThroughCursor {
+				t.Fatalf("tail next_cursor %q through %q", tail.NextCursor, tail.ThroughCursor)
+			}
+			rows := append([]Row(nil), tail.Turns...)
+			page := tail
+			for pages := 0; page.BeforeCursor != ""; pages++ {
+				if pages > len(full.Turns) {
+					t.Fatal("before cursor did not terminate")
+				}
+				page, err = ReadRows(context.Background(), src, RowsOptions{Before: page.BeforeCursor, Limit: 1, Kinds: kinds})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Turns) > 1 {
+					t.Fatalf("unbounded page: %v", idsOf(page.Turns))
+				}
+				rows = append(page.Turns, rows...)
+			}
+			if !reflect.DeepEqual(rows, want) {
+				t.Fatalf("filtered backward pages %v want %v", idsOf(rows), idsOf(want))
+			}
+		})
+	}
+}
+
+// TestParseRowKinds: the allowlist parser accepts the row vocabulary and
+// names every valid kind when it refuses one.
+func TestParseRowKinds(t *testing.T) {
+	got, err := ParseRowKinds(" user, assistant ")
+	if err != nil || !reflect.DeepEqual(got, []string{"user", "assistant"}) {
+		t.Fatalf("ParseRowKinds: %v %v", got, err)
+	}
+	for _, bad := range []string{"user,bogus", "user,,assistant", ""} {
+		_, err := ParseRowKinds(bad)
+		if err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+		if bad == "user,bogus" {
+			for _, k := range []string{`"bogus"`, "user", "assistant", "turn_end", "other"} {
+				if !strings.Contains(err.Error(), k) {
+					t.Fatalf("error %q does not name %s", err, k)
+				}
+			}
+		}
+	}
+	if err := ValidateRowsOptions(RowsOptions{Kinds: []string{"nope"}}); err == nil {
+		t.Fatal("ValidateRowsOptions accepted an unknown kind")
+	}
+}
+
+// TestRowsKindsTailGrowsWindowForSparseKinds: when the kept rows sit far
+// before the last 256 KB window, --tail with a filter keeps widening the
+// window until it has N kept rows instead of answering from the tail only.
+func TestRowsKindsTailGrowsWindowForSparseKinds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	var b strings.Builder
+	b.WriteString(`{"type":"user","uuid":"u1","message":{"role":"user","content":"first"},"timestamp":"2026-11-18T10:00:00Z"}` + "\n")
+	b.WriteString(`{"type":"user","uuid":"u2","message":{"role":"user","content":"second"},"timestamp":"2026-11-18T10:00:01Z"}` + "\n")
+	pad := strings.Repeat("x", 900)
+	for i := 0; b.Len() < 1<<20; i++ {
+		id := fmt.Sprintf("t%06d", i)
+		b.WriteString(`{"type":"assistant","uuid":"` + id + `","message":{"id":"m` + id + `","role":"assistant","content":[{"type":"tool_use","id":"toolu_` + id + `","name":"Bash","input":{"command":"echo ` + pad + `"}}]},"timestamp":"2026-11-18T10:00:02Z"}` + "\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := RowsSource{Harness: "claude", Path: path}
+	tl, err := ReadRows(context.Background(), src, RowsOptions{Tail: 2, Kinds: []string{"user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(tl.Turns); !reflect.DeepEqual(got, []string{"u1", "u2"}) {
+		t.Fatalf("--tail 2 --kinds user over 1 MB: %v", got)
+	}
+	older, err := ReadRows(context.Background(), src, RowsOptions{Before: tl.BeforeCursor, Limit: 5, Kinds: []string{"user"}})
+	if err != nil || len(older.Turns) != 0 || older.BeforeCursor != "" {
+		t.Fatalf("older page before the first user row: %v %q %v", idsOf(older.Turns), older.BeforeCursor, err)
+	}
+}

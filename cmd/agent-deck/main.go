@@ -162,7 +162,9 @@ func writeVersionOutput(w io.Writer, currentVersion string) {
 // A core that predates this list prints the plain version line instead of
 // JSON for `version --json`; clients treat that as "no features".
 //   - recall_timeline_batch: `recall timeline --json [--tail N] --sessions a,b,...`
-var coreFeatures = []string{"recall_timeline_batch"}
+//   - recall_timeline_kinds: `recall timeline --kinds a,b` and
+//     `--skip-empty-body`, filtered on this host, with next_cursor
+var coreFeatures = []string{"recall_timeline_batch", "recall_timeline_kinds"}
 
 // writeVersionJSON prints {"version": "...", "features": [...]}.
 func writeVersionJSON(w io.Writer, currentVersion string) {

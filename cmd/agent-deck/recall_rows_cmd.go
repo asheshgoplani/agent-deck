@@ -291,6 +291,9 @@ func readRowsTimeline(t *rowsTarget, opts query.RowsOptions) (query.RowsTimeline
 		err = fmt.Errorf("recall timeline: --before is unsupported for harness %s", t.src.Harness)
 	} else {
 		result.Turns, err = query.TimelineTurnsForSource(context.Background(), t.src.Harness, t.src.Path, t.native)
+		// Index rows have no cursor; the filter applies before --tail, so
+		// --tail counts kept rows as it does on the native path.
+		result.Turns = query.FilterRows(result.Turns, opts)
 		if err == nil && opts.Tail > 0 && len(result.Turns) > opts.Tail {
 			result.Turns = result.Turns[len(result.Turns)-opts.Tail:]
 		}
