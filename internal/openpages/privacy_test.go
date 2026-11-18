@@ -178,7 +178,7 @@ func TestPhonePolicyEvilPageAssets(t *testing.T) {
 	if r.Inlined != 0 {
 		t.Fatalf("evil.html loads nothing allowed (bigasset is over the asset cap), inlined %d:\n%s", r.Inlined, doc)
 	}
-	if !strings.HasPrefix(doc, `<meta http-equiv="Content-Security-Policy" content="`+PageCSP+`">`) {
+	if !strings.HasPrefix(doc, `<meta http-equiv="Content-Security-Policy" content="`+DocumentCSP(nil)+`">`) { // no inline script: script-src 'none'
 		t.Fatalf("the page policy must come first:\n%s", doc[:200])
 	}
 	if !strings.Contains(doc, `name="viewport"`) {
@@ -222,8 +222,8 @@ func TestPhonePolicyAllowedAssetsAndLinks(t *testing.T) {
 	if strings.Count(doc, `name="viewport"`) != 1 {
 		t.Error("a page with its own viewport keeps only its own")
 	}
-	if strings.Contains(doc, "fake.css") == false || strings.Contains(doc, "data:text/css;base64,"+base64.StdEncoding.EncodeToString(append([]byte{0}, []byte(marker+"\n")...))) {
-		t.Error("a binary file named .css is not inlined")
+	if strings.Contains(doc, "fake.css") || strings.Contains(doc, "data:text/css;base64,"+base64.StdEncoding.EncodeToString(append([]byte{0}, []byte(marker+"\n")...))) {
+		t.Error("a binary file named .css is not inlined, and its <link> is dropped (rework 1, M2)")
 	}
 	if r.Inlined != 4 { // pic.png, app.css, its pic.png, font.woff2
 		t.Errorf("inlined %d, want 4\n%s", r.Inlined, doc)

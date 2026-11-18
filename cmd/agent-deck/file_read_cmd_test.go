@@ -193,9 +193,10 @@ func TestFileReadCLIUsesConfiguredRoots(t *testing.T) {
 }
 
 // Phone finish (18 Nov 2026), feature sweep D1: `file read` under the roots
-// applies the phone's private-name rule (internal/openpages.Private): no
-// dotfile (.env, .git/, .ssh/ …) and no secret-like name, also behind a
-// harmless-looking symlink.
+// refuses private names (filelinks.OpenReadable): .env*, .git/, .ssh/, key
+// files, credential data files, also behind a harmless-looking symlink; an
+// ordinary code file whose name contains "token" or a file under .github/
+// still reads (review rework 1, S2).
 func TestFileReadRefusesPrivateNames(t *testing.T) {
 	tmp := t.TempDir()
 	root := filepath.Join(tmp, "root")
@@ -234,8 +235,19 @@ func TestFileReadRefusesPrivateNames(t *testing.T) {
 			t.Errorf("%s: plain read must fail with no output, got err %v out %q", rel, err, out.String())
 		}
 	}
-	var out, diag bytes.Buffer
-	if err := runFileRead([]string{root}, []string{filepath.Join(root, "notes.txt")}, &out, &diag); err != nil || out.String() != "hello\n" {
-		t.Fatalf("an ordinary file still reads: %v %q", err, out.String())
+	for _, rel := range []string{"notes.txt", "tokens.go", "design-tokens.css", ".github/workflows/ci.yml", ".gitignore"} {
+		p := filepath.Join(root, rel)
+		if rel != "notes.txt" {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("hello\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var out, diag bytes.Buffer
+		if err := runFileRead([]string{root}, []string{p}, &out, &diag); err != nil || out.String() != "hello\n" {
+			t.Errorf("%s: an ordinary file still reads: %v %q", rel, err, out.String())
+		}
 	}
 }

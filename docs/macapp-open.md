@@ -109,15 +109,23 @@ runs `open --list` / `open --show` on the host). Nothing changes for the Mac app
   inlined only when the whole file parses as CSS rules that declare at least one
   property, so a `.env`, key, JSON, YAML or note renamed `.css` is not), and is
   skipped otherwise; a CSS reference that is skipped becomes `about:invalid`. Scripts,
-  frames, objects and media files are never inlined, and a relative link to a
-  private name becomes `#`.
+  frames, objects and media files are never inlined, a `javascript:` source of
+  an iframe, frame, object or embed becomes `about:blank`, and a relative link to
+  a private name becomes `#`. A `<link>` survives only as an inlined stylesheet
+  or icon; every other `<link>` (preconnect, dns-prefetch, prefetch, preload,
+  modulepreload, prerender, next, manifest, a remote stylesheet …) is dropped,
+  because the engine would connect for it with no script and no CSP check, and
+  `x-dns-prefetch-control` is off.
 - Every document starts with a `<meta http-equiv="Content-Security-Policy">`
   (a later policy can only add restrictions): `default-src 'none';
-  script-src 'unsafe-inline'; style-src 'unsafe-inline' data:; img-src data:;
+  script-src <the SHA-256 hash of each inline script the document holds, or
+  'none'>; style-src 'unsafe-inline' data:; img-src data:;
   font-src data:; media-src data:; connect-src 'none'; frame-src 'none';
   child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none';
-  base-uri 'none'`. A page may run its own inline scripts and styles (charts,
-  small apps) and show its inlined images and fonts. It cannot fetch, post,
+  base-uri 'none'` (the web route sends the same policy as a header, plus
+  `sandbox allow-scripts`). A page may run its own inline `<script>` blocks and
+  styles (charts, small apps); inline event handlers (`onclick=`), `javascript:`
+  URLs and scripts added later do not run. It may show its inlined images and fonts. It cannot fetch, post,
   open a socket, load anything remote (scripts, styles, images, fonts,
   frames), submit forms or set a `<base>`. A link the user taps still leaves
   for the browser, and a page script could navigate to a URL the same way; the

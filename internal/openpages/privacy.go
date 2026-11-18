@@ -182,9 +182,10 @@ func contentMatches(t string, data []byte) bool {
 	return false
 }
 
-// PageCSP is the policy every rendered page carries in a <meta> at its top
-// (and the web route also sends as a header): the page may run its own
-// inline scripts and styles and show inlined images and fonts, and nothing
+// PageCSP is the base policy; every rendered page carries DocumentCSP (this
+// policy with script-src narrowed to the hashes of the document's own inline
+// scripts) in a <meta> at its top, and the web route sends it as a header:
+// the page may run its own inline scripts and styles and show inlined images and fonts, and nothing
 // else. No network at all (no fetch, XHR, WebSocket, beacon, remote image,
 // script, style or font, no frames, no form posts, no <base>).
 const PageCSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' data:; img-src data:; font-src data:; media-src data:; " +

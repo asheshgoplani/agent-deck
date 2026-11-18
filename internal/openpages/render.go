@@ -2,6 +2,7 @@ package openpages
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -153,7 +154,8 @@ var reDoctype = regexp.MustCompile(`(?is)^\s*(<\?xml[^>]*>\s*)?(<!doctype[^>]*>)
 // none, at the very top of the document, before anything the page wrote:
 // a later <meta http-equiv> can only add restrictions, never lift these.
 func withHead(doc []byte) []byte {
-	head := `<meta http-equiv="Content-Security-Policy" content="` + PageCSP + `">`
+	head := `<meta http-equiv="Content-Security-Policy" content="` + DocumentCSP(doc) + `">` +
+		`<meta http-equiv="x-dns-prefetch-control" content="off">`
 	if !reViewport.Match(doc) {
 		head += `<meta name="viewport" content="width=device-width, initial-scale=1">`
 	}
@@ -169,7 +171,7 @@ func withHead(doc []byte) []byte {
 }
 
 func wrapBody(title, body string) string {
-	return "<!doctype html>\n<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"" + PageCSP + "\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+	return "<!doctype html>\n<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"" + DocumentCSP(nil) + "\"><meta http-equiv=\"x-dns-prefetch-control\" content=\"off\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
 		"<meta name=\"color-scheme\" content=\"light dark\"><title>" + html.EscapeString(title) + "</title></head><body style=\"margin:0\">" + body + "</body></html>\n"
 }
 
@@ -393,23 +395,27 @@ func (in *inliner) rewriteTag(from string, t xhtml.Token) (string, bool) {
 	changed := false
 	switch t.Data {
 	case "link":
+		// Allowlist (review rework 1, M2): a <link> survives only as an
+		// inlined stylesheet (a <style>) or an inlined icon (data:). Every
+		// other one is dropped: preconnect, dns-prefetch, prefetch, preload,
+		// modulepreload, prerender, next, manifest … make the engine connect
+		// with no script and no CSP check.
 		rel, _ := attr(t, "rel")
 		href, i := attr(t, "href")
-		lrel := strings.ToLower(rel)
-		if i >= 0 && strings.Contains(lrel, "stylesheet") {
+		kind := linkKind(rel)
+		if i >= 0 && kind == "stylesheet" {
 			if real, uri, ok := in.asset(from, href); ok && strings.HasPrefix(uri, "data:text/css;") {
 				raw, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(uri, "data:text/css;base64,"))
 				return "<style>" + in.inlineCSS(real, string(raw), 0) + "</style>", true
 			}
-			return "", false
 		}
-		if i >= 0 && strings.Contains(lrel, "icon") {
+		if i >= 0 && kind == "icon" {
 			if _, uri, ok := in.asset(from, href); ok && strings.HasPrefix(uri, "data:image/") {
 				t.Attr[i].Val = uri
 				return t.String(), true
 			}
 		}
-		return "", false
+		return "", true
 	case "a", "area":
 		href, i := attr(t, "href")
 		if i < 0 {
@@ -424,7 +430,20 @@ func (in *inliner) rewriteTag(from string, t xhtml.Token) (string, bool) {
 			return t.String(), true
 		}
 		return "", false
-	case "script", "iframe", "frame", "object", "embed", "audio", "source", "track":
+	case "iframe", "frame", "object", "embed":
+		// A javascript: source runs in the frame's own realm, where no
+		// guard may reach (a frame in a closed shadow root): never kept.
+		for i, a := range t.Attr {
+			if (a.Key == "src" || a.Key == "data") && isJavascriptURL(a.Val) {
+				t.Attr[i].Val = "about:blank"
+				changed = true
+			}
+		}
+		if changed {
+			return t.String(), true
+		}
+		return "", false
+	case "script", "audio", "source", "track":
 		return "", false
 	}
 	for i, a := range t.Attr {
@@ -459,4 +478,77 @@ func (in *inliner) rewriteTag(from string, t xhtml.Token) (string, bool) {
 		return "", false
 	}
 	return t.String(), true
+}
+
+// linkKind is "stylesheet" or "icon" when every rel token is one of those
+// kinds, else "" (the link is dropped).
+func linkKind(rel string) string {
+	kind := ""
+	for _, tok := range strings.Fields(strings.ToLower(rel)) {
+		k := ""
+		switch tok {
+		case "stylesheet":
+			k = "stylesheet"
+		case "icon", "shortcut", "apple-touch-icon", "apple-touch-icon-precomposed", "mask-icon":
+			k = "icon"
+		default:
+			return ""
+		}
+		if kind != "" && kind != k {
+			return ""
+		}
+		kind = k
+	}
+	return kind
+}
+
+// isJavascriptURL reports whether v is a javascript: URL the way a browser
+// reads it (leading/trailing C0 controls and spaces stripped, tabs and
+// newlines removed anywhere, scheme case-insensitive).
+func isJavascriptURL(v string) bool {
+	v = strings.TrimFunc(v, func(r rune) bool { return r <= ' ' })
+	v = strings.NewReplacer("\t", "", "\n", "", "\r", "").Replace(v)
+	return len(v) >= 11 && strings.EqualFold(v[:11], "javascript:")
+}
+
+// DocumentCSP is PageCSP for one document: script-src allows exactly the
+// inline scripts the document holds, by SHA-256 hash ('none' when it has
+// none), never 'unsafe-inline' (review rework 1, M1). A javascript: URL, an
+// inline event handler or a script injected later is refused by the engine,
+// in every frame that inherits the policy.
+func DocumentCSP(doc []byte) string {
+	var hashes []string
+	seen := map[string]bool{}
+	z := xhtml.NewTokenizer(bytes.NewReader(doc))
+	for {
+		tt := z.Next()
+		if tt == xhtml.ErrorToken {
+			break
+		}
+		if tt != xhtml.StartTagToken {
+			continue
+		}
+		t := z.Token()
+		if t.Data != "script" {
+			continue
+		}
+		if _, i := attr(t, "src"); i >= 0 {
+			continue
+		}
+		if z.Next() != xhtml.TextToken {
+			continue
+		}
+		text := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(string(z.Raw()))
+		sum := sha256.Sum256([]byte(text))
+		h := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+		if !seen[h] {
+			seen[h] = true
+			hashes = append(hashes, h)
+		}
+	}
+	src := "'none'"
+	if len(hashes) > 0 {
+		src = strings.Join(hashes, " ")
+	}
+	return strings.Replace(PageCSP, "script-src 'unsafe-inline'", "script-src "+src, 1)
 }

@@ -15,7 +15,11 @@ import (
 // images and fonts, no network, no frames, no forms) inside a sandbox without
 // allow-same-origin or allow-popups: the page gets an opaque origin, so it
 // can read neither the deck's cookies nor its API, and cannot open windows.
-const openPageCSP = "sandbox allow-scripts; " + openpages.PageCSP + "; " + frameAncestorsNone
+// The header carries the same per-document script hashes as the document's
+// own <meta> (openpages.DocumentCSP): no 'unsafe-inline'.
+func openPageCSP(doc []byte) string {
+	return "sandbox allow-scripts; " + openpages.DocumentCSP(doc) + "; " + frameAncestorsNone
+}
 
 // handleSessionOpenPages serves the pages `agent-deck open` showed for a
 // session (the HTTP form of `agent-deck open --list/--show`):
@@ -103,7 +107,7 @@ func (s *Server) handleSessionOpenPages(w http.ResponseWriter, r *http.Request, 
 	}
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
-	h.Set("Content-Security-Policy", openPageCSP)
+	h.Set("Content-Security-Policy", openPageCSP(rendered.HTML))
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
 	h.Set("Referrer-Policy", "no-referrer")

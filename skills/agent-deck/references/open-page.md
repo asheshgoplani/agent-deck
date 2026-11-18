@@ -24,7 +24,8 @@ agent-deck open notes.md   --session "$AGENTDECK_INSTANCE_ID" --json   # Markdow
 ## Write pages that read well on a phone
 
 - One self-contained file is best. Relative images, CSS and fonts next to the page are bundled
-  into it for the phone. Put JavaScript INLINE in `<script>` (a `<script src>` is not loaded), and
+  into it for the phone. Put JavaScript INLINE in `<script>` blocks (a `<script src>` is not loaded; inline
+  `onclick=` handlers and `javascript:` links do not run: use `addEventListener` in a script), and
   load nothing from the web: the phone page has no network (no CDN scripts, fonts, images or
   fetch). Draw charts with inline SVG or a canvas script.
 - HTML: include `<meta name="viewport" content="width=device-width, initial-scale=1">`, use

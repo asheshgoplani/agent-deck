@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/filelinks"
-	"github.com/asheshgoplani/agent-deck/internal/openpages"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -62,15 +61,11 @@ func fileLinkErrorCode(err error) string {
 		return "not_regular"
 	case errors.Is(err, filelinks.ErrTooLarge):
 		return "too_large"
-	case errors.Is(err, errFilePrivate):
+	case errors.Is(err, filelinks.ErrPrivate):
 		return "private"
 	}
 	return "error"
 }
-
-// errFilePrivate refuses a dotfile or a secret-like name under the roots
-// (internal/openpages.Private): .env, .git/, .ssh/, id_rsa, *.pem, …
-var errFilePrivate = errors.New("private file: dotfiles and secret-like names are not read")
 
 // errFileJSONWritten tells handleFile the refusal was already printed as JSON.
 var errFileJSONWritten = errors.New("file: error written as JSON")
@@ -93,13 +88,9 @@ func runFileRead(roots []string, args []string, out, diagnostics io.Writer) erro
 	if flags.NArg() != 1 {
 		return errors.New(fileReadUsage)
 	}
-	f, err := filelinks.Open(roots, flags.Arg(0))
-	if err == nil && openpages.Private(roots, f.Path) {
-		// the phone's private-name rule (dotfiles, secret-like names), on
-		// the symlink-resolved path: the same files the phone never gets
-		_ = f.Close()
-		err = errFilePrivate
-	}
+	// the private-name rule (.env, keys, credential data, VCS internals) on
+	// the symlink-resolved path, as GET /api/files
+	f, err := filelinks.OpenReadable(roots, flags.Arg(0))
 	if err != nil {
 		if *jsonOut {
 			_ = json.NewEncoder(out).Encode(fileErrorJSON{Error: err.Error(), Code: fileLinkErrorCode(err)})
