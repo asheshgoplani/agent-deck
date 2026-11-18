@@ -1,19 +1,19 @@
  ●●○ Agent Deck  11 sessions                                           <version>
-  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+  All    ● 1   ◐ 2   ○ 6   ■ 1   ✕ 1   !@#& filter • 0 all • % open • …
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
 a ▾ alpha (7) ● 1 ◐ 1        │ 📁 alpha
-sa ├─ ■ opencode-idle        │
-c  ├─ ✕ claude-idle          │ 4 sessions
+sa ├─ ○ opencode-idle        │
+c  ├─ ○ claude-idle          │ 4 sessions
 d  ├─ ◐ claude-waiting       │
-e  └─ ■ claude-stopped       │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+e  └─ ■ claude-stopped       │ ◐ 1 waiting  ○ 2 idle  ■ 1 stopped
 f   ▾ backend (3) ● 1        │
-g    ├─ ✕ codex-idle         │ ───────────────── Sessions ─────────────────
-h    ├─ ● claude-running     │   ■ opencode-idle opencode
-j    └─ ✕ claude-error       │   ✕ claude-idle claude
+g    ├─ ○ codex-idle         │ ───────────────── Sessions ─────────────────
+h    ├─ ● claude-running     │   ○ opencode-idle opencode
+j    └─ ✕ claude-error       │   ○ claude-idle claude
 k ▾ beta (4) ◐ 1             │   ◐ claude-waiting claude
-l  ├─ ✕ gemini-idle          │   ■ claude-stopped claude
-m  ├─ ✕ pi-idle              │
+l  ├─ ○ gemini-idle          │   ■ claude-stopped claude
+m  ├─ ○ pi-idle              │
 p  ├─ ◐ claude-i18n          │ Tab toggle • r rename • d delete • g subgroup
 ss └─ ○ shell-live           │
 w ▾ remotes/lab (0) · host … │
