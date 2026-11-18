@@ -43,3 +43,24 @@ func TestResultFromDesk_DeskShapesCarryNoDictatedOrSpokenText(t *testing.T) {
 		}
 	}
 }
+
+// P1b: a to-do's text is show.items[].title. For kind "todos" the frame keeps
+// id and status only; the title never reaches the bus.
+const deskTodosShape = `{"handled":true,"intent":"todo_list","lang":"en","say":"One to do.","show":{"kind":"todos","items":[{"id":"1","title":"CANARYTODO pay the rent","host":"","status":"open"},{"id":"2","title":"CANARYTODO call the bank","host":"","status":"done"}]},"confirm":null,"then":null,"refused":null,"dryRun":false}`
+
+func TestResultFromDesk_TodoTextNeverInFrame(t *testing.T) {
+	ev, err := ResultFromDesk([]byte(deskTodosShape), "mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := json.Marshal(ev)
+	if strings.Contains(string(out), "CANARYTODO") {
+		t.Errorf("to-do text in the frame: %s", out)
+	}
+	if ev.Show.Kind != "todos" || len(ev.Show.Items) != 2 {
+		t.Fatalf("show %+v", ev.Show)
+	}
+	if it := ev.Show.Items[1]; it.ID != "2" || it.Status != "done" || it.Title != "" {
+		t.Errorf("item %+v", it)
+	}
+}
