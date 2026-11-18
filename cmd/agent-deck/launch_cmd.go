@@ -972,11 +972,17 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
 				exitCLI(1)
 			}
-			verifyPromptConsumedAfterLaunchAttributed(
-				tmuxSess, newInstance.Tool, initialMessage, opts.composerPasteFreeBeforeSend,
-				10*time.Second, 250*time.Millisecond,
-				os.Stderr,
-			)
+			// The check reads the agent's composer (see
+			// launchPromptCheckApplies). A tool without one sat out both
+			// windows, had the message typed a second time in between and
+			// was then warned about claude.
+			if launchPromptCheckApplies(newInstance.Tool) {
+				verifyPromptConsumedAfterLaunchAttributed(
+					tmuxSess, newInstance.Tool, initialMessage, opts.composerPasteFreeBeforeSend,
+					10*time.Second, 250*time.Millisecond,
+					os.Stderr,
+				)
+			}
 		}
 	}
 

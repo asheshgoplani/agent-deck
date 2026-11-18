@@ -182,3 +182,27 @@ func TestVerifyPromptConsumedAfterLaunch_ForeignComposerContent_NoRetry_WarningE
 		t.Fatal("the withheld retry must be surfaced as a warning")
 	}
 }
+
+// Which tools `launch --no-wait -m` runs the prompt-consumed check for:
+// Claude and Codex (the two composers the check can read) keep it, tools
+// without such a composer skip it.
+func TestLaunchPromptCheckApplies_ByTool(t *testing.T) {
+	for _, tc := range []struct {
+		tool string
+		want bool
+	}{
+		{"claude", true},
+		{"codex", true},
+		{"shell", false},
+		{"bash", false},
+		{"gemini", false},
+		{"opencode", false},
+		{"pi", false},
+		{"some-custom-cli", false},
+		{"", false},
+	} {
+		if got := launchPromptCheckApplies(tc.tool); got != tc.want {
+			t.Errorf("launchPromptCheckApplies(%q) = %v, want %v", tc.tool, got, tc.want)
+		}
+	}
+}
