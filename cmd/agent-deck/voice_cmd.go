@@ -32,7 +32,7 @@ func init() {
 	voiceSubs = append(voiceSubs, voiceSub{
 		name:    "state",
 		summary: "Voice state: on/off, phase, mic target [--json]",
-		usage:   "  agent-deck voice state --json   {on, phase (listening|hearing|thinking|speaking|resting|off), phaseSince, muted, target, source, from, updatedAt}",
+		usage:   "  agent-deck voice state --json   {on, phase (listening|hearing|thinking|speaking|resting|off), extra (muted|call|meeting or empty), phaseSince, muted, target, source, from, updatedAt}",
 		run:     runVoiceState,
 	})
 }
@@ -118,6 +118,9 @@ func voiceStateLine(v voicestate.View) string {
 	}
 	line := "voice: " + v.Phase
 	switch {
+	case v.Extra != "" && v.Muted && v.Extra != "muted":
+		// A rest for a call or a meeting while also muted says both.
+		line += " (" + v.Extra + ", muted)"
 	case v.Extra != "":
 		line += " (" + v.Extra + ")"
 	case v.Muted:

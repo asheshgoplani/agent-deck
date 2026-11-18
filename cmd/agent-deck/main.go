@@ -28,6 +28,7 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
+	"github.com/asheshgoplani/agent-deck/internal/core"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/crashreport"
 	"github.com/asheshgoplani/agent-deck/internal/events"
@@ -3174,7 +3175,7 @@ func handleList(profile string, args []string) {
 		skipsBefore := tmux.CaptureBatchSkips()
 		refresh, cached := session.CLIStatusCandidates(instances)
 		session.RefreshInstancesForCLIStatus(refresh)
-		output, err := buildListJSONRows(storage.Profile(), instances, all, cached)
+		output, err := buildListJSONRows(storage.Profile(), instances, all, cached, core.ReadStatusStamps(storage))
 		statusElapsed := time.Since(statusStarted)
 		tmuxCalls := tmux.SubprocessStarts() - tmuxBefore
 		// #2331: this status pass is the one thing both the poll (`list
@@ -3252,13 +3253,20 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 	if len(cachedStatus) != 0 {
 		cached = cachedStatus[0]
 	}
-	return buildListJSONRows(profileName, instances, instances, cached)
+	return buildListJSONRows(profileName, instances, instances, cached, nil)
+}
+
+// buildListJSONStamped is buildListJSON with the profile's status-change
+// stamps, so a listing pushed by the remote agent carries waiting_since
+// like a fetched one.
+func buildListJSONStamped(profileName string, instances []*session.Instance, cached map[*session.Instance]bool, stamps map[string]statedb.StatusStamp) ([]byte, error) {
+	return buildListJSONRows(profileName, instances, instances, cached, stamps)
 }
 
 // buildListJSONRows is buildListJSON for a subset of the profile's rows
 // (`list --no-archived`): instances are the rows listed, all the full set
 // their parent paths are recovered from.
-func buildListJSONRows(profileName string, instances, all []*session.Instance, cached map[*session.Instance]bool) ([]byte, error) {
+func buildListJSONRows(profileName string, instances, all []*session.Instance, cached map[*session.Instance]bool, stamps map[string]statedb.StatusStamp) ([]byte, error) {
 	type sessionJSON struct {
 		ID                string `json:"id"`
 		ParentSessionID   string `json:"parent_session_id,omitempty"`
@@ -3301,6 +3309,13 @@ func buildListJSONRows(profileName string, instances, all []*session.Instance, c
 		// apply the local recency filter (session.TimeFilterMode) to this
 		// session, the same way it applies to a local one.
 		LastActivityAt string `json:"last_activity_at,omitempty"`
+		// WaitingSince is when a waiting session's status changed to
+		// waiting, from state.db's status_changes stamp (statedb
+		// ReadStatusChanges); its last activity when it has waited since
+		// before that table existed (core.ListedWaitingSince, the same
+		// value core.SessionRow carries). Absent when the session is not
+		// waiting or the start is unknown (needs-me, docs/voice.md).
+		WaitingSince string `json:"waiting_since,omitempty"`
 		// Viewers are the people attached to the tmux session (the remote
 		// deck's "who else is viewing" indicator reads it from here). A
 		// pointer so "nobody" ([]) and "unknown" (absent: tmux could not be
@@ -3374,6 +3389,7 @@ func buildListJSONRows(profileName string, instances, all []*session.Instance, c
 			IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),
 			ConductorName:     inst.ListedConductorName(),
 		}
+		sj.WaitingSince = core.ListedWaitingSince(sj.Status, inst.ID, stamps, inst.DisplayLastActivityTime())
 		if cached[inst] {
 			sj.StatusSource = "cached"
 		} else if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.CaptureSkipped() {

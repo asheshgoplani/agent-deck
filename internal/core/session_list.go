@@ -7,6 +7,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -83,6 +84,7 @@ type SessionRow struct {
 	TranscriptPath    string         `json:"transcript_path,omitempty"`
 	ResolvedCodexHome string         `json:"resolved_codex_home,omitempty"`
 	LastActivityAt    string         `json:"last_activity_at,omitempty" doc:"live"`
+	WaitingSince      string         `json:"waiting_since,omitempty" doc:"live; when a waiting session's status changed to waiting (state.db status_changes); for a session waiting since before that table existed, its last activity time; absent when not waiting or unknown"`
 	Viewers           *[]tmux.Viewer `json:"viewers,omitempty" doc:"live; absent when tmux could not be asked"`
 
 	// BackgroundWork is the in-flight background work behind substate
@@ -139,7 +141,7 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 	skipsBefore := tmux.CaptureBatchSkips()
 	refresh, cached := session.CLIStatusCandidates(instances)
 	session.RefreshInstancesForCLIStatus(refresh)
-	out.Sessions = liveSessionRows(ctx, out.Profile, instances, all, cached, transcripts)
+	out.Sessions = liveSessionRows(ctx, out.Profile, instances, all, cached, transcripts, ReadStatusStamps(storage))
 	elapsed := time.Since(started)
 	tmuxCalls := tmux.SubprocessStarts() - tmuxBefore
 	health.RecordStatusPass(elapsed, len(instances), tmuxCalls)
@@ -184,7 +186,7 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 // liveSessionRows refreshes each session's status and fills every field.
 // Callers warm the status caches first. all is the full row set parent paths
 // are recovered from; instances may be a subset of it.
-func liveSessionRows(ctx context.Context, profile string, instances, all []*session.Instance, cached map[*session.Instance]bool, transcripts map[*session.Instance]string) []SessionRow {
+func liveSessionRows(ctx context.Context, profile string, instances, all []*session.Instance, cached map[*session.Instance]bool, transcripts map[*session.Instance]string, stamps map[string]statedb.StatusStamp) []SessionRow {
 	rows := make([]SessionRow, len(instances))
 	viewers := session.ViewersByTmuxSession(ctx, instances)
 	var pass session.StatusUpdatePass
@@ -215,7 +217,9 @@ func liveSessionRows(ctx context.Context, profile string, instances, all []*sess
 		row.ArchivedAt = inst.ArchivedAtThreadSafe()
 		row.SupersededBy = inst.SupersededBy
 		row.Supersedes = inst.Supersedes
-		row.LastActivityAt = inst.DisplayLastActivityTime().Format(time.RFC3339Nano)
+		lastActivity := inst.DisplayLastActivityTime()
+		row.LastActivityAt = lastActivity.Format(time.RFC3339Nano)
+		row.WaitingSince = ListedWaitingSince(row.Status, inst.ID, stamps, lastActivity)
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			row.TmuxSession = tmuxSess.Name
 			if v, known := viewers[tmuxSess.Name]; known {
@@ -230,6 +234,47 @@ func liveSessionRows(ctx context.Context, profile string, instances, all []*sess
 		rows[i] = row
 	}
 	return rows
+}
+
+// ReadStatusStamps reads the profile's status-change stamps (statedb
+// status_changes). nil when there is no database or the read fails: the
+// listing then leaves waiting_since out rather than guessing.
+func ReadStatusStamps(storage *session.Storage) map[string]statedb.StatusStamp {
+	db := storage.GetDB()
+	if db == nil {
+		return nil
+	}
+	stamps, err := db.ReadStatusChanges()
+	if err != nil {
+		return nil
+	}
+	return stamps
+}
+
+// ListedWaitingSince is a listed row's waiting_since (RFC 3339, UTC), shared
+// by the registry listing and the legacy one so both emit the same bytes:
+//   - not waiting, or stamps unknown (nil): "".
+//   - a stamp recording the change to waiting: that time.
+//   - a stamp for another status: "" (the stored status is behind the live
+//     one; when it turned waiting is not known).
+//   - no stamp at all: the row has been waiting since before status_changes
+//     existed (every later insert or status change is stamped by a trigger),
+//     so the best time known is its last activity (fallback); "" when zero.
+func ListedWaitingSince(status, id string, stamps map[string]statedb.StatusStamp, fallback time.Time) string {
+	if status != string(session.StatusWaiting) || stamps == nil {
+		return ""
+	}
+	at := fallback
+	if st, ok := stamps[id]; ok {
+		if st.Status != string(session.StatusWaiting) {
+			return ""
+		}
+		at = st.At
+	}
+	if at.IsZero() {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339Nano)
 }
 
 // listedStatusSource is a live row's status_source: cached for an absent row
