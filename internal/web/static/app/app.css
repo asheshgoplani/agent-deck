@@ -1283,11 +1283,14 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .markdown-code .tok-add { color: var(--tn-green); }
 .markdown-code .tok-del { color: var(--tn-red); }
 :root[data-theme="light"] .markdown-code .tok-kw, :root.light .markdown-code .tok-kw { color: #7847bd; }
-:root[data-theme="light"] .markdown-code .tok-type, :root.light .markdown-code .tok-type { color: #006c86; }
+:root[data-theme="light"] .markdown-code .tok-type, :root.light .markdown-code .tok-type,
+:root[data-theme="light"] .markdown-code .tok-meta, :root.light .markdown-code .tok-meta { color: #006c86; }
 :root[data-theme="light"] .markdown-code .tok-fn, :root.light .markdown-code .tok-fn { color: #2959aa; }
 :root[data-theme="light"] .markdown-code .tok-str, :root.light .markdown-code .tok-str { color: #485e30; }
 :root[data-theme="light"] .markdown-code .tok-num, :root.light .markdown-code .tok-num { color: #965027; }
 :root[data-theme="light"] .markdown-code .tok-com, :root.light .markdown-code .tok-com { color: #6c7086; }
+:root[data-theme="light"] .markdown-code .tok-add, :root.light .markdown-code .tok-add { color: #33635c; }
+:root[data-theme="light"] .markdown-code .tok-del, :root.light .markdown-code .tok-del { color: #a8304a; }
 :root[data-theme="light"] .markdown-code .tok-add, :root.light .markdown-code .tok-add { color: #33635c; }
 :root[data-theme="light"] .markdown-code .tok-del, :root.light .markdown-code .tok-del { color: #8c4351; }
 .cc-shl { font-size: 11px; color: var(--muted); padding: 0 0 3px 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
