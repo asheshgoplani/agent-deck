@@ -4,7 +4,7 @@ Delete a group.
 
 Options:
   -force
-    	Move sessions to parent and delete
+    	Move sessions (also those of its subgroups) to parent and delete the group and its subgroups
   -json
     	Output as JSON
   -q	Minimal output (short)
