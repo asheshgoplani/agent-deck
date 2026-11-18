@@ -9,13 +9,14 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/events"
 )
 
-// ResultItem is one row of the desk's show list.
+// ResultItem is one row of the desk's show list: which session and its
+// status, nothing else. The desk's own "line" (his dictated message for a
+// tell, the spoken reply for a read) never goes on the bus.
 type ResultItem struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Host   string `json:"host"`
 	Status string `json:"status"`
-	Line   string `json:"line"`
 }
 
 // ResultShow is the desk's `show` (CONTRACT.md section 2).
@@ -88,7 +89,7 @@ func ResultFromDesk(raw []byte, from string) (ResultEvent, error) {
 	if !d.Handled || d.DryRun {
 		return ResultEvent{}, ErrNotPublishable
 	}
-	r := ResultEvent{Intent: d.Intent, Target: d.Target, Show: d.Show, Then: d.Then, Refused: d.Refused, From: from}
+	r := ResultEvent{Intent: d.Intent, Target: d.Target, Show: showWithoutText(d.Show), Then: d.Then, Refused: d.Refused, From: from}
 	if d.Confirm != nil {
 		// The desk's prompt is the read-back of his dictated message ("Send
 		// to alpha: <message>. Yes?"): it stays with the brain. The card
@@ -141,4 +142,24 @@ func confirmPrompt(kind, intent string, target *Target) string {
 		return "Confirm for " + title + "?"
 	}
 	return "Confirm?"
+}
+
+// showWithoutText rebuilds the desk's show from id, title, host and status
+// per item and a known kind: no free text reaches the frame. For to-dos
+// (title is his text) only id and status are kept.
+func showWithoutText(in ResultShow) ResultShow {
+	out := ResultShow{Kind: "none", Items: make([]ResultItem, 0, len(in.Items))}
+	switch in.Kind {
+	case "sessions", "confirm", "search", "todos":
+		out.Kind = in.Kind
+	}
+	for _, it := range in.Items {
+		if in.Kind == "todos" {
+			// a to-do's title is his dictated text: id and status only.
+			out.Items = append(out.Items, ResultItem{ID: it.ID, Status: it.Status})
+			continue
+		}
+		out.Items = append(out.Items, ResultItem{ID: it.ID, Title: it.Title, Host: it.Host, Status: it.Status})
+	}
+	return out
 }
