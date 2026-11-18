@@ -873,7 +873,7 @@ func handleGroupUpdate(profile string, args []string) {
 // handleGroupDelete deletes a group
 func handleGroupDelete(profile string, args []string) {
 	fs := flag.NewFlagSet("group delete", flag.ContinueOnError)
-	force := fs.Bool("force", false, "Move sessions to parent and delete")
+	force := fs.Bool("force", false, "Move sessions to the parent group (to My Sessions for a root group) and delete")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -888,7 +888,8 @@ func handleGroupDelete(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck group delete experiments")
-		fmt.Println("  agent-deck group delete work --force   # Move sessions to parent")
+		fmt.Println("  agent-deck group delete work/api --force   # Move its sessions to the parent group (work)")
+		fmt.Println("  agent-deck group delete work --force       # Root group: move its sessions to My Sessions")
 	}
 
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
@@ -977,29 +978,14 @@ func handleGroupDelete(profile string, args []string) {
 
 	// Check if group has sessions and --force not specified
 	if sessionCount > 0 && !*force {
-		out.Error(fmt.Sprintf("group '%s' has %d sessions. Use --force to move them to parent.", name, sessionCount), ErrCodeGroupNotEmpty)
+		out.Error(fmt.Sprintf("group '%s' has %d sessions. Use --force to move them to the '%s' group.", name, sessionCount, groupTree.DeleteGroupDestinationName(groupPath)), ErrCodeGroupNotEmpty)
 		exitCLI(1)
 	}
 
-	// Determine where sessions will be moved
-	parentPath := getParentGroupPath(groupPath)
-	movedTo := parentPath
-	if movedTo == "" {
-		movedTo = session.DefaultGroupPath
-	}
-
-	// Delete the group (this also moves sessions to default group)
+	// Sessions move to the parent group, or to the default group when a root
+	// group is deleted: the tree's one rule, shared with the TUI and the web.
+	movedTo := groupTree.DeleteGroupDestination(groupPath)
 	movedSessions := groupTree.DeleteGroup(groupPath)
-
-	// If we want to move to parent instead of default, do it manually
-	if parentPath != "" && len(movedSessions) > 0 {
-		// Move sessions from default to parent
-		for _, sess := range movedSessions {
-			sess.GroupPath = parentPath
-		}
-		// Re-sync the tree
-		groupTree.SyncWithInstances(groupTree.GetAllInstances())
-	}
 
 	// Save
 	if err := storage.SaveWithGroups(groupTree.GetAllInstances(), groupTree); err != nil {
