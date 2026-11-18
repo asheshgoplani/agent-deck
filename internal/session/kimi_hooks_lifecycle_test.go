@@ -291,7 +291,7 @@ command = "notify-send Kimi"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("config permissions = %04o, want 0600", info.Mode().Perm())
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("config permissions = %04o, want preserved 0644", info.Mode().Perm())
 	}
 }

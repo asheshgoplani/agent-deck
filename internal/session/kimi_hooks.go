@@ -449,7 +449,13 @@ func writeKimiConfig(configPath string, data []byte) error {
 			return fmt.Errorf("validate Kimi config.toml: %w", err)
 		}
 	}
-	if err := atomicfile.WriteFile(configPath, data, 0o600); err != nil {
+	perm := os.FileMode(0o600)
+	if info, err := os.Stat(configPath); err == nil {
+		perm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat Kimi config.toml: %w", err)
+	}
+	if err := atomicfile.WriteFile(configPath, data, perm); err != nil {
 		return fmt.Errorf("write Kimi config.toml: %w", err)
 	}
 	return nil

@@ -150,6 +150,42 @@ func TestKimiHooksConcurrentLifecyclePreservesUnrelatedConfig(t *testing.T) {
 	}
 }
 
+func TestKimiHooksPreserveExistingConfigMode(t *testing.T) {
+	for _, operation := range []string{"install", "uninstall"} {
+		t.Run(operation, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.toml")
+			config := "default_model = \"kimi-code/k3\"\n"
+			if operation == "uninstall" {
+				config += "[[hooks]]\nevent = \"SessionStart\"\ncommand = \"agent-deck hook-handler\"\n"
+			}
+			if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(configPath, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var err error
+			if operation == "install" {
+				_, err = session.InjectKimiHooks(dir)
+			} else {
+				_, err = session.RemoveKimiHooks(dir)
+			}
+			if err != nil {
+				t.Fatalf("%s Kimi hooks: %v", operation, err)
+			}
+			info, err := os.Stat(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o644 {
+				t.Fatalf("config mode after %s = %04o, want 0644", operation, info.Mode().Perm())
+			}
+		})
+	}
+}
+
 func TestKimiHooksNoOpUninstallAndFreshInstallFilesystemEffects(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "missing")
 	removed, err := session.RemoveKimiHooks(dir)
