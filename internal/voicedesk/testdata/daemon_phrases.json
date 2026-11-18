@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared fixtures with the voice daemon (claude-code-voice): sentences the daemon handles itself (switch, look, audio, harness, app commands) and plain talk. The desk must answer handled:false for every one, so it never steals a sentence that belongs to the daemon or to the session. Session names follow testdata/sessions.json. talk_coding: ordinary coding talk that starts with a desk verb and names no session; the desk may list sessions for these but must hand them on.",
+  "_comment": "Shared fixtures with the voice daemon (claude-code-voice): sentences the daemon handles itself (switch, look, audio, harness, app commands) and plain talk. The desk must answer handled:false for every one, so it never steals a sentence that belongs to the daemon or to the session. Session names follow testdata/sessions.json. talk_coding: ordinary coding talk that starts with a desk verb and names no session; the desk may list sessions for these but must hand them on. Explicit tells to a name are never handed on (conductor ruling); they are tested in round2_test.go.",
   "switch": [
     "switch to deck conductor",
     "Switch to the voice test session",
@@ -191,9 +191,7 @@
     "tell me what you think",
     "tell me why the test fails",
     "tell the user to restart the app",
-    "tell the build script to skip the lint step",
     "ask the user whether they want dark mode",
-    "ask the linter why it complains",
     "ask the api for the latest version",
     "list the files in this folder",
     "list all the open issues",
@@ -205,8 +203,6 @@
     "usko bolo ki ruk jaye",
     "build ka status kya hai yaar",
     "logs padho aur batao kya hua",
-    "test ko bolo ki fast chale",
-    "server se poocho ki kya hua",
     "error dhoondo",
     "bug wali file dhoondo",
     "config file ka jawab padho",

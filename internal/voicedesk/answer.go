@@ -1,6 +1,9 @@
 package voicedesk
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // Answer kinds to a pending question.
 const (
@@ -72,8 +75,8 @@ func answerText(sentence string) string {
 // (index). Names as a choice are handled by the caller, which knows the
 // candidates.
 func classifyAnswer(sentence string) (kind string, index int) {
-	if strings.HasSuffix(strings.TrimSpace(sentence), "?") {
-		return AnswerNone, -1 // "yes?" is a question back, not consent
+	if hasQuestionMark(sentence) {
+		return AnswerNone, -1 // "yes?", "Yes?!", "ہاں؟" are a question back, not consent
 	}
 	t := answerText(sentence)
 	switch {
@@ -124,6 +127,24 @@ func risky(message string) bool {
 			if strings.HasPrefix(w.roman, stem) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// questionMarks: ASCII, full-width, Arabic/Urdu, double, interrobang,
+// inverted and reversed question marks.
+const questionMarks = "?？؟⁇‽¿⸮⁈⁉"
+
+// hasQuestionMark: a question mark anywhere in the answer, after zero-width
+// and other format characters are taken out ("yes?\u200b", "ہاں؟\u200f").
+func hasQuestionMark(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		if strings.ContainsRune(questionMarks, r) {
+			return true
 		}
 	}
 	return false

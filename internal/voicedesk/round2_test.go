@@ -105,21 +105,55 @@ func TestUnknownNumberedCodingNameIsNotFound(t *testing.T) {
 	}
 }
 
-// S1: one word that fits part of several session names is talk, not a
-// question ("tell the deck to shuffle before dealing").
-func TestOneWordPartOfSeveralNamesIsTalk(t *testing.T) {
-	for _, s := range []string{"tell the deck to shuffle before dealing", "deck ko bolo shuffle kare", "conductor se pucho kitne ticket bache",
-		"ask the conductor to hand out tickets in the story"} {
-		h := newHarness(t)
-		h.addSession(Session{ID: "e1000009-1700000039", Title: "deck-conductor-2", Group: "team/alex", Profile: "work", Status: "idle"})
-		if got := h.say(s); got.Handled {
-			t.Errorf("%q: %+v", s, got)
-		}
+// CONTRACT 4.1 (audio run on 993ebc16): in an explicit desk form, a name
+// whose words fit two or more of his sessions asks which one; it is never
+// handed on as talk. Only a generic coding word is handed on.
+func TestNameFittingSeveralSessionsAsks(t *testing.T) {
+	for _, s := range []string{
+		"What is the status of billing?", "biling ka status kya hai?", "Read billing.", "biling ka jawab padho",
+		"Tell billing to send the invoice.", "biling ko bolo ki report banaao", "बिलिंग को बोलो कि रिपोर्ट बनाओ",
+		"ask billing to send the invoice", "billing se kaho ki invoice bhejo", "बिलिंग का स्टेटस क्या है",
+	} {
+		t.Run(s, func(t *testing.T) {
+			h := newHarness(t)
+			h.addSession(Session{ID: "e1000021-1700000061", Title: "billing-dashboard", Group: "team/alex", Profile: "work", Status: "idle"})
+			h.addSession(Session{ID: "e1000022-1700000062", Title: "billing-report", Group: "team/alex", Profile: "work", Status: "idle"})
+			got := h.say(s)
+			if !got.Handled || got.Confirm == nil || got.Confirm.Kind != "choice" || len(got.Show.Items) != 2 {
+				t.Fatalf("not asked: %+v", got)
+			}
+			if got.Say != "Did you mean billing dashboard or billing report?" {
+				t.Errorf("say = %q", got.Say)
+			}
+		})
 	}
-	// a whole short name still asks or resolves
-	h := newHarness(t)
-	if got := h.say("status of conductor deck alex"); targetID(got) != idConductor {
-		t.Errorf("whole name: %+v", got)
+}
+
+// Conductor ruling: an explicit tell is never handed on to be typed as
+// plain text. No match is "not found", also for coding words.
+func TestTellIsNeverHandedOn(t *testing.T) {
+	for _, s := range []string{
+		"tell git to ignore the build folder", "tell the logger to write to stderr", "ask the notes module to flush",
+		"tell the build script to skip the lint step", "server se poocho ki kya hua", "ask the linter why it complains",
+		"test ko bolo ki fast chale", "tell the notes app to sync on start", "tell the conductor class to retry three times",
+		"tell mac app users to update", "बिल्ड को बोलो कि लिंट स्किप करे", "tell the deck to shuffle before dealing",
+	} {
+		t.Run(s, func(t *testing.T) {
+			h := newHarness(t)
+			got := h.say(s)
+			if !got.Handled || got.Intent != IntentTell {
+				t.Fatalf("a tell was handed on: %+v", got)
+			}
+		})
+	}
+	// a pronoun or a generic addressee is not a session: handed on
+	for _, s := range []string{"tell me what you think about this", "ask him to wait", "tell them to retry",
+		"tell everyone to pull", "tell the user to restart the app", "tell the team to review", "tell the client to wait",
+		"usko bolo ki ruk jaye", "unko bolo ki ruk jao", "mujhe batao ki kya hua", "sabko bolo ki chhutti hai"} {
+		h := newHarness(t)
+		if got := h.say(s); got.Handled {
+			t.Errorf("addressee %q: %+v", s, got)
+		}
 	}
 }
 
