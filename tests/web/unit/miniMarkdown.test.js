@@ -152,6 +152,29 @@ describe('miniMarkdown edge cases and compatibility', () => {
     expect(c.querySelector('p').textContent).toBe('A | B -- | nope')
   })
 
+  it('keeps one-cell rows in a table and renders one-column tables', () => {
+    const c = mount('A | B\n--- | ---\n| only |\nx | y\n\n| Status |\n| --- |\n| ready |\n\nplain\n---')
+    const tables = c.querySelectorAll('table')
+    expect(tables).toHaveLength(2)
+    expect([...tables[0].querySelectorAll('tbody td')].map(el => el.textContent)).toEqual(['only', '', 'x', 'y'])
+    expect([...tables[1].querySelectorAll('th, td')].map(el => el.textContent)).toEqual(['Status', 'ready'])
+    expect(c.querySelector('hr')).not.toBeNull()
+  })
+
+  it('ends a table at a line that starts another block', () => {
+    const c = mount('A | B\n--- | ---\nx | y\n## Next | Steps\n- a | b\n> q | r')
+    expect([...c.querySelectorAll('tbody td')].map(el => el.textContent)).toEqual(['x', 'y'])
+    expect(c.querySelector('h4').textContent).toBe('Next | Steps')
+    expect(c.querySelector('li').textContent).toBe('a | b')
+    expect(c.querySelector('blockquote').textContent).toContain('q | r')
+  })
+
+  it('keeps balanced parentheses in bare URLs and drops the unmatched one', () => {
+    const c = mount('See https://example.test/Go_(lang) and (https://example.test/a_(b)).')
+    expect([...c.querySelectorAll('a')].map(a => a.getAttribute('href'))).toEqual(['https://example.test/Go_(lang)', 'https://example.test/a_(b)'])
+    expect(c.textContent).toBe('See https://example.test/Go_(lang) and (https://example.test/a_(b)).')
+  })
+
   it.each(['javascript:alert', 'JaVaScRiPt:alert', 'data:text/html,x', 'vbscript:msgbox', 'file:///etc/passwd', '//example.test', 'javascript&#58;alert'])('rejects the unsafe link target %s', href => {
     const c = mount('[click](' + href + ')')
     expect(c.querySelector('a')).toBeNull()

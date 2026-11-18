@@ -19,6 +19,19 @@ function link(href, label) {
   return html`<a href=${href} target="_blank" rel="noopener noreferrer">${label}</a>`
 }
 
+// Drops trailing punctuation, but keeps a ")" that closes a "(" in the URL.
+function trimUrlTrail(url) {
+  let end = url.length
+  while (end > 0 && /[.,;:!?)\]'"]/.test(url[end - 1])) {
+    if (url[end - 1] === ')') {
+      const head = url.slice(0, end)
+      if ((head.match(/\(/g) || []).length >= (head.match(/\)/g) || []).length) break
+    }
+    end--
+  }
+  return url.slice(0, end)
+}
+
 function inline(text) {
   const out = []
   let last = 0
@@ -32,8 +45,7 @@ function inline(text) {
     } else if (tok.startsWith('<')) {
       out.push(link(tok.slice(1, -1), tok.slice(1, -1)))
     } else if (/^https?:/i.test(tok)) {
-      const trail = tok.match(/[.,;:!?)\]'"]+$/)
-      if (trail) tok = tok.slice(0, -trail[0].length)
+      tok = trimUrlTrail(tok)
       out.push(link(tok, tok))
     } else {
       const [, label, href] = tok.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)
@@ -74,6 +86,12 @@ function tableAlignment(raw) {
   const cells = splitTableRow(raw)
   if (!cells.length || !cells.every(cell => /^:?-{3,}:?$/.test(cell))) return null
   return cells.map(cell => cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : 'left')
+}
+
+// A line that starts another block ends a table even when it contains a pipe.
+function startsBlock(raw) {
+  return /^ {0,3}(?:#{1,6}\s|>|`{3,}|~{3,})/.test(raw) || !!listItem(raw) ||
+    /^(?:-{3,}|\*{3,}|_{3,})$/.test(raw.replace(/\s/g, ''))
 }
 
 function listItem(raw) {
@@ -160,11 +178,12 @@ export function renderMarkdown(src, depth = 0) {
     if (index + 1 < lines.length) {
       const headers = splitTableRow(raw)
       const alignment = tableAlignment(lines[index + 1])
-      if (alignment && headers.length > 1 && headers.length === alignment.length) {
+      const piped = raw.includes('|') && lines[index + 1].includes('|')
+      if (alignment && (headers.length > 1 || piped) && headers.length === alignment.length) {
         flushPara()
         const rows = []
         index += 2
-        while (index < lines.length && lines[index].trim() && splitTableRow(lines[index]).length > 1) {
+        while (index < lines.length && lines[index].trim() && lines[index].includes('|') && !startsBlock(lines[index])) {
           const cells = splitTableRow(lines[index])
           rows.push(headers.map((_, cell) => cells[cell] || ''))
           index++
