@@ -23,7 +23,7 @@ func keepRows(rows []Row, kinds []string, skipEmpty bool) []Row {
 		if len(kinds) > 0 && !allowed[r.Kind] {
 			continue
 		}
-		if skipEmpty && strings.TrimSpace(r.Body) == "" {
+		if skipEmpty && strings.TrimSpace(r.Body) == "" && (r.Finished == nil || *r.Finished) {
 			continue
 		}
 		out = append(out, r)
@@ -375,6 +375,55 @@ func TestKeptCounterTracksMembership(t *testing.T) {
 		k.touch(set, step.fr)
 		if k.n != step.want || k.n != len(FilterRows(set.list(), k.opts)) {
 			t.Fatalf("step %d: counter %d, want %d (rescan %d)", i, k.n, step.want, len(FilterRows(set.list(), k.opts)))
+		}
+	}
+}
+
+// TestRowsSkipEmptyBodyKeepsPendingToolCall: a tool call whose output has
+// not arrived yet is kept by --skip-empty-body, so the result patch a later
+// --since read carries lands on a row the client already holds. Once the
+// call has finished with no output, a fresh read drops it.
+func TestRowsSkipEmptyBodyKeepsPendingToolCall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	call := `{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_p","name":"Bash","input":{"command":"make"}}]},"timestamp":"2026-11-18T10:00:00Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(call), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := RowsSource{Harness: "claude", Path: path}
+	opts := RowsOptions{SkipEmptyBody: true}
+	first, err := ReadRows(context.Background(), src, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(first.Turns); !reflect.DeepEqual(got, []string{"toolu_p"}) {
+		t.Fatalf("pending tool call not kept: %v", got)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"type":"user","uuid":"r1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p","content":"built ok"}]},"timestamp":"2026-11-18T10:00:01Z"}` + "\n")
+	f.Close()
+	next, err := ReadRows(context.Background(), src, RowsOptions{Since: first.NextCursor, SkipEmptyBody: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Updates) != 1 || next.Updates[0].ID != "toolu_p" || next.Updates[0].Body != "built ok" {
+		t.Fatalf("result patch for the held row: %+v", next.Updates)
+	}
+
+	empty := filepath.Join(t.TempDir(), "empty.jsonl")
+	data := call + `{"type":"user","uuid":"r1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p","content":""}]},"timestamp":"2026-11-18T10:00:01Z"}` + "\n"
+	if err := os.WriteFile(empty, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []RowsOptions{opts, {SkipEmptyBody: true, Tail: 5}} {
+		done, err := ReadRows(context.Background(), RowsSource{Harness: "claude", Path: empty}, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(done.Turns) != 0 {
+			t.Fatalf("%+v: finished call with no output kept: %v", o, idsOf(done.Turns))
 		}
 	}
 }

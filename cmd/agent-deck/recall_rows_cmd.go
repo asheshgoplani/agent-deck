@@ -320,14 +320,19 @@ func readRowsTimeline(t *rowsTarget, opts query.RowsOptions) (query.RowsTimeline
 
 // boundIndexRows applies --tail and the filter to index-backed rows, which
 // have no cursor. The filter runs first, so --tail and --limit count kept
-// rows as on the native path. --limit (the first N rows) applies only with
+// rows as on the native path; --tail takes precedence over --limit.
+// --limit (the first N rows) applies only with
 // a filter: the unfiltered index answer has always ignored it, and stays
 // byte-identical.
 func boundIndexRows(rows []query.Row, opts query.RowsOptions) []query.Row {
 	rows = query.FilterRows(rows, opts)
-	if opts.Tail > 0 && len(rows) > opts.Tail {
-		rows = rows[len(rows)-opts.Tail:]
-	} else if opts.Filtered() && opts.Limit > 0 && len(rows) > opts.Limit {
+	switch {
+	case opts.Tail > 0:
+		// --tail wins over --limit, as on the native path.
+		if len(rows) > opts.Tail {
+			rows = rows[len(rows)-opts.Tail:]
+		}
+	case opts.Filtered() && opts.Limit > 0 && len(rows) > opts.Limit:
 		rows = rows[:opts.Limit]
 	}
 	return rows

@@ -14,7 +14,7 @@ With --kinds or --skip-empty-body, --tail and --limit count kept rows. A native 
   -json
     	Output canonical JSON
   -kinds string
-    	Comma-separated row kinds to keep (user, assistant, thinking, tool, bash, edit, read, subagent, todo, question, skill, command, system, compaction, turn_end, other); filtered here, before output, sub-agent children included. Native reads resume with next_cursor
+    	Comma-separated row kinds to keep (user, assistant, thinking, tool, bash, edit, read, subagent, todo, question, skill, command, system, compaction, turn_end, other); filtered here, before output, sub-agent children included. Native reads other than --agent resume with next_cursor
   -limit int
     	Maximum older rows with --before; otherwise stop after N new rows and resume with --since
   -sessions string
@@ -22,7 +22,7 @@ With --kinds or --skip-empty-body, --tail and --limit count kept rows. A native 
   -since string
     	Only what changed after this cursor: new rows in turns, changes to earlier rows in updates/removed
   -skip-empty-body
-    	Drop rows whose body is empty or only whitespace; filtered here, before output, sub-agent children included. Native reads resume with next_cursor
+    	Drop rows whose body is empty or only whitespace (a tool call still waiting for its result is kept); filtered here, before output, sub-agent children included. Native reads other than --agent resume with next_cursor
   -tail int
     	Only the last N rows, read from the end of the transcript (fast first paint)
   -transcript string

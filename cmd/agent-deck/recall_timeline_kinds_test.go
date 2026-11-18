@@ -48,9 +48,10 @@ func recallHomeEnabled(t *testing.T) string {
 
 type kindsTimelineJSON struct {
 	Turns []struct {
-		ID   string `json:"id"`
-		Kind string `json:"kind"`
-		Body string `json:"body"`
+		ID       string `json:"id"`
+		Kind     string `json:"kind"`
+		Body     string `json:"body"`
+		Finished *bool  `json:"finished"`
 	} `json:"turns"`
 	ThroughCursor string  `json:"through_cursor"`
 	BeforeCursor  string  `json:"before_cursor"`
@@ -138,7 +139,7 @@ func TestRecallTimelineKindsCLI(t *testing.T) {
 		t.Fatalf("--skip-empty-body kept %d of %d rows", len(skipped.Turns), len(full.Turns))
 	}
 	for _, r := range skipped.Turns {
-		if strings.TrimSpace(r.Body) == "" {
+		if strings.TrimSpace(r.Body) == "" && (r.Finished == nil || *r.Finished) {
 			t.Fatalf("row %s with an empty body kept", r.ID)
 		}
 	}
@@ -352,6 +353,8 @@ func TestBoundIndexRows(t *testing.T) {
 		{query.RowsOptions{Kinds: user}, []string{"u1", "u2", "u3"}},
 		{query.RowsOptions{Limit: 2}, []string{"u1", "b1", "u2", "b2", "u3"}},
 		{query.RowsOptions{Tail: 2}, []string{"b2", "u3"}},
+		{query.RowsOptions{Kinds: user, Tail: 3, Limit: 2}, []string{"u1", "u2", "u3"}},
+		{query.RowsOptions{Kinds: user, Tail: 5, Limit: 1}, []string{"u1", "u2", "u3"}},
 	} {
 		if got := ids(boundIndexRows(append([]query.Row(nil), rows...), tc.opts)); !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%+v: %v want %v", tc.opts, got, tc.want)

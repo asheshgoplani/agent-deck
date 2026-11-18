@@ -110,7 +110,9 @@ agent-deck recall timeline <session> --json --skip-empty-body --tail 100
   `compaction`, `turn_end`, `other`. An unknown or empty kind is refused
   with exit 2 (`INVALID_OPERATION`) and the list of valid kinds.
 - `--skip-empty-body` drops rows whose `body` is empty or only whitespace.
-  Both flags can be combined.
+  A tool call still waiting for its result (`finished: false`) is kept: its
+  output arrives later as an update to that row, and a client can only merge
+  an update into a row it already holds. Both flags can be combined.
 - `--tail N`, `--limit N` and `--before <cursor> --limit N` count rows that
   are kept: `--kinds user --tail 20` answers the last 20 user rows, however
   many other rows sit between them.

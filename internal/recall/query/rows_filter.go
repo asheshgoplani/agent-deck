@@ -42,13 +42,18 @@ func validateRowKinds(kinds []string) error {
 func (o RowsOptions) Filtered() bool { return len(o.Kinds) > 0 || o.SkipEmptyBody }
 
 // keeps reports whether row passes the filter. A row's kind and body are
-// what the client would see after merging every update.
+// what the client would see after merging every update. --skip-empty-body
+// keeps a tool call still waiting for its result (finished:false): its
+// output arrives later as an update patch, and a client can only merge that
+// into a row it already holds.
 func (o RowsOptions) keeps(row Row) bool {
 	if len(o.Kinds) > 0 && !slices.Contains(o.Kinds, row.Kind) {
 		return false
 	}
-	return !o.SkipEmptyBody || strings.TrimSpace(row.Body) != ""
+	return !o.SkipEmptyBody || strings.TrimSpace(row.Body) != "" || pending(row)
 }
+
+func pending(row Row) bool { return row.Finished != nil && !*row.Finished }
 
 // keepsUpdate reports whether an update patch for a row the client already
 // holds may cross the wire. A patch rarely names its row's kind; one that
@@ -148,7 +153,7 @@ func filterIdentity(row Row, opts RowsOptions) Row {
 	if !opts.Filtered() {
 		return id
 	}
-	id.Kind = row.Kind
+	id.Kind, id.Finished = row.Kind, row.Finished
 	switch {
 	case strings.TrimSpace(row.Body) != "":
 		id.Body = "x"

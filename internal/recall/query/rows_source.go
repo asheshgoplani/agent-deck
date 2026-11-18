@@ -66,7 +66,8 @@ type RowsTimeline struct {
 //     windows so a 100 MB transcript answers from its end.
 //   - AgentID returns one Claude Code sub-agent sidechain.
 //   - Kinds keeps only rows of these kinds (RowKinds); SkipEmptyBody drops
-//     rows whose body is only whitespace. Both filter before serialization;
+//     rows whose body is only whitespace, except a tool call still waiting
+//     for its result. Both filter before serialization;
 //     Limit and Tail count rows that pass, and cursors still cover the
 //     rows filtered out (see RowsTimeline.NextCursor).
 type RowsOptions struct {
