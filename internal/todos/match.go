@@ -63,7 +63,20 @@ func queryWords(q string) []string {
 
 // inflectionEndings are the endings that make two words the same word:
 // "bank"/"banks", "tax"/"taxes", "किताब"/"किताबें", "दोस्त"/"दोस्तों".
+// "es" counts only after a sibilant stem (see esAfter): box/boxes, not
+// tim/times.
 var inflectionEndings = []string{"s", "es", "ें", "ों"}
+
+// esAfter reports whether "es" may follow stem: s, x, z, ch or sh only.
+// Anywhere else "es" is "e"+"s" of a different word (times/tim, jones/jon).
+func esAfter(stem string) bool {
+	for _, e := range []string{"s", "x", "z", "ch", "sh"} {
+		if strings.HasSuffix(stem, e) {
+			return true
+		}
+	}
+	return false
+}
 
 // inflectionMinRunes is the shortest bare word an ending may follow, so
 // "i" never matches "is".
@@ -90,6 +103,9 @@ func inflectionOf(long, short string) bool {
 		return false
 	}
 	for _, e := range inflectionEndings {
+		if e == "es" && !esAfter(short) {
+			continue
+		}
 		if long == short+e {
 			return true
 		}
