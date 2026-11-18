@@ -31,18 +31,25 @@ Commands:
 --source is one of voice, cli, phone, mac, tui (default cli): on add it is
 the item's source; on done, undo and remove it is "by" in the event.
 "done" with words ticks off the one open item whose text has every word,
-the same word or a prefix of 4+ letters at most 2 letters short ("bank"
-for "banks"; not "car" for "card", "bank" for "bankruptcy" or "maria"
-for "mario"). Words keep their vowel signs (Devanagari too). Filler words
-(the, a, an, my, todo, to-do) are ignored; only filler names nothing. When
-several items match it changes nothing and exits 3 with the candidates;
-it never guesses. An exact match of the whole text wins over longer ones;
-saying it again answers already_done. A number (12, #12) is only an id.
+the same word or the same word with a plural ending s, es, ें or ों,
+either way round ("bank" or "banks" for "call the bank", "tax" for "pay
+taxes", "किताबें" for "किताब खरीदो"). A word that only starts a longer one
+("plan" for "book the plane", "pay rent" for "pay rental insurance") is a
+close match: nothing is ticked off, it exits 3 with status close_match and
+the candidates, so the caller asks "Did you mean ...?" and then ticks it
+off by id. Shorter look-alikes ("car" for "card", "bank" for
+"bankruptcy", "maria" for "mario") never match. Words keep their vowel
+signs (Devanagari too). Filler words (the, a, an, my, todo, to-do) are
+ignored; only filler names nothing. When several items match it changes
+nothing and exits 3 with the candidates; it never guesses. An exact match
+of the whole text wins over longer ones; saying it again answers
+already_done. A number (12, #12) is only an id.
 Text that starts with "-" goes after "--": everything after "--" is text,
 so put flags such as --json before it (todo add --json -- "-5 degrees").
 
 Exit codes: 0 ok, 1 error (bad input, unreadable list), 2 no item
-matches, 3 more than one item matches.
+matches, 3 more than one item matches or only a close match (nothing
+changed in either case; the JSON status tells them apart).
 
 JSON (--json prints exactly one object on stdout):
   item:    {"id":"3","text":"call the bank","created_at":"RFC3339",
@@ -55,12 +62,17 @@ JSON (--json prints exactly one object on stdout):
   done no match:   {"status":"not_found","query":"bank"}            (exit 2)
   done ambiguous:  {"status":"ambiguous","query":"milk",
                     "candidates":[item...]}                         (exit 3)
+  done close match: {"status":"close_match","query":"plan",
+                    "candidates":[item...]}                         (exit 3)
   error:           {"status":"error","error":"..."}                 (exit 1)`
 
 // Exit codes beyond 0 and 1 (the same meaning as `agent-deck switch`).
 const (
 	todoExitNotFound  = 2
 	todoExitAmbiguous = 3
+	// A close match changes nothing either: the caller asks "Did you
+	// mean ...?" and ticks the item off by id.
+	todoExitCloseMatch = 3
 )
 
 // todoEnv is what runTodo needs from the outside world.
@@ -262,8 +274,22 @@ func runTodoChange(action string, args []string, out, errOut io.Writer, env todo
 		it, err = store.Remove(query)
 		changed = err == nil
 	}
-	var amb *todos.AmbiguousError
+	var (
+		amb *todos.AmbiguousError
+		cm  *todos.CloseMatchError
+	)
 	switch {
+	case errors.As(err, &cm):
+		res := todos.Result{Status: todos.StatusCloseMatch, Query: query, Candidates: cm.Candidates}
+		if *jsonOut {
+			_ = json.NewEncoder(out).Encode(res)
+		} else {
+			fmt.Fprintf(out, "No to-do matches %q exactly. Did you mean (say done <id>):\n", query)
+			for _, c := range cm.Candidates {
+				fmt.Fprintln(out, todoLine(c))
+			}
+		}
+		return todoExitCloseMatch
 	case errors.As(err, &amb):
 		res := todos.Result{Status: todos.StatusAmbiguous, Query: query, Candidates: amb.Candidates}
 		if *jsonOut {

@@ -28,7 +28,7 @@ func TestMatch(t *testing.T) {
 		{query: "the bank", wantID: "1"},
 		{query: "call bank", wantID: "1"},
 		{query: "ban", wantErr: ErrNotFound},     // a 3-letter prefix is a look-alike
-		{query: "banks", wantErr: ErrNotFound},   // longer than the word
+		{query: "banks", wantID: "1"},            // a plural is the same word
 		{query: "dentsit", wantErr: ErrNotFound}, // a typo is not a match
 		{query: "book dentsit", wantErr: ErrNotFound},
 		{query: "dentist appointmnt", wantErr: ErrNotFound},

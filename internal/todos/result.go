@@ -13,11 +13,12 @@ const (
 	StatusRemoved     = "removed"
 	StatusNotFound    = "not_found"
 	StatusAmbiguous   = "ambiguous"
+	StatusCloseMatch  = "close_match"
 	StatusError       = "error"
 )
 
 // Result is the answer to a change (add, done, undo, remove), a failed
-// match (not_found, ambiguous) or an error.
+// match (not_found, ambiguous, close_match) or an error.
 type Result struct {
 	Status     string `json:"status"`
 	Todo       *Item  `json:"todo,omitempty"`

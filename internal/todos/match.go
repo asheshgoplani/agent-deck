@@ -12,12 +12,18 @@ import (
 // lowercased. Filler words ("the", "a", "an", "my", "todo", "to-do",
 // "to do") are dropped; a query of only filler words names nothing. An
 // item is a candidate when EVERY remaining query word matches one word of
-// its text: the same word, or a prefix of it when the query word has 4 or
-// more letters and the text word is at most 2 letters longer ("bank" ->
-// "banks", "call" -> "calls"). A shorter prefix ("car" for "card"), a long
-// tail ("bank" for "bankruptcy") and a one-letter difference ("maria" for
-// "mario") are look-alikes and never match: the caller asks again rather
-// than tick off the wrong item.
+// its text: the same word, or the same word with a plural or inflection
+// ending ("s", "es", Devanagari "ें", "ों") on either side ("bank" and
+// "banks", "tax" and "taxes", "किताब" and "किताबें"; the bare word has 3
+// or more letters). Anything else is no match: a short prefix ("car" for
+// "card"), a long tail ("bank" for "bankruptcy") and a one-letter
+// difference ("maria" for "mario") never match.
+//
+// A close match is a query word of 4 or more letters that starts an item
+// word at most 2 letters longer without being one of those endings
+// ("plan" for "plane", "rent" for "rental"). It is never ticked off: when
+// no open item matches but open items match closely, the answer is a
+// *CloseMatchError with them, so the caller can ask "Did you mean ...?".
 //
 // An exact match (the item's words equal the query's words, in order)
 // comes first: one open exact match wins over longer candidates, and when
@@ -26,7 +32,8 @@ import (
 // twice never ticks off "pay rental insurance". Otherwise one open
 // candidate is the match and several are ambiguous. With no open
 // candidate, one done candidate is the answer (already done again for a
-// repeated "done bank"). The match never guesses.
+// repeated "done bank"); then open close matches are a close match. The
+// match never guesses.
 
 var fillerWords = map[string]bool{"the": true, "a": true, "an": true, "my": true, "todo": true}
 
@@ -54,36 +61,77 @@ func queryWords(q string) []string {
 	return out
 }
 
-// prefixMinRunes and prefixMaxTail bound a prefix match: "bank" matches
-// "banks" but "car" does not match "card" and "bank" not "bankruptcy".
+// inflectionEndings are the endings that make two words the same word:
+// "bank"/"banks", "tax"/"taxes", "किताब"/"किताबें", "दोस्त"/"दोस्तों".
+var inflectionEndings = []string{"s", "es", "ें", "ों"}
+
+// inflectionMinRunes is the shortest bare word an ending may follow, so
+// "i" never matches "is".
+const inflectionMinRunes = 3
+
+// closeMinRunes and closeMaxTail bound a close match: "plan" for "plane"
+// is close (asked about, never ticked off); "car" for "card" and "bank"
+// for "bankruptcy" are not even close.
 const (
-	prefixMinRunes = 4
-	prefixMaxTail  = 2
+	closeMinRunes = 4
+	closeMaxTail  = 2
 )
 
-func wordMatches(q, t string) bool {
-	if q == t {
-		return true
+type wordMatch int
+
+const (
+	wordNone  wordMatch = iota
+	wordClose           // a look-alike: ask, never tick off
+	wordSame            // equal, or equal but for an inflection ending
+)
+
+func inflectionOf(long, short string) bool {
+	if len([]rune(short)) < inflectionMinRunes {
+		return false
 	}
-	qn, tn := len([]rune(q)), len([]rune(t))
-	return qn >= prefixMinRunes && tn-qn <= prefixMaxTail && strings.HasPrefix(t, q)
+	for _, e := range inflectionEndings {
+		if long == short+e {
+			return true
+		}
+	}
+	return false
 }
 
-func itemMatches(qw []string, text string) bool {
+func wordMatches(q, t string) wordMatch {
+	if q == t || inflectionOf(t, q) || inflectionOf(q, t) {
+		return wordSame
+	}
+	qn, tn := len([]rune(q)), len([]rune(t))
+	if qn >= closeMinRunes && tn-qn <= closeMaxTail && strings.HasPrefix(t, q) {
+		return wordClose
+	}
+	return wordNone
+}
+
+// itemMatches returns how well the item's text matches the query words:
+// wordSame when every query word is the same as one of its words,
+// wordClose when every query word is at least close to one, else wordNone.
+func itemMatches(qw []string, text string) wordMatch {
 	tw := words(text)
+	res := wordSame
 	for _, q := range qw {
-		found := false
+		best := wordNone
 		for _, t := range tw {
-			if wordMatches(q, t) {
-				found = true
-				break
+			if m := wordMatches(q, t); m > best {
+				best = m
+				if best == wordSame {
+					break
+				}
 			}
 		}
-		if !found {
-			return false
+		if best == wordNone {
+			return wordNone
+		}
+		if best < res {
+			res = best
 		}
 	}
-	return true
+	return res
 }
 
 func exactMatch(q, text string) bool {
@@ -100,8 +148,9 @@ func exactMatch(q, text string) bool {
 }
 
 // Match returns the one open item that query names by words of its text.
-// It returns ErrNotFound, or an *AmbiguousError (errors.Is ErrAmbiguous)
-// with the candidates oldest first.
+// It returns ErrNotFound, an *AmbiguousError (errors.Is ErrAmbiguous) or
+// a *CloseMatchError (errors.Is ErrCloseMatch), with the candidates oldest
+// first.
 func Match(items []Item, query string) (Item, error) {
 	i, err := matchIndex(items, query)
 	if err != nil {
@@ -138,7 +187,7 @@ func matchIndex(items []Item, query string) (int, error) {
 	}
 	var cands []int
 	for i, it := range items {
-		if !it.Done() && itemMatches(qw, it.Text) {
+		if !it.Done() && itemMatches(qw, it.Text) == wordSame {
 			cands = append(cands, i)
 		}
 	}
@@ -148,7 +197,7 @@ func matchIndex(items []Item, query string) (int, error) {
 		// (already done), so repeating "done bank" is not "no such to-do".
 		done := -1
 		for i, it := range items {
-			if it.Done() && itemMatches(qw, it.Text) {
+			if it.Done() && itemMatches(qw, it.Text) == wordSame {
 				if done >= 0 {
 					return -1, ErrNotFound
 				}
@@ -157,6 +206,18 @@ func matchIndex(items []Item, query string) (int, error) {
 		}
 		if done >= 0 {
 			return done, nil
+		}
+		// Open items that only look alike ("plan" for "book the plane")
+		// are never ticked off: the caller asks "Did you mean ...?".
+		closeErr := &CloseMatchError{Query: query}
+		for _, it := range items {
+			if !it.Done() && itemMatches(qw, it.Text) == wordClose {
+				closeErr.Candidates = append(closeErr.Candidates, it)
+			}
+		}
+		if len(closeErr.Candidates) > 0 {
+			sortItems(closeErr.Candidates)
+			return -1, closeErr
 		}
 		return -1, ErrNotFound
 	case 1:

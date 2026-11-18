@@ -69,6 +69,7 @@ type file struct {
 var (
 	ErrNotFound    = errors.New("no to-do matches")
 	ErrAmbiguous   = errors.New("more than one to-do matches")
+	ErrCloseMatch  = errors.New("no to-do matches exactly; some look alike")
 	ErrEmptyText   = errors.New("to-do text is empty")
 	ErrTextTooLong = fmt.Errorf("to-do text is longer than %d characters", MaxTextRunes)
 	ErrBadSource   = fmt.Errorf("source must be one of %s", strings.Join(Sources, ", "))
@@ -90,6 +91,20 @@ func (e *AmbiguousError) Error() string {
 }
 
 func (e *AmbiguousError) Unwrap() error { return ErrAmbiguous }
+
+// CloseMatchError carries the open items that only look like the query
+// ("plan" for "book the plane"): nothing was changed, the caller asks
+// "Did you mean ...?".
+type CloseMatchError struct {
+	Query      string
+	Candidates []Item
+}
+
+func (e *CloseMatchError) Error() string {
+	return fmt.Sprintf("%q does not match a to-do exactly; %d look alike", e.Query, len(e.Candidates))
+}
+
+func (e *CloseMatchError) Unwrap() error { return ErrCloseMatch }
 
 // Store is the list on disk. A zero Store is not usable; use NewStore or
 // Open.

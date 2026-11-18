@@ -61,10 +61,18 @@ into words: runs of letters, digits and combining marks, lowercased, so a Devana
 keeps its vowel signs and virama and stays one word (`बैंक` never matches `किताब`). `the`,
 `a`, `an`, `my`, `todo` and `to-do` (or `to do`) are dropped; a query of only those words
 names nothing (exit 2). An item is a candidate when **every** query word matches one of its
-words: the same word, or a prefix of it when the query word has 4 or more letters and the
-item's word is at most 2 letters longer (`bank` → `banks`, `call` → `calls`). Everything
-else is a look-alike and never matches: a short prefix (`car` for `card`), a long tail
-(`bank` for `bankruptcy`) or a one-letter difference (`maria` for `mario`, `dentsit` for
+words: the same word, or the same word with a plural or inflection ending `s`, `es`, `ें` or
+`ों`, either way round (`bank` or `banks` for `call the bank`, `egg` for `buy eggs`, `tax`
+for `pay taxes`, `किताबें` for `किताब खरीदो`; the bare word has at least 3 letters).
+
+A word of 4 or more letters that only starts an item's word at most 2 letters longer is a
+**close match**, never a match: `plan` for `book the plane`, `pay rent` for
+`pay rental insurance`, `read` for `get ready for demo`, `port` for `check the portal`.
+When no open item matches but open items match closely, nothing is ticked off: the
+command exits 3 with status `close_match` and those items as candidates, so the voice
+desk asks "Did you mean book the plane?" and, on a yes, ticks it off by id. Anything else
+is a look-alike and never matches: a short prefix (`car` for `card`), a long tail (`bank`
+for `bankruptcy`) or a one-letter difference (`maria` for `mario`, `dentsit` for
 `dentist`); the caller asks again instead of ticking off the wrong item.
 
 - an exact match comes first (the item's words equal the query's, in order): one open
@@ -72,10 +80,13 @@ else is a look-alike and never matches: a short prefix (`car` for `card`), a lon
   `buy milk and bread`); when no open item is exact but a done one is, the answer is
   `already_done` for that item, so saying `done pay rent` twice never ticks off
   `pay rental insurance`;
-- otherwise one open candidate is ticked off; several change **nothing** and the command
-  exits 3 with the candidates. It never guesses;
+- otherwise one open candidate is ticked off (a match beats a close match: `plan` ticks
+  off `plan the trip` even when `book the plane` is open); several change **nothing** and
+  the command exits 3 with the candidates. It never guesses;
 - no open candidate but exactly one done candidate: `already_done` for it, so repeating
   `done bank` is not "no such to-do";
+- no candidate at all, but open close matches: `close_match`, exit 3, nothing changed
+  (a done item that only looks alike is not reported);
 - none: exit 2.
 
 A number is only ever an id (`12`, `#12`, `12.`): when there is no item 12 it exits 2,
@@ -90,7 +101,8 @@ before it: `agent-deck todo add --json -- "-5 degrees check"`.
 ### Exit codes
 
 `0` ok (also for `already_done` / `already_open`), `1` error (bad input, unreadable list),
-`2` no item matches, `3` more than one item matches.
+`2` no item matches, `3` more than one item matches (`ambiguous`) or only a close match
+(`close_match`); with `3` nothing was changed and the candidates are in the answer.
 
 ### JSON (one object on stdout)
 
@@ -103,6 +115,7 @@ before it: `agent-deck todo add --json -- "-5 degrees check"`.
 | `remove` | `{"status":"removed","todo":item,"open":1}` (the item as it was) |
 | no match | `{"status":"not_found","query":"bank"}` (exit 2) |
 | ambiguous | `{"status":"ambiguous","query":"milk","candidates":[item...]}` (exit 3) |
+| close match | `{"status":"close_match","query":"plan","candidates":[item...]}` (exit 3; ask "Did you mean ...?", then `done <id>`) |
 | error | `{"status":"error","error":"..."}` (exit 1; also for a bad flag when `--json` was given; the message is on stderr too) |
 
 ## Event
