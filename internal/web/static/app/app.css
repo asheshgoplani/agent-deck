@@ -1528,6 +1528,6 @@ body[data-rail="hidden"] .rightrail { display: none; }
   border-radius: 6px; background: var(--panel); border: 1px solid var(--border); white-space: pre-wrap;
 }
 .chat-tool summary { cursor: pointer; }
-.chat-tool summary, .chat-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+div.chat-tool, .chat-tool summary, .chat-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-note { color: var(--muted); }
 .session-chat pre { overflow-x: auto; }

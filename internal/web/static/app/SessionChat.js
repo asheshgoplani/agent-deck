@@ -20,11 +20,15 @@ function appendChanges(previous, data) {
 function Bubble({ row }) {
   if (row.type === 'assistant') return html`<div class="cc-md">${renderMarkdown(row.body || '')}</div>`
   if (row.type === 'user') return html`<div class="chat-user">${row.body}</div>`
-  if (row.type === 'tool') return html`
-    <details class="chat-tool">
-      <summary>${[row.title || row.kind, row.summary].filter(Boolean).join(' · ')}</summary>
-      <pre>${row.body}</pre>
-    </details>`
+  if (row.type === 'tool') {
+    const summary = [row.title || row.kind, row.summary].filter(Boolean).join(' · ')
+    if (!row.body) return html`<div class="chat-tool">${summary}</div>`
+    return html`
+      <details class="chat-tool">
+        <summary>${summary}</summary>
+        <pre>${row.body}</pre>
+      </details>`
+  }
   const line = (row.title || row.body || row.kind || '').split('\n')[0]
   return html`<div class="chat-note">${line}</div>`
 }

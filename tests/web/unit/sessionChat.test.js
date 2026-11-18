@@ -149,3 +149,16 @@ it('follows new rows when the reader is near the bottom', async () => {
   await tick(2000)
   expect(list.scrollTop).toBe(400)
 })
+
+it('shows a plain tool summary until the tool has output', async () => {
+  reply(page([], { turns: [{ id: 'tool', kind: 'bash', title: 'Run tests', summary: 'Started', body: '' }] }))
+  mount(view())
+  await tick()
+  expect(screen.getByText('Run tests · Started')).toBeVisible()
+  expect(root.querySelector('details, pre')).toBeNull()
+
+  reply(page([], { updates: [{ id: 'tool', body: 'Tests passed' }] }))
+  await tick(2000)
+  expect(root.querySelector('details > summary')).toHaveTextContent('Run tests · Started')
+  expect(root.querySelector('details > pre')).toHaveTextContent('Tests passed')
+})
