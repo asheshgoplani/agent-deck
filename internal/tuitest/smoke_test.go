@@ -10,15 +10,99 @@ import (
 	"time"
 )
 
-// skipIfNoTmuxServer skips the test if tmux binary is missing or server isn't running.
-func skipIfNoTmuxServer(t *testing.T) {
+// requireTmux skips only where there is no tmux binary to run. It must not
+// ask for a running server: TestMain gives this package a private tmux socket,
+// so no server exists until the first test starts one, and a "server not
+// running" skip turned every real-binary test here into a permanent skip.
+// In CI and in the test container a missing tmux is a failure, not a skip.
+func requireTmux(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
+		if os.Getenv("CI") != "" || os.Getenv("AGENTDECK_TEST_CONTAINER") == "1" {
+			t.Fatalf("tmux is required for the real-binary TUI tests: %v", err)
+		}
 		t.Skip("tmux not available")
 	}
-	if err := exec.Command("tmux", "list-sessions").Run(); err != nil {
-		t.Skip("tmux server not running")
+}
+
+// deckEnv is the environment a real agent-deck runs with in these tests: a
+// HOME of its own with a config file (so the deck opens on the session list,
+// not the setup wizard), no update check, no usage-data question, and the
+// opt-in that lets the deck start inside the test's own tmux pane.
+type deckEnv struct {
+	home string
+	vars []string
+}
+
+func newDeckEnv(t *testing.T) *deckEnv {
+	t.Helper()
+	home := t.TempDir()
+	cfgDir := filepath.Join(home, ".config", "agent-deck")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("[updates]\ncheck_enabled = false\n"), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	return &deckEnv{home: home, vars: []string{
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		"AGENTDECK_PROFILE=_test",
+		"AGENTDECK_SKIP_UPDATE_CHECK=1",
+		"DO_NOT_TRACK=1",
+		"AGENT_DECK_ALLOW_OUTER_TMUX=1",
+		"TERM=xterm-256color",
+	}}
+}
+
+// cli runs an agent-deck CLI command against this deck's state.
+func (e *deckEnv) cli(t *testing.T, binary string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(binary, args...)
+	cmd.Env = append(os.Environ(), e.vars...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("agent-deck %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+// seed adds two shell sessions in a group "work". Shell sessions are never
+// started here and raise no agent-specific start-up question.
+func (e *deckEnv) seed(t *testing.T, binary string) {
+	t.Helper()
+	for _, title := range []string{"smoke-one", "smoke-two"} {
+		dir := filepath.Join(e.home, "proj", title)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir project dir: %v", err)
+		}
+		e.cli(t, binary, "add", dir, "-t", title, "-g", "work", "-c", "shell")
+	}
+}
+
+// startDeck opens the real TUI in a detached 120x40 tmux session. The
+// variables are passed on the command line: a tmux server keeps the
+// environment of the client that started it, so a later test's HOME would
+// otherwise not reach its pane.
+func (e *deckEnv) startDeck(t *testing.T, sessionName, binary string) {
+	t.Helper()
+	args := []string{"new-session", "-d", "-s", sessionName, "-x", "120", "-y", "40", "env"}
+	args = append(args, e.vars...)
+	args = append(args, binary)
+	if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil {
+		t.Fatalf("tmux new-session: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { killSession(t, sessionName) })
+}
+
+// waitForSessionList waits until the deck shows the seeded session list.
+func waitForSessionList(t *testing.T, sessionName string) string {
+	t.Helper()
+	waitForContent(t, sessionName, "smoke-one", 20*time.Second)
+	return waitForContent(t, sessionName, "smoke-two", 5*time.Second)
 }
 
 // pinnedToolchain returns the toolchain pinned by go.mod's go directive
@@ -138,20 +222,6 @@ func sendKey(t *testing.T, sessionName string, key string) {
 	}
 }
 
-// dismissUpdatePrompt checks if the TUI shows an update prompt and dismisses it with 'n'.
-// The _test profile may have auto_update enabled, causing "Update now? [Y/n]:" to block.
-func dismissUpdatePrompt(t *testing.T, sessionName string) {
-	t.Helper()
-	time.Sleep(2 * time.Second)
-	content := tmuxCapture(t, sessionName)
-	if strings.Contains(content, "Update now?") || strings.Contains(content, "Update available") {
-		t.Log("update prompt detected, dismissing with 'n'")
-		sendKey(t, sessionName, "n")
-		sendKey(t, sessionName, "Enter")
-		time.Sleep(500 * time.Millisecond)
-	}
-}
-
 // waitForContent polls tmux capture until the content contains the expected substring
 // (case-insensitive) or timeout.
 func waitForContent(t *testing.T, sessionName, substr string, timeout time.Duration) string {
@@ -183,30 +253,28 @@ func killSession(t *testing.T, sessionName string) {
 	_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 }
 
-// TestSmoke_TUIRenders builds the binary, launches it in tmux, and verifies the TUI renders.
+// TestSmoke_TUIRenders builds the binary, starts it in tmux and checks that
+// the session list shows the seeded group and sessions.
 func TestSmoke_TUIRenders(t *testing.T) {
-	skipIfNoTmuxServer(t)
+	requireTmux(t)
 
 	binary := buildBinary(t)
-	session := "tuitest_render_" + t.Name()
-	defer killSession(t, session)
+	env := newDeckEnv(t)
+	env.seed(t, binary)
+	session := "tuitest_render"
+	env.startDeck(t, session, binary)
 
-	// Launch agent-deck in a tmux session with test profile
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", session, "-x", "120", "-y", "40", binary)
-	cmd.Env = append(os.Environ(), "AGENTDECK_PROFILE=_test")
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("tmux new-session: %v", err)
+	content := waitForSessionList(t, session)
+	for _, want := range []string{"work", "smoke-one", "smoke-two"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("session list does not show %q:\n%s", want, content)
+		}
 	}
-
-	// Dismiss update prompt if it appears (auto_update may be enabled in _test profile)
-	dismissUpdatePrompt(t, session)
-
-	// Wait for TUI to render: look for "SESSIONS" in the output
-	content := waitForContent(t, session, "sessions", 10*time.Second)
-
-	// Verify key TUI elements are present (case-insensitive)
-	if !strings.Contains(strings.ToLower(content), "conductor") {
-		t.Error("expected 'conductor' group in TUI output")
+	// The deck must be on its list, not parked in a start-up dialog.
+	for _, dialog := range []string{"Help improve agent-deck?", "You are inside tmux", "Update now?"} {
+		if strings.Contains(content, dialog) {
+			t.Errorf("deck opened on %q instead of the session list:\n%s", dialog, content)
+		}
 	}
 
 	// Capture screenshot if freeze is available
@@ -217,38 +285,54 @@ func TestSmoke_TUIRenders(t *testing.T) {
 	}
 }
 
-// TestSmoke_NewSessionDialog verifies the new session dialog opens when 'n' is pressed.
-func TestSmoke_NewSessionDialog(t *testing.T) {
-	skipIfNoTmuxServer(t)
+// TestSmoke_FirstRunWelcome starts the binary with no sessions and no config:
+// a new user's first screen.
+func TestSmoke_FirstRunWelcome(t *testing.T) {
+	requireTmux(t)
 
 	binary := buildBinary(t)
-	session := "tuitest_dialog_" + t.Name()
-	defer killSession(t, session)
-
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", session, "-x", "120", "-y", "40", binary)
-	cmd.Env = append(os.Environ(), "AGENTDECK_PROFILE=_test")
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("tmux new-session: %v", err)
+	env := newDeckEnv(t)
+	if err := os.Remove(filepath.Join(env.home, ".config", "agent-deck", "config.toml")); err != nil {
+		t.Fatalf("remove config.toml: %v", err)
 	}
+	session := "tuitest_welcome"
+	env.startDeck(t, session, binary)
 
-	dismissUpdatePrompt(t, session)
+	// The first screen is the first-run check ("Agent Deck · quick check").
+	waitForContent(t, session, "quick check", 20*time.Second)
+}
 
-	// Wait for main TUI to render
-	waitForContent(t, session, "sessions", 10*time.Second)
+// TestSmoke_NewSessionDialog verifies the new session dialog opens when 'n' is pressed.
+func TestSmoke_NewSessionDialog(t *testing.T) {
+	requireTmux(t)
+
+	binary := buildBinary(t)
+	env := newDeckEnv(t)
+	env.seed(t, binary)
+	session := "tuitest_dialog"
+	env.startDeck(t, session, binary)
+	waitForSessionList(t, session)
 
 	// Press 'n' to open new session dialog
 	sendKey(t, session, "n")
+	content := waitForContent(t, session, "new session", 10*time.Second)
+	for _, want := range []string{"Name", "Path"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("new session dialog lacks the %q field:\n%s", want, content)
+		}
+	}
 
-	// Wait for dialog to appear: should contain "Name" field label
-	content := waitForContent(t, session, "name", 5*time.Second)
-
-	// Verify dialog elements (case-insensitive)
-	lower := strings.ToLower(content)
-	hasSessionDialog := strings.Contains(lower, "new session") ||
-		strings.Contains(lower, "name") ||
-		strings.Contains(lower, "path")
-	if !hasSessionDialog {
-		t.Error("new session dialog did not appear after pressing 'n'")
+	// Esc closes it and the list is back.
+	sendKey(t, session, "Escape")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !strings.Contains(strings.ToLower(tmuxCapture(t, session)), "new session") {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if after := tmuxCapture(t, session); strings.Contains(strings.ToLower(after), "new session") {
+		t.Errorf("Esc did not close the new session dialog:\n%s", after)
 	}
 
 	// Capture screenshot if freeze is available
@@ -261,46 +345,26 @@ func TestSmoke_NewSessionDialog(t *testing.T) {
 
 // TestSmoke_QuitExitsCleanly verifies pressing 'q' exits the TUI.
 func TestSmoke_QuitExitsCleanly(t *testing.T) {
-	skipIfNoTmuxServer(t)
+	requireTmux(t)
 
 	binary := buildBinary(t)
-	session := "tuitest_quit_" + t.Name()
-	defer killSession(t, session)
+	env := newDeckEnv(t)
+	env.seed(t, binary)
+	session := "tuitest_quit"
+	env.startDeck(t, session, binary)
+	waitForSessionList(t, session)
 
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", session, "-x", "120", "-y", "40", binary)
-	cmd.Env = append(os.Environ(), "AGENTDECK_PROFILE=_test")
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("tmux new-session: %v", err)
-	}
-
-	dismissUpdatePrompt(t, session)
-
-	// Wait for TUI to render
-	waitForContent(t, session, "sessions", 10*time.Second)
-
-	// Press 'q' to quit. If MCP pool is running, a dialog appears with options:
-	//   k = Keep running (quit TUI, keep pool)
-	//   s = Shut down (quit TUI, stop pool)
-	// Send 'k' to dismiss and quit without stopping the pool.
 	sendKey(t, session, "q")
-	time.Sleep(500 * time.Millisecond)
-	sendKey(t, session, "k")
 
-	// Wait for tmux session to disappear (TUI exited)
-	deadline := time.Now().Add(5 * time.Second)
-	exited := false
+	// The pane runs only the deck, so the tmux session ends when the deck exits.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		err := exec.Command("tmux", "has-session", "-t", session).Run()
-		if err != nil {
-			exited = true
-			break
+		if err := exec.Command("tmux", "has-session", "-t", session).Run(); err != nil {
+			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-
-	if !exited {
-		t.Error("TUI did not exit after pressing 'q' then 'k' (tmux session still exists)")
-	}
+	t.Errorf("TUI did not exit after pressing 'q' (tmux session still exists):\n%s", tmuxCapture(t, session))
 }
 
 // TestSmoke_BuildVersion verifies the built binary reports the correct Go toolchain version.
