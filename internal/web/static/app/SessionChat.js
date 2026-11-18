@@ -80,7 +80,7 @@ export function SessionChat({ sessionId, remoteName, active }) {
             resync = true
           } else if (res.status === 503 && data.error?.code === 'RECALL_DISABLED') {
             setNotice('To read chat, set [recall] enabled = true in config.toml.')
-          } else if (res.status === 400 || res.status === 501) {
+          } else if ((tail && res.status === 400) || res.status === 501) {
             setNotice('No chat for this session. Use Terminal.')
           }
           return
