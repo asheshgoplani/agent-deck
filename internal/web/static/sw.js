@@ -1,4 +1,4 @@
-const CACHE_VERSION = "agentdeck-shell-v24"
+const CACHE_VERSION = "agentdeck-shell-v25"
 const SHELL_CACHE = CACHE_VERSION
 const APP_SHELL_URLS = [
   "/",
@@ -6,6 +6,8 @@ const APP_SHELL_URLS = [
   "/static/index.html",
   "/static/styles.css",
   "/static/app/main.js",
+  "/static/app/SessionChat.js",
+  "/static/app/chatRows.js",
   "/static/icons/logo.svg",
 ]
 

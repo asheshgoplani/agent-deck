@@ -1510,3 +1510,24 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .fleet-stats .stat.tone-ok .num   { color: var(--tn-green); }
 .fleet-stats .stat.tone-muted .num { color: var(--text-dim); }
 .kb-col.muted { border-top-color: var(--muted); }
+
+.session-view-toggle { display: flex; gap: 4px; }
+.session-view-toggle button {
+  padding: 4px 12px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--panel); color: var(--muted); cursor: pointer;
+}
+.session-view-toggle button[aria-pressed="true"] { color: var(--text-hi); border-color: var(--accent); }
+.session-terminal:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.session-chat {
+  flex: 1; min-height: 0; overflow: auto; overflow-anchor: none;
+  padding: 0 8px; overflow-wrap: anywhere;
+}
+.session-chat > * { margin: 10px 0; }
+.chat-user {
+  width: fit-content; max-width: 90%; margin-left: auto; padding: 8px 12px;
+  border-radius: 6px; background: var(--panel); border: 1px solid var(--border); white-space: pre-wrap;
+}
+.chat-tool summary { cursor: pointer; }
+.chat-tool summary, .chat-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-note { color: var(--muted); }
+.session-chat pre { overflow-x: auto; }
