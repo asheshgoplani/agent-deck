@@ -1540,6 +1540,10 @@ func GroupPathForProject(projectPath string) string {
 
 // extractGroupPath extracts a group path from project path
 // e.g., "/home/user/projects/devops" -> "projects"
+// DerivedGroupPath returns the group a new session gets from its project path
+// when none is named: the name of the project's parent directory, as found.
+func DerivedGroupPath(projectPath string) string { return extractGroupPath(projectPath) }
+
 func extractGroupPath(projectPath string) string {
 	parts := strings.Split(projectPath, "/")
 	// Find meaningful directory (skip Users, home, etc.)

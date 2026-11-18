@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1430,6 +1431,94 @@ func (t *GroupTree) CreateGroupPath(path string) *Group {
 		parentPath = leaf.Path
 	}
 	return leaf
+}
+
+// typedLevelNames maps each level of path to the display name the user typed
+// for it, when typed is path as typed (same levels, each canonical to the
+// level's last segment, case aside for levels that matched an existing group).
+func typedLevelNames(path, typed string) map[string]string {
+	var typedLevels []string
+	for _, segment := range strings.Split(typed, "/") {
+		if strings.TrimSpace(segment) != "" {
+			typedLevels = append(typedLevels, segment)
+		}
+	}
+	levels := strings.Split(path, "/")
+	if len(levels) != len(typedLevels) {
+		return nil
+	}
+	names := make(map[string]string, len(levels))
+	for i, level := range levels {
+		if !strings.EqualFold(CanonicalGroupPath(typedLevels[i]), level) {
+			return nil
+		}
+		names[strings.Join(levels[:i+1], "/")] = sanitizeGroupName(typedLevels[i])
+	}
+	return names
+}
+
+// CreateGroupPathTyped is CreateGroupPath for a path resolved from what the
+// user typed: a level it creates gets the typed display name, as `group
+// create` gives it ("New Team" at path "New-Team"). Existing levels are kept.
+func (t *GroupTree) CreateGroupPathTyped(path, typed string) *Group {
+	names := typedLevelNames(path, typed)
+	var existed []string
+	for level := path; level != ""; level = getParentPath(level) {
+		if _, ok := t.Groups[level]; ok {
+			existed = append(existed, level)
+		}
+	}
+	leaf := t.CreateGroupPath(path)
+	for level := path; level != ""; level = getParentPath(level) {
+		group, ok := t.Groups[level]
+		if !ok || names[level] == "" || slices.Contains(existed, level) {
+			continue
+		}
+		group.Name = names[level]
+	}
+	return leaf
+}
+
+// EnsureGroupForNewSession makes sure the group of inst, a session being
+// created, exists at every level and returns it. A level that is in the tree
+// only because inst points at it (no stored row, no other session in it or
+// below it) is a new group: when typed is the group path as the user typed it
+// (or as it was taken from the project directory), the level gets the typed
+// name, as `group create` gives it ("My Team" at path "My-Team"). Groups that
+// existed before keep their name.
+func (t *GroupTree) EnsureGroupForNewSession(inst *Instance, typed string) *Group {
+	if inst == nil || inst.GroupPath == "" {
+		return nil
+	}
+	// The tree was built with inst, so its group is normally there already;
+	// a group stored under a path that is not canonical (older data) is
+	// kept as it is, never doubled by a canonical twin.
+	leaf, ok := t.Groups[inst.GroupPath]
+	if !ok {
+		leaf = t.CreateGroupPath(inst.GroupPath)
+	}
+	for path, name := range typedLevelNames(inst.GroupPath, typed) {
+		if group, ok := t.Groups[path]; ok && group.derived && path != DefaultGroupPath && t.holdsOnly(path, inst) {
+			group.Name = name
+		}
+	}
+	return leaf
+}
+
+// holdsOnly reports whether no session other than inst is in the group at
+// path or in a group below it.
+func (t *GroupTree) holdsOnly(path string, inst *Instance) bool {
+	for groupPath, group := range t.Groups {
+		if groupPath != path && !strings.HasPrefix(groupPath, path+"/") {
+			continue
+		}
+		for _, s := range group.Sessions {
+			if s != inst {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // RenameTargetPath returns the group path that RenameGroup(oldPath, newName)
