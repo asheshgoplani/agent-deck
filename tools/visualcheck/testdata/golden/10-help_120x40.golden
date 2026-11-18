@@ -15,6 +15,7 @@
                    │  NAVIGATION                                                                    │
                    │    j / Down       Move down                                                    │
                    │    k / Up         Move up                                                      │
+                   │    Ctrl+p/n       Move up / down                                               │
                    │    Ctrl+u/d       Half page up/down                                            │
                    │    PgUp / PgDn    Half page up/down                                            │
                    │    Ctrl+f/b       Full page up/down                                            │
@@ -31,7 +32,6 @@
                    │    Shift+Enter    Open session in new iTerm window (macOS)                     │
                    │                                                                                │
                    │  GROUP NAVIGATION                                                              │
-                   │    Alt+j / Alt+k  Next / prev session in group                                 │
                    │  ▼ more below                                                                  │
                    │                                                                                │
                    │  j/k scroll • Tab 5 keys • any other key to close                              │

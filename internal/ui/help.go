@@ -246,7 +246,19 @@ func (h *HelpOverlay) View() string {
 	if !h.allKeys {
 		return h.viewShort()
 	}
+	return h.renderAllKeys(h.allKeySections())
+}
 
+// helpSection is one titled block of [key, description] rows in the full list.
+type helpSection struct {
+	title string
+	items [][2]string // [key, description]
+}
+
+// allKeySections lists every row of the full key list, with the keys as they
+// are bound now. The key-map test reads it to hold the overlay to the keys
+// the main screen really handles.
+func (h *HelpOverlay) allKeySections() []helpSection {
 	// Define help sections
 	newKeys := h.keyPair(hotkeyNewSession, hotkeyQuickCreate, "n/N")
 	forkKeys := h.keyPair(hotkeyQuickFork, hotkeyForkWithOptions, "f/F")
@@ -319,6 +331,7 @@ func (h *HelpOverlay) View() string {
 	navigationItems := [][2]string{
 		{"j / Down", "Move down"},
 		{"k / Up", "Move up"},
+		{"Ctrl+p/n", "Move up / down"},
 		{"Ctrl+u/d", "Half page up/down"},
 		{"PgUp / PgDn", "Half page up/down"},
 		{"Ctrl+f/b", "Full page up/down"},
@@ -348,10 +361,7 @@ func (h *HelpOverlay) View() string {
 		)
 	}
 
-	sections := []struct {
-		title string
-		items [][2]string // [key, description]
-	}{
+	sections := []helpSection{
 		{
 			title: "QUICK START",
 			items: [][2]string{
@@ -380,11 +390,15 @@ func (h *HelpOverlay) View() string {
 			title: "SESSIONS",
 			items: [][2]string{
 				{newKeys, "New / quick create"},
+				{"z", "Quick open: new session in a recent directory (zoxide)"},
+				{"I", "Insert mode: type into the selected session (Esc exits)"},
 				{renameKey, "Rename session"},
 				{restartKey, "Restart session"},
 				{restartFreshKey, "Restart with new session ID"},
 				{deleteKey, "Delete session"},
 				{closeKey, "Close session process"},
+				{"X", "Remove a stopped or errored session from the list (process and files stay)"},
+				{"Ctrl+X", "Remove all errored sessions from the list"},
 				{undoKey, "Undo delete"},
 				{archiveKey, "Archive session"},
 				{unarchiveKey, "Unarchive session"},
@@ -407,6 +421,7 @@ func (h *HelpOverlay) View() string {
 				{pinKeys, "Pin (cycle off→top→bottom→off)"},
 				{forkKeys, "Fork session (Claude/Pi)"},
 				{yoloKey, "Toggle YOLO mode"},
+				{"Ctrl+G", "Choose the Gemini model (Gemini sessions)"},
 				{contextInspectorKey, "Inspect full context (everything the agent is being sent, ranked by cost)"},
 				{sendKey, "Send output to session"},
 				{sessionRefKey, "Hand a reference to another session (pick, move, ⏎ drop; never sent)"},
@@ -463,11 +478,15 @@ func (h *HelpOverlay) View() string {
 			title: "SEARCH & FILTER",
 			items: [][2]string{
 				{searchKey, "Open search"},
+				{"0", "Clear status filter (show all)"},
+				{"!", "Filter running"},
+				{"@", "Filter waiting"},
+				{"#", "Filter idle"},
 				{FilterKeyError, "Filter errors"},
 				{FilterKeyActive, "Filter open (hide errors)"},
-				{"/waiting", "Filter waiting"},
-				{"/running", "Filter running"},
-				{"/idle", "Filter idle"},
+				{"/waiting", "In search: only waiting sessions (the slash is optional)"},
+				{"/running", "In search: only running sessions"},
+				{"/idle", "In search: only idle sessions"},
 				{groupViewKey, "Cycle view: active-on-top / populated-on-top"},
 				{timeFilterKey, "Cycle time filter: today / 3 / 7 / 30 days / all"},
 			},
@@ -484,7 +503,9 @@ func (h *HelpOverlay) View() string {
 				{scrollbackKey, "Scrollback pager (while attached)"},
 				{reportKey, "Report a problem or idea (GitHub issue; you see it in full and confirm first)"},
 				{whatsNewKey, "What's new in this version (and whether your reports are fixed)"},
+				{"Ctrl+E", "Rate this version"},
 				{quitKey, "Quit"},
+				{"Esc Esc", "Quit (press twice within half a second)"},
 				{helpKey, "This help"},
 			},
 		},
@@ -520,7 +541,11 @@ func (h *HelpOverlay) View() string {
 		}
 		sections[i].items = filtered
 	}
+	return sections
+}
 
+// renderAllKeys draws the full key list in its scrollable box.
+func (h *HelpOverlay) renderAllKeys(sections []helpSection) string {
 	// Styles
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
