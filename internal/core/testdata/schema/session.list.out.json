@@ -208,6 +208,10 @@
           "items": {
             "$ref": "#/$defs/tmux.Viewer"
           }
+        },
+        "waiting_since": {
+          "description": "live; when a waiting session's status changed to waiting (state.db status_changes); for a session waiting since before that table existed, its last activity time; absent when not waiting or unknown",
+          "type": "string"
         }
       },
       "required": [

@@ -644,6 +644,9 @@ func (s *StateDB) Migrate() error {
 	if err := migrateTriggerTables(tx); err != nil {
 		return err
 	}
+	if err := migrateStatusChanges(tx); err != nil {
+		return err
+	}
 
 	// Watcher delivery refusals: additive table, SchemaVersion unchanged.
 	if err := migrateWatcherDeliveryRefusals(tx); err != nil {

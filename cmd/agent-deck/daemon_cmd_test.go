@@ -464,6 +464,26 @@ func alignStorageTimes(t *testing.T, racedHome, serialHome string) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
+	// status_changes.changed_at is a time field too (state.db's stamp of
+	// each status change, statedb/status_changes.go).
+	stamps, err := raced.Query("SELECT id, changed_at FROM status_changes ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stamps.Close()
+	for stamps.Next() {
+		var id string
+		var at int64
+		if err := stamps.Scan(&id, &at); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := serial.Exec("UPDATE status_changes SET changed_at=? WHERE id=?", at, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stamps.Err(); err != nil {
+		t.Fatal(err)
+	}
 	var modified string
 	if err := raced.QueryRow("SELECT value FROM metadata WHERE key='last_modified'").Scan(&modified); err != nil {
 		t.Fatal(err)
