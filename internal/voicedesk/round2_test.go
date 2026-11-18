@@ -133,10 +133,8 @@ func TestNameFittingSeveralSessionsAsks(t *testing.T) {
 // plain text. No match is "not found", also for coding words.
 func TestTellIsNeverHandedOn(t *testing.T) {
 	for _, s := range []string{
-		"tell git to ignore the build folder", "tell the logger to write to stderr", "ask the notes module to flush",
-		"tell the build script to skip the lint step", "server se poocho ki kya hua", "ask the linter why it complains",
-		"test ko bolo ki fast chale", "tell the notes app to sync on start", "tell the conductor class to retry three times",
-		"tell mac app users to update", "बिल्ड को बोलो कि लिंट स्किप करे", "tell the deck to shuffle before dealing",
+		"tell zephyr to stop", "tell billing two to stop", "tell build 0957 to stop", "zephyr ko bolo ki ruk jao",
+		"tell the deck to shuffle before dealing", "tell velvet to say hi",
 	} {
 		t.Run(s, func(t *testing.T) {
 			h := newHarness(t)
@@ -154,6 +152,44 @@ func TestTellIsNeverHandedOn(t *testing.T) {
 		if got := h.say(s); got.Handled {
 			t.Errorf("addressee %q: %+v", s, got)
 		}
+	}
+}
+
+// The one exception to the tell rule (final review F1): a tell whose
+// unknown addressee is a generic coding word is talk to the current
+// session, handed on; the 23 sentences the review saw swallowed.
+func TestCodingAddresseeTellIsHandedOn(t *testing.T) {
+	for _, s := range []string{
+		"tell the compiler to ignore unused variables",
+		"tell the build script to print the version",
+		"tell the tests to run in parallel",
+		"tell the notes app to sync on start",
+		"tell the conductor class to retry three times",
+		"tell the shared box component to use flexbox",
+		"tell git to ignore the build folder",
+		"tell the logger to write to stderr",
+		"tell the parser that tabs are allowed",
+		"tell mac app users to update",
+		"ask the build server if the cache is warm",
+		"ask the database whether the row exists first",
+		"ask the notes module to flush",
+		"test ko bolo ki fast chale",
+		"compiler ko bolo warnings ignore kare",
+		"function ko bolo ki null return kare",
+		"server se pucho ki cache garam hai kya",
+		"database se pucho ki row hai ya nahi",
+		"टेस्ट को बोलो कि तेज चले",
+		"tell the build script to skip the lint step",
+		"ask the linter why it complains",
+		"test ko bolo ki fast chale",
+		"server se poocho ki kya hua",
+	} {
+		t.Run(s, func(t *testing.T) {
+			h := newHarness(t)
+			if got := h.do(Request{Sentence: s, On: idConductor, DryRun: true}); got.Handled {
+				t.Fatalf("swallowed: intent=%s refused=%s say=%q", got.Intent, refusedOf(got), got.Say)
+			}
+		})
 	}
 }
 

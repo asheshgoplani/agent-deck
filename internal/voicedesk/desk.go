@@ -599,11 +599,13 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	}
 	// "status of the build", "test ko bolo ki ...": a name of only coding
 	// nouns is talk unless it says a session's whole title
-	// A tell is never handed on to be typed as plain text (conductor
-	// ruling): one match reads back, several ask which, none is not found.
-	// Other forms may still hand on talk-like or coding-word names.
+	// A tell to a name always answers (conductor ruling): one match reads
+	// back, several ask which, a real-looking unknown name is not found and
+	// never typed. The one exception, for tells and every other form: an
+	// addressee that is a generic coding word ("tell git to …", "tell the
+	// compiler to …", "server se pucho …") is talk to the current session.
 	isTell := p.Intent == IntentTell
-	if !isTell && genericOnlyQ(q) && (res.Kind == resolvedOne || res.Kind == resolvedAmbiguous) && !saysWholeTitle(q, res) {
+	if genericOnlyQ(q) && (res.Kind == resolvedOne || res.Kind == resolvedAmbiguous) && !saysWholeTitle(q, res) {
 		return notMine(p.Lang), nil
 	}
 	switch res.Kind {
@@ -611,7 +613,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 		refuse(&r, RefusedOtherPerson, otherLine(res.Person))
 		return r, nil
 	case resolvedNotFound:
-		if !isTell && (p.Soft || (!hasDigitWord(q.words) && (talkLike(q.words) || anyCodeNoun(q)))) {
+		if (!isTell && p.Soft) || (!hasDigitWord(q.words) && (talkLike(q.words) || anyCodeNoun(q))) {
 			return notMine(p.Lang), nil
 		}
 		refuse(&r, RefusedNotFound, "I found no session of yours called "+strings.TrimSpace(q.raw)+".")

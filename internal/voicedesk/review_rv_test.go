@@ -74,16 +74,16 @@ func TestReviewNoBlindSendIntoAnOpenMenu(t *testing.T) {
 // RV5. Ordinary coding talk that begins with a desk verb and names no
 // session goes on to the session he is on.
 func TestReviewCodingTalkIsNotStolen(t *testing.T) {
-	// Conductor ruling (after this review): an explicit tell to a NAME is
-	// never handed on as plain text; it reads back, asks which, or answers
-	// "not found". So the review's tell rows to unknown names ("tell git to
-	// …", "tell the logger to …", "tell the notes app to …", "tell the
-	// conductor class to …", "ask the notes module to …", "tell mac app users
-	// to …", "बिल्ड को बोलो कि …") moved to TestTellIsNeverHandedOn. Rows with
-	// a generic addressee ("यूजर" = the user) or no tell stay here.
 	for _, s := range []string{
+		"tell git to ignore the build folder",
+		"tell the logger to write to stderr",
+		"tell the notes app to sync on start",
+		"tell the conductor class to retry three times",
+		"ask the notes module to flush",
 		"status of the pull request",
+		"tell mac app users to update",
 		"यूजर को बोलो कि ऐप रीस्टार्ट करे",
+		"बिल्ड को बोलो कि लिंट स्किप करे",
 		"list all",
 	} {
 		t.Run(s, func(t *testing.T) {
