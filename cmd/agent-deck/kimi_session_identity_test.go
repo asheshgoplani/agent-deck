@@ -54,8 +54,8 @@ func TestKimiInitialMessageSessionStartPublishesBinding(t *testing.T) {
 	if err := json.Unmarshal(statusData, &statusFile); err != nil {
 		t.Fatal(err)
 	}
-	if statusFile.Event != "SessionStart" || statusFile.SessionID != "native-first" || !statusFile.InitialMessagePending {
-		t.Fatalf("first SessionStart status = %+v, want binding with initial message pending", statusFile)
+	if statusFile.Status != "running" || statusFile.Event != "SessionStart" || statusFile.SessionID != "native-first" || !statusFile.InitialMessagePending {
+		t.Fatalf("first SessionStart status = %+v, want running binding with initial message pending", statusFile)
 	}
 	status := session.HookStatus{
 		Status: statusFile.Status, SessionID: statusFile.SessionID, Event: statusFile.Event,

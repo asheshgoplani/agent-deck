@@ -1102,6 +1102,9 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 		if eventKey == "onsessionstart" && control.InitialMessagePending {
 			return false
 		}
+		if kimiEvent && eventKey == "sessionstart" && control.InitialMessagePending {
+			statusFile.Status = "running"
+		}
 		control.NextSequence++
 		statusFile.HookGeneration, statusFile.Sequence = generation, control.NextSequence
 		if eventKey == "postllmcall" || eventKey == "onsessionend" ||
