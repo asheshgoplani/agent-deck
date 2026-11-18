@@ -124,7 +124,7 @@ nothing).
 
 Server-sent events on `agent-deck web`, owner auth as `/events/menu`
 (`?token=` accepted), served in read-only mode too. Query `kind=` (prefix
-list of `session.*` and `voice.*` kinds; default `session.status,voice.`) and
+list of `session.*` and `voice.*` kinds; default `session.status,session.link,voice.`) and
 `after=<cursor>` or the `Last-Event-ID` header. First event `hello`
 `{cursor, host, voice}` (the newest cursor and the voice state now); then one
 event per matching frame: `id: <cursor>`, `event: <kind>`, `data: <the
@@ -140,8 +140,15 @@ remotes' own `session.status` frames on this host's bus, followed over ssh
 (`remote <name> events follow --kind session.status`, resumed by cursor
 after a drop), with `data.host` = the remote's name and `data.remote_cursor`
 = its cursor there. So one `/events/state` stream carries local and remote
-status in one cursor order. A remote's history before the server started is
-not replayed; frames that already carry a host are not forwarded again (two
+status in one cursor order. It starts at the remote's own newest cursor
+(`events stats`, no clock comparison) and resumes from the last one after a
+drop, retrying within a second. Each connect publishes `session.link`
+`{host, up: true, sessions: [{id, status, title}]}` with the remote's
+current statuses (a resync: a change made while this server or the link
+was down is not lost), and each drop publishes `session.link {host, up:
+false}` (until the next up, that host's status may be stale). A resume
+cursor the remote no longer has starts over from its newest cursor with a
+resync. A remote's history before the server started is not replayed; frames that already carry a host are not forwarded again (two
 hosts that stream each other never loop); a remote's `voice.state` is not
 forwarded (each host has its own, from the relay).
 
