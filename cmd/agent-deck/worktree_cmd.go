@@ -729,12 +729,20 @@ func handleWorktreeFinish(profile string, args []string) {
 	// Finishing removes the worktree and deletes the branch. Another session
 	// on the same worktree would be left at a path that no longer exists, so
 	// refuse and name it unless --force (#1449; the TUI keeps it instead).
-	if sharers := session.SessionsSharingWorktree(inst, instances); len(sharers) > 0 && !*force {
+	sharers := session.SessionsSharingWorktree(inst, instances)
+	if len(sharers) > 0 && !*force {
 		out.Error(fmt.Sprintf(
 			"worktree %s is still used by %s; finish or remove those sessions first, or pass --force to remove the worktree and branch anyway",
 			FormatPath(worktreePath), sessionNameList(sharers),
 		), ErrCodeInvalidOperation)
 		exitCLI(1)
+	}
+	sharedWith := make([]string, 0, len(sharers))
+	for _, o := range sharers {
+		sharedWith = append(sharedWith, o.Title)
+	}
+	if len(sharers) > 0 && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: --force: removing worktree %s still used by %s\n", FormatPath(worktreePath), sessionNameList(sharers))
 	}
 
 	finishBackend, err := detectAndCreateBackend(repoRoot)
@@ -893,6 +901,7 @@ func handleWorktreeFinish(profile string, args []string) {
 			"merged_into":    targetBranch,
 			"merged":         !*noMerge,
 			"branch_deleted": !*keepBranch,
+			"shared_with":    sharedWith, // sessions left without their worktree by --force
 		})
 	} else {
 		fmt.Printf("\n%s Finished: session '%s' removed, worktree cleaned up", successSymbol, inst.Title)

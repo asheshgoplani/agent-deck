@@ -156,3 +156,104 @@ func TestRemove_KeepsSharedWorktree(t *testing.T) {
 		})
 	}
 }
+
+// A session added by plain path at (or inside) the worktree records no
+// worktree fields; it still uses the directory finish would remove.
+func TestWorktreeFinish_CountsPlainPathSessionAsSharer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	home := t.TempDir()
+	first, second, wt, _ := sharedWorktreeSessions(t, home)
+	// Only first keeps the worktree fields; a plain session lives in a subdir.
+	if stdout, stderr, code := runAgentDeck(t, home, "session", "remove", second, "--json"); code != 0 {
+		t.Fatalf("drop second: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("worktree gone before the test: %v", err)
+	}
+	addTestSession(t, home, filepath.Join(wt, "sub"), "plain-in-wt")
+
+	stdout, stderr, code := runAgentDeck(t, home, "worktree", "finish", first, "--no-merge", "--json")
+	if code != 1 || !strings.Contains(stdout, "plain-in-wt") {
+		t.Fatalf("finish with a plain-path session inside the worktree: exit %d, want 1 naming plain-in-wt\n%s\n%s", code, stdout, stderr)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("refused finish removed the worktree: %v", err)
+	}
+}
+
+// --force overrides the guard and says whom it left without a worktree;
+// remove reports a kept worktree in --json.
+func TestWorktreeShared_JSONReportsOverrideAndKeep(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	home := t.TempDir()
+	first, second, _, _ := sharedWorktreeSessions(t, home)
+	stdout, stderr, code := runAgentDeck(t, home, "remove", first, "--json")
+	if code != 0 {
+		t.Fatalf("remove: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	var rm map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &rm); err != nil || rm["worktree_kept"] != true {
+		t.Errorf("remove --json: want worktree_kept=true, got %v (%v)\n%s", rm["worktree_kept"], err, stdout)
+	}
+
+	home2 := t.TempDir()
+	first, _, _, _ = sharedWorktreeSessions(t, home2)
+	_ = second
+	stdout, stderr, code = runAgentDeck(t, home2, "worktree", "finish", first, "--no-merge", "--force", "--json")
+	if code != 0 {
+		t.Fatalf("finish --force: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	// Progress lines precede the JSON object on stdout; read the object.
+	obj := stdout[strings.Index(stdout, "{"):]
+	var fin struct {
+		SharedWith []string `json:"shared_with"`
+	}
+	if err := json.Unmarshal([]byte(obj), &fin); err != nil || len(fin.SharedWith) != 1 || fin.SharedWith[0] != "wt-four" {
+		t.Errorf("finish --force --json: want shared_with [wt-four], got %v (%v)\n%s", fin.SharedWith, err, stdout)
+	}
+}
+
+// The bulk sweep keeps a worktree that a surviving session uses and removes
+// one whose every user is in the sweep.
+func TestSessionRemoveAllErrored_PruneSharedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	for _, tc := range []struct {
+		name         string
+		bothErrored  bool
+		wantWorktree bool
+	}{
+		{"one sharer survives", false, true},
+		{"every sharer swept", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			first, second, wt, _ := sharedWorktreeSessions(t, home)
+			forceSetStatus(t, home, first, session.StatusError)
+			if tc.bothErrored {
+				forceSetStatus(t, home, second, session.StatusError)
+			}
+			if stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--prune-worktree", "--json"); code != 0 {
+				t.Fatalf("bulk remove: exit %d\n%s\n%s", code, stdout, stderr)
+			}
+			_, err := os.Stat(wt)
+			if got := err == nil; got != tc.wantWorktree {
+				t.Errorf("worktree present = %v, want %v (stat err %v)", got, tc.wantWorktree, err)
+			}
+		})
+	}
+}

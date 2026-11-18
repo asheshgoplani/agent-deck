@@ -56,6 +56,8 @@ func (s *Server) handleSessionWorktreeFinish(w http.ResponseWriter, r *http.Requ
 			writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
 		case errors.Is(err, ErrNotAWorktree):
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		case errors.Is(err, ErrWorktreeShared):
+			writeAPIError(w, http.StatusConflict, ErrCodeBadRequest, err.Error())
 		default:
 			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
 		}

@@ -52,9 +52,11 @@ func OtherSessionsShareWorktree(target *Instance, others []*Instance) bool {
 }
 
 // SessionsSharingWorktree returns the instances in others (other than target
-// itself) that reference target's worktree directory, compared as in
-// OtherSessionsShareWorktree. Callers that refuse or skip a removal use it to
-// name the sessions that still need the worktree.
+// itself) that use target's worktree directory: their worktree path is that
+// directory, or their project path is that directory or inside it (a session
+// added by plain path at the worktree records no worktree fields). Paths are
+// compared canonically as in OtherSessionsShareWorktree. Callers that refuse
+// or skip a removal use it to name the sessions that still need the worktree.
 func SessionsSharingWorktree(target *Instance, others []*Instance) []*Instance {
 	if target == nil {
 		return nil
@@ -69,11 +71,11 @@ func SessionsSharingWorktree(target *Instance, others []*Instance) []*Instance {
 		if o == nil || o.ID == target.ID {
 			continue
 		}
-		owt := strings.TrimSpace(o.WorktreePath)
-		if owt == "" {
+		if owt := strings.TrimSpace(o.WorktreePath); owt != "" && canonicalPath(owt) == targetCanon {
+			sharers = append(sharers, o)
 			continue
 		}
-		if canonicalPath(owt) == targetCanon {
+		if pp := strings.TrimSpace(o.ProjectPath); pp != "" && pathIsOrUnder(canonicalPath(pp), targetCanon) {
 			sharers = append(sharers, o)
 		}
 	}
@@ -107,6 +109,11 @@ func RemoveSessionWorktreeUnlessShared(inst *Instance, others []*Instance) (remo
 		return false, nil
 	}
 	return RemoveSessionWorktree(inst)
+}
+
+// pathIsOrUnder reports whether p is dir or a path inside it (both canonical).
+func pathIsOrUnder(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, dir+string(filepath.Separator))
 }
 
 // canonicalPath resolves symlinks and cleans a path for equality comparison so

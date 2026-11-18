@@ -26,7 +26,7 @@ func handleSessionRemove(profile string, args []string) {
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	force := fs.Bool("force", false, "Remove even when the session is running/waiting/idle; with --all-errored, also include pinned sessions (destructive)")
 	allErrored := fs.Bool("all-errored", false, "Remove every unpinned session currently in the 'error' state (bulk); pinned sessions are skipped unless --force is given")
-	pruneWorktree := fs.Bool("prune-worktree", false, "Also kill the process and remove any git worktree (destructive)")
+	pruneWorktree := fs.Bool("prune-worktree", false, "Also kill the process and remove any git worktree (destructive; a worktree another session still uses is kept)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session remove <id|title> [options]")
@@ -101,8 +101,9 @@ func handleSessionRemove(profile string, args []string) {
 	_ = inst.KillAndWait()
 	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
+	worktreeKept := false
 	if *pruneWorktree {
-		pruneSessionWorktree(inst, instances, *jsonOutput)
+		worktreeKept = pruneSessionWorktree(inst, instances, *jsonOutput)
 	}
 
 	// v1.9.1 (#909): RemoveSessionAndVerify replaces the
@@ -122,9 +123,10 @@ func handleSessionRemove(profile string, args []string) {
 	session.CleanupRemovedSession(storage.Profile(), inst.ID)
 
 	out.Success(fmt.Sprintf("Removed session: %s", inst.Title), map[string]interface{}{
-		"success": true,
-		"id":      inst.ID,
-		"title":   inst.Title,
+		"success":       true,
+		"id":            inst.ID,
+		"title":         inst.Title,
+		"worktree_kept": worktreeKept, // another session still uses it
 	})
 }
 
@@ -218,7 +220,7 @@ func bulkRemoveSessions(
 		saveStoppedBeforeRemoval(storage, inst)
 		_ = inst.KillAndWait()
 		if pruneWorktree {
-			pruneSessionWorktree(inst, live, out.jsonMode)
+			_ = pruneSessionWorktree(inst, live, out.jsonMode)
 		}
 		live = dropInstance(live, inst.ID)
 		if err := storage.DeleteInstance(inst.ID); err != nil {
@@ -292,21 +294,27 @@ func saveStoppedBeforeRemoval(storage *session.Storage, inst *session.Instance) 
 	}
 }
 
-// pruneSessionWorktree kills the session and removes its git worktree (if any).
+// pruneSessionWorktree kills the session and removes its git worktree (if any)
+// unless another session still uses it; kept reports that case.
 // Errors are logged to stderr but never block the remove.
 //
 // Uses KillAndWait so the SIGTERM→SIGKILL escalation completes before
 // this short-lived CLI exits (issue #59, v1.7.68).
-func pruneSessionWorktree(inst *session.Instance, instances []*session.Instance, jsonOutput bool) {
+func pruneSessionWorktree(inst *session.Instance, instances []*session.Instance, jsonOutput bool) (kept bool) {
 	_ = inst.KillAndWait()
-	if inst.IsWorktree() && !keepSharedWorktree(inst, instances, jsonOutput) {
-		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
-			if err := backend.RemoveWorktree(inst.WorktreePath, true); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: worktree remove failed for %s: %v\n", inst.ID, err)
-			}
-			_ = backend.PruneWorktrees()
-		}
+	if !inst.IsWorktree() {
+		return false
 	}
+	if keepSharedWorktree(inst, instances, jsonOutput) {
+		return true
+	}
+	if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
+		if err := backend.RemoveWorktree(inst.WorktreePath, true); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: worktree remove failed for %s: %v\n", inst.ID, err)
+		}
+		_ = backend.PruneWorktrees()
+	}
+	return false
 }
 
 // keepSharedWorktree reports whether inst's worktree must survive its removal

@@ -904,6 +904,22 @@ func (m *WebMutator) FinishWorktree(id string, opts menudata.WorktreeFinishOptio
 	worktreePath := inst.WorktreePath
 	worktreeBranch := inst.WorktreeBranch
 
+	// Same guard as `agent-deck worktree finish` (F9): another session on
+	// this worktree would be left at a path that no longer exists.
+	if !opts.Force {
+		m.h.instancesMu.RLock()
+		sharers := session.SessionsSharingWorktree(inst, m.h.instances)
+		m.h.instancesMu.RUnlock()
+		if len(sharers) > 0 {
+			names := make([]string, 0, len(sharers))
+			for _, o := range sharers {
+				names = append(names, "'"+o.Title+"'")
+			}
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("%w: %s (set force=true to remove the worktree and branch anyway)",
+				menudata.ErrWorktreeShared, strings.Join(names, ", "))
+		}
+	}
+
 	backend, err := vcsbackend.Detect(repoRoot)
 	if err != nil {
 		return menudata.WorktreeFinishResult{}, fmt.Errorf("initialize VCS: %w", err)
