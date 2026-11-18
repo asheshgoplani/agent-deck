@@ -1290,8 +1290,6 @@ body[data-rail="hidden"] .rightrail { display: none; }
 :root[data-theme="light"] .markdown-code .tok-num, :root.light .markdown-code .tok-num { color: #965027; }
 :root[data-theme="light"] .markdown-code .tok-com, :root.light .markdown-code .tok-com { color: #6c7086; }
 :root[data-theme="light"] .markdown-code .tok-add, :root.light .markdown-code .tok-add { color: #33635c; }
-:root[data-theme="light"] .markdown-code .tok-del, :root.light .markdown-code .tok-del { color: #a8304a; }
-:root[data-theme="light"] .markdown-code .tok-add, :root.light .markdown-code .tok-add { color: #33635c; }
 :root[data-theme="light"] .markdown-code .tok-del, :root.light .markdown-code .tok-del { color: #8c4351; }
 .cc-shl { font-size: 11px; color: var(--muted); padding: 0 0 3px 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-sdone { font-size: 11px; color: var(--muted-2); padding: 3px 0; }
