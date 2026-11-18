@@ -178,3 +178,31 @@ func TestSessionRestart_GuardJudgesTheStatusListShows(t *testing.T) {
 		t.Fatalf("restart of a session list shows as error was skipped by the freshness guard\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 }
+
+// The other half of the guard: a session that is genuinely fresh (live pane,
+// started seconds ago) is still skipped, also after the 1.5 s start grace, so
+// the verdict does not depend on how fast the restart runs.
+func TestSessionRestart_GuardStillSkipsALiveFreshSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexec sleep 120\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	home := t.TempDir()
+	id := addTestSession(t, home, filepath.Join(home, "proj"), "fresh-and-live")
+	t.Cleanup(func() { _, _, _ = runAgentDeck(t, home, "session", "stop", id) })
+	if _, stderr, code := runAgentDeck(t, home, "session", "start", id); code != 0 {
+		t.Fatalf("session start: exit %d: %s", code, stderr)
+	}
+	forceSetStartedStatus(t, home, id, session.StatusIdle, time.Now().Add(-5*time.Second))
+	if got := listStatusOf(t, home, id); got == "error" || got == "stopped" {
+		t.Fatalf("precondition: list shows %q for a live session", got)
+	}
+	stdout, stderr, _ := runAgentDeck(t, home, "session", "restart", id, "--json")
+	if !strings.Contains(stdout, `"skipped": true`) && !strings.Contains(stdout, `"skipped":true`) {
+		t.Fatalf("restart of a live session started seconds ago was not skipped by the freshness guard\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+}
