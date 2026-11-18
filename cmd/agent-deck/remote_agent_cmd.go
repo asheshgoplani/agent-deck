@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/core"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -402,7 +403,7 @@ func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func() (string, 
 		}
 		refresh, cached := session.CLIStatusCandidates(instances)
 		session.RefreshInstancesForCLIStatus(refresh)
-		l, err := buildListJSONStamped(storage.Profile(), instances, cached, listStatusStamps(storage))
+		l, err := buildListJSONStamped(storage.Profile(), instances, cached, core.ReadStatusStamps(storage))
 		if err != nil {
 			return "", "", err
 		}
