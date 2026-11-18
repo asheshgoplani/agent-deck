@@ -11,6 +11,7 @@ package ui
 // watcher's change callback asks for one status sweep at once.
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -184,6 +185,28 @@ func (h *Home) processHookPass() {
 	h.cachedStatusCounts.valid.Store(false)
 	h.publishWebSessionStates(instances)
 	h.refreshSessionRenderSnapshot(instances)
+	// Repaint now: the rows read the snapshot, but nothing else wakes the
+	// UI until the next tick.
+	if h.statusRepaint != nil {
+		select {
+		case h.statusRepaint <- struct{}{}:
+		default:
+		}
+	}
+}
+
+type statusRepaintMsg struct{}
+
+func listenForStatusRepaint(ch chan struct{}) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		if _, ok := <-ch; !ok {
+			return nil
+		}
+		return statusRepaintMsg{}
+	}
 }
 
 // runPendingHookPass runs a hook pass the UI asked for while the worker was
@@ -194,7 +217,9 @@ func (h *Home) runPendingHookPass() {
 	}
 }
 
-// hookSampleKey identifies one hook sample. (Rework shim: its time only.)
+// hookSampleKey identifies one hook sample. Hook files carry whole-second
+// times, so two events in one second (a prompt, then its stop) share
+// UpdatedAt: the hook's own generation and sequence tell them apart.
 func hookSampleKey(hs *session.HookStatus) string {
-	return hs.UpdatedAt.String()
+	return fmt.Sprintf("%d|%s|%d|%s|%s", hs.UpdatedAt.UnixNano(), hs.HookGeneration, hs.Sequence, hs.Status, hs.Event)
 }

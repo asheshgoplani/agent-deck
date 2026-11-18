@@ -90,7 +90,10 @@ func ResultFromDesk(raw []byte, from string) (ResultEvent, error) {
 	}
 	r := ResultEvent{Intent: d.Intent, Target: d.Target, Show: d.Show, Then: d.Then, Refused: d.Refused, From: from}
 	if d.Confirm != nil {
-		r.Confirm = &ResultConfirm{Kind: d.Confirm.Kind, Prompt: d.Confirm.Prompt, ExpiresMs: d.Confirm.ExpiresMs}
+		// The desk's prompt is the read-back of his dictated message ("Send
+		// to alpha: <message>. Yes?"): it stays with the brain. The card
+		// gets a prompt built from the target only.
+		r.Confirm = &ResultConfirm{Kind: d.Confirm.Kind, Prompt: confirmPrompt(d.Confirm.Kind, d.Intent, d.Target), ExpiresMs: d.Confirm.ExpiresMs}
 	}
 	if r.Then != nil && r.Then.Action == "" {
 		r.Then = nil
@@ -119,4 +122,23 @@ func PublishResult(profile string, r ResultEvent) {
 		r.Show.Kind = "none"
 	}
 	events.PublishProfile(profile, KindResult, r.SessionID(), r)
+}
+
+// confirmPrompt is the card's question without any of his words.
+func confirmPrompt(kind, intent string, target *Target) string {
+	title := ""
+	if target != nil {
+		title = target.Title
+	}
+	switch {
+	case kind == "choice":
+		return "Which one?"
+	case intent == "tell" && title != "":
+		return "Send to " + title + "?"
+	case intent == "find" && title != "":
+		return "Switch to " + title + "?"
+	case title != "":
+		return "Confirm for " + title + "?"
+	}
+	return "Confirm?"
 }

@@ -120,20 +120,27 @@ func PublishProfile(profile, kind, sessionID string, data any) {
 	publishTap(profile, kind, sessionID, data)
 }
 
-func publishTap(profile, kind, sessionID string, data any) {
+// TryPublishProfile is PublishProfile that reports whether the tap took
+// the frame (false: bus disabled, closed, or its queue full). A producer
+// that must not lose a frame keeps it and offers it again.
+func TryPublishProfile(profile, kind, sessionID string, data any) bool {
+	return publishTap(profile, kind, sessionID, data)
+}
+
+func publishTap(profile, kind, sessionID string, data any) bool {
 	if disabled, explicit := envOverride(); explicit && disabled {
 		warnDisabled("AGENTDECK_EVENTS_BUS disabled", nil)
-		return
+		return false
 	}
 	raw, err := marshalData(data)
 	if err != nil {
-		return
+		return false
 	}
 	qf := queuedFrame{profile: profile, kind: kind, sessionID: sessionID, data: raw, ts: time.Now()}
 	tapMu.Lock()
+	defer tapMu.Unlock()
 	if tapClosed {
-		tapMu.Unlock()
-		return
+		return false
 	}
 	if tapQueue == nil {
 		tapQueue = make(chan queuedFrame, defaultQueueCap)
@@ -142,10 +149,11 @@ func publishTap(profile, kind, sessionID string, data any) {
 	}
 	select {
 	case tapQueue <- qf:
+		return true
 	default:
 		tapDropped.Add(1)
+		return false
 	}
-	tapMu.Unlock()
 }
 
 func defaultTapLoop(queue <-chan queuedFrame, done chan<- struct{}) {

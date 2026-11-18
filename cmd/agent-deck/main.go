@@ -139,6 +139,18 @@ var undoableDeletesSignalFinalize atomic.Pointer[func()]
 
 func setUndoableDeletesSignalFinalize(fn func()) { undoableDeletesSignalFinalize.Store(&fn) }
 
+// voiceProducerSignalStop stops agent-deck web's voice producer when a
+// signal ends the process (its "off" frame must reach the bus first).
+var voiceProducerSignalStop atomic.Pointer[func()]
+
+func setVoiceProducerSignalStop(fn func()) { voiceProducerSignalStop.Store(&fn) }
+
+func stopVoiceProducerOnSignal() {
+	if fn := voiceProducerSignalStop.Load(); fn != nil {
+		(*fn)()
+	}
+}
+
 func finalizeUndoableDeletesOnSignal() {
 	if fn := undoableDeletesSignalFinalize.Load(); fn != nil {
 		(*fn)()
@@ -1098,6 +1110,9 @@ func main() {
 			_ = db.UnregisterInstance()
 		}
 		signalTerminalCleanup()
+		// agent-deck web's voice producer publishes "off" (reason stopped)
+		// before the bus is drained, so no follower keeps "listening".
+		stopVoiceProducerOnSignal()
 		_ = events.CloseDefault()
 		exitCLI(0)
 	}()
@@ -1359,6 +1374,7 @@ func main() {
 		// The web UI is up once it listens: count it then, not when the
 		// long-running server exits. A failure before that counts as failed.
 		server.SetOnListening(func() { finishCLITelemetry(0) })
+		setVoiceProducerSignalStop(server.StopVoiceProducer)
 
 		if webHeadless {
 			// Headless: block on server.Start() and skip bubbletea. The

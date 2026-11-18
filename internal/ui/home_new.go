@@ -205,6 +205,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		triggersFeed:              stateDBTriggersFeed{},
 		voiceReader:               voicestate.NewReader(voicestate.DefaultDir()),
 		hookChanged:               make(chan struct{}, 1),
+		statusRepaint:             make(chan struct{}, 1),
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,

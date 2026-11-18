@@ -25,7 +25,7 @@ const DefaultInterval = 50 * time.Millisecond
 // daemon pid, "on": false, or a missed heartbeat window
 // (voicestate.Reader). It is driven by Run or, in tests, by Step.
 type Producer struct {
-	Reader  *voicestate.Reader
+	Reader *voicestate.Reader
 	// Publish puts a frame on the bus and reports whether the bus took it.
 	Publish func(kind, sessionID string, data any) bool
 	// Origin names this machine in frames from its own current.json.
@@ -41,13 +41,17 @@ type Producer struct {
 	started bool
 	lastKey string
 	last    StateEvent
+	// lastOrigin is the origin of the newest live state: an "off" carries
+	// it, so a follower ends the state of the daemon that went away (an
+	// expired mirror's off must not carry this host's own name).
+	lastOrigin string
 }
 
 // NewProducer is a producer for dir that publishes on profile's bus.
 func NewProducer(dir, profile string) *Producer {
 	return &Producer{
 		Reader:  voicestate.NewReader(dir),
-		Publish: func(kind, sid string, data any) bool { events.PublishProfile(profile, kind, sid, data); return true },
+		Publish: func(kind, sid string, data any) bool { return events.TryPublishProfile(profile, kind, sid, data) },
 		Origin:  LocalOrigin(),
 	}
 }
@@ -74,13 +78,22 @@ func (p *Producer) Step() (StateEvent, bool) {
 		reason = ReasonExpired
 	}
 	ev := FromState(s, p.Origin, reason, now)
+	if !ev.On {
+		ev.Origin = p.lastOrigin // the daemon that went away; "" when none was seen
+	}
 	key := ev.key()
 	if p.started && key == p.lastKey {
 		return p.last, false
 	}
+	// A frame the bus did not take is not recorded: the next Step offers
+	// it again, so a dropped "off" cannot leave "listening" as the newest
+	// frame.
+	if p.Publish != nil && !p.Publish(KindState, ev.SessionID(), ev) {
+		return ev, false
+	}
 	p.started, p.lastKey, p.last = true, key, ev
-	if p.Publish != nil {
-		_ = p.Publish(KindState, ev.SessionID(), ev)
+	if ev.On {
+		p.lastOrigin = ev.Origin
 	}
 	return ev, true
 }
@@ -119,10 +132,13 @@ func (p *Producer) stop() {
 	if !p.started || !p.last.On {
 		return
 	}
-	ev := Off(ReasonStopped, p.Origin, p.now())
+	ev := Off(ReasonStopped, p.lastOrigin, p.now())
 	p.last, p.lastKey = ev, ev.key()
 	if p.Publish != nil {
-		_ = p.Publish(KindState, "", ev)
+		// Last chance: offer it a few times if the queue is full.
+		for i := 0; i < 20 && !p.Publish(KindState, "", ev); i++ {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 
@@ -169,13 +185,16 @@ func RunExclusive(ctx context.Context, profile string, p *Producer) error {
 			release()
 			return nil
 		}
+		wait := lockRetry
 		if !errors.Is(err, errLocked) {
-			return err
+			// Not "held" (a transient open or flock error): keep trying,
+			// slower, rather than leave the host without a producer.
+			wait = time.Second
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(lockRetry):
+		case <-time.After(wait):
 		}
 	}
 }

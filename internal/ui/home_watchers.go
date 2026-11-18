@@ -74,6 +74,9 @@ func (h *Home) Init() tea.Cmd {
 	if h.hookChanged != nil {
 		cmds = append(cmds, listenForHookChange(h.hookChanged))
 	}
+	if h.statusRepaint != nil {
+		cmds = append(cmds, listenForStatusRepaint(h.statusRepaint))
+	}
 
 	// Start listening for storage changes
 	if h.storageWatcher != nil {

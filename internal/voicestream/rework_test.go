@@ -338,3 +338,34 @@ func TestResultFromDesk_DropsEverythingElse(t *testing.T) {
 		}
 	}
 }
+
+// M1 (Mac app re-review): the off for an expired mirror carries the origin
+// of the daemon that went away (the mirror's sender), not this host's own
+// name, so a follower ends that daemon's state.
+func TestProducer_OffCarriesTheDaemonsOrigin(t *testing.T) {
+	dir := t.TempDir()
+	if err := voicestate.WriteMirror(dir, liveMirrorFrom("laptop")); err != nil {
+		t.Fatal(err)
+	}
+	var got []StateEvent
+	p := &Producer{Reader: voicestate.NewReader(dir), Origin: "box",
+		Publish: func(_, _ string, d any) bool { got = append(got, d.(StateEvent)); return true }}
+	p.Step()
+	if len(got) != 1 || !got[0].On || got[0].Origin != "laptop" {
+		t.Fatalf("live mirror frame: %+v", got)
+	}
+	_ = os.Remove(filepath.Join(dir, "mirror.json")) // expired or gone
+	p.Step()
+	if last := got[len(got)-1]; last.On || last.Origin != "laptop" {
+		t.Fatalf("off frame origin %q (on=%v), want laptop: the daemon that went away", last.Origin, last.On)
+	}
+	// A producer that stops after that says off for the same daemon.
+	p2 := &Producer{Reader: voicestate.NewReader(dir), Origin: "box",
+		Publish: func(_, _ string, d any) bool { got = append(got, d.(StateEvent)); return true }}
+	_ = voicestate.WriteMirror(dir, liveMirrorFrom("studio"))
+	p2.Step()
+	p2.stop()
+	if last := got[len(got)-1]; last.On || last.Reason != ReasonStopped || last.Origin != "studio" {
+		t.Fatalf("stop frame %+v, want off/stopped with origin studio", last)
+	}
+}

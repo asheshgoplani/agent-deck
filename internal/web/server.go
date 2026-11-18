@@ -323,6 +323,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if f, ok := s.mutator.(pendingDeleteFinalizer); ok {
 		defer finalizePendingDeletesBounded(f, pendingDeleteFinalizeTimeout)
 	}
+	// The voice producer says "off" (reason stopped) before the server
+	// goes: a follower must never keep "listening" from a stopped producer.
+	s.stopVoiceProducer()
 	if s.cancelBase != nil {
 		// Signal long-lived handlers (SSE/WS) to stop promptly.
 		s.cancelBase()

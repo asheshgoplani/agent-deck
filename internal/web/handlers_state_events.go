@@ -94,18 +94,26 @@ func stateKindMatch(kinds []string, kind string) bool {
 }
 
 func parseStateAfter(r *http.Request) (events.Cursor, bool, error) {
-	raw := strings.TrimSpace(r.URL.Query().Get("after"))
-	if raw == "" {
-		raw = strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	// A browser EventSource reconnects with the URL it was opened with
+	// (?after= from the first connect) plus Last-Event-ID: the larger one
+	// is where the client really is, so nothing it has is replayed.
+	var after events.Cursor
+	resume := false
+	for _, raw := range []string{r.URL.Query().Get("after"), r.Header.Get("Last-Event-ID")} {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return 0, false, fmt.Errorf("after %q is not a cursor", raw)
+		}
+		resume = true
+		if events.Cursor(n) > after {
+			after = events.Cursor(n)
+		}
 	}
-	if raw == "" {
-		return 0, false, nil
-	}
-	n, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		return 0, false, fmt.Errorf("after %q is not a cursor", raw)
-	}
-	return events.Cursor(n), true, nil
+	return after, resume, nil
 }
 
 // stateBus is the profile's events bus, opened once as a follower.
@@ -294,6 +302,11 @@ func (s *Server) startVoiceProducer() {
 		}
 	}()
 }
+
+// StopVoiceProducer stops the voice producer and publishes its "off"; the
+// process's signal path calls it before the bus is closed. Safe to call
+// more than once.
+func (s *Server) StopVoiceProducer() { s.stopVoiceProducer() }
 
 func (s *Server) stopVoiceProducer() {
 	if s.voiceProdCancel != nil {

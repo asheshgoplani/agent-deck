@@ -73,9 +73,9 @@ func TestReader_RelativeMirrorKeepsRemote(t *testing.T) {
 
 func TestRelativeRemote(t *testing.T) {
 	cases := []struct{ target, dest, self, want string }{
-		{"", "box", "laptop", "laptop"}, // target on the daemon's machine
-		{"box", "box", "laptop", ""},    // target on the receiving host itself
-		{"other", "box", "laptop", "other"},
+		{"", "box", "laptop", "laptop"},            // target on the daemon's machine
+		{"box", "box", "laptop", ""},               // target on the receiving host itself
+		{"other", "box", "laptop", "laptop/other"}, // a third host: named from the daemon's machine, never a local remote
 	}
 	for _, c := range cases {
 		if got := RelativeRemote(c.target, c.dest, c.self); got != c.want {

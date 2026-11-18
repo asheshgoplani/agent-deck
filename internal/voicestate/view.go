@@ -38,6 +38,7 @@ func NewView(s *State, now time.Time) View {
 		Phase:      s.PhaseWord(),
 		Extra:      s.Extra(),
 		Muted:      s.Muted || s.Extra() == ExtraMuted,
+		Source:     s.ClientSource,
 		From:       "local",
 		UpdatedAt:  rfc3339(now),
 		PhaseSince: "",
