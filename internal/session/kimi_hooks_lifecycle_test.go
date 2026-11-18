@@ -282,6 +282,9 @@ command = "notify-send Kimi"
 	if err := os.WriteFile(configPath, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(configPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	installed, err := session.InjectKimiHooks(dir)
 	if err != nil || !installed {
