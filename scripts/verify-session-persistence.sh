@@ -66,7 +66,7 @@ cleanup() {
     for n in ${CREATED_SESSIONS[@]+"${CREATED_SESSIONS[@]}"}; do
       [[ -n "${n}" ]] || continue
       agent-deck session stop "$n" >/dev/null 2>&1 || true
-      agent-deck remove --force "$n" >/dev/null 2>&1 || true
+      agent-deck remove "$n" --force >/dev/null 2>&1 || true
     done
   fi
   # Tear down any lingering login-sim scope.
