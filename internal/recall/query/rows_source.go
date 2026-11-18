@@ -414,24 +414,24 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		return readOlderRows(ctx, src, f, size, opts.Tail, nil, opts)
 	}
 	p := newRowParser(src.Harness, st)
-	// With a filter, --limit counts rows that pass it; they are recounted
-	// only when a line added a row.
-	counted := 0
+	// With a filter, --limit counts rows that pass it, tracked per frame.
+	kept := newKeptCounter(opts)
 	end, err := scanLines(ctx, f, start, size, func(line []byte, _ int64) error {
 		for _, fr := range p.line(line) {
 			set.apply(fr)
+			kept.touch(set, fr)
 		}
-		if opts.Limit <= 0 || set.len() < opts.Limit {
+		if opts.Limit <= 0 {
 			return nil
 		}
 		if !opts.Filtered() {
-			return errStopScan
-		}
-		if set.len() != counted {
-			counted = set.len()
-			if len(FilterRows(set.list(), opts)) >= opts.Limit {
+			if set.len() >= opts.Limit {
 				return errStopScan
 			}
+			return nil
+		}
+		if kept.n >= opts.Limit {
+			return errStopScan
 		}
 		return nil
 	})
@@ -441,8 +441,8 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 	tl.Turns = FilterRows(set.list(), opts)
 	tl.Updates, tl.Removed = filterUpdates(set.updates, opts), set.removed
 	if src.Harness == "claude" {
-		tl.Turns = withClaudeSidechains(ctx, src.Path, tl.Turns)
-		tl.Updates = withClaudeSidechains(ctx, src.Path, tl.Updates)
+		tl.Turns = filterChildren(withClaudeSidechains(ctx, src.Path, tl.Turns), opts)
+		tl.Updates = filterChildren(withClaudeSidechains(ctx, src.Path, tl.Updates), opts)
 	}
 	anchor, err := anchorAt(f, end)
 	if err != nil {
@@ -505,7 +505,7 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 				return tl, err
 			}
 			if src.Harness == "claude" {
-				rows = withClaudeSidechains(ctx, src.Path, rows)
+				rows = filterChildren(withClaudeSidechains(ctx, src.Path, rows), opts)
 			}
 			anchor, err := anchorAt(f, end)
 			if err != nil {

@@ -127,8 +127,11 @@ agent-deck recall timeline <session> --json --skip-empty-body --tail 100
 - In `--since` answers, `updates` that name a kind outside the list are
   dropped; an update that carries no kind is kept (it names a row by id
   only, and a client ignores ids it does not hold). `removed` is unchanged.
-- Rows read from the index (`source: "index"`) are filtered the same way;
-  they have no cursor.
+- Sub-agent children attached to a kept `subagent` row are filtered the
+  same way, so a sidechain's dropped kinds do not ride along.
+- Rows read from the index (`source: "index"`) and `--agent` sidechains
+  are filtered the same way; they have no cursor and no `next_cursor`.
+  On the index path `--limit N` keeps the first N kept rows.
 - Filtering runs on the owner host, so `remote <name> recall timeline
   --kinds ...` and an `ssh <host> agent-deck recall timeline --kinds ...`
   both carry only the kept rows. `--v1` is refused with a filter.

@@ -306,3 +306,75 @@ func TestRowsKindsTailGrowsWindowForSparseKinds(t *testing.T) {
 		t.Fatalf("older page before the first user row: %v %q %v", idsOf(older.Turns), older.BeforeCursor, err)
 	}
 }
+
+// TestRowsKindsFilterSidechainChildren: a kept subagent row's attached
+// children are filtered too, so the sidechain's dropped kinds do not ride
+// along in the payload.
+func TestRowsKindsFilterSidechainChildren(t *testing.T) {
+	src := RowsSource{Harness: "claude", Path: rowsFixture(t, "claude")}
+	full, err := ReadRows(context.Background(), src, RowsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, ok := rowByID(full.Turns, "toolu_agent1")
+	if !ok || len(parent.Children) == 0 {
+		t.Fatalf("fixture subagent row has no children: %+v", parent)
+	}
+	kinds := []string{"subagent", "assistant"}
+	want := keepRows(parent.Children, kinds, false)
+	if len(want) == len(parent.Children) {
+		t.Fatalf("fixture children have nothing to filter: %v", kindsOf(parent.Children))
+	}
+	for _, opts := range []RowsOptions{{Kinds: kinds}, {Kinds: kinds, Tail: 50}} {
+		tl, err := ReadRows(context.Background(), src, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok := rowByID(tl.Turns, "toolu_agent1")
+		if !ok {
+			t.Fatalf("%+v: subagent row dropped", opts)
+		}
+		if len(want) == 0 {
+			want = nil
+		}
+		if !reflect.DeepEqual(got.Children, want) {
+			t.Fatalf("%+v: children %v want %v", opts, kindsOf(got.Children), kindsOf(want))
+		}
+	}
+}
+
+// TestKeptCounterTracksMembership: the --limit counter follows a row in
+// and out of the filter as frames replace it, fill its body later, move it
+// (queue absorb) or remove it, without rescanning the set.
+func TestKeptCounterTracksMembership(t *testing.T) {
+	f := func(frame string, r Row) RowFrame {
+		if frame == "remove" {
+			return RowFrame{Frame: frame, ID: r.ID}
+		}
+		return RowFrame{Frame: frame, Row: &r}
+	}
+	set := newRowSet()
+	k := newKeptCounter(RowsOptions{Kinds: []string{"bash", "user"}, SkipEmptyBody: true})
+	for i, step := range []struct {
+		fr   RowFrame
+		want int
+	}{
+		{f("row", Row{ID: "b1", Kind: "bash"}), 0},
+		{f("row", Row{ID: "b2", Kind: "bash", Body: "  "}), 0},
+		{f("update", Row{ID: "b1", Body: "ls"}), 1},
+		{f("update", Row{ID: "b2", Body: "pwd"}), 2},
+		{f("row", Row{ID: "s1", Kind: "system", Body: "x"}), 2},
+		{f("row", Row{ID: "q1", Kind: "user", Body: "queued", Queued: boolPtr(true)}), 3},
+		{f("row", Row{ID: "u9", Kind: "user", Body: "later"}), 4},
+		{f("update", Row{ID: "q1", Queued: boolPtr(false), TS: "2026-11-18T10:00:00Z"}), 4},
+		{f("row", Row{ID: "b1", Kind: "bash", Body: ""}), 3},
+		{f("remove", Row{ID: "q1"}), 2},
+		{f("update", Row{ID: "unknown", Body: "x"}), 2},
+	} {
+		set.apply(step.fr)
+		k.touch(set, step.fr)
+		if k.n != step.want || k.n != len(FilterRows(set.list(), k.opts)) {
+			t.Fatalf("step %d: counter %d, want %d (rescan %d)", i, k.n, step.want, len(FilterRows(set.list(), k.opts)))
+		}
+	}
+}

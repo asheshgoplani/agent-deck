@@ -21,8 +21,8 @@ func handleRecallTimeline(profile string, args []string) {
 	limit := fs.Int("limit", 0, "Maximum older rows with --before; otherwise stop after N new rows and resume with --since")
 	tail := fs.Int("tail", 0, "Only the last N rows, read from the end of the transcript (fast first paint)")
 	agentID := fs.String("agent", "", "One Claude Code sub-agent sidechain by agent id")
-	kinds := fs.String("kinds", "", "Comma-separated row kinds to keep (user, assistant, thinking, tool, bash, edit, read, subagent, todo, question, skill, command, system, compaction, turn_end, other); filtered here, before output. Resume with next_cursor")
-	skipEmpty := fs.Bool("skip-empty-body", false, "Drop rows whose body is empty or only whitespace; filtered here, before output. Resume with next_cursor")
+	kinds := fs.String("kinds", "", "Comma-separated row kinds to keep (user, assistant, thinking, tool, bash, edit, read, subagent, todo, question, skill, command, system, compaction, turn_end, other); filtered here, before output, sub-agent children included. Native reads resume with next_cursor")
+	skipEmpty := fs.Bool("skip-empty-body", false, "Drop rows whose body is empty or only whitespace; filtered here, before output, sub-agent children included. Native reads resume with next_cursor")
 	sessions := fs.String("sessions", "", fmt.Sprintf("Comma-separated session ids: one call answers each id's timeline (at most %d; only --tail, --kinds and --skip-empty-body combine with it)", recallTimelineBatchMax))
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>] [--kinds a,b] [--skip-empty-body]")
@@ -31,7 +31,7 @@ func handleRecallTimeline(profile string, args []string) {
 		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline <session> --json --v1   (slice-6 turn shape)")
 		fmt.Fprintln(fs.Output(), "<session>: deck session id, title or id prefix; a Claude, Codex or Pi conversation id; or #n / any id the index knows.")
 		fmt.Fprintln(fs.Output(), "Rows are parsed from the native transcript directly, whatever the index or its deferral state. Needs [recall] enabled = true.")
-		fmt.Fprintln(fs.Output(), "With --kinds or --skip-empty-body, --tail and --limit count kept rows, and the answer carries next_cursor: pass it to --since (never a cursor made from the last kept row).")
+		fmt.Fprintln(fs.Output(), "With --kinds or --skip-empty-body, --tail and --limit count kept rows. A native read then carries next_cursor: pass it to --since (never a cursor made from the last kept row). --agent sidechains and index-backed rows have no cursor.")
 		fs.PrintDefaults()
 	}
 	if !parseRecallFlags(fs, args) {

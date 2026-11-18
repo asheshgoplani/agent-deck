@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 )
 
 // rowsFixtureDir holds the Claude fixture the timeline goldens were made
@@ -326,4 +328,33 @@ func TestVersionJSONAdvertisesTimelineKinds(t *testing.T) {
 		}
 	}
 	t.Fatalf("features lack recall_timeline_kinds: %s", stdout)
+}
+
+// TestBoundIndexRows: index-backed rows (no cursor) are filtered before
+// --tail and --limit, which count kept rows; without a filter --limit is
+// ignored there as before, so that answer stays byte-identical.
+func TestBoundIndexRows(t *testing.T) {
+	rows := []query.Row{{ID: "u1", Kind: "user"}, {ID: "b1", Kind: "bash"}, {ID: "u2", Kind: "user"}, {ID: "b2", Kind: "bash"}, {ID: "u3", Kind: "user"}}
+	ids := func(rs []query.Row) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	user := []string{"user"}
+	for _, tc := range []struct {
+		opts query.RowsOptions
+		want []string
+	}{
+		{query.RowsOptions{Kinds: user, Limit: 2}, []string{"u1", "u2"}},
+		{query.RowsOptions{Kinds: user, Tail: 2}, []string{"u2", "u3"}},
+		{query.RowsOptions{Kinds: user}, []string{"u1", "u2", "u3"}},
+		{query.RowsOptions{Limit: 2}, []string{"u1", "b1", "u2", "b2", "u3"}},
+		{query.RowsOptions{Tail: 2}, []string{"b2", "u3"}},
+	} {
+		if got := ids(boundIndexRows(append([]query.Row(nil), rows...), tc.opts)); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("%+v: %v want %v", tc.opts, got, tc.want)
+		}
+	}
 }

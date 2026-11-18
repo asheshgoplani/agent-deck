@@ -73,6 +73,59 @@ func FilterRows(rows []Row, opts RowsOptions) []Row {
 	return out
 }
 
+// filterChildren applies the filter to attached sub-agent children, so a
+// kept subagent row does not carry the sidechain's dropped kinds.
+func filterChildren(rows []Row, opts RowsOptions) []Row {
+	if !opts.Filtered() {
+		return rows
+	}
+	for i := range rows {
+		if len(rows[i].Children) == 0 {
+			continue
+		}
+		children := FilterRows(filterChildren(rows[i].Children, opts), opts)
+		if len(children) == 0 {
+			children = nil
+		}
+		rows[i].Children = children
+	}
+	return rows
+}
+
+// keptCounter counts the rows of a rowSet that pass a filter, updated per
+// applied frame: a frame can add, replace, merge into (a body arriving
+// later), move or remove a row, and only that row's membership can change.
+type keptCounter struct {
+	opts RowsOptions
+	in   map[string]bool
+	n    int
+}
+
+func newKeptCounter(opts RowsOptions) *keptCounter {
+	return &keptCounter{opts: opts, in: map[string]bool{}}
+}
+
+func (k *keptCounter) touch(s *rowSet, f RowFrame) {
+	if !k.opts.Filtered() {
+		return
+	}
+	id := f.ID
+	if f.Row != nil {
+		id = f.Row.ID
+	}
+	i, ok := s.idx[id]
+	now := ok && k.opts.keeps(s.rows[i])
+	if now == k.in[id] {
+		return
+	}
+	if now {
+		k.n++
+	} else {
+		k.n--
+	}
+	k.in[id] = now
+}
+
 func filterUpdates(rows []Row, opts RowsOptions) []Row {
 	if !opts.Filtered() || len(rows) == 0 {
 		return rows
