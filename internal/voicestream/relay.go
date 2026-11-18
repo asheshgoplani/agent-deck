@@ -15,14 +15,16 @@ import (
 )
 
 // RelayRefresh re-sends an unchanged state so the receiving host's
-// mirror.json stays inside its heartbeat window.
-const RelayRefresh = 5 * time.Second
+// mirror.json stays inside its window.
+const RelayRefresh = voicestate.RelayRefresh
 
 // Sink takes the mirror for one stream host. It must not block for long;
 // the ssh link (cmd/agent-deck) keeps only the newest one.
 type Sink struct {
 	Dest string // the remote's name, as this host's config names it
 	Send func(voicestate.Mirror)
+	// Ping keeps the link alive while there is nothing to send.
+	Ping func()
 }
 
 // Relay polls the daemon's state file and hands every change (and a
@@ -71,6 +73,10 @@ func mirrorKey(st *voicestate.State) string {
 	raw, _ := json.Marshal(voicestate.MirrorFor(st, "\x00", "", 0))
 	return string(raw)
 }
+
+// MirrorInIdle: a receiver that hears nothing (no mirror, no ping) for
+// this long treats its link as gone. (Rework shim: unused.)
+var MirrorInIdle = 3 * voicestate.RelayRefresh
 
 // MirrorInLinger bounds how long a receiver whose relay went away keeps
 // publishing: until its mirror expired (it has then said "off") or another

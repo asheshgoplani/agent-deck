@@ -33,8 +33,9 @@ func newRig(t *testing.T) *rig {
 	rd.Now = func() time.Time { return r.now }
 	rd.PIDAlive = func(pid int) bool { return r.alive[pid] }
 	r.p = &Producer{Reader: rd, Origin: "laptop", Now: func() time.Time { return r.now },
-		Publish: func(kind, sid string, data any) {
+		Publish: func(kind, sid string, data any) bool {
 			r.pubs = append(r.pubs, published{kind, sid, data.(StateEvent)})
+			return true
 		}}
 	return r
 }
@@ -209,11 +210,12 @@ func TestRunExclusive_HandoverAndStopFrame(t *testing.T) {
 
 	var mu sync.Mutex
 	var order []string
-	record := func(who string) func(kind, sid string, data any) {
-		return func(kind, sid string, data any) {
+	record := func(who string) func(kind, sid string, data any) bool {
+		return func(kind, sid string, data any) bool {
 			mu.Lock()
 			order = append(order, who+":"+data.(StateEvent).Reason)
 			mu.Unlock()
+			return true
 		}
 	}
 	a.p.Publish, b.p.Publish = record("a"), record("b")

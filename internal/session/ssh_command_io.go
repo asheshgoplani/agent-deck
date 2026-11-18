@@ -257,8 +257,7 @@ func (r *SSHRunner) RunStdinStreamIO(ctx context.Context, stdin io.Reader, stdou
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return err
 	}
-	remoteCmd := r.buildRemoteCommand(args...)
-	sshArgs := append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no"}, r.sshChannelArgs(remoteCmd)...)
+	sshArgs := r.stdinStreamSSHArgs(r.buildRemoteCommand(args...))
 	// Literal ssh; validated host and individually quoted remote argv.
 	cmd := newSSHCommand(ctx, sshArgs...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -272,4 +271,10 @@ func (r *SSHRunner) RunStdinStreamIO(ctx context.Context, stdin io.Reader, stdou
 	}
 	cmd.WaitDelay = 3 * time.Second
 	return runSSHCommand(cmd)
+}
+
+// stdinStreamSSHArgs is the argv of RunStdinStreamIO. (Rework shim: the
+// shared keepalives.)
+func (r *SSHRunner) stdinStreamSSHArgs(remoteCmd string) []string {
+	return append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no"}, r.sshChannelArgs(remoteCmd)...)
 }

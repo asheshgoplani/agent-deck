@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/voicestate"
 )
 
@@ -64,5 +65,21 @@ func TestVoiceWatch_SendsChangesOnly(t *testing.T) {
 	_ = os.Remove(filepath.Join(dir, "current.json"))
 	if st := next("off"); st != nil {
 		t.Fatalf("removed file still live: %+v", st)
+	}
+}
+
+// S7 (rework round 1): hook files carry whole-second times, so two hook
+// events in one second (prompt then stop) have the same time. The hook pass
+// must still see the second one: its key includes the hook's own sequence.
+func TestHookSampleKey_TwoEventsInOneSecondDiffer(t *testing.T) {
+	at := time.Unix(1_794_950_000, 0)
+	running := &session.HookStatus{Status: "running", Event: "UserPromptSubmit", UpdatedAt: at, Sequence: 7}
+	waiting := &session.HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: at, Sequence: 8}
+	if hookSampleKey(running) == hookSampleKey(waiting) {
+		t.Fatalf("two hook samples in one second share a key %q: the second (waiting) is skipped until the next sweep", hookSampleKey(running))
+	}
+	again := *waiting
+	if hookSampleKey(waiting) != hookSampleKey(&again) {
+		t.Fatal("the same sample got two keys")
 	}
 }

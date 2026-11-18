@@ -327,7 +327,7 @@ type Home struct {
 	hookChanged chan struct{}
 	// hookPassSeen is the hook sample time processHookPass last applied per
 	// session; owned by the status worker goroutine.
-	hookPassSeen map[string]time.Time
+	hookPassSeen map[string]string
 	// hookPending: a hook change not yet applied; the status worker runs a
 	// hook pass after its current pass or sweep (live_watch.go).
 	hookPending atomic.Bool

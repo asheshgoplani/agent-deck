@@ -26,7 +26,8 @@ const DefaultInterval = 50 * time.Millisecond
 // (voicestate.Reader). It is driven by Run or, in tests, by Step.
 type Producer struct {
 	Reader  *voicestate.Reader
-	Publish func(kind, sessionID string, data any)
+	// Publish puts a frame on the bus and reports whether the bus took it.
+	Publish func(kind, sessionID string, data any) bool
 	// Origin names this machine in frames from its own current.json.
 	Origin   string
 	Interval time.Duration
@@ -46,7 +47,7 @@ type Producer struct {
 func NewProducer(dir, profile string) *Producer {
 	return &Producer{
 		Reader:  voicestate.NewReader(dir),
-		Publish: func(kind, sid string, data any) { events.PublishProfile(profile, kind, sid, data) },
+		Publish: func(kind, sid string, data any) bool { events.PublishProfile(profile, kind, sid, data); return true },
 		Origin:  LocalOrigin(),
 	}
 }
@@ -79,7 +80,7 @@ func (p *Producer) Step() (StateEvent, bool) {
 	}
 	p.started, p.lastKey, p.last = true, key, ev
 	if p.Publish != nil {
-		p.Publish(KindState, ev.SessionID(), ev)
+		_ = p.Publish(KindState, ev.SessionID(), ev)
 	}
 	return ev, true
 }
@@ -121,7 +122,7 @@ func (p *Producer) stop() {
 	ev := Off(ReasonStopped, p.Origin, p.now())
 	p.last, p.lastKey = ev, ev.key()
 	if p.Publish != nil {
-		p.Publish(KindState, "", ev)
+		_ = p.Publish(KindState, "", ev)
 	}
 }
 
