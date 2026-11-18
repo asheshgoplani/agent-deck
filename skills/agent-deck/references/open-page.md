@@ -23,26 +23,33 @@ agent-deck open notes.md   --session "$AGENTDECK_INSTANCE_ID" --json   # Markdow
 
 ## Write pages that read well on a phone
 
-- One self-contained file is best. Relative assets (images, CSS, JS next to the page) are fine:
-  they are bundled into the page for the phone. Files outside the session's project are not.
+- One self-contained file is best. Relative images, CSS and fonts next to the page are bundled
+  into it for the phone. Put JavaScript INLINE in `<script>` (a `<script src>` is not loaded), and
+  load nothing from the web: the phone page has no network (no CDN scripts, fonts, images or
+  fetch). Draw charts with inline SVG or a canvas script.
 - HTML: include `<meta name="viewport" content="width=device-width, initial-scale=1">`, use
-  readable font sizes, and let wide tables scroll (`overflow-x:auto` on a wrapper). Inline `<script>`
-  works (charts); the page cannot call agent-deck or read cookies.
+  readable font sizes, and let wide tables scroll (`overflow-x:auto` on a wrapper).
 - Markdown: headings, lists, tables, code blocks, links and images are rendered to clean HTML with
   light and dark themes. Raw HTML inside Markdown is shown as text.
 
-## Where the file must live
+## Where the file must live, and what never reaches the phone
 
 Only files under this session's project path, or under a `[web] file_link_roots` entry, reach the
-phone (the same rules as `agent-deck file read`). A file anywhere else still opens in the Mac app but
-`--json` reports `"where":"mac","phone":"outside_roots"`; move it into the project to show it on the
-phone. Never put secrets in a page.
+phone (the same rules as `agent-deck file read`). Dotfiles and dot folders (`.env`, `.git/`, `.ssh/`,
+`.aws/` …) and secret-like names (`*secret*`, `*credential*`, `*password*`, `*token*`, `*.pem`,
+`*.key`, `id_rsa*` …) never do, not as a page, not as an image or stylesheet inside one, not through
+a symlink. Pages are HTML, Markdown, images or plain text, up to 4 MiB. Anything else still opens in
+the Mac app; `--json` then says `"where":"mac"` and why in `phone` (`outside_roots`, `private`,
+`unsupported`, `too_large`). Name the page plainly (`plan.md`, not `secret-plan.md`) and put it in
+the project. Never put secrets in a page: it is shown on the phone as written, and a page's own
+scripts can read and keep their own cookies and storage (they cannot send anything anywhere: the page
+has no network, and every link or navigation out of it needs the owner's tap and confirm).
 
 ## Result (`--json`)
 
 ```json
 {"status":"opened|queued","where":"mac|phone|both","session":"<id>","title":"<session title>",
- "path":"/abs/file","url":"","page_id":"…","page_title":"<the page's own title>","name":"file.html","kind":"html|markdown|text|image|url","phone":"shown|outside_roots|url","elapsed_ms":42}
+ "path":"/abs/file","url":"","page_id":"…","page_title":"<the page's own title>","name":"file.html","kind":"html|markdown|text|image|url","phone":"shown|url|outside_roots|private|unsupported|too_large","elapsed_ms":42}
 ```
 
 `status` is `opened` when the Mac app confirmed it, `queued` when it opens once the app connects.
@@ -51,7 +58,7 @@ phone. Never put secrets in a page.
 
 | Command | Does |
 |---|---|
-| `agent-deck open --last --session <id> [--json]` | re-open the newest page of a session (exit 2 when it has none) |
+| `agent-deck open --last --session <id> [--json]` | re-open the newest page of a session whose file still exists (exit 2 when none) |
 | `agent-deck open --list --session <id> --json` | the session's pages, newest first |
 | `agent-deck open --show <page-id> --session <id> [--json]` | the page as one self-contained HTML document |
 

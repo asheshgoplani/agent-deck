@@ -11,13 +11,11 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// openPageCSP lets a page run its own inline scripts and styles (charts,
-// small apps) inside a sandbox without allow-same-origin: it gets an opaque
-// origin, so it can read neither the deck's cookies nor its API. Its loads
-// are its own inlined data: URIs plus https.
-const openPageCSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; " +
-	"default-src 'none'; img-src data: https:; media-src data: https:; font-src data: https:; " +
-	"style-src 'unsafe-inline' data: https:; script-src 'unsafe-inline' data: https:; connect-src https:; " + frameAncestorsNone
+// openPageCSP is openpages.PageCSP (inline scripts and styles, inlined
+// images and fonts, no network, no frames, no forms) inside a sandbox without
+// allow-same-origin or allow-popups: the page gets an opaque origin, so it
+// can read neither the deck's cookies nor its API, and cannot open windows.
+const openPageCSP = "sandbox allow-scripts; " + openpages.PageCSP + "; " + frameAncestorsNone
 
 // handleSessionOpenPages serves the pages `agent-deck open` showed for a
 // session (the HTTP form of `agent-deck open --list/--show`):
@@ -63,7 +61,7 @@ func (s *Server) handleSessionOpenPages(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		for i := range pages {
-			pages[i].EventID = ""
+			pages[i] = pages[i].ForPhone()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"session": inst.ID, "title": inst.Title, "pages": pages})
 		return
@@ -74,11 +72,15 @@ func (s *Server) handleSessionOpenPages(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	roots := filelinks.WithProjectRoot(session.GetWebFileLinkRoots(), inst.ProjectPath)
-	rendered, err := openpages.Render(roots, page)
+	all, _ := openpages.List(profile, inst.ID)
+	rendered, err := openpages.RenderLinked(roots, page, openpages.Links(all))
 	if err != nil {
 		status, code := fileLinkErrorStatus(err)
-		if errors.Is(err, openpages.ErrTooLarge) {
+		switch {
+		case errors.Is(err, openpages.ErrTooLarge):
 			status, code = http.StatusRequestEntityTooLarge, ErrCodeFileLinkRefused
+		case errors.Is(err, openpages.ErrPrivate), errors.Is(err, openpages.ErrUnsupported):
+			status, code = http.StatusForbidden, ErrCodeFileLinkRefused
 		}
 		writeAPIError(w, status, code, err.Error())
 		return

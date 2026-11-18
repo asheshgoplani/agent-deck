@@ -213,6 +213,41 @@ func Get(profile, sessionID, pageID string) (Page, error) {
 	return Page{}, ErrNotFound
 }
 
+// ForPhone is the page as clients see it: no host path, no bus id.
+func (p Page) ForPhone() Page {
+	p.Path, p.EventID = "", ""
+	return p
+}
+
+// Links maps each listed file (resolved path) to its page id.
+func Links(pages []Page) map[string]string {
+	m := make(map[string]string, len(pages))
+	for _, p := range pages {
+		if p.Path != "" {
+			m[p.Path] = p.ID
+		}
+	}
+	return m
+}
+
+// LastExisting is the newest page whose file still exists (URLs always do),
+// so "open the page from X" survives a deleted newest file.
+func LastExisting(profile, sessionID string) (Page, error) {
+	pages, err := List(profile, sessionID)
+	if err != nil {
+		return Page{}, err
+	}
+	for _, p := range pages {
+		if p.Kind == KindURL {
+			return p, nil
+		}
+		if info, err := os.Stat(p.Path); err == nil && info.Mode().IsRegular() {
+			return p, nil
+		}
+	}
+	return Page{}, ErrNotFound
+}
+
 // Last returns the newest page of a session.
 func Last(profile, sessionID string) (Page, error) {
 	pages, err := List(profile, sessionID)

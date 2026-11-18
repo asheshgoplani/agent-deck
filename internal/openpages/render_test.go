@@ -45,7 +45,7 @@ func TestRenderHTMLInlinesRelativeAssetsUnderRoots(t *testing.T) {
 		t.Fatalf("title %q", r.Title)
 	}
 	png := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\nDATA"))
-	for _, want := range []string{png, "<style>", "data:text/javascript;base64," + base64.StdEncoding.EncodeToString([]byte(`console.log("hi")`)),
+	for _, want := range []string{png, "<style>", `<script src="app.js"></script>`, // scripts are never inlined (phone policy)
 		"data:text/css;base64,", `href="other.html"`, `src="https://example.com/x.png"`, `src="../../secret.png"`} {
 		if !strings.Contains(doc, want) {
 			t.Fatalf("missing %q in\n%s", want, doc)
@@ -54,13 +54,16 @@ func TestRenderHTMLInlinesRelativeAssetsUnderRoots(t *testing.T) {
 	if strings.Contains(doc, base64.StdEncoding.EncodeToString([]byte("\x89PNG SECRET"))) {
 		t.Fatal("a file outside the root was inlined")
 	}
-	if r.Skipped < 2 || r.Inlined < 5 {
+	if strings.Contains(doc, "data:text/javascript") {
+		t.Fatal("a script was inlined")
+	}
+	if r.Skipped < 2 || r.Inlined < 4 {
 		t.Fatalf("inlined %d skipped %d", r.Inlined, r.Skipped)
 	}
 	// A symlinked asset that leaves the root is skipped too.
 	writeFile(t, filepath.Join(root, "site/l.html"), `<img src="img/link.png">`)
 	r, err = Render([]string{root}, Page{Path: filepath.Join(root, "site/l.html"), Kind: KindHTML})
-	if err != nil || strings.Contains(string(r.HTML), "data:") || r.Skipped != 1 {
+	if err != nil || strings.Contains(string(r.HTML), "data:image") || r.Skipped != 1 {
 		t.Fatalf("symlink escape: %v %s", err, r.HTML)
 	}
 }

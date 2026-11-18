@@ -71,21 +71,54 @@ The same `agent-deck open` also puts the page on the session's page list, which
 the phone app shows in the session's Pages panel (through the phone gateway, which
 runs `open --list` / `open --show` on the host). Nothing changes for the Mac app.
 
-- A file joins the list only when it is under the session's project path or a
-  `[web] file_link_roots` entry, with the rules of `agent-deck file read`:
-  absolute, symlinks resolved, opened through `os.Root`, regular files only.
-  A project path that is `/`, contains the home directory, or is at or inside
-  `~/.ssh` or the deck's config or data directory is not a root. Any other file
-  still opens in the Mac app and stays off the phone.
+- A file joins the list only when all of these hold (the same check runs again
+  at every read, so a file swapped later is refused then):
+  - it is under the session's project path or a `[web] file_link_roots`
+    entry, with the rules of `agent-deck file read`: absolute, symlinks
+    resolved, opened through `os.Root`, regular files only. A project path
+    that is `/`, contains the home directory, or is at or inside `~/.ssh` or
+    the deck's config or data directory is not a root;
+  - no path component below the root is private: nothing starting with `.`
+    (`.env*`, `.git/`, `.ssh/`, `.aws/`, `.npmrc`, `.netrc`, `.claude/` …) and
+    no secret-like name (containing `secret`, `credential`, `password`,
+    `passwd`, `token`, `private_key`, `apikey`; ending in `.pem`, `.key`,
+    `.p12`, `.pfx`, `.kdbx`, `.keystore`, `.jks`, `.ppk`, `.gpg`, `.asc`,
+    `.ovpn`, `.tfstate`, `.tfvars`; starting with `id_rsa`, `id_dsa`,
+    `id_ecdsa`, `id_ed25519`). This is checked on the symlink-resolved path, so
+    a link to a private file is private;
+  - it is a page kind the phone shows: HTML, Markdown, an image, or plain text
+    (`.txt`, `.text`, `.log`, `.csv`);
+  - it is at most 4 MiB.
+  Any other file still opens in the Mac app and stays off the phone; `--json`
+  says why in `phone`: `outside_roots`, `private`, `unsupported` or `too_large`.
 - URLs always join the list (`kind: "url"`); the phone opens them in its browser.
 - The list lives in `<data dir>/pages/<profile>/<session id>.json`: metadata only,
   newest 50, one entry per file or URL (opening it again moves it to the top).
-  Each addition also commits `page.opened` on the profile bus.
+  Each addition also commits `page.opened` on the profile bus (`page_id`, `kind`,
+  `title`, `name`, `url`, `opened_at`, `host`; no host path). A relative link to a
+  file that is on the list is rewritten to `/@page/<page-id>`, which the phone opens
+  as that page.
 - Content is read from disk at every request, so a saved follow-up edit shows on
-  refresh. HTML is served as written, with its relative assets (img, srcset,
-  poster, script src, stylesheet links, CSS `url()` and `@import`, a style
-  attribute's `url()`) inlined as `data:` URIs; every asset is checked against the
-  roots again and skipped when outside, missing or too big. Markdown is rendered
+  refresh. HTML is served as written, with its relative images, stylesheets
+  and fonts (img src/srcset, poster, icon links, stylesheet links, CSS `url()`
+  and `@import`) inlined as `data:` URIs. Each asset passes the same root and
+  private-name rules, must be an image, a stylesheet or a font by extension
+  and by content (a secret renamed `logo.png` is not inlined), and is skipped
+  otherwise; a CSS reference that is skipped becomes `about:invalid`. Scripts,
+  frames, objects and media files are never inlined, and a relative link to a
+  private name becomes `#`.
+- Every document starts with a `<meta http-equiv="Content-Security-Policy">`
+  (a later policy can only add restrictions): `default-src 'none';
+  script-src 'unsafe-inline'; style-src 'unsafe-inline' data:; img-src data:;
+  font-src data:; media-src data:; connect-src 'none'; frame-src 'none';
+  child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none';
+  base-uri 'none'`. A page may run its own inline scripts and styles (charts,
+  small apps) and show its inlined images and fonts. It cannot fetch, post,
+  open a socket, load anything remote (scripts, styles, images, fonts,
+  frames), submit forms or set a `<base>`. A link the user taps still leaves
+  for the browser, and a page script could navigate to a URL the same way; the
+  page holds only what its author put in it, never a private file.
+  HTML pages without a viewport get one. Markdown is rendered
   to one phone-sized HTML document (light and dark, wide tables and code scroll);
   raw HTML in Markdown is shown as text and only `http(s)`, `mailto` and relative
   links are kept. Text is shown in `<pre>`, an image in `<img>`.
@@ -95,8 +128,8 @@ runs `open --list` / `open --show` on the host). Nothing changes for the Mac app
 agent-deck open notes.md --json
 # {"status":"queued","where":"phone","session":"<id>","title":"<title>","path":"/abs/notes.md","url":"",
 #  "page_id":"<16 hex>","page_title":"Notes","name":"notes.md","kind":"markdown","phone":"shown","elapsed_ms":41}
-agent-deck open --last --session <id> --json      # re-open the newest page; exit 2 + {"code":"no_page"} when none
-agent-deck open --list --session <id> --json      # {"session","title","pages":[{id,kind,title,name,path,url,opened_at}]}
+agent-deck open --last --session <id> --json      # re-open the newest page whose file exists; exit 2 + {"code":"no_page"} when none
+agent-deck open --list --session <id> --json      # {"session","title","pages":[{id,session_id,kind,title,name,url,opened_at}]} (no host paths)
 agent-deck open --show <page-id> --session <id> --json
 # {"id","kind","title","name","url","html","bytes","inlined","skipped","modified_at"}
 ```
@@ -114,8 +147,9 @@ without `--json` is unchanged.
 The web server serves the same with the token auth of the other session routes:
 `GET /api/sessions/{id}/open-pages` (the list) and
 `GET /api/sessions/{id}/open-pages/{page-id}` (the HTML document, under a CSP
-`sandbox allow-scripts` without `allow-same-origin`, so a page's scripts get an
-opaque origin and cannot read the deck's cookies or call its API;
+`sandbox allow-scripts` without `allow-same-origin` or `allow-popups` plus the
+policy above, so a page's scripts get an opaque origin, cannot read the deck's
+cookies or call its API, and cannot open windows;
 `?format=json` returns the `--show --json` object).
 
 ## Remote page folders

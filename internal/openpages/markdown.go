@@ -368,9 +368,9 @@ func renderTable(out *bytes.Buffer, lines []string, i int) int {
 
 var (
 	reCode     = regexp.MustCompile("(`+)(.+?)(`+)")
-	reImage    = regexp.MustCompile(`!\[([^\]]*)\]\(\s*<?([^)\s>]*)>?(?:\s+"([^"]*)")?\s*\)`)
-	reLink     = regexp.MustCompile(`\[([^\]]+)\]\(\s*<?([^)\s>]*)>?(?:\s+"([^"]*)")?\s*\)`)
-	reAutolink = regexp.MustCompile(`<(https?://[^>\s]+)>`)
+	reImage    = regexp.MustCompile(`!\[([^\]]*)\]\(\s*<?((?:[^()\s>]|\([^()\s]*\))*)>?(?:\s+"([^"]*)")?\s*\)`)
+	reLink     = regexp.MustCompile(`\[([^\]]+)\]\(\s*<?((?:[^()\s>]|\([^()\s]*\))*)>?(?:\s+"([^"]*)")?\s*\)`)
+	reAutolink = regexp.MustCompile(`&lt;(https?://[^\s<>]+?)&gt;`)
 	reBareURL  = regexp.MustCompile(`(^|[\s(])(https?://[^\s<>()]+[^\s<>().,;:!?'"])`)
 	reStrong   = regexp.MustCompile(`(\*\*|__)([^\s*_](?:.*?[^\s])?)(\*\*|__)`)
 	reEm       = regexp.MustCompile(`(^|[^\w*])[*_]([^\s*_](?:[^*_]*?[^\s*_])?)[*_]($|[^\w*])`)
@@ -421,8 +421,8 @@ func inline(s string) string {
 		return hold(`<a href="` + html.EscapeString(href) + `">` + emphasis(p[1]) + `</a>`)
 	})
 	s = reAutolink.ReplaceAllStringFunc(s, func(m string) string {
-		p := reAutolink.FindStringSubmatch(html.UnescapeString(m))
-		return hold(`<a href="` + html.EscapeString(p[1]) + `">` + html.EscapeString(p[1]) + `</a>`)
+		u := html.UnescapeString(reAutolink.FindStringSubmatch(m)[1])
+		return hold(`<a href="` + html.EscapeString(u) + `">` + html.EscapeString(u) + `</a>`)
 	})
 	s = reBareURL.ReplaceAllStringFunc(s, func(m string) string {
 		p := reBareURL.FindStringSubmatch(m)

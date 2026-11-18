@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"mime"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -39,12 +38,44 @@ type Rendered struct {
 	ModifiedAt time.Time
 }
 
+// CheckPage applies the whole phone policy to a page file without reading
+// it: under the roots (filelinks), not private, a kind the phone shows, not
+// over MaxSourceBytes. It returns the resolved path and the kind.
+func CheckPage(roots []string, path string) (string, string, error) {
+	f, err := filelinks.Open(roots, path)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	return checkOpened(roots, f)
+}
+
+func checkOpened(roots []string, f *filelinks.File) (string, string, error) {
+	if Private(roots, f.Path) {
+		return "", "", ErrPrivate
+	}
+	kind := PageKind(f.Path)
+	if kind == "" || kind == KindText && !strings.HasPrefix(f.ContentType, "text/") {
+		return "", "", ErrUnsupported
+	}
+	if f.Size > MaxSourceBytes {
+		return "", "", fmt.Errorf("%w (%d bytes, limit %d)", ErrTooLarge, f.Size, MaxSourceBytes)
+	}
+	return f.Path, kind, nil
+}
+
 // Render reads p from disk under roots and returns it as one document a
-// phone WebView can show from a string: HTML as written with its relative
-// assets inlined as data: URIs, Markdown rendered by RenderMarkdown, text in
-// <pre>, an image in <img>. Every file, the page and each asset, is opened
-// through filelinks.Open, so the roots, symlink and size rules apply to all.
-func Render(roots []string, p Page) (Rendered, error) {
+// phone WebView can show from a string: HTML as written with its allowed
+// relative assets inlined as data: URIs, Markdown rendered by
+// RenderMarkdown, text in <pre>, an image in <img>. The page and every asset
+// pass the phone policy (privacy.go) at every call, and the document carries
+// PageCSP in a <meta> at its top.
+func Render(roots []string, p Page) (Rendered, error) { return RenderLinked(roots, p, nil) }
+
+// RenderLinked is Render with the session's page list: a relative link to a
+// file that is on the list becomes "/@page/<page id>", so a viewer opens
+// exactly that page (two index.html in different folders stay apart).
+func RenderLinked(roots []string, p Page, links map[string]string) (Rendered, error) {
 	if p.Kind == KindURL || p.Path == "" {
 		return Rendered{Title: p.Title}, nil
 	}
@@ -53,26 +84,23 @@ func Render(roots []string, p Page) (Rendered, error) {
 		return Rendered{}, err
 	}
 	defer f.Close()
-	if f.Size > MaxSourceBytes {
-		return Rendered{}, fmt.Errorf("%w (%d bytes, limit %d)", ErrTooLarge, f.Size, MaxSourceBytes)
+	real, kind, err := checkOpened(roots, f)
+	if err != nil {
+		return Rendered{}, err
 	}
 	info, _ := f.Stat()
 	src, err := io.ReadAll(f.Reader())
 	if err != nil {
 		return Rendered{}, err
 	}
-	in := &inliner{roots: roots, budget: MaxDocumentBytes - int64(len(src))}
+	in := &inliner{roots: roots, budget: MaxDocumentBytes - int64(len(src)), links: links}
 	r := Rendered{Title: p.Title}
 	if info != nil {
 		r.ModifiedAt = info.ModTime().UTC()
 	}
-	kind := p.Kind
-	if kind == "" {
-		kind = KindOf(p.Path)
-	}
 	switch kind {
 	case KindHTML:
-		r.HTML = in.inlineHTML(f.Path, src)
+		r.HTML = withHead(in.inlineHTML(real, src))
 		if t := htmlTitle(src); t != "" {
 			r.Title = t
 		}
@@ -80,13 +108,13 @@ func Render(roots []string, p Page) (Rendered, error) {
 		if t := markdownTitle(src); t != "" {
 			r.Title = t
 		}
-		r.HTML = in.inlineHTML(f.Path, RenderMarkdown(src, r.Title))
+		r.HTML = withHead(in.inlineHTML(real, RenderMarkdown(src, r.Title)))
 	case KindImage:
-		uri, ok := dataURI(f.Path, src)
-		if !ok {
-			uri = ""
+		t := assetType(real)
+		if t == "" || !contentMatches(t, src) {
+			return Rendered{}, ErrUnsupported
 		}
-		r.HTML = []byte(wrapBody(r.Title, `<img alt="`+html.EscapeString(p.Name)+`" src="`+uri+`" style="max-width:100%;height:auto">`))
+		r.HTML = []byte(wrapBody(r.Title, `<img alt="`+html.EscapeString(p.Name)+`" src="data:`+t+`;base64,`+base64.StdEncoding.EncodeToString(src)+`" style="max-width:100%;height:auto">`))
 	default:
 		r.HTML = []byte(wrapBody(r.Title, `<pre style="white-space:pre-wrap;font:14px/1.5 ui-monospace,Menlo,monospace;padding:12px">`+html.EscapeString(string(src))+`</pre>`))
 	}
@@ -118,8 +146,30 @@ func TitleOf(roots []string, path, kind string) string {
 	return ""
 }
 
+var reViewport = regexp.MustCompile(`(?i)<meta[^>]+name\s*=\s*["']?viewport`)
+var reDoctype = regexp.MustCompile(`(?is)^\s*(<\?xml[^>]*>\s*)?(<!doctype[^>]*>)?`)
+
+// withHead puts the page policy, and a phone viewport when the page has
+// none, at the very top of the document, before anything the page wrote:
+// a later <meta http-equiv> can only add restrictions, never lift these.
+func withHead(doc []byte) []byte {
+	head := `<meta http-equiv="Content-Security-Policy" content="` + PageCSP + `">`
+	if !reViewport.Match(doc) {
+		head += `<meta name="viewport" content="width=device-width, initial-scale=1">`
+	}
+	loc := reDoctype.FindIndex(doc)
+	at := 0
+	if loc != nil {
+		at = loc[1]
+	}
+	out := make([]byte, 0, len(doc)+len(head)+1)
+	out = append(out, doc[:at]...)
+	out = append(out, head...)
+	return append(out, doc[at:]...)
+}
+
 func wrapBody(title, body string) string {
-	return "<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+	return "<!doctype html>\n<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"" + PageCSP + "\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
 		"<meta name=\"color-scheme\" content=\"light dark\"><title>" + html.EscapeString(title) + "</title></head><body style=\"margin:0\">" + body + "</body></html>\n"
 }
 
@@ -154,39 +204,60 @@ func htmlTitle(src []byte) string {
 }
 
 type inliner struct {
+	links   map[string]string // resolved path -> page id
 	roots   []string
 	budget  int64
 	inlined int
 	skipped int
 }
 
-// asset opens rel (relative to the folder of from) under the roots and
-// returns its bytes, or false when it is outside, missing, too big or over
-// the document budget.
-func (in *inliner) asset(from, raw string) (string, []byte, bool) {
+// asset returns raw (relative to the folder of from) as a data: URI when it
+// passes the phone policy: under the roots, not private, an allowed asset
+// type whose bytes match the type, within the size and document budgets.
+func (in *inliner) asset(from, raw string) (string, string, bool) {
 	target, ok := localRef(from, raw)
 	if !ok {
-		return "", nil, false
+		return "", "", false
+	}
+	skip := func() (string, string, bool) { in.skipped++; return "", "", false }
+	if lexicallyPrivate(from, target) {
+		return skip()
 	}
 	f, err := filelinks.Open(in.roots, target)
 	if err != nil {
-		in.skipped++
-		return "", nil, false
+		return skip()
 	}
 	defer f.Close()
+	t := assetType(f.Path)
+	if t == "" || Private(in.roots, f.Path) {
+		return skip()
+	}
 	encoded := (f.Size + 2) / 3 * 4
 	if f.Size > MaxAssetBytes || encoded > in.budget {
-		in.skipped++
-		return "", nil, false
+		return skip()
 	}
 	data, err := io.ReadAll(f.Reader())
-	if err != nil {
-		in.skipped++
-		return "", nil, false
+	if err != nil || !contentMatches(t, data) {
+		return skip()
 	}
 	in.budget -= encoded
 	in.inlined++
-	return f.Path, data, true
+	return f.Path, "data:" + t + ";base64," + base64.StdEncoding.EncodeToString(data), true
+}
+
+// lexicallyPrivate reports whether the written reference names a private
+// component on its way (".env", "x/.git/y"), before any symlink resolution.
+func lexicallyPrivate(from, target string) bool {
+	rel, err := filepath.Rel(filepath.Dir(from), target)
+	if err != nil {
+		return true
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part != ".." && PrivateName(part) {
+			return true
+		}
+	}
+	return false
 }
 
 // localRef resolves a reference written in the page at from. Only relative
@@ -204,30 +275,37 @@ func localRef(from, raw string) (string, bool) {
 	return filepath.Join(filepath.Dir(from), filepath.FromSlash(path.Clean(u.Path))), true
 }
 
-func mimeOf(name string, data []byte) string {
-	ext := strings.ToLower(filepath.Ext(name))
-	switch ext {
-	case ".css":
-		return "text/css"
-	case ".js", ".mjs":
-		return "text/javascript"
-	case ".svg":
-		return "image/svg+xml"
-	case ".json":
-		return "application/json"
-	case ".woff2":
-		return "font/woff2"
-	case ".woff":
-		return "font/woff"
+// privateLink reports whether a relative link of the page points at a
+// private name, lexically or after symlink resolution.
+func (in *inliner) privateLink(from, raw string) bool {
+	target, ok := localRef(from, raw)
+	if !ok {
+		return false
 	}
-	if t := mime.TypeByExtension(ext); t != "" {
-		return t
+	if lexicallyPrivate(from, target) {
+		return true
 	}
-	return "application/octet-stream"
+	if real, err := filepath.EvalSymlinks(target); err == nil {
+		return Private(in.roots, real)
+	}
+	return false
 }
 
-func dataURI(name string, data []byte) (string, bool) {
-	return "data:" + mimeOf(name, data) + ";base64," + base64.StdEncoding.EncodeToString(data), true
+// linkedPage is the page id of a relative link's target when that file is on
+// the session's page list.
+func (in *inliner) linkedPage(from, raw string) (string, bool) {
+	if len(in.links) == 0 {
+		return "", false
+	}
+	target, ok := localRef(from, raw)
+	if !ok {
+		return "", false
+	}
+	if real, err := filepath.EvalSymlinks(target); err == nil {
+		target = real
+	}
+	id, ok := in.links[target]
+	return id, ok
 }
 
 // inlineCSS replaces url() and @import references of a stylesheet at from.
@@ -236,23 +314,27 @@ func (in *inliner) inlineCSS(from, css string, depth int) string {
 		g := cssImport.FindStringSubmatch(m)
 		ref := g[1] + g[2]
 		if depth > 3 {
-			return m
+			return `@import url("about:invalid")`
 		}
-		real, data, ok := in.asset(from, ref)
-		if !ok {
-			return m
+		real, uri, ok := in.asset(from, ref)
+		if !ok || !strings.HasPrefix(uri, "data:text/css;") {
+			return `@import url("about:invalid")`
 		}
-		inner := in.inlineCSS(real, string(data), depth+1)
+		raw, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(uri, "data:text/css;base64,"))
+		inner := in.inlineCSS(real, string(raw), depth+1)
 		return `@import url("data:text/css;base64,` + base64.StdEncoding.EncodeToString([]byte(inner)) + `")`
 	})
 	return cssURL.ReplaceAllStringFunc(css, func(m string) string {
 		g := cssURL.FindStringSubmatch(m)
 		ref := g[1] + g[2] + g[3]
-		real, data, ok := in.asset(from, ref)
-		if !ok {
+		if strings.HasPrefix(strings.TrimSpace(ref), "data:") || strings.HasPrefix(ref, "#") {
 			return m
 		}
-		uri, _ := dataURI(real, data)
+		_, uri, ok := in.asset(from, ref)
+		if !ok {
+			// Not inlinable: drop the reference so nothing is fetched.
+			return `url("about:invalid")`
+		}
 		return `url("` + uri + `")`
 	})
 }
@@ -263,8 +345,7 @@ var (
 )
 
 // inlineHTML rewrites the page's relative loads to data: URIs and leaves
-// everything else byte for byte. A stylesheet <link> becomes a <style>, a
-// <script src> keeps its tag with a data: src.
+// everything else byte for byte. A stylesheet <link> becomes a <style>.
 func (in *inliner) inlineHTML(from string, src []byte) []byte {
 	var out bytes.Buffer
 	z := xhtml.NewTokenizer(bytes.NewReader(src))
@@ -304,42 +385,53 @@ func attr(t xhtml.Token, key string) (string, int) {
 	return "", -1
 }
 
+// rewriteTag inlines what a tag loads. Only images (src, srcset, poster,
+// icons), stylesheets and CSS url() are inlined; a script, frame, object or
+// media src is never filled in (the page CSP blocks loading them anyway).
+// A relative link to a private name becomes "#".
 func (in *inliner) rewriteTag(from string, t xhtml.Token) (string, bool) {
 	changed := false
-	if t.Data == "link" {
+	switch t.Data {
+	case "link":
 		rel, _ := attr(t, "rel")
-		href, _ := attr(t, "href")
-		if strings.Contains(strings.ToLower(rel), "stylesheet") {
-			if real, data, ok := in.asset(from, href); ok {
-				return "<style>" + in.inlineCSS(real, string(data), 0) + "</style>", true
+		href, i := attr(t, "href")
+		lrel := strings.ToLower(rel)
+		if i >= 0 && strings.Contains(lrel, "stylesheet") {
+			if real, uri, ok := in.asset(from, href); ok && strings.HasPrefix(uri, "data:text/css;") {
+				raw, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(uri, "data:text/css;base64,"))
+				return "<style>" + in.inlineCSS(real, string(raw), 0) + "</style>", true
 			}
 			return "", false
 		}
-		if strings.Contains(strings.ToLower(rel), "icon") {
-			if real, data, ok := in.asset(from, href); ok {
-				_, i := attr(t, "href")
-				t.Attr[i].Val, _ = dataURI(real, data)
+		if i >= 0 && strings.Contains(lrel, "icon") {
+			if _, uri, ok := in.asset(from, href); ok && strings.HasPrefix(uri, "data:image/") {
+				t.Attr[i].Val = uri
 				return t.String(), true
 			}
 		}
+		return "", false
+	case "a", "area":
+		href, i := attr(t, "href")
+		if i < 0 {
+			return "", false
+		}
+		if in.privateLink(from, href) {
+			t.Attr[i].Val = "#"
+			return t.String(), true
+		}
+		if id, ok := in.linkedPage(from, href); ok {
+			t.Attr[i].Val = "/@page/" + id
+			return t.String(), true
+		}
+		return "", false
+	case "script", "iframe", "frame", "object", "embed", "audio", "source", "track":
 		return "", false
 	}
 	for i, a := range t.Attr {
 		switch a.Key {
 		case "src", "poster":
-			if t.Data == "iframe" || t.Data == "frame" {
-				continue
-			}
-			if real, data, ok := in.asset(from, a.Val); ok {
-				t.Attr[i].Val, _ = dataURI(real, data)
-				changed = true
-			}
-		case "data":
-			if t.Data != "object" {
-				continue
-			}
-			if real, data, ok := in.asset(from, a.Val); ok {
-				t.Attr[i].Val, _ = dataURI(real, data)
+			if _, uri, ok := in.asset(from, a.Val); ok && strings.HasPrefix(uri, "data:image/") {
+				t.Attr[i].Val = uri
 				changed = true
 			}
 		case "srcset":
@@ -349,8 +441,8 @@ func (in *inliner) rewriteTag(from string, t xhtml.Token) (string, bool) {
 				if len(fields) == 0 {
 					continue
 				}
-				if real, data, ok := in.asset(from, fields[0]); ok {
-					fields[0], _ = dataURI(real, data)
+				if _, uri, ok := in.asset(from, fields[0]); ok && strings.HasPrefix(uri, "data:image/") {
+					fields[0] = uri
 					parts[k] = strings.Join(fields, " ")
 					changed = true
 				}

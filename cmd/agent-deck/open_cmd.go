@@ -124,13 +124,13 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	}
 	switch {
 	case *list:
-		return writeOpenPageList(out, profile, inst, fail)
+		return writeOpenPageList(out, profile, inst, *jsonOut, fail)
 	case *show != "":
 		return writeOpenPageShow(out, profile, inst, *show, *jsonOut, fail)
 	}
 	target := ""
 	if *last {
-		page, err := openpages.Last(profile, inst.ID)
+		page, err := openpages.LastExisting(profile, inst.ID)
 		if err != nil {
 			if errors.Is(err, openpages.ErrNotFound) {
 				return fail(errors.New("no page opened for this session"), "no_page")
@@ -170,8 +170,24 @@ const (
 	openPhoneShown   = "shown"
 	openPhoneURL     = "url"
 	openPhoneOutside = "outside_roots"
+	openPhonePrivate = "private"
+	openPhoneKind    = "unsupported"
+	openPhoneLarge   = "too_large"
 	openPhoneError   = "error"
 )
+
+// phonePolicyCode names why a file stays off the phone.
+func phonePolicyCode(err error) string {
+	switch {
+	case errors.Is(err, openpages.ErrPrivate):
+		return openPhonePrivate
+	case errors.Is(err, openpages.ErrUnsupported):
+		return openPhoneKind
+	case errors.Is(err, openpages.ErrTooLarge), errors.Is(err, filelinks.ErrTooLarge):
+		return openPhoneLarge
+	}
+	return openPhoneOutside
+}
 
 // errOpenJSONWritten carries an exit code for a refusal already printed.
 type errOpenJSONWritten struct {
@@ -257,13 +273,13 @@ func recordOpenedPage(profile string, bus *events.Bus, inst *session.InstanceDat
 	if req.URL != "" {
 		p.Kind = openpages.KindURL
 	} else {
-		f, err := filelinks.Open(openPageRoots(inst), req.Path)
+		// The whole phone policy (roots, private names, kind, size), the
+		// same check --show and the web route run again at every read.
+		real, kind, err := openpages.CheckPage(openPageRoots(inst), req.Path)
 		if err != nil {
-			return openpages.Page{}, openPhoneOutside
+			return openpages.Page{}, phonePolicyCode(err)
 		}
-		p.Path = f.Path
-		_ = f.Close()
-		p.Kind = openpages.KindOf(p.Path)
+		p.Path, p.Kind = real, kind
 		phone = openPhoneShown
 		p.Title = openpages.TitleOf(openPageRoots(inst), p.Path, p.Kind)
 	}
@@ -274,7 +290,7 @@ func recordOpenedPage(profile string, bus *events.Bus, inst *session.InstanceDat
 	}
 	bus.Publish(events.KindPageOpened, inst.ID, map[string]any{
 		"page_id": page.ID, "kind": page.Kind, "title": page.Title, "name": page.Name,
-		"path": page.Path, "url": page.URL, "opened_at": page.OpenedAt.Format(time.RFC3339Nano),
+		"url": page.URL, "opened_at": page.OpenedAt.Format(time.RFC3339Nano), "host": req.Host,
 	})
 	bus.Flush(openCommitTimeout)
 	return page, phone
@@ -287,13 +303,21 @@ type openPageListJSON struct {
 	Pages   []openpages.Page `json:"pages"`
 }
 
-func writeOpenPageList(out io.Writer, profile string, inst *session.InstanceData, fail func(error, string) error) error {
+func writeOpenPageList(out io.Writer, profile string, inst *session.InstanceData, jsonOut bool, fail func(error, string) error) error {
 	pages, err := openpages.List(profile, inst.ID)
 	if err != nil {
 		return fail(err, "error")
 	}
 	for i := range pages {
-		pages[i].EventID = ""
+		pages[i] = pages[i].ForPhone() // no host paths to the phone
+	}
+	if !jsonOut {
+		for _, p := range pages {
+			if _, err := fmt.Fprintf(out, "%s  %-8s  %s  (%s)\n", p.ID, p.Kind, p.Title, p.Name); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return json.NewEncoder(out).Encode(openPageListJSON{Session: inst.ID, Title: inst.Title, Pages: pages})
 }
@@ -317,7 +341,8 @@ func writeOpenPageShow(out io.Writer, profile string, inst *session.InstanceData
 	if err != nil {
 		return fail(err, "not_found")
 	}
-	r, err := openpages.Render(openPageRoots(inst), page)
+	all, _ := openpages.List(profile, inst.ID)
+	r, err := openpages.RenderLinked(openPageRoots(inst), page, openpages.Links(all))
 	if err != nil {
 		return fail(err, pageRenderErrorCode(err))
 	}
@@ -340,6 +365,10 @@ func pageRenderErrorCode(err error) string {
 	switch {
 	case errors.Is(err, openpages.ErrTooLarge), errors.Is(err, filelinks.ErrTooLarge):
 		return "too_large"
+	case errors.Is(err, openpages.ErrPrivate), errors.Is(err, openpages.ErrUnsupported):
+		// The gateway and the phone already explain outside_roots as
+		// "not shareable with the phone"; the message says which rule.
+		return "outside_roots"
 	case errors.Is(err, filelinks.ErrOutside), errors.Is(err, filelinks.ErrNotRegular), errors.Is(err, filelinks.ErrDisabled), errors.Is(err, filelinks.ErrNotAbsolute):
 		return "outside_roots"
 	case errors.Is(err, filelinks.ErrNotFound):

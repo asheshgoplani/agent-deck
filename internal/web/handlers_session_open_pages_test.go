@@ -52,6 +52,14 @@ func TestSessionOpenPagesRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A dotfile in the project never reaches the phone, even when listed.
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("SECRET-VALUE-42"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	envRec, err := openpages.Record("", openpages.Page{SessionID: inst.ID, Path: filepath.Join(project, ".env"), Kind: openpages.KindText})
+	if err != nil {
+		t.Fatal(err)
+	}
 	// A record pointing outside the project (a tampered index) is refused at serve time.
 	bad, err := openpages.Record("", openpages.Page{SessionID: inst.ID, Path: outside, Kind: openpages.KindHTML})
 	if err != nil {
@@ -76,7 +84,7 @@ func TestSessionOpenPagesRoutes(t *testing.T) {
 		Session string           `json:"session"`
 		Pages   []openpages.Page `json:"pages"`
 	}
-	if rr.Code != http.StatusOK || json.Unmarshal(rr.Body.Bytes(), &list) != nil || len(list.Pages) != 3 || list.Pages[1].ID != page.ID {
+	if rr.Code != http.StatusOK || json.Unmarshal(rr.Body.Bytes(), &list) != nil || len(list.Pages) != 4 || list.Pages[2].ID != page.ID {
 		t.Fatalf("list: %d %s", rr.Code, rr.Body.String())
 	}
 	rr = get(base+"/"+page.ID, true)
@@ -84,7 +92,8 @@ func TestSessionOpenPagesRoutes(t *testing.T) {
 	csp := rr.Header().Get("Content-Security-Policy")
 	if rr.Code != http.StatusOK || !strings.HasPrefix(rr.Header().Get("Content-Type"), "text/html") ||
 		!strings.Contains(body, "data:image/png;base64,") || !strings.Contains(body, "<script>draw()</script>") ||
-		!strings.Contains(csp, "sandbox allow-scripts") || strings.Contains(csp, "allow-same-origin") || !strings.Contains(csp, "frame-ancestors 'none'") ||
+		!strings.Contains(csp, "sandbox allow-scripts;") || strings.Contains(csp, "allow-same-origin") || strings.Contains(csp, "allow-popups") || !strings.Contains(csp, "frame-ancestors 'none'") ||
+		!strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "connect-src 'none'") || !strings.Contains(csp, "form-action 'none'") || strings.Contains(csp, "https:") ||
 		rr.Header().Get("X-Content-Type-Options") != "nosniff" || rr.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("html page: %d %v %s", rr.Code, rr.Header(), body)
 	}
@@ -93,6 +102,9 @@ func TestSessionOpenPagesRoutes(t *testing.T) {
 	if rr.Code != http.StatusOK || json.Unmarshal(rr.Body.Bytes(), &shown) != nil || shown["title"] != "Plan" ||
 		!strings.Contains(shown["html"].(string), "&lt;script&gt;") {
 		t.Fatalf("md json: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr = get(base+"/"+envRec.ID, true); rr.Code != http.StatusForbidden || strings.Contains(rr.Body.String(), "SECRET-VALUE-42") {
+		t.Fatalf(".env: %d %s", rr.Code, rr.Body.String())
 	}
 	if rr = get(base+"/"+bad.ID, true); rr.Code != http.StatusForbidden || strings.Contains(rr.Body.String(), "private") {
 		t.Fatalf("outside: %d %s", rr.Code, rr.Body.String())
