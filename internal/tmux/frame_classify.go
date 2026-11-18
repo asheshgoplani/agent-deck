@@ -117,22 +117,37 @@ func trimKimiToCurrentTurn(content string) string {
 // follows the retry/generation evidence still visible above it. A later busy
 // line keeps its priority; submitted prompt glyphs are not turn boundaries.
 func (s *Session) kimiApprovalOutranksBusy(content string) bool {
-	if inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand()) != "kimi" {
+	if inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand()) != "kimi" ||
+		!strings.Contains(content, "▶ Run this command?") {
 		return false
 	}
-	approvals := kimiApprovalPromptRe.FindAllStringIndex(content, -1)
-	if len(approvals) == 0 {
+	approvalAt := -1
+	for end := len(content); end > 0; {
+		at := strings.LastIndex(content[:end], "▶ Run this command?")
+		if at < 0 {
+			break
+		}
+		lineStart := strings.LastIndex(content[:at], "\n") + 1
+		lineEnd := len(content)
+		if next := strings.IndexByte(content[at:], '\n'); next >= 0 {
+			lineEnd = at + next
+		}
+		if kimiApprovalPromptRe.MatchString(content[lineStart:lineEnd]) {
+			approvalAt = lineStart
+			break
+		}
+		end = at
+	}
+	if approvalAt < 0 {
 		return false
 	}
-	approvalAt := approvals[len(approvals)-1][0]
 	patterns := s.resolvedPatterns
 	if patterns == nil {
 		patterns = defaultResolvedPatternsForTool("kimi")
 	}
 	if patterns != nil {
 		for _, re := range patterns.BusyRegexps {
-			matches := re.FindAllStringIndex(content, -1)
-			if len(matches) > 0 && matches[len(matches)-1][0] > approvalAt {
+			if re.MatchString(content[approvalAt:]) {
 				return false
 			}
 		}
