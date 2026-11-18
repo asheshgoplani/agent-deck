@@ -14,6 +14,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// tmuxSessionNotFoundHint is the banner text the web terminal shows when the
+// session has no tmux session (never started, stopped, or killed). It names
+// the controls the banner and the work head really have, on desktop and on
+// phones: the banner's own "Restart session" button and the Restart button
+// above the terminal. (It used to send users to a sidebar icon phones do not
+// have and to the `r` key, which renames.)
+const tmuxSessionNotFoundHint = "The tmux session for this entry is not running. Use Restart session below, or Restart above the terminal, to start a fresh tmux session."
+
 type wsClientMessage struct {
 	Type string `json:"type"`
 	Data string `json:"data,omitempty"`
@@ -209,7 +217,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, ErrTmuxSessionNotFound) {
 				code = "TMUX_SESSION_NOT_FOUND"
 				message = "tmux session is not available"
-				hint = "The tmux session for this entry no longer exists. Restart it from the sidebar (Restart icon, or press 'r' with the row focused) to create a fresh tmux session."
+				hint = tmuxSessionNotFoundHint
 			}
 			_ = writer.WriteJSON(wsServerMessage{
 				Type:      "error",

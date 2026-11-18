@@ -2,6 +2,7 @@
 // CSS-driven visibility via `.mob-tabs` rules in app.css.
 import { html } from 'htm/preact'
 import { activeTabSignal } from './uiState.js'
+import { openTab } from './state.js'
 
 const MOBILE_TABS = [
   { id: 'command-center', label: 'Command', icon: '★' },
@@ -19,7 +20,7 @@ export function MobileTabs() {
         <button key=${t.id}
                 class=${`mob-tab ${activeTab === t.id ? 'on' : ''}`}
                 data-testid=${`mobile-tab-${t.id}`}
-                onClick=${() => (activeTabSignal.value = t.id)}>
+                onClick=${() => openTab(t.id)}>
           <span class="mt-ic">${t.icon}</span><span>${t.label}</span>
         </button>
       `)}
