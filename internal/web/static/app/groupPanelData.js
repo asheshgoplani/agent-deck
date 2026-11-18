@@ -43,8 +43,11 @@ export function groupMembers(groupPath) {
   return [...active, ...archived]
 }
 
+// Counts only the active members: archived sessions are listed in the panel
+// but stay out of every status count, as in the TUI header, group rows and
+// preview, `agent-deck status` and `group list`.
 export function groupStats(groupPath) {
-  const members = groupMembers(groupPath)
+  const members = menuModelSignal.value.byGroup[groupPath] || []
   const counts = { running: 0, waiting: 0, idle: 0, stopped: 0, error: 0 }
   for (const s of members) counts[statusBucket(s.status)]++
   return {

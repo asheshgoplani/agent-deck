@@ -122,7 +122,7 @@ agent-deck list [--json] [--all] [--no-archived]
 agent-deck ls  # Alias
 ```
 
-`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
+`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`; the single-profile table shows the same live status in a `STATUS` column, `archived` for an archived session. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
 
 A live `list --json` captures every live pane with one tmux call per socket. When that call times out (a host too loaded to answer it), the listing does not fall back to one `capture-pane` per session: those rows carry `"status_source": "stale"`: status is the last one observed in this process (the default for a fresh process), `substate` is the last one seen or absent, and `--stats` reports how many panes were skipped as `captures_skipped` (absent when none).
 
@@ -143,7 +143,7 @@ agent-deck rm  # Alias
 agent-deck status [-v|-q|--json]
 ```
 
-- Default: `2 waiting - 5 running - 3 idle`
+- Default: `2 waiting • 5 running • 3 idle`, then `• N stopped` and `• N error` when not zero. Every status summary (this line, `--json`, `group list`, the TUI header, the web chips and group panel) counts the same five buckets over non-archived sessions; `starting` and `queued` count as idle.
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
 - Archived sessions are not counted or listed: archiving stops the pane on purpose, so their stopped/error status is not news. `list --json` still includes them, each with `"archived": true`.
