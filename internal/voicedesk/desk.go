@@ -101,6 +101,10 @@ var (
 	ErrUnconfirmed = errors.New("send not confirmed")
 	// ErrMenuOpen: the session shows a menu or question; nothing was typed.
 	ErrMenuOpen = errors.New("session is at a menu")
+	// ErrNoPrompt: the send's guard saw no input prompt; nothing was typed.
+	ErrNoPrompt = errors.New("session shows no input prompt")
+	// ErrNotSent: the send failed before anything was typed.
+	ErrNotSent = errors.New("not sent")
 )
 
 // Refusal reasons.
@@ -281,6 +285,14 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 			if r, ok := d.reask(req, p, lang, ""); ok {
 				return r, true, nil
 			}
+			// the second short miss: cancelled, and handled, so the caller
+			// never types it into the session the mic is on
+			r := d.base(IntentConfirmNo, lang, req.DryRun)
+			r.Say = "Cancelled, nothing sent."
+			if p.Action != actionSend {
+				r.Say = "Cancelled, nothing done."
+			}
+			return r, true, nil
 		}
 		return Result{}, false, nil // dropped; fresh sentence
 	}
@@ -391,7 +403,7 @@ func choiceByName(sentence string, choices []Ref) int {
 	hit := -1
 	for i, c := range choices {
 		ok, level, _ := coverage(q, Session{Title: c.Title})
-		if ok && level >= wordPhonetic {
+		if ok && level == wordSure {
 			if hit >= 0 {
 				return -1 // the name fits two choices
 			}
@@ -501,6 +513,8 @@ func sendLine(err error, name string) (say, refusedWhy string) {
 		return "Sent to " + name + ".", ""
 	case errors.Is(err, ErrMenuOpen):
 		return sayAtMenu(name), RefusedUnsafe
+	case errors.Is(err, ErrNoPrompt):
+		return capitalize(name) + " is not at its prompt, so nothing was sent; try again when it is.", RefusedUnsafe
 	case errors.Is(err, ErrUnconfirmed):
 		return "I am not sure it was sent; check " + name + ".", ""
 	}
@@ -588,12 +602,18 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	if genericOnlyQ(q) && (res.Kind == resolvedOne || res.Kind == resolvedAmbiguous) && !saysWholeTitle(q, res) {
 		return notMine(p.Lang), nil
 	}
+	// one plain word that is only part of several session names ("tell the
+	// deck to shuffle", "conductor se pucho") is talk, not a question; a
+	// whole name, or a word that fits one session, still counts
+	if p.Intent != IntentFind && len(q.words) == 1 && res.Kind == resolvedAmbiguous && res.Sure && len(res.Choices) > 1 && !saysWholeTitle(q, res) {
+		return notMine(p.Lang), nil
+	}
 	switch res.Kind {
 	case resolvedOther:
 		refuse(&r, RefusedOtherPerson, otherLine(res.Person))
 		return r, nil
 	case resolvedNotFound:
-		if p.Soft || talkLike(q.words) || anyCodeNoun(q) {
+		if p.Soft || (!hasDigitWord(q.words) && (talkLike(q.words) || anyCodeNoun(q))) {
 			return notMine(p.Lang), nil
 		}
 		refuse(&r, RefusedNotFound, "I found no session of yours called "+strings.TrimSpace(q.raw)+".")
@@ -953,6 +973,15 @@ func saysWholeTitle(q nameQuery, res resolution) bool {
 			}
 		}
 		if all {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDigitWord(ws []string) bool {
+	for _, w := range ws {
+		if strings.IndexFunc(w, func(r rune) bool { return r >= '0' && r <= '9' }) >= 0 {
 			return true
 		}
 	}

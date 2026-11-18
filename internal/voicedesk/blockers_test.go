@@ -113,7 +113,7 @@ func TestShortNonAnswerIsAskedAgainOnce(t *testing.T) {
 		t.Fatalf("not asked again: %+v", again)
 	}
 	third := h.do(Request{Sentence: "hmm what", Pending: again.Confirm.Token, AnswerDelayMs: 800, HasAnswerDelay: true})
-	if third.Handled || len(h.deck.sent) != 0 {
+	if !third.Handled || third.Say != "Cancelled, nothing sent." || len(h.deck.sent) != 0 {
 		t.Fatalf("second miss: %+v", third)
 	}
 	// a re-asked question still sends on a yes

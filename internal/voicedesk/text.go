@@ -418,7 +418,7 @@ func cleanMessage(s string) string {
 	s = strings.ToValidUTF8(s, " ")
 	var b strings.Builder
 	for _, r := range s {
-		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
 			b.WriteRune(' ')
 			continue
 		}
