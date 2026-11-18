@@ -43,7 +43,8 @@ func TestR2ExplicitTellToASharedShortNameIsAsked(t *testing.T) {
 // The lead's question-mark rows: re-asked once, then cancelled; never sent.
 func TestQuestionMarkAnywhereIsNotAnAnswer(t *testing.T) {
 	for _, w := range []string{"ہاں؟", "جی ہاں؟", "ہاں بھیجو؟", "Yes?!", "haan?!", "हाँ?!", "\"yes?\"", "(yes?)", "yes?.", "yes？",
-		"yes?\u200f", "\u200fyes?", "yes\u200b?", "ye\u200bs?", "yes⁇", "yes‽", "¿yes?", "haan ji?", "ok send it?"} {
+		"yes?\u200f", "\u200fyes?", "yes\u200b?", "ye\u200bs?", "yes⁇", "yes‽", "¿yes?", "haan ji?", "ok send it?",
+		"yes❓", "haan❓", "ہاں❓", "yes﹖", "yes❔", "yes︖"} {
 		t.Run(w, func(t *testing.T) {
 			if k, _ := classifyAnswer(w); k != AnswerNone {
 				t.Fatalf("%q classifies as %q", w, k)

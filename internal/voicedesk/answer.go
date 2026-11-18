@@ -132,9 +132,9 @@ func risky(message string) bool {
 	return false
 }
 
-// questionMarks: ASCII, full-width, Arabic/Urdu, double, interrobang,
-// inverted and reversed question marks.
-const questionMarks = "?？؟⁇‽¿⸮⁈⁉"
+// questionMarks: ASCII, full-width, small and vertical forms, Arabic/Urdu,
+// double, interrobang, inverted, reversed, and the question mark emoji.
+const questionMarks = "?？﹖︖؟⁇‽¿⸮⁈⁉❓❔"
 
 // hasQuestionMark: a question mark anywhere in the answer, after zero-width
 // and other format characters are taken out ("yes?\u200b", "ہاں؟\u200f").

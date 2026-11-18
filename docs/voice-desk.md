@@ -77,17 +77,21 @@ daemon, the phone and the Mac app use this list; `internal/voicedesk/answer.go` 
 Matching is exact against these rows: the sentence's words, lowercased, punctuation and a leading wake name
 dropped, must equal a row. There is no fuzzy or phonetic matching for answers ("sorry" is not "sure", "ha" is not
 "haa", "car do" is not "kar do"); every accepted spelling is a row here. A session's exact name also answers a
-choice question. Not answers: a sentence ending in "?" ("yes?"), a yes inside a longer sentence ("yes I think so,
-also …"). A short sentence (three words or fewer) that is neither an answer nor a desk command keeps the question
+choice question. Not answers: a sentence with any question mark anywhere (?, ？, ﹖, ؟, ⁇, ‽, ¿, ❓ …, also next to
+zero-width or direction marks: "yes?", "Yes?!", "ہاں؟"), a yes inside a longer sentence ("yes I think so, also …"). A short sentence (three words or fewer) that is neither an answer nor a desk command keeps the question
 open once ("Please say yes or no.", new token in `confirm`); a second short miss cancels it ("Cancelled, nothing
 sent.", `handled:true`, so it is typed nowhere); a longer sentence drops the token and is handled as a fresh
 sentence.
 
 Forms that overlap with plain talk or with the voice daemon's own commands ("read this", "what is he doing",
-"find the bug in the parser") come back `handled:false` when the name is not a session. So does any desk form whose
-unknown name holds an ordinary coding word ("tell git to ignore the build folder", "status of the pull request"),
-and a name made only of coding words that does not say a session's whole title ("tell the build to …"). A short
-unknown name in an explicit form ("tell phone walk to continue") answers "I found no session of yours called …".
+"find the bug in the parser") come back `handled:false` when the name is not a session. So does any desk form, a
+tell included, whose unknown name holds an ordinary coding word ("tell git to ignore the build folder", "ask the
+database whether the row exists", "status of the pull request"), and a name made only of coding words that does not
+say a session's whole title ("tell the build to …"); a pronoun or generic addressee ("ask him to wait", "tell the
+user to …", "usko bolo …") as well. Otherwise a tell to a name always answers: one match reads back, a name that fits
+two or more of his sessions asks which one ("tell conductor to …", "status of billing"), and a real-looking unknown
+name ("tell phone walk to continue", "tell zephyr to stop", a name with a number) answers "I found no session of
+yours called …"; it is never typed into the session as plain text.
 
 ## Safety
 
