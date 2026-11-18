@@ -391,5 +391,12 @@ func webRemoteStatusRunner(name string) web.RemoteStatusRunner {
 	if !ok {
 		return nil
 	}
-	return session.NewSSHRunner(name, rc)
+	return streamRemoteRunner(name, rc)
+}
+
+// streamRemoteRunner is the runner of one --stream-remotes follow: the
+// relay's fast keepalive, so a dead link is said (session.link down) in
+// seconds rather than after ~60 s.
+func streamRemoteRunner(name string, rc session.RemoteConfig) *session.SSHRunner {
+	return session.NewSSHRunner(name, rc).WithFastKeepalive()
 }
