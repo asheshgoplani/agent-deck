@@ -161,6 +161,13 @@ describe('miniMarkdown edge cases and compatibility', () => {
     expect(c.querySelector('hr')).not.toBeNull()
   })
 
+  it('trims a long run of closing parens after a URL in linear time', () => {
+    const started = performance.now()
+    const c = mount('https://x.test/' + ')'.repeat(80000))
+    expect(performance.now() - started).toBeLessThan(1000)
+    expect(c.querySelector('a').getAttribute('href')).toBe('https://x.test/')
+  })
+
   it('ends a table at a line that starts another block', () => {
     const c = mount('A | B\n--- | ---\nx | y\n## Next | Steps\n- a | b\n> q | r')
     expect([...c.querySelectorAll('tbody td')].map(el => el.textContent)).toEqual(['x', 'y'])

@@ -1255,7 +1255,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .cc-summary-card { border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 6px; padding: 10px 14px; background: var(--panel-2); }
 .cc-summary-head { font-size: 12px; font-weight: 600; color: var(--text-hi); margin-bottom: 6px; }
 .cc-summary-src { font-weight: 400; color: var(--muted); font-family: var(--mono); font-size: 11px; }
-.cc-md { font-size: 12.5px; color: var(--text); line-height: 1.5; }
+.cc-md { font-size: 12.5px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
 .cc-md h3, .cc-md h4, .cc-md h5 { margin: 8px 0 4px; color: var(--text-hi); font-size: 13px; }
 .cc-md h3 { font-size: 14px; }
 .cc-md p { margin: 4px 0; }

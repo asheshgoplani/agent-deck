@@ -21,11 +21,14 @@ function link(href, label) {
 
 // Drops trailing punctuation, but keeps a ")" that closes a "(" in the URL.
 function trimUrlTrail(url) {
+  let open = 0
+  let close = 0
+  for (const char of url) { if (char === '(') open++; else if (char === ')') close++ }
   let end = url.length
   while (end > 0 && /[.,;:!?)\]'"]/.test(url[end - 1])) {
     if (url[end - 1] === ')') {
-      const head = url.slice(0, end)
-      if ((head.match(/\(/g) || []).length >= (head.match(/\)/g) || []).length) break
+      if (open >= close) break
+      close--
     }
     end--
   }
