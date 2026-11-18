@@ -113,3 +113,24 @@ export const sidebarFilterSignal = signal('')
 // only persistence on a read-only server, where toggleGroupOpen stays local.
 export const groupExpandedSignal = signal(loadJSON('agentdeck.groupExpanded', {}))
 persist(groupExpandedSignal, 'agentdeck.groupExpanded')
+
+// backdropDismiss returns the overlay handlers that close a dialog on a click
+// on its backdrop, but only when the press also STARTED on the backdrop.
+// A click whose mousedown landed inside the dialog and whose mouseup landed
+// on the backdrop (the dialog shrank or moved under the pointer, or the user
+// dragged out of a field) is delivered to the overlay as a click with
+// target === currentTarget; closing on it threw away everything typed.
+// The press origin is kept per module, not per render, because the dialog
+// may re-render between pointerdown and click (a blur that collapses a
+// suggestion list does exactly that).
+let pressStartedOn = null
+export function backdropDismiss(close) {
+  return {
+    onPointerDown: (e) => { pressStartedOn = e.target },
+    onClick: (e) => {
+      const startedOnBackdrop = pressStartedOn === e.currentTarget
+      pressStartedOn = null
+      if (startedOnBackdrop && e.target === e.currentTarget) close()
+    },
+  }
+}
