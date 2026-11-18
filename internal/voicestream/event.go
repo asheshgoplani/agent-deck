@@ -54,11 +54,14 @@ type StateEvent struct {
 	Hibernating  bool    `json:"hibernating"`
 	FallingBack  bool    `json:"fallingBack"`
 	Target       *Target `json:"target"`
-	Source       string  `json:"source"`
-	From         string  `json:"from"`
-	Origin       string  `json:"origin"`
-	Reason       string  `json:"reason"`
-	UpdatedAt    string  `json:"updatedAt"`
+	// Switching: the mic is moving there (daemon v1.3); a hint for
+	// "Switching to X…" only, never the holder. null = not switching.
+	Switching *Target `json:"switching"`
+	Source    string  `json:"source"`
+	From      string  `json:"from"`
+	Origin    string  `json:"origin"`
+	Reason    string  `json:"reason"`
+	UpdatedAt string  `json:"updatedAt"`
 }
 
 // SessionID is the frame's session_id: the target when it is on this host.
@@ -83,6 +86,9 @@ func (e StateEvent) key() string {
 	b.WriteString("|" + itoa(e.PhaseSinceMs))
 	if t := e.Target; t != nil {
 		b.WriteString("|" + t.ID + "|" + t.Title + "|" + t.Host + "|" + t.Profile)
+	}
+	if w := e.Switching; w != nil {
+		b.WriteString("|>" + w.ID + "|" + w.Title + "|" + w.Host)
 	}
 	return b.String()
 }
@@ -133,6 +139,9 @@ func FromState(s *voicestate.State, origin, reason string, now time.Time) StateE
 	}
 	if t := s.Target; t.SessionID != "" || t.Title != "" {
 		e.Target = &Target{ID: t.SessionID, Title: t.Title, Host: t.Remote, Profile: t.Profile}
+	}
+	if w := s.Switching; w != nil && (w.SessionID != "" || w.Title != "") {
+		e.Switching = &Target{ID: w.SessionID, Title: w.Title, Host: w.Remote, Profile: w.Profile}
 	}
 	return e
 }

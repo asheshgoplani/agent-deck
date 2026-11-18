@@ -10,8 +10,10 @@ type View struct {
 	Extra      string      `json:"extra"` // muted|call|meeting|"": why phase is resting
 	Muted      bool        `json:"muted"`
 	Target     *ViewTarget `json:"target"`
-	Source     string      `json:"source"`
-	From       string      `json:"from"`
+	// Switching: the mic is moving there (hint only; target is the holder).
+	Switching *ViewTarget `json:"switching"`
+	Source    string      `json:"source"`
+	From      string      `json:"from"`
 	// Origin is the machine of the daemon as frames name it (voice.state
 	// "origin"): a mirror's "from"; "" for this machine's own file or none.
 	Origin    string `json:"origin"`
@@ -55,6 +57,9 @@ func NewView(s *State, now time.Time) View {
 	}
 	if t := s.Target; t.SessionID != "" || t.Title != "" {
 		v.Target = &ViewTarget{ID: t.SessionID, Title: t.Title, Host: t.Remote, Profile: t.Profile}
+	}
+	if w := s.Switching; w != nil && (w.SessionID != "" || w.Title != "") {
+		v.Switching = &ViewTarget{ID: w.SessionID, Title: w.Title, Host: w.Remote, Profile: w.Profile}
 	}
 	return v
 }
