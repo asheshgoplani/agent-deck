@@ -274,12 +274,20 @@ func TestKimiHookPromptEscapeMeansLater(t *testing.T) {
 	statedb.SetGlobal(db)
 	t.Cleanup(func() { statedb.SetGlobal(previousDB) })
 
-	home := &Home{confirmDialog: NewConfirmDialog(), pendingKimiHooksPrompt: true}
+	home := NewHome()
+	t.Cleanup(func() { cleanupKimiHooksHome(t, home) })
+	home.initialLoading = false
+	home.pendingKimiHooksPrompt = true
 	home.showPendingHooksPrompt()
 	home.handleConfirmDialogKey(tea.KeyMsg{Type: tea.KeyEsc})
 
 	if home.confirmDialog.IsVisible() {
 		t.Fatal("Esc did not dismiss the Kimi consent prompt")
+	}
+	model, _ := home.Update(loadSessionsMsg{})
+	home = model.(*Home)
+	if home.confirmDialog.IsVisible() {
+		t.Fatal("Kimi consent prompt reopened on a session reload after Esc postponed it")
 	}
 	if !home.pendingKimiHooksPrompt {
 		t.Fatal("Esc cleared the pending Kimi consent prompt instead of postponing it")
@@ -290,6 +298,27 @@ func TestKimiHookPromptEscapeMeansLater(t *testing.T) {
 	}
 	if gotMeta != "" {
 		t.Fatalf("Esc recorded a durable Kimi consent decision: %q", gotMeta)
+	}
+}
+
+func TestKimiHookPromptReloadDoesNotCoverAnotherModal(t *testing.T) {
+	home := NewHome()
+	t.Cleanup(func() { cleanupKimiHooksHome(t, home) })
+	home.initialLoading = false
+	home.pendingKimiHooksPrompt = true
+	home.settingsPanel.Show()
+
+	model, _ := home.Update(loadSessionsMsg{})
+	home = model.(*Home)
+
+	if !home.settingsPanel.IsVisible() {
+		t.Fatal("test modal was unexpectedly closed by the session reload")
+	}
+	if home.confirmDialog.IsVisible() {
+		t.Fatal("Kimi consent prompt opened over another modal on session reload")
+	}
+	if !home.pendingKimiHooksPrompt {
+		t.Fatal("modal-visible reload cleared the pending Kimi consent prompt")
 	}
 }
 

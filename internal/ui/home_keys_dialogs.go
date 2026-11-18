@@ -980,6 +980,7 @@ func (h *Home) showPendingHooksPrompt() {
 	if h.pendingHermesHooksPrompt {
 		h.confirmDialog.ShowInstallHermesHooks(filepath.Join(session.GetHermesConfigDir(), "config.yaml"), session.HermesHookEventsForInstall())
 	} else if h.pendingKimiHooksPrompt {
+		h.kimiHooksBoxShown = true
 		h.confirmDialog.ShowInstallKimiHooks(filepath.Join(session.GetKimiConfigDir(), "config.toml"), session.KimiHookEventsForInstall())
 	} else {
 		return

@@ -524,6 +524,7 @@ type Home struct {
 	claudeHooksBoxShown      bool // The fallback Claude hooks box was shown this run (showClaudeHooksBox)
 	pendingHermesHooksPrompt bool // True if user should be prompted to install Hermes hooks
 	pendingKimiHooksPrompt   bool // True if user should be prompted to install Kimi hooks
+	kimiHooksBoxShown        bool // The Kimi hooks box was shown this run; Esc postpones it until the next run
 
 	// hints is the one-key onboarding hint bar (onboarding_hints.go, ASK-211).
 	hints onboardingHints
@@ -2541,7 +2542,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (h.instances is filled further down, so msg says it.)
 			hasSessions := msg.err == nil && len(msg.instances) > 0
 			if !(firstLoad && hasSessions && claudeHooksRelevant(msg.instances) && h.showClaudeHooksBox(false)) {
-				h.showPendingHooksPrompt()
+				if !h.kimiHooksBoxShown && !h.hasModalVisible() {
+					h.showPendingHooksPrompt()
+				}
 			}
 		}
 
