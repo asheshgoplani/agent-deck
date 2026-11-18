@@ -186,9 +186,9 @@ func TestOpenPhonePolicyMatrix(t *testing.T) {
 	// S9: a relative link to a listed page points at that page by id.
 	w("proj/docs/index.html", []byte(`<title>Docs</title><a href="../notes.md">notes</a> <a href="plan.md">not listed</a>`))
 	w("proj/docs/plan.md", []byte("# Plan\n"))
-	m, out, _ := run("open", filepath.Join(proj, "docs", "index.html"), "--session", "pager", "--wait", "0", "--json")
+	m, _, _ := run("open", filepath.Join(proj, "docs", "index.html"), "--session", "pager", "--wait", "0", "--json")
 	docsID := str(m, "page_id")
-	m, out, _ = run("open", "--show", docsID, "--session", "pager", "--json")
+	m, out, _ := run("open", "--show", docsID, "--session", "pager", "--json")
 	if doc := str(m, "html"); !strings.Contains(doc, `<a href="/@page/`+ids["notes.md"]+`">notes</a>`) || !strings.Contains(doc, `<a href="plan.md">not listed</a>`) {
 		t.Errorf("relative links by page id: %s", out)
 	}
