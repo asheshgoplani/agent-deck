@@ -267,6 +267,7 @@ var completionTree = []completionNode{
 	{name: "provider", subs: []string{"list", "test"}},
 	{name: "open"},
 	{name: "switch", args: map[string][]argKind{"": {argSession}}},
+	{name: "todo", subs: []string{"add", "list", "done", "undo", "remove"}},
 	{name: "file", subs: []string{"bundle", "read", "roots"}},
 	{name: "costs", subs: []string{"sync", "summary", "recompute", "daily", "sessions", "models", "groups", "budgets"}},
 	{name: "hooks", subs: []string{"install", "uninstall", "status"}},

@@ -64,6 +64,10 @@ const (
 	hotkeyDetach           = "detach"
 	hotkeyWatcherPanel     = "watcher_panel"
 	hotkeyDeadLetters      = "dead_letters"
+	// hotkeyTodos opens the owner's to-do list (docs/todos.md). Every
+	// letter is taken (see hotkeyReportProblem); "alt+o" (to-dO) is a chord
+	// no main-screen action, dialog or attach-loop intercept uses.
+	hotkeyTodos = "todos"
 	// hotkeyTriggers opens the Triggers panel (#2702): every launchd job,
 	// systemd unit, watcher and bridge that wakes a session. The mockup asks
 	// for "T", which is restart_fresh; "alt+t" keeps the mnemonic on a chord
@@ -183,6 +187,7 @@ var hotkeyActionOrder = []string{
 	hotkeyDetach,
 	hotkeyWatcherPanel,
 	hotkeyDeadLetters,
+	hotkeyTodos,
 	hotkeyTriggers,
 	hotkeyAgentsPanel,
 	hotkeyReportProblem,
@@ -245,6 +250,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyDetach:           "ctrl+q",
 	hotkeyWatcherPanel:     "w",
 	hotkeyDeadLetters:      "alt+d",
+	hotkeyTodos:            "alt+o",
 	hotkeyTriggers:         "alt+t",
 	hotkeyAgentsPanel:      "alt+a",
 	hotkeyReportProblem:    "Z",

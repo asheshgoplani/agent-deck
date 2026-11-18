@@ -302,6 +302,7 @@ func (h *HelpOverlay) View() string {
 	worktreeKey := h.key(hotkeyWorktreeFinish, "W")
 	watcherPanelKey := h.key(hotkeyWatcherPanel, "w")
 	deadLettersKey := h.key(hotkeyDeadLetters, "alt+d")
+	todosKey := h.key(hotkeyTodos, "alt+o")
 	triggersKey := h.key(hotkeyTriggers, "alt+t")
 	agentsPanelKey := h.key(hotkeyAgentsPanel, "alt+a")
 	reportKey := h.key(hotkeyReportProblem, "Z")
@@ -449,6 +450,7 @@ func (h *HelpOverlay) View() string {
 				{watcherPanelKey, "Watcher panel"},
 				{deadLettersKey, "Dead-letter events"},
 				{triggersKey, "Triggers: what wakes each session"},
+				{todosKey, "To-dos: your list (add, tick off)"},
 			},
 		},
 		{

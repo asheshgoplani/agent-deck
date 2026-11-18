@@ -303,6 +303,7 @@ type Home struct {
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
 	agentsPanel          *AgentsPanel          // Agents tab: adopted agents, grouped by machine
 	deadLetterPanel      *DeadLetterPanel      // Inspect, retry, and explicitly purge delivery failures
+	todosPanel           *TodosPanel           // The owner's to-do list (hotkeyTodos)
 	triggersPanel        *TriggersPanel        // What wakes which session (#2702); read-only in P1
 	// Triggers read model (triggers_live.go). A background tick reads the
 	// state DB's triggers_rev stamp and reloads only when it moved; the
@@ -2217,6 +2218,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.handleOnboardingMsg(msg)
 		return h, nil
 
+	case todosPanelTickMsg:
+		return h, h.todosPanel.HandleTick(msg)
+
+	case todosPanelResultMsg:
+		h.todosPanel.HandleResult(msg)
+		return h, nil
+
 	case askPollMsg, askSeenMsg, askDeliveredMsg, askCancelledMsg, askTickMsg, askCloseMsg:
 		return h, h.askDialog.HandleMsg(msg, func() bool { return h.canShowAsk(time.Now()) })
 
@@ -2247,6 +2255,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.deadLetterPanel != nil {
 			h.deadLetterPanel.SetSize(msg.Width, msg.Height)
 		}
+		h.todosPanel.SetSize(msg.Width, msg.Height)
 		if h.triggersPanel != nil {
 			h.triggersPanel.SetSize(msg.Width, msg.Height)
 		}
@@ -5039,6 +5048,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.deadLetterPanel, cmd = h.deadLetterPanel.Update(msg)
 			return h, cmd
 		}
+		if h.todosPanel.IsVisible() {
+			var cmd tea.Cmd
+			h.todosPanel, cmd = h.todosPanel.Update(msg)
+			return h, cmd
+		}
 		if h.agentsPanel.IsVisible() {
 			var cmd tea.Cmd
 			h.agentsPanel, cmd = h.agentsPanel.Update(msg)
@@ -6319,6 +6333,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.deadLetterPanel.Show()
 		h.deadLetterPanel.SetSize(h.width, h.height)
 		return h, nil
+
+	case defaultHotkeyBindings[hotkeyTodos]:
+		if h.todosPanel == nil {
+			h.todosPanel = NewTodosPanel(h.profile)
+		}
+		h.todosPanel.SetSize(h.width, h.height)
+		h.todosPanel.SetCloseKey(h.actionKey(hotkeyTodos))
+		return h, h.todosPanel.Show()
 
 	case defaultHotkeyBindings[hotkeySessionRef]:
 		// Pick the selected session as a reference source (ASK-111); the
