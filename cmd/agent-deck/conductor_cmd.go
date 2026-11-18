@@ -1249,7 +1249,7 @@ func handleConductorStatus(_ string, args []string) {
 						cs.DuplicateSessionIDs = ids
 					}
 					_ = inst.UpdateStatus()
-					cs.Running = inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle
+					cs.Running = conductorSessionRunning(inst)
 				}
 			}
 		}
@@ -1345,6 +1345,17 @@ func handleConductorStatus(_ string, args []string) {
 }
 
 // handleConductorList lists all conductors
+// conductorSessionRunning reports whether the conductor's session is really
+// up: a live status AND an existing tmux pane. A conductor that was only set
+// up is stored as idle with no pane, and must read as stopped, not running.
+func conductorSessionRunning(inst *session.Instance) bool {
+	switch inst.Status {
+	case session.StatusRunning, session.StatusWaiting, session.StatusIdle:
+		return inst.Exists()
+	}
+	return false
+}
+
 func handleConductorList(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -1411,7 +1422,7 @@ func handleConductorList(profile string, args []string) {
 				session.RefreshInstancesForCLIStatus(instances)
 				if inst := session.FindConductorInstance(instances, meta.Name); inst != nil {
 					_ = inst.UpdateStatus()
-					if inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle {
+					if conductorSessionRunning(inst) {
 						statusText = "running"
 					} else {
 						statusText = "stopped"
