@@ -71,6 +71,17 @@ type Item struct {
 	DividerLabel        string // Label shown on an ItemTypeDivider row (e.g. "idle / done")
 }
 
+// DrawsNested reports whether a session row is drawn nested under a parent
+// session row, one level deeper than its group's top-level rows. IsSubSession
+// alone does not say that: a sub-session whose parent is in another group, is
+// gone, or is in the other archive partition keeps the flag (its parent link
+// still routes events) but Flatten emits it at top-level depth (#2995).
+// Renderers that draw the child layout (gutter, selection arrow) must ask
+// this, not IsSubSession (#3169). The web sidebar uses the same depth rule.
+func (it Item) DrawsNested() bool {
+	return it.IsSubSession && it.Level > GetGroupLevel(it.Path)+1
+}
+
 // IsCreatingPlaceholder reports whether this row is a still-creating session
 // placeholder: a session-typed row whose *Instance has not been created yet
 // (Session == nil). Mutations (move/rename/fork) must be refused on such rows —
