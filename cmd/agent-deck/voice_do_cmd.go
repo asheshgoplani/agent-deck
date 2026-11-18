@@ -358,14 +358,18 @@ func (d *cliVoiceDeck) Send(ctx context.Context, s voicedesk.Session, message st
 		return voicedesk.ErrUnconfirmed
 	case err == nil:
 		return nil
-	case strings.Contains(text, "no keys typed") || strings.Contains(text, "menu_open") || strings.Contains(text, "input prompt unavailable"):
+	case strings.Contains(text, "menu_open") || strings.Contains(text, "menu is open"):
 		return voicedesk.ErrMenuOpen
+	case strings.Contains(text, "no keys typed") || strings.Contains(text, "input prompt unavailable"):
+		return voicedesk.ErrNoPrompt
+	case strings.Contains(text, "unconfirmed") || strings.Contains(text, "not confirmed") || strings.Contains(text, "unverified"):
+		return voicedesk.ErrUnconfirmed // typed, the submit was not proven
 	case ctx.Err() != nil:
 		return voicedesk.ErrUnconfirmed // killed mid-way: it may have landed
-	case strings.Contains(text, "not found") || strings.Contains(text, "not running") || strings.Contains(text, "unknown flag") || strings.Contains(text, "flag provided but not defined"):
-		return fmt.Errorf("session send refused")
 	}
-	return voicedesk.ErrUnconfirmed
+	// any other refusal (unknown flag on an older remote, not found, not
+	// running): the send stopped before typing
+	return voicedesk.ErrNotSent
 }
 
 // Lookup reads the one session again from its own host only (one local

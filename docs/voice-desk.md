@@ -70,16 +70,18 @@ daemon, the phone and the Mac app use this list; `internal/voicedesk/answer.go` 
 
 | Answer | English | Roman Hindi | Devanagari / Urdu |
 |---|---|---|---|
-| yes | yes, yes send, yes send it, yes please, yes switch, yes do it, send it, okay, ok, ok send, okay send it, yeah, yep, sure, go ahead, do it | haan, haa, han, haan ji, han ji, ji haan, ji han, ji, haan bhejo, haa bhejo, haan bhej do, bhej do, bhejdo, bhejo, haan haan, theek hai, thik hai, kar do, haan kar do | हाँ, हां, हाँ भेजो, हां भेजो, हाँ जी, जी हाँ, भेज दो; ہاں, جی ہاں, ہاں بھیجو, ہاں جی |
-| no | no, cancel, no thanks, nope, stop it | nahin, nahi, nahee, rehne do, rahne do, mat bhejo, mat karo, nahin bhejo | नहीं, नहि, रहने दो, मत भेजो; نہیں, رہنے دو, مت بھیجو |
-| choice | first, the first, first one, the first one; second …; third … | pehla, pehla wala, pehli, pehli wali; doosra, dusra, doosra wala, doosri; teesra, tisra, teesra wala, teesri | पहला, पहली, पहला वाला; दूसरा, दूसरी; तीसरा, तीसरी |
+| yes | yes, yes send, yes send it, yes please, yes switch, yes do it, send it, okay, ok, ok send, okay send it, yeah, yep, sure, go ahead, do it | haan, haa, han, haan ji, han ji, ha ji, hanji, haanji, ji haan, ji han, ji, haan bhejo, haa bhejo, han bhejo, haan bhej do, haa bhej do, han bhej do, haan bhejdo, bhej do, bhejdo, bhejo, haan haan, theek hai, thik hai, kar do, haan kar do | हाँ, हां, हाँ भेजो, हां भेजो, हाँ जी, जी हाँ, भेज दो; ہاں, جی ہاں, ہاں بھیجو, ہاں جی |
+| no | no, cancel, no thanks, nope, stop it | nahin, nahi, nahee, rehne do, rahne do, rehene do, mat bhejo, mat karo, nahin bhejo | नहीं, नहि, रहने दो, मत भेजो; نہیں, رہنے دو, مت بھیجو |
+| choice | first, the first, first one, the first one; second …; third … | pehla, pahla, pehla wala, pahla wala, pehli, pahli, pehli wali; doosra, dusra, doosra wala, doosri; teesra, tisra, teesra wala, tisra wala, teesri, tisri | पहला, पहली, पहला वाला; दूसरा, दूसरी; तीसरा, तीसरी |
 
-Also: a session's name answers a choice question; a word of four letters or more may be spelled the way the
-listener writes it ("rahne do", "pahla"); a short word must be exact ("ho" is never "haan"). Not answers: a sentence
-ending in "?" ("yes?"), a yes inside a longer sentence ("yes I think so, also …"). A short sentence (three words or
-fewer) that is neither an answer nor a desk command keeps the question open once ("Please say yes or no.", new
-token in `confirm`), so it is not typed into the session; a second miss, or a longer sentence, drops the token and
-is handled as a fresh sentence.
+Matching is exact against these rows: the sentence's words, lowercased, punctuation and a leading wake name
+dropped, must equal a row. There is no fuzzy or phonetic matching for answers ("sorry" is not "sure", "ha" is not
+"haa", "car do" is not "kar do"); every accepted spelling is a row here. A session's exact name also answers a
+choice question. Not answers: a sentence ending in "?" ("yes?"), a yes inside a longer sentence ("yes I think so,
+also …"). A short sentence (three words or fewer) that is neither an answer nor a desk command keeps the question
+open once ("Please say yes or no.", new token in `confirm`); a second short miss cancels it ("Cancelled, nothing
+sent.", `handled:true`, so it is typed nowhere); a longer sentence drops the token and is handled as a fresh
+sentence.
 
 Forms that overlap with plain talk or with the voice daemon's own commands ("read this", "what is he doing",
 "find the bug in the parser") come back `handled:false` when the name is not a session. So does any desk form whose
@@ -106,8 +108,10 @@ unknown name in an explicit form ("tell phone walk to continue") answers "I foun
    that shows a permission menu or question (substate `interactive-menu`) is not sent to: "<title> is asking a
    question; answer it on screen first."; sends into agent tools also use `session send --require-input-prompt`,
    so nothing is typed unless an input prompt is visible. The yes re-reads only the target (its own host), and
-   says the title it has now. When a send's outcome is not known (time ran out after it started) the line is "I
-   am not sure it was sent; check <title>.", never a failure or a success that did not happen.
+   says the title it has now. A send that stopped before typing says "Could not send to <title>."; a target that
+   shows no input prompt says "<title> is not at its prompt, so nothing was sent"; only when the outcome is not
+   known (time ran out after typing began, or the send could not confirm it) the line is "I am not sure it was
+   sent; check <title>." Never a failure or a success that did not happen.
 4. **Unreadable settings refuse.** A `config.toml` that cannot be parsed never falls back to the open default: the
    desk answers `refused:"unsafe"`, "I cannot read the voice settings.", and acts on nothing.
 5. **The message is cleaned**: every control character (newline, tab, escape, Ctrl-C …) becomes a space before

@@ -12,13 +12,15 @@ import (
 // secret, and show nothing of that text.
 
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_\-]{16,}`),                // Anthropic, OpenAI, Stripe style
-	regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}`),                         // GitHub tokens
-	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`),                                     // GitHub fine-grained
-	regexp.MustCompile(`\bxox[abposr]-[A-Za-z0-9\-]{10,}`),                                   // Slack
-	regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`),                                      // AWS access key id
-	regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`),                                         // Google API key
-	regexp.MustCompile(`\bglpat-[A-Za-z0-9_\-]{20,}`),                                        // GitLab
+	regexp.MustCompile(`\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_\-]{16,}`), // Anthropic, OpenAI, Stripe style
+	regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}`),          // GitHub tokens
+	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`),                      // GitHub fine-grained
+	regexp.MustCompile(`\bxox[abposr]-[A-Za-z0-9\-]{10,}`),                    // Slack
+	regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`),                       // AWS access key id
+	regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`),                          // Google API key
+	regexp.MustCompile(`\bglpat-[A-Za-z0-9_\-]{20,}`),
+	regexp.MustCompile(`\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}`),                      // Stripe secret / restricted keys
+	regexp.MustCompile(`\bwhsec_[A-Za-z0-9]{16,}`),                                           // webhook signing secrets                                        // GitLab
 	regexp.MustCompile(`\b\d{8,10}:[A-Za-z0-9_\-]{35}\b`),                                    // Telegram bot token
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`),                                 // PEM keys
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}`), // JWT
