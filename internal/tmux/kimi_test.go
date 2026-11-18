@@ -88,6 +88,31 @@ func TestKimiHistoricalApprovalDoesNotOutrankLaterRetry(t *testing.T) {
 	}
 }
 
+func TestKimiConfiguredBusyStringOutranksOnlyEarlierApproval(t *testing.T) {
+	approval := "  ▶ Run this command?\n" +
+		"  ▶ 1. Approve once\n" +
+		"    2. Reject\n"
+	for _, tc := range []struct {
+		name     string
+		content  string
+		wantBusy bool
+	}{
+		{name: "configured string after approval", content: approval + "  KIMI_WORKING\n", wantBusy: true},
+		{name: "configured string before approval", content: "  KIMI_WORKING\n" + approval, wantBusy: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Session{
+				DisplayName:      "kimi-configured-busy",
+				detectedTool:     "kimi",
+				resolvedPatterns: &ResolvedPatterns{BusyStrings: []string{"KIMI_WORKING"}},
+			}
+			if got := s.hasBusyIndicator(tc.content); got != tc.wantBusy {
+				t.Fatalf("hasBusyIndicator = %v, want %v", got, tc.wantBusy)
+			}
+		})
+	}
+}
+
 func TestKimiHistoricalRetryDoesNotOutliveSubmittedTurn(t *testing.T) {
 	content := " ❯ first\n" +
 		"  🌘 Retrying (3/10) · APIConnectionError · in 2s\n" +

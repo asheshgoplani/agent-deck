@@ -151,6 +151,22 @@ func (s *Session) kimiApprovalOutranksBusy(content string) bool {
 				return false
 			}
 		}
+		lowerContent := strings.ToLower(content[approvalAt:])
+		statusBarLines := lastNLines(content, 3)
+		spinnerChars := defaultSpinnerChars()
+		if len(patterns.SpinnerChars) > 0 {
+			spinnerChars = patterns.SpinnerChars
+		}
+		for _, str := range patterns.BusyStrings {
+			lowerStr := strings.ToLower(str)
+			if !strings.Contains(lowerContent, lowerStr) {
+				continue
+			}
+			if strings.Contains(lowerStr, "interrupt") && !hasInterruptBusyContext(statusBarLines, lowerStr, spinnerChars) {
+				continue
+			}
+			return false
+		}
 	}
 	return true
 }
