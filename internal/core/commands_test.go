@@ -128,6 +128,40 @@ func TestSessionStartYoloFailureIsInvalidAndStartsNothing(t *testing.T) {
 	wantCode(t, res.Err, CodeInvalid, "yolo unsupported")
 }
 
+func TestSessionStartKimiYoloSetSemantics(t *testing.T) {
+	for i, tt := range []struct {
+		name        string
+		yolo        bool
+		yoloSet     bool
+		wantYoloSet bool
+	}{
+		{name: "true implies explicit", yolo: true, wantYoloSet: true},
+		{name: "explicit false overrides inheritance", yoloSet: true, wantYoloSet: true},
+		{name: "omitted inherits"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := fmt.Sprintf("_core_start_kimi_yolo_%d_%d", i, time.Now().UnixNano())
+			seedStore(t, profile, nil, session.NewInstanceWithTool("kimi", t.TempDir(), "kimi"))
+			var gotYolo, gotAuto, gotYoloSet, gotAutoSet bool
+			deps := Deps{ApplyKimiPermissions: func(_ *session.Instance, yolo, auto, yoloSet, autoSet bool) error {
+				gotYolo, gotAuto, gotYoloSet, gotAutoSet = yolo, auto, yoloSet, autoSet
+				return errors.New("stop after capturing Kimi permissions")
+			}}
+			res := testRegistry(t, deps).Run(context.Background(), IDSessionStart, SessionStartIn{
+				Profile: profile,
+				Session: "kimi",
+				Yolo:    tt.yolo,
+				YoloSet: tt.yoloSet,
+			})
+			wantCode(t, res.Err, CodeInvalid, "stop after capturing Kimi permissions")
+			if gotYolo != tt.yolo || gotYoloSet != tt.wantYoloSet || gotAuto || gotAutoSet {
+				t.Fatalf("Kimi permission input = (yolo=%v auto=%v yoloSet=%v autoSet=%v), want (yolo=%v auto=false yoloSet=%v autoSet=false)",
+					gotYolo, gotAuto, gotYoloSet, gotAutoSet, tt.yolo, tt.wantYoloSet)
+			}
+		})
+	}
+}
+
 func TestSessionStopNotRunning(t *testing.T) {
 	const profile = "_core_stop_idle"
 	seedStore(t, profile, nil, session.NewInstance("alpha", t.TempDir()))

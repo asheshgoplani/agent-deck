@@ -29,11 +29,11 @@
       "type": "string"
     },
     "yolo": {
-      "description": "Enable YOLO mode for Gemini, Codex, Hermes or Kimi sessions",
+      "description": "Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)",
       "type": "boolean"
     },
     "yolo_set": {
-      "description": "Whether the user explicitly set --yolo, including false",
+      "description": "Whether the user explicitly set --yolo, including false; implied by yolo:true",
       "type": "boolean"
     }
   },

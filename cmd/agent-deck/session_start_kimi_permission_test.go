@@ -31,6 +31,7 @@ func TestSessionStartKimiPermissionFlags(t *testing.T) {
 		}{
 			{name: "yolo", startArgs: []string{"--yolo"}, wantArgs: []string{"--yolo"}},
 			{name: "explicit false overrides never ask", initialArgs: []string{"--auto"}, startArgs: []string{"--yolo=false"}},
+			{name: "omitted inherits never ask", initialArgs: []string{"--auto"}, wantArgs: []string{"--auto"}},
 			{name: "auto", startArgs: []string{"--auto"}, wantArgs: []string{"--auto"}},
 		} {
 			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
