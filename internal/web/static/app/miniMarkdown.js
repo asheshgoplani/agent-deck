@@ -67,6 +67,28 @@ function MarkdownCodeBlock({ code, language }) {
   return html`<pre class="markdown-code" tabIndex="0"><code class=${safeLanguage ? 'language-' + safeLanguage : ''}>${highlightCode(code, safeLanguage)}</code></pre>`
 }
 
+function fenceMarker(line) {
+  const delimiter = line.match(/^(?:`{3,}|~{3,})/)?.[0]
+  return delimiter ? { delimiter, info: line.slice(delimiter.length) } : null
+}
+
+function parseFence(lines, index, marker, indent = 0) {
+  const { delimiter, info } = marker
+  const language = info.trim().split(/\s+/)[0] || ''
+  const prefix = ' '.repeat(indent)
+  const code = []
+  while (index < lines.length) {
+    const raw = lines[index]
+    const line = raw.trim()
+    if (line && !raw.startsWith(prefix)) break
+    index++
+    const closer = fenceMarker(line)
+    if (closer && closer.delimiter[0] === delimiter[0] && closer.delimiter.length >= delimiter.length && !closer.info) break
+    code.push(raw.slice(indent))
+  }
+  return [html`<${MarkdownCodeBlock} code=${code.join('\n')} language=${language}/>`, index]
+}
+
 function splitTableRow(raw) {
   const cells = []
   let cell = ''
@@ -98,48 +120,70 @@ function startsBlock(raw) {
 }
 
 function listItem(raw) {
-  const match = raw.match(/^( *)(?:[-+*]|(\d+)[.)])\s+(.*)$/)
-  return match ? { indent: match[1].length, ordered: !!match[2], text: match[3] } : null
+  const match = raw.match(/^( *)(?:[-+*]|(\d{1,9})[.)])\s+/)
+  if (!match) return null
+  const contentIndent = match[0].length
+  return {
+    indent: match[1].length,
+    number: match[2] === undefined ? null : Number(match[2]),
+    contentIndent,
+    text: raw.slice(contentIndent),
+  }
 }
 
-function parseList(lines, start, indent, depth) {
-  const first = listItem(lines[start])
-  const ordered = first.ordered
+function appendItemBlock(item, block) {
+  if (item.text) item.children.push(inline(item.text))
+  item.children.push(block)
+  item.text = ''
+}
+
+function parseList(lines, start, first, depth) {
+  const { indent, number } = first
+  const ordered = number !== null
   const items = []
+  let item
   let index = start
   while (index < lines.length) {
-    const raw = lines[index]
-    if (!raw.trim()) break
+    let raw = lines[index]
+    if (!raw.trim()) {
+      let next = index + 1
+      while (next < lines.length && !lines[next].trim()) next++
+      if (next === lines.length || lines[next].search(/[^ ]/) < item.contentIndent) break
+      index = next
+      raw = lines[index]
+    }
     const match = listItem(raw)
+    let text
     if (match) {
       if (match.indent < indent) break
-      if (match.indent > indent) {
-        if (!items.length) break
-        if (depth >= MAX_NESTING) {
-          items.push({ text: match.text, children: [] })
-          index++
-          continue
-        }
-        const [child, next] = parseList(lines, index, match.indent, depth + 1)
-        items[items.length - 1].children.push(child)
+      if (match.indent > indent && depth < MAX_NESTING) {
+        const [child, next] = parseList(lines, index, match, depth + 1)
+        appendItemBlock(item, child)
         index = next
         continue
       }
-      if (match.ordered !== ordered) break
-      items.push({ text: match.text, children: [] })
-      index++
-      continue
+      if (match.indent === indent && (match.number !== null) !== ordered) break
+      item = { text: '', contentIndent: match.contentIndent, children: [] }
+      items.push(item)
+      text = match.text
+    } else {
+      if (raw.search(/[^ ]/) < item.contentIndent) break
+      text = raw.trimStart()
     }
-    const continuation = raw.match(/^( +)\s*(.*)$/)
-    if (items.length && continuation && continuation[1].length > indent && continuation[2]) {
-      items[items.length - 1].text += ' ' + continuation[2]
-      index++
-      continue
+    index++
+    const marker = fenceMarker(text)
+    if (marker) {
+      const [block, next] = parseFence(lines, index, marker, item.contentIndent)
+      appendItemBlock(item, block)
+      index = next
+    } else {
+      item.text += item.text ? ' ' + text : text
     }
-    break
   }
-  const children = items.map(item => html`<li>${inline(item.text)}${item.children}</li>`)
-  return [ordered ? html`<ol>${children}</ol>` : html`<ul>${children}</ul>`, index]
+  const children = items.map(item => html`<li>${item.children}${inline(item.text)}</li>`)
+  // Uppercase makes Preact use the HTML attribute. Clearing the DOM start property would set it to 0.
+  const list = ordered ? html`<ol START=${number === 1 ? undefined : number}>${children}</ol>` : html`<ul>${children}</ul>`
+  return [list, index]
 }
 
 export function renderMarkdown(src, depth = 0) {
@@ -147,33 +191,20 @@ export function renderMarkdown(src, depth = 0) {
   const lines = String(src || '').split(/\r?\n/)
   const blocks = []
   let para = []
-  let fence = null
-  let language = ''
-  let code = []
   const flushPara = () => {
     if (para.length) blocks.push(html`<p>${inline(para.join(' '))}</p>`)
     para = []
-  }
-  const flushFence = () => {
-    blocks.push(html`<${MarkdownCodeBlock} code=${code.join('\n')} language=${language}/>`)
-    fence = null
-    language = ''
-    code = []
   }
 
   for (let index = 0; index < lines.length; index++) {
     const raw = lines[index]
     const line = raw.trim()
-    const marker = line.match(/^(`{3,}|~{3,})(.*)$/)
-    if (fence) {
-      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) flushFence()
-      else code.push(raw)
-      continue
-    }
+    const marker = fenceMarker(line)
     if (marker) {
       flushPara()
-      fence = marker[1]
-      language = marker[2].trim().split(/\s+/)[0] || ''
+      const [block, next] = parseFence(lines, index + 1, marker)
+      blocks.push(block)
+      index = next - 1
       continue
     }
     if (!line) { flushPara(); continue }
@@ -227,14 +258,13 @@ export function renderMarkdown(src, depth = 0) {
     const item = listItem(raw)
     if (item) {
       flushPara()
-      const [list, next] = parseList(lines, index, item.indent, depth + 1)
+      const [list, next] = parseList(lines, index, item, depth + 1)
       blocks.push(list)
       index = next - 1
       continue
     }
     para.push(line)
   }
-  if (fence) flushFence()
   flushPara()
   return blocks
 }
