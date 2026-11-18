@@ -51,7 +51,9 @@ func TestStatusCycle_ShellSessionWithCommand(t *testing.T) {
 	assert.Equal(t, StatusStopped, inst.Status, "after Kill() status should be stopped")
 
 	// Tmux session should no longer exist
-	assert.False(t, inst.Exists(), "tmux session should not exist after Kill()")
+	exists, probeErr := inst.GetTmuxSession().ProbeExists()
+	require.NoError(t, probeErr)
+	assert.False(t, exists, "tmux session should not exist after Kill()")
 }
 
 // TestStatusCycle_ShellSessionNoCommand verifies that a shell session without

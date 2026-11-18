@@ -127,7 +127,9 @@ func TestLifecycleFork_CreatesIndependentCopy(t *testing.T) {
 
 	// Kill the parent and verify the child survives.
 	require.NoError(t, parent.Kill())
-	assert.False(t, parent.Exists(), "parent should not exist after kill")
+	exists, probeErr := parent.GetTmuxSession().ProbeExists()
+	require.NoError(t, probeErr)
+	assert.False(t, exists, "parent should not exist after kill")
 	assert.True(t, child.Exists(), "child should survive parent kill")
 }
 

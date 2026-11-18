@@ -98,8 +98,9 @@ func TestIssue2400_ArchiveKeepsLiveCodexIdentity(t *testing.T) {
 
 	captureStdout(t, func() { handleSessionArchive(profile, []string{inst.ID, "--json"}) })
 
-	if inst.GetTmuxSession().Exists() {
-		t.Fatal("archive did not stop the session")
+	// Exists() may answer from the shared session cache, which lists a killed session until its TTL.
+	if exists, err := inst.GetTmuxSession().ProbeExists(); err != nil || exists {
+		t.Fatalf("archive did not stop the session (exists %v, probe error %v)", exists, err)
 	}
 	if got := reloadedCodexIdentity(t, profile, inst.ID); got != codexFirstTurnThread {
 		t.Fatalf("persisted identity after archive = %q, want %q", got, codexFirstTurnThread)
