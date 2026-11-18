@@ -351,31 +351,60 @@ var (
 func (in *inliner) inlineHTML(from string, src []byte) []byte {
 	var out bytes.Buffer
 	z := xhtml.NewTokenizer(bytes.NewReader(src))
-	inStyle := false
+	raw := "" // the raw-text element the tokenizer is in, if any
 	for {
 		kind := z.Next()
 		if kind == xhtml.ErrorToken {
 			return out.Bytes()
 		}
-		raw := z.Raw()
+		rawBytes := z.Raw()
 		switch kind {
 		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
 			t := z.Token()
-			inStyle = t.Data == "style" && kind == xhtml.StartTagToken
+			raw = ""
+			if kind == xhtml.StartTagToken && rawTextTags[t.Data] {
+				raw = t.Data
+			}
 			if rewritten, ok := in.rewriteTag(from, t); ok {
 				out.WriteString(rewritten)
 				continue
 			}
 		case xhtml.EndTagToken:
-			inStyle = false
+			raw = ""
 		case xhtml.TextToken:
-			if inStyle {
-				out.WriteString(in.inlineCSS(from, string(raw), 0))
+			if raw != "" {
+				text := string(rawBytes)
+				if raw == "style" {
+					text = in.inlineCSS(from, text, 0)
+				}
+				out.WriteString(escapeLoaders(raw, text))
 				continue
 			}
 		}
-		out.Write(raw)
+		out.Write(rawBytes)
 	}
+}
+
+// rawTextTags are the elements whose content the tokenizer reads as raw
+// text, where a browser may still read markup (scripting off for noscript,
+// foreign content for svg/math style and script).
+var rawTextTags = map[string]bool{"script": true, "style": true, "noscript": true, "iframe": true, "noembed": true,
+	"noframes": true, "xmp": true, "textarea": true, "title": true, "plaintext": true}
+
+var reLoader = regexp.MustCompile(`(?i)<(\s*(?:link|iframe|frame|object|embed)(?:[\s/>]|$))`)
+
+// escapeLoaders makes every tag that loads inside raw text plain text however
+// a parser reads it: \x3c in a script (a JS string keeps its value), \3c in a
+// stylesheet, &lt; elsewhere (shown the same where entities are decoded).
+func escapeLoaders(raw, text string) string {
+	esc := "&lt;"
+	switch raw {
+	case "script":
+		esc = `\x3c`
+	case "style":
+		esc = `\3c `
+	}
+	return reLoader.ReplaceAllString(text, strings.ReplaceAll(esc, "$", "$$")+"$1")
 }
 
 func attr(t xhtml.Token, key string) (string, int) {

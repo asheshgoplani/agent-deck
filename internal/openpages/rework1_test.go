@@ -130,3 +130,27 @@ func TestSrcdocIsRewrittenAndSpeculationRulesNotHashed(t *testing.T) {
 		t.Fatalf("speculation rules must not be allowed by hash: %q", ss)
 	}
 }
+
+// Rework 2: text the Go tokenizer reads as raw text (script, style,
+// noscript, iframe, noembed, noframes, xmp, textarea, title) may be read as
+// markup by a browser (scripting off for noscript, foreign content for svg
+// style/script): a tag that loads inside it is escaped, never left as "<link".
+// Inside a script the escape is \x3c (a JS string keeps its value), the same as
+// the phone viewer.
+func TestRawTextCannotHideALoadingTag(t *testing.T) {
+	doc := renderPage(t, `<html><body><script>var s="<link rel=stylesheet href=x>"+"<iframe src=y>";</script>`+
+		`<noscript><link rel=preconnect href=http://leak.example/n></noscript>`+
+		`<svg><style><img><link rel=preconnect href=http://leak.example/s></style></svg>`+
+		`<svg><script><img><link rel=preconnect href=http://leak.example/f></script></svg>`+
+		`<textarea><link rel=prefetch href=http://leak.example/t></textarea></body></html>`)
+	if regexp.MustCompile(`(?i)<(link|iframe)[^>]*leak\.example`).MatchString(doc) {
+		t.Fatalf("a loading tag survived in raw text:\n%s", doc)
+	}
+	a := `var s="\x3clink rel=stylesheet href=x>"+"\x3ciframe src=y>";`
+	if !strings.Contains(doc, "<script>"+a+"</script>") {
+		t.Fatalf("script text: \\x3c escape expected:\n%s", doc)
+	}
+	if ss := scriptSrc(t, doc); !strings.Contains(ss, hashOf(a)) {
+		t.Fatalf("the hash is of the escaped script: %q", ss)
+	}
+}

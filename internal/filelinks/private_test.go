@@ -35,7 +35,11 @@ func TestOpenReadableRefusesPrivateNames(t *testing.T) {
 		".aws/credentials", ".gnupg/pubring.kbx", ".npmrc", ".netrc", ".pypirc", ".git-credentials", ".pgpass", ".docker/config.json",
 		".kube/config", "id_rsa", "id_ed25519.pub", "server.pem", "tls.key", "cert.p12", "store.jks", "vault.kdbx", "state.tfstate",
 		"prod.tfvars", "Secret.TXT", "API_KEY.md", "db_password.txt", "github-token.txt", "aws_credentials.txt", "credentials.json",
-		"client_secret_123.json", "secrets/notes.md", "token.json", "my-secret.yaml", ".claude/.credentials.json"}
+		"client_secret_123.json", "secrets/notes.md", "token.json", "my-secret.yaml", ".claude/.credentials.json",
+		// rework 2 (review m1)
+		".envrc", ".secrets", ".credentials", "terraform.tfstate", "terraform.tfstate.backup", "infra/prod.tfstate.1700000000.backup",
+		".config/gcloud/credentials.db", ".config/gcloud/access_tokens.db", ".config/gcloud/legacy_credentials/me@example.com/adc.json",
+		".s3cfg", ".boto", ".bash_history", ".zsh_history", "prod.env", "app.p12", "app.pfx", "app.jks", "release.keystore"}
 	writeTree(t, root, private, "SECRET-VALUE-42")
 	if err := os.Symlink(".env", filepath.Join(root, "notes.txt")); err != nil {
 		t.Fatal(err)

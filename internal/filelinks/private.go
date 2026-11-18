@@ -14,13 +14,15 @@ var ErrPrivate = errors.New("private file: dotenv, keys, credentials and VCS int
 // below the root (on the symlink-resolved path, compared case-insensitively)
 // is private:
 //
-//   - .env and .env.* (any dotenv file);
+//   - .env, .env.*, *.env and .envrc (any dotenv file);
 //   - secret stores and VCS internals: .git, .ssh, .aws, .gnupg, .docker,
 //     .kube, .azure, .password-store, .terraform.d, .npmrc, .netrc, .pypirc,
 //     .git-credentials, .pgpass, .my.cnf, .htpasswd, .vault-token,
-//     .credentials.json;
+//     .credentials.json, .secrets, .credentials, .s3cfg, .boto, shell and
+//     database histories, gcloud credentials.db / access_tokens.db /
+//     legacy_credentials;
 //   - key and certificate files: *.pem *.key *.p12 *.pfx *.kdbx *.kdb
-//     *.keystore *.jks *.ppk *.gpg *.pgp *.ovpn *.tfstate *.tfvars, and
+//     *.keystore *.jks *.ppk *.gpg *.pgp *.ovpn *.tfstate(.*) *.tfvars, and
 //     id_rsa / id_dsa / id_ecdsa / id_ed25519 (with .pub);
 //   - credential data: a directory, or a DATA file (.txt .md .json .yaml .yml
 //     .toml .ini .cfg .conf .env .properties .xml .csv .log or no extension),
@@ -64,9 +66,12 @@ func PrivatePath(rel string) bool {
 
 var privateDotNames = map[string]bool{".git": true, ".ssh": true, ".aws": true, ".gnupg": true, ".docker": true, ".kube": true,
 	".azure": true, ".password-store": true, ".terraform.d": true, ".npmrc": true, ".netrc": true, ".pypirc": true,
-	".git-credentials": true, ".pgpass": true, ".my.cnf": true, ".htpasswd": true, ".vault-token": true, ".credentials.json": true}
+	".git-credentials": true, ".pgpass": true, ".my.cnf": true, ".htpasswd": true, ".vault-token": true, ".credentials.json": true,
+	".envrc": true, ".secrets": true, ".credentials": true, ".s3cfg": true, ".boto": true, ".bash_history": true, ".zsh_history": true,
+	".python_history": true, ".psql_history": true, ".mysql_history": true, "credentials.db": true, "access_tokens.db": true,
+	"legacy_credentials": true}
 
-var privateSuffixes = []string{".pem", ".key", ".p12", ".pfx", ".kdbx", ".kdb", ".keystore", ".jks", ".ppk", ".gpg", ".pgp", ".ovpn", ".tfstate", ".tfvars"}
+var privateSuffixes = []string{".pem", ".key", ".p12", ".pfx", ".kdbx", ".kdb", ".keystore", ".jks", ".ppk", ".gpg", ".pgp", ".ovpn", ".tfstate", ".tfvars", ".env"}
 
 var privatePrefixes = []string{"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "client_secret"}
 
@@ -92,6 +97,9 @@ func privateComponent(name string, dir bool) bool {
 		if strings.HasSuffix(n, s) {
 			return true
 		}
+	}
+	if strings.Contains(n, ".tfstate.") { // terraform.tfstate.backup, x.tfstate.<ts>.backup
+		return true
 	}
 	if !dir && !dataExts[filepath.Ext(n)] {
 		return false
