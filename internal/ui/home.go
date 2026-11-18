@@ -3051,6 +3051,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cleanupDone = make(chan struct{})
 			h.undoMu.Lock()
 			h.undoStack[len(h.undoStack)-1].cleanupDone = cleanupDone
+			h.undoStack[len(h.undoStack)-1].prev = msg.prev
 			h.undoMu.Unlock()
 			// Save to recent sessions for quick re-creation
 			if err := h.storage.SaveRecentSession(deletedInstance); err != nil {
@@ -3194,8 +3195,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.instancesMu.Unlock()
 		h.cachedStatusCounts.valid.Store(false)
 
-		// Track as launching for animation
-		h.launchingSessions[msg.instance.ID] = time.Now()
+		// Track as launching for animation (only a restarted session launches)
+		if msg.restarted {
+			h.launchingSessions[msg.instance.ID] = time.Now()
+		}
 
 		// Expand the group so the restored session is visible
 		if msg.instance.GroupPath != "" {
@@ -6904,11 +6907,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if entry.cleanupDone != nil {
 				<-entry.cleanupDone
 			}
-			err := inst.Restart()
+			// TUI-7: bring the session back as it was; only one that was
+			// active when it was deleted is started again.
+			restarted, err := restoreForUndo(inst, entry.prev)
+			warning := ""
+			if restarted {
+				warning = inst.ConsumeCodexRestartWarning()
+			}
 			return sessionRestoredMsg{
-				instance: inst,
-				err:      err,
-				warning:  inst.ConsumeCodexRestartWarning(),
+				instance:  inst,
+				err:       err,
+				warning:   warning,
+				restarted: restarted,
 			}
 		}
 
