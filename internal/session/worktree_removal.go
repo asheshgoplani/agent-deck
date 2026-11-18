@@ -48,14 +48,23 @@ func IsRemovableWorktree(inst *Instance) bool {
 // sessions that share a single worktree must not remove the shared directory or
 // delete the branch while a sibling session still uses it.
 func OtherSessionsShareWorktree(target *Instance, others []*Instance) bool {
+	return len(SessionsSharingWorktree(target, others)) > 0
+}
+
+// SessionsSharingWorktree returns the instances in others (other than target
+// itself) that reference target's worktree directory, compared as in
+// OtherSessionsShareWorktree. Callers that refuse or skip a removal use it to
+// name the sessions that still need the worktree.
+func SessionsSharingWorktree(target *Instance, others []*Instance) []*Instance {
 	if target == nil {
-		return false
+		return nil
 	}
 	wt := strings.TrimSpace(target.WorktreePath)
 	if wt == "" {
-		return false
+		return nil
 	}
 	targetCanon := canonicalPath(wt)
+	var sharers []*Instance
 	for _, o := range others {
 		if o == nil || o.ID == target.ID {
 			continue
@@ -65,10 +74,10 @@ func OtherSessionsShareWorktree(target *Instance, others []*Instance) bool {
 			continue
 		}
 		if canonicalPath(owt) == targetCanon {
-			return true
+			sharers = append(sharers, o)
 		}
 	}
-	return false
+	return sharers
 }
 
 // RemoveSessionWorktree removes the session's worktree directory if and only if

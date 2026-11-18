@@ -3629,8 +3629,9 @@ func handleRemove(profile string, args []string) {
 	// this removal was never allowed to touch.
 	_ = inst.RetireServiceUnit(serviceUnitOwnership)
 
-	// Clean up worktree directory if this is a worktree session
-	if inst.IsWorktree() {
+	// Clean up worktree directory if this is a worktree session, unless
+	// another session still uses it (#1449, as the TUI delete does).
+	if inst.IsWorktree() && !keepSharedWorktree(inst, instances, *jsonOutput) {
 		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
 			if err := backend.RemoveWorktree(inst.WorktreePath, false); err != nil {
 				if !*jsonOutput {

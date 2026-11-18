@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -101,7 +102,7 @@ func handleSessionRemove(profile string, args []string) {
 	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
 	if *pruneWorktree {
-		pruneSessionWorktree(inst)
+		pruneSessionWorktree(inst, instances, *jsonOutput)
 	}
 
 	// v1.9.1 (#909): RemoveSessionAndVerify replaces the
@@ -210,12 +211,16 @@ func bulkRemoveSessions(
 
 	removed := make([]removedSessionRow, 0, len(doomed))
 	removedIDs := make([]string, 0, len(doomed))
+	// Sessions not removed yet: a worktree shared only with sessions this
+	// sweep already removed goes with the last of them.
+	live := append([]*session.Instance(nil), instances...)
 	for _, inst := range doomed {
 		saveStoppedBeforeRemoval(storage, inst)
 		_ = inst.KillAndWait()
 		if pruneWorktree {
-			pruneSessionWorktree(inst)
+			pruneSessionWorktree(inst, live, out.jsonMode)
 		}
+		live = dropInstance(live, inst.ID)
 		if err := storage.DeleteInstance(inst.ID); err != nil {
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			exitBulkRemove(1)
@@ -292,9 +297,9 @@ func saveStoppedBeforeRemoval(storage *session.Storage, inst *session.Instance) 
 //
 // Uses KillAndWait so the SIGTERM→SIGKILL escalation completes before
 // this short-lived CLI exits (issue #59, v1.7.68).
-func pruneSessionWorktree(inst *session.Instance) {
+func pruneSessionWorktree(inst *session.Instance, instances []*session.Instance, jsonOutput bool) {
 	_ = inst.KillAndWait()
-	if inst.IsWorktree() {
+	if inst.IsWorktree() && !keepSharedWorktree(inst, instances, jsonOutput) {
 		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
 			if err := backend.RemoveWorktree(inst.WorktreePath, true); err != nil {
 				fmt.Fprintf(os.Stderr, "warn: worktree remove failed for %s: %v\n", inst.ID, err)
@@ -302,6 +307,29 @@ func pruneSessionWorktree(inst *session.Instance) {
 			_ = backend.PruneWorktrees()
 		}
 	}
+}
+
+// keepSharedWorktree reports whether inst's worktree must survive its removal
+// because another session in instances still uses it (#1449, the same rule as
+// the TUI delete). It says so on stderr outside --json mode.
+func keepSharedWorktree(inst *session.Instance, instances []*session.Instance, jsonOutput bool) bool {
+	sharers := session.SessionsSharingWorktree(inst, instances)
+	if len(sharers) == 0 {
+		return false
+	}
+	if !jsonOutput {
+		fmt.Fprintf(os.Stderr, "Kept worktree %s: still used by %s\n", FormatPath(inst.WorktreePath), sessionNameList(sharers))
+	}
+	return true
+}
+
+// sessionNameList renders sessions as "title (id8), ..." for messages.
+func sessionNameList(insts []*session.Instance) string {
+	names := make([]string, 0, len(insts))
+	for _, s := range insts {
+		names = append(names, fmt.Sprintf("'%s' (%s)", s.Title, shortID(s.ID)))
+	}
+	return strings.Join(names, ", ")
 }
 
 // dropInstance returns a new slice with the given id filtered out.

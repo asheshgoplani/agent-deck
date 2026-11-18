@@ -666,7 +666,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	into := fs.String("into", "", "Target branch to merge into (default: auto-detect)")
 	noMerge := fs.Bool("no-merge", false, "Skip merge (e.g. for PR workflows)")
 	keepBranch := fs.Bool("keep-branch", false, "Don't delete local branch after finish")
-	force := fs.Bool("force", false, "Skip safety checks and force branch deletion")
+	force := fs.Bool("force", false, "Skip safety checks (uncommitted changes, other sessions on the same worktree) and force branch deletion")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -725,6 +725,17 @@ func handleWorktreeFinish(profile string, args []string) {
 	repoRoot := inst.WorktreeRepoRoot
 	worktreePath := inst.WorktreePath
 	worktreeBranch := inst.WorktreeBranch
+
+	// Finishing removes the worktree and deletes the branch. Another session
+	// on the same worktree would be left at a path that no longer exists, so
+	// refuse and name it unless --force (#1449; the TUI keeps it instead).
+	if sharers := session.SessionsSharingWorktree(inst, instances); len(sharers) > 0 && !*force {
+		out.Error(fmt.Sprintf(
+			"worktree %s is still used by %s; finish or remove those sessions first, or pass --force to remove the worktree and branch anyway",
+			FormatPath(worktreePath), sessionNameList(sharers),
+		), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
 
 	finishBackend, err := detectAndCreateBackend(repoRoot)
 	if err != nil {
