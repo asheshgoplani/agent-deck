@@ -322,6 +322,10 @@ func TestKimiHookPromptReloadDoesNotCoverAnotherModal(t *testing.T) {
 	}
 }
 
+func TestKimiHookConsentRemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("remote rows are not local Instances and have no ItemTypeRemoteSession hook-consent path; the remote agent manages its own Kimi hook installation and permission state")
+}
+
 func TestAcceptedKimiHooksRemovedLaterAreNotReinstalled(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

@@ -150,6 +150,10 @@ func TestKimiYoloShortcutOnExistingSession(t *testing.T) {
 	}
 }
 
+func TestKimiYoloShortcutRemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("remote rows are not local Instances and have no ItemTypeRemoteSession y-toggle path; the remote agent manages its own Kimi permission state")
+}
+
 func TestKimiYoloShortcutRestartsIdleSession(t *testing.T) {
 	setXDGTestHome(t)
 	h := NewHome()
