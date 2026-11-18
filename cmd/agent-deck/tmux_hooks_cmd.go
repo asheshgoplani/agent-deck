@@ -86,8 +86,6 @@ func handleTmuxHooksUninstall() {
 	}
 }
 
-func handleTmuxHooksStatus() { runTmuxHooksStatus(false) }
-
 func runTmuxHooksStatus(asJSON bool) {
 	socket := tmux.DefaultSocketName()
 	state, err := tmux.WindowPolicyHookStatus(socket)

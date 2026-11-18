@@ -642,8 +642,6 @@ func handleCodexHooksUninstall() {
 	fmt.Println("No agent-deck Codex hook found to remove.")
 }
 
-func handleCodexHooksStatus() { runCodexHooksStatus(false) }
-
 func runCodexHooksStatus(asJSON bool) {
 	configPath := getCodexConfigPath()
 	if asJSON {

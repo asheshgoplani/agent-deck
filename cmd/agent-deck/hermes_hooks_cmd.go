@@ -79,8 +79,6 @@ func handleHermesHooksUninstall() {
 	}
 }
 
-func handleHermesHooksStatus() { runHermesHooksStatus(false) }
-
 func runHermesHooksStatus(asJSON bool) {
 	configDir := getHermesConfigDirForHooks()
 	installed := session.CheckHermesHooksInstalled(configDir)

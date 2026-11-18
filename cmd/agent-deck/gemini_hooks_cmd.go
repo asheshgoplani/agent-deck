@@ -78,8 +78,6 @@ func handleGeminiHooksUninstall() {
 	}
 }
 
-func handleGeminiHooksStatus() { runGeminiHooksStatus(false) }
-
 func runGeminiHooksStatus(asJSON bool) {
 	configDir := getGeminiConfigDirForHooks()
 	installed := session.CheckGeminiHooksInstalled(configDir)
