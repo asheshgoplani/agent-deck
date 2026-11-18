@@ -86,8 +86,10 @@ runs `open --list` / `open --show` on the host). Nothing changes for the Mac app
     `.ovpn`, `.tfstate`, `.tfvars`; starting with `id_rsa`, `id_dsa`,
     `id_ecdsa`, `id_ed25519`). This is checked on the symlink-resolved path, so
     a link to a private file is private;
-  - it is a page kind the phone shows: HTML, Markdown, an image, or plain text
-    (`.txt`, `.text`, `.log`, `.csv`);
+  - first of all, its type is on the phone's allowlist: `.html`, `.htm`, `.md`,
+    `.markdown` or `.txt` (nothing else: no logs, CSV, JSON, YAML, config files,
+    images or files without an extension); the private-name rule above is a
+    second layer on top of it;
   - it is at most 4 MiB.
   Any other file still opens in the Mac app and stays off the phone; `--json`
   says why in `phone`: `outside_roots`, `private`, `unsupported` or `too_large`.
@@ -103,8 +105,10 @@ runs `open --list` / `open --show` on the host). Nothing changes for the Mac app
   and fonts (img src/srcset, poster, icon links, stylesheet links, CSS `url()`
   and `@import`) inlined as `data:` URIs. Each asset passes the same root and
   private-name rules, must be an image, a stylesheet or a font by extension
-  and by content (a secret renamed `logo.png` is not inlined), and is skipped
-  otherwise; a CSS reference that is skipped becomes `about:invalid`. Scripts,
+  and by content (a secret renamed `logo.png` is not inlined; a `.css` file is
+  inlined only when the whole file parses as CSS rules that declare at least one
+  property, so a `.env`, key, JSON, YAML or note renamed `.css` is not), and is
+  skipped otherwise; a CSS reference that is skipped becomes `about:invalid`. Scripts,
   frames, objects and media files are never inlined, and a relative link to a
   private name becomes `#`.
 - Every document starts with a `<meta http-equiv="Content-Security-Policy">`
@@ -121,7 +125,11 @@ runs `open --list` / `open --show` on the host). Nothing changes for the Mac app
   HTML pages without a viewport get one. Markdown is rendered
   to one phone-sized HTML document (light and dark, wide tables and code scroll);
   raw HTML in Markdown is shown as text and only `http(s)`, `mailto` and relative
-  links are kept. Text is shown in `<pre>`, an image in `<img>`.
+  links are kept. Text is shown in `<pre>`.
+- What these rules cannot see: a secret written INTO an allowed type under an
+  ordinary name (`creds.txt`, a password in `notes.md`) is shown when the
+  session opens that file, like anything else the session writes on a page.
+  The rules stop files that are secret by type or by name, not secret content.
 - Limits: page file 4 MiB, one asset 8 MiB, whole document 12 MiB.
 
 ```sh

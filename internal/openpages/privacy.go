@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
 )
 
 // The phone policy, on top of the filelinks roots (which decide WHERE a file
@@ -19,12 +18,19 @@ import (
 //     the symlink-resolved path, so a harmless-looking link to a private file
 //     is private too. It applies to the page, every inlined asset and every
 //     relative link in it.
-//   - Pages are HTML, Markdown, images and plain text (.txt, .text, .log,
-//     .csv) only; anything else stays Mac-only.
-//   - Inlined assets are images, stylesheets and fonts only, and their bytes
-//     must match their type (an image sniffs as an image, a stylesheet is
-//     UTF-8 text, a font has a font signature). Scripts, frames, objects and
-//     media files are never inlined.
+//   - First, an allowlist of file types: pages are .html .htm .md .markdown
+//     .txt only (PageKind); anything else stays Mac-only. Inlined assets are
+//     images, stylesheets and fonts only (assetType), and their bytes must
+//     match their type (an image sniffs as an image, a stylesheet parses as
+//     CSS (isStylesheet), a font has a font signature). Scripts, frames,
+//     objects and media files are never inlined.
+//   - The private-name rules above are the second layer, on every page,
+//     asset and link that passed the allowlist.
+//   - What the rules cannot see: a secret WRITTEN INTO an allowed type under
+//     an ordinary name (creds.txt, notes.md holding a password, a CSS value)
+//     is shown when the session opens it, exactly like any other text the
+//     session puts on a page. The rules stop files that are secret by kind
+//     or by name, not secret content inside an ordinary page.
 
 // ErrPrivate is returned for a dotfile or a secret-like path.
 var ErrPrivate = errors.New("private file: dotfiles and secret-like names are never shown on the phone")
@@ -106,16 +112,17 @@ func relUnderRoots(roots []string, real string) (string, bool) {
 }
 
 // PageKind is the kind a file is shown as on the phone, or "" when the phone
-// does not show it.
+// does not show it. This is the first layer of the phone policy, an
+// ALLOWLIST of page types: .html .htm .md .markdown .txt, nothing else (no
+// logs, CSV, JSON, YAML, config, images or files without an extension).
+// The private-name rules (Private) are the second layer on top of it.
 func PageKind(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".html", ".htm", ".xhtml":
+	case ".html", ".htm":
 		return KindHTML
-	case ".md", ".markdown", ".mdown", ".mkd":
+	case ".md", ".markdown":
 		return KindMarkdown
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp":
-		return KindImage
-	case ".txt", ".text", ".log", ".csv":
+	case ".txt":
 		return KindText
 	}
 	return ""
@@ -158,7 +165,7 @@ func assetType(name string) string {
 func contentMatches(t string, data []byte) bool {
 	switch {
 	case t == "text/css":
-		return utf8.Valid(data) && bytes.IndexByte(data, 0) < 0
+		return isStylesheet(data)
 	case t == "image/avif":
 		return len(data) >= 12 && string(data[4:8]) == "ftyp"
 	case t == "image/x-icon":

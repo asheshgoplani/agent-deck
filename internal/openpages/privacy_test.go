@@ -108,8 +108,8 @@ func TestPhonePolicyPages(t *testing.T) {
 		{"report.html", nil, KindHTML},
 		{"notes.md", nil, KindMarkdown},
 		{"plain.txt", nil, KindText},
-		{"assets/pic.png", nil, KindImage},
-		{"piclink.png", nil, KindImage},
+		{"assets/pic.png", ErrUnsupported, ""}, // images are assets, not pages (page allowlist)
+		{"piclink.png", ErrUnsupported, ""},
 		{"docs/second.md", nil, KindMarkdown},
 		{"evil.html", nil, KindHTML},
 		{".env", ErrPrivate, ""},

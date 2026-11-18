@@ -80,8 +80,8 @@ func TestOpenPhonePolicyMatrix(t *testing.T) {
 		{"notes ünï cödé 日本.md", "shown", "phone"},
 		{"my report (v2).html", "shown", "phone"},
 		{"plain.txt", "shown", "phone"},
-		{"assets/pic.png", "shown", "phone"},
-		{"piclink.png", "shown", "phone"},
+		{"assets/pic.png", "unsupported", "mac"}, // page allowlist: .html .htm .md .markdown .txt
+		{"piclink.png", "unsupported", "mac"},
 		{".env", "private", "mac"},             // sweep D1
 		{".git/config", "private", "mac"},      // dot directory
 		{".aws/credentials", "private", "mac"}, // dot directory
@@ -149,7 +149,7 @@ func TestOpenPhonePolicyMatrix(t *testing.T) {
 	var list struct {
 		Pages []struct{ ID, Name string } `json:"pages"`
 	}
-	if code != 0 || json.Unmarshal([]byte(listOut), &list) != nil || len(list.Pages) != 6 { // piclink.png resolves to assets/pic.png: one entry
+	if code != 0 || json.Unmarshal([]byte(listOut), &list) != nil || len(list.Pages) != 5 { // report, notes, unicode, v2, plain
 		t.Fatalf("list: %d %s", code, listOut)
 	}
 	for target, id := range ids {

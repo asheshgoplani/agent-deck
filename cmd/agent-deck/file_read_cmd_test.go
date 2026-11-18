@@ -191,3 +191,51 @@ func TestFileReadCLIUsesConfiguredRoots(t *testing.T) {
 		t.Fatalf("file read outside: exit=%d stdout=%q", code, stdout)
 	}
 }
+
+// Phone finish (18 Nov 2026), feature sweep D1: `file read` under the roots
+// applies the phone's private-name rule (internal/openpages.Private): no
+// dotfile (.env, .git/, .ssh/ …) and no secret-like name, also behind a
+// harmless-looking symlink.
+func TestFileReadRefusesPrivateNames(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "root")
+	const marker = "SECRET-VALUE-42"
+	for _, rel := range []string{".env", ".env.local", ".git/config", ".ssh/id_x", ".npmrc", "id_rsa", "server.pem", "tls.key",
+		"secrets/notes.md", "db_password.txt", "github-token.txt", "aws_credentials.txt"} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(marker), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".env", filepath.Join(root, "pretty.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{".env", ".env.local", ".git/config", ".ssh/id_x", ".npmrc", "id_rsa", "server.pem", "tls.key",
+		"secrets/notes.md", "db_password.txt", "github-token.txt", "aws_credentials.txt", "pretty.txt"} {
+		path := filepath.Join(root, rel)
+		var out, diag bytes.Buffer
+		err := runFileRead([]string{root}, []string{path, "--json"}, &out, &diag)
+		if !errors.Is(err, errFileJSONWritten) {
+			t.Errorf("%s: err %v, want the JSON refusal (out %q)", rel, err, out.String())
+			continue
+		}
+		var got fileErrorJSON
+		if json.Unmarshal(out.Bytes(), &got) != nil || got.Code != "private" || strings.Contains(out.String(), marker) {
+			t.Errorf("%s: %q, want code private", rel, out.String())
+		}
+		out.Reset()
+		if err := runFileRead([]string{root}, []string{path}, &out, &diag); err == nil || out.Len() != 0 {
+			t.Errorf("%s: plain read must fail with no output, got err %v out %q", rel, err, out.String())
+		}
+	}
+	var out, diag bytes.Buffer
+	if err := runFileRead([]string{root}, []string{filepath.Join(root, "notes.txt")}, &out, &diag); err != nil || out.String() != "hello\n" {
+		t.Fatalf("an ordinary file still reads: %v %q", err, out.String())
+	}
+}

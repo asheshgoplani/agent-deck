@@ -38,7 +38,8 @@ Only files under this session's project path, or under a `[web] file_link_roots`
 phone (the same rules as `agent-deck file read`). Dotfiles and dot folders (`.env`, `.git/`, `.ssh/`,
 `.aws/` …) and secret-like names (`*secret*`, `*credential*`, `*password*`, `*token*`, `*.pem`,
 `*.key`, `id_rsa*` …) never do, not as a page, not as an image or stylesheet inside one, not through
-a symlink. Pages are HTML, Markdown, images or plain text, up to 4 MiB. Anything else still opens in
+a symlink. Pages are `.html`, `.htm`, `.md`, `.markdown` or `.txt` files only, up to 4 MiB (images,
+CSS and fonts are bundled into a page, not opened on their own). Anything else still opens in
 the Mac app; `--json` then says `"where":"mac"` and why in `phone` (`outside_roots`, `private`,
 `unsupported`, `too_large`). Name the page plainly (`plan.md`, not `secret-plan.md`) and put it in
 the project. Never put secrets in a page: it is shown on the phone as written, and a page's own
