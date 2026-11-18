@@ -48,7 +48,13 @@ type RowsTimeline struct {
 	Removed       []string    `json:"removed,omitempty"`
 	ThroughCursor string      `json:"through_cursor,omitempty"`
 	BeforeCursor  string      `json:"before_cursor,omitempty"`
-	Status        *LiveStatus `json:"status,omitempty"`
+	// NextCursor is set only when a filter (Kinds, SkipEmptyBody) is on:
+	// the --since cursor that resumes after every row this read covered,
+	// filtered or not. It equals ThroughCursor; a client that derived its
+	// cursor from the last row it received would go backwards whenever
+	// that row was filtered out.
+	NextCursor string      `json:"next_cursor,omitempty"`
+	Status     *LiveStatus `json:"status,omitempty"`
 }
 
 // RowsOptions bounds a timeline read.
@@ -59,12 +65,19 @@ type RowsTimeline struct {
 //   - Tail returns only the last N rows, reading backwards in growing byte
 //     windows so a 100 MB transcript answers from its end.
 //   - AgentID returns one Claude Code sub-agent sidechain.
+//   - Kinds keeps only rows of these kinds (RowKinds); SkipEmptyBody drops
+//     rows whose body is only whitespace, except a tool call still waiting
+//     for its result. Both filter before serialization;
+//     Limit and Tail count rows that pass, and cursors still cover the
+//     rows filtered out (see RowsTimeline.NextCursor).
 type RowsOptions struct {
-	Since   string
-	Before  string
-	Limit   int
-	Tail    int
-	AgentID string
+	Since         string
+	Before        string
+	Limit         int
+	Tail          int
+	AgentID       string
+	Kinds         []string
+	SkipEmptyBody bool
 }
 
 // ValidateRowsOptions rejects combinations that cannot describe one page.
@@ -75,7 +88,7 @@ func ValidateRowsOptions(opts RowsOptions) error {
 	if opts.Before != "" && (opts.Limit <= 0 || opts.Since != "" || opts.Tail != 0 || opts.AgentID != "") {
 		return errors.New("recall rows: --before requires a positive --limit and cannot combine with --since, --tail or --agent")
 	}
-	return nil
+	return validateRowKinds(opts.Kinds)
 }
 
 // ErrRowsUnsupported is returned for a harness whose native format the rows
@@ -95,6 +108,12 @@ type rowsCursor struct {
 	A string         `json:"a"`
 	S rowParserState `json:"s"`
 	B string         `json:"b,omitempty"` // exclusive row boundary for older-history paging
+	// D lists open rows (a tool call waiting for its result, a queued
+	// message) that a --kinds / --skip-empty-body read dropped. Their later
+	// update patches name no kind, so a resumed filtered read drops patches
+	// for these ids instead of sending them to a client that never held
+	// the row. Only filtered reads set it; an unfiltered cursor is unchanged.
+	D []string `json:"d,omitempty"`
 }
 
 func encodeRowsCursor(c rowsCursor) string {
@@ -350,7 +369,7 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 			return tl, fmt.Errorf("recall rows: --agent is supported for Claude Code sidechains only")
 		}
 		rows, err := claudeSidechainRows(ctx, src.Path, opts.AgentID)
-		tl.Turns = rows
+		tl.Turns = FilterRows(rows, opts)
 		return tl, err
 	}
 	var f *os.File
@@ -362,6 +381,7 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		cursor = opts.Before
 	}
 	var before *rowsCursor
+	var dropped []string
 	if cursor != "" {
 		c, err := decodeRowsCursor(cursor)
 		if err != nil {
@@ -377,6 +397,7 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		}
 		f, size, start, st = file, info.Size(), c.O, c.S
 		set.keepForeign = true
+		dropped = c.D
 		if opts.Before != "" {
 			before = &c
 			size, start = c.O, 0
@@ -396,17 +417,29 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 	defer f.Close()
 	path := f.Name()
 	if before != nil {
-		return readOlderRows(ctx, src, f, size, opts.Limit, before)
+		return readOlderRows(ctx, src, f, size, opts.Limit, before, opts)
 	}
 	if opts.Tail > 0 && opts.Since == "" {
-		return readOlderRows(ctx, src, f, size, opts.Tail, nil)
+		return readOlderRows(ctx, src, f, size, opts.Tail, nil, opts)
 	}
 	p := newRowParser(src.Harness, st)
+	// With a filter, --limit counts rows that pass it, tracked per frame.
+	kept := newKeptCounter(opts)
 	end, err := scanLines(ctx, f, start, size, func(line []byte, _ int64) error {
 		for _, fr := range p.line(line) {
 			set.apply(fr)
+			kept.touch(set, fr)
 		}
-		if opts.Limit > 0 && set.len() >= opts.Limit {
+		if opts.Limit <= 0 {
+			return nil
+		}
+		if !opts.Filtered() {
+			if set.len() >= opts.Limit {
+				return errStopScan
+			}
+			return nil
+		}
+		if kept.n >= opts.Limit {
 			return errStopScan
 		}
 		return nil
@@ -414,26 +447,30 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 	if err != nil {
 		return tl, err
 	}
-	tl.Turns = set.list()
-	tl.Updates, tl.Removed = set.updates, set.removed
+	tl.Turns = FilterRows(set.list(), opts)
+	tl.Updates, tl.Removed = filterUpdates(set.updates, opts, dropped), set.removed
 	if src.Harness == "claude" {
-		tl.Turns = withClaudeSidechains(ctx, src.Path, tl.Turns)
-		tl.Updates = withClaudeSidechains(ctx, src.Path, tl.Updates)
+		tl.Turns = filterChildren(withClaudeSidechains(ctx, src.Path, tl.Turns), opts)
+		tl.Updates = filterChildren(withClaudeSidechains(ctx, src.Path, tl.Updates), opts)
 	}
 	anchor, err := anchorAt(f, end)
 	if err != nil {
 		return tl, err
 	}
-	tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, S: p.st})
+	tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, S: p.st, D: stillDropped(dropped, set, opts)})
 	if opts.Since == "" && len(tl.Turns) > 0 {
 		tl.BeforeCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, B: tl.Turns[0].ID})
+	}
+	if opts.Filtered() {
+		tl.NextCursor = tl.ThroughCursor
 	}
 	return tl, nil
 }
 
 // readOlderRows parses growing windows through the snapshot end until n
 // rows before the boundary are found, preserving later updates to older rows.
-func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, n int, before *rowsCursor) (RowsTimeline, error) {
+// With a filter in opts only rows that pass it count toward n.
+func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, n int, before *rowsCursor, opts RowsOptions) (RowsTimeline, error) {
 	var tl RowsTimeline
 	for window := int64(256 << 10); ; window *= 4 {
 		start := tailStart(f, size, window)
@@ -444,7 +481,8 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 		end, err := scanLines(ctx, f, start, size, func(line []byte, _ int64) error {
 			for _, frame := range p.line(line) {
 				if frame.Row != nil {
-					frame.Row = &Row{ID: frame.Row.ID, TS: frame.Row.TS, Queued: frame.Row.Queued}
+					id := filterIdentity(*frame.Row, opts)
+					frame.Row = &id
 				}
 				set.apply(frame)
 			}
@@ -454,6 +492,7 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 			return tl, err
 		}
 		rows := set.list()
+		drop := droppedOpen(nil, rows, opts)
 		boundaryFound := before == nil || before.B == ""
 		if before != nil && before.B != "" {
 			for i, row := range rows {
@@ -466,6 +505,7 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 		if start == 0 && !boundaryFound {
 			return tl, &ResyncError{"row_boundary_missing"}
 		}
+		rows = FilterRows(rows, opts)
 		if boundaryFound && (len(rows) >= n || start == 0) {
 			if len(rows) > n {
 				rows = rows[len(rows)-n:]
@@ -475,16 +515,19 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 				return tl, err
 			}
 			if src.Harness == "claude" {
-				rows = withClaudeSidechains(ctx, src.Path, rows)
+				rows = filterChildren(withClaudeSidechains(ctx, src.Path, rows), opts)
 			}
 			anchor, err := anchorAt(f, end)
 			if err != nil {
 				return tl, err
 			}
 			tl.Turns = rows
-			tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, S: p.st})
+			tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, S: p.st, D: drop})
 			if len(rows) > 0 {
 				tl.BeforeCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, B: rows[0].ID})
+			}
+			if opts.Filtered() {
+				tl.NextCursor = tl.ThroughCursor
 			}
 			return tl, nil
 		}

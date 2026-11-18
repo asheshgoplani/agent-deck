@@ -137,6 +137,7 @@ supersedes the messages before it (they stay readable and searchable).
 ```bash
 agent-deck recall timeline <session> --json --tail 50                # ordered typed turns, with a resume cursor
 agent-deck recall timeline <session> --json --since <cursor>         # only what changed after that cursor
+agent-deck recall timeline <session> --json --kinds user,assistant --tail 50   # only these row kinds; resume with next_cursor
 agent-deck recall follow <session> --after <cursor|end> --jsonl      # stream new turns as JSONL frames (--status adds status frames)
 ```
 
@@ -144,7 +145,9 @@ Both read the native transcript directly (Claude, Codex or Pi), whatever the
 index state; `--agent <id>` picks one Claude sub-agent sidechain and
 `--transcript <file> --harness claude|codex|pi` reads a file instead of a
 session. Frames: `row`, `update`, `remove`, `status`, `delivery`,
-`resync_required`.
+`resync_required`. `--kinds a,b` and `--skip-empty-body` filter timeline rows
+on the host that owns the transcript; a filtered answer carries `next_cursor`,
+the cursor to pass to `--since` next.
 
 `agent-deck web` serves the same timeline over HTTP at
 `GET /api/sessions/{id}/timeline` (parameters `tail`, `limit`, `since`,
