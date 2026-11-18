@@ -18,7 +18,7 @@ function appendChanges(previous, data) {
 }
 
 function Bubble({ row }) {
-  if (row.type === 'assistant') return html`<div class="chat-assistant">${renderMarkdown(row.body || '')}</div>`
+  if (row.type === 'assistant') return html`<div class="cc-md">${renderMarkdown(row.body || '')}</div>`
   if (row.type === 'user') return html`<div class="chat-user">${row.body}</div>`
   if (row.type === 'tool') return html`
     <details class="chat-tool">

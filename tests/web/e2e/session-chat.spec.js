@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test'
 
+test.use({ serviceWorkers: 'block' })
+
 test('reads the timeline and returns to the same terminal', async ({ page, request }) => {
   await request.post('/__fixture/reset')
   await page.route('**/api/sessions/sess-001/timeline?*', route => {
