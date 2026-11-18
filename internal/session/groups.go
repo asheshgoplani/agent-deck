@@ -1590,7 +1590,30 @@ func (t *GroupTree) MoveGroupTo(sourcePath, destParentPath string) error {
 	return nil
 }
 
-// DeleteGroup deletes a group, all its subgroups, and moves all sessions to default
+// DeleteGroupDestination returns the path of the group that receives the
+// sessions of the group at path (and of its subgroups) when it is deleted: the
+// parent group, or the default group for a root group or a parent that is not
+// in the tree. It is the one rule for the CLI, the TUI and the web.
+func (t *GroupTree) DeleteGroupDestination(path string) string {
+	if parent := getParentPath(path); parent != "" {
+		if _, ok := t.Groups[parent]; ok {
+			return parent
+		}
+	}
+	return DefaultGroupPath
+}
+
+// DeleteGroupDestinationName is the display name of DeleteGroupDestination.
+func (t *GroupTree) DeleteGroupDestinationName(path string) string {
+	dest := t.DeleteGroupDestination(path)
+	if group, ok := t.Groups[dest]; ok && group.Name != "" {
+		return group.Name
+	}
+	return DefaultGroupName
+}
+
+// DeleteGroup deletes a group and all its subgroups, and moves their sessions
+// to DeleteGroupDestination(path): the parent group, else the default group.
 func (t *GroupTree) DeleteGroup(path string) []*Instance {
 	group, exists := t.Groups[path]
 	if !exists || path == DefaultGroupPath {
@@ -1627,22 +1650,24 @@ func (t *GroupTree) DeleteGroup(path string) []*Instance {
 	// Otherwise deleting an empty non-default group would spuriously materialize
 	// a "My Sessions" group the user never asked for.
 	if len(allMovedSessions) > 0 {
+		destPath := t.DeleteGroupDestination(path)
 		for _, sess := range allMovedSessions {
-			sess.GroupPath = DefaultGroupPath
+			sess.GroupPath = destPath
 		}
 
-		defaultGroup, exists := t.Groups[DefaultGroupPath]
+		destGroup, exists := t.Groups[destPath]
 		if !exists {
-			defaultGroup = &Group{
+			// Only the default group can be missing here.
+			destGroup = &Group{
 				derived:  true,
 				Name:     DefaultGroupName,
 				Path:     DefaultGroupPath,
 				Expanded: true,
 				Sessions: []*Instance{},
 			}
-			t.Groups[DefaultGroupPath] = defaultGroup
+			t.Groups[DefaultGroupPath] = destGroup
 		}
-		defaultGroup.Sessions = append(defaultGroup.Sessions, allMovedSessions...)
+		destGroup.Sessions = append(destGroup.Sessions, allMovedSessions...)
 	}
 
 	// Remove the main group

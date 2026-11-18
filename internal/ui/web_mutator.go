@@ -172,7 +172,7 @@ func (m *WebMutator) StartSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	// Starting an archived session unarchives it durably first, as the CLI
 	// and the TUI do; a failed start restores the exact archive timestamp.
@@ -191,7 +191,7 @@ func (m *WebMutator) StopSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	loaded := session.BeforeStopKill(m.h.storage, id)
 	if err := inst.Kill(); err != nil {
@@ -215,7 +215,7 @@ func (m *WebMutator) RestartSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	_, err = session.UnarchiveAround(inst, "restart", m.persistArchived, func() error {
 		return inst.RestartFrom(telemetry.SurfaceWeb)
@@ -248,7 +248,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 
 	// Kill the tmux session (ignore errors — may already be stopped)
@@ -299,7 +299,7 @@ func (m *WebMutator) CloseSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	if err := inst.Kill(); err != nil {
 		return err
@@ -320,7 +320,12 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
+	}
+	// Like `agent-deck session archive`: archiving twice is an error, not a
+	// second success.
+	if inst.IsArchived() {
+		return fmt.Errorf("session is already archived: %s", id)
 	}
 	if err := inst.Kill(); err != nil {
 		return fmt.Errorf("failed to stop session: %w", err)
@@ -342,7 +347,7 @@ func (m *WebMutator) UnarchiveSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	m.h.instancesMu.Lock()
 	if !inst.IsArchived() {
@@ -579,7 +584,7 @@ func (m *WebMutator) ForkSession(id string) (string, error) {
 	parent := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if parent == nil {
-		return "", fmt.Errorf("session not found: %s", id)
+		return "", fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 
 	forked, _, err := parent.CreateForkedInstanceForTool(parent.Title+" (fork)", parent.GroupPath, nil)
@@ -630,7 +635,7 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return nil, false, fmt.Errorf("session not found: %s", id)
+		return nil, false, fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 
 	changed := make([]string, 0, len(updates))
@@ -1009,8 +1014,11 @@ func (m *WebMutator) FinishWorktree(id string, opts menudata.WorktreeFinishOptio
 	}, nil
 }
 
-// DeleteGroup deletes a group (and its subgroups), moving sessions to the default
-// group. Returns an error if groupPath is the default group.
+// DeleteGroup deletes a group (and its subgroups), moving their sessions to
+// the parent group, or to the default group for a root group
+// (session.GroupTree.DeleteGroupDestination, the CLI's and the TUI's rule).
+// Returns an error if groupPath is the default group and
+// menudata.ErrGroupNotFound when no group has that path.
 func (m *WebMutator) DeleteGroup(groupPath string) error {
 	if groupPath == session.DefaultGroupPath {
 		return fmt.Errorf("cannot delete default group")
@@ -1021,6 +1029,12 @@ func (m *WebMutator) DeleteGroup(groupPath string) error {
 	}
 	defer unlock()
 
+	if m.h.groupTree == nil {
+		return menudata.ErrGroupNotFound
+	}
+	if _, ok := m.h.groupTree.Groups[groupPath]; !ok {
+		return menudata.ErrGroupNotFound
+	}
 	m.h.groupTree.DeleteGroup(groupPath)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)

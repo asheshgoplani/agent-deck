@@ -908,7 +908,7 @@ agent-deck group create <name> [--parent <group>]
 agent-deck group delete <name> [--force]
 ```
 
-`--force`: Move sessions to parent and delete.
+`--force`: Move the sessions of the group and its subgroups to the parent group (to My Sessions for a root group) and delete.
 
 ### group move
 
