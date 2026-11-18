@@ -434,7 +434,8 @@ func TestAnchorPatterns(t *testing.T) {
 		{"config/local.json", "/config/local.json"},
 		{"/config/local.json", "/config/local.json"},
 		{"config/*/local.json", "/config/*/local.json"},
-		{"**/x.env", "/**/x.env"},
+		{"**/x.env", "**/x.env"},
+		{"!**/x", "!**/x"},
 		{"!config/local.json", "!/config/local.json"},
 		{"!sub/.env", "!/sub/.env"},
 	}
@@ -673,6 +674,37 @@ func TestProcessWorktreeInclude_MixedPatternsKeepAnchoring(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "config", "local.json")); !os.IsNotExist(err) {
 		t.Errorf("nested sub/config/local.json must not be copied (err=%v)", err)
+	}
+}
+
+// An anchored negation only un-ignores the root path. The nested path keeps
+// the bare-name match, as gitignore does.
+func TestProcessWorktreeInclude_AnchoredNegationKeepsNestedMatch(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "local.json\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "config", "local.json"), `{"root": true}`)
+	writeFile(t, filepath.Join(repoDir, "sub", "config", "local.json"), `{"nested": true}`)
+
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "local.json\n!config/local.json\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(worktreeDir, "config", "local.json")); !os.IsNotExist(err) {
+		t.Errorf("negated config/local.json must not be copied (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "config", "local.json")); err != nil {
+		t.Errorf("expected sub/config/local.json to keep the bare-name match: %v", err)
 	}
 }
 

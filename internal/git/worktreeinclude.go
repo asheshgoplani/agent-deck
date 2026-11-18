@@ -111,12 +111,15 @@ func anchorPatterns(patterns []string) []string {
 }
 
 // anchorPattern returns pattern with a leading "/" when gitignore anchors it at
-// the repository root. Bare names and names with only a trailing separator keep
-// matching at any depth. A leading "/**/" is harmless: the matcher strips it.
+// the repository root. Bare names, names with only a trailing separator and a
+// leading "**/" keep matching at any depth.
 func anchorPattern(pattern string) string {
 	negate := strings.HasPrefix(pattern, "!")
 	body := strings.TrimPrefix(pattern, "!")
-	if strings.HasPrefix(body, "/") || !strings.Contains(strings.TrimSuffix(body, "/"), "/") {
+	if strings.HasPrefix(body, "/") || strings.HasPrefix(body, "**/") {
+		return pattern
+	}
+	if !strings.Contains(strings.TrimSuffix(body, "/"), "/") {
 		return pattern
 	}
 	if negate {
