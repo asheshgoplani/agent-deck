@@ -380,7 +380,30 @@ var (
 // safeHref keeps http(s), mailto and relative targets; anything else
 // (javascript:, data:, file:) becomes "#".
 func safeHref(raw string) string {
-	raw = strings.TrimSpace(raw)
+	// Decode entities until stable (a browser decodes "java&#x73;cript:" or
+	// "javascript&colon;" in an attribute) and drop whitespace and control
+	// characters (browsers ignore them in a scheme: "java\tscript:").
+	for i := 0; i < 4; i++ {
+		d := html.UnescapeString(raw)
+		if d == raw {
+			break
+		}
+		raw = d
+	}
+	raw = strings.Map(func(r rune) rune {
+		if r <= ' ' || r == 0x7f {
+			return -1
+		}
+		return r
+	}, raw)
+	// A ':' before any '/', '?' or '#' is a scheme, parsed or not.
+	if i := strings.IndexAny(raw, ":/?#"); i >= 0 && raw[i] == ':' {
+		switch strings.ToLower(raw[:i]) {
+		case "http", "https", "mailto":
+		default:
+			return "#"
+		}
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "#"
