@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,5 +122,59 @@ func TestReloadedNeverStartedSession_ReadsIdleNotError(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A start that failed before tmux existed (a failed queued spawn, a missing
+// project dir) is stored as error with no start stamp. It is not a
+// never-started session: it must keep reading error everywhere, not idle.
+// (Found in independent review.)
+func TestFailedStartBeforeTmuxStaysError(t *testing.T) {
+	t.Run("failed-queued-spawn", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		storage := newTestStorage(t)
+		t.Cleanup(SetQueuedSpawnForTest(func(*Instance, string) error { return errors.New("spawn failed") }))
+		inst := NewInstanceWithGroup("worker", t.TempDir(), "workers")
+		inst.Tool = "claude"
+		inst.CreatedAt = time.Now().Add(-time.Hour)
+		inst.MarkQueued("brief")
+		if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := storage.StartQueued(inst); err == nil {
+			t.Fatal("StartQueued returned nil for a failed spawn")
+		}
+		requireReloadedStatus(t, storage, StatusError)
+	})
+	t.Run("missing-project-dir", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		storage := newTestStorage(t)
+		inst := NewInstanceWithGroup("worker2", "/nonexistent/failed-start-dir", "workers")
+		inst.Tool = "shell"
+		inst.CreatedAt = time.Now().Add(-time.Hour)
+		inst.MarkQueued("")
+		if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := storage.StartQueued(inst); err == nil {
+			if ts := inst.GetTmuxSession(); ts != nil {
+				_ = ts.Kill()
+			}
+			t.Fatal("start in a missing directory did not fail")
+		}
+		requireReloadedStatus(t, storage, StatusError)
+	})
+}
+
+func requireReloadedStatus(t *testing.T, storage *Storage, want Status) {
+	t.Helper()
+	loaded, _, err := storage.LoadWithGroups()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("load: %v %+v", err, loaded)
+	}
+	stored := loaded[0].Status
+	RefreshLiveStatus(loaded)
+	if got := loaded[0].GetStatusThreadSafe(); got != want {
+		t.Errorf("reloaded status after a failed start = %q (stored %q), want %q", got, stored, want)
 	}
 }

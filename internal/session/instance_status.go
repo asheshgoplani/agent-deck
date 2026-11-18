@@ -154,12 +154,12 @@ func (i *Instance) neverStarted() bool {
 // (LastAccessedAt), durable agent activity, a hook record and every
 // tool conversation id. A session that ran under a binary older than the
 // start stamp still carries one of the others, so it keeps its error.
-// The stored status may be error too: that heals rows an earlier binary
-// already wrote as error for this very reason.
+// The stored status must still be the pristine post-add one (idle or
+// starting): a stored error with no start stamp is a start that failed
+// before tmux existed (spawn failure, failed queued start), which must
+// stay error.
 func (i *Instance) storedNeverStarted() bool {
-	switch i.Status {
-	case StatusIdle, StatusStarting, StatusError:
-	default:
+	if i.Status != StatusIdle && i.Status != StatusStarting {
 		return false
 	}
 	if !i.LastStartedAt.IsZero() || !i.LastAccessedAt.IsZero() {

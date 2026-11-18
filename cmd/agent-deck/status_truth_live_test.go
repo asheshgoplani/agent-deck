@@ -86,16 +86,21 @@ func TestSessionRemove_JudgesTheStatusListShows(t *testing.T) {
 	}
 }
 
-// `session remove --all-errored` must remove what list shows as error and
-// keep a session that was added but never started (list shows it idle).
+// `session remove --all-errored` is a bulk delete: a row goes only when
+// its stored status AND the status list shows are both error. A row that
+// was added but never started (list shows idle) stays, and so does a row
+// stored healthy whose tmux is gone for one sample (another process
+// mid-restart), even though list shows it as error at that instant.
 func TestSessionRemove_AllErroredJudgesTheStatusListShows(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
 	home := t.TempDir()
-	deadID := addTestSession(t, home, filepath.Join(home, "dead"), "died-while-running")
-	forceSetStartedStatus(t, home, deadID, session.StatusRunning, time.Now().Add(-time.Hour))
+	deadID := addTestSession(t, home, filepath.Join(home, "dead"), "died")
+	forceSetStartedStatus(t, home, deadID, session.StatusError, time.Now().Add(-time.Hour))
 	freshID := addTestSession(t, home, filepath.Join(home, "fresh"), "never-started")
+	blinkID := addTestSession(t, home, filepath.Join(home, "blink"), "mid-restart")
+	forceSetStartedStatus(t, home, blinkID, session.StatusIdle, time.Now().Add(-time.Hour))
 	if got := listStatusOf(t, home, freshID); got != "idle" {
 		t.Fatalf("list shows a never-started session as %q, want idle", got)
 	}
@@ -105,10 +110,13 @@ func TestSessionRemove_AllErroredJudgesTheStatusListShows(t *testing.T) {
 	}
 	listJSON := readSessionsJSON(t, home)
 	if strings.Contains(listJSON, deadID) {
-		t.Errorf("a session list showed as error was not removed:\n%s", listJSON)
+		t.Errorf("a session stored and shown as error was not removed:\n%s", listJSON)
 	}
 	if !strings.Contains(listJSON, freshID) {
 		t.Errorf("a never-started session was removed as errored:\n%s", listJSON)
+	}
+	if !strings.Contains(listJSON, blinkID) {
+		t.Errorf("a session stored idle was removed on one live sample:\n%s", listJSON)
 	}
 }
 

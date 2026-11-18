@@ -8,7 +8,7 @@ func refreshLiveStatus(instances []*session.Instance) {
 	session.RefreshLiveStatus(instances)
 }
 
-// liveSwitchStatuses returns the live status of every stored session by id,
+// liveSwitchStatuses returns the live status of every non-archived session by id,
 // for switch's candidates and its live-session bonus. A nil map (no state
 // yet, or a read failure) leaves the stored statuses in place.
 func liveSwitchStatuses(profile string) map[string]string {
@@ -21,6 +21,9 @@ func liveSwitchStatuses(profile string) map[string]string {
 	if err != nil {
 		return nil
 	}
+	// Switch never targets an archived session, so only the others get the
+	// status pass.
+	instances = session.FilterInstancesByArchive(instances, false)
 	refreshLiveStatus(instances)
 	out := make(map[string]string, len(instances))
 	for _, inst := range instances {
