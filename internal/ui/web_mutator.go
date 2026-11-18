@@ -47,6 +47,7 @@ type WebMutator struct {
 type webDeletedEntry struct {
 	instance  *session.Instance
 	deletedAt time.Time
+	prev      undoPrevState // state before the delete, restored by an undo
 }
 
 // NewWebMutator returns a WebMutator backed by the given Home. The undo
@@ -251,6 +252,9 @@ func (m *WebMutator) DeleteSession(id string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
+	// Captured before the kill, which writes StatusStopped: an undo brings
+	// the session back in this state.
+	prev := captureUndoState(inst)
 	// Kill the tmux session (ignore errors — may already be stopped)
 	_ = inst.Kill()
 
@@ -279,7 +283,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	// session's pending inbox events.
 	session.PublishSessionClosed(storage.Profile(), id, session.SessionClosedRemoved)
 	inst.RecordTelemetryEndFrom(telemetry.EndDelete, telemetry.SurfaceWeb)
-	m.pushUndo(inst)
+	m.pushUndo(inst, prev)
 	return nil
 }
 
@@ -405,9 +409,6 @@ func (m *WebMutator) UndoDelete() (string, error) {
 	return id, nil
 }
 
-// restartForUndo restarts a session an undo brings back (a seam for tests).
-var restartForUndo = func(inst *session.Instance) error { return inst.Restart() }
-
 // restoreDeleted restarts a popped undo entry and re-persists it.
 func (m *WebMutator) restoreDeleted(entry webDeletedEntry) (string, error) {
 
@@ -416,7 +417,7 @@ func (m *WebMutator) restoreDeleted(entry webDeletedEntry) (string, error) {
 	// tool (e.g. a tool the user has since uninstalled). Bubble the
 	// error up so the handler returns 500; the entry has already been
 	// popped, mirroring the TUI's ctrl+z semantics.
-	if err := restartForUndo(entry.instance); err != nil {
+	if _, err := restoreForUndo(entry.instance, entry.prev); err != nil {
 		return "", fmt.Errorf("restart session: %w", err)
 	}
 
@@ -458,7 +459,7 @@ func (m *WebMutator) restoreDeleted(entry webDeletedEntry) (string, error) {
 // capped at 10 entries (FIFO eviction) to bound memory. Entries past the undo
 // window, or evicted by the cap, can no longer be undone: their deletes are
 // final and the deferred inbox and notify-state sweep (#910) runs for them.
-func (m *WebMutator) pushUndo(inst *session.Instance) {
+func (m *WebMutator) pushUndo(inst *session.Instance, prev undoPrevState) {
 	// The row is deleted: an undo must re-insert it, not update it.
 	inst.ForgetStorageSnapshot()
 	m.undoMu.Lock()
@@ -478,6 +479,7 @@ func (m *WebMutator) pushUndo(inst *session.Instance) {
 	m.undoStack = append(kept, webDeletedEntry{
 		instance:  inst,
 		deletedAt: time.Now(),
+		prev:      prev,
 	})
 	if len(m.undoStack) > 10 {
 		final = append(final, m.undoStack[:len(m.undoStack)-10]...)
