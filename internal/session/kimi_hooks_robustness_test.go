@@ -166,14 +166,18 @@ func TestKimiHooksPreserveExistingConfigMode(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			var changed bool
 			var err error
 			if operation == "install" {
-				_, err = session.InjectKimiHooks(dir)
+				changed, err = session.InjectKimiHooks(dir)
 			} else {
-				_, err = session.RemoveKimiHooks(dir)
+				changed, err = session.RemoveKimiHooks(dir)
 			}
 			if err != nil {
 				t.Fatalf("%s Kimi hooks: %v", operation, err)
+			}
+			if !changed {
+				t.Fatalf("%s Kimi hooks reported no rewrite", operation)
 			}
 			info, err := os.Stat(configPath)
 			if err != nil {
