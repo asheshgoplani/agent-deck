@@ -133,7 +133,7 @@ func isRemovableStatus(s session.Status) bool {
 }
 
 // needsForceToRemove reports whether removing inst would kill a session that
-// may still be working: its tmux session is alive and it is not stopped or
+// may still be working: it has a live process and it is not stopped or
 // errored. A row whose process is gone (never started, a pane that died, a
 // CLI start whose row kept 'starting') has nothing to kill, whatever status
 // it last stored, so it is removable without --force; refusing it was a dead
@@ -142,7 +142,20 @@ func needsForceToRemove(inst *session.Instance) bool {
 	if isRemovableStatus(inst.Status) {
 		return false
 	}
-	return inst.Exists()
+	return sessionHasLiveProcess(inst)
+}
+
+// sessionHasLiveProcess reports whether inst still has a process running in
+// tmux. A tmux session that exists is not enough: with remain-on-exit on,
+// tmux keeps the session after its process exits, holding only dead panes
+// (#{pane_dead}). A session whose panes are all dead is not running. A
+// variable so tests can stand in for tmux.
+var sessionHasLiveProcess = func(inst *session.Instance) bool {
+	ts := inst.GetTmuxSession()
+	if ts == nil || !ts.Exists() {
+		return false
+	}
+	return !ts.AllPanesDead()
 }
 
 // refuseRunningRemoval is the one guard `remove`/`rm` and `session remove`

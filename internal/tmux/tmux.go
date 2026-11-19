@@ -1652,6 +1652,43 @@ func (s *Session) IsPaneDead() bool {
 	return strings.TrimSpace(string(out)) == "1"
 }
 
+// AllPanesDead reports whether every pane of the session is dead
+// (#{pane_dead} = 1). With remain-on-exit on, tmux keeps a session whose
+// process has exited, so has-session (Exists) still succeeds although
+// nothing is left running in it. Unlike IsPaneDead, which looks only at the
+// primary pane 0.0, this checks every pane in every window: a session with
+// any live pane is still running.
+//
+// An error, a timeout or an empty listing reads as "not all dead": a caller
+// that uses this to skip a safety check must not call a live session dead.
+func (s *Session) AllPanesDead() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	out, err := commandOutput(s.tmuxCmdContext(ctx, "list-panes", "-s", "-t", s.TmuxName(), "-F", "#{pane_dead}"))
+	if err != nil {
+		return false
+	}
+	return allPanesDeadFromList(string(out))
+}
+
+// allPanesDeadFromList interprets one "#{pane_dead}" line per pane. It is
+// true only when there is at least one pane and every line is "1". Pure so
+// the parsing is unit-testable.
+func allPanesDeadFromList(raw string) bool {
+	panes := 0
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line != "1" {
+			return false
+		}
+		panes++
+	}
+	return panes > 0
+}
+
 // PaneDeadExitStatus returns the exit code of the process that ran in the
 // session's primary pane, and true, but ONLY when the pane died while
 // remain-on-exit was enabled so tmux still holds the dead pane and its exit
