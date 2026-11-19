@@ -463,7 +463,9 @@ const checkpointCleanupTimeout = 10 * time.Second
 
 func checkpointGit(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error) {
 	opts := []string{"--no-optional-locks", "--no-replace-objects", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false", "-c", "submodule.recurse=false"}
-	cmd := exec.CommandContext(ctx, "git", append(opts, args...)...)
+	// G204: only fixed Git operations reach this helper. The base is a full
+	// hex object ID, worktree paths follow --, and patch data goes to stdin.
+	cmd := exec.CommandContext(ctx, "git", append(opts, args...)...) //nolint:gosec // G204: fixed Git operations and validated arguments, no shell
 	if dir == "" {
 		dir = os.TempDir()
 	}
