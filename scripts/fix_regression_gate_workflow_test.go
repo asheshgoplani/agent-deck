@@ -57,12 +57,12 @@ func TestFixRegressionGate_CheckerComesFromTheBase(t *testing.T) {
 	steps := gateSteps(t)
 	trusted := ""
 	for _, s := range steps {
-		if strings.HasPrefix(s.Uses, "actions/checkout@") && s.With["ref"] == "${{ github.event.pull_request.base.sha }}" {
+		if strings.HasPrefix(s.Uses, "actions/checkout@") && s.With["ref"] == "${{ github.event.pull_request.base.ref }}" {
 			trusted = s.With["path"]
 		}
 	}
 	if trusted == "" {
-		t.Fatal("no checkout of github.event.pull_request.base.sha: the checker must be built from the base, not the PR")
+		t.Fatal("no checkout of github.event.pull_request.base.ref: the checker must be built from the base branch, not the PR (base.sha can be stale)")
 	}
 	built := false
 	for _, s := range steps {
