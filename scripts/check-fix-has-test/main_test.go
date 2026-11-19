@@ -188,16 +188,19 @@ func TestClosedIssues(t *testing.T) {
 
 func TestIsTestFile(t *testing.T) {
 	for p, want := range map[string]bool{
-		"internal/session/restart_test.go": true,
-		"tests/e2e/send.sh":                true,
-		"internal/ui/testdata/pane.txt":    true,
-		"web/src/app.test.ts":              true,
-		"web/src/app.spec.js":              true,
-		"internal/session/restart.go":      false,
-		"cmd/tests.go":                     false,
-		"docs/testing.md":                  false,
-		"test":                             false,
-		"README.md":                        false,
+		"internal/session/restart_test.go":     true,
+		"tests/e2e/send.sh":                    true,
+		"internal/ui/testdata/pane.txt":        true,
+		"web/src/app.test.ts":                  true,
+		"web/src/app.spec.js":                  true,
+		"scripts/runtime-health/test_probe.py": true,
+		"scripts/tools/probe_test.py":          true,
+		"scripts/tools/probe.py":               false,
+		"internal/session/restart.go":          false,
+		"cmd/tests.go":                         false,
+		"docs/testing.md":                      false,
+		"test":                                 false,
+		"README.md":                            false,
 	} {
 		if got := IsTestFile(p); got != want {
 			t.Errorf("IsTestFile(%q) = %v, want %v", p, got, want)
