@@ -24,6 +24,7 @@ const maxFollowDropped = 1024
 // the client, or a client whose last rows were all filtered out resumes
 // from an older cursor and re-reads the same window.
 type FollowFilter struct {
+	after   string
 	opts    RowsOptions
 	dropped []string        // ids the client does not hold, newest last
 	open    map[string]bool // dropped ids whose row may still change
@@ -31,13 +32,27 @@ type FollowFilter struct {
 
 // NewFollowFilter starts a filter for a follow that resumes at after.
 func NewFollowFilter(after string, opts RowsOptions) *FollowFilter {
-	f := &FollowFilter{opts: opts, open: map[string]bool{}}
+	f := &FollowFilter{after: after, opts: opts, open: map[string]bool{}}
 	if c, err := decodeRowsCursor(after); err == nil {
 		for _, id := range c.D {
 			f.drop(id, true)
 		}
 	}
 	return f
+}
+
+// Start is the cursor the follow resumes from, in the form Apply hands
+// out, or "" when after is not a cursor (the follow then answers
+// resync_required). A stream sends it before any frame, so a client that
+// drops before the first frame still resumes at the right place.
+func (f *FollowFilter) Start() string {
+	if _, err := decodeRowsCursor(f.after); err != nil {
+		return ""
+	}
+	if !f.opts.Filtered() {
+		return f.after
+	}
+	return f.cursor(f.after)
 }
 
 // Apply reports whether fr goes to the client and returns it with its

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -377,4 +378,118 @@ func TestSessionTimelineStream_StopsOnDisconnect(t *testing.T) {
 	ts.Close()
 	ts.Client().CloseIdleConnections()
 	goleak.VerifyNone(t, baseline)
+}
+
+// An open timeline stream, like /events/*, does not count as in-flight
+// work: a headless web server with a follower open still self-restarts
+// into a new build (review F-1).
+func TestSessionTimelineStream_DoesNotBlockIdle(t *testing.T) {
+	f := newTimelineFixture(t, "claude", true)
+	st := f.openStream(t, newStreamServer(t, f), "status=true&after=end", nil)
+	if fr, _ := st.nextFrame(t); fr.Frame != "status" {
+		t.Fatalf("frame = %+v", fr)
+	}
+	if !f.srv.Idle() {
+		t.Fatalf("open /timeline/stream counts as in-flight (InFlightRequests=%d)", f.srv.InFlightRequests())
+	}
+}
+
+// after=end sends its resolved start cursor as an id before any frame, so
+// a client that drops before the first frame reconnects with it and gets
+// the rows written in between instead of skipping them (review F-2).
+func TestSessionTimelineStream_AfterEndSendsStartCursor(t *testing.T) {
+	f := newTimelineFixture(t, "claude", true)
+	f.appendTurns(t, 0, 1)
+	ts := newStreamServer(t, f)
+	st := f.openStream(t, ts, "after=end", nil)
+	var start sseEvent
+	select {
+	case start = <-st.events:
+	case <-time.After(2 * time.Second):
+		t.Fatal("after=end: no id before the first frame")
+	}
+	if start.ID == "" || start.Event != "" || start.Data != "" {
+		t.Fatalf("first block = %+v, want an id-only block", start)
+	}
+	st.close()
+	f.appendTurns(t, 1, 1) // written while the client is away
+	resumed := f.openStream(t, ts, "after=end", http.Header{"Last-Event-ID": {start.ID}})
+	if fr, _ := resumed.nextFrame(t); fr.Frame != "row" || fr.Row.Body != "user turn 1" {
+		t.Fatalf("resume from the start id = %+v, want the row written while away", fr)
+	}
+}
+
+const (
+	streamToolCall   = `{"type":"assistant","uuid":"a-tool","sessionId":"conversation-1","message":{"id":"m-tool","role":"assistant","content":[{"type":"tool_use","id":"toolu_r","name":"Bash","input":{"command":"make"}}]},"timestamp":"2026-11-18T10:00:00Z"}` + "\n"
+	streamToolResult = `{"type":"user","uuid":"r-tool","sessionId":"conversation-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_r","content":"BIG RESULT"}]},"timestamp":"2026-11-18T10:00:01Z"}` + "\n"
+)
+
+func appendRaw(t *testing.T, path, s string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A filtered after=end stream starts from a filtered read's cursor, so the
+// result of a tool call already open at the end stays off the wire for a
+// client that filtered tool rows out (review F-3).
+func TestSessionTimelineStream_AfterEndFilterKeepsOpenCallResultOff(t *testing.T) {
+	f := newTimelineFixture(t, "claude", true)
+	f.appendTurns(t, 0, 1)
+	appendRaw(t, f.path, streamToolCall)
+	// openStream returns once the response headers arrive, which is after
+	// the handler resolved "end", so the call below is open at the start.
+	st := f.openStream(t, newStreamServer(t, f), "kinds=user&after=end", nil)
+	appendRaw(t, f.path, streamToolResult)
+	f.appendTurns(t, 1, 1)
+	for {
+		fr, ev := st.nextFrame(t)
+		if fr.Frame == "update" || strings.Contains(ev.Data, "BIG RESULT") {
+			t.Fatalf("kinds=user stream sent the open call's result: %s", ev.Data)
+		}
+		if fr.Frame == "row" {
+			return
+		}
+	}
+}
+
+// Timeline streams are capped per server; past the cap a new one is
+// refused with 429 before any frame, and a slot frees when a client
+// disconnects (review N-1).
+func TestSessionTimelineStream_CapsConcurrentStreams(t *testing.T) {
+	f := newTimelineFixture(t, "claude", true)
+	ts := newStreamServer(t, f)
+	var open []*timelineStream
+	for i := 0; ; i++ {
+		st := f.openStream(t, ts, "after=end", nil)
+		if st.resp.StatusCode != http.StatusOK {
+			if st.resp.StatusCode != http.StatusTooManyRequests || i != 32 {
+				t.Fatalf("stream %d: status %d, want 429 after 32 open", i+1, st.resp.StatusCode)
+			}
+			break
+		}
+		if i == 32 {
+			t.Fatal("33 concurrent timeline streams accepted, want a cap of 32")
+		}
+		open = append(open, st)
+	}
+	open[0].close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st := f.openStream(t, ts, "after=end", nil)
+		if st.resp.StatusCode == http.StatusOK {
+			return
+		}
+		st.close()
+		if time.Now().After(deadline) {
+			t.Fatalf("slot not freed 5s after a disconnect: status %d", st.resp.StatusCode)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

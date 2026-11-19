@@ -236,7 +236,10 @@ data: {"frame":"row","row":{"id":"…","kind":"assistant","body":"…"},"cursor"
 ```
 
 - `after` (required): a `through_cursor`, `next_cursor` or frame cursor, or
-  `end` to start at the current end.
+  `end` to start at the current end. The first block is always an id-only
+  event with the start cursor (for `end`, the resolved end), so a client
+  that drops before the first frame reconnects without skipping the rows
+  written in between.
 - `kinds`, `skip-empty-body`: the timeline filter. Rows the filter drops are
   not sent, nor their later `update`/`remove` frames. When a held-back frame
   carried a cursor, the stream sends an id-only event (an `id:` line, no
@@ -250,7 +253,13 @@ data: {"frame":"row","row":{"id":"…","kind":"assistant","body":"…"},"cursor"
 The stream uses the same token check as the snapshot route (the
 `Authorization` header or the web UI's token cookie; a `?token=` query is
 refused). It ends after `resync_required`, and when the client disconnects;
-an idle stream sends a `: keepalive` comment every 15 seconds. Before the
+an idle stream sends a `: keepalive` comment every 15 seconds. On
+`resync_required`, close the EventSource and reload with a fresh snapshot:
+an EventSource left open reconnects with the same stale `Last-Event-ID` and
+gets `resync_required` again. A server keeps at most 32 timeline streams
+open; past that a new one gets 429 `RATE_LIMITED` until a client
+disconnects. An open stream does not hold back a headless `agent-deck web`
+from restarting into a new build, as with `/events/*`. Before the
 first event, errors are JSON as on the snapshot route (a missing `after`
 is a 400).
 | 501 | `NOT_IMPLEMENTED` | the session's tool is not Claude Code, Codex or Pi; the CLI falls back to the index for those, the route does not |

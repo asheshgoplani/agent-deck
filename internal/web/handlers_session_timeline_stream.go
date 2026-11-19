@@ -22,6 +22,11 @@ var (
 	// timelineStreamStatusEvery bounds how often status=true reloads the
 	// menu snapshot; the menu stream polls at the same rate.
 	timelineStreamStatusEvery = 2 * time.Second
+	// timelineStreamMax caps the timeline streams one server keeps open.
+	// Each stream parses what is appended to its transcript on its own, so
+	// cost grows with streams times bytes; past the cap a new stream is
+	// refused with 429 until a client disconnects.
+	timelineStreamMax int64 = 32
 )
 
 // handleSessionTimelineStream is GET /api/sessions/{id}/timeline/stream,
@@ -38,6 +43,11 @@ var (
 // event id. With a filter, the cursor of a frame the filter holds back is
 // sent as an id-only event (no data): it is the stream's next_cursor. The
 // stream ends after resync_required, or when the client disconnects.
+//
+// The first block is always an id-only event with the start cursor (the
+// resolved "end", or after itself), so a client that drops before the
+// first frame reconnects from it. An open stream is not in-flight work
+// (isStreamPath), and at most timelineStreamMax are open per server.
 func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "method not allowed")
@@ -75,12 +85,21 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "stream unavailable")
 		return
 	}
+	if s.timelineStreams.Add(1) > timelineStreamMax {
+		s.timelineStreams.Add(-1)
+		writeAPIError(w, http.StatusTooManyRequests, ErrCodeRateLimited, fmt.Sprintf("too many open timeline streams (at most %d); close one and retry", timelineStreamMax))
+		return
+	}
+	defer s.timelineStreams.Add(-1)
 	src, _, _, ok := s.timelineSource(w, sessionID, opts)
 	if !ok {
 		return
 	}
 	if after == "end" {
-		tl, err := query.ReadRows(r.Context(), src, query.RowsOptions{Tail: 1})
+		// Resolve the end with the stream's own filter: a filtered read's
+		// cursor lists the open rows it dropped (a tool call still waiting
+		// for its result), so their later patches stay off the wire.
+		tl, err := query.ReadRows(r.Context(), src, query.RowsOptions{Tail: 1, Kinds: opts.Kinds, SkipEmptyBody: opts.SkipEmptyBody})
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to read the session transcript")
 			return
@@ -101,6 +120,11 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 	out := &sseWriter{w: w, flusher: flusher, last: time.Now()}
 	filter := query.NewFollowFilter(after, opts)
+	if start := filter.Start(); start != "" {
+		if err := out.idOnly(start); err != nil {
+			return
+		}
+	}
 	var status func() *query.LiveStatus
 	if withStatus {
 		status = s.timelineStatus(sessionID)

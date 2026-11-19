@@ -65,3 +65,20 @@ func TestFollowFilter_Unfiltered(t *testing.T) {
 		t.Fatalf("unfiltered Apply = %+v, %v", out, send)
 	}
 }
+
+// Start is the after cursor in the form Apply hands out: unchanged with no
+// filter, carrying its dropped-open ids with one, and "" for a value that
+// is not a cursor.
+func TestFollowFilter_Start(t *testing.T) {
+	after := encodeRowsCursor(rowsCursor{P: "/t.jsonl", O: 10, A: "a", D: []string{"tool-9"}})
+	if got := NewFollowFilter(after, RowsOptions{}).Start(); got != after {
+		t.Fatalf("unfiltered Start = %q, want after unchanged", got)
+	}
+	c, err := decodeRowsCursor(NewFollowFilter(after, RowsOptions{SkipEmptyBody: true}).Start())
+	if err != nil || c.O != 10 || !slices.Equal(c.D, []string{"tool-9"}) {
+		t.Fatalf("filtered Start = %+v (err %v), want offset 10 and D [tool-9]", c, err)
+	}
+	if got := NewFollowFilter("not-a-cursor", RowsOptions{}).Start(); got != "" {
+		t.Fatalf("Start for an invalid cursor = %q, want empty", got)
+	}
+}
