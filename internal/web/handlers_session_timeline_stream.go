@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,8 +25,8 @@ var (
 	timelineStreamStatusEvery = 2 * time.Second
 	// timelineStreamMax caps the timeline streams one server keeps open.
 	// Each stream parses what is appended to its transcript on its own, so
-	// cost grows with streams times bytes; past the cap a new stream is
-	// refused with 429 until a client disconnects.
+	// cost grows with streams times bytes; past the cap a new stream ends
+	// the oldest one, whose client resumes with Last-Event-ID.
 	timelineStreamMax int64 = 32
 )
 
@@ -102,28 +103,25 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 		}
 		after = tl.ThroughCursor
 	}
-	// Take a slot only once the request can no longer fail, so a
-	// rejected one does not evict a live stream on its way out.
-	slot := &timelineSlot{cancel: cancel}
-	s.timelineSlotsMu.Lock()
-	if int64(len(s.timelineSlots)) >= timelineStreamMax {
-		s.timelineSlots[0].cancel() // oldest; its client resumes with Last-Event-ID
-		s.timelineSlots = s.timelineSlots[1:]
-	}
-	s.timelineSlots = append(s.timelineSlots, slot)
-	s.timelineStreams.Store(int64(len(s.timelineSlots)))
-	s.timelineSlotsMu.Unlock()
-	defer func() {
-		s.timelineSlotsMu.Lock()
-		for i, o := range s.timelineSlots {
-			if o == slot {
-				s.timelineSlots = append(s.timelineSlots[:i], s.timelineSlots[i+1:]...)
-				break
-			}
+	// Check the resume cursor (after or Last-Event-ID) as the follow will,
+	// so a cursor it can only answer with resync_required is answered here,
+	// without a slot.
+	resync := ""
+	if err := query.CheckFollowCursor(src, after); err != nil {
+		var re *query.ResyncError
+		if !errors.As(err, &re) {
+			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to read the session transcript")
+			return
 		}
-		s.timelineStreams.Store(int64(len(s.timelineSlots)))
-		s.timelineSlotsMu.Unlock()
-	}()
+		resync = re.Reason
+	}
+	// Every answer other than a live stream is written above. Take a slot
+	// only now, so a rejected request does not evict a live stream on its
+	// way out.
+	if resync == "" {
+		release := s.takeTimelineSlot(cancel)
+		defer release()
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -140,6 +138,10 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 		if err := out.idOnly(start); err != nil {
 			return
 		}
+	}
+	if resync != "" {
+		_ = out.frame(query.RowFrame{Frame: "resync_required", Reason: resync})
+		return
 	}
 	var status func() *query.LiveStatus
 	if withStatus {
@@ -163,6 +165,32 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 		}
 		return out.frame(fr)
 	})
+}
+
+// takeTimelineSlot registers a stream that cancel ends. At
+// timelineStreamMax it first ends the oldest open stream, whose client
+// resumes with Last-Event-ID. The returned func releases the slot.
+func (s *Server) takeTimelineSlot(cancel context.CancelFunc) func() {
+	slot := &timelineSlot{cancel: cancel}
+	s.timelineSlotsMu.Lock()
+	if int64(len(s.timelineSlots)) >= timelineStreamMax {
+		s.timelineSlots[0].cancel()
+		s.timelineSlots = s.timelineSlots[1:]
+	}
+	s.timelineSlots = append(s.timelineSlots, slot)
+	s.timelineStreams.Store(int64(len(s.timelineSlots)))
+	s.timelineSlotsMu.Unlock()
+	return func() {
+		s.timelineSlotsMu.Lock()
+		for i, o := range s.timelineSlots {
+			if o == slot {
+				s.timelineSlots = append(s.timelineSlots[:i], s.timelineSlots[i+1:]...)
+				break
+			}
+		}
+		s.timelineStreams.Store(int64(len(s.timelineSlots)))
+		s.timelineSlotsMu.Unlock()
+	}
 }
 
 // timelineStatus answers status frames from the menu snapshot the web UI

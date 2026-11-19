@@ -629,6 +629,38 @@ func withClaudeSidechains(ctx context.Context, transcript string, rows []Row) []
 	return rows
 }
 
+// CheckFollowCursor runs the checks FollowRows makes on after before it
+// sends a frame: nil when a follow can resume src there, a *ResyncError
+// with the reason its resync_required frame would carry, or another error
+// when the file cannot be read. A server calls it before it commits a
+// stream slot, so a request it can only answer with resync_required does
+// not take one.
+func CheckFollowCursor(src RowsSource, after string) error {
+	_, _, f, _, err := openFollow(src, after)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// openFollow decodes after and opens the file it resumes, checked as
+// openAtCursor checks it. A cursor that cannot be used is a *ResyncError.
+func openFollow(src RowsSource, after string) (rowsCursor, string, *os.File, os.FileInfo, error) {
+	c, err := decodeRowsCursor(after)
+	if err != nil {
+		return c, "", nil, nil, &ResyncError{"invalid_cursor"}
+	}
+	path, err := cursorPath(src, c)
+	if err != nil {
+		return c, "", nil, nil, err
+	}
+	f, info, err := openAtCursor(path, c)
+	if err != nil {
+		return c, "", nil, nil, err
+	}
+	return c, path, f, info, nil
+}
+
 // FollowRows streams frames after cursor `after`, polling the file every
 // poll interval (200 ms when zero). status, when set, is sampled once a
 // second: a status frame goes out every second while the session runs and
@@ -641,19 +673,7 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 		poll = 200 * time.Millisecond
 	}
 	resync := func(reason string) error { return emit(RowFrame{Frame: "resync_required", Reason: reason}) }
-	c, err := decodeRowsCursor(after)
-	if err != nil {
-		return resync("invalid_cursor")
-	}
-	path, err := cursorPath(src, c)
-	if err != nil {
-		var re *ResyncError
-		if !errors.As(err, &re) {
-			return err
-		}
-		return resync(re.Reason)
-	}
-	f, opened, err := openAtCursor(path, c)
+	c, path, f, opened, err := openFollow(src, after)
 	if err != nil {
 		var re *ResyncError
 		if errors.As(err, &re) {
