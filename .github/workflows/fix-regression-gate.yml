@@ -1,0 +1,96 @@
+name: Fix PR regression gate
+
+# A fix PR (fix: / fix(scope): title, or it closes an issue labelled bug) must
+# ship a regression test that FAILS on the base and PASSES on the head:
+#   1. it changes a test file (scripts/check-fix-has-test, #2788), and
+#   2. at least one changed Go test fails by assertion on the merge base with the
+#      PR's test files copied onto it, and every changed Go test passes on the
+#      head. A build or setup error on the base is not red evidence.
+#   3. Advisory for now: the PR body has a "## Siblings" section whose
+#      `grep: <regexp>` lines find no file the section does not name
+#      (AGENTS.md review rule 1). Promote with --siblings-required.
+# Any other PR passes at once, so this can be a required check.
+#
+# Why (ASK-85, mode 6): the 2026-10-19 prevention only checked that a test file
+# changed, and it ran nowhere automatically. A maintainer can add the
+# base-red-exempt label when a fix truly cannot be reproduced in a Go test
+# (the PR body then says how it was verified); it skips step 2 only.
+#
+# Security: pull_request (not _target), read-only token, no secrets. The PR's
+# tests run on GitHub's hosted runner, as in go-test.yml.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: fix-regression-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  AGENTDECK_SKIP_UPDATE_CHECK: "1"
+
+jobs:
+  gate:
+    name: Fix PR regression gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: head/go.mod
+          cache: false
+      - name: Install tmux
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux
+      - name: Check the fix's regression test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          BASE_REF_SHA: ${{ github.event.pull_request.base.sha }}
+          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'base-red-exempt') }}
+        run: |
+          set -euo pipefail
+          cd head
+          git fetch -q --no-tags origin "$BASE_REF_SHA"
+          base=$(git merge-base "$BASE_REF_SHA" HEAD)
+          git worktree add -q --detach "$RUNNER_TEMP/base" "$base"
+          echo "base=$base head=$(git rev-parse HEAD)"
+          # Tests never see the runner's HOME.
+          export HOME="$RUNNER_TEMP/home" CI=true
+          mkdir -p "$HOME"
+          red=(--base "$base" --red-on-base "$RUNNER_TEMP/base")
+          if [ "$EXEMPT" = "true" ]; then
+            echo "::notice title=base-red-exempt::a maintainer exempted this PR from the red-on-base step"
+            red=()
+          fi
+          set +e
+          scripts/check-fix-has-test.sh --pr "$PR" --repo "$REPO" "${red[@]}" --siblings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          while IFS= read -r line; do
+            case $line in
+              needs-regression-test:*|test-not-red-on-base:*|test-not-green-on-head:*) echo "::error title=Fix PR regression gate::$line" ;;
+              advisory:*) echo "::warning title=Siblings::${line#advisory: }" ;;
+            esac
+          done < "$RUNNER_TEMP/gate.log"
+          {
+            echo "### Fix PR regression gate (base $base)"
+            echo '```'
+            cat "$RUNNER_TEMP/gate.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"

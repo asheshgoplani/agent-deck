@@ -11,6 +11,13 @@
 //
 //	check-fix-has-test --pr 123 [--repo owner/name] [--advisory]
 //	check-fix-has-test --range origin/main..HEAD --title "fix: ..." [--body-file f] [--advisory]
+//	check-fix-has-test --pr 123 --base <sha> --red-on-base <base checkout> [--siblings]
+//
+// --red-on-base (run from the head checkout) also requires a fix PR's changed Go
+// tests to fail on the base commit by assertion and pass on the head (redbase.go).
+// --siblings reports, as advisory lines, files that the "## Siblings" grep lines
+// of a fix PR's body find and the section does not name; --siblings-required
+// makes them fail the check (siblings.go).
 //
 // --pr reads the PR through gh (read-only), with every changed file paged in from
 // the API (gh pr view stops at 100). --range reads the changed files from
@@ -283,6 +290,10 @@ func run(args []string, stdout io.Writer, runner Runner) int {
 	body := fs.String("body", "", "PR body (with --range)")
 	bodyFile := fs.String("body-file", "", "file holding the PR body (with --range)")
 	advisory := fs.Bool("advisory", false, "print the finding and exit 0")
+	redBase := fs.String("red-on-base", "", "checkout of the base commit: also require the changed Go tests to fail there and pass here (run from the head checkout)")
+	siblings := fs.Bool("siblings", false, "fix PRs: report (advisory) files a \"## Siblings\" grep finds that the section does not name")
+	siblingsRequired := fs.Bool("siblings-required", false, "like --siblings, but a finding fails the check")
+	baseSHA := fs.String("base", "", "base commit for --red-on-base with --pr (with --range the range's base is used)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -318,15 +329,88 @@ func run(args []string, stdout io.Writer, runner Runner) int {
 	if err != nil {
 		return fail(err)
 	}
-	if reason == "" {
+	code := 0
+	if *siblings || *siblingsRequired {
+		fix, err := isFix(in, *repo)
+		if err != nil {
+			return fail(err)
+		}
+		if fix {
+			found, err := CheckSiblings(in.Body, runner)
+			if err != nil {
+				return fail(err)
+			}
+			for _, f := range found {
+				if *siblingsRequired {
+					fmt.Fprintln(stdout, f)
+				} else {
+					fmt.Fprintln(stdout, "advisory: "+f)
+				}
+			}
+			if len(found) > 0 && *siblingsRequired {
+				code = 1
+			}
+		}
+	}
+	switch {
+	case reason != "":
+		fmt.Fprintln(stdout, reason)
+		code = 1
+	case *redBase != "":
+		if c := redStep(in, *repo, *rng, *baseSHA, *redBase, stdout, runner); c > code {
+			code = c
+		}
+	default:
 		fmt.Fprintln(stdout, "ok: no regression test needed or one is included")
+	}
+	if *advisory && code == 1 {
 		return 0
 	}
-	fmt.Fprintln(stdout, reason)
-	if *advisory {
+	return code
+}
+
+// isFix reports whether the PR is a fix that is not docs-only: Check asks for a
+// test for the same PR with its test files taken out exactly then.
+func isFix(in Input, repo string) (bool, error) {
+	code := in
+	code.Files = nil
+	for _, f := range in.Files {
+		if !IsTestFile(f.Path) {
+			code.Files = append(code.Files, f)
+		}
+	}
+	why, err := Check(code, repo)
+	return why != "", err
+}
+
+// redStep runs the red-on-base check for a PR that passed the has-a-test check.
+// It returns the exit code: 0 ok or not a fix, 1 not red on base, 2 unreadable.
+func redStep(in Input, repo, rng, baseSHA, baseDir string, stdout io.Writer, runner Runner) int {
+	fix, err := isFix(in, repo)
+	if err != nil {
+		fmt.Fprintf(stdout, "check-fix-has-test: %v\n", err)
+		return 2
+	}
+	if !fix {
+		fmt.Fprintln(stdout, "ok: not a fix PR (or docs and tests only): red-on-base not required")
 		return 0
 	}
-	return 1
+	if rng != "" && baseSHA == "" {
+		baseSHA, _, _ = strings.Cut(strings.Replace(rng, "...", "..", 1), "..")
+	}
+	if baseSHA == "" {
+		fmt.Fprintln(stdout, "check-fix-has-test: --red-on-base needs --base SHA (or --range)")
+		return 2
+	}
+	ok, err := redOnBaseMode(runner, baseSHA, baseDir, stdout)
+	if err != nil {
+		fmt.Fprintf(stdout, "check-fix-has-test: %v\n", err)
+		return 2
+	}
+	if !ok {
+		return 1
+	}
+	return 0
 }
 
 func main() {
