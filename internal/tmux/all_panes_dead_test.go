@@ -123,3 +123,38 @@ func TestAllPanesDead_MissingSessionIsNotDead(t *testing.T) {
 		t.Fatal("AllPanesDead() = true for a session that does not exist")
 	}
 }
+
+// A plain "-t NAME" on list-panes resolves NAME as a window of the current
+// session before it tries a session of that name. Here the most recent
+// session ("decoy") has a window named like the target session, and every
+// decoy pane is dead while the target's pane is live. The probes must look
+// at the target session, not at the decoy window's session.
+func TestAllPanesDead_WindowNamedLikeSessionDoesNotCollide(t *testing.T) {
+	socket := allPanesDeadSocket(t)
+	const target = "collide-target"
+	const decoy = "collide-decoy"
+	allPanesDeadTmux(t, socket, "new-session", "-d", "-s", target, "sleep 6000")
+	allPanesDeadTmux(t, socket, "set-option", "-gw", "remain-on-exit", "on")
+	// Created last, so it is the server's current session for "-t" lookups.
+	allPanesDeadTmux(t, socket, "new-session", "-d", "-s", decoy, "true")
+	allPanesDeadTmux(t, socket, "new-window", "-d", "-t", decoy+":", "-n", target, "true")
+	waitPaneDeadList(t, socket, "="+decoy+":", "1,1")
+	waitPaneDeadList(t, socket, "="+target+":", "0")
+	if got := allPanesDeadTmux(t, socket, "list-panes", "-s", "-t", target, "-F", "#{session_name}"); !strings.Contains(got, decoy) {
+		t.Logf("this tmux resolves plain -t %s to the session itself (%q); collision not reproducible here", target, got)
+	}
+
+	s := &Session{Name: target, SocketName: socket}
+	if s.AllPanesDead() {
+		t.Fatalf("AllPanesDead() = true for live session %q: probe read the panes of window %q in session %q", target, target, decoy)
+	}
+
+	wantPID := allPanesDeadTmux(t, socket, "list-panes", "-s", "-t", "="+target+":", "-F", "#{pane_pid}")
+	pids, err := s.AllPanePIDs()
+	if err != nil {
+		t.Fatalf("AllPanePIDs: %v", err)
+	}
+	if len(pids) != 1 || fmt.Sprint(pids[0]) != wantPID {
+		t.Fatalf("AllPanePIDs() = %v, want [%s] (the panes of session %q)", pids, wantPID, target)
+	}
+}
