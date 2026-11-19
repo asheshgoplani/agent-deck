@@ -734,9 +734,10 @@ func (i *Instance) codexIdentityFlag(codexHome, projectPath string) string {
 // documentation/HARNESS_IDENTITY.md; opt out per session with --no-identity).
 // A sandbox mounts this host's codex home, so it merges as a local spawn does.
 func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string, bool) {
-	var merged string
+	var merged, text string
 	if i.identityRunsElsewhere() {
-		text, ok := i.identityRemoteText()
+		var ok bool
+		text, ok = i.identityRemoteText()
 		if !ok {
 			return "", false
 		}
@@ -777,7 +778,9 @@ func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string,
 		merged = existing + "\n\n" + merged
 	}
 	if i.identityRunsElsewhere() {
-		return i.codexRemoteOverrideWithinBudget(merged, merged)
+		// text, not merged: the printf payload carries the block once, the
+		// override carries existing + block — the same sum fits() measured.
+		return i.codexRemoteOverrideWithinBudget(text, merged)
 	}
 	return "developer_instructions=" + identityTOMLString(merged), true
 }
