@@ -2,13 +2,25 @@ package main
 
 // Red on base: a fix PR's test must fail on the base commit and pass on the head.
 //
-// A test file that changes is not proof by itself: mode 6 kept growing after the
-// "has a test file" check (2026-10-19) because tests were added that passed on the
-// base too (source greps, log-only asserts, a guard that scans the wrong file).
-// This step copies the PR's changed test files and test data onto a checkout of
-// the base commit, runs the changed Go tests there and on the head, and passes
-// only when at least one of them fails on the base by assertion (not by a build
-// or setup error) and all of them pass on the head.
+// A test file that changes is not proof by itself: the "has a test file" check
+// (2026-10-19) also passes a test that cannot fail. This step copies the PR's
+// changed test files and test data onto a checkout of the base commit, runs the
+// changed Go tests there and on the head, and passes only when at least one of
+// them fails on the base by assertion (not by a build or setup error) and all
+// of them pass on the head. A fix that changes Go code must change a Go test
+// function.
+//
+// Limits (it proves the test can fail, not what it checks):
+//   - A source-grep test (read a .go file, look for a string the fix added) is
+//     red on base and green on head, so it passes. Review must still reject it.
+//   - Only test files and test data are copied onto the base. A test that fails
+//     on the base because a NEW non-test file it reads (a fixture outside
+//     testdata/) is missing there also counts as red.
+//   - A test that calls a function the fix adds does not build on the base and
+//     is refused: test through code that exists on the base, or a maintainer
+//     adds base-red-exempt.
+//   - It says nothing about paths the test does not cover (the missed-path class
+//     in mode 6); see siblings.go for the advisory part of that.
 
 import (
 	"bufio"
@@ -209,7 +221,7 @@ func RedOnBase(targets []Target, overlay []string, headDir, baseDir string, run 
 			return r, fmt.Errorf("copy %s onto the base: %w", rel, err)
 		}
 	}
-	red, baseRed, headBad := 0, 0, 0
+	red, baseRed, headBad, noBuild := 0, 0, 0, 0
 	for _, t := range targets {
 		args := []string{"-C", "", "test", "-count=1", "-json", "-run", runPattern(t.Tests), t.Pkg}
 		args[1] = baseDir
@@ -227,6 +239,7 @@ func RedOnBase(targets []Target, overlay []string, headDir, baseDir string, run 
 				baseRed++
 				verdict = "red on base, but " + h[name] + " on head"
 			case b[name] == NoBuild:
+				noBuild++
 				verdict = "base does not build with this test (a build error is not red evidence)"
 			}
 			if h[name] != Pass {
@@ -239,6 +252,11 @@ func RedOnBase(targets []Target, overlay []string, headDir, baseDir string, run 
 	case red == 0 && baseRed == 0:
 		r.Lines = append(r.Lines, "test-not-red-on-base: none of the changed tests fails on the base by assertion; "+
 			"a fix needs a test that reproduces the bug (it must FAIL on the base commit)")
+		if noBuild > 0 {
+			r.Lines = append(r.Lines, "hint: a test that calls code the fix adds cannot run on the base; "+
+				"test the fix through code that exists on the base (the path the user hit), "+
+				"or ask a maintainer for the base-red-exempt label and say in the PR body how it was verified")
+		}
 	case red == 0 || headBad > 0:
 		r.Lines = append(r.Lines, fmt.Sprintf("test-not-green-on-head: %d changed test(s) do not pass on the head", headBad))
 	default:
@@ -285,6 +303,13 @@ func redOnBaseMode(run Runner, baseSHA, baseDir string, stdout io.Writer) (bool,
 		return false, err
 	}
 	if len(targets) == 0 {
+		for _, c := range changes {
+			if c.Status != "D" && strings.HasSuffix(c.Path, ".go") && !IsTestFile(c.Path) {
+				fmt.Fprintf(stdout, "no-go-test: this fix changes Go code (%s) but adds or changes no Go test function (func TestXxx); "+
+					"add one that reproduces the bug (a maintainer can add base-red-exempt for a fix covered only by non-Go tests)\n", c.Path)
+				return false, nil
+			}
+		}
 		var other []string
 		for _, c := range changes {
 			if c.Status != "D" && IsTestFile(c.Path) {

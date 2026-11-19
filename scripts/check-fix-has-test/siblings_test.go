@@ -7,28 +7,37 @@ import (
 	"testing"
 )
 
-// fakeGrep answers `git grep -l -E -e <pat>` from a pattern-to-files map.
-func fakeGrep(hits map[string]string, calls *[]string) Runner {
+// siblingsTree writes a small head checkout into a temp dir, makes it the
+// working directory and returns a runner answering git ls-files and git diff.
+func siblingsTree(t *testing.T, calls *[]string) Runner {
+	t.Helper()
+	head := t.TempDir()
+	t.Chdir(head)
+	files := map[string]string{
+		"internal/ui/status_counts.go":      "if s.IsArchived() { continue }\n",
+		"internal/core/group_list.go":       "if s.IsArchived() { skip() }\n",
+		"internal/ui/status_counts_test.go": "s.IsArchived()\n",
+		"internal/ui/testdata/golden.txt":   "IsArchived()\n",
+	}
+	var ls []string
+	for p, s := range files {
+		writeFile(t, head, p, s)
+		ls = append(ls, p)
+	}
 	return func(name string, args ...string) ([]byte, error) {
 		*calls = append(*calls, name+" "+strings.Join(args, " "))
-		if name == "git" && len(args) > 4 && args[0] == "grep" {
-			if out, ok := hits[args[4]]; ok {
-				return []byte(out), nil
-			}
-			return nil, errors.New("exit status 1") // git grep: no match
-		}
-		if name == "git" && args[0] == "diff" {
-			return []byte("3\t1\tinternal/session/status.go\n9\t0\tinternal/session/status_test.go\n"), nil
+		switch {
+		case name == "git" && args[0] == "ls-files":
+			return []byte(strings.Join(ls, "\x00") + "\x00"), nil
+		case name == "git" && args[0] == "diff":
+			return []byte("3\t1\tinternal/ui/status_counts.go\n9\t0\tinternal/ui/status_counts_test.go\n"), nil
 		}
 		return nil, errors.New("unexpected " + name)
 	}
 }
 
 func TestCheckSiblings(t *testing.T) {
-	hits := map[string]string{
-		"IsArchived\\(": "internal/ui/status_counts.go\ninternal/core/group_list.go\n",
-		"none-here":     "",
-	}
+	changed := []string{"internal/ui/status_counts.go"}
 	cases := []struct {
 		name, body string
 		want       []string // substrings, one per finding; empty means no findings
@@ -42,13 +51,13 @@ func TestCheckSiblings(t *testing.T) {
 		// A file named only after the section ends does not count.
 		{"named outside the section", "## Siblings\ngrep: IsArchived\\(\ninternal/ui/status_counts.go\n## Notes\ninternal/core/group_list.go\n",
 			[]string{"also matches internal/core/group_list.go"}},
-		{"no match", "## Siblings\ngrep: none-here\n", nil},
-		{"bad regexp", "## Siblings\ngrep: (unclosed\n", []string{"is not a valid regexp"}},
+		{"matches nothing", "## Siblings\ngrep: none-here\n", []string{"matches none of the files this PR changes"}},
+		{"bad regexp", "## Siblings\ngrep: (unclosed\n", []string{"is not a valid Go regexp"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var calls []string
-			got, err := CheckSiblings(c.body, fakeGrep(hits, &calls))
+			got, err := CheckSiblings(c.body, changed, siblingsTree(t, &calls))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -60,9 +69,9 @@ func TestCheckSiblings(t *testing.T) {
 					t.Fatalf("finding %q, want %q", got[i], w)
 				}
 			}
-			for _, call := range calls {
-				if !strings.Contains(call, ":(exclude)*_test.go") {
-					t.Fatalf("grep must skip test files, ran %q", call)
+			for _, f := range got {
+				if strings.Contains(f, "_test.go") || strings.Contains(f, "testdata") {
+					t.Fatalf("test files and test data are not siblings: %q", f)
 				}
 			}
 		})
@@ -71,7 +80,6 @@ func TestCheckSiblings(t *testing.T) {
 
 func TestSiblingsFlag(t *testing.T) {
 	body := "## Siblings\ngrep: IsArchived\\(\n- internal/ui/status_counts.go: fixed\n"
-	hits := map[string]string{"IsArchived\\(": "internal/ui/status_counts.go\ninternal/core/group_list.go\n"}
 	cases := []struct {
 		name, title string
 		flags       []string
@@ -85,9 +93,10 @@ func TestSiblingsFlag(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var calls []string
+			runner := siblingsTree(t, &calls)
 			var out bytes.Buffer
 			args := append([]string{"--range", "abc..HEAD", "--title", c.title, "--body", body}, c.flags...)
-			code := run(args, &out, fakeGrep(hits, &calls))
+			code := run(args, &out, runner)
 			o := "\n" + out.String()
 			if code != c.code || !strings.Contains(o, c.want) || (c.not != "" && strings.Contains(o, c.not)) {
 				t.Fatalf("exit %d, output %q; want exit %d with %q and without %q", code, out.String(), c.code, c.want, c.not)
