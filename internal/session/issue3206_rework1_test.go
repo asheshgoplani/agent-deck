@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -34,25 +33,23 @@ func withDeadline(t *testing.T, d time.Duration, what string, f func()) {
 }
 
 // waitCodexDetectionDone registers a cleanup, run after every later one
-// (cleanups are LIFO), that waits until no detectCodexSessionAsync goroutine
-// started by a codex Start/Restart is left: it runs for ~4s after a spawn and
-// is not joined, and a later test file that swaps the package logger
-// (issue662_session_data_diag_test.go) raced it under -race on CI.
+// (cleanups are LIFO), that waits on codexDetections until no codex
+// detection goroutine started by a Start/Restart is left. They run for ~4s
+// after a spawn, and a later test file that swaps the package logger
+// (issue662_session_data_diag_test.go) raced one under -race on CI; the
+// WaitGroup gives the race detector the ordering.
 func waitCodexDetectionDone(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
-		deadline := time.Now().Add(20 * time.Second)
-		buf := make([]byte, 1<<20)
-		for {
-			n := runtime.Stack(buf, true)
-			if !strings.Contains(string(buf[:n]), "detectCodexSessionAsync") {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Errorf("codex session detection still running 20s after the test")
-				return
-			}
-			time.Sleep(100 * time.Millisecond)
+		done := make(chan struct{})
+		go func() {
+			codexDetections.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			t.Errorf("codex session detection still running 20s after the test")
 		}
 	})
 }

@@ -1946,7 +1946,7 @@ func (i *Instance) Start() (startErr error) {
 	// Start async session ID detection for Codex
 	// This runs in background and captures the session ID once Codex creates it
 	if IsCodexCompatible(i.Tool) {
-		go i.detectCodexSessionAsync()
+		i.startCodexDetection()
 	}
 
 	// Start async session ID detection for Copilot
@@ -2306,7 +2306,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		go i.detectOpenCodeSessionAsync()
 	}
 	if IsCodexCompatible(i.Tool) {
-		go i.detectCodexSessionAsync()
+		i.startCodexDetection()
 	}
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
