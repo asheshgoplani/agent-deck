@@ -256,3 +256,20 @@ func TestRedOnBase_Run(t *testing.T) {
 		})
 	}
 }
+
+// One changed test proves the bug, another one breaks on the head: still red.
+func TestRedOnBase_AnotherTestRedOnHead(t *testing.T) {
+	targets := []Target{{Pkg: "./internal/ui", Tests: []string{"TestA", "TestB"}}}
+	var calls []string
+	run := fakeGo(map[string][]byte{
+		"/base": goJSON("p", "TestA=fail", "TestB=pass"),
+		"/head": goJSON("p", "TestA=pass", "TestB=fail"),
+	}, &calls)
+	rep, err := RedOnBase(targets, nil, "/head", "/base", run, func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := strings.Join(rep.Lines, "\n"); rep.OK || !strings.Contains(text, "test-not-green-on-head: 1 changed test(s)") {
+		t.Fatalf("ok=%v lines:\n%s\nwant a head failure", rep.OK, text)
+	}
+}
