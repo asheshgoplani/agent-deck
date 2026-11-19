@@ -7,6 +7,8 @@
 go.mod              @asheshgoplani
 go.sum              @asheshgoplani
 .github/            @asheshgoplani
+.github/workflows/  @asheshgoplani
+scripts/check-fix-has-test/ @asheshgoplani
 .golangci.yml       @asheshgoplani
 SECURITY.md         @asheshgoplani
 CODEOWNERS          @asheshgoplani
