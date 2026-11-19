@@ -104,6 +104,7 @@ Notes:
 - `--trust-folder` (also on `add`): add the session's folder to `[security] trusted_folders`, so agent-deck pre-trusts it for Claude, Codex and Cursor and sources a relative `env_file` from it. Needed on a new install (v1.16.34+, where `auto_trust_folders` is off) for a headless launch in a folder the tool has never been allowed to open; without it Claude shows its "trust the files in this folder?" prompt first and the launch prints a note on stderr and, with `--json`, adds `"warnings": [{"code": "FOLDER_NOT_TRUSTED", "folder": "<dir>", "hint": "..."}]` to the result (a queued start logs `queued_start_folder_not_trusted` with the same code). The flag edits config.toml in place, so comments and layout are kept. Installs from before v1.16.34 keep pre-trusting every folder (config-reference.md, `[security]`).
 - Kickoff envelope (#3131): when `launch` runs inside a session and links that session as the parent, a Claude child's initial message starts with the same `[agent-deck from:<parent id>]` line `session send` uses. The child's first turn is then a reply to its parent: an urgent result (completion sentinel, question, error) wakes an idle Claude parent even when it is not a conductor, and a plain answer stays info (unless the parent's `[inbox] wake_on` includes `info`). `--no-tag` or `[send] tag_sends = false` turns it off. Never tagged: a launch from a human shell, a `--parent` that is not the calling session (including a nested launch linked to the caller's own parent), a non-Claude parent or child, a bare slash command, and a child whose turns are not reported (`--no-transition-notify`, or `[notifications]` transition events off), because such a child answers an enveloped message with an explicit `session send`. A typed wake into a Claude session that is not a conductor (inbox and `remote drain` wakes) is sent with `--require-input-prompt`, so it is skipped while that session shows a menu or a permission dialog, and, like every wake, it never types over text left in the input box; the record then arrives on the session's next turn. `--json` carries `"tagged": true|false` when there is a message.
 - `--no-identity` (also on `add`): skip the harness identity injection for this session only. By default every spawn tells the model it runs inside agent-deck, its session metadata and how to use the CLI (`[launch] inject_identity` in config-reference.md, `documentation/HARNESS_IDENTITY.md`). Persisted, so restarts honour it.
+- `--instructions-file <path>` (also on `add`; repeatable, or comma-separated): standing instructions for this session (a role, team rules). Each file is read at every start, restart, resume and fork and appended as a "Session instructions" section to the identity block, so every harness gets it the way it gets that block; editing the file takes effect on the next start or restart. Absolute paths only (`~` and `$VAR` expanded); only regular UTF-8 text files, control characters other than newline and tab dropped, 32 KB per file; `--no-identity` and context level `none` suppress it. Change the list later with `session set <id> instructions-file`; `session show --json` and `session primer` report each file's state. `-capabilities --json` marks the flag `"repeatable": true`. Details: `documentation/HARNESS_IDENTITY.md`.
 
 ### accounts - List named account slots
 
@@ -460,6 +461,8 @@ agent-deck session primer my-project --json
 #  "identity_file":"/.../identity.md","text":"..."}
 ```
 
+When the session has instruction files (`--instructions-file`), the text includes their section and the output lists each file with its state: `ok` (in the block), `unreadable` (missing, not a regular file, not UTF-8 text) or `not_delivered` (over the per-file cap or the inline budget, so a pointer line stands in for it, or context level `none`), with a `reason`; `--json` has them as `instructions_files: [{"path","state","reason"}]` (also in `session show --json`).
+
 `--json` adds `skip_reason` when the level is `none`; SSH/sandboxed sessions inject like local ones (the block travels inline in the launch command `delivery` says so and `identity_file` is empty). Against an older remote (`agent-deck remote <r> session primer`) that predates this command, the controller prints a one-line "remote does not support 'session primer'" message instead of forwarding raw stderr.
 
 ### session set
@@ -468,7 +471,7 @@ agent-deck session primer my-project --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, tool-session-id, account, idle-timeout, context-level, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
+**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, tool-session-id, account, idle-timeout, context-level, instructions-file, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -477,6 +480,13 @@ Setting `account` auto-migrates the Claude conversation into the target account'
 ```bash
 agent-deck session set my-project context-level primer
 agent-deck session set my-project context-level ""       # clear: inherit group/global
+```
+
+`instructions-file` replaces the session's list of instruction files (#3206) with a comma-separated list of absolute paths (`~` and `$VAR` expanded; an unset variable is refused); an empty value clears it. Applied on the next start/restart, like `--instructions-file` on `add`/`launch`.
+
+```bash
+agent-deck session set Review instructions-file "$HOME/team/roles/review.md,$HOME/team/rules.md"
+agent-deck session set Review instructions-file ""       # clear
 ```
 
 `prompt-suggestions` sets the per-session override for Claude Code prompt suggestions: `children-off`, `on` or `off` (also `true`/`false`), applied on the next start/restart. `children-off` turns them off when the session has a parent and leaves a root session alone; an empty value clears the override so the session follows `[profiles.<profile>.claude].prompt_suggestions`, then `[launch].prompt_suggestions` (default `children-off`; see `config-reference.md`).

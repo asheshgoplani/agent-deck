@@ -192,6 +192,13 @@ func handleSessionShow(profile string, args []string) {
 	// ambiguous with absence-of-value, and here that ambiguity cost a user a
 	// bug report against the wrong component.
 	jsonData["wrapper"] = inst.Wrapper
+	// #3206: instruction files and what the next spawn makes of each.
+	// Omitted when the session has none.
+	var instructionsFiles []session.InstructionsFileStatus
+	if len(inst.InstructionsFiles) > 0 {
+		_, instructionsFiles = inst.InstructionsFilesReport()
+		jsonData["instructions_files"] = instructionsFiles
+	}
 	if inst.Favorite {
 		jsonData["favorite"] = true
 	}
@@ -394,6 +401,9 @@ func handleSessionShow(profile string, args []string) {
 	if inst.NoTransitionNotify {
 		sb.WriteString("Notify:  transition events suppressed\n")
 	}
+	for _, f := range instructionsFiles {
+		sb.WriteString(fmt.Sprintf("Instructions: %s\n", formatInstructionsFileStatus(f)))
+	}
 	sb.WriteString(fmt.Sprintf("Created: %s\n", inst.CreatedAt.Format("2006-01-02 15:04:05")))
 
 	if !inst.LastAccessedAt.IsZero() {
@@ -469,6 +479,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
 		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")
 		fmt.Println("  context-level      Harness context-level override: none, primer, or full (#2260; empty clears; global < group < session; see `session primer`); restart required")
+		fmt.Println("  instructions-file  Instruction files appended to the identity block: comma-separated absolute paths, replaces the list (#3206; empty clears; see `session primer`); restart required")
 		fmt.Println("  prompt-suggestions Claude prompt suggestions: children-off (off when the session has a parent), on, or off (empty clears; session > profile > [launch]); restart required")
 		fmt.Println("  wait-timeout       Wait timer (claude): after a question with a \"(Recommended)\" option under the cursor has waited this long, take that option; never permission/trust prompts (Go duration >= 1m, e.g. 5m; off disables; empty uses [sessions] wait_timeout)")
 		fmt.Println("  order              0-based position in the group (see `session show --json` .order); clamps to the end")
@@ -495,6 +506,8 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  agent-deck session set my-project color \"\"              # clear (opt-out)")
 		fmt.Println("  agent-deck session set my-project context-level primer")
 		fmt.Println("  agent-deck session set my-project context-level \"\"       # clear (inherit group/global)")
+		fmt.Println("  agent-deck session set my-project instructions-file \"$HOME/team/roles/review.md,$HOME/team/rules.md\"")
+		fmt.Println("  agent-deck session set my-project instructions-file \"\"   # clear")
 		fmt.Println("  agent-deck session set my-project wait-timeout 5m        # take the recommended option after 5 minutes")
 		fmt.Println("  agent-deck session set my-project account work --intended \"acme blocked\" --intended-for 48h")
 		fmt.Println("  agent-deck session set my-project model opus --intended \"Fable weekly cap\"")
