@@ -54,6 +54,10 @@ type SessionLinkEvent struct {
 	Host     string              `json:"host"`
 	Sessions []SessionLinkStatus `json:"sessions,omitempty"`
 	Up       bool                `json:"up"`
+	// Cursor is the remote cursor read before the listing: the listing
+	// covers every remote frame at or before it. Not sent; it orders the
+	// forwarded frames merged into the stored snapshot.
+	Cursor uint64 `json:"-"`
 }
 
 // SessionLinkStatus is one remote session's status in a resync.
@@ -70,6 +74,9 @@ type remoteStatusForwarder struct {
 	// since is the last remote cursor republished; 0 = read the remote's
 	// current cursor (`events stats`) before following.
 	since uint64
+	// snapCursor is the remote cursor the last listing covers: a frame at
+	// or before it (a replay after a reconnect) is older than that listing.
+	snapCursor uint64
 	// startTS is kept for older callers; liveness never compares clocks.
 	startTS int64
 	up      bool
@@ -121,15 +128,27 @@ func (f *remoteStatusForwarder) remoteCursor(ctx context.Context) (uint64, error
 	return st.Cursor, nil
 }
 
-// resync publishes session.link up with the remote's current statuses.
-func (f *remoteStatusForwarder) resync(ctx context.Context) error {
+// resync publishes session.link up with the remote's current statuses. The
+// remote cursor is read first, so the listing covers every frame up to it:
+// a frame the follow replays at or before that cursor (one from while the
+// link was down) is older than the listing and is not forwarded, so it can
+// not bring back a session deleted meanwhile or undo a newer status.
+func (f *remoteStatusForwarder) resync(ctx context.Context, cursor uint64) error {
+	if cursor == 0 {
+		c, err := f.remoteCursor(ctx)
+		if err != nil {
+			return err
+		}
+		cursor = c
+	}
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	list, _, err := f.runner.FetchSessions(cctx)
 	if err != nil {
 		return fmt.Errorf("listing the remote's sessions: %w", err)
 	}
-	ev := SessionLinkEvent{Host: f.name, Up: true, Sessions: make([]SessionLinkStatus, 0, len(list))}
+	f.snapCursor = cursor
+	ev := SessionLinkEvent{Host: f.name, Up: true, Cursor: cursor, Sessions: make([]SessionLinkStatus, 0, len(list))}
 	for _, rs := range list {
 		ev.Sessions = append(ev.Sessions, SessionLinkStatus{ID: rs.ID, Status: rs.Status, Title: rs.Title})
 	}
@@ -142,16 +161,18 @@ func (f *remoteStatusForwarder) resync(ctx context.Context) error {
 const tooOldMarker = "older than the retained log"
 
 func (f *remoteStatusForwarder) once(ctx context.Context) error {
+	var fresh uint64 // a cursor read just now serves the resync too
 	if f.since == 0 {
 		c, err := f.remoteCursor(ctx)
 		if err != nil {
 			return err
 		}
-		f.since = c
+		f.since, fresh = c, c
 	}
-	// Statuses first, then the follow from the cursor: a change in between
-	// arrives twice (snapshot, frame), never not at all.
-	if err := f.resync(ctx); err != nil {
+	// Cursor, then statuses, then the follow from the resume cursor: a
+	// change after the cursor arrives twice (snapshot, frame), never not at
+	// all; one at or before it is in the snapshot and is not forwarded.
+	if err := f.resync(ctx, fresh); err != nil {
 		return err
 	}
 	cctx, cancel := context.WithCancel(ctx)
@@ -215,8 +236,8 @@ func (f *remoteStatusForwarder) forward(line []byte) {
 	}
 	// Every frame read moves the resume point, whatever its kind.
 	f.since = uint64(fr.Cursor)
-	if fr.Kind != "session.status" {
-		return
+	if fr.Kind != "session.status" || uint64(fr.Cursor) <= f.snapCursor {
+		return // a replay the session.link up already covers
 	}
 	var data map[string]any
 	if len(fr.Data) == 0 || json.Unmarshal(fr.Data, &data) != nil {
@@ -257,7 +278,8 @@ func (s *Server) startRemoteStatusForward(names []string, runnerFor RemoteStatus
 					s.noteRemoteLink(d)
 				case map[string]any:
 					if to, _ := d["to"].(string); kind == "session.status" && to != "" {
-						s.noteRemoteStatus(name, sid, to)
+						rc, _ := d["remote_cursor"].(uint64)
+						s.noteRemoteStatus(name, sid, to, rc)
 					}
 				}
 				events.PublishProfile(profile, kind, sid, data)
@@ -288,14 +310,19 @@ func (s *Server) noteRemoteLink(l SessionLinkEvent) {
 }
 
 // noteRemoteStatus applies one forwarded status to the stored snapshot, so
-// hello.remotes is the remote's current state, not the last link-up's.
-func (s *Server) noteRemoteStatus(host, id, status string) {
+// hello.remotes is the remote's current state, not the last link-up's. It
+// is ordered by the remote cursor: a frame at or before the newest one the
+// snapshot holds (the listing's cursor or a later frame already applied)
+// is older than that state, so it neither overwrites a status nor adds back
+// a session the listing left out.
+func (s *Server) noteRemoteStatus(host, id, status string, cursor uint64) {
 	s.remoteLinksMu.Lock()
 	defer s.remoteLinksMu.Unlock()
 	l, ok := s.remoteLinksByHost[host]
-	if !ok || !l.Up || id == "" {
+	if !ok || !l.Up || id == "" || cursor <= l.Cursor {
 		return
 	}
+	l.Cursor = cursor
 	sessions := make([]SessionLinkStatus, 0, len(l.Sessions)+1)
 	found := false
 	for _, st := range l.Sessions {
