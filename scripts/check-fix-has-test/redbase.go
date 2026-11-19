@@ -53,6 +53,7 @@ type Target struct {
 
 // testFuncs returns the top-level TestXxx(t *testing.T) functions of a Go file,
 // name to printed body (comments and layout dropped, so such an edit is no change).
+// TestMain is the package entry hook, not a test: go test never reports it.
 func testFuncs(src []byte) (map[string]string, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "x_test.go", src, 0)
@@ -62,7 +63,7 @@ func testFuncs(src []byte) (map[string]string, error) {
 	out := map[string]string{}
 	for _, d := range f.Decls {
 		fn, ok := d.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || fn.Body == nil || !isTestName(fn.Name.Name) || fn.Type.Params.NumFields() != 1 {
+		if !ok || fn.Recv != nil || fn.Body == nil || fn.Name.Name == "TestMain" || !isTestName(fn.Name.Name) || fn.Type.Params.NumFields() != 1 {
 			continue
 		}
 		var b bytes.Buffer
