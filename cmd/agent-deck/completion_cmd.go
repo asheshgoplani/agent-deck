@@ -250,7 +250,7 @@ var completionTree = []completionNode{
 	},
 	{
 		name: "worktree",
-		subs: []string{"list", "info", "cleanup", "finish", "trust-hooks"},
+		subs: []string{"list", "info", "cleanup", "finish", "checkpoint", "trust-hooks"},
 		args: map[string][]argKind{
 			"info":   {argSession},
 			"finish": {argSession},
@@ -258,7 +258,7 @@ var completionTree = []completionNode{
 	},
 	{
 		name: "wt",
-		subs: []string{"list", "info", "cleanup", "finish", "trust-hooks"},
+		subs: []string{"list", "info", "cleanup", "finish", "checkpoint", "trust-hooks"},
 		args: map[string][]argKind{
 			"info":   {argSession},
 			"finish": {argSession},

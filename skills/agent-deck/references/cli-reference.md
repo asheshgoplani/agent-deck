@@ -995,6 +995,19 @@ agent-deck worktree cleanup [--force]
 
 Finds orphaned worktrees/sessions. Dry-run by default; `--force` performs the cleanup.
 
+### worktree checkpoint
+
+```bash
+agent-deck worktree checkpoint save --output FILE [--note FILE]
+agent-deck worktree checkpoint preview FILE
+agent-deck worktree checkpoint restore FILE --path NEW_PATH [--expect SHA256]
+```
+
+Move tracked text changes and a handoff note between Git checkouts at a known
+base commit. Restore creates a new detached worktree outside the existing
+worktrees. See [the worktree guide](../../../docs/guide/worktrees.md#save-and-restore-a-task-checkpoint)
+for supported changes and file handling.
+
 ### worktree trust-hooks
 
 ```bash
