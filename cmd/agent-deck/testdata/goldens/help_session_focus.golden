@@ -1,7 +1,7 @@
-Usage: agent-deck session focus [--remote <name>] <id> [--attach] [--json]
+Usage: agent-deck session focus [--remote <name>] <id|title> [--attach] [--json]
 
 Signal the running agent-deck TUI (same profile) to reveal and
-select the session with the given instance id on its next refresh.
+select the session with the given id or title on its next refresh.
 With --attach, the TUI opens/attaches the session (as if you
 pressed Enter on it) instead of only moving the cursor.
 With --remote, <id> is a session on that remote: the TUI selects

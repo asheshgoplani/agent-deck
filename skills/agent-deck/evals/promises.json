@@ -2614,8 +2614,8 @@
    "area": "core",
    "file": "references/cli-reference.md",
    "heading": "Session Resolution",
-   "anchor": "**ID prefix:** `abc123` (6+ chars)",
-   "summary": "Session resolution (title, 6+ char id prefix, path, current) and generic exit codes 0/1/2.",
+   "anchor": "**ID prefix:** `abc1` (4+ chars, when only one session has it)",
+   "summary": "Session resolution (id, title in any case or behind a leading emoji marker, 4+ char id prefix, path, current) and generic exit codes 0/1/2.",
    "kind": "reference"
   },
   {
