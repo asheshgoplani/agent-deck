@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -27,7 +28,19 @@ func (f *fakeRemoteFollow) FetchSessions(context.Context) ([]session.RemoteSessi
 
 func (f *fakeRemoteFollow) RunReadIO(ctx context.Context, stdin io.Reader, stdout, _ io.Writer, _ []byte, follow bool, args ...string) error {
 	if len(args) >= 2 && args[0] == "events" && args[1] == "stats" {
-		_, err := io.WriteString(stdout, `{"cursor":1}`+"\n") // the remote's history ends at cursor 1
+		// The remote's history ends at cursor 1; once a connection has
+		// played, its cursor is the newest frame that connection sent.
+		f.mu.Lock()
+		c := 1
+		for _, l := range f.script[:min(len(f.calls), len(f.script))] {
+			for _, line := range l {
+				if fr, err := events.ParseFrameLine([]byte(line)); err == nil && int(fr.Cursor) > c {
+					c = int(fr.Cursor)
+				}
+			}
+		}
+		f.mu.Unlock()
+		_, err := fmt.Fprintf(stdout, `{"cursor":%d}`+"\n", c)
 		return err
 	}
 	f.mu.Lock()

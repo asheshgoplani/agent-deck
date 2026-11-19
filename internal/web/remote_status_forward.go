@@ -113,19 +113,28 @@ func (f *remoteStatusForwarder) run(ctx context.Context) {
 
 // remoteCursor is the remote bus's newest cursor (`events stats --json`).
 func (f *remoteStatusForwarder) remoteCursor(ctx context.Context) (uint64, error) {
+	c, _, err := f.remoteLog(ctx)
+	return c, err
+}
+
+// remoteLog is the remote bus's newest cursor and whether that bus is
+// enabled (a disabled bus reports cursor 0, which says nothing about its
+// log). A reply without "enabled" counts as enabled.
+func (f *remoteStatusForwarder) remoteLog(ctx context.Context) (uint64, bool, error) {
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	var out bytes.Buffer
 	if err := f.runner.RunReadIO(cctx, nil, &out, io.Discard, []byte("unsupported\n"), false, "events", "stats", "--json", "--read-only"); err != nil {
-		return 0, fmt.Errorf("reading the remote cursor: %w", err)
+		return 0, false, fmt.Errorf("reading the remote cursor: %w", err)
 	}
 	var st struct {
-		Cursor uint64 `json:"cursor"`
+		Cursor  uint64 `json:"cursor"`
+		Enabled *bool  `json:"enabled"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &st); err != nil {
-		return 0, fmt.Errorf("decoding the remote cursor: %w", err)
+		return 0, false, fmt.Errorf("decoding the remote cursor: %w", err)
 	}
-	return st.Cursor, nil
+	return st.Cursor, st.Enabled == nil || *st.Enabled, nil
 }
 
 // resync publishes session.link up with the remote's current statuses. The
@@ -161,18 +170,23 @@ func (f *remoteStatusForwarder) resync(ctx context.Context, cursor uint64) error
 const tooOldMarker = "older than the retained log"
 
 func (f *remoteStatusForwarder) once(ctx context.Context) error {
-	var fresh uint64 // a cursor read just now serves the resync too
-	if f.since == 0 {
-		c, err := f.remoteCursor(ctx)
-		if err != nil {
-			return err
-		}
-		f.since, fresh = c, c
+	// The remote's cursor is read on every connect: it starts the first
+	// follow and bounds the listing the resync takes.
+	cur, enabled, err := f.remoteLog(ctx)
+	if err != nil {
+		return err
+	}
+	if f.since == 0 || (enabled && cur < f.since) {
+		// First connect, or the remote's log moved backward (it was
+		// recreated): resume from its current cursor. Frames above the
+		// old resume cursor would otherwise all look already seen and be
+		// dropped; the resync below covers everything up to cur.
+		f.since = cur
 	}
 	// Cursor, then statuses, then the follow from the resume cursor: a
 	// change after the cursor arrives twice (snapshot, frame), never not at
 	// all; one at or before it is in the snapshot and is not forwarded.
-	if err := f.resync(ctx, fresh); err != nil {
+	if err := f.resync(ctx, cur); err != nil {
 		return err
 	}
 	cctx, cancel := context.WithCancel(ctx)
@@ -197,7 +211,7 @@ func (f *remoteStatusForwarder) once(ctx context.Context) error {
 	}
 	cancel()
 	_ = outR.Close()
-	err := <-done
+	err = <-done
 	if strings.Contains(stderr.String(), tooOldMarker) {
 		f.since = 0 // re-read the remote's cursor; the resync covers the gap
 	}
