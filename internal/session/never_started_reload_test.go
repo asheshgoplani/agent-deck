@@ -178,3 +178,74 @@ func requireReloadedStatus(t *testing.T, storage *Storage, want Status) {
 		t.Errorf("reloaded status after a failed start = %q (stored %q), want %q", got, stored, want)
 	}
 }
+
+// A FRESH failed start (created moments ago, not backdated) must read error
+// during the 1.5 s start grace and after it. The grace used to rewrite the
+// stored error to starting, and the next refresh after the grace then read
+// that starting row as never started: error, starting, idle. Covers the
+// instance that ran the failed start, the same instance with no tmux handle,
+// and the row reloaded by another process (UpdateStatus and the list path).
+// (Found in independent review.)
+func TestFreshFailedStartStaysErrorThroughGrace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	storage := newTestStorage(t)
+	t.Cleanup(SetQueuedSpawnForTest(func(*Instance, string) error { return errors.New("spawn failed") }))
+	inst := NewInstanceWithGroup("fresh-worker", t.TempDir(), "workers")
+	inst.Tool = "claude"
+	inst.MarkQueued("brief")
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.StartQueued(inst); err == nil {
+		t.Fatal("StartQueued returned nil for a failed spawn")
+	}
+	if got := inst.GetStatusThreadSafe(); got != StatusError {
+		t.Fatalf("after the failed start: %q, want error", got)
+	}
+	created := inst.CreatedAt
+
+	noHandle := NewInstanceWithGroup("fresh-worker-nohandle", t.TempDir(), "workers")
+	noHandle.CreatedAt = created
+	noHandle.Status = StatusError
+	noHandle.tmuxSession = nil
+
+	loaded, _, err := storage.LoadWithGroups()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("load: %v %+v", err, loaded)
+	}
+	reloaded := loaded[0]
+	if !reloaded.CreatedAt.After(time.Now().Add(-time.Minute)) {
+		t.Fatalf("reloaded row is not fresh: created %v", reloaded.CreatedAt)
+	}
+	listed, _, err := storage.LoadWithGroups()
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("load: %v %+v", err, listed)
+	}
+
+	check := func(phase string) {
+		t.Helper()
+		for name, in := range map[string]*Instance{"same-process": inst, "no-tmux-handle": noHandle, "reloaded": reloaded} {
+			// Twice: the second read is the row the first would have written back.
+			for pass := 1; pass <= 2; pass++ {
+				in.ForceNextStatusCheck()
+				if err := in.UpdateStatus(); err != nil {
+					t.Fatalf("%s %s: UpdateStatus: %v", phase, name, err)
+				}
+				if got := in.GetStatusThreadSafe(); got != StatusError {
+					t.Errorf("%s pass %d: %s reads %q, want error", phase, pass, name, got)
+				}
+			}
+		}
+		RefreshLiveStatus(listed)
+		if got := listed[0].GetStatusThreadSafe(); got != StatusError {
+			t.Errorf("%s: list path reads %q, want error", phase, got)
+		}
+	}
+
+	if time.Since(created) >= 1500*time.Millisecond {
+		t.Skip("setup outlasted the 1.5 s start grace; the grace read was not exercised")
+	}
+	check("in grace")
+	time.Sleep(time.Until(created.Add(1600 * time.Millisecond)))
+	check("after grace")
+}
