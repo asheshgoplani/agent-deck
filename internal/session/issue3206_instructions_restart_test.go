@@ -205,6 +205,9 @@ func TestIssue3206_InstructionsFileDeliveredAtStartRestartResume(t *testing.T) {
 			require.NoError(t, os.WriteFile(instructions, []byte("ROLE MARKER-ONE: you review only.\n"), 0o644))
 
 			created := NewInstanceWithTool("issue3206-"+tool, projectPath, tool)
+			if tool == "codex" {
+				waitCodexDetectionDone(t)
+			}
 			t.Cleanup(func() { _ = created.Kill() })
 
 			_, postCommit, err := SetField(created, issue3206FieldInstructionsFile, instructions, nil)

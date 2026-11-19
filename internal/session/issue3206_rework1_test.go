@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -30,6 +31,30 @@ func withDeadline(t *testing.T, d time.Duration, what string, f func()) {
 	case <-time.After(d):
 		t.Fatalf("%s hung for %s", what, d)
 	}
+}
+
+// waitCodexDetectionDone registers a cleanup, run after every later one
+// (cleanups are LIFO), that waits until no detectCodexSessionAsync goroutine
+// started by a codex Start/Restart is left: it runs for ~4s after a spawn and
+// is not joined, and a later test file that swaps the package logger
+// (issue662_session_data_diag_test.go) raced it under -race on CI.
+func waitCodexDetectionDone(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		deadline := time.Now().Add(20 * time.Second)
+		buf := make([]byte, 1<<20)
+		for {
+			n := runtime.Stack(buf, true)
+			if !strings.Contains(string(buf[:n]), "detectCodexSessionAsync") {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("codex session detection still running 20s after the test")
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 }
 
 // R-1: a FIFO (or any non-regular file) must never be opened for reading: an
@@ -147,6 +172,7 @@ func TestIssue3206Rework_LocalCodexRealSpawnWithConfiguredDeveloperInstructions(
 
 	inst := NewInstanceWithTool("issue3206-rework-codex", projectPath, "codex")
 	inst.InstructionsFiles = []string{file}
+	waitCodexDetectionDone(t)
 	t.Cleanup(func() { _ = inst.Kill() })
 	require.NoError(t, inst.Start(), "a codex session with a configured developer_instructions must still start with an instruction file")
 	s := issue3206WaitSpawn(t, recDir, 1, 15*time.Second)
