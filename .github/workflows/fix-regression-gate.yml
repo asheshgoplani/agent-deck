@@ -66,8 +66,11 @@ jobs:
         run: |
           set -euo pipefail
           go build -o "$RUNNER_TEMP/checker" ./scripts/check-fix-has-test
-          # A base from before this gate has only the has-a-test check.
-          if "$RUNNER_TEMP/checker" -h 2>&1 | grep -q -- '-fix-out'; then
+          # A base from before this gate has only the has-a-test check. Read the
+          # usage into a variable: -h exits 2, and a pipe into grep -q under
+          # pipefail would read every base as old.
+          usage=$("$RUNNER_TEMP/checker" -h 2>&1 || true)
+          if [[ $usage == *-fix-out* ]]; then
             echo "red=true" >> "$GITHUB_OUTPUT"
           else
             echo "red=false" >> "$GITHUB_OUTPUT"
