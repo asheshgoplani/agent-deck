@@ -886,6 +886,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	}
 
 	forked := NewInstance(newTitle, workDir)
+	forked.InstructionsFiles = append([]string(nil), i.InstructionsFiles...) // #3206: a fork keeps its source's instruction files
 	if childID != "" {
 		forked.OpenCodeSessionID = childID
 		forked.OpenCodeDetectedAt = time.Now()

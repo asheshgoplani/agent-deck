@@ -25,7 +25,11 @@ func creationFieldsFromFlags(fs *flag.FlagSet) []session.RemoteCreationField {
 		if boolean, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && boolean.IsBoolFlag() {
 			takesValue = false
 		}
-		fields = append(fields, session.RemoteCreationField{Name: f.Name, TakesValue: takesValue})
+		field := session.RemoteCreationField{Name: f.Name, TakesValue: takesValue}
+		if r, ok := f.Value.(interface{ IsRepeatable() bool }); ok && r.IsRepeatable() {
+			field.Repeatable = true
+		}
+		fields = append(fields, field)
 	})
 	return fields
 }

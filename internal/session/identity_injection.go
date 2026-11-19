@@ -217,16 +217,6 @@ func (i *Instance) identityRunsElsewhere() bool {
 	return i != nil && (i.IsSSH() || i.IsSandboxed())
 }
 
-// identityText renders the block this spawn carries, or ok=false when
-// injection is off. It writes nothing.
-func (i *Instance) identityText() (string, bool) {
-	if !i.identityInjectionEnabled() {
-		return "", false
-	}
-	level, _ := i.EffectiveContextLevel()
-	return i.BuildContextPromptForLevel(level), true
-}
-
 // identityInlineMaxBytes caps the identity payload an SSH/sandboxed launch
 // command carries (the encoded block, plus codex's TOML override). tmux
 // refuses a pane command over ~16 KB, and the rest of a remote launch (env
@@ -236,13 +226,17 @@ func (i *Instance) identityText() (string, bool) {
 // too big to carry at all is not injected on that spawn (as before ASK-105).
 const identityInlineMaxBytes = 8 << 10
 
-// identityRemoteText is identityText for an SSH/sandboxed spawn, or ok=false
-// when the encoded block alone exceeds identityInlineMaxBytes.
+// identityRemoteText renders the block an SSH/sandboxed spawn carries, or
+// ok=false when injection is off or the encoded block alone exceeds
+// identityInlineMaxBytes. It writes nothing.
 func (i *Instance) identityRemoteText() (string, bool) {
-	text, ok := i.identityText()
-	if !ok {
+	if !i.identityInjectionEnabled() {
 		return "", false
 	}
+	// Instruction files (#3206) are fitted into the inline budget here, file
+	// by file; without them this is BuildContextPromptForLevel(level).
+	level, _ := i.EffectiveContextLevel()
+	text, _ := i.contextBlock(level, i.spawnBudget())
 	if n := len(identityPrintfArg(text)); n > identityInlineMaxBytes {
 		sessionLog.Warn("identity_remote_block_too_large",
 			slog.String("instance_id", i.ID),
@@ -263,6 +257,9 @@ func (i *Instance) identityRemoteText() (string, bool) {
 func identityPrintfArg(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, "\n", `\n`)
+	// A tab can only come from an instruction file (#3206); the block itself
+	// never has one, so its encoding is unchanged.
+	s = strings.ReplaceAll(s, "\t", `\t`)
 	return shellescape.Quote(identityLaunchSafe(s, `\0047`, `exec\0040`))
 }
 
@@ -633,7 +630,8 @@ func (i *Instance) ensureIdentityFile() (dir, file string, ok bool) {
 	// block. Regeneration on start/restart still happens whenever the record
 	// changed, because the rendered content then differs.
 	level, _ := i.EffectiveContextLevel()
-	content := []byte(i.BuildContextPromptForLevel(level))
+	text, _ := i.contextBlock(level, budgetFile)
+	content := []byte(text)
 	names := []string{identityFileName, geminiIdentityFileName}
 	if i.Tool == "copilot" {
 		if err := os.MkdirAll(filepath.Join(dir, copilotIdentitySubdir), 0o755); err == nil {
@@ -747,6 +745,13 @@ func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string,
 			return "", false
 		}
 		merged = string(content)
+		if len(i.InstructionsFiles) > 0 {
+			// The file carries every instruction file in full; the inline
+			// override fits them into codex's budget, a pointer line
+			// standing in for each one that does not fit (#3206).
+			level, _ := i.EffectiveContextLevel()
+			merged, _ = i.contextBlock(level, budgetCodexLocal)
+		}
 	}
 	// A configured (present) developer_instructions leads, so codex applies
 	// exactly what it would have plus our block. An explicit empty override

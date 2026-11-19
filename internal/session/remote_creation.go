@@ -29,6 +29,9 @@ type RemoteCreationField struct {
 	Name       string   `json:"name"`
 	Aliases    []string `json:"aliases,omitempty"`
 	TakesValue bool     `json:"takes_value"`
+	// Repeatable marks a flag that may be given more than once
+	// (--instructions-file, #3206).
+	Repeatable bool `json:"repeatable,omitempty"`
 }
 
 type RemoteCreationTool struct {

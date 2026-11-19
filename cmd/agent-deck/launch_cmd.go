@@ -136,6 +136,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		extraArgFlags = append(extraArgFlags, s)
 		return nil
 	})
+	instructionsFileFlags := registerInstructionsFileFlag(fs)
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
@@ -222,6 +223,11 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	validatedAdditionalPaths, pathValidationErr := validateCreationPaths(additionalPaths)
 	if pathValidationErr != nil {
 		NewCLIOutput(*jsonOutput, false).Error(pathValidationErr.Error(), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	instructionsFiles, instructionsErr := normalizeInstructionsFileFlag(*instructionsFileFlags)
+	if instructionsErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error("--instructions-file: "+instructionsErr.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 
@@ -601,6 +607,9 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if *noIdentity {
 		newInstance.IdentityInjectionDisabled = true
 	}
+	// #3206: per-session instruction files, read into the identity block at
+	// every spawn.
+	newInstance.InstructionsFiles = instructionsFiles
 
 	if sessionCommandInput != "" {
 		newInstance.Tool = firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
