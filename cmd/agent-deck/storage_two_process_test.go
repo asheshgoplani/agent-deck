@@ -89,7 +89,7 @@ exit 0
 			case "disjoint account":
 				b, bOut = start("", "session", "set", "shared", "account", "seminno", "--json")
 			case "deleted row":
-				b, bOut = start("", "rm", "shared")
+				b, bOut = start("", "rm", "shared", "--force") // the shim tmux reports it live
 			case "new addition":
 				b, bOut = start("", "add", home, "--title", "bob", "--no-parent", "--json")
 			}

@@ -352,6 +352,9 @@ class TestStaleCleanup(unittest.TestCase):
         call_args = [c[0][0] for c in rc.call_args_list]
         self.assertTrue(any("remove" in args and "test-v" in args for args in call_args),
                         f"expected remove call, got: {call_args}")
+        # `remove` refuses a session whose process is alive without --force.
+        self.assertTrue(any("remove" in args and "--force" in args for args in call_args),
+                        f"expected remove --force, got: {call_args}")
         self.assertIn("test-v", wd.removed_ids)
 
     def test_stale_critical_NOT_removed(self):

@@ -133,7 +133,7 @@ Both JSON forms always include `account`: the exact stored per-session slot, inc
 ### remove - Remove session
 
 ```bash
-agent-deck remove <id|title>
+agent-deck remove <id|title> [--force]   # a session whose process is alive needs --force (exit 1 without), like session remove
 agent-deck rm  # Alias
 ```
 

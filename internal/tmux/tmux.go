@@ -1652,6 +1652,53 @@ func (s *Session) IsPaneDead() bool {
 	return strings.TrimSpace(string(out)) == "1"
 }
 
+// AllPanesDead reports whether every pane of the session is dead
+// (#{pane_dead} = 1). With remain-on-exit on, tmux keeps a session whose
+// process has exited, so has-session (Exists) still succeeds although
+// nothing is left running in it. Unlike IsPaneDead, which looks only at the
+// primary pane 0.0, this checks every pane in every window: a session with
+// any live pane is still running.
+//
+// An error, a timeout or an empty listing reads as "not all dead": a caller
+// that uses this to skip a safety check must not call a live session dead.
+func (s *Session) AllPanesDead() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	out, err := commandOutput(s.tmuxCmdContext(ctx, "list-panes", "-s", "-t", exactSessionTarget(s.TmuxName()), "-F", "#{pane_dead}"))
+	if err != nil {
+		return false
+	}
+	return allPanesDeadFromList(string(out))
+}
+
+// exactSessionTarget turns a plain session name into a target for commands
+// that take a target-pane or target-window (list-panes, display-message).
+// A bare "-t NAME" there is tried as a window of the current session before
+// a session, so a window named like another session wins; "=NAME" alone is
+// still read as a window name. "=NAME:" pins the lookup to the session named
+// exactly NAME (its current window and pane), with no prefix match.
+func exactSessionTarget(name string) string {
+	return "=" + name + ":"
+}
+
+// allPanesDeadFromList interprets one "#{pane_dead}" line per pane. It is
+// true only when there is at least one pane and every line is "1". Pure so
+// the parsing is unit-testable.
+func allPanesDeadFromList(raw string) bool {
+	panes := 0
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line != "1" {
+			return false
+		}
+		panes++
+	}
+	return panes > 0
+}
+
 // PaneDeadExitStatus returns the exit code of the process that ran in the
 // session's primary pane, and true, but ONLY when the pane died while
 // remain-on-exit was enabled so tmux still holds the dead pane and its exit
@@ -1849,7 +1896,7 @@ func (s *Session) PrimaryPanePID() (int, error) {
 // AllPanePIDs lists the pane pid of every pane in every window of the
 // session.
 func (s *Session) AllPanePIDs() ([]int, error) {
-	out, err := runBoundedOutput(s.SocketName, "list-panes", "-s", "-t", s.TmuxName(), "-F", "#{pane_pid}")
+	out, err := runBoundedOutput(s.SocketName, "list-panes", "-s", "-t", exactSessionTarget(s.TmuxName()), "-F", "#{pane_pid}")
 	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return nil, err
 	}
@@ -2316,7 +2363,7 @@ func (s *Session) GetWorkDir() string {
 
 	// Bounded: a wedged server / destroyed target must not hang this poll (see
 	// tmuxPollTimeout). Bare .Output() here was one of the orphan-spin sources.
-	output, err := s.runBoundedOutput("display-message", "-t", s.TmuxName(), "-p", "#{pane_current_path}")
+	output, err := s.runBoundedOutput("display-message", "-t", exactSessionTarget(s.TmuxName()), "-p", "#{pane_current_path}")
 	if err != nil {
 		return ""
 	}
@@ -2335,7 +2382,7 @@ func (s *Session) GetWorkDir() string {
 // query. On error it returns (false, err); the caller preserves the pager on
 // error rather than silently disabling a configured feature.
 func (s *Session) IsAltScreen() (bool, error) {
-	output, err := s.runBoundedOutput("display-message", "-t", s.TmuxName(), "-p", "#{alternate_on}")
+	output, err := s.runBoundedOutput("display-message", "-t", exactSessionTarget(s.TmuxName()), "-p", "#{alternate_on}")
 	if err != nil {
 		return false, err
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // addTestSession adds a session under the isolated HOME and returns its id.
@@ -101,15 +102,20 @@ func TestSessionRemove_StoppedSessionSucceeds(t *testing.T) {
 	}
 }
 
-// TestSessionRemove_RunningWithoutForce_Rejected enforces the safety gate.
+// TestSessionRemove_RunningWithoutForce_Rejected enforces the safety gate on
+// a session whose process is alive. (A row that only stores 'running' with no
+// process is removable: see TestRemove_StaleActiveRowNeedsNoForce.)
 func TestSessionRemove_RunningWithoutForce_Rejected(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
+	testutil.RequireTmux(t) // starts a real session pane
 	home := t.TempDir()
-	workPath := filepath.Join(home, "proj")
-	id := addTestSession(t, home, workPath, "remove-running")
-	forceSetStatus(t, home, id, session.StatusRunning)
+	id := addOpenTestSession(t, home, "remove-running")
+	if stdout, stderr, code := runAgentDeck(t, home, "session", "start", id); code != 0 {
+		t.Fatalf("session start: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	t.Cleanup(func() { _, _, _ = runAgentDeck(t, home, "session", "stop", id) })
 
 	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", id, "--json")
 	if code == 0 {

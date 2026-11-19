@@ -474,9 +474,9 @@ wait
 After getting the response, remove the consultation session:
 
 ```bash
-agent-deck remove "Consult Codex"
+agent-deck remove --force "Consult Codex"   # --force: the session is still idle with a live process
 # Or remove multiple at once:
-agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
+agent-deck remove --force "Codex Review" && agent-deck remove --force "Gemini Arch"
 ```
 
 ## TUI Keyboard Shortcuts
@@ -718,7 +718,7 @@ agent-deck ls  # Alias
 ### remove - Remove session
 
 ```bash
-agent-deck remove <id|title>
+agent-deck remove <id|title> [--force]   # a session whose process is alive needs --force (exit 1 without), like session remove
 agent-deck rm  # Alias
 ```
 

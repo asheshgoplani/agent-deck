@@ -326,7 +326,8 @@ func (s *suite) removeCompletionSession(id string, requireHooks bool) (string, e
 	if requireHooks && len(hookFiles) == 0 {
 		return "", fmt.Errorf("no hook files existed before removal; cleanup cannot be verified")
 	}
-	if out, err := s.cmd("remove", "--json", id); err != nil {
+	// The fork and the child are still live here: removal kills them.
+	if out, err := s.cmd("remove", "--json", "--force", id); err != nil {
 		return out, err
 	}
 	listed, err := s.sessionListed(id)

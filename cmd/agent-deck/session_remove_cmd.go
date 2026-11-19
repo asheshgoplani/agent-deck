@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -31,8 +32,10 @@ func handleSessionRemove(profile string, args []string) {
 		fmt.Println("Usage: agent-deck session remove <id|title> [options]")
 		fmt.Println("       agent-deck session remove --all-errored [options]")
 		fmt.Println()
-		fmt.Println("Remove a session from the registry. By default only stopped or")
-		fmt.Println("errored sessions may be removed; use --force to bypass.")
+		fmt.Println("Remove a session from the registry. A session whose process is still")
+		fmt.Println("alive (and that is not stopped or errored) is refused (exit 1) unless")
+		fmt.Println("--force is given; a row with no live process is removed. 'remove'")
+		fmt.Println("uses the same guard.")
 		fmt.Println()
 		fmt.Println("This is registry-only by default: Claude transcripts under")
 		fmt.Println("~/.claude/projects/ are preserved. Pass --prune-worktree to also")
@@ -56,6 +59,10 @@ func handleSessionRemove(profile string, args []string) {
 	}
 
 	if *allErrored {
+		if fs.NArg() > 0 {
+			out.Error(fmt.Sprintf("--all-errored takes no session argument, got: %s", strings.Join(fs.Args(), " ")), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
 		removeAllErrored(out, storage, instances, groups, *pruneWorktree, *force)
 		return
 	}
@@ -65,6 +72,7 @@ func handleSessionRemove(profile string, args []string) {
 		out.Error("usage: session remove <id|title> OR --all-errored", ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
+	rejectExtraRemoveArgs(out, fs)
 
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
@@ -76,16 +84,7 @@ func handleSessionRemove(profile string, args []string) {
 		return
 	}
 
-	if !*force && !isRemovableStatus(inst.Status) {
-		out.Error(
-			fmt.Sprintf(
-				"session '%s' is in state '%s'; only stopped/error sessions may be removed without --force",
-				inst.Title, inst.Status,
-			),
-			ErrCodeInvalidOperation,
-		)
-		exitCLI(1)
-	}
+	refuseRunningRemoval(out, inst, *force)
 
 	// Always kill the tmux scope + its process tree before deleting the
 	// registry row (issue #59, v1.7.68). Previously Kill() was only
@@ -131,6 +130,61 @@ func handleSessionRemove(profile string, args []string) {
 // from the registry without --force.
 func isRemovableStatus(s session.Status) bool {
 	return s == session.StatusStopped || s == session.StatusError
+}
+
+// needsForceToRemove reports whether removing inst would kill a session that
+// may still be working: it has a live process and it is not stopped or
+// errored. A row whose process is gone (never started, a pane that died, a
+// CLI start whose row kept 'starting') has nothing to kill, whatever status
+// it last stored, so it is removable without --force; refusing it was a dead
+// end because `session stop` answers "not running" for it.
+func needsForceToRemove(inst *session.Instance) bool {
+	if isRemovableStatus(inst.Status) {
+		return false
+	}
+	return sessionHasLiveProcess(inst)
+}
+
+// sessionHasLiveProcess reports whether inst still has a process running in
+// tmux. A tmux session that exists is not enough: with remain-on-exit on,
+// tmux keeps the session after its process exits, holding only dead panes
+// (#{pane_dead}). A session whose panes are all dead is not running. A
+// variable so tests can stand in for tmux.
+var sessionHasLiveProcess = func(inst *session.Instance) bool {
+	ts := inst.GetTmuxSession()
+	if ts == nil || !ts.Exists() {
+		return false
+	}
+	return !ts.AllPanesDead()
+}
+
+// refuseRunningRemoval is the one guard `remove`/`rm` and `session remove`
+// share: without --force a session that needsForceToRemove is refused with
+// exit 1 and the same text on both commands.
+func refuseRunningRemoval(out *CLIOutput, inst *session.Instance, force bool) {
+	if force || !needsForceToRemove(inst) {
+		return
+	}
+	out.Error(
+		fmt.Sprintf(
+			"session '%s' is in state '%s' and may still be working; stop it first or pass --force to kill and remove it",
+			inst.Title, inst.Status,
+		),
+		ErrCodeInvalidOperation,
+	)
+	exitCLI(1)
+}
+
+// rejectExtraRemoveArgs refuses a second positional argument instead of
+// silently ignoring it (`remove a b` used to remove only a).
+func rejectExtraRemoveArgs(out *CLIOutput, fs *flag.FlagSet) {
+	if fs.NArg() > 1 {
+		out.Error(
+			fmt.Sprintf("remove takes one session, got %d arguments: %s", fs.NArg(), strings.Join(fs.Args(), " ")),
+			ErrCodeInvalidOperation,
+		)
+		exitCLI(1)
+	}
 }
 
 // removedSessionRow is the {id,title} payload emitted for each removed session.

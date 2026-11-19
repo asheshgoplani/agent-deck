@@ -1154,7 +1154,9 @@ class Watchdog:
             args = [AGENT_DECK_BIN]
             if profile:
                 args += ["-p", profile]
-            args += ["remove", sid]
+            # --force: eviction is the point; a live pane behind an error
+            # row would otherwise refuse the removal on every scan.
+            args += ["remove", "--force", sid]
             rc, _, err = run_cmd(args, timeout=20)
             if rc == 0:
                 with self.lock:
