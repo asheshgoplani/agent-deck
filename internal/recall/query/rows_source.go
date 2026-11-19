@@ -669,7 +669,9 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 	var lastStatus []byte
 	var lastStatusAt, lastResolveAt time.Time
 	for {
-		if info, err := os.Stat(c.P); err != nil || !os.SameFile(info, opened) {
+		// path is c.P as cursorPath checked it. Use it, not c.P: the cursor
+		// can come from a web client (GET /timeline/stream).
+		if info, err := os.Stat(path); err != nil || !os.SameFile(info, opened) {
 			return resync("source_replaced")
 		}
 		size := int64(0)
@@ -692,7 +694,7 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 				for i := range frames {
 					fr := frames[i]
 					if fr.Frame == "update" && src.Harness == "claude" {
-						attachSidechain(ctx, c.P, fr.Row)
+						attachSidechain(ctx, path, fr.Row)
 					}
 					if i == len(frames)-1 {
 						fr.Cursor = encodeRowsCursor(rowsCursor{P: c.P, O: end, A: anchor, S: cloneState(p.st)})
