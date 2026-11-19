@@ -284,17 +284,27 @@ Standing instructions for this session from your operator, read from these files
 - Absolute paths only: `~` and `$VAR` are expanded when the list is set (an
   unset variable is refused); a comma separates entries, so a path cannot
   contain one. At most 16 files.
-- Only regular UTF-8 text files are read. A missing file, a directory, or
-  binary or non-UTF-8 content is reported as `unreadable` and named in the
-  block by one line instead of its content. Control characters other than
+- Only regular UTF-8 text files are read. A missing file, a directory, a
+  FIFO or device (also through a symlink), or binary or non-UTF-8 content is
+  reported as `unreadable` and named in the block by one line instead of its
+  content. A non-regular file is never opened, so a FIFO cannot block a
+  spawn, `session show` or `session primer`. Control characters other than
   newline and tab (a CR of a CRLF file, escape sequences) and a leading BOM
   are dropped, so a file cannot break the launch command.
 - A file over 32 KB is not read; a one-line pointer names it.
 - Where the block rides inline in the launch command with a budget (codex's
   `-c developer_instructions`, and every SSH or sandboxed launch, 8 KB as
   above), the files are fitted in order: a file that does not fit is replaced
-  by a one-line pointer, and a later, smaller file can still go in. A local
-  codex session's identity file keeps every file in full. Over SSH and in a
+  by a one-line pointer, and a later, smaller file can still go in. For
+  codex the budget counts the `developer_instructions` from your codex
+  config that the override is merged with. When not even one pointer per
+  file fits (an SSH or sandboxed codex launch carries the block twice), one
+  summary line names every file instead. When the block and your configured
+  `developer_instructions` already fill the budget, the override stays
+  exactly as without instruction files (so a session that started before
+  still starts), and `session show`/`session primer` report each file as
+  `not_delivered` with the reason. A local codex session's identity file
+  keeps every file in full. Over SSH and in a
   sandbox the controller's path does not exist where the harness runs, so
   the content travels inline within that budget and the pointer says the
   file is on the agent-deck host.

@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -118,21 +119,34 @@ func isInstructionsControlRune(r rune) bool {
 
 // readInstructionsFile reads one instruction file under the safety rules and
 // returns its sanitized text, or a state and reason when it cannot be used.
+//
+// The path is stat'ed before it is opened, and a non-regular file (a FIFO,
+// a device, a directory, a symlink to one of them) is refused without an
+// open: an O_RDONLY open of a FIFO blocks until a writer appears, which hung
+// every spawn and `session show`/`session primer` (#3215 review R-1). The
+// open itself is O_NONBLOCK and the opened file is checked again, so a path
+// swapped for a FIFO between the stat and the open cannot block either.
 func readInstructionsFile(path string) (text string, size int, state, reason string) {
-	f, err := os.Open(path) // #nosec G304 -- operator-configured absolute path, read only
+	st, err := os.Stat(path)
 	if err != nil {
 		return "", 0, InstructionsStateUnreadable, instructionsOpenReason(err)
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return "", 0, InstructionsStateUnreadable, "cannot stat the file"
 	}
 	if !st.Mode().IsRegular() {
 		return "", 0, InstructionsStateUnreadable, "not a regular file"
 	}
 	if st.Size() > instructionsFileMaxBytes {
 		return "", int(st.Size()), InstructionsStateNotDelivered, fmt.Sprintf("larger than the %d KB per-file cap", instructionsFileMaxBytes>>10)
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 -- operator-configured absolute path, read only
+	if err != nil {
+		return "", 0, InstructionsStateUnreadable, instructionsOpenReason(err)
+	}
+	defer f.Close()
+	if st, err = f.Stat(); err != nil {
+		return "", 0, InstructionsStateUnreadable, "cannot stat the file"
+	}
+	if !st.Mode().IsRegular() {
+		return "", 0, InstructionsStateUnreadable, "not a regular file"
 	}
 	data, err := io.ReadAll(io.LimitReader(f, instructionsFileMaxBytes+1))
 	if err != nil {
@@ -195,14 +209,24 @@ const (
 )
 
 // fits reports whether a block of this text stays inside the inline budget.
-func (b identityBudget) fits(text string) bool {
+// existing is the developer_instructions codex already has configured: the
+// codex override carries existing + "\n\n" + text (codexIdentityOverride),
+// so that is what is measured (#3215 review R-2).
+func (b identityBudget) fits(text, existing string) bool {
+	override := func() int {
+		merged := text
+		if existing != "" {
+			merged = existing + "\n\n" + text
+		}
+		return len("developer_instructions=") + len(identityTOMLString(merged))
+	}
 	switch b {
 	case budgetCodexLocal:
-		return len("developer_instructions=")+len(identityTOMLString(text)) <= identityInlineMaxBytes
+		return override() <= identityInlineMaxBytes
 	case budgetRemote:
 		return len(identityPrintfArg(text)) <= identityInlineMaxBytes
 	case budgetRemoteCodex:
-		return len(identityPrintfArg(text))+len("developer_instructions=")+len(identityTOMLString(text)) <= identityInlineMaxBytes
+		return len(identityPrintfArg(text))+override() <= identityInlineMaxBytes
 	}
 	return true
 }
@@ -212,6 +236,20 @@ func (b identityBudget) overBudgetReason() string {
 		return fmt.Sprintf("over the %d KB inline budget of codex's developer_instructions", identityInlineMaxBytes>>10)
 	}
 	return fmt.Sprintf("over the %d KB inline budget of an SSH/sandboxed launch", identityInlineMaxBytes>>10)
+}
+
+// codexBudgetExisting is the developer_instructions this session's codex
+// override is merged with (see codexIdentityOverride), for the budget: the
+// configured value of a local or sandboxed codex, "" for any other tool and
+// for SSH, whose remote config is not readable here and is not merged.
+func (i *Instance) codexBudgetExisting() string {
+	if i == nil || !IsCodexCompatible(i.Tool) || i.IsSSH() {
+		return ""
+	}
+	if existing, found := codexEffectiveDeveloperInstructions(i.getCodexHomeDir(), i.EffectiveWorkingDir()); found {
+		return existing
+	}
+	return ""
 }
 
 // spawnBudget is the budget the session's own harness spawn uses.
@@ -244,11 +282,31 @@ func instructionsPointer(reason string, remote bool) string {
 	return fmt.Sprintf("(not included: %s; %s)\n", reason, where)
 }
 
+// instructionsSummary stands in for the whole section when not even one
+// pointer line per file fits: one line naming every file that is not
+// included, so none is dropped silently (#3215 review R-3).
+func instructionsSummary(id string, paths []string, reason string, remote bool) string {
+	where := "read the files themselves"
+	if remote {
+		where = "they are on the agent-deck host, not where this session runs"
+	}
+	return fmt.Sprintf("\n## Session instructions\n(not included: %d instruction file(s), %s; %s; `agent-deck session primer %s` lists them: %s)\n",
+		len(paths), reason, where, id, strings.Join(paths, ", "))
+}
+
 // contextBlock renders the block a spawn carries at the given resolved level:
 // the identity/primer block followed, when the session has instruction files,
 // by their section. Without instruction files it is exactly
-// BuildContextPromptForLevel(level). Writes nothing.
-func (i *Instance) contextBlock(level string, budget identityBudget) (string, []InstructionsFileStatus) {
+// BuildContextPromptForLevel(level). existing is the configured codex
+// developer_instructions the codex override is merged with ("" otherwise).
+// Writes nothing.
+//
+// Where the budget is tight it degrades in steps, never silently: files in
+// full where they fit and a pointer line for each other file; else one
+// summary line naming them all; else (the base block, plus a configured
+// developer_instructions, already fill the budget) the base block alone, as
+// without the flag, and every file reported not_delivered with the reason.
+func (i *Instance) contextBlock(level string, budget identityBudget, existing string) (string, []InstructionsFileStatus) {
 	base := i.BuildContextPromptForLevel(level)
 	if i == nil || len(i.InstructionsFiles) == 0 {
 		return base, nil
@@ -294,29 +352,41 @@ func (i *Instance) contextBlock(level string, budget identityBudget) (string, []
 		if entries[k].status.State != InstructionsStateOK {
 			continue
 		}
-		if !budget.fits(assemble(k)) {
+		if !budget.fits(assemble(k), existing) {
 			entries[k].body = instructionsPointer(budget.overBudgetReason(), remote)
 			entries[k].status.State = InstructionsStateNotDelivered
 			entries[k].status.Reason = budget.overBudgetReason()
 		}
 	}
 	text := assemble(len(entries))
-	if !budget.fits(text) {
-		// Not even the pointers fit next to the base block: leave the base
-		// block as it was (it has its own size handling) and report why.
-		statuses := make([]InstructionsFileStatus, len(entries))
-		for k, e := range entries {
-			statuses[k] = e.status
-			statuses[k].State = InstructionsStateNotDelivered
-			statuses[k].Reason = budget.overBudgetReason()
-		}
-		return base, statuses
-	}
 	statuses := make([]InstructionsFileStatus, len(entries))
 	for k, e := range entries {
 		statuses[k] = e.status
 	}
-	return text, statuses
+	if budget.fits(text, existing) {
+		return text, statuses
+	}
+	// Not even a pointer per file fits: every readable file is out of the
+	// budget; unreadable and over-cap files keep their own state.
+	reason := budget.overBudgetReason()
+	if existing != "" && !budget.fits(base, existing) {
+		reason = fmt.Sprintf("no room in codex's %d KB inline budget next to the configured developer_instructions", identityInlineMaxBytes>>10)
+	}
+	var paths []string
+	for k := range statuses {
+		if statuses[k].State == InstructionsStateOK || statuses[k].State == InstructionsStateNotDelivered && statuses[k].Reason == budget.overBudgetReason() {
+			statuses[k].State = InstructionsStateNotDelivered
+			statuses[k].Reason = reason
+		}
+		paths = append(paths, identityField(statuses[k].Path))
+	}
+	if summary := base + instructionsSummary(identityField(i.ID), paths, reason, remote); budget.fits(summary, existing) {
+		return summary, statuses
+	}
+	// The base block (with a configured developer_instructions) already
+	// fills the budget: leave it exactly as without instruction files, so a
+	// session that started before the flag still starts.
+	return base, statuses
 }
 
 // InstructionsFilesReport resolves what the session's next spawn delivers:
@@ -335,5 +405,5 @@ func (i *Instance) InstructionsFilesReport() (text string, files []InstructionsF
 		}
 		return "", files
 	}
-	return i.contextBlock(level, i.spawnBudget())
+	return i.contextBlock(level, i.spawnBudget(), i.codexBudgetExisting())
 }

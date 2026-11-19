@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -110,5 +112,55 @@ func TestIssue3206_AddShowPrimerSetRoundTrip(t *testing.T) {
 	}
 	if _, ok := show()["instructions_files"]; ok {
 		t.Fatal("a cleared list must leave instructions_files out of show --json")
+	}
+}
+
+// #3215 review R-1: a FIFO as an instruction file must not hang the CLI.
+// `session show --json` and `session primer --json` return and report it as
+// unreadable (they used to block in open(2) until a writer appeared).
+func TestIssue3206_CLIShowPrimerDoNotHangOnFIFO(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(home, "fifo.md")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, stderr, code := runAgentDeck(t, home, "add", "-c", "codex", "-t", "Fifo", "--no-parent", "--json", "--instructions-file", fifo, project); code != 0 {
+		t.Fatalf("add: %d %s %s", code, out, stderr)
+	}
+	type fileState struct{ Path, State, Reason string }
+	want := fileState{fifo, "unreadable", "not a regular file"}
+	for _, args := range [][]string{{"session", "show", "Fifo", "--json"}, {"session", "primer", "Fifo", "--json"}} {
+		done := make(chan struct{})
+		var out, stderr string
+		var code int
+		go func() {
+			defer close(done)
+			out, stderr, code, _ = execAgentDeckEnv(channelsCLIBinary(t), home, "", nil, args...)
+		}()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("%v hangs on a FIFO instruction file", args)
+		}
+		if code != 0 {
+			t.Fatalf("%v: %d %s %s", args, code, out, stderr)
+		}
+		var got struct {
+			InstructionsFiles []fileState `json:"instructions_files"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("%v: %v %s", args, err, out)
+		}
+		if len(got.InstructionsFiles) != 1 || got.InstructionsFiles[0] != want {
+			t.Fatalf("%v instructions_files = %+v, want %+v", args, got.InstructionsFiles, want)
+		}
 	}
 }

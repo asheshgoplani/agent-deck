@@ -236,7 +236,7 @@ func (i *Instance) identityRemoteText() (string, bool) {
 	// Instruction files (#3206) are fitted into the inline budget here, file
 	// by file; without them this is BuildContextPromptForLevel(level).
 	level, _ := i.EffectiveContextLevel()
-	text, _ := i.contextBlock(level, i.spawnBudget())
+	text, _ := i.contextBlock(level, i.spawnBudget(), i.codexBudgetExisting())
 	if n := len(identityPrintfArg(text)); n > identityInlineMaxBytes {
 		sessionLog.Warn("identity_remote_block_too_large",
 			slog.String("instance_id", i.ID),
@@ -630,7 +630,7 @@ func (i *Instance) ensureIdentityFile() (dir, file string, ok bool) {
 	// block. Regeneration on start/restart still happens whenever the record
 	// changed, because the rendered content then differs.
 	level, _ := i.EffectiveContextLevel()
-	text, _ := i.contextBlock(level, budgetFile)
+	text, _ := i.contextBlock(level, budgetFile, "")
 	content := []byte(text)
 	names := []string{identityFileName, geminiIdentityFileName}
 	if i.Tool == "copilot" {
@@ -747,10 +747,16 @@ func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string,
 		merged = string(content)
 		if len(i.InstructionsFiles) > 0 {
 			// The file carries every instruction file in full; the inline
-			// override fits them into codex's budget, a pointer line
-			// standing in for each one that does not fit (#3206).
+			// override fits them into codex's budget together with the
+			// configured developer_instructions it is merged with below, a
+			// pointer line standing in for each one that does not fit
+			// (#3206; #3215 review R-2).
+			existing := ""
+			if value, found := codexEffectiveDeveloperInstructions(codexHome, projectPath); found {
+				existing = value
+			}
 			level, _ := i.EffectiveContextLevel()
-			merged, _ = i.contextBlock(level, budgetCodexLocal)
+			merged, _ = i.contextBlock(level, budgetCodexLocal, existing)
 		}
 	}
 	// A configured (present) developer_instructions leads, so codex applies

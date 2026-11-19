@@ -168,3 +168,45 @@ func TestIdentityGolden_SandboxCodex(t *testing.T) {
 	}
 	assertIdentityGolden(t, home, "sandbox_codex_override.txt", value)
 }
+
+// identityGoldenConfiguredDeveloperInstructions is a ~9 KB operator
+// developer_instructions: large enough that the codex override alone is
+// over the 8 KB inline budget, as in the #3215 review (R-2).
+func identityGoldenConfiguredDeveloperInstructions() string {
+	var b strings.Builder
+	for k := 0; b.Len() < 9000; k++ {
+		b.WriteString("Operator rule ")
+		b.WriteString(strings.Repeat("x", k%7))
+		b.WriteString(": keep the build green and say what you changed.\n")
+	}
+	return b.String()
+}
+
+// writeCodexDeveloperInstructions writes developer_instructions into
+// <codexHome>/config.toml the way an operator would.
+func writeCodexDeveloperInstructions(t *testing.T, codexHome, text string) {
+	t.Helper()
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("developer_instructions = "+tomlBasicString(text)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A local codex session whose codex config already carries a large
+// developer_instructions: the override and the full launch command, without
+// instruction files, are pinned from main (#3215 review R-2).
+func TestIdentityGolden_LocalCodexConfiguredDeveloperInstructions(t *testing.T) {
+	home := identityTestEnv(t)
+	t.Setenv("CODEX_HOME", "")
+	codexHome := filepath.Join(home, ".codex")
+	writeCodexDeveloperInstructions(t, codexHome, identityGoldenConfiguredDeveloperInstructions())
+	inst := identityTestInstance("codex")
+	value, ok := inst.codexIdentityOverride(codexHome, inst.ProjectPath)
+	if !ok {
+		t.Fatal("codexIdentityOverride returned !ok with a configured developer_instructions")
+	}
+	assertIdentityGolden(t, home, "local_codex_configured_dev_override.txt", value)
+	assertIdentityGolden(t, home, "local_codex_configured_dev_command.txt", inst.buildCodexCommand("codex"))
+}
