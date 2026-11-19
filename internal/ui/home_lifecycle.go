@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -69,6 +70,18 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		)
 		h.instancesMu.RUnlock()
 	}
+	// The same check for each per-repo worktree of a multi-repo session: a
+	// session added by path at one of them (in this or another profile) still
+	// uses it.
+	multiRepoShared := make([]bool, len(multiRepoWorktrees))
+	if isMultiRepo && len(multiRepoWorktrees) > 0 {
+		h.instancesMu.RLock()
+		for i, wt := range multiRepoWorktrees {
+			multiRepoShared[i] = session.OtherSessionsShareWorktree(
+				&session.Instance{ID: id, WorktreePath: wt.WorktreePath, WorktreeRepoRoot: wt.RepoRoot}, h.instances)
+		}
+		h.instancesMu.RUnlock()
+	}
 	profile := h.profile
 	return func() tea.Msg {
 		killErr := inst.Kill()
@@ -101,12 +114,16 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 			}
 		}
 		if isMultiRepo {
-			// Clean up multi-repo temp directory
-			if multiRepoTempDir != "" {
-				_ = os.RemoveAll(multiRepoTempDir)
-			}
-			// Clean up per-repo worktrees
-			for _, wt := range multiRepoWorktrees {
+			// Clean up per-repo worktrees, keeping any that another session,
+			// in this or another local profile, still uses.
+			var kept []string
+			for i, wt := range multiRepoWorktrees {
+				snap := &session.Instance{ID: id, WorktreePath: wt.WorktreePath, WorktreeRepoRoot: wt.RepoRoot}
+				if multiRepoShared[i] || keepWorktreeForOtherProfiles(snap, profile, "delete") {
+					uiLog.Info("worktree_remove_skipped", slog.String("path", wt.WorktreePath), slog.String("repo", wt.RepoRoot), slog.String("reason", "another session still uses this per-repo worktree"))
+					kept = append(kept, wt.WorktreePath)
+					continue
+				}
 				if err := git.RemoveWorktree(wt.RepoRoot, wt.WorktreePath, true); err != nil {
 					uiLog.Warn("worktree_remove_err", slog.String("path", wt.WorktreePath), slog.String("err", err.Error()))
 				}
@@ -114,9 +131,30 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 					uiLog.Warn("worktree_prune_err", slog.String("repo", wt.RepoRoot), slog.String("err", err.Error()))
 				}
 			}
+			// Clean up the multi-repo temp directory. The per-repo worktrees
+			// are created inside it, so it stays while it holds a kept one.
+			if multiRepoTempDir != "" {
+				if dirHoldsAny(multiRepoTempDir, kept) {
+					uiLog.Info("multi_repo_tempdir_kept", slog.String("path", multiRepoTempDir), slog.String("reason", "holds a per-repo worktree another session still uses"))
+				} else {
+					_ = os.RemoveAll(multiRepoTempDir)
+				}
+			}
 		}
 		return sessionDeletedMsg{deletedID: id, killErr: killErr}
 	}
+}
+
+// dirHoldsAny reports whether any of paths is dir or lies inside it.
+func dirHoldsAny(dir string, paths []string) bool {
+	d := filepath.Clean(dir)
+	for _, p := range paths {
+		p = filepath.Clean(p)
+		if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // keepWorktreeForOtherProfiles reports whether a TUI delete or finish must

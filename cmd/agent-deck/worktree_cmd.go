@@ -666,7 +666,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	into := fs.String("into", "", "Target branch to merge into (default: auto-detect)")
 	noMerge := fs.Bool("no-merge", false, "Skip merge (e.g. for PR workflows)")
 	keepBranch := fs.Bool("keep-branch", false, "Don't delete local branch after finish")
-	force := fs.Bool("force", false, "Skip safety checks (uncommitted changes, other sessions on the same worktree) and force branch deletion")
+	force := fs.Bool("force", false, "Skip safety checks (uncommitted changes, other sessions on the same worktree, other profiles that cannot be read; reported as profiles_unchecked in --json) and force branch deletion")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -748,6 +748,10 @@ func handleWorktreeFinish(profile string, args []string) {
 	}
 	if len(sharers) > 0 && !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "Warning: --force: removing worktree %s still used by %s\n", FormatPath(worktreePath), sessionNameList(sharers))
+	}
+	profilesUnchecked := session.UncheckedProfiles(err)
+	if len(profilesUnchecked) > 0 && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: --force: removing worktree %s without checking other profiles: %v\n", FormatPath(worktreePath), err)
 	}
 
 	finishBackend, err := detectAndCreateBackend(repoRoot)
@@ -898,7 +902,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	warnRemovedSessionCleanup(session.CleanupRemovedSession(storage.Profile(), inst.ID), inst.ID, *jsonOutput)
 
 	if *jsonOutput {
-		out.Print("", map[string]interface{}{
+		result := map[string]interface{}{
 			"success":        true,
 			"session":        inst.Title,
 			"session_id":     inst.ID,
@@ -907,7 +911,12 @@ func handleWorktreeFinish(profile string, args []string) {
 			"merged":         !*noMerge,
 			"branch_deleted": !*keepBranch,
 			"shared_with":    sharedWith, // sessions left without their worktree by --force
-		})
+		}
+		if len(profilesUnchecked) > 0 {
+			// --force removed the worktree without reading these profiles.
+			result["profiles_unchecked"] = profilesUnchecked
+		}
+		out.Print("", result)
 	} else {
 		fmt.Printf("\n%s Finished: session '%s' removed, worktree cleaned up", successSymbol, inst.Title)
 		if !*noMerge {

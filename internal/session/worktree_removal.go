@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -53,9 +54,12 @@ func OtherSessionsShareWorktree(target *Instance, others []*Instance) bool {
 }
 
 // SessionsSharingWorktree returns the instances in others (other than target
-// itself) that use target's worktree directory: their worktree path is that
-// directory, or their project path is that directory or inside it (a session
-// added by plain path at the worktree records no worktree fields). Paths are
+// itself) that use target's worktree directory: their worktree path or one of
+// their multi-repo worktree paths is that directory, or their project path or
+// one of their additional paths is that directory or inside it (a session
+// added by plain path at the worktree records no worktree fields). Only local
+// sessions count: a remote (--ssh) session runs on another machine and its
+// ProjectPath is a local placeholder, not a checkout (LocationOf). Paths are
 // compared canonically as in OtherSessionsShareWorktree. Callers that refuse
 // or skip a removal use it to name the sessions that still need the worktree.
 func SessionsSharingWorktree(target *Instance, others []*Instance) []*Instance {
@@ -69,24 +73,42 @@ func SessionsSharingWorktree(target *Instance, others []*Instance) []*Instance {
 	targetCanon := canonicalPath(wt)
 	var sharers []*Instance
 	for _, o := range others {
-		if o == nil || o.ID == target.ID {
+		if o == nil || o.ID == target.ID || !LocationOf(o).IsLocal() {
 			continue
 		}
-		if owt := strings.TrimSpace(o.WorktreePath); owt != "" && canonicalPath(owt) == targetCanon {
-			sharers = append(sharers, o)
-			continue
-		}
-		if pp := strings.TrimSpace(o.ProjectPath); pp != "" && pathIsOrUnder(canonicalPath(pp), targetCanon) {
+		if usesWorktree(o, targetCanon) {
 			sharers = append(sharers, o)
 		}
 	}
 	return sharers
 }
 
+// usesWorktree reports whether the local session o uses the worktree whose
+// canonical path is wtCanon.
+func usesWorktree(o *Instance, wtCanon string) bool {
+	worktrees := []string{o.WorktreePath}
+	for _, mw := range o.MultiRepoWorktrees {
+		worktrees = append(worktrees, mw.WorktreePath)
+	}
+	for _, w := range worktrees {
+		if w = strings.TrimSpace(w); w != "" && canonicalPath(w) == wtCanon {
+			return true
+		}
+	}
+	for _, p := range append([]string{o.ProjectPath}, o.AdditionalPaths...) {
+		if p = strings.TrimSpace(p); p != "" && pathIsOrUnder(canonicalPath(p), wtCanon) {
+			return true
+		}
+	}
+	return false
+}
+
 // OtherProfileInstances loads the sessions of every local profile except
 // currentProfile, so a worktree guard also sees users in other profiles. An
 // error means some profile could not be read: callers must treat its
-// sessions as unknown, never as absent.
+// sessions as unknown, never as absent. When the profiles could be listed,
+// the error is an *UnreadableProfilesError naming every profile that could
+// not be read, and the sessions of the readable ones are still returned.
 func OtherProfileInstances(currentProfile string) ([]*Instance, error) {
 	profiles, err := ListProfiles()
 	if err != nil {
@@ -94,22 +116,65 @@ func OtherProfileInstances(currentProfile string) ([]*Instance, error) {
 	}
 	current := GetEffectiveProfile(currentProfile)
 	var all []*Instance
+	unreadable := &UnreadableProfilesError{}
 	for _, profile := range profiles {
 		if profile == currentProfile || profile == current {
 			continue
 		}
 		storage, err := NewStorageWithProfile(profile)
 		if err != nil {
-			return nil, fmt.Errorf("open profile %q for worktree ownership: %w", profile, err)
+			unreadable.add(profile, fmt.Errorf("open profile %q for worktree ownership: %w", profile, err))
+			continue
 		}
 		instances, _, err := storage.LoadWithGroups()
 		_ = storage.Close()
 		if err != nil {
-			return nil, fmt.Errorf("load profile %q for worktree ownership: %w", profile, err)
+			unreadable.add(profile, fmt.Errorf("load profile %q for worktree ownership: %w", profile, err))
+			continue
 		}
 		all = append(all, instances...)
 	}
+	if len(unreadable.Profiles) > 0 {
+		return all, unreadable
+	}
 	return all, nil
+}
+
+// UnreadableProfilesError lists the local profiles OtherProfileInstances
+// could not read.
+type UnreadableProfilesError struct {
+	Profiles []string
+	errs     []error
+}
+
+func (e *UnreadableProfilesError) add(profile string, err error) {
+	e.Profiles = append(e.Profiles, profile)
+	e.errs = append(e.errs, err)
+}
+
+func (e *UnreadableProfilesError) Error() string {
+	msgs := make([]string, 0, len(e.errs))
+	for _, err := range e.errs {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+func (e *UnreadableProfilesError) Unwrap() []error { return e.errs }
+
+// UncheckedProfiles names the profiles a failed OtherProfileInstances call
+// could not check, for reports such as the CLI's "profiles_unchecked" field.
+// When the profile list itself could not be read it returns ["*"] (every
+// other profile); for a nil error it returns nil.
+func UncheckedProfiles(err error) []string {
+	if err == nil {
+		return nil
+	}
+	var u *UnreadableProfilesError
+	if errors.As(err, &u) {
+		return append([]string(nil), u.Profiles...)
+	}
+	return []string{"*"}
 }
 
 // WorktreeUsersInOtherProfiles returns the sessions in local profiles other
@@ -118,13 +183,11 @@ func OtherProfileInstances(currentProfile string) ([]*Instance, error) {
 // checks this on top of the current profile's sessions: the CLI through
 // worktreeRemovalGuard (cmd/agent-deck), the TUI delete and finish, and the
 // web finish. On error the caller must keep the worktree unless the user
-// forced the removal.
+// forced the removal. With an error, the users found in the profiles that
+// could be read are still returned.
 func WorktreeUsersInOtherProfiles(target *Instance, currentProfile string) ([]*Instance, error) {
 	others, err := OtherProfileInstances(currentProfile)
-	if err != nil {
-		return nil, err
-	}
-	return SessionsSharingWorktree(target, others), nil
+	return SessionsSharingWorktree(target, others), err
 }
 
 // RemoveSessionWorktree removes the session's worktree directory if and only if

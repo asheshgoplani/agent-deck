@@ -3634,7 +3634,10 @@ func handleRemove(profile string, args []string) {
 	// another session in this or another local profile still uses it (#1449,
 	// as the TUI delete does). remove has no --force, so an unreadable other
 	// profile keeps the worktree too.
-	worktreeKept := inst.IsWorktree() && keepSharedWorktree(inst, instances, newWorktreeRemovalGuard(profile), false, *jsonOutput)
+	worktreeKept := false
+	if inst.IsWorktree() {
+		worktreeKept, _ = keepSharedWorktree(inst, instances, newWorktreeRemovalGuard(profile), false, *jsonOutput)
+	}
 	if inst.IsWorktree() && !worktreeKept {
 		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
 			if err := backend.RemoveWorktree(inst.WorktreePath, false); err != nil {

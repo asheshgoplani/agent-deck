@@ -222,3 +222,70 @@ func TestSessionCleanup_KeepsWorktreeUsedByOtherProfile(t *testing.T) {
 		})
 	}
 }
+
+// --force removes a worktree even when another profile cannot be read. With
+// --json the stderr warning is suppressed, so the output must name the
+// profiles that were not checked; without --force nothing is skipped and the
+// field is absent.
+func TestWorktreeRemovalPaths_ForceReportsUncheckedProfiles(t *testing.T) {
+	skipUnlessWorktreeCLITest(t)
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, home, id string)
+		args    func(id string) []string
+		want    bool
+	}{
+		{name: "session remove --prune-worktree --force", want: true,
+			args: func(id string) []string {
+				return []string{"session", "remove", id, "--prune-worktree", "--force", "--json"}
+			}},
+		{name: "session remove --all-errored --prune-worktree --force", want: true,
+			prepare: func(t *testing.T, home, id string) { forceSetStatus(t, home, id, session.StatusError) },
+			args: func(string) []string {
+				return []string{"session", "remove", "--all-errored", "--prune-worktree", "--force", "--json"}
+			}},
+		{name: "session remove --prune-worktree", want: false,
+			args: func(id string) []string { return []string{"session", "remove", id, "--prune-worktree", "--json"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			first, second, _, _ := sharedWorktreeSessions(t, home)
+			if stdout, stderr, code := runAgentDeck(t, home, "session", "remove", second, "--json"); code != 0 {
+				t.Fatalf("drop second: exit %d\n%s\n%s", code, stdout, stderr)
+			}
+			broken := filepath.Join(home, ".local", "share", "agent-deck", "profiles", "broken_profile_test")
+			if err := os.MkdirAll(broken, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(broken, "state.db"), []byte("not a database"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.prepare != nil {
+				tc.prepare(t, home, first)
+			}
+			stdout, stderr, code := runAgentDeck(t, home, tc.args(first)...)
+			if code != 0 {
+				t.Fatalf("%s: exit %d\n%s\n%s", tc.name, code, stdout, stderr)
+			}
+			has := strings.Contains(stdout, `"profiles_unchecked"`) && strings.Contains(stdout, "broken_profile_test")
+			if has != tc.want {
+				t.Errorf("%s --json: profiles_unchecked naming broken_profile_test present = %v, want %v\n%s", tc.name, has, tc.want, stdout)
+			}
+		})
+	}
+}
+
+// The help of every --force that also skips the unreadable-profile check says so.
+func TestWorktreeRemovalForceHelpMentionsProfileCheck(t *testing.T) {
+	skipUnlessWorktreeCLITest(t)
+	for _, args := range [][]string{
+		{"session", "remove", "--help"},
+		{"session", "cleanup", "--help"},
+		{"worktree", "finish", "--help"},
+	} {
+		stdout, stderr, _ := runAgentDeck(t, t.TempDir(), args...)
+		if !strings.Contains(stdout+stderr, "profiles that cannot be read") {
+			t.Errorf("%v: --force help does not say it skips the check of profiles that cannot be read\n%s%s", args, stdout, stderr)
+		}
+	}
+}
