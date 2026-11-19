@@ -87,6 +87,23 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	src, _, _, ok := s.timelineSource(w, sessionID, opts)
+	if !ok {
+		return
+	}
+	if after == "end" {
+		// Resolve the end with the stream's own filter: a filtered read's
+		// cursor lists the open rows it dropped (a tool call still waiting
+		// for its result), so their later patches stay off the wire.
+		tl, err := query.ReadRows(ctx, src, query.RowsOptions{Tail: 1, Kinds: opts.Kinds, SkipEmptyBody: opts.SkipEmptyBody})
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to read the session transcript")
+			return
+		}
+		after = tl.ThroughCursor
+	}
+	// Take a slot only once the request can no longer fail, so a
+	// rejected one does not evict a live stream on its way out.
 	slot := &timelineSlot{cancel: cancel}
 	s.timelineSlotsMu.Lock()
 	if int64(len(s.timelineSlots)) >= timelineStreamMax {
@@ -107,21 +124,6 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 		s.timelineStreams.Store(int64(len(s.timelineSlots)))
 		s.timelineSlotsMu.Unlock()
 	}()
-	src, _, _, ok := s.timelineSource(w, sessionID, opts)
-	if !ok {
-		return
-	}
-	if after == "end" {
-		// Resolve the end with the stream's own filter: a filtered read's
-		// cursor lists the open rows it dropped (a tool call still waiting
-		// for its result), so their later patches stay off the wire.
-		tl, err := query.ReadRows(ctx, src, query.RowsOptions{Tail: 1, Kinds: opts.Kinds, SkipEmptyBody: opts.SkipEmptyBody})
-		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to read the session transcript")
-			return
-		}
-		after = tl.ThroughCursor
-	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

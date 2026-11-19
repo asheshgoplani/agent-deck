@@ -500,3 +500,53 @@ func TestSessionTimelineStream_CapEvictsOldest(t *testing.T) {
 	}
 	extra.close()
 }
+
+// A request that fails validation (here an unknown session) is answered
+// before it takes a stream slot, so at the cap it does not evict a live
+// stream on its way to a 404.
+func TestSessionTimelineStream_RejectedRequestKeepsStreams(t *testing.T) {
+	old := timelineStreamMax
+	timelineStreamMax = 1
+	t.Cleanup(func() { timelineStreamMax = old })
+	f := newTimelineFixture(t, "claude", true)
+	f.appendTurns(t, 0, 1)
+	ts := newStreamServer(t, f)
+	st := f.openStream(t, ts, "after=end", nil)
+	if st.resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", st.resp.StatusCode)
+	}
+	if start := st.next(t); start.ID == "" {
+		t.Fatalf("first block = %+v, want the start id", start)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/sessions/missing/timeline/stream?after=end", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "localhost"
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown session: status %d, want 404", resp.StatusCode)
+	}
+
+	f.appendTurns(t, 1, 1)
+	select {
+	case ev, ok := <-st.events:
+		if !ok {
+			t.Fatal("a 404 for an unknown session evicted the open stream")
+		}
+		var fr query.RowFrame
+		if err := json.Unmarshal([]byte(ev.Data), &fr); err != nil || fr.Frame != "row" || fr.Row.Body != "user turn 1" {
+			t.Fatalf("next event after the 404 = %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("open stream got no row within 5s after the 404")
+	}
+	if n := f.srv.timelineStreams.Load(); n != 1 {
+		t.Fatalf("open streams = %d, want 1", n)
+	}
+}
