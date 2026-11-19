@@ -616,3 +616,28 @@ func TestRemoteCommandArgsSessionOwnershipInspect(t *testing.T) {
 		}
 	}
 }
+
+// `--` ends the options of `session send-keys` as it does locally, so a
+// session titled "-worker" can be targeted remotely. Exactly one session is
+// still required after the separator.
+func TestRemoteCommandArgsSessionSendKeysDoubleDash(t *testing.T) {
+	for _, args := range [][]string{
+		{"session", "send-keys", "--named-key", "Escape", "--", "-worker"},
+		{"session", "send-keys", "--enter", "--", "--json"},
+		{"session", "send-keys", "--", "id"},
+	} {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Errorf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"session", "send-keys", "--named-key", "Escape", "--"},
+		{"session", "send-keys", "--named-key", "Escape", "--", "-worker", "extra"},
+		{"session", "send-keys", "id", "--enter", "--", "-worker"},
+	} {
+		if _, err := remoteCommandArgs(args); err == nil || !strings.Contains(err.Error(), "expects 1 session") {
+			t.Errorf("remoteCommandArgs(%v) error = %v, want one containing %q", args, err, "expects 1 session")
+		}
+	}
+}

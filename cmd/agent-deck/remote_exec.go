@@ -128,6 +128,7 @@ var remoteSendKeysOptions = map[string]bool{"text": true, "named-key": true, "en
 
 // validateRemoteSendKeysArgs checks the arguments of `session send-keys`
 // before they are forwarded: one session and the documented one-shot options.
+// "--" ends the options; what follows it counts as positional.
 // A help request passes through so the remote's own usage text answers.
 func validateRemoteSendKeysArgs(args []string) error {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") { //nolint:gosec // G602: guarded by len(args) == 1
@@ -136,6 +137,12 @@ func validateRemoteSendKeysArgs(args []string) error {
 	sessions := 0
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--" {
+			// End of options, as the local command parses it: everything
+			// after it is positional, so "-- -worker" names a session.
+			sessions += len(args) - i - 1
+			break
+		}
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
 			sessions++
 			continue
