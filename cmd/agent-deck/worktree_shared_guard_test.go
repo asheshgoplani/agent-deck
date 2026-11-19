@@ -257,3 +257,36 @@ func TestSessionRemoveAllErrored_PruneSharedWorktree(t *testing.T) {
 		})
 	}
 }
+
+// A session in another local profile that uses the worktree blocks finish
+// too: removing the worktree would strand it just the same.
+func TestWorktreeFinish_RefusesWorktreeUsedByOtherProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	home := t.TempDir()
+	first, second, wt, repo := sharedWorktreeSessions(t, home)
+	// Leave first as the only user in its own profile; the other user lives
+	// in a second profile.
+	if stdout, stderr, code := runAgentDeck(t, home, "session", "remove", second, "--json"); code != 0 {
+		t.Fatalf("drop second: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if stdout, stderr, code := runAgentDeck(t, home, "-p", "other_profile_test",
+		"add", "-t", "wt-other-profile", "-c", "claude", "--no-parent", "--json", wt); code != 0 {
+		t.Fatalf("add in other profile: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home, "worktree", "finish", first, "--no-merge", "--json")
+	if code != 1 || !strings.Contains(stdout, "wt-other-profile") {
+		t.Fatalf("finish with the worktree used in another profile: exit %d, want 1 naming wt-other-profile\n%s\n%s", code, stdout, stderr)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("refused finish removed the worktree: %v", err)
+	}
+	if !branchExists(t, repo, "feat-shared") {
+		t.Error("refused finish deleted the shared branch")
+	}
+}

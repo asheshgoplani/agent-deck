@@ -729,7 +729,13 @@ func handleWorktreeFinish(profile string, args []string) {
 	// Finishing removes the worktree and deletes the branch. Another session
 	// on the same worktree would be left at a path that no longer exists, so
 	// refuse and name it unless --force (#1449; the TUI keeps it instead).
-	sharers := session.SessionsSharingWorktree(inst, instances)
+	// Sessions in other local profiles count too.
+	others, err := otherProfileInstances(profile)
+	if err != nil && !*force {
+		out.Error(fmt.Sprintf("failed to check other profiles for users of the worktree: %v (use --force to override)", err), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	sharers := session.SessionsSharingWorktree(inst, append(append([]*session.Instance{}, instances...), others...))
 	if len(sharers) > 0 && !*force {
 		out.Error(fmt.Sprintf(
 			"worktree %s is still used by %s; finish or remove those sessions first, or pass --force to remove the worktree and branch anyway",

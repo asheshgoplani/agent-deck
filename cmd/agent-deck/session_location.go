@@ -314,12 +314,27 @@ func localSessionPaths(instances []*session.Instance) map[string]bool {
 // session row belongs to a different profile.
 func allProfileSessionPaths(currentProfile string, current []*session.Instance) (map[string]bool, error) {
 	paths := localSessionPaths(current)
+	others, err := otherProfileInstances(currentProfile)
+	if err != nil {
+		return nil, err
+	}
+	for path := range localSessionPaths(others) {
+		paths[path] = true
+	}
+	return paths, nil
+}
+
+// otherProfileInstances loads the sessions of every local profile except
+// currentProfile, so a worktree guard also sees users in other profiles.
+func otherProfileInstances(currentProfile string) ([]*session.Instance, error) {
 	profiles, err := session.ListProfiles()
 	if err != nil {
 		return nil, fmt.Errorf("list profiles for worktree ownership: %w", err)
 	}
+	current := session.GetEffectiveProfile(currentProfile)
+	var all []*session.Instance
 	for _, profile := range profiles {
-		if profile == currentProfile {
+		if profile == currentProfile || profile == current {
 			continue
 		}
 		storage, err := session.NewStorageWithProfile(profile)
@@ -331,11 +346,9 @@ func allProfileSessionPaths(currentProfile string, current []*session.Instance) 
 		if err != nil {
 			return nil, fmt.Errorf("load profile %q for worktree ownership: %w", profile, err)
 		}
-		for path := range localSessionPaths(instances) {
-			paths[path] = true
-		}
+		all = append(all, instances...)
 	}
-	return paths, nil
+	return all, nil
 }
 
 // localSessionsAtPath returns every session that runs locally at path. Callers
