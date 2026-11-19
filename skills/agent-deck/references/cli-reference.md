@@ -1308,7 +1308,7 @@ In the TUI, remote sessions use the same status indicators and nested group tree
 ### remote conversation and status reads
 
 ```bash
-agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
+agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N] [--kinds a,b] [--skip-empty-body]
 agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
 agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--profile <name>]
 agent-deck remote <name> events publish --kind macapp.open.ack|macapp.switch.ack|macapp.browser.response|macapp.app.focus|macapp.ask.seen --session <id> --data-file - < reply.json
