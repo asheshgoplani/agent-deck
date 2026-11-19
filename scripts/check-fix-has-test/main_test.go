@@ -193,6 +193,7 @@ func TestIsTestFile(t *testing.T) {
 		"internal/ui/testdata/pane.txt":    true,
 		"web/src/app.test.ts":              true,
 		"web/src/app.spec.js":              true,
+		"tests/runtime/probe.py":           true,
 		"internal/session/restart.go":      false,
 		"cmd/tests.go":                     false,
 		"docs/testing.md":                  false,
