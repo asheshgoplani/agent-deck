@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -80,6 +81,50 @@ func SessionsSharingWorktree(target *Instance, others []*Instance) []*Instance {
 		}
 	}
 	return sharers
+}
+
+// OtherProfileInstances loads the sessions of every local profile except
+// currentProfile, so a worktree guard also sees users in other profiles. An
+// error means some profile could not be read: callers must treat its
+// sessions as unknown, never as absent.
+func OtherProfileInstances(currentProfile string) ([]*Instance, error) {
+	profiles, err := ListProfiles()
+	if err != nil {
+		return nil, fmt.Errorf("list profiles for worktree ownership: %w", err)
+	}
+	current := GetEffectiveProfile(currentProfile)
+	var all []*Instance
+	for _, profile := range profiles {
+		if profile == currentProfile || profile == current {
+			continue
+		}
+		storage, err := NewStorageWithProfile(profile)
+		if err != nil {
+			return nil, fmt.Errorf("open profile %q for worktree ownership: %w", profile, err)
+		}
+		instances, _, err := storage.LoadWithGroups()
+		_ = storage.Close()
+		if err != nil {
+			return nil, fmt.Errorf("load profile %q for worktree ownership: %w", profile, err)
+		}
+		all = append(all, instances...)
+	}
+	return all, nil
+}
+
+// WorktreeUsersInOtherProfiles returns the sessions in local profiles other
+// than currentProfile that use target's worktree (SessionsSharingWorktree
+// over OtherProfileInstances). Every path that removes a session's worktree
+// checks this on top of the current profile's sessions: the CLI through
+// worktreeRemovalGuard (cmd/agent-deck), the TUI delete and finish, and the
+// web finish. On error the caller must keep the worktree unless the user
+// forced the removal.
+func WorktreeUsersInOtherProfiles(target *Instance, currentProfile string) ([]*Instance, error) {
+	others, err := OtherProfileInstances(currentProfile)
+	if err != nil {
+		return nil, err
+	}
+	return SessionsSharingWorktree(target, others), nil
 }
 
 // RemoveSessionWorktree removes the session's worktree directory if and only if

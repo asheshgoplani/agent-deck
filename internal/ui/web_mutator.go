@@ -905,11 +905,18 @@ func (m *WebMutator) FinishWorktree(id string, opts menudata.WorktreeFinishOptio
 	worktreeBranch := inst.WorktreeBranch
 
 	// Same guard as `agent-deck worktree finish` (F9): another session on
-	// this worktree would be left at a path that no longer exists.
+	// this worktree, in this or any other local profile, would be left at a
+	// path that no longer exists.
 	if !opts.Force {
 		m.h.instancesMu.RLock()
 		sharers := session.SessionsSharingWorktree(inst, m.h.instances)
 		m.h.instancesMu.RUnlock()
+		others, oErr := session.WorktreeUsersInOtherProfiles(inst, m.h.profile)
+		if oErr != nil {
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("%w: could not check other profiles for users: %v (set force=true to remove the worktree and branch anyway)",
+				menudata.ErrWorktreeShared, oErr)
+		}
+		sharers = append(sharers, others...)
 		if len(sharers) > 0 {
 			names := make([]string, 0, len(sharers))
 			for _, o := range sharers {

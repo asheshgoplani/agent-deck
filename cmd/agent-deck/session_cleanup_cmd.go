@@ -310,7 +310,7 @@ func handleSessionCleanup(profile string, args []string) {
 		return
 	}
 
-	removed := bulkRemoveSessions(out, storage, instances, groups, candidates, *pruneWorktree)
+	removed := bulkRemoveSessions(out, storage, instances, groups, candidates, *pruneWorktree, newWorktreeRemovalGuard(profile), *force)
 
 	msg := fmt.Sprintf("Removed %d dead session(s).", len(removed))
 	if pinnedSkipped > 0 {
