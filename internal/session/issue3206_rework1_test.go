@@ -199,3 +199,56 @@ func TestIssue3206Rework_SSHCodexSmallFilesNeverDroppedSilently(t *testing.T) {
 		}
 	}
 }
+
+// CodeRabbit on #3215 (security, minor): the identity files copy the text
+// of the instruction files, so with instruction files they are owner-only
+// (0600) and never more readable than a private source. Without instruction
+// files they stay 0644, as before.
+func TestIssue3206Rework_IdentityFilesPrivateWithInstructions(t *testing.T) {
+	identityTestEnv(t)
+	secret := writeInstructions(t, t.TempDir(), "private.md", "PRIVATE-ROLE\n")
+	require.NoError(t, os.Chmod(secret, 0o600))
+	for _, tc := range []struct {
+		files []string
+		want  os.FileMode
+	}{{nil, 0o644}, {[]string{secret}, 0o600}} {
+		inst := identityTestInstance("copilot")
+		inst.InstructionsFiles = tc.files
+		dir, _, ok := inst.ensureIdentityFile()
+		require.True(t, ok)
+		for _, name := range []string{identityFileName, geminiIdentityFileName, filepath.Join(copilotIdentitySubdir, copilotIdentityFileName)} {
+			st, err := os.Stat(filepath.Join(dir, name))
+			require.NoError(t, err)
+			require.Equal(t, tc.want, st.Mode().Perm(), "%s with %d instruction file(s)", name, len(tc.files))
+		}
+	}
+}
+
+// CodeRabbit on #3215 (minor): a later file that is shorter than its pointer
+// line must be reserved at its own size, so two files that fit together in
+// full are both delivered.
+func TestIssue3206Rework_ShortLaterFileDoesNotPushOutAnEarlierOne(t *testing.T) {
+	identityTestEnv(t)
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.md")
+	short := writeInstructions(t, dir, "short.md", "x\n")
+	inst := identityTestInstance("codex")
+	inst.InstructionsFiles = []string{big, short}
+	level, _ := inst.EffectiveContextLevel()
+	// Largest big file for which both files fit in full.
+	n := 0
+	for size := 8000; size > 0; size-- {
+		require.NoError(t, os.WriteFile(big, []byte(strings.Repeat("b", size)+"\n"), 0o600))
+		full, _ := inst.contextBlock(level, budgetFile, "")
+		if budgetCodexLocal.fits(full, "") {
+			n = size
+			break
+		}
+	}
+	require.NotZero(t, n)
+	full, _ := inst.contextBlock(level, budgetFile, "")
+	got, files := inst.contextBlock(level, budgetCodexLocal, "")
+	require.Equal(t, InstructionsStateOK, files[0].State, "big file (%d B) fits with the short one", n)
+	require.Equal(t, InstructionsStateOK, files[1].State)
+	require.Equal(t, full, got)
+}

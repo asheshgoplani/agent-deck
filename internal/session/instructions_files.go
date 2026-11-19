@@ -329,8 +329,8 @@ func (i *Instance) contextBlock(level string, budget identityBudget, existing st
 		entries = append(entries, e)
 	}
 	assemble := func(n int) string {
-		// Entries [0,n) as decided, entry n in full, the rest as pointers
-		// (each later file needs room at least for that).
+		// Entries [0,n) as decided, entry n in full, each later file at the
+		// smaller of its text and its pointer (it needs room at least for that).
 		var b strings.Builder
 		b.WriteString(base)
 		b.WriteString(instructionsSectionHeader(identityField(i.ID)))
@@ -339,7 +339,13 @@ func (i *Instance) contextBlock(level string, budget identityBudget, existing st
 			if k <= n {
 				b.WriteString(e.body)
 			} else if e.status.State == InstructionsStateOK {
-				b.WriteString(instructionsPointer(budget.overBudgetReason(), remote))
+				// Reserve the smaller of the file and its pointer: a short
+				// file must not push an earlier one out (CodeRabbit, #3215).
+				if p := instructionsPointer(budget.overBudgetReason(), remote); len(p) < len(e.body) {
+					b.WriteString(p)
+				} else {
+					b.WriteString(e.body)
+				}
 			} else {
 				b.WriteString(e.body)
 			}

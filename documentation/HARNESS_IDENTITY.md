@@ -304,7 +304,9 @@ Standing instructions for this session from your operator, read from these files
   exactly as without instruction files (so a session that started before
   still starts), and `session show`/`session primer` report each file as
   `not_delivered` with the reason. A local codex session's identity file
-  keeps every file in full. Over SSH and in a
+  keeps every file in full. With instruction files the identity files are
+  written owner-only (0600), so a private instruction file's text is never
+  more readable in its copy. Over SSH and in a
   sandbox the controller's path does not exist where the harness runs, so
   the content travels inline within that budget and the pointer says the
   file is on the agent-deck host.

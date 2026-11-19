@@ -638,12 +638,21 @@ func (i *Instance) ensureIdentityFile() (dir, file string, ok bool) {
 			names = append(names, filepath.Join(copilotIdentitySubdir, copilotIdentityFileName))
 		}
 	}
+	// With instruction files (#3206) the block carries their text, so the
+	// copies are owner-only and never more readable than a private source
+	// file; without them the mode is 0644 as before.
+	perm := os.FileMode(0o644)
+	if len(i.InstructionsFiles) > 0 {
+		perm = 0o600
+	}
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, content) {
-			continue
+			if st, err := os.Stat(path); err == nil && st.Mode().Perm() == perm {
+				continue
+			}
 		}
-		if err := atomicWriteFile(path, content, 0o644); err != nil {
+		if err := atomicWriteFile(path, content, perm); err != nil {
 			sessionLog.Warn("identity_file_write_failed",
 				slog.String("path", path),
 				slog.String("error", err.Error()))
@@ -745,25 +754,26 @@ func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string,
 			return "", false
 		}
 		merged = string(content)
-		if len(i.InstructionsFiles) > 0 {
-			// The file carries every instruction file in full; the inline
-			// override fits them into codex's budget together with the
-			// configured developer_instructions it is merged with below, a
-			// pointer line standing in for each one that does not fit
-			// (#3206; #3215 review R-2).
-			existing := ""
-			if value, found := codexEffectiveDeveloperInstructions(codexHome, projectPath); found {
-				existing = value
-			}
-			level, _ := i.EffectiveContextLevel()
-			merged, _ = i.contextBlock(level, budgetCodexLocal, existing)
-		}
 	}
 	// A configured (present) developer_instructions leads, so codex applies
 	// exactly what it would have plus our block. An explicit empty override
 	// (found, value=="") contributes no prefix — codex would apply nothing —
 	// but must NOT resurrect a shadowed user/ancestor value; found gates that.
-	if existing, found := codexEffectiveDeveloperInstructions(codexHome, projectPath); found && existing != "" {
+	// Read once: the same value is fitted against and emitted.
+	existing, found := codexEffectiveDeveloperInstructions(codexHome, projectPath)
+	if !found {
+		existing = ""
+	}
+	if !i.identityRunsElsewhere() && len(i.InstructionsFiles) > 0 {
+		// The file carries every instruction file in full; the inline
+		// override fits them into codex's budget together with the
+		// configured developer_instructions it is merged with, a pointer
+		// line standing in for each one that does not fit (#3206; #3215
+		// review R-2).
+		level, _ := i.EffectiveContextLevel()
+		merged, _ = i.contextBlock(level, budgetCodexLocal, existing)
+	}
+	if existing != "" {
 		merged = existing + "\n\n" + merged
 	}
 	if i.identityRunsElsewhere() {
