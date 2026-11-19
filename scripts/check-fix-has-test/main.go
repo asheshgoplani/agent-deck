@@ -1,11 +1,12 @@
 // Command check-fix-has-test flags a fix PR that ships without a regression test.
 //
-// A PR needs a test when its title is a conventional fix (fix:, fix(scope):, fix!:)
-// or when it closes an issue labelled bug (Closes/Fixes/Resolves #n, or GitHub's
+// A PR needs a test when its title starts with fix, bugfix or hotfix (with or
+// without a conventional colon: "fix:", "fix(scope):", "Fix crash ...") or when
+// it closes an issue labelled bug (Closes/Fixes/Resolves #n, or GitHub's
 // linked issues). It has one when it adds lines to a test file: *_test.go, a file
 // under a tests/ or testdata/ directory, or a *.test.* / *.spec.* file. A PR that
-// changes only docs (docs/, documentation/, site/, top-level *.md and LICENSE) is
-// not asked for a test. Markdown elsewhere, such as embedded templates, is code.
+// changes only docs (docs/, documentation/, site/, top-level *.md and LICENSE)
+// or only CI (.github/) is not asked for a test. Markdown elsewhere, such as embedded templates, is code.
 //
 // Usage:
 //
@@ -18,6 +19,16 @@
 // --siblings reports, as advisory lines, files that the "## Siblings" grep lines
 // of a fix PR's body find and the section does not name; --siblings-required
 // makes them fail the check (siblings.go).
+//
+// In CI the gate runs in two steps (fix-regression-gate.yml), both with this
+// tool built from the BASE branch, never from the PR:
+//
+//	check-fix-has-test --pr N --siblings --exempt-label base-red-exempt --fix-out f   (has a token)
+//	check-fix-has-test --range base..HEAD --assume-fix --red-on-base <dir>         (no token; runs the PR's tests)
+//
+// --fix-out writes "yes" when the PR is a fix with a test file (run the red step)
+// and "no" otherwise. --exempt-label skips the whole gate when a maintainer
+// (admin or maintain permission) added that label; the output names who.
 //
 // --pr reads the PR through gh (read-only), with every changed file paged in from
 // the API (gh pr view stops at 100). --range reads the changed files from
@@ -57,11 +68,12 @@ type Input struct {
 	Body   string
 	Files  []File
 	Linked []int                       // issues in the same repo GitHub links as closed by the PR
+	PRLabs []string                    // labels on the PR itself (--pr only)
 	Labels func(int) ([]string, error) // labels of an issue (gh in main, a fixture in tests)
 }
 
 var (
-	fixTitle = regexp.MustCompile(`(?i)^\s*fix(\([^)]*\))?!?:`)
+	fixTitle = regexp.MustCompile(`(?i)^\s*(bug|hot)?fix\b`)
 	// GitHub closing keywords followed by #n, owner/repo#n or an issue URL.
 	closeRef = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+` +
 		`(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b`)
@@ -108,11 +120,12 @@ func IsTestFile(p string) bool {
 	return false
 }
 
-// isDoc reports whether p is documentation only. A .md file outside the docs
-// trees and the repo root can ship in the binary (go:embed templates, skills),
-// so it is not a doc.
+// isDoc reports whether p needs no regression test: documentation, or CI
+// configuration under .github/ (a CI fix has no Go test to write). A .md file
+// outside the docs trees and the repo root can ship in the binary (go:embed
+// templates, skills), so it is not a doc.
 func isDoc(p string) bool {
-	if strings.HasPrefix(p, "docs/") || strings.HasPrefix(p, "documentation/") || strings.HasPrefix(p, "site/") {
+	if strings.HasPrefix(p, ".github/") || strings.HasPrefix(p, "docs/") || strings.HasPrefix(p, "documentation/") || strings.HasPrefix(p, "site/") {
 		return true
 	}
 	return !strings.Contains(p, "/") && (docExt[strings.ToLower(path.Ext(p))] || p == "LICENSE")
@@ -209,7 +222,7 @@ func ghLabels(run Runner, repo string) func(int) ([]string, error) {
 }
 
 func fromPR(run Runner, repo string, pr int) (Input, error) {
-	out, err := run("gh", "pr", "view", strconv.Itoa(pr), "-R", repo, "--json", "title,body,changedFiles,closingIssuesReferences")
+	out, err := run("gh", "pr", "view", strconv.Itoa(pr), "-R", repo, "--json", "title,body,changedFiles,closingIssuesReferences,labels")
 	if err != nil {
 		return Input{}, err
 	}
@@ -217,7 +230,10 @@ func fromPR(run Runner, repo string, pr int) (Input, error) {
 		Title        string `json:"title"`
 		Body         string `json:"body"`
 		ChangedFiles int    `json:"changedFiles"`
-		Linked       []struct {
+		Labels       []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		Linked []struct {
 			Number     int `json:"number"`
 			Repository struct {
 				Name  string `json:"name"`
@@ -231,6 +247,9 @@ func fromPR(run Runner, repo string, pr int) (Input, error) {
 		return Input{}, fmt.Errorf("gh pr view: %w", err)
 	}
 	in := Input{Title: v.Title, Body: v.Body}
+	for _, l := range v.Labels {
+		in.PRLabs = append(in.PRLabs, l.Name)
+	}
 	for _, l := range v.Linked {
 		if r := l.Repository; r.Name != "" && !strings.EqualFold(r.Owner.Login+"/"+r.Name, repo) {
 			continue // closes an issue in another repo: its number means something else here
@@ -293,6 +312,9 @@ func run(args []string, stdout io.Writer, runner Runner) int {
 	redBase := fs.String("red-on-base", "", "checkout of the base commit: also require the changed Go tests to fail there and pass here (run from the head checkout)")
 	siblings := fs.Bool("siblings", false, "fix PRs: report (advisory) files a \"## Siblings\" grep finds that the section does not name")
 	siblingsRequired := fs.Bool("siblings-required", false, "like --siblings, but a finding fails the check")
+	exemptLabel := fs.String("exempt-label", "", "with --pr: a PR label that skips the gate when a maintainer added it")
+	fixOut := fs.String("fix-out", "", "write yes (a fix with a test file: run the red step) or no to this file")
+	assumeFix := fs.Bool("assume-fix", false, "with --range and --red-on-base: skip classification (an earlier --fix-out said yes) and never call gh")
 	baseSHA := fs.String("base", "", "base commit for --red-on-base with --pr (with --range the range's base is used)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -300,6 +322,29 @@ func run(args []string, stdout io.Writer, runner Runner) int {
 	fail := func(err error) int {
 		fmt.Fprintf(stdout, "check-fix-has-test: %v\n", err)
 		return 2
+	}
+	writeFix := func(v string) int {
+		if *fixOut == "" {
+			return 0
+		}
+		if err := os.WriteFile(*fixOut, []byte(v+"\n"), 0o600); err != nil {
+			return fail(err)
+		}
+		return 0
+	}
+	if *assumeFix {
+		if *rng == "" || *redBase == "" || *pr != 0 {
+			return fail(errors.New("--assume-fix needs --range base..HEAD and --red-on-base, and no --pr"))
+		}
+		base, _, _ := strings.Cut(strings.Replace(*rng, "...", "..", 1), "..")
+		ok, err := redOnBaseMode(runner, base, *redBase, stdout)
+		if err != nil {
+			return fail(err)
+		}
+		if !ok {
+			return 1
+		}
+		return 0
 	}
 	var in Input
 	switch {
@@ -324,10 +369,35 @@ func run(args []string, stdout io.Writer, runner Runner) int {
 	default:
 		return fail(errors.New("give either --pr N or --range base..head --title T"))
 	}
+	if *exemptLabel != "" && *pr > 0 {
+		exempt, line, err := exemptBy(runner, *repo, *pr, *exemptLabel, in.PRLabs)
+		if err != nil {
+			return fail(err)
+		}
+		if line != "" {
+			fmt.Fprintln(stdout, line)
+		}
+		if exempt {
+			return writeFix("no")
+		}
+	}
 	in.Labels = ghLabels(runner, *repo)
 	reason, err := Check(in, *repo)
 	if err != nil {
 		return fail(err)
+	}
+	if *fixOut != "" {
+		fix, err := isFix(in, *repo)
+		if err != nil {
+			return fail(err)
+		}
+		v := "no"
+		if fix && reason == "" {
+			v = "yes"
+		}
+		if c := writeFix(v); c != 0 {
+			return c
+		}
 	}
 	code := 0
 	if *siblings || *siblingsRequired {
@@ -336,7 +406,13 @@ func run(args []string, stdout io.Writer, runner Runner) int {
 			return fail(err)
 		}
 		if fix {
-			found, err := CheckSiblings(in.Body, runner)
+			var changed []string
+			for _, f := range in.Files {
+				if f.Status != "removed" && !IsTestFile(f.Path) {
+					changed = append(changed, f.Path)
+				}
+			}
+			found, err := CheckSiblings(in.Body, changed, runner)
 			if err != nil {
 				return fail(err)
 			}
@@ -411,6 +487,38 @@ func redStep(in Input, repo, rng, baseSHA, baseDir string, stdout io.Writer, run
 		return 1
 	}
 	return 0
+}
+
+// exemptBy reports whether label is on the PR and was added by someone with
+// admin or maintain permission, with a line saying who. Anyone with triage
+// access can add a label, so the label alone proves nothing.
+func exemptBy(run Runner, repo string, pr int, label string, labels []string) (bool, string, error) {
+	on := false
+	for _, l := range labels {
+		on = on || l == label
+	}
+	if !on {
+		return false, "", nil
+	}
+	out, err := run("gh", "api", "--paginate", fmt.Sprintf("repos/%s/issues/%d/events", repo, pr),
+		"--jq", fmt.Sprintf(`.[] | select(.event == "labeled" and .label.name == %q) | .actor.login`, label))
+	if err != nil {
+		return false, "", fmt.Errorf("reading who added %s: %w", label, err)
+	}
+	lines := strings.Fields(string(out))
+	if len(lines) == 0 {
+		return false, label + " ignored: no labeled event found", nil
+	}
+	actor := lines[len(lines)-1] // the latest add counts
+	out, err = run("gh", "api", fmt.Sprintf("repos/%s/collaborators/%s/permission", repo, actor), "--jq", ".permission")
+	if err != nil {
+		return false, "", fmt.Errorf("reading %s's permission: %w", actor, err)
+	}
+	perm := strings.TrimSpace(string(out))
+	if perm == "admin" || perm == "maintain" {
+		return true, fmt.Sprintf("exempt: %s added by %s (%s); the gate is skipped and the PR body must say how the fix was verified", label, actor, perm), nil
+	}
+	return false, fmt.Sprintf("%s ignored: added by %s (%s), not a maintainer", label, actor, perm), nil
 }
 
 func main() {

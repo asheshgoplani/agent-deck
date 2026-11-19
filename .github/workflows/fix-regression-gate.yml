@@ -1,23 +1,25 @@
 name: Fix PR regression gate
 
-# A fix PR (fix: / fix(scope): title, or it closes an issue labelled bug) must
-# ship a regression test that FAILS on the base and PASSES on the head:
-#   1. it changes a test file (scripts/check-fix-has-test, #2788), and
+# A fix PR (title starts with fix/bugfix/hotfix, or it closes an issue labelled
+# bug) must ship a regression test that FAILS on the base and PASSES on the head:
+#   1. it changes a test file, and when it changes Go code, a Go test function;
 #   2. at least one changed Go test fails by assertion on the merge base with the
 #      PR's test files copied onto it, and every changed Go test passes on the
 #      head. A build or setup error on the base is not red evidence.
-#   3. Advisory for now: the PR body has a "## Siblings" section whose
-#      `grep: <regexp>` lines find no file the section does not name
+#   3. Advisory: the PR body has a "## Siblings" section whose `grep: <regexp>`
+#      lines match the fixed code and name every other file they match
 #      (AGENTS.md review rule 1). Promote with --siblings-required.
-# Any other PR passes at once, so this can be a required check.
+# Any other PR passes at once, so this can be a required check. Docs-only and
+# CI-only (.github/) PRs are not asked for a test.
 #
-# Why (ASK-85, mode 6): the 2026-10-19 prevention only checked that a test file
-# changed, and it ran nowhere automatically. A maintainer can add the
-# base-red-exempt label when a fix truly cannot be reproduced in a Go test
-# (the PR body then says how it was verified); it skips step 2 only.
+# What it does NOT catch: a real test that covers one path while the user hit
+# another (21 of the 30 mode-6 defects, ASK-85). It proves a test can fail,
+# not that it tests the right thing; source-grep tests still need review.
 #
-# Security: pull_request (not _target), read-only token, no secrets. The PR's
-# tests run on GitHub's hosted runner, as in go-test.yml.
+# Trust: the checker is built from the BASE commit (the `trusted` checkout),
+# never from the PR, so a PR cannot edit the judge. The step that runs the PR's
+# tests has no token. A maintainer (admin or maintain permission) can add the
+# base-red-exempt label to skip the gate; the log names who added it.
 
 on:
   pull_request:
@@ -41,7 +43,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the base (the checker comes from here)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR (only its tests run)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: head
@@ -51,46 +60,76 @@ jobs:
         with:
           go-version-file: head/go.mod
           cache: false
-      - name: Install tmux
+      - name: Build the checker from the base
+        id: checker
+        working-directory: trusted
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y tmux
-      - name: Check the fix's regression test
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/checker" ./scripts/check-fix-has-test
+          # A base from before this gate has only the has-a-test check.
+          if "$RUNNER_TEMP/checker" -h 2>&1 | grep -q -- '-fix-out'; then
+            echo "red=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "red=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Classify the PR and check it has a test (reads GitHub; runs no PR code)
+        working-directory: head
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          BASE_REF_SHA: ${{ github.event.pull_request.base.sha }}
-          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'base-red-exempt') }}
+          RED: ${{ steps.checker.outputs.red }}
         run: |
           set -euo pipefail
-          cd head
-          git fetch -q --no-tags origin "$BASE_REF_SHA"
+          if [ "$RED" = true ]; then
+            args=(--siblings --exempt-label base-red-exempt --fix-out "$RUNNER_TEMP/fix.txt")
+          else
+            echo "::notice title=Fix PR regression gate::the base's checker predates red-on-base; running its has-a-test check only"
+            args=()
+            echo no > "$RUNNER_TEMP/fix.txt"
+          fi
+          set +e
+          "$RUNNER_TEMP/checker" --pr "$PR" --repo "$REPO" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/classify.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          while IFS= read -r line; do
+            case $line in
+              needs-regression-test:*|check-fix-has-test:*) echo "::error title=Fix PR regression gate::$line" ;;
+              advisory:*) echo "::warning title=Siblings::${line#advisory: }" ;;
+              exempt:*|*ignored:*) echo "::notice title=base-red-exempt::$line" ;;
+            esac
+          done < "$RUNNER_TEMP/classify.log"
+          { echo "### Fix PR regression gate: classify"; echo '```'; cat "$RUNNER_TEMP/classify.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - name: Install tmux
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux
+      - name: Red on base, green on head (runs the PR's tests; no token)
+        working-directory: head
+        env:
+          BASE_REF_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$(cat "$RUNNER_TEMP/fix.txt")" != yes ]; then
+            echo "not a fix with a test file, or exempt: no red-on-base run"
+            exit 0
+          fi
           base=$(git merge-base "$BASE_REF_SHA" HEAD)
           git worktree add -q --detach "$RUNNER_TEMP/base" "$base"
           echo "base=$base head=$(git rev-parse HEAD)"
           # Tests never see the runner's HOME.
           export HOME="$RUNNER_TEMP/home" CI=true
           mkdir -p "$HOME"
-          red=(--base "$base" --red-on-base "$RUNNER_TEMP/base")
-          if [ "$EXEMPT" = "true" ]; then
-            echo "::notice title=base-red-exempt::a maintainer exempted this PR from the red-on-base step"
-            red=()
-          fi
           set +e
-          scripts/check-fix-has-test.sh --pr "$PR" --repo "$REPO" "${red[@]}" --siblings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          "$RUNNER_TEMP/checker" --range "$base..HEAD" --assume-fix --red-on-base "$RUNNER_TEMP/base" 2>&1 | tee "$RUNNER_TEMP/red.log"
           rc=${PIPESTATUS[0]}
           set -e
           while IFS= read -r line; do
             case $line in
-              needs-regression-test:*|test-not-red-on-base:*|test-not-green-on-head:*) echo "::error title=Fix PR regression gate::$line" ;;
-              advisory:*) echo "::warning title=Siblings::${line#advisory: }" ;;
+              test-not-red-on-base:*|test-not-green-on-head:*|no-go-test:*|check-fix-has-test:*) echo "::error title=Fix PR regression gate::$line" ;;
+              hint:*) echo "::notice title=Fix PR regression gate::$line" ;;
             esac
-          done < "$RUNNER_TEMP/gate.log"
-          {
-            echo "### Fix PR regression gate (base $base)"
-            echo '```'
-            cat "$RUNNER_TEMP/gate.log"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          done < "$RUNNER_TEMP/red.log"
+          { echo "### Fix PR regression gate: red on base ($base)"; echo '```'; cat "$RUNNER_TEMP/red.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"

@@ -12,12 +12,21 @@ package main
 //
 //	grep: <extended regexp>
 //
-// The check runs `git grep -l -E` for each pattern over the head's non-test
-// files and reports every matching file the section does not name. Naming a
-// file with a word on why it is fine ("cmd/x.go: different problem") is enough.
+// For each pattern the check lists the head's tracked non-test files
+// (`git ls-files`) and matches the pattern with Go's regexp (RE2) against
+// each one, so what it validates is what it runs. A pattern must match at least
+// one non-test file the PR changes (it names the code you fixed; a pattern that
+// matches nothing would silence the check). Every other file it matches must be
+// named in the section; a word on why it is fine ("cmd/x.go: different
+// problem") is enough.
+//
+// Limit: it finds siblings that share the fixed pattern's text. A sibling that
+// does the same job with other words (#3132 vs TurnOriginForPrompt) is found
+// only if the author greps for the behaviour, not the token.
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -42,8 +51,13 @@ func SiblingsSection(body string) (string, bool) {
 	return rest, true
 }
 
+// maxSiblingFile skips huge files (vendored or generated data) when matching.
+const maxSiblingFile = 2 << 20
+
 // CheckSiblings returns the findings for a fix PR's body (empty when it is fine).
-func CheckSiblings(body string, run Runner) ([]string, error) {
+// changed are the PR's changed non-test files; files are read from the working
+// directory (the head checkout).
+func CheckSiblings(body string, changed []string, run Runner) ([]string, error) {
 	sec, ok := SiblingsSection(body)
 	if !ok {
 		return []string{"siblings: no \"## Siblings\" section; add `grep: <regexp>` lines for the pattern you fixed and name each file it finds"}, nil
@@ -52,28 +66,53 @@ func CheckSiblings(body string, run Runner) ([]string, error) {
 	if len(pats) == 0 {
 		return []string{"siblings: the \"## Siblings\" section has no `grep: <regexp>` line"}, nil
 	}
-	var out []string
+	out, err := run("git", "ls-files", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	var files []string
+	for _, f := range strings.Split(string(out), "\x00") {
+		if f != "" && !IsTestFile(f) {
+			files = append(files, f)
+		}
+	}
+	isChanged := map[string]bool{}
+	for _, f := range changed {
+		isChanged[f] = true
+	}
+	var found []string
 	for _, m := range pats {
 		pat := strings.Trim(m[1], "`")
-		if _, err := regexp.Compile(pat); err != nil {
-			out = append(out, fmt.Sprintf("siblings: grep %q is not a valid regexp: %v", pat, err))
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			found = append(found, fmt.Sprintf("siblings: grep %q is not a valid Go regexp: %v", pat, err))
 			continue
 		}
-		res, err := run("git", "grep", "-l", "-E", "-e", pat, "--", ".", ":(exclude)*_test.go", ":(exclude)**/testdata/**")
-		if err != nil && len(res) > 0 {
-			return nil, fmt.Errorf("git grep %q: %w", pat, err)
-		} // exit 1 with no output is "no match"
 		var missing []string
-		for _, f := range strings.Split(strings.TrimSpace(string(res)), "\n") {
-			if f != "" && !strings.Contains(sec, f) {
+		hitsChange := false
+		for _, f := range files {
+			info, err := os.Stat(f)
+			if err != nil || !info.Mode().IsRegular() || info.Size() > maxSiblingFile {
+				continue
+			}
+			b, err := os.ReadFile(f)
+			if err != nil || !re.Match(b) {
+				continue
+			}
+			if isChanged[f] {
+				hitsChange = true
+			} else if !strings.Contains(sec, f) {
 				missing = append(missing, f)
 			}
 		}
+		if !hitsChange {
+			found = append(found, fmt.Sprintf("siblings: grep %q matches none of the files this PR changes; grep for the code you fixed", pat))
+		}
 		sort.Strings(missing)
 		if len(missing) > 0 {
-			out = append(out, fmt.Sprintf("siblings: grep %q also matches %s; name each in the section with what you did there",
+			found = append(found, fmt.Sprintf("siblings: grep %q also matches %s; name each in the section with what you did there",
 				pat, strings.Join(missing, ", ")))
 		}
 	}
-	return out, nil
+	return found, nil
 }
