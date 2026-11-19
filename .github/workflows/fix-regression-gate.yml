@@ -43,10 +43,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # The base BRANCH (its tip now), not pull_request.base.sha: that sha can be
+      # stale on synchronize events (seen: it stayed on the branch's old tip after
+      # the branch moved), which would build an older checker.
       - name: Check out the base (the checker comes from here)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           path: trusted
           persist-credentials: false
       - name: Check out the PR (only its tests run)
@@ -111,14 +114,17 @@ jobs:
       - name: Red on base, green on head (runs the PR's tests; no token)
         working-directory: head
         env:
-          BASE_REF_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           if [ "$(cat "$RUNNER_TEMP/fix.txt")" != yes ]; then
             echo "not a fix with a test file, or exempt: no red-on-base run"
             exit 0
           fi
-          base=$(git merge-base "$BASE_REF_SHA" HEAD)
+          # The same base tip the checker was built from.
+          tip=$(git -C "$GITHUB_WORKSPACE/trusted" rev-parse HEAD)
+          git fetch -q --no-tags origin "$tip" 2>/dev/null || true
+          base=$(git merge-base "$tip" HEAD)
           git worktree add -q --detach "$RUNNER_TEMP/base" "$base"
           echo "base=$base head=$(git rev-parse HEAD)"
           # Tests never see the runner's HOME.
