@@ -36,6 +36,12 @@ var ErrGroupNotFound = errors.New("group not found")
 // #1126.
 var ErrNotAWorktree = errors.New("session is not in a worktree")
 
+// ErrWorktreeShared is returned by SessionMutator.FinishWorktree when another
+// session still uses the worktree and force is not set: finishing would
+// remove the worktree and delete the branch under it. The handler maps this
+// to 409.
+var ErrWorktreeShared = errors.New("worktree is still used by another session")
+
 // WorktreeFinishOptions configures a SessionMutator.FinishWorktree call.
 // All fields are optional; the zero value asks the implementation to
 // auto-detect the target branch, perform the merge, delete the source

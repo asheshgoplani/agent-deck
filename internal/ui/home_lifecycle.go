@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -69,9 +70,30 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		)
 		h.instancesMu.RUnlock()
 	}
+	// The same check for each per-repo worktree of a multi-repo session: a
+	// session added by path at one of them (in this or another profile) still
+	// uses it.
+	multiRepoShared := make([]bool, len(multiRepoWorktrees))
+	if isMultiRepo && len(multiRepoWorktrees) > 0 {
+		h.instancesMu.RLock()
+		for i, wt := range multiRepoWorktrees {
+			multiRepoShared[i] = session.OtherSessionsShareWorktree(
+				&session.Instance{ID: id, WorktreePath: wt.WorktreePath, WorktreeRepoRoot: wt.RepoRoot}, h.instances)
+		}
+		h.instancesMu.RUnlock()
+	}
+	profile := h.profile
 	return func() tea.Msg {
 		killErr := inst.Kill()
 		inst.RecordTelemetryEnd(telemetry.EndDelete)
+		if isWorktree && !sharedWorktree {
+			// h.instances only holds this profile. A session in another local
+			// profile can use the same worktree; read them here, off the UI
+			// goroutine. An unreadable profile keeps the worktree: the TUI has
+			// no --force, and a leftover worktree is recoverable.
+			sharedWorktree = keepWorktreeForOtherProfiles(
+				&session.Instance{ID: id, WorktreePath: worktreePath, WorktreeRepoRoot: worktreeRepoRoot}, profile, "delete")
+		}
 		if isWorktree && sharedWorktree {
 			// #1449: another live session still references this worktree; skip
 			// the destructive removal + branch delete and merely drop this
@@ -92,12 +114,16 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 			}
 		}
 		if isMultiRepo {
-			// Clean up multi-repo temp directory
-			if multiRepoTempDir != "" {
-				_ = os.RemoveAll(multiRepoTempDir)
-			}
-			// Clean up per-repo worktrees
-			for _, wt := range multiRepoWorktrees {
+			// Clean up per-repo worktrees, keeping any that another session,
+			// in this or another local profile, still uses.
+			var kept []string
+			for i, wt := range multiRepoWorktrees {
+				snap := &session.Instance{ID: id, WorktreePath: wt.WorktreePath, WorktreeRepoRoot: wt.RepoRoot}
+				if multiRepoShared[i] || keepWorktreeForOtherProfiles(snap, profile, "delete") {
+					uiLog.Info("worktree_remove_skipped", slog.String("path", wt.WorktreePath), slog.String("repo", wt.RepoRoot), slog.String("reason", "another session still uses this per-repo worktree"))
+					kept = append(kept, wt.WorktreePath)
+					continue
+				}
 				if err := git.RemoveWorktree(wt.RepoRoot, wt.WorktreePath, true); err != nil {
 					uiLog.Warn("worktree_remove_err", slog.String("path", wt.WorktreePath), slog.String("err", err.Error()))
 				}
@@ -105,9 +131,50 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 					uiLog.Warn("worktree_prune_err", slog.String("repo", wt.RepoRoot), slog.String("err", err.Error()))
 				}
 			}
+			// Clean up the multi-repo temp directory. The per-repo worktrees
+			// are created inside it, so it stays while it holds a kept one.
+			if multiRepoTempDir != "" {
+				if dirHoldsAny(multiRepoTempDir, kept) {
+					uiLog.Info("multi_repo_tempdir_kept", slog.String("path", multiRepoTempDir), slog.String("reason", "holds a per-repo worktree another session still uses"))
+				} else {
+					_ = os.RemoveAll(multiRepoTempDir)
+				}
+			}
 		}
 		return sessionDeletedMsg{deletedID: id, killErr: killErr}
 	}
+}
+
+// dirHoldsAny reports whether any of paths is dir or lies inside it.
+func dirHoldsAny(dir string, paths []string) bool {
+	d := filepath.Clean(dir)
+	for _, p := range paths {
+		p = filepath.Clean(p)
+		if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// keepWorktreeForOtherProfiles reports whether a TUI delete or finish must
+// keep target's worktree because a session in another local profile uses it,
+// or because another profile could not be read (the TUI has no --force).
+// This is the cross-profile half of the check the CLI runs through
+// worktreeRemovalGuard; the caller has already checked h.instances.
+func keepWorktreeForOtherProfiles(target *session.Instance, profile, action string) bool {
+	sharers, err := session.WorktreeUsersInOtherProfiles(target, profile)
+	if err != nil {
+		uiLog.Warn("worktree_remove_skipped", slog.String("action", action), slog.String("path", target.WorktreePath),
+			slog.String("reason", "could not check other profiles for users"), slog.String("err", err.Error()))
+		return true
+	}
+	if len(sharers) > 0 {
+		uiLog.Info("worktree_remove_skipped", slog.String("action", action), slog.String("path", target.WorktreePath),
+			slog.String("reason", "a session in another profile still uses this worktree"), slog.Int("users", len(sharers)))
+		return true
+	}
+	return false
 }
 
 // captureAutoNameBeforeStop persists an auto-named session's live Claude task
@@ -927,8 +994,15 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 // finishWorktree performs the worktree finish operation asynchronously:
 // merge branch, remove worktree, delete branch, kill session, remove from storage
 func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, branchName, repoRoot, worktreePath string, mergeEnabled bool, targetBranch string, keepBranch bool, sharedWorktree bool) tea.Cmd {
+	profile := h.profile
 	return func() tea.Msg {
 		merged := false
+		if !sharedWorktree {
+			// The caller only saw this profile's sessions; count users in
+			// other local profiles too, off the UI goroutine.
+			sharedWorktree = keepWorktreeForOtherProfiles(
+				&session.Instance{ID: sessionID, WorktreePath: worktreePath, WorktreeRepoRoot: repoRoot}, profile, "finish")
+		}
 
 		// Step 1: Merge (if requested). git.MergeBack handles both regular
 		// and bare-repo layouts; in bare layouts the project root has no

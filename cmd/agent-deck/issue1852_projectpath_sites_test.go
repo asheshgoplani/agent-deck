@@ -149,3 +149,22 @@ func TestParseLocation(t *testing.T) {
 		}
 	}
 }
+
+// TestLocalSessionPaths_CountsMultiRepoWorktrees: a multi-repo session uses
+// every per-repo worktree and additional path, not only its ProjectPath (the
+// first mapped path), so worktree cleanup must not take the others for
+// orphans.
+func TestLocalSessionPaths_CountsMultiRepoWorktrees(t *testing.T) {
+	mr := &session.Instance{ID: "m", Title: "multi", ProjectPath: "/data/multi-repo-worktrees/m/api",
+		MultiRepoEnabled: true, AdditionalPaths: []string{"/home/dev/extra"},
+		MultiRepoWorktrees: []session.MultiRepoWorktree{
+			{WorktreePath: "/data/multi-repo-worktrees/m/api", RepoRoot: "/home/dev/api"},
+			{WorktreePath: "/data/multi-repo-worktrees/m/web", RepoRoot: "/home/dev/web"},
+		}}
+	paths := localSessionPaths([]*session.Instance{mr})
+	for _, want := range []string{"/data/multi-repo-worktrees/m/web", "/home/dev/extra"} {
+		if !paths[want] {
+			t.Errorf("localSessionPaths dropped multi-repo path %s; worktree cleanup would take it for an orphan", want)
+		}
+	}
+}
