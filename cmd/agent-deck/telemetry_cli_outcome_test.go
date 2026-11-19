@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // The CLI used to count a command's feature (and its first-use funnel
@@ -37,19 +39,30 @@ func TestCLITelemetryOutcomeHelper(t *testing.T) {
 	if len(args) > 0 {
 		args = args[1:]
 	}
-	if len(args) > 0 && args[0] == "__seed_fresh_session" {
-		// A healthy session started just now: `session restart` must skip it.
+	if len(args) > 0 && args[0] == "__restart_fresh_session" {
+		// A healthy session started just now, then `session restart` on it:
+		// the freshness guard must skip it. Healthy means a live pane, since
+		// the guard judges the live status `list` shows (a row with no tmux
+		// session is dead and is restarted). Each helper process has its own
+		// tmux socket, so the pane is started here and the restart runs in
+		// this same process. CreatedAt is past the 1.5 s start grace so the
+		// verdict does not depend on timing. The parent reaps this socket's
+		// server (the line below names it): main() exits the process.
+		fmt.Printf("helper-tmux-tmpdir=%s\n", os.Getenv("TMUX_TMPDIR"))
 		storage, err := session.NewStorageWithProfile("")
 		if err != nil {
 			t.Fatal(err)
 		}
 		inst := session.NewInstanceWithTool(args[1], t.TempDir(), "shell")
-		inst.Status = session.StatusIdle
-		inst.LastStartedAt = time.Now()
+		inst.CreatedAt = time.Now().Add(-time.Minute)
+		if err := inst.Start(); err != nil {
+			t.Fatal(err)
+		}
 		if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
 			t.Fatal(err)
 		}
-		os.Exit(0)
+		storage.Close()
+		args = []string{"session", "restart", args[1]}
 	}
 	telemetry.EnableForTest(t)
 	telemetry.SetTerminalForTest(t, true)
@@ -59,6 +72,12 @@ func TestCLITelemetryOutcomeHelper(t *testing.T) {
 }
 
 func runCLITelHelper(t *testing.T, args ...string) int {
+	t.Helper()
+	code, _ := runCLITelHelperOut(t, args...)
+	return code
+}
+
+func runCLITelHelperOut(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLITelemetryOutcomeHelper$", "--"}, args...)...)
 	cmd.Env = append(os.Environ(), cliTelHelperEnv+"=1", "AGENT_DECK_TASK6_HELPER_PROCESS=1")
@@ -74,7 +93,7 @@ func runCLITelHelper(t *testing.T, args ...string) int {
 		code = ee.ExitCode()
 	}
 	t.Logf("agent-deck %v -> rc=%d\n%s", args, code, out.String())
-	return code
+	return code, out.String()
 }
 
 // cliTelHome isolates HOME and grants consent (the parent then reads the same
@@ -174,11 +193,15 @@ func TestCLITelemetry_FleetStatusIsNotFleetLaunch(t *testing.T) {
 // (cli_cmds) but not a restart.
 func TestCLITelemetry_SkippedRestartNotCounted(t *testing.T) {
 	cliTelHome(t)
-	if rc := runCLITelHelper(t, "__seed_fresh_session", "fresh"); rc != 0 {
-		t.Fatalf("seed rc=%d", rc)
+	rc, out := runCLITelHelperOut(t, "__restart_fresh_session", "fresh")
+	if m := regexp.MustCompile(`helper-tmux-tmpdir=(\S+)`).FindStringSubmatch(out); m != nil {
+		t.Cleanup(func() { testutil.KillTmuxServersUnder(m[1]); _ = os.RemoveAll(m[1]) })
 	}
-	if rc := runCLITelHelper(t, "session", "restart", "fresh"); rc != 0 {
+	if rc != 0 {
 		t.Fatalf("session restart rc=%d", rc)
+	}
+	if !strings.Contains(out, "skipped") && !strings.Contains(out, "freshness window") {
+		t.Fatalf("restart of a live session started seconds ago was not skipped:\n%s", out)
 	}
 	got := readCLITel(t)
 	if fc, ok := got.features["restart"]; ok {

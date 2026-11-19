@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -21,6 +22,9 @@ func TestCLIStatusCandidatesClassifiesAbsentErrorRows(t *testing.T) {
 		return map[string]struct{}{}, nil
 	}
 	absent := func(inst *Instance) *Instance {
+		// Rows that ran: a reloaded row without the persisted start stamp
+		// reads as never started.
+		inst.LastStartedAt = time.Now().Add(-time.Hour)
 		inst.tmuxSession = tmux.ReconnectSessionLazy("absent-"+inst.ID, inst.ID, "", "", "inactive")
 		inst.tmuxSession.SocketName = "list-terminated-absent"
 		return inst
