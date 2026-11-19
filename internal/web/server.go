@@ -59,6 +59,7 @@ func (c Config) confirmLinkOpen() bool {
 // Server wraps an HTTP server for Agent Deck web mode.
 type Server struct {
 	stateServerFields
+	remoteForwardFields
 
 	cfg         Config
 	httpServer  *http.Server
@@ -255,7 +256,9 @@ func (s *Server) Start() error {
 		s.push.Start(s.baseCtx)
 	}
 	s.startVoiceProducer()
+	s.startRemoteStatusForward(s.remoteFwdNames, s.remoteFwdRunner)
 	err := s.listenAndServe()
+	s.stopRemoteStatusForward()
 	s.stopVoiceProducer()
 	if s.hookWatcher != nil {
 		s.hookWatcher.Stop()

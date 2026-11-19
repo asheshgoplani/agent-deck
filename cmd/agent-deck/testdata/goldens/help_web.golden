@@ -19,6 +19,8 @@ Options:
     	VAPID subject used for web push notifications (default "mailto:agentdeck@localhost")
   -read-only
     	Run in read-only mode (input disabled)
+  -stream-remotes string
+    	Comma-separated remotes whose session.status frames GET /events/state also carries, with data.host (followed over ssh)
   -token string
     	Bearer token for API/WS access
   -token-file string
