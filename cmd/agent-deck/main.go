@@ -53,6 +53,7 @@ var Version = "1.16.39" // overridden at build time via -ldflags "-X main.Versio
 // Table column widths for list command output
 const (
 	tableColTitle     = 20
+	tableColStatus    = 8
 	tableColGroup     = 15
 	tableColPath      = 40
 	tableColIDDisplay = 12
@@ -3195,10 +3196,11 @@ func handleList(profile string, args []string) {
 		return
 	}
 
-	// Table output
+	// Table output. STATUS is the live status list --json reports.
+	refreshLiveStatus(instances)
 	fmt.Printf("Profile: %s\n\n", storage.Profile())
-	fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
-	fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
+	fmt.Printf("%-*s %-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColStatus, "STATUS", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
+	fmt.Println(strings.Repeat("-", tableColTitle+tableColStatus+tableColGroup+tableColPath+tableColIDDisplay+6))
 	for _, inst := range instances {
 		title := truncate(inst.Title, tableColTitle)
 		group := truncate(inst.GroupPath, tableColGroup)
@@ -3208,7 +3210,7 @@ func handleList(profile string, args []string) {
 		if len(idDisplay) > tableColIDDisplay {
 			idDisplay = idDisplay[:tableColIDDisplay]
 		}
-		fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
+		fmt.Printf("%-*s %-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColStatus, listTableStatus(inst.Status, inst.IsArchived()), tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
 	}
 	fmt.Printf("\nTotal: %d sessions\n", len(instances))
 
@@ -3816,7 +3818,7 @@ func countByStatus(instances []*session.Instance) statusCounts {
 	var counts statusCounts
 	for _, inst := range instances {
 		_ = inst.UpdateStatus() // Refresh status from tmux
-		switch inst.Status {
+		switch summaryBucket(inst.Status) {
 		case session.StatusRunning:
 			counts.running++
 		case session.StatusWaiting:
@@ -3998,7 +4000,7 @@ func handleStatus(profile string, args []string) {
 		printStatusGroup := func(label, symbol string, status session.Status) {
 			var matching []*session.Instance
 			for _, inst := range instances {
-				if inst.Status == status {
+				if summaryBucket(inst.Status) == status {
 					matching = append(matching, inst)
 				}
 			}
@@ -4039,8 +4041,7 @@ func handleStatus(profile string, args []string) {
 		fmt.Printf("Total: %d sessions in profile '%s'\n", counts.total, storage.Profile())
 	} else {
 		// Compact output
-		fmt.Printf("%d waiting • %d running • %d idle\n",
-			counts.waiting, counts.running, counts.idle)
+		fmt.Println(compactStatusLine(counts.waiting, counts.running, counts.idle, counts.stopped, counts.err))
 	}
 
 	// Show update notice if available (skip for JSON/quiet output)
