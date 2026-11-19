@@ -83,7 +83,7 @@ func matchSwitchTarget(query string, targets []switchTarget) switchMatchResult {
 	if index >= 0 && targets[index].ID != q && strings.TrimSpace(targets[index].Title) == q {
 		var sameName []switchTarget
 		for _, t := range targets {
-			if foldSessionTitle(t.Title) == foldSessionTitle(q) {
+			if sameSessionTitle(t.Title, q) {
 				sameName = append(sameName, t)
 			}
 		}
@@ -179,11 +179,13 @@ var (
 	switchStopWords = map[string]bool{"the": true, "session": true, "a": true, "to": true, "my": true, "one": true, "please": true}
 )
 
-// switchTokens is the voice daemon's tokens(): lowercase Latin, Devanagari
-// and digit words, punctuation as spaces, stop words dropped.
+// switchTokens is the voice daemon's tokens(): case-folded Latin,
+// Devanagari and digit words, punctuation as spaces, stop words dropped.
+// Words are folded with foldSessionRef, so two words are equal exactly when
+// strings.EqualFold says so (the exact-title pass compares the same way).
 func switchTokens(text string) []string {
 	var out []string
-	for _, w := range strings.Fields(switchNonWord.ReplaceAllString(strings.ToLower(text), " ")) {
+	for _, w := range strings.Fields(switchNonWord.ReplaceAllString(foldSessionRef(text), " ")) {
 		if !switchStopWords[w] {
 			out = append(out, w)
 		}

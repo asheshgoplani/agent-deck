@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -62,9 +63,9 @@ func matchSessionRef(ref string, n int, idOf, titleOf func(int) string) (index i
 			return byPrefix[0], nil, ""
 		}
 	}
-	if want := foldSessionTitle(ref); want != "" {
+	if bareSessionTitle(ref) != "" {
 		for i := 0; i < n; i++ {
-			if foldSessionTitle(titleOf(i)) == want {
+			if sameSessionTitle(titleOf(i), ref) {
 				byTitle = append(byTitle, i)
 			}
 		}
@@ -80,9 +81,37 @@ func matchSessionRef(ref string, n int, idOf, titleOf func(int) string) (index i
 	return -1, nil, ""
 }
 
-// foldSessionTitle is the form two titles are compared in when the stored
-// spelling did not match: no leading decoration, no surrounding space, one
-// case. Read-side only: the stored title is never changed.
-func foldSessionTitle(title string) string {
-	return strings.ToLower(strings.TrimSpace(session.TitleWithoutDecoration(title)))
+// bareSessionTitle is title without leading decoration and surrounding
+// space. Read-side only: the stored title is never changed.
+func bareSessionTitle(title string) string {
+	return strings.TrimSpace(session.TitleWithoutDecoration(title))
+}
+
+// sameSessionTitle reports whether two titles name the same session when
+// the stored spelling did not match: the bare titles (bareSessionTitle)
+// compared with strings.EqualFold. Not by lowercasing both sides, which
+// keeps "Σ" apart from "ς" and "s" apart from "ſ", and puts "İ" with "i".
+func sameSessionTitle(a, b string) bool {
+	return strings.EqualFold(bareSessionTitle(a), bareSessionTitle(b))
+}
+
+// foldSessionRef maps s to a form in which two strings are equal exactly
+// when strings.EqualFold reports them equal, for code that needs a key
+// (a map, a prefix or substring test) rather than a pairwise comparison.
+// Each rune becomes the smallest lowercase rune of its simple case-folding
+// orbit (the smallest rune of the orbit when it has no lowercase one), so
+// ASCII letters come out lowercase.
+func foldSessionRef(s string) string {
+	return strings.Map(foldSessionRune, s)
+}
+
+func foldSessionRune(r rune) rune {
+	best, bestLower := r, unicode.IsLower(r)
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		lower := unicode.IsLower(f)
+		if (lower && !bestLower) || (lower == bestLower && f < best) {
+			best, bestLower = f, lower
+		}
+	}
+	return best
 }
