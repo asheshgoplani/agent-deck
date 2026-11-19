@@ -94,6 +94,9 @@ func IsTestFile(p string) bool {
 	if strings.HasSuffix(base, "_test.go") {
 		return true
 	}
+	if strings.HasSuffix(base, ".py") && (strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py")) {
+		return true // pytest file names outside tests/, e.g. scripts/runtime-health/test_probe.py
+	}
 	for _, seg := range strings.Split(path.Dir(p), "/") {
 		if seg == "tests" || seg == "testdata" || seg == "__tests__" {
 			return true
