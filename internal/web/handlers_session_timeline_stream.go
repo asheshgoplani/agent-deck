@@ -85,12 +85,28 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "stream unavailable")
 		return
 	}
-	if s.timelineStreams.Add(1) > timelineStreamMax {
-		s.timelineStreams.Add(-1)
-		writeAPIError(w, http.StatusTooManyRequests, ErrCodeRateLimited, fmt.Sprintf("too many open timeline streams (at most %d); close one and retry", timelineStreamMax))
-		return
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	slot := &timelineSlot{cancel: cancel}
+	s.timelineSlotsMu.Lock()
+	if int64(len(s.timelineSlots)) >= timelineStreamMax {
+		s.timelineSlots[0].cancel() // oldest; its client resumes with Last-Event-ID
+		s.timelineSlots = s.timelineSlots[1:]
 	}
-	defer s.timelineStreams.Add(-1)
+	s.timelineSlots = append(s.timelineSlots, slot)
+	s.timelineStreams.Store(int64(len(s.timelineSlots)))
+	s.timelineSlotsMu.Unlock()
+	defer func() {
+		s.timelineSlotsMu.Lock()
+		for i, o := range s.timelineSlots {
+			if o == slot {
+				s.timelineSlots = append(s.timelineSlots[:i], s.timelineSlots[i+1:]...)
+				break
+			}
+		}
+		s.timelineStreams.Store(int64(len(s.timelineSlots)))
+		s.timelineSlotsMu.Unlock()
+	}()
 	src, _, _, ok := s.timelineSource(w, sessionID, opts)
 	if !ok {
 		return
@@ -99,7 +115,7 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 		// Resolve the end with the stream's own filter: a filtered read's
 		// cursor lists the open rows it dropped (a tool call still waiting
 		// for its result), so their later patches stay off the wire.
-		tl, err := query.ReadRows(r.Context(), src, query.RowsOptions{Tail: 1, Kinds: opts.Kinds, SkipEmptyBody: opts.SkipEmptyBody})
+		tl, err := query.ReadRows(ctx, src, query.RowsOptions{Tail: 1, Kinds: opts.Kinds, SkipEmptyBody: opts.SkipEmptyBody})
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to read the session transcript")
 			return
@@ -116,8 +132,6 @@ func (s *Server) handleSessionTimelineStream(w http.ResponseWriter, r *http.Requ
 
 	// A failed write (peer gone, but the request context not yet
 	// cancelled) ends the follow through ctx as well.
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 	out := &sseWriter{w: w, flusher: flusher, last: time.Now()}
 	filter := query.NewFollowFilter(after, opts)
 	if start := filter.Start(); start != "" {
@@ -207,3 +221,5 @@ func (o *sseWriter) frame(fr query.RowFrame) error {
 func (o *sseWriter) idOnly(cursor string) error { return o.write("id: %s\n\n", cursor) }
 
 func (o *sseWriter) comment(text string) error { return o.write(": %s\n\n", text) }
+
+type timelineSlot struct{ cancel context.CancelFunc }

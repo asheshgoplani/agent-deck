@@ -459,37 +459,44 @@ func TestSessionTimelineStream_AfterEndFilterKeepsOpenCallResultOff(t *testing.T
 	}
 }
 
-// Timeline streams are capped per server; past the cap a new one is
-// refused with 429 before any frame, and a slot frees when a client
-// disconnects (review N-1).
-func TestSessionTimelineStream_CapsConcurrentStreams(t *testing.T) {
+// Timeline streams are capped per server; past the cap a new one evicts the
+// oldest open stream instead of being refused, so slots held by dead peers
+// are reclaimed. The evicted client resumes with Last-Event-ID (review F-4).
+func TestSessionTimelineStream_CapEvictsOldest(t *testing.T) {
 	f := newTimelineFixture(t, "claude", true)
 	ts := newStreamServer(t, f)
 	var open []*timelineStream
-	for i := 0; ; i++ {
+	for i := 0; i < int(timelineStreamMax); i++ {
 		st := f.openStream(t, ts, "after=end", nil)
 		if st.resp.StatusCode != http.StatusOK {
-			if st.resp.StatusCode != http.StatusTooManyRequests || i != 32 {
-				t.Fatalf("stream %d: status %d, want 429 after 32 open", i+1, st.resp.StatusCode)
-			}
-			break
-		}
-		if i == 32 {
-			t.Fatal("33 concurrent timeline streams accepted, want a cap of 32")
+			t.Fatalf("stream %d: status %d, want 200 within the cap", i+1, st.resp.StatusCode)
 		}
 		open = append(open, st)
 	}
-	open[0].close()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		st := f.openStream(t, ts, "after=end", nil)
-		if st.resp.StatusCode == http.StatusOK {
-			return
-		}
-		st.close()
-		if time.Now().After(deadline) {
-			t.Fatalf("slot not freed 5s after a disconnect: status %d", st.resp.StatusCode)
-		}
-		time.Sleep(20 * time.Millisecond)
+	extra := f.openStream(t, ts, "after=end", nil)
+	if extra.resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream %d: status %d, want 200 (evicts the oldest)", timelineStreamMax+1, extra.resp.StatusCode)
 	}
+	// The oldest stream is ended by the server: its event channel closes.
+	deadline := time.After(5 * time.Second)
+	for closed := false; !closed; {
+		select {
+		case _, ok := <-open[0].events:
+			closed = !ok
+		case <-deadline:
+			t.Fatal("oldest stream still open 5s after the cap was exceeded")
+		}
+	}
+	if n := f.srv.timelineStreams.Load(); n > timelineStreamMax {
+		t.Fatalf("open streams = %d, want at most %d", n, timelineStreamMax)
+	}
+	// A newer stream is untouched.
+	select {
+	case _, ok := <-open[1].events:
+		if !ok {
+			t.Fatal("second-oldest stream was evicted too")
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+	extra.close()
 }

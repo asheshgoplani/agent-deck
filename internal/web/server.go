@@ -73,6 +73,8 @@ type Server struct {
 	// timelineStreams counts open /timeline/stream handlers, capped at
 	// timelineStreamMax; each handler decrements it when it returns.
 	timelineStreams atomic.Int64
+	timelineSlotsMu sync.Mutex
+	timelineSlots   []*timelineSlot
 
 	costStore       *costs.Store
 	mutator         SessionMutator
