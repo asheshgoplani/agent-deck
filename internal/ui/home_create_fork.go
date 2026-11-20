@@ -78,7 +78,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 
 		// Resolve the account BEFORE anything is created: a refusal here must
 		// leave no worktree, branch or session behind.
-		resolvedAccount, accErr := resolveCreateAccount(claudeAccount, tool, command, sandboxEnabled, groupPath, accountParent)
+		resolvedAccount, accErr := resolveCreateAccount(claudeAccount, tool, command, sandboxEnabled, effectiveCreateGroup(groupPath, path, worktreePath, worktreeRepoRoot, worktreeBranch, multiRepoEnabled), accountParent)
 		if accErr != nil {
 			return sessionCreatedMsg{err: accErr, tempID: tempID}
 		}
@@ -1503,4 +1503,18 @@ func resolveCreateAccount(claudeAccount, tool, command string, sandboxEnabled bo
 		return "", nil
 	}
 	return session.ResolveNewSessionAccount(cfg, tool, groupPath, parent)
+}
+
+// effectiveCreateGroup is the group the new instance will land in: the given
+// group, or (quick create passes none) the one derived from the project path,
+// which is the worktree path for a single-repo worktree. The account resolver
+// needs it, not the raw value, to see a group's config_dir.
+func effectiveCreateGroup(groupPath, path, worktreePath, worktreeRepoRoot, worktreeBranch string, multiRepo bool) string {
+	if groupPath != "" {
+		return groupPath
+	}
+	if worktreePath != "" && worktreeRepoRoot != "" && worktreeBranch != "" && !multiRepo {
+		path = worktreePath
+	}
+	return session.GroupPathForProject(path)
 }

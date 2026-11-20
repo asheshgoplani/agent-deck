@@ -173,3 +173,52 @@ func TestClaudeConfigDirHasLogin_FreshDirNeedsNoOnboardingFlag(t *testing.T) {
 		t.Fatal("completed onboarding means no first-run screen")
 	}
 }
+
+// A fallback TARGET needs a positive login. A configured dir whose auth state
+// is merely unknown (unreadable or malformed file, a bare env block) is not
+// moved onto; the refusal stands.
+func TestResolveNewSessionAccount_FallbackTargetNeedsPositiveLogin(t *testing.T) {
+	skipIfLoginAssumed(t)
+	for name, files := range map[string]map[string]string{
+		"malformed .claude.json":    {".claude.json": `{not json`},
+		"env block only":            {"settings.json": `{"env":{"FOO":"1"}}`},
+		"onboarding flag only":      {".claude.json": `{"hasCompletedOnboarding":true}`},
+		"empty credentials file":    {".credentials.json": ``},
+		"unrelated .claude.json":    {".claude.json": `{"numStartups":2}`},
+		"unreadable .claude.json/x": {".claude.json/x": ``},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			for _, k := range claudeAuthEnvSignals {
+				t.Setenv(k, "")
+			}
+			for _, k := range []string{"CLAUDE_CONFIG_DIR", "AGENTDECK_PROFILE"} {
+				t.Setenv(k, "")
+			}
+			prev := claudeManagedSettingsPath
+			claudeManagedSettingsPath = filepath.Join(home, "none.json")
+			t.Cleanup(func() { claudeManagedSettingsPath = prev })
+			ClearUserConfigCache()
+			t.Cleanup(ClearUserConfigCache)
+			if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			workDir := filepath.Join(home, "acct-work")
+			for rel, body := range files {
+				p := filepath.Join(workDir, rel)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := &UserConfig{Profiles: map[string]ProfileSettings{"work": {Claude: ProfileClaudeSettings{ConfigDir: workDir}}}}
+			acct, err := ResolveNewSessionAccount(cfg, "claude", "projects", nil)
+			if err == nil {
+				t.Fatalf("want a refusal, got a move onto %q", acct)
+			}
+		})
+	}
+}

@@ -209,6 +209,42 @@ func claudeConfigDirHasLoginOnDisk(dir string) bool {
 	return false
 }
 
+// claudeConfigDirHasPositiveLogin reports whether dir shows a login: a
+// non-empty credentials file, or oauthAccount, primaryApiKey or apiKeyHelper
+// in its .claude.json, or apiKeyHelper in its settings files. Unreadable or
+// unparseable files do not count. On macOS the keychain cannot be probed, so a
+// configured dir is assumed logged in.
+func claudeConfigDirHasPositiveLogin(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	if runtime.GOOS == "darwin" {
+		return true
+	}
+	if st, err := os.Stat(filepath.Join(dir, credentialsFileName)); err == nil && st.Size() > 0 {
+		return true
+	}
+	positive := func(path string, keys ...string) bool {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		var parsed map[string]json.RawMessage
+		if json.Unmarshal(data, &parsed) != nil {
+			return false
+		}
+		for _, k := range keys {
+			if v, ok := parsed[k]; ok && len(v) > 0 && string(v) != "null" {
+				return true
+			}
+		}
+		return false
+	}
+	return positive(filepath.Join(dir, ".claude.json"), "oauthAccount", "primaryApiKey", "apiKeyHelper") ||
+		positive(filepath.Join(dir, "settings.json"), "apiKeyHelper") ||
+		positive(filepath.Join(dir, "settings.local.json"), "apiKeyHelper")
+}
+
 // claudeSpawnAuthUnknown reports whether a new session could get its auth from
 // something agent-deck cannot see from here: a [claude].command alias or
 // wrapper, an env_file or inline env at the claude, group or conductor level,
@@ -267,7 +303,9 @@ func ResolveNewSessionAccount(cfg *UserConfig, tool, groupPath string, parent *I
 	configured := ConfiguredAccountNames(cfg)
 	var loggedIn []string
 	for _, name := range configured {
-		if ClaudeConfigDirHasLogin(cfg.GetProfileClaudeConfigDir(name)) {
+		// A fallback target must show a POSITIVE login; "unknown" is enough to
+		// leave a session alone but not to move one onto another account.
+		if claudeConfigDirHasPositiveLogin(cfg.GetProfileClaudeConfigDir(name)) {
 			loggedIn = append(loggedIn, name)
 		}
 	}
