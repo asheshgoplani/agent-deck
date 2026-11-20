@@ -196,14 +196,13 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst.Account = claudeAccount
 		}
 		// Default account on a host whose ~/.claude has no login would open
-		// Claude's first-run screen: fall back to a logged-in account or refuse.
+		// Claude's first-run screen: fall back to a logged-in account.
 		if inst.Account == "" && session.IsClaudeCompatible(tool) && session.AmbientClaudeConfigDir() == "" {
 			if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
-				account, accErr := session.ResolveNewSessionAccount(cfg, inst.GroupPath, nil)
-				if accErr != nil {
-					return sessionCreatedMsg{err: accErr, tempID: tempID}
+				// The dialog already refused the no-account case.
+				if account, accErr := session.ResolveNewSessionAccount(cfg, inst.GroupPath, nil); accErr == nil {
+					inst.Account = account
 				}
-				inst.Account = account
 			}
 		}
 

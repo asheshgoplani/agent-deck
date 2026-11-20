@@ -95,7 +95,13 @@ func DefaultAccountForNewSession(cfg *UserConfig, groupPath string, parent *Inst
 // or an oauthAccount in .claude.json (for the implicit ~/.claude, Claude keeps
 // that file at ~/.claude.json). On macOS the login lives in the keychain,
 // which cannot be probed here, so it is assumed present.
-func ClaudeConfigDirHasLogin(dir string) bool {
+func ClaudeConfigDirHasLogin(dir string) bool { return ClaudeLoginProbe(dir) }
+
+// ClaudeLoginProbe is the login check ResolveNewSessionAccount uses; a test
+// binary whose fixtures create Claude sessions on a bare temp HOME replaces it.
+var ClaudeLoginProbe = claudeConfigDirHasLoginOnDisk
+
+func claudeConfigDirHasLoginOnDisk(dir string) bool {
 	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
 		return true
 	}
