@@ -56,7 +56,7 @@ func defaultCLIAccountSlot(inst *session.Instance, parent *session.Instance) str
 	// account. With none, still create the session (headless scripts and
 	// fixtures register sessions on hosts with no login, and extra stderr would
 	// corrupt --json consumers); the TUI, an interactive flow, refuses.
-	account, err := session.ResolveNewSessionAccount(cfg, inst.GroupPath, parent)
+	account, err := session.ResolveNewSessionAccount(cfg, inst.Tool, inst.GroupPath, parent)
 	if err != nil {
 		return ""
 	}

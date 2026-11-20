@@ -90,28 +90,63 @@ func DefaultAccountForNewSession(cfg *UserConfig, groupPath string, parent *Inst
 	return account
 }
 
-// ClaudeConfigDirHasLogin reports whether Claude would start authenticated
-// from dir: an API key or OAuth token in the environment, a credentials file,
-// or an oauthAccount in .claude.json (for the implicit ~/.claude, Claude keeps
-// that file at ~/.claude.json). On macOS the login lives in the keychain,
-// which cannot be probed here, so it is assumed present.
+// ClaudeConfigDirHasLogin reports whether Claude may start authenticated from
+// dir. It fails safe toward true: it returns false only when every known auth
+// signal is absent and every file it needs was readable. Signals: API key,
+// auth token or OAuth token in the environment; Bedrock, Vertex or Foundry
+// mode; a credentials file; oauthAccount, primaryApiKey or apiKeyHelper in
+// .claude.json (for the implicit ~/.claude, Claude keeps that file at
+// ~/.claude.json) or apiKeyHelper in settings.json. It checks presence only
+// and never reads or logs a secret value. On macOS the login lives in the
+// keychain, which cannot be probed, so it is assumed present.
 func ClaudeConfigDirHasLogin(dir string) bool { return ClaudeLoginProbe(dir) }
 
 // ClaudeLoginProbe is the login check ResolveNewSessionAccount uses; a test
 // binary whose fixtures create Claude sessions on a bare temp HOME replaces it.
 var ClaudeLoginProbe = claudeConfigDirHasLoginOnDisk
 
+var claudeAuthEnvSignals = []string{
+	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+	"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+}
+
+// jsonFileHasAnyKey reports whether the JSON object in path has any of keys set
+// to a non-null value. A missing file is a definite no; any other read or parse
+// problem is unknown and counts as present.
+func jsonFileHasAnyKey(path string, keys ...string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return !os.IsNotExist(err)
+	}
+	var parsed map[string]json.RawMessage
+	if json.Unmarshal(data, &parsed) != nil {
+		return true
+	}
+	for _, k := range keys {
+		if v, ok := parsed[k]; ok && len(v) > 0 && string(v) != "null" {
+			return true
+		}
+	}
+	return false
+}
+
 func claudeConfigDirHasLoginOnDisk(dir string) bool {
-	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
+	for _, k := range claudeAuthEnvSignals {
+		if os.Getenv(k) != "" {
+			return true
+		}
+	}
+	if runtime.GOOS == "darwin" || dir == "" {
 		return true
 	}
-	if runtime.GOOS == "darwin" {
+	if st, err := os.Stat(filepath.Join(dir, credentialsFileName)); err == nil {
+		if st.Size() > 0 {
+			return true
+		}
+	} else if !os.IsNotExist(err) {
 		return true
 	}
-	if dir == "" {
-		return false
-	}
-	if st, err := os.Stat(filepath.Join(dir, credentialsFileName)); err == nil && st.Size() > 0 {
+	if jsonFileHasAnyKey(filepath.Join(dir, "settings.json"), "apiKeyHelper") {
 		return true
 	}
 	files := []string{filepath.Join(dir, ".claude.json")}
@@ -119,14 +154,33 @@ func claudeConfigDirHasLoginOnDisk(dir string) bool {
 		files = append(files, filepath.Join(home, ".claude.json"))
 	}
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			continue
+		if jsonFileHasAnyKey(f, "oauthAccount", "primaryApiKey", "apiKeyHelper") {
+			return true
 		}
-		var parsed struct {
-			OAuthAccount json.RawMessage `json:"oauthAccount"`
+	}
+	return false
+}
+
+// claudeSpawnAuthUnknown reports whether a new session could get its auth from
+// something agent-deck cannot see from here: a [claude].command alias or
+// wrapper, an env_file or inline env at the claude, group or conductor level,
+// or [shell] env_files or an init script. Any of them counts as unknown.
+func claudeSpawnAuthUnknown(cfg *UserConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	customCmd := func(c string) bool { c = strings.TrimSpace(c); return c != "" && c != "claude" }
+	if customCmd(cfg.Claude.Command) || strings.TrimSpace(cfg.Claude.EnvFile) != "" ||
+		len(cfg.Shell.EnvFiles) > 0 || strings.TrimSpace(cfg.Shell.InitScript) != "" {
+		return true
+	}
+	for _, g := range cfg.Groups {
+		if customCmd(g.Claude.Command) || strings.TrimSpace(g.Claude.EnvFile) != "" || len(g.Claude.Env) > 0 {
+			return true
 		}
-		if json.Unmarshal(data, &parsed) == nil && len(parsed.OAuthAccount) > 0 && string(parsed.OAuthAccount) != "null" {
+	}
+	for _, c := range cfg.Conductors {
+		if customCmd(c.Claude.Command) || strings.TrimSpace(c.Claude.EnvFile) != "" || len(c.Claude.Env) > 0 {
 			return true
 		}
 	}
@@ -138,10 +192,18 @@ func claudeConfigDirHasLoginOnDisk(dir string) bool {
 // leaves the session on the implicit ~/.claude (source "default") and that dir
 // has no login, Claude would open its first-run screen, so it falls back to a
 // configured account that is logged in: [claude].default_account, then the
-// active profile's slot, then the only logged-in slot. With none, it refuses
+// only logged-in slot. (The active profile's own slot never reaches this
+// point: a profile config_dir resolves with source "profile".) With none, it refuses
 // with a message naming the fix. An explicitly configured dir (group,
 // conductor, env, profile, global) is the user's choice and is left alone.
-func ResolveNewSessionAccount(cfg *UserConfig, groupPath string, parent *Instance) (string, error) {
+//
+// It only applies to the plain "claude" tool: a custom Claude-compatible tool
+// brings its own env and auth. It also leaves the session alone whenever the
+// auth could come from something it cannot see (see claudeSpawnAuthUnknown).
+func ResolveNewSessionAccount(cfg *UserConfig, tool, groupPath string, parent *Instance) (string, error) {
+	if tool != "claude" {
+		return "", nil
+	}
 	if account := DefaultAccountForNewSession(cfg, groupPath, parent); account != "" {
 		return account, nil
 	}
@@ -151,7 +213,7 @@ func ResolveNewSessionAccount(cfg *UserConfig, groupPath string, parent *Instanc
 		probe.ConductorName = parent.ResolveConductorNameThreadSafe()
 	}
 	dir, source := GetClaudeConfigDirSourceForInstance(probe)
-	if source != "default" || ClaudeConfigDirHasLogin(dir) {
+	if source != "default" || ClaudeConfigDirHasLogin(dir) || claudeSpawnAuthUnknown(cfg) {
 		return "", nil
 	}
 	configured := ConfiguredAccountNames(cfg)
@@ -165,7 +227,6 @@ func ResolveNewSessionAccount(cfg *UserConfig, groupPath string, parent *Instanc
 	if cfg != nil {
 		prefer = append(prefer, strings.TrimSpace(cfg.Claude.DefaultAccount))
 	}
-	prefer = append(prefer, resolvedProcessProfile())
 	for _, name := range prefer {
 		if name != "" && slices.Contains(loggedIn, name) {
 			return name, nil

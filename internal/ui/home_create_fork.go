@@ -59,6 +59,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	tempID string,
 	autoName bool,
 ) tea.Cmd {
+	// Resolved here, on the UI goroutine, so the create path hands the account
+	// resolver the same parent conductor the dialog validated with.
+	accountParent := h.getInstanceByID(parentSessionID)
 	return func() tea.Msg {
 		var setupWarning string // non-fatal worktree setup-script failure, if any
 
@@ -199,10 +202,11 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// Claude's first-run screen: fall back to a logged-in account.
 		if inst.Account == "" && !sandboxEnabled && session.IsClaudeCompatible(tool) && session.AmbientClaudeConfigDir() == "" {
 			if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
-				// The dialog already refused the no-account case.
-				if account, accErr := session.ResolveNewSessionAccount(cfg, inst.GroupPath, nil); accErr == nil {
-					inst.Account = account
+				account, accErr := session.ResolveNewSessionAccount(cfg, tool, inst.GroupPath, accountParent)
+				if accErr != nil {
+					return sessionCreatedMsg{err: accErr, tempID: tempID}
 				}
+				inst.Account = account
 			}
 		}
 

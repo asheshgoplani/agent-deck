@@ -36,7 +36,7 @@ func TestResolveNewSessionAccount_UnauthenticatedDefaultConfigDir(t *testing.T) 
 	}}
 
 	t.Run("refuses when nothing configured is logged in", func(t *testing.T) {
-		acct, err := ResolveNewSessionAccount(cfg, "projects", nil)
+		acct, err := ResolveNewSessionAccount(cfg, "claude", "projects", nil)
 		if err == nil {
 			t.Fatalf("want refusal, got account %q and no error", acct)
 		}
@@ -46,7 +46,7 @@ func TestResolveNewSessionAccount_UnauthenticatedDefaultConfigDir(t *testing.T) 
 	})
 
 	t.Run("refuses with no accounts at all", func(t *testing.T) {
-		if _, err := ResolveNewSessionAccount(&UserConfig{}, "projects", nil); err == nil {
+		if _, err := ResolveNewSessionAccount(&UserConfig{}, "claude", "projects", nil); err == nil {
 			t.Fatal("want refusal with no accounts configured")
 		}
 	})
@@ -56,7 +56,7 @@ func TestResolveNewSessionAccount_UnauthenticatedDefaultConfigDir(t *testing.T) 
 	}
 
 	t.Run("falls back to the logged-in configured account", func(t *testing.T) {
-		acct, err := ResolveNewSessionAccount(cfg, "projects", nil)
+		acct, err := ResolveNewSessionAccount(cfg, "claude", "projects", nil)
 		if err != nil || acct != "work" {
 			t.Fatalf("want fallback to work, got %q, %v", acct, err)
 		}
@@ -67,7 +67,7 @@ func TestResolveNewSessionAccount_UnauthenticatedDefaultConfigDir(t *testing.T) 
 	}
 
 	t.Run("logged-in default dir stays on inherit", func(t *testing.T) {
-		acct, err := ResolveNewSessionAccount(cfg, "projects", nil)
+		acct, err := ResolveNewSessionAccount(cfg, "claude", "projects", nil)
 		if err != nil || acct != "" {
 			t.Fatalf("want inherit, got %q, %v", acct, err)
 		}

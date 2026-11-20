@@ -1927,7 +1927,7 @@ func (d *NewDialog) validate() (string, focusTarget) {
 	// A sandboxed session logs in through its own credential store, so skip it.
 	if !d.createsOffMachine() && !d.sandboxEnabled && d.isClaudeSelected() && d.GetClaudeAccount() == "" && session.AmbientClaudeConfigDir() == "" {
 		if cfg, err := session.LoadUserConfig(); err == nil {
-			if _, accErr := session.ResolveNewSessionAccount(cfg, d.parentGroupPath, d.selectedConductor()); accErr != nil {
+			if _, accErr := session.ResolveNewSessionAccount(cfg, d.presetCommands[d.commandCursor], d.parentGroupPath, d.selectedConductor()); accErr != nil {
 				return accErr.Error(), focusName
 			}
 		}
