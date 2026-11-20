@@ -52,8 +52,8 @@ func issue3169Home(t *testing.T, grp string, dOrder int) (*Home, map[string]*ses
 	return h, map[string]*session.Instance{"A": a, "B": b, "C": c, "D": d}
 }
 
-// rowFor returns the rendered list line of the session titled title.
-func rowFor(t *testing.T, frame, title string) string {
+// rowForIssue3169 returns the rendered list line of the session titled title.
+func rowForIssue3169(t *testing.T, frame, title string) string {
 	t.Helper()
 	for _, l := range strings.Split(frame, "\n") {
 		if strings.Contains(l, "○ "+title+" ") {
@@ -86,11 +86,11 @@ func TestCrossGroupChildRendersTopLevel_Issue3169(t *testing.T) {
 				// The same cursor on B and on D must put ▶ and the connector in
 				// the same columns: D is a top-level row of grp, like B.
 				h.moveCursorToSession(s["B"].ID)
-				bSel := rowFor(t, stripAnsi(h.renderSessionList(80, 20)), "B")
+				bSel := rowForIssue3169(t, stripAnsi(h.renderSessionList(80, 20)), "B")
 				h.moveCursorToSession(s["D"].ID)
 				frame := stripAnsi(h.renderSessionList(80, 20))
-				dSel := rowFor(t, frame, "D")
-				cRow := rowFor(t, frame, "C")
+				dSel := rowForIssue3169(t, frame, "D")
+				cRow := rowForIssue3169(t, frame, "C")
 
 				if got, want := connectorColumn(dSel), connectorColumn(bSel); got != want {
 					t.Errorf("selected D connector at column %d, selected B at %d: D is drawn as a child\nB: %q\nD: %q", got, want, bSel, dSel)
