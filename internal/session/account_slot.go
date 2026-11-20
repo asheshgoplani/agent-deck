@@ -105,14 +105,18 @@ func ClaudeConfigDirHasLogin(dir string) bool { return ClaudeLoginProbe(dir) }
 // binary whose fixtures create Claude sessions on a bare temp HOME replaces it.
 var ClaudeLoginProbe = claudeConfigDirHasLoginOnDisk
 
+var claudeManagedSettingsPath = "/etc/claude-code/managed-settings.json"
+
 var claudeAuthEnvSignals = []string{
 	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
 	"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
 }
 
 // jsonFileHasAnyKey reports whether the JSON object in path has any of keys set
-// to a non-null value. A missing file is a definite no; any other read or parse
-// problem is unknown and counts as present.
+// to a non-null value. A key named "env" counts only when it holds at least one
+// entry (settings files apply that block to every session, which is the
+// documented way to set Bedrock, Vertex or an API key). A missing file is a
+// definite no; any other read or parse problem is unknown and counts as present.
 func jsonFileHasAnyKey(path string, keys ...string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -123,13 +127,52 @@ func jsonFileHasAnyKey(path string, keys ...string) bool {
 		return true
 	}
 	for _, k := range keys {
-		if v, ok := parsed[k]; ok && len(v) > 0 && string(v) != "null" {
-			return true
+		v, ok := parsed[k]
+		if !ok || len(v) == 0 || string(v) == "null" {
+			continue
 		}
+		if k == "env" {
+			var env map[string]json.RawMessage
+			if json.Unmarshal(v, &env) != nil || len(env) > 0 {
+				return true
+			}
+			continue
+		}
+		return true
 	}
 	return false
 }
 
+// claudeOnboardingMayBePending reports whether Claude's first-run (onboarding)
+// screen would show for dir. Claude Code runs its onboarding flow at startup
+// unless hasCompletedOnboarding is true in the config file, which is
+// <dir>/.claude.json (and ~/.claude.json for the implicit ~/.claude). It is
+// false (no first run) when any of those files says onboarding is complete,
+// and also when a file is unreadable or unparseable (unknown counts as no
+// change). Only the flag is read.
+func claudeOnboardingMayBePending(files []string) bool {
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false
+		}
+		var parsed map[string]json.RawMessage
+		if json.Unmarshal(data, &parsed) != nil {
+			return false
+		}
+		if string(parsed["hasCompletedOnboarding"]) == "true" {
+			return false
+		}
+	}
+	return true
+}
+
+// claudeConfigDirHasLoginOnDisk returns false only for a really fresh dir: the
+// first-run screen would show (onboarding not completed) AND no auth signal is
+// present anywhere. Anything else, including anything unreadable, is true.
 func claudeConfigDirHasLoginOnDisk(dir string) bool {
 	for _, k := range claudeAuthEnvSignals {
 		if os.Getenv(k) != "" {
@@ -139,6 +182,13 @@ func claudeConfigDirHasLoginOnDisk(dir string) bool {
 	if runtime.GOOS == "darwin" || dir == "" {
 		return true
 	}
+	files := []string{filepath.Join(dir, ".claude.json")}
+	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(dir) == filepath.Join(home, ".claude") {
+		files = append(files, filepath.Join(home, ".claude.json"))
+	}
+	if !claudeOnboardingMayBePending(files) {
+		return true
+	}
 	if st, err := os.Stat(filepath.Join(dir, credentialsFileName)); err == nil {
 		if st.Size() > 0 {
 			return true
@@ -146,12 +196,10 @@ func claudeConfigDirHasLoginOnDisk(dir string) bool {
 	} else if !os.IsNotExist(err) {
 		return true
 	}
-	if jsonFileHasAnyKey(filepath.Join(dir, "settings.json"), "apiKeyHelper") {
-		return true
-	}
-	files := []string{filepath.Join(dir, ".claude.json")}
-	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(dir) == filepath.Join(home, ".claude") {
-		files = append(files, filepath.Join(home, ".claude.json"))
+	for _, f := range []string{filepath.Join(dir, "settings.json"), filepath.Join(dir, "settings.local.json"), claudeManagedSettingsPath} {
+		if jsonFileHasAnyKey(f, "apiKeyHelper", "env") {
+			return true
+		}
 	}
 	for _, f := range files {
 		if jsonFileHasAnyKey(f, "oauthAccount", "primaryApiKey", "apiKeyHelper") {

@@ -76,6 +76,13 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err), tempID: tempID}
 		}
 
+		// Resolve the account BEFORE anything is created: a refusal here must
+		// leave no worktree, branch or session behind.
+		resolvedAccount, accErr := resolveCreateAccount(claudeAccount, tool, command, sandboxEnabled, groupPath, accountParent)
+		if accErr != nil {
+			return sessionCreatedMsg{err: accErr, tempID: tempID}
+		}
+
 		var worktreeBackend vcs.Backend
 		if worktreePath != "" && worktreeRepoRoot != "" && worktreeBranch != "" && !multiRepoEnabled {
 			// Single-repo worktree: create here. Multi-repo worktrees are handled below.
@@ -198,16 +205,8 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		if claudeAccount != "" && session.IsClaudeCompatible(tool) {
 			inst.Account = claudeAccount
 		}
-		// Default account on a host whose ~/.claude has no login would open
-		// Claude's first-run screen: fall back to a logged-in account.
-		if inst.Account == "" && !sandboxEnabled && session.IsClaudeCompatible(tool) && session.AmbientClaudeConfigDir() == "" {
-			if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
-				account, accErr := session.ResolveNewSessionAccount(cfg, tool, inst.GroupPath, accountParent)
-				if accErr != nil {
-					return sessionCreatedMsg{err: accErr, tempID: tempID}
-				}
-				inst.Account = account
-			}
+		if inst.Account == "" && resolvedAccount != "" {
+			inst.Account = resolvedAccount
 		}
 
 		// Apply sandbox config.
@@ -1485,4 +1484,23 @@ func forkWithStateWorkspaceJJ(parentPath, repoRoot, workspacePath, branch string
 		return fmt.Errorf("failed to materialize parent state: %w; new workspace cleaned up", err)
 	}
 	return nil
+}
+
+// resolveCreateAccount is the new-session account fallback. A default account
+// on a host whose ~/.claude has no login would open Claude's first-run screen,
+// so it falls back to a logged-in account, or refuses. It touches nothing, so
+// callers run it before creating any worktree. An explicit account, a sandbox,
+// an ambient CLAUDE_CONFIG_DIR and non-Claude tools are left alone.
+func resolveCreateAccount(claudeAccount, tool, command string, sandboxEnabled bool, groupPath string, parent *session.Instance) (string, error) {
+	if tool == "" {
+		tool, _ = createSessionTool(command)
+	}
+	if claudeAccount != "" || sandboxEnabled || !session.IsClaudeCompatible(tool) || session.AmbientClaudeConfigDir() != "" {
+		return "", nil
+	}
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		return "", nil
+	}
+	return session.ResolveNewSessionAccount(cfg, tool, groupPath, parent)
 }

@@ -37,6 +37,13 @@ func TestResolveNewSessionAccount_FailsSafeTowardLoggedIn(t *testing.T) {
 		{name: "malformed .claude.json", files: map[string]string{".claude.json": `{not json`}},
 		{name: "unreadable .claude.json", files: map[string]string{".claude.json/x": ``}},
 		{name: "malformed settings.json", files: map[string]string{".claude/settings.json": `{not json`}},
+		{name: "settings.json env bedrock", files: map[string]string{".claude/settings.json": `{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}`}},
+		{name: "settings.json env api key", files: map[string]string{".claude/settings.json": `{"env":{"ANTHROPIC_API_KEY":"sk-x"}}`}},
+		{name: "settings.local.json env", files: map[string]string{".claude/settings.local.json": `{"env":{"ANTHROPIC_BASE_URL":"http://x"}}`}},
+		{name: "settings.local.json apiKeyHelper", files: map[string]string{".claude/settings.local.json": `{"apiKeyHelper":"/bin/true"}`}},
+		{name: "managed settings env", files: map[string]string{"managed/managed-settings.json": `{"env":{"CLAUDE_CODE_USE_VERTEX":"1"}}`}},
+		{name: "managed settings apiKeyHelper", files: map[string]string{"managed/managed-settings.json": `{"apiKeyHelper":"/bin/true"}`}},
+		{name: "onboarding completed, no other signal", files: map[string]string{".claude.json": `{"hasCompletedOnboarding":true}`}},
 		{name: "command alias", cfg: func(string) *UserConfig { return &UserConfig{Claude: ClaudeSettings{Command: "cdw"}} }},
 		{name: "claude env_file", cfg: func(string) *UserConfig { return &UserConfig{Claude: ClaudeSettings{EnvFile: "~/.envrc"}} }},
 		{name: "shell env_files", cfg: func(string) *UserConfig {
@@ -74,6 +81,10 @@ func TestResolveNewSessionAccount_FailsSafeTowardLoggedIn(t *testing.T) {
 				if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
 					t.Fatal(err)
 				}
+				managed := filepath.Join(home, "managed", "managed-settings.json")
+				prev := claudeManagedSettingsPath
+				claudeManagedSettingsPath = managed
+				t.Cleanup(func() { claudeManagedSettingsPath = prev })
 				for rel, body := range tc.files {
 					write(t, filepath.Join(home, rel), body)
 				}
@@ -135,5 +146,30 @@ func TestResolveNewSessionAccount_OnlyPlainClaudeTool(t *testing.T) {
 		if acct, err := ResolveNewSessionAccount(&UserConfig{}, tool, "projects", nil); err != nil || acct != "" {
 			t.Fatalf("tool %q: want no change, got %q, %v", tool, acct, err)
 		}
+	}
+}
+
+// The refusal and the fallback fire only for a really fresh dir: onboarding
+// not completed and no auth signal anywhere.
+func TestClaudeConfigDirHasLogin_FreshDirNeedsNoOnboardingFlag(t *testing.T) {
+	skipIfLoginAssumed(t)
+	for _, k := range claudeAuthEnvSignals {
+		t.Setenv(k, "")
+	}
+	prev := claudeManagedSettingsPath
+	claudeManagedSettingsPath = filepath.Join(t.TempDir(), "none.json")
+	t.Cleanup(func() { claudeManagedSettingsPath = prev })
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"numStartups":3,"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ClaudeConfigDirHasLogin(dir) {
+		t.Fatal("a dir with config but no completed onboarding and no auth is a first run")
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"hasCompletedOnboarding":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !ClaudeConfigDirHasLogin(dir) {
+		t.Fatal("completed onboarding means no first-run screen")
 	}
 }
