@@ -435,6 +435,24 @@ func (h *Home) saveUIStateErr() error {
 		sort.Strings(foldedIDs)
 		state.ParentChildrenCollapsed = foldedIDs
 	}
+
+	// Remote parent-child folds (#3223), as remote -> parent session IDs.
+	for remoteName, folds := range h.remoteParentChildrenCollapsed {
+		foldedIDs := make([]string, 0, len(folds))
+		for sid, isFolded := range folds {
+			if isFolded {
+				foldedIDs = append(foldedIDs, sid)
+			}
+		}
+		if len(foldedIDs) == 0 {
+			continue
+		}
+		sort.Strings(foldedIDs)
+		if state.RemoteParentChildrenCollapsed == nil {
+			state.RemoteParentChildrenCollapsed = make(map[string][]string)
+		}
+		state.RemoteParentChildrenCollapsed[remoteName] = foldedIDs
+	}
 	// Capture cursor position
 	if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
@@ -501,6 +519,23 @@ func (h *Home) loadUIState() {
 	}
 	for _, sid := range state.ParentChildrenCollapsed {
 		h.parentChildrenCollapsed[sid] = true
+	}
+
+	// Remote parent-child folds (#3223), harmless for gone sessions the same
+	// way.
+	if h.remoteParentChildrenCollapsed == nil {
+		h.remoteParentChildrenCollapsed = make(map[string]map[string]bool)
+	}
+	for remoteName, ids := range state.RemoteParentChildrenCollapsed {
+		if len(ids) == 0 {
+			continue
+		}
+		if h.remoteParentChildrenCollapsed[remoteName] == nil {
+			h.remoteParentChildrenCollapsed[remoteName] = make(map[string]bool)
+		}
+		for _, sid := range ids {
+			h.remoteParentChildrenCollapsed[remoteName][sid] = true
+		}
 	}
 
 	// Apply preview mode, status filter, and group view mode immediately

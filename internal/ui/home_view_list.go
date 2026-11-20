@@ -1020,6 +1020,21 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	remoteViewers, remoteViewersKnown := rs.ViewerList()
 	remoteViewersBadge := renderViewersBadge(remoteViewers, remoteViewersKnown, selected)
 
+	// Parent-child fold badge (#3223): chevron + child count on a remote
+	// parent row, last on the row as on a local parent row.
+	childFoldBadge := ""
+	if n := h.remoteSessionChildCount(item); n > 0 {
+		foldChar := "▾"
+		if h.isRemoteParentFolded(item.RemoteName, rs.ID) {
+			foldChar = "▸"
+		}
+		foldStyle := TreeConnectorStyle
+		if selected {
+			foldStyle = TreeConnectorSelStyle
+		}
+		childFoldBadge = foldStyle.Render(fmt.Sprintf(" %s%d", foldChar, n))
+	}
+
 	// 🎙 voice badge right after the title when this remote row holds the
 	// mic (voice_badge.go). It is fitted before the tool, viewers and
 	// pending badges, so on a narrow list it is the last to go: the words
@@ -1031,12 +1046,12 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		if listWidth > 0 {
 			head := cellWidth(remoteRowGutter(selected) + indent + treeConnector + " " + statusIcon + " " + titleStr)
 			budget = max(0, listWidth-head-1)
-			wordsBudget = max(0, budget-cellWidth(toolStr)-cellWidth(remoteViewersBadge)-cellWidth(pendingStr))
+			wordsBudget = max(0, budget-cellWidth(toolStr)-cellWidth(remoteViewersBadge)-cellWidth(pendingStr)-cellWidth(childFoldBadge))
 		}
 		voiceBadgeText, _ = fitVoiceBadge(voiceSt, selected, budget, wordsBudget, h.voiceClock())
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s%s%s\n",
 		remoteRowGutter(selected), // align with group/session hotkey gutter
 		indent,
 		DimStyle.Render(treeConnector),
@@ -1046,5 +1061,6 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		toolStr,
 		remoteViewersBadge,
 		pendingStr,
+		childFoldBadge,
 	))
 }
