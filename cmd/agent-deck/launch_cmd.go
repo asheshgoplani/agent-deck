@@ -233,6 +233,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// -g means what it means for add: a unique group name resolves to its
 	// stored path and an ambiguous one is an error, before anything is created.
 	sessionGroup := mergeFlags(*group, *groupShort)
+	typedGroup := sessionGroup
 	explicitGroupProvided := strings.TrimSpace(sessionGroup) != ""
 	if explicitGroupProvided {
 		resolvedGroup, groupErr := resolveLaunchGroup(profile, sessionGroup)
@@ -353,6 +354,13 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		exitCLI(1)
 	}
 	if *startupQuery != "" && queryGroup != "" {
+		if !explicitGroupProvided {
+			// The directory-derived group keeps the directory's name as its
+			// display name, as on the path without a startup query.
+			if raw := session.GroupPathForProject(path); raw != "" && session.CanonicalGroupPath(raw) == session.CanonicalGroupPath(queryGroup) {
+				typedGroup = raw
+			}
+		}
 		sessionGroup = queryGroup
 		explicitGroupProvided = true
 	}
@@ -508,6 +516,14 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	}
 	if parentInstance != nil {
 		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
+		// The group taken from the project directory follows the -g path
+		// rule here too: "My Proj" is the group "My-Proj", named "My Proj",
+		// not a second group at the raw name.
+		if !explicitGroupProvided && cwdDerivedGroup != "" && sessionGroup == cwdDerivedGroup &&
+			(!inheritParentGroup || parentInstance.GroupPath == "") {
+			typedGroup = cwdDerivedGroup
+			sessionGroup = derivedLaunchGroup(profile, cwdDerivedGroup)
+		}
 	}
 
 	// Default title to folder name
@@ -550,6 +566,9 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		newInstance = session.NewInstanceWithGroup(sessionTitle, path, sessionGroup)
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
+		// The group taken from the project directory follows the -g path rule.
+		typedGroup = newInstance.GroupPath
+		newInstance.GroupPath = derivedLaunchGroup(profile, typedGroup)
 	}
 
 	// An initial message is a send: an enforced cost budget refuses the
@@ -759,9 +778,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	launchCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = launchCfg.GroupDefaults.MaxConcurrent
-	if newInstance.GroupPath != "" {
-		groupTree.CreateGroupPath(newInstance.GroupPath)
-	}
+	groupTree.EnsureGroupForNewSession(newInstance, typedGroup)
 
 	// v1.9.x issue #1031: targeted single-row insert + verify, NOT the
 	// load-modify-write SaveWithGroups rewrite. SaveWithGroups under
@@ -935,9 +952,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	postStartTree := session.NewGroupTreeWithGroups(instances, groups)
 	postStartCfg, _ := session.LoadUserConfig()
 	postStartTree.DefaultMaxConcurrent = postStartCfg.GroupDefaults.MaxConcurrent
-	if newInstance.GroupPath != "" {
-		postStartTree.CreateGroupPath(newInstance.GroupPath)
-	}
+	postStartTree.EnsureGroupForNewSession(newInstance, typedGroup)
 	if err := creationRollback.run("save started session", func() error { return storage.InsertSessionAndVerify(newInstance, postStartTree) }); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
@@ -1061,9 +1076,10 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 
 // resolveLaunchGroup resolves launch's -g selector the way handleAdd does:
 // against the stored groups plus those declared in config.toml, through
-// resolveGroupPathForAdd. A name matching no group is kept as given, so the
-// group is created, as with add. A registry that cannot be read keeps the
-// selector too; the load further down reports that error.
+// resolveGroupPathForAdd. A name matching no group becomes the path `group
+// create` would store for it, so the group is created, as with add. A
+// registry that cannot be read keeps the selector too; the load further down
+// reports that error.
 func resolveLaunchGroup(profile, groupSelector string) (string, error) {
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
@@ -1075,6 +1091,22 @@ func resolveLaunchGroup(profile, groupSelector string) (string, error) {
 		session.ReconcileDeclarativeGroups(groupTree, cfg)
 	}
 	return resolveGroupPathForAdd(groupTree, groupSelector)
+}
+
+// derivedLaunchGroup is derivedGroupPath for launch, which has not loaded the
+// stored groups at that point. A name that is its own canonical path needs no
+// lookup; a registry that cannot be read keeps the name (the load further down
+// reports that error).
+func derivedLaunchGroup(profile, derived string) string {
+	if session.CanonicalGroupPath(derived) == derived {
+		return derived
+	}
+	storage, instances, groups, err := loadSessionData(profile)
+	if err != nil {
+		return derived
+	}
+	_ = storage.Close()
+	return derivedGroupPath(session.NewGroupTreeWithGroups(instances, groups), derived)
 }
 
 // resolveLaunchPath resolves the project path for `agent-deck launch`.

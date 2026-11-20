@@ -21,8 +21,8 @@ func TestCanonicalGroupPathMatchesCreate(t *testing.T) {
 		if leaf == nil {
 			t.Fatalf("CreateGroupPath(%q) returned nil", key)
 		}
-		if got := canonicalGroupPath(key); got != leaf.Path {
-			t.Errorf("canonicalGroupPath(%q) = %q, CreateGroupPath stored %q", key, got, leaf.Path)
+		if got := CanonicalGroupPath(key); got != leaf.Path {
+			t.Errorf("CanonicalGroupPath(%q) = %q, CreateGroupPath stored %q", key, got, leaf.Path)
 		}
 	}
 }

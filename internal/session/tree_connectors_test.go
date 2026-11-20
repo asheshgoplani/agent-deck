@@ -407,3 +407,44 @@ func TestRemoteItemTypes_UnaffectedByRecompute(t *testing.T) {
 		t.Errorf("ItemTypeRemoteSession row's IsLastInGroup was changed from false")
 	}
 }
+
+// TestDrawsNested_CrossGroupChild_Issue3169: a session whose parent lives in
+// another group keeps IsSubSession (its parent link routes events) but is
+// emitted at top-level depth, so it must not be drawn nested. A real child of
+// a top-level row of the same group is drawn nested. Root and nested groups.
+func TestDrawsNested_CrossGroupChild_Issue3169(t *testing.T) {
+	for _, grp := range []string{"workers", "deck/workers"} {
+		t.Run(grp, func(t *testing.T) {
+			a := newSession(t, "A")
+			a.GroupPath = "conductor"
+			b := newSession(t, "B")
+			b.GroupPath = grp
+			d := newSession(t, "D")
+			d.GroupPath = grp
+			d.ParentSessionID = a.ID
+			kid := newSession(t, "kid")
+			kid.GroupPath = grp
+			kid.ParentSessionID = b.ID
+			b.Order, d.Order, kid.Order = 0, 1, 2
+
+			items := session.RecomputeTreeConnectors(session.NewGroupTree([]*session.Instance{a, b, d, kid}).Flatten())
+			bi, di, ki := itemByID(t, items, b.ID), itemByID(t, items, d.ID), itemByID(t, items, kid.ID)
+
+			if di.Level != bi.Level {
+				t.Errorf("D level %d, B level %d: a cross-group child is a top-level row", di.Level, bi.Level)
+			}
+			if !di.IsSubSession {
+				t.Errorf("D lost IsSubSession; the parent link must survive rendering")
+			}
+			if di.DrawsNested() {
+				t.Errorf("D.DrawsNested() = true; its parent is in another group")
+			}
+			if bi.DrawsNested() {
+				t.Errorf("B.DrawsNested() = true for a top-level session")
+			}
+			if !ki.DrawsNested() {
+				t.Errorf("kid.DrawsNested() = false for a child of a top-level row of its own group")
+			}
+		})
+	}
+}
