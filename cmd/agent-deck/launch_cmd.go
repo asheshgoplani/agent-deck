@@ -611,12 +611,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// #2895: no --account or AGENTDECK_ACCOUNT → [claude].default_account,
 	// applied once the tool is known (Claude sessions only).
 	if newInstance.Account == "" {
-		defaultAcct, defaultErr := defaultCLIAccountSlot(newInstance, parentInstance)
-		if defaultErr != nil {
-			out.Error(defaultErr.Error(), ErrCodeInvalidOperation)
-			exitCLI(1)
-		}
-		newInstance.Account = defaultAcct
+		newInstance.Account = defaultCLIAccountSlot(newInstance, parentInstance)
 	}
 	if err := newInstance.ValidateAccount(); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
