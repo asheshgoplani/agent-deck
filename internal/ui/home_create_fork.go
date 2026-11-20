@@ -195,6 +195,17 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		if claudeAccount != "" && session.IsClaudeCompatible(tool) {
 			inst.Account = claudeAccount
 		}
+		// Default account on a host whose ~/.claude has no login would open
+		// Claude's first-run screen: fall back to a logged-in account or refuse.
+		if inst.Account == "" && session.IsClaudeCompatible(tool) && session.AmbientClaudeConfigDir() == "" {
+			if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
+				account, accErr := session.ResolveNewSessionAccount(cfg, inst.GroupPath, nil)
+				if accErr != nil {
+					return sessionCreatedMsg{err: accErr, tempID: tempID}
+				}
+				inst.Account = account
+			}
+		}
 
 		// Apply sandbox config.
 		if sandboxEnabled {

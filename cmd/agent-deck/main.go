@@ -2765,7 +2765,12 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	// #2895: no --account or AGENTDECK_ACCOUNT → [claude].default_account.
 	// Not for --ssh: the slot names a config_dir on this machine.
 	if newInstance.Account == "" && *sshHost == "" {
-		newInstance.Account = defaultCLIAccountSlot(newInstance, parentInstance)
+		defaultAcct, defaultErr := defaultCLIAccountSlot(newInstance, parentInstance)
+		if defaultErr != nil {
+			out.Error(defaultErr.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		newInstance.Account = defaultAcct
 	}
 	if err := newInstance.ValidateAccount(); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)

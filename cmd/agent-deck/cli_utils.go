@@ -41,18 +41,20 @@ func resolveCLIAccountSlot(explicitAccount, resolvedTool, resolvedCommand string
 // session on inherit (session.DefaultAccountForNewSession). So does an
 // ambient CLAUDE_CONFIG_DIR: a Claude session exports its account's dir, and
 // a child it creates keeps that account, as before the default existed.
-func defaultCLIAccountSlot(inst *session.Instance, parent *session.Instance) string {
+func defaultCLIAccountSlot(inst *session.Instance, parent *session.Instance) (string, error) {
 	if inst == nil || !session.IsClaudeCompatible(inst.Tool) {
-		return ""
+		return "", nil
 	}
 	if session.AmbientClaudeConfigDir() != "" {
-		return ""
+		return "", nil
 	}
 	cfg, err := session.LoadUserConfig()
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	return session.DefaultAccountForNewSession(cfg, inst.GroupPath, parent)
+	// Falls back to a logged-in account, or refuses, when the implicit
+	// ~/.claude has no login (it would open the first-run screen).
+	return session.ResolveNewSessionAccount(cfg, inst.GroupPath, parent)
 }
 
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
