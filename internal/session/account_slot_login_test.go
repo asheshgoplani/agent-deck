@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,7 @@ import (
 // opens its first-run screen. The resolver must fall back to a configured
 // account, or refuse with a message naming the fix.
 func TestResolveNewSessionAccount_UnauthenticatedDefaultConfigDir(t *testing.T) {
+	skipIfLoginAssumed(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
@@ -73,6 +75,7 @@ func TestResolveNewSessionAccount_UnauthenticatedDefaultConfigDir(t *testing.T) 
 }
 
 func TestClaudeConfigDirHasLogin(t *testing.T) {
+	skipIfLoginAssumed(t)
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 	dir := t.TempDir()
@@ -84,5 +87,14 @@ func TestClaudeConfigDirHasLogin(t *testing.T) {
 	}
 	if !ClaudeConfigDirHasLogin(dir) {
 		t.Fatal("oauthAccount in .claude.json must count as logged in")
+	}
+}
+
+// skipIfLoginAssumed skips the filesystem-login tests where the probe assumes
+// a login (macOS keychain cannot be probed).
+func skipIfLoginAssumed(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("login probe assumes a keychain login on macOS")
 	}
 }

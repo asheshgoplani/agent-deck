@@ -1924,7 +1924,8 @@ func (d *NewDialog) validate() (string, focusTarget) {
 
 	// Default account on a host whose ~/.claude has no login would open
 	// Claude's first-run screen; refuse here, where the user can still act.
-	if !d.createsOffMachine() && d.isClaudeSelected() && d.GetClaudeAccount() == "" && session.AmbientClaudeConfigDir() == "" {
+	// A sandboxed session logs in through its own credential store, so skip it.
+	if !d.createsOffMachine() && !d.sandboxEnabled && d.isClaudeSelected() && d.GetClaudeAccount() == "" && session.AmbientClaudeConfigDir() == "" {
 		if cfg, err := session.LoadUserConfig(); err == nil {
 			if _, accErr := session.ResolveNewSessionAccount(cfg, d.parentGroupPath, d.selectedConductor()); accErr != nil {
 				return accErr.Error(), focusName
