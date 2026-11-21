@@ -1596,6 +1596,30 @@ func pinBridgePackages(names []string, pyVersion string) []string {
 	return pinned
 }
 
+// bridgeImportProbes lists, per Python distribution, the imports the bridge
+// makes. Root modules alone are not enough: aiogram 2.x and discord.py 1.x
+// import fine but lack the APIs conductor_bridge.py needs, so a root-only
+// probe would skip the pinned install and leave the bridge disabled at
+// startup. Keep each entry in sync with conductor_bridge.py's guarded imports.
+var bridgeImportProbes = map[string]string{
+	"toml":       "import toml",
+	"aiogram":    "from aiogram import Bot, Dispatcher, types; from aiogram.filters import Command, CommandStart; from aiogram.client.session.aiohttp import AiohttpSession",
+	"slack-bolt": "from slack_bolt.async_app import AsyncApp; from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler; from slack_bolt.authorization import AuthorizeResult",
+	"slack-sdk":  "from slack_sdk.web.async_client import AsyncWebClient",
+	"aiohttp":    "import aiohttp",
+	"discord.py": "import discord; from discord import app_commands",
+}
+
+// bridgeImportProbe returns the import statement that proves pkg is usable by
+// the bridge. A distribution without an entry falls back to importing its
+// root module under the same name.
+func bridgeImportProbe(pkg string) string {
+	if probe, ok := bridgeImportProbes[pkg]; ok {
+		return probe
+	}
+	return "import " + pkg
+}
+
 // installPythonDeps checks for the bridge's Python dependencies and installs
 // them only if needed.
 // Returns true on success. On failure it prints a formatted, actionable error
@@ -1633,22 +1657,13 @@ func installPythonDeps() bool {
 		python = "python3"
 	}
 
-	modules := make([]string, 0, len(packages))
+	imports := make([]string, 0, len(packages))
 	for _, pkg := range packages {
-		switch pkg {
-		case "slack-bolt":
-			modules = append(modules, "slack_bolt")
-		case "slack-sdk":
-			modules = append(modules, "slack_sdk")
-		case "discord.py":
-			modules = append(modules, "discord")
-		default:
-			modules = append(modules, pkg)
-		}
+		imports = append(imports, bridgeImportProbe(pkg))
 	}
 	// Avoid importing from the caller's working directory, which Python -c
 	// adds to sys.path but the bridge daemon does not use.
-	probe := "import sys; sys.path[:] = [path for path in sys.path if path]; import " + strings.Join(modules, ", ")
+	probe := "import sys; sys.path[:] = [path for path in sys.path if path]; " + strings.Join(imports, "; ")
 	if err := exec.Command(python, "-c", probe).Run(); err == nil {
 		return true
 	}
