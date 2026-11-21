@@ -45,7 +45,8 @@ The checkpoint contains a net Git patch for supported tracked text files and
 the optional note. It omits untracked files and session transcripts. Review it
 before sharing because even tracked changes and notes can contain sensitive
 content. Save rejects unsupported changes such as binary files, symlink changes,
-submodule changes, mode changes, and checkouts with configured Git filters.
+submodule changes, mode or attribute changes, and filters that apply to
+tracked files.
 Restore requires the base locally and does not run worktree setup scripts or
 fetch objects. Keep the source and destination stable while the command runs.
 

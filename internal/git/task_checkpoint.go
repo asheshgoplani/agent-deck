@@ -43,7 +43,7 @@ func CaptureTaskCheckpoint(ctx context.Context, dir, note string) (TaskCheckpoin
 	if err != nil {
 		return TaskCheckpoint{}, err
 	}
-	if err := checkCheckpointFilters(ctx, root); err != nil {
+	if err := checkCheckpointFilters(ctx, root, false); err != nil {
 		return TaskCheckpoint{}, err
 	}
 	if err := refuseCheckpointGitOperation(ctx, root); err != nil {
@@ -217,6 +217,9 @@ func (c TaskCheckpoint) Paths(ctx context.Context) ([]string, error) {
 				return nil, errors.New("binary patches are not supported")
 			}
 		}
+		if strings.EqualFold(path.Base(fields[2]), ".gitattributes") {
+			return nil, errors.New("checkpoints do not support changes to Git attributes")
+		}
 		if seen[fields[2]] {
 			return nil, errors.New("duplicate checkpoint patch path")
 		}
@@ -267,9 +270,6 @@ func RestoreTaskCheckpoint(ctx context.Context, dir, target string, c TaskCheckp
 	}
 	root, err := checkpointRoot(ctx, dir)
 	if err != nil {
-		return err
-	}
-	if err := checkCheckpointFilters(ctx, root); err != nil {
 		return err
 	}
 	base, err := checkpointGit(ctx, root, nil, "rev-parse", "--verify", c.Base+"^{commit}")
@@ -323,10 +323,21 @@ func RestoreTaskCheckpoint(ctx context.Context, dir, target string, c TaskCheckp
 			err = errors.Join(err, fmt.Errorf("inspect incomplete restore at %q: %w", target, removeErr))
 		}
 	}()
-	if _, err = checkpointGit(ctx, root, nil, "worktree", "add", "--detach", "--quiet", "--", target, c.Base); err != nil {
+	if _, err = checkpointGit(ctx, root, nil, "worktree", "add", "--detach", "--quiet", "--no-checkout", "--", target, c.Base); err != nil {
 		return fmt.Errorf("create restore worktree: %w", err)
 	}
 	added = true
+	// Materialize only the index first, then inspect the base tree's
+	// attributes before any checkout can invoke a filter.
+	if _, err = checkpointGit(ctx, target, nil, "read-tree", c.Base); err != nil {
+		return fmt.Errorf("load restore index: %w", err)
+	}
+	if err = checkCheckpointFilters(ctx, target, true, paths...); err != nil {
+		return err
+	}
+	if _, err = checkpointGit(ctx, target, nil, "checkout-index", "--all", "--index"); err != nil {
+		return fmt.Errorf("check out restore base: %w", err)
+	}
 	for _, name := range paths {
 		if err = checkCheckpointDestination(target, name); err != nil {
 			return err
@@ -444,17 +455,46 @@ func checkpointRoot(ctx context.Context, dir string) (string, error) {
 	return filepath.EvalSymlinks(strings.TrimSuffix(string(out), "\n"))
 }
 
-func checkCheckpointFilters(ctx context.Context, root string) error {
-	out, err := checkpointGit(ctx, root, nil, "config", "--name-only", "--get-regexp", "^filter\\.")
+func checkCheckpointFilters(ctx context.Context, dir string, cached bool, extraPaths ...string) error {
+	// check-attr uses these literal labels for absent attributes. A
+	// driver with either reserved name would be indistinguishable.
+	reserved, err := checkpointGit(ctx, dir, nil, "config", "--name-only", "--get-regexp", "^filter\\.(unspecified|unset)\\.")
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if err != nil && (!errors.As(err, &exitErr) || exitErr.ExitCode() != 1) {
+		return fmt.Errorf("check Git filter names: %w", err)
+	}
+	if len(reserved) != 0 {
+		return errors.New("checkpoint does not support checkout filters named unset or unspecified")
+	}
+	files, err := checkpointGit(ctx, dir, nil, "ls-files", "-z")
+	if err != nil {
+		return fmt.Errorf("list tracked paths for Git attribute check: %w", err)
+	}
+	for _, path := range extraPaths {
+		files = append(files, path...)
+		files = append(files, 0)
+	}
+	if len(files) == 0 {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("check Git filters: %w", err)
+	args := []string{"check-attr", "-z", "--stdin"}
+	if cached {
+		args = append(args, "--cached")
 	}
-	if len(out) != 0 {
-		return errors.New("checkpoint does not support checkout filters")
+	out, err := checkpointGit(ctx, dir, files, append(args, "filter")...)
+	if err != nil {
+		return fmt.Errorf("check tracked Git attributes: %w", err)
+	}
+	fields := bytes.Split(out, []byte{0})
+	if len(fields)%3 != 1 || len(fields[len(fields)-1]) != 0 || len(fields) != bytes.Count(files, []byte{0})*3+1 {
+		return errors.New("unexpected Git attribute output")
+	}
+	for i := 2; i < len(fields); i += 3 {
+		switch string(fields[i]) {
+		case "unspecified", "unset":
+		default:
+			return errors.New("checkpoint does not support checkout filters on tracked files")
+		}
 	}
 	return nil
 }

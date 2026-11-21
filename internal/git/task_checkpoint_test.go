@@ -116,6 +116,7 @@ func TestTaskCheckpointRejectsUnsupportedChanges(t *testing.T) {
 				require.NoError(t, os.Chmod(filepath.Join(repo, "tracked file"), 0o700))
 			case "filter":
 				checkpointTestGit(t, repo, "config", "filter.example.clean", "cat")
+				checkpointTestWrite(t, repo, ".gitattributes", "*.txt filter=example\n* filter=example\n")
 			}
 			_, err := CaptureTaskCheckpoint(context.Background(), repo, "")
 			require.Error(t, err)
@@ -159,4 +160,36 @@ func TestTaskCheckpointRejectsInvalidMetadata(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestTaskCheckpointIgnoresUnusedFilter(t *testing.T) {
+	ctx := context.Background()
+	repo := checkpointTestRepo(t)
+	checkpointTestGit(t, repo, "config", "filter.example.clean", "false")
+	checkpointTestGit(t, repo, "config", "filter.example.smudge", "false")
+	checkpointTestGit(t, repo, "config", "filter.example.required", "true")
+	checkpointTestWrite(t, repo, "tracked file", "changed\n")
+	c, err := CaptureTaskCheckpoint(ctx, repo, "")
+	require.NoError(t, err)
+	target := filepath.Join(t.TempDir(), "restored")
+	require.NoError(t, RestoreTaskCheckpoint(ctx, repo, target, c))
+	require.FileExists(t, filepath.Join(target, "tracked file"))
+}
+
+func TestTaskCheckpointRestoreRefusesFilterOnBase(t *testing.T) {
+	ctx := context.Background()
+	repo := checkpointTestRepo(t)
+	checkpointTestWrite(t, repo, ".gitattributes", "tracked* filter=example\n")
+	checkpointTestGit(t, repo, "add", ".gitattributes")
+	checkpointTestGit(t, repo, "commit", "-qm", "base with an attribute")
+	base := strings.TrimSpace(string(checkpointTestGit(t, repo, "rev-parse", "HEAD")))
+	checkpointTestGit(t, repo, "config", "filter.example.smudge", "false")
+	checkpointTestGit(t, repo, "config", "filter.example.required", "true")
+	checkpointTestWrite(t, repo, ".gitattributes", "")
+	target := filepath.Join(t.TempDir(), "restored")
+	before := checkpointTestGit(t, repo, "worktree", "list", "--porcelain")
+	err := RestoreTaskCheckpoint(ctx, repo, target, TaskCheckpoint{Version: checkpointVersion, Base: base})
+	require.ErrorContains(t, err, "checkout filters")
+	require.NoDirExists(t, target)
+	require.Equal(t, before, checkpointTestGit(t, repo, "worktree", "list", "--porcelain"))
 }
