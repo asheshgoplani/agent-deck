@@ -1,7 +1,6 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -71,27 +70,36 @@ func TestHandleSystemStats_ConcurrentRequestsShareOneProbe(t *testing.T) {
 	}
 
 	server := NewServer(Config{MenuData: &fakeMenuDataLoader{}})
+	get := func() {
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, newLocalRequest(http.MethodGet, "/api/system/stats", nil))
+		if w.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+			return
+		}
+		// Even the first poll carries data: it waits for the collection.
+		var resp struct {
+			GPU struct {
+				UsagePercent float64 `json:"usage_percent"`
+				Name         string  `json:"name"`
+			} `json:"gpu"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.GPU.UsagePercent != 37 || resp.GPU.Name != "Fake GPU" {
+			t.Errorf("gpu = %+v (error %v), want 37%% Fake GPU; body: %s", resp.GPU, err, w.Body.String())
+		}
+	}
 	var requests sync.WaitGroup
 	for range 12 {
-		requests.Go(func() {
-			w := httptest.NewRecorder()
-			server.Handler().ServeHTTP(w, newLocalRequest(http.MethodGet, "/api/system/stats", nil))
-			if w.Code != http.StatusOK {
-				t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
-			}
-		})
+		requests.Go(get)
 	}
 	requests.Wait()
-	// Shutdown waits for the collection in progress.
-	if err := server.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	get() // within 5 s: served from the cache
 
 	log, err := os.ReadFile(probeLog)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Count(string(log), "gpu\n"); got != 1 {
-		t.Errorf("GPU probes for 12 concurrent requests = %d, want 1", got)
+		t.Errorf("GPU probes for 13 requests within 5 s = %d, want 1", got)
 	}
 }

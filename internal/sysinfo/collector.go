@@ -2,7 +2,6 @@ package sysinfo
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -13,8 +12,6 @@ type Collector struct {
 	stats    Stats
 	interval time.Duration
 	stopCh   chan struct{}
-	doneCh   chan struct{} // closed when the collection goroutine returns
-	started  atomic.Bool
 	onUpdate func() // called after each collection cycle
 }
 
@@ -27,7 +24,6 @@ func NewCollector(intervalSeconds int, onUpdate func()) *Collector {
 	return &Collector{
 		interval: time.Duration(intervalSeconds) * time.Second,
 		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
 		onUpdate: onUpdate,
 	}
 }
@@ -40,9 +36,7 @@ func NewCollector(intervalSeconds int, onUpdate func()) *Collector {
 // (e.g. a wedged `netstat -ib` on macOS) would otherwise freeze the TUI on a
 // blank screen until it returned.
 func (c *Collector) Start() {
-	c.started.Store(true)
 	go func() {
-		defer close(c.doneCh)
 		// Probe GPU availability once, then take an initial snapshot so the
 		// first refresh has data without waiting a full interval.
 		probeGPU()
@@ -68,13 +62,9 @@ func (c *Collector) Start() {
 	}()
 }
 
-// Stop terminates the background collection goroutine and, if Start ran,
-// waits for it to return.
+// Stop terminates the background collection goroutine.
 func (c *Collector) Stop() {
 	close(c.stopCh)
-	if c.started.Load() {
-		<-c.doneCh
-	}
 }
 
 // Get returns the latest cached stats snapshot.
