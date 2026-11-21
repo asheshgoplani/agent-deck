@@ -394,7 +394,11 @@ func (i *Instance) openCodeLaunchID(tmuxSession *tmux.Session) string {
 	if tmuxSession == nil || i.IsSSH() || i.IsSandboxed() {
 		return ""
 	}
-	raw, err := tmuxSession.GetEnvironment("OPENCODE_SESSION_ID")
+	// Uncached: the launch shell records the ID with an external
+	// `tmux set-environment`, which cannot clear this handle's env cache. A
+	// discovery pass that read before the write would otherwise serve a
+	// cached miss and fall back to the same-directory search.
+	raw, err := tmuxSession.ReadEnvironment("OPENCODE_SESSION_ID")
 	if err != nil {
 		return ""
 	}

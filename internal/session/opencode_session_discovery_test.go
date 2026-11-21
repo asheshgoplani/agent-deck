@@ -487,6 +487,45 @@ func TestUpdateOpenCodeSession_V2UsesOwnLaunchID(t *testing.T) {
 	}
 }
 
+// TestQueryOpenCodeSession_V2LaunchIDIgnoresNegativeEnvCache: the launch shell
+// records OPENCODE_SESSION_ID with an external `tmux set-environment`, which
+// cannot clear this handle's environment cache. A discovery pass that read the
+// variable before that write caches a miss; the next pass must still see the
+// launch ID instead of adopting a same-directory sibling.
+func TestQueryOpenCodeSession_V2LaunchIDIgnoresNegativeEnvCache(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	pinOpenCodeMajorVersion(t, 2, true)
+	project := t.TempDir()
+	now := time.Now().UnixMilli()
+	reply := fmt.Sprintf(`{"data":[{"id":"ses_sibling","location":{"directory":%q},"time":{"created":%d,"updated":%d}}]}`, project, now, now)
+	setFakeOpenCodePath(t, "#!/bin/sh\nprintf '%s\\n' '"+reply+"'", true)
+	configureFakeOpenCode(t)
+
+	inst := NewInstanceWithTool("open-code-cached-miss", project, "opencode")
+	inst.OpenCodeStartedAt = now - 1000
+	inst.tmuxSession = tmux.NewSession(inst.Title, inst.ProjectPath)
+	if err := inst.tmuxSession.Start("sleep 300"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inst.tmuxSession.Kill() })
+
+	// Cache the miss through the instance's handle, as a pass before the
+	// launch shell writes the ID would.
+	if _, err := inst.tmuxSession.GetEnvironment("OPENCODE_SESSION_ID"); err == nil {
+		t.Fatal("precondition: OPENCODE_SESSION_ID should be absent")
+	}
+	// The launch shell uses its own handle, so this write leaves the cached
+	// miss above intact.
+	launcher := &tmux.Session{Name: inst.tmuxSession.TmuxName(), SocketName: inst.tmuxSession.SocketName}
+	if err := launcher.SetEnvironment("OPENCODE_SESSION_ID", "ses_launch"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := inst.queryOpenCodeSession(); got != "ses_launch" {
+		t.Fatalf("session ID = %q, want the launch-recorded ses_launch over the cached miss", got)
+	}
+}
+
 func TestQueryOpenCodeSession_V2UnboundIgnoresSiblingUpdatedAfterSpawn(t *testing.T) {
 	pinOpenCodeMajorVersion(t, 2, true)
 	projectPath := t.TempDir()
