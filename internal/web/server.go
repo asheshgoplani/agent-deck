@@ -16,6 +16,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 	"golang.org/x/time/rate"
 )
 
@@ -76,6 +77,8 @@ type Server struct {
 	mcpMgr          MCPManager
 	remoteFleet     RemoteFleetLoader
 	mutationLimiter *rate.Limiter
+	systemStats     *sysinfo.Collector
+	systemStatsOnce sync.Once // starts systemStats; Shutdown uses it to block a later start
 
 	// hookStatusLoader returns the latest hook payload for every instance
 	// whose hook file is present on disk. Defaults to defaultLoadHookStatuses
@@ -122,6 +125,8 @@ func NewServer(cfg Config) *Server {
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
 		annotationReader: &stateDBAnnotationReader{},
+		// Same 5 s interval as the web UI's stats poll.
+		systemStats: sysinfo.NewCollector(5, nil),
 	}
 	s.annotationLoader = s.annotationReader.load
 	if s.remoteFleet == nil {
@@ -325,6 +330,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.hookWatcher != nil {
 		s.hookWatcher.Stop()
 		s.hookWatcher = nil
+	}
+	if s.systemStats != nil {
+		s.systemStatsOnce.Do(func() {})
+		s.systemStats.Stop()
 	}
 
 	err := s.httpServer.Shutdown(ctx)

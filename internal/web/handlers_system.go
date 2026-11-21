@@ -16,9 +16,15 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats := sysinfo.Collect()
-
 	resp := map[string]any{}
+	if s.systemStats == nil {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	// One collector serves every request, so each polling tab no longer
+	// starts its own probe. It starts on the first request.
+	s.systemStatsOnce.Do(s.systemStats.Start)
+	stats := s.systemStats.Get()
 
 	if stats.CPU.Available {
 		resp["cpu"] = map[string]any{
