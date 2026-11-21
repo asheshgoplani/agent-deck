@@ -32,6 +32,8 @@ func handleWorktree(profile string, args []string) {
 		handleWorktreeFinish(profile, args[1:])
 	case "trust-hooks", "trust-scripts": // trust-scripts: pre-1.16.22 name
 		exitCLI(runWorktreeTrustHooks(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinStdoutIsTerminal()))
+	case "checkpoint":
+		exitCLI(runWorktreeCheckpoint(args[1:], os.Stdout, os.Stderr))
 	case "help", "-h", "--help":
 		printWorktreeUsage()
 	default:
@@ -52,6 +54,7 @@ func printWorktreeUsage() {
 	fmt.Println("  info <session>    Show worktree info for a session")
 	fmt.Println("  finish <session>  Merge branch, remove worktree, and delete session")
 	fmt.Println("  cleanup [--force] Find and remove orphaned worktrees/sessions")
+	fmt.Println("  checkpoint        Save, preview, or restore tracked changes")
 	fmt.Println("  trust-hooks <repo> [--hook setup|destruction] [--yes] [--revoke]")
 	fmt.Println("                    Review and approve .agent-deck/worktree-*.sh hooks for a repo")
 	fmt.Println()

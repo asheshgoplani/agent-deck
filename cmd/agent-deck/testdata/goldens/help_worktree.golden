@@ -7,6 +7,7 @@ Commands:
   info <session>    Show worktree info for a session
   finish <session>  Merge branch, remove worktree, and delete session
   cleanup [--force] Find and remove orphaned worktrees/sessions
+  checkpoint        Save, preview, or restore tracked changes
   trust-hooks <repo> [--hook setup|destruction] [--yes] [--revoke]
                     Review and approve .agent-deck/worktree-*.sh hooks for a repo
 
