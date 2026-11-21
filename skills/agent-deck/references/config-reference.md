@@ -10,6 +10,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides)
 - [[group_defaults] Section](#group_defaults-section)
 - [[gemini] Section](#gemini-section)
+- [[antigravity] Section](#antigravity-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
 - [[models] Section](#models-section)
@@ -282,6 +283,20 @@ command = "gemini"                   # Binary/invocation override
 | `default_model` | string | `""` | Model to use (e.g., `"gemini-2.5-flash"`). Empty uses Gemini's default. |
 | `env_file` | string | `""` | A .env file sourced for Gemini sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"gemini"` | Override the binary/invocation. Supports flags. |
+
+## [antigravity] Section
+
+The built-in `antigravity` preset launches Google's `agy` CLI. Override the
+invocation for the preset with:
+
+```toml
+[antigravity]
+command = "agy --mode plan" # Default: "agy"
+```
+
+An existing `[tools.antigravity].command` is used if `[antigravity].command` is
+unset. Set terminal detection overrides under `[tools.antigravity]`. Gemini CLI
+remains a separate tool with its own settings.
 
 ## [opencode] Section
 

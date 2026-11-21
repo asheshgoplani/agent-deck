@@ -122,6 +122,11 @@ func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Durat
 
 		alreadyReady := readyCount >= 10 && attempt >= 15
 		if (sawActive && (status == "waiting" || status == "idle")) || alreadyReady {
+			// Antigravity's login and workspace-trust menus may be idle but
+			// must never receive a startup prompt or its submitting Enter.
+			if tool == "antigravity" && !paneShowsReadyPrompt(target, tool, gates) {
+				continue
+			}
 			if gates.ClaudeComposer {
 				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil && !HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {
 					continue
@@ -161,6 +166,9 @@ func paneShowsReadyPrompt(target AgentReadyChecker, tool string, gates PromptGat
 	content := tmux.StripANSI(raw)
 	if gates.CodexPrompt || strings.EqualFold(tool, "codex") {
 		return tmux.NewPromptDetector("codex").HasPrompt(content)
+	}
+	if tool == "antigravity" {
+		return tmux.NewPromptDetector(tool).HasPrompt(content)
 	}
 	if paneLooksBusy(content) {
 		return false

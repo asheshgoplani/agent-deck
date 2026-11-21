@@ -28,6 +28,16 @@ func (m *mockReadyChecker) CapturePaneFresh() (string, error) {
 	return m.pane, nil
 }
 
+func TestWaitForAgentReady_AntigravityDoesNotSendIntoLogin(t *testing.T) {
+	mock := &mockReadyChecker{
+		statuses: []string{"active", "waiting"},
+		pane:     "Select login method:\n> 1. Google OAuth\n  2. Use a Google Cloud project",
+	}
+	if err := WaitForAgentReady(mock, "antigravity", 600*time.Millisecond, PromptGates{}); err == nil {
+		t.Fatal("login screen must not count as a ready composer")
+	}
+}
+
 // Cursor can be interactive while GetStatus still returns "starting" during
 // the tmux startup window (no activity-timestamp change → no prompt re-check).
 func TestWaitForAgentReady_StartingWithCursorPrompt(t *testing.T) {

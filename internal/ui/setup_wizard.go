@@ -59,7 +59,7 @@ func NewSetupWizard() *SetupWizard {
 		visible:             false,
 		complete:            false,
 		currentStep:         0,
-		toolOptions:         []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "shell", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"},
+		toolOptions:         []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "shell", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "antigravity"},
 		selectedTool:        0, // Default to Claude
 		dangerousMode:       false,
 		useDefaultConfigDir: true,
@@ -421,17 +421,18 @@ func (w *SetupWizard) View() string {
 		content.Reset()
 
 		toolDescriptions := map[string]string{
-			"claude":    "Claude Code - Anthropic's AI coding assistant",
-			"gemini":    "Gemini CLI - Google's AI assistant",
-			"opencode":  "OpenCode - Open source AI coding tool",
-			"opencode2": "OpenCode 2 - OpenCode v2 launcher",
-			"codex":     "Codex CLI - OpenAI's coding assistant",
-			"pi":        "Pi CLI - lightweight coding assistant",
-			"omp":       "Oh My Pi - batteries-included coding agent (omp)",
-			"crush":     "Crush - Charm's terminal-first AI coding assistant",
-			"muse":      "Muse Code - Meta's terminal AI coding assistant",
-			"shell":     "Shell - No AI tool (plain terminal)",
-			"cursor":    "Cursor Agent - Cursor CLI (agent / cursor agent)",
+			"claude":      "Claude Code - Anthropic's AI coding assistant",
+			"gemini":      "Gemini CLI - Google's AI assistant",
+			"opencode":    "OpenCode - Open source AI coding tool",
+			"antigravity": "Antigravity CLI - Google's coding agent (agy)",
+			"opencode2":   "OpenCode 2 - OpenCode v2 launcher",
+			"codex":       "Codex CLI - OpenAI's coding assistant",
+			"pi":          "Pi CLI - lightweight coding assistant",
+			"omp":         "Oh My Pi - batteries-included coding agent (omp)",
+			"crush":       "Crush - Charm's terminal-first AI coding assistant",
+			"muse":        "Muse Code - Meta's terminal AI coding assistant",
+			"shell":       "Shell - No AI tool (plain terminal)",
+			"cursor":      "Cursor Agent - Cursor CLI (agent / cursor agent)",
 		}
 
 		for i, tool := range w.toolOptions {

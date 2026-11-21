@@ -147,15 +147,16 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 // pane's initial process and whose clean exit (e.g. `/exit`) can fall back to
 // an interactive shell when exit_to_shell is enabled (issue #1161).
 var builtinAgentTools = map[string]bool{
-	"claude":   true,
-	"gemini":   true,
-	"opencode": true,
-	"codex":    true,
-	"copilot":  true,
-	"cursor":   true,
-	"hermes":   true,
-	"crush":    true,
-	"muse":     true,
+	"antigravity": true,
+	"claude":      true,
+	"gemini":      true,
+	"opencode":    true,
+	"codex":       true,
+	"copilot":     true,
+	"cursor":      true,
+	"hermes":      true,
+	"crush":       true,
+	"muse":        true,
 	// pi and omp (Oh My Pi) launch with the same `<env>; AGENTDECK_... pi
 	// --continue ...` shape; they were left out of this list, so exit_to_shell
 	// silently skipped them (issue #2556).

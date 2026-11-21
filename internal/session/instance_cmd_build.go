@@ -1310,6 +1310,28 @@ func redactEmbeddedSpawnPrompt(command, prompt string) string {
 	return command
 }
 
+func (i *Instance) antigravityCommand() string {
+	command := strings.TrimSpace(i.Command)
+	if command == "" {
+		return GetToolCommand("antigravity")
+	}
+	first := strings.Fields(command)[0]
+	if strings.EqualFold(first, "antigravity") {
+		return GetToolCommand("antigravity") + command[len(first):]
+	}
+	return i.Command
+}
+
+func (i *Instance) buildAntigravityCommandWithPrompt(prompt string) (string, bool) {
+	command := i.antigravityCommand()
+	if command != "agy" || i.Wrapper != "" || strings.TrimSpace(prompt) == "" {
+		// Don't inject flags into a user-provided command. Use the shared
+		// post-start delivery path for wrappers and non-default invocations.
+		return command, false
+	}
+	return command + " --prompt-interactive " + shellescape.Quote(prompt), true
+}
+
 func (i *Instance) buildCodexCommandWithPrompt(baseCommand, prompt string) (string, bool) {
 	command := i.buildCodexCommand(baseCommand)
 	if strings.TrimSpace(prompt) == "" {

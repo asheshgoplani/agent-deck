@@ -43,13 +43,14 @@ func TestGetToolCommand_NoConfig(t *testing.T) {
 
 func TestGetToolCommand_WithOverride(t *testing.T) {
 	cfg := &UserConfig{
-		Claude:   ClaudeSettings{Command: "/usr/local/bin/claude-custom"},
-		Gemini:   GeminiSettings{Command: "gemini --custom-flag"},
-		OpenCode: OpenCodeSettings{Command: "opencode-nightly"},
-		Codex:    CodexSettings{Command: "codex --experimental"},
-		Copilot:  CopilotSettings{Command: "gh copilot"},
-		Hermes:   HermesSettings{Command: "hermes --model gpt-5.5-pro --provider openai"},
-		OMP:      OMPSettings{Command: "omp --smol haiku"},
+		Claude:      ClaudeSettings{Command: "/usr/local/bin/claude-custom"},
+		Gemini:      GeminiSettings{Command: "gemini --custom-flag"},
+		Antigravity: AntigravitySettings{Command: "/opt/bin/agy --mode plan"},
+		OpenCode:    OpenCodeSettings{Command: "opencode-nightly"},
+		Codex:       CodexSettings{Command: "codex --experimental"},
+		Copilot:     CopilotSettings{Command: "gh copilot"},
+		Hermes:      HermesSettings{Command: "hermes --model gpt-5.5-pro --provider openai"},
+		OMP:         OMPSettings{Command: "omp --smol haiku"},
 	}
 	restore := resetUserConfigCache(t, cfg)
 	defer restore()
@@ -60,6 +61,7 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 	}{
 		{"claude", "/usr/local/bin/claude-custom"},
 		{"gemini", "gemini --custom-flag"},
+		{"antigravity", "/opt/bin/agy --mode plan"},
 		{"opencode", "opencode-nightly"},
 		{"codex", "codex --experimental"},
 		{"copilot", "gh copilot"},
@@ -70,6 +72,28 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 		got := GetToolCommand(tt.tool)
 		if got != tt.expected {
 			t.Errorf("GetToolCommand(%q) = %q, want %q", tt.tool, got, tt.expected)
+		}
+	}
+}
+
+func TestAntigravityCommand(t *testing.T) {
+	restore := resetUserConfigCache(t, &UserConfig{})
+	defer restore()
+
+	prompt := "What's next?\nKeep the $(literal) text."
+	for _, tt := range []struct {
+		command, wrapper string
+		want             string
+		embedded         bool
+	}{
+		{"antigravity", "", "agy --prompt-interactive " + shellescape.Quote(prompt), true},
+		{"antigravity --mode plan", "", "agy --mode plan", false},
+		{"agy", "{command} --conversation abc", "agy", false},
+		{"/opt/bin/agy --conversation abc", "", "/opt/bin/agy --conversation abc", false},
+	} {
+		inst := &Instance{Tool: "antigravity", Command: tt.command, Wrapper: tt.wrapper}
+		if got, embedded := inst.buildAntigravityCommandWithPrompt(prompt); got != tt.want || embedded != tt.embedded {
+			t.Errorf("%q with wrapper %q: got (%q, %t), want (%q, %t)", tt.command, tt.wrapper, got, embedded, tt.want, tt.embedded)
 		}
 	}
 }

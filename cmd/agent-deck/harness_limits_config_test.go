@@ -124,7 +124,7 @@ func TestHarnessListAndStatus(t *testing.T) {
 			t.Errorf("%s lacks install/login/docs", h.Name)
 		}
 	}
-	for _, name := range []string{"claude", "codex", "gemini", "opencode", "pi", "hermes"} {
+	for _, name := range []string{"claude", "codex", "gemini", "opencode", "pi", "hermes", "antigravity"} {
 		if _, ok := byName[name]; !ok {
 			t.Fatalf("harness list lacks %s", name)
 		}
