@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -56,9 +55,7 @@ func TestSessionFork_AntigravityReachesNativeForkPath(t *testing.T) {
 	if !capturedFork.IsForkAwaitingStart {
 		t.Fatalf("captured Antigravity fork should have IsForkAwaitingStart=true")
 	}
-	for _, want := range []string{"agy", "--conversation " + convID, "--prompt-interactive /fork"} {
-		if !strings.Contains(capturedFork.ForkStartCommand, want) {
-			t.Fatalf("captured Antigravity fork command = %q, want to contain %q", capturedFork.ForkStartCommand, want)
-		}
+	if want := "agy --conversation " + convID; capturedFork.ForkStartCommand != want {
+		t.Fatalf("captured Antigravity fork command = %q, want %q without a startup prompt", capturedFork.ForkStartCommand, want)
 	}
 }
