@@ -40,7 +40,7 @@ func ProcessWorktreeInclude(repoDir, worktreePath string, stderr io.Writer) erro
 
 	matcher := ignore.CompileIgnoreLines(patterns...)
 
-	candidates, err := findCandidates(repoDir, matcher)
+	candidates, err := findCandidates(repoDir, patterns, matcher)
 	if err != nil {
 		return err
 	}
@@ -86,39 +86,108 @@ func parseWorktreeInclude(r io.Reader) ([]string, error) {
 	return patterns, scanner.Err()
 }
 
-func findCandidates(repoDir string, matcher *ignore.GitIgnore) ([]string, error) {
+// includeWalkRoots returns the directories that can contain a match.
+// walkAll is set when a pattern can match at any depth, so the whole
+// checkout has to be visited. Anchored patterns such as
+// ".claude/rules/personal/" only need their own prefix.
+func includeWalkRoots(patterns []string) (roots []string, walkAll bool) {
+	seen := map[string]bool{}
+	for _, pattern := range patterns {
+		root, anchored := anchoredIncludeRoot(pattern)
+		if !anchored {
+			return nil, true
+		}
+		if root == "" {
+			root = "."
+		}
+		if !seen[root] {
+			seen[root] = true
+			roots = append(roots, root)
+		}
+	}
+	return roots, false
+}
+
+// anchoredIncludeRoot reports the longest directory prefix that contains no
+// wildcard. A pattern with no slash matches in every directory, so it is not
+// anchored. A negation or a "**" also forces a full walk.
+func anchoredIncludeRoot(pattern string) (string, bool) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" || strings.HasPrefix(pattern, "!") || strings.Contains(pattern, "**") {
+		return "", false
+	}
+	body := strings.Trim(pattern, "/")
+	if !strings.Contains(body, "/") {
+		return "", false
+	}
+	var parts []string
+	for _, part := range strings.Split(body, "/") {
+		if part == "" || strings.ContainsAny(part, "*?[") {
+			break
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return filepath.Join(parts...), true
+}
+
+// walkDir is filepath.Walk. Tests replace it to see which trees are visited.
+var walkDir = filepath.Walk
+
+func findCandidates(repoDir string, patterns []string, matcher *ignore.GitIgnore) ([]string, error) {
+	roots, walkAll := includeWalkRoots(patterns)
+	if walkAll || len(roots) == 0 {
+		roots = []string{"."}
+	}
 	var candidates []string
-	err := filepath.Walk(repoDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(repoDir, path)
-		if rel == "." {
-			return nil
-		}
-		if info.IsDir() {
-			if rel == ".git" {
-				return filepath.SkipDir
+	for _, root := range roots {
+		start := repoDir
+		if root != "." {
+			start = filepath.Join(repoDir, root)
+			if _, err := os.Stat(start); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, err
 			}
-			// Don't descend into nested worktrees or submodules — each has its
-			// own .git entry. Otherwise the walk recurses into agent-deck's own
-			// worktree output dir (e.g. .worktrees/) and copies an ever-growing
-			// nested forest of every other worktree's files into the new one.
-			if path != repoDir {
-				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
+		}
+		err := walkDir(start, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			rel, relErr := filepath.Rel(repoDir, path)
+			if relErr != nil || rel == "." {
+				return nil
+			}
+			if info.IsDir() {
+				if rel == ".git" {
+					return filepath.SkipDir
+				}
+				// Don't descend into nested worktrees or submodules — each has its
+				// own .git entry. Otherwise the walk recurses into agent-deck's own
+				// worktree output dir (e.g. .worktrees/) and copies an ever-growing
+				// nested forest of every other worktree's files into the new one.
+				if path != repoDir {
+					if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
+						return filepath.SkipDir
+					}
+				}
+			}
+			if matcher.MatchesPath(rel) {
+				candidates = append(candidates, rel)
+				if info.IsDir() {
 					return filepath.SkipDir
 				}
 			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		if matcher.MatchesPath(rel) {
-			candidates = append(candidates, rel)
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-		}
-		return nil
-	})
-	return candidates, err
+	}
+	return candidates, nil
 }
 
 func filterGitignored(repoDir string, candidates []string) ([]string, error) {
