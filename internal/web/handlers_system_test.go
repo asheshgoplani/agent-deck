@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestHandleSystemStats_OK(t *testing.T) {
@@ -93,13 +94,24 @@ func TestHandleSystemStats_ConcurrentRequestsShareOneProbe(t *testing.T) {
 		requests.Go(get)
 	}
 	requests.Wait()
-	get() // within 5 s: served from the cache
-
-	log, err := os.ReadFile(probeLog)
-	if err != nil {
-		t.Fatal(err)
+	probes := func() int {
+		log, err := os.ReadFile(probeLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(log), "gpu\n")
 	}
-	if got := strings.Count(string(log), "gpu\n"); got != 1 {
+	get() // within 5 s: served from the cache
+	if got := probes(); got != 1 {
 		t.Errorf("GPU probes for 13 requests within 5 s = %d, want 1", got)
+	}
+
+	// Once the sample is older than 5 s, the next request collects again.
+	server.systemStats.mu.Lock()
+	server.systemStats.collected = time.Now().Add(-systemStatsMaxAge)
+	server.systemStats.mu.Unlock()
+	get()
+	if got := probes(); got != 2 {
+		t.Errorf("GPU probes after the cache expired = %d, want 2", got)
 	}
 }
