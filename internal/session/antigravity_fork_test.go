@@ -107,7 +107,7 @@ func TestCanForkAntigravity(t *testing.T) {
 	})
 }
 
-func TestCreateForkedAntigravityInstance_EmbeddedPromptInteractive(t *testing.T) {
+func TestCreateForkedAntigravityInstance_TmuxFork(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	restore := resetUserConfigCache(t, &UserConfig{})
@@ -146,9 +146,8 @@ func TestCreateForkedAntigravityInstance_EmbeddedPromptInteractive(t *testing.T)
 	if forked.Command != "agy --mode plan" {
 		t.Fatalf("forked.Command = %q, want clean base command without parent conversation", forked.Command)
 	}
-	if !forked.IsForkAwaitingStart || !forked.antigravityEmbeddedFork || forked.antigravityNeedsTmuxFork {
-		t.Fatalf("unexpected fork start flags: awaiting=%v embedded=%v tmux=%v",
-			forked.IsForkAwaitingStart, forked.antigravityEmbeddedFork, forked.antigravityNeedsTmuxFork)
+	if !forked.IsForkAwaitingStart {
+		t.Fatal("fork start should be deferred")
 	}
 	if forked.antigravityForkParentID != "conv-parent-1" {
 		t.Fatalf("antigravityForkParentID = %q, want conv-parent-1", forked.antigravityForkParentID)
@@ -157,11 +156,13 @@ func TestCreateForkedAntigravityInstance_EmbeddedPromptInteractive(t *testing.T)
 		"agy --mode plan",
 		"--conversation conv-parent-1",
 		"--add-dir " + wtDir,
-		"--prompt-interactive /fork",
 	} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("Antigravity fork command = %q, want to contain %q", cmd, want)
 		}
+	}
+	if strings.Contains(cmd, "/fork") || strings.Contains(cmd, "--prompt-interactive") {
+		t.Fatalf("fork must not be embedded in launch command: %q", cmd)
 	}
 
 	// Once the child binds its own conversation ID, future restarts resume the child ID, never /fork.
@@ -172,7 +173,7 @@ func TestCreateForkedAntigravityInstance_EmbeddedPromptInteractive(t *testing.T)
 	}
 }
 
-func TestCreateForkedAntigravityInstance_WrapperFallbackToTmuxFork(t *testing.T) {
+func TestCreateForkedAntigravityInstance_WrappedTmuxFork(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	restore := resetUserConfigCache(t, &UserConfig{})
@@ -190,10 +191,6 @@ func TestCreateForkedAntigravityInstance_WrapperFallbackToTmuxFork(t *testing.T)
 	}
 	if forked.Wrapper != "env FOO=1 {command}" {
 		t.Fatalf("custom wrapper should be preserved, got %q", forked.Wrapper)
-	}
-	if !forked.antigravityNeedsTmuxFork || forked.antigravityEmbeddedFork {
-		t.Fatalf("custom wrapper fork should fall back to tmux /fork: embedded=%v tmux=%v",
-			forked.antigravityEmbeddedFork, forked.antigravityNeedsTmuxFork)
 	}
 	if strings.Contains(cmd, "--prompt-interactive") {
 		t.Fatalf("wrapper fallback command must not embed --prompt-interactive: %q", cmd)
@@ -336,7 +333,7 @@ func TestAntigravitySessionIDPersistenceAndSetField(t *testing.T) {
 	}
 }
 
-func TestAntigravityFork_StartEmbeddedAndTmuxFallback(t *testing.T) {
+func TestAntigravityFork_SendsTmuxCommandAfterComposerReady(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ClearUserConfigCache()
@@ -349,8 +346,13 @@ func TestAntigravityFork_StartEmbeddedAndTmuxFallback(t *testing.T) {
 	argsLog := filepath.Join(home, "agy-args.log")
 	stdinLog := filepath.Join(home, "agy-stdin.log")
 	stubPath := filepath.Join(binDir, "agy")
-	stubScript := `#!/bin/sh
+	stubScript := `#!/bin/bash
 printf '%s\n' "$*" > ` + argsLog + `
+printf 'Trust this folder?\n> Yes\n  No\n'
+if IFS= read -r -t 0.8 line; then
+  printf 'premature: %s\n' "$line" >> ` + stdinLog + `
+fi
+printf '\033[H\033[2J'
 printf '────────────────\n>\n────────────────\n? for shortcuts\n'
 while IFS= read -r line; do
   printf '%s\n' "$line" >> ` + stdinLog + `
@@ -361,8 +363,9 @@ done
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	t.Run("embedded --prompt-interactive /fork", func(t *testing.T) {
+	t.Run("bare agy", func(t *testing.T) {
 		_ = os.Remove(argsLog)
+		_ = os.Remove(stdinLog)
 		parent := NewInstanceWithGroupAndTool("agy-e2e-parent", home, "default", "antigravity")
 		parent.Command = "agy"
 		parent.AntigravitySessionID = "parent-conv-e2e"
@@ -379,18 +382,24 @@ done
 		}
 
 		deadline := time.Now().Add(5 * time.Second)
-		var gotArgs string
+		var gotArgs, gotStdin string
 		for time.Now().Before(deadline) {
-			if raw, err := os.ReadFile(argsLog); err == nil && len(raw) > 0 {
+			if raw, err := os.ReadFile(argsLog); err == nil {
 				gotArgs = strings.TrimSpace(string(raw))
+			}
+			if raw, err := os.ReadFile(stdinLog); err == nil {
+				gotStdin = strings.TrimSpace(string(raw))
+			}
+			if gotArgs != "" && gotStdin != "" {
 				break
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		for _, want := range []string{"--conversation parent-conv-e2e", "--prompt-interactive /fork"} {
-			if !strings.Contains(gotArgs, want) {
-				t.Fatalf("stub agy args = %q, want to contain %q", gotArgs, want)
-			}
+		if gotArgs != "--conversation parent-conv-e2e" {
+			t.Fatalf("stub agy args = %q, want only the parent conversation", gotArgs)
+		}
+		if gotStdin != "/fork" {
+			t.Fatalf("bare agy stdin = %q, want only /fork after the composer appears", gotStdin)
 		}
 
 		// Simulate Antigravity writing both parent and newly forked child conversations to cache.
@@ -425,7 +434,7 @@ done
 		}
 	})
 
-	t.Run("custom wrapper falls back to tmux /fork after composer ready", func(t *testing.T) {
+	t.Run("custom wrapper with initial message", func(t *testing.T) {
 		_ = os.Remove(argsLog)
 		_ = os.Remove(stdinLog)
 		parent := NewInstanceWithGroupAndTool("agy-wrap-parent", home, "default", "antigravity")
@@ -440,8 +449,8 @@ done
 		}
 		t.Cleanup(func() { _ = forked.Kill() })
 
-		if err := forked.Start(); err != nil {
-			t.Fatalf("forked.Start: %v", err)
+		if err := forked.StartWithMessage("hello child"); err != nil {
+			t.Fatalf("forked.StartWithMessage: %v", err)
 		}
 
 		deadline := time.Now().Add(5 * time.Second)
@@ -453,7 +462,7 @@ done
 			if raw, err := os.ReadFile(stdinLog); err == nil {
 				gotStdin = strings.TrimSpace(string(raw))
 			}
-			if gotArgs != "" && strings.Contains(gotStdin, "/fork") {
+			if gotArgs != "" && strings.Contains(gotStdin, "hello child") {
 				break
 			}
 			time.Sleep(50 * time.Millisecond)
@@ -461,8 +470,8 @@ done
 		if !strings.Contains(gotArgs, "--conversation parent-wrap-e2e") || strings.Contains(gotArgs, "--prompt-interactive") {
 			t.Fatalf("wrapped stub agy args = %q, want --conversation without --prompt-interactive", gotArgs)
 		}
-		if !strings.Contains(gotStdin, "/fork") {
-			t.Fatalf("wrapped fork did not send /fork via tmux, stdin log = %q", gotStdin)
+		if gotStdin != "/fork\nhello child" {
+			t.Fatalf("wrapped fork stdin = %q, want /fork followed by the initial message", gotStdin)
 		}
 	})
 }

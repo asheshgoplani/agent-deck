@@ -320,8 +320,6 @@ type Instance struct {
 	lastAntigravityScanAt     time.Time // Rate-limits ~/.gemini/antigravity-cli metadata scans
 	antigravitySessionCleared bool      // Set on explicit SetField clear so sticky merge clears it
 	antigravityForkParentID   string    // Transient: source conversation ID during a fork's first start
-	antigravityNeedsTmuxFork  bool      // Transient: true when Start() must send /fork over tmux after composer ready
-	antigravityEmbeddedFork   bool      // Transient: true when ForkStartCommand embeds --prompt-interactive /fork
 
 	// OpenCode CLI integration
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
@@ -2142,9 +2140,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	case i.Tool == "antigravity":
 		if i.IsForkAwaitingStart {
 			command = i.consumeForkStartCommand()
-			antigravityTmuxFork = i.antigravityNeedsTmuxFork
-			i.antigravityNeedsTmuxFork = false
-			i.antigravityEmbeddedFork = false
+			antigravityTmuxFork = true
 			i.AntigravityStartedAt = time.Now().UnixMilli()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
