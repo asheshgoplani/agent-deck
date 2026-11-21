@@ -1229,7 +1229,7 @@ type OpenClawSettings struct {
 type RemoteAttachSettings struct {
 	// PasteImages lets Ctrl+V with an image on this machine's clipboard upload
 	// it to the attached remote session and type its host path, when that
-	// session's agent (Claude, Gemini) shows its input composer. Default on;
+	// session's agent (Claude, Gemini, OpenCode 2) shows its input composer. Default on;
 	// false leaves Ctrl+V to the remote untouched.
 	PasteImages *bool `toml:"paste_images,omitempty"`
 }
