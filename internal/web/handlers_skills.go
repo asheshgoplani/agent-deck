@@ -90,7 +90,7 @@ func (s *Server) handleSkillsCatalog(w http.ResponseWriter, r *http.Request) {
 // The caller (handleSessionByAction) has already authorized the request
 // and resolved sessionID + the remaining path suffix after `skills`.
 func (s *Server) handleSessionSkills(w http.ResponseWriter, r *http.Request, sessionID, subpath string) {
-	sess, ok := s.lookupSession(sessionID, r.Method == http.MethodGet)
+	sess, ok := s.lookupSession(sessionID)
 	if !ok {
 		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "session not found")
 		return
@@ -189,26 +189,13 @@ func writeSkillError(w http.ResponseWriter, err error) {
 	}
 }
 
-// lookupSession resolves a sessionID to its MenuSession via the menu
-// snapshot. Used by per-session handlers that need projectPath + tool.
-// With fresh set (read-only GET requests), it reads the persisted session
-// instead, so it does not wait for a menu refresh and finds a session saved
-// inside the refresh throttle.
-func (s *Server) lookupSession(sessionID string, fresh bool) (*MenuSession, bool) {
-	if fresh {
-		sess, _, err := menudata.ResolveMenuSession(s.menuData, sessionID)
-		return sess, err == nil && sess != nil
-	}
-	snapshot, err := s.menuData.LoadMenuSnapshot()
-	if err != nil || snapshot == nil {
-		return nil, false
-	}
-	for _, item := range snapshot.Items {
-		if item.Type == MenuItemTypeSession && item.Session != nil && item.Session.ID == sessionID {
-			return item.Session, true
-		}
-	}
-	return nil, false
+// lookupSession resolves a sessionID to its MenuSession from the persisted
+// session, so it does not wait for a menu refresh and finds a session saved
+// inside the refresh throttle. Used by per-session handlers that need
+// projectPath + tool; reads and changes resolve the same way.
+func (s *Server) lookupSession(sessionID string) (*MenuSession, bool) {
+	sess, _, err := menudata.ResolveMenuSession(s.menuData, sessionID)
+	return sess, err == nil && sess != nil
 }
 
 func (s *Server) skillsServiceOrDefault() SkillsService {

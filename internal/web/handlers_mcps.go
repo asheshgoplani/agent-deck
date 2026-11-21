@@ -145,7 +145,7 @@ func (s *Server) handleSessionMCPs(w http.ResponseWriter, r *http.Request, sessi
 		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "session id is required")
 		return
 	}
-	target, ok := s.lookupSessionMCPTarget(sessionID, r.Method == http.MethodGet)
+	target, ok := s.lookupSessionMCPTarget(sessionID)
 	if !ok {
 		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "session not found")
 		return
@@ -300,12 +300,12 @@ func (s *Server) handleMCPMove(w http.ResponseWriter, r *http.Request, target MC
 
 // lookupSessionMCPTarget resolves a session id to the tool + project path that
 // together select an on-disk MCP store. Both halves come from the same
-// session entry, so they cannot disagree. fresh is passed to lookupSession.
-func (s *Server) lookupSessionMCPTarget(sessionID string, fresh bool) (MCPTarget, bool) {
+// session entry, so they cannot disagree.
+func (s *Server) lookupSessionMCPTarget(sessionID string) (MCPTarget, bool) {
 	if s.menuData == nil {
 		return MCPTarget{}, false
 	}
-	sess, ok := s.lookupSession(sessionID, fresh)
+	sess, ok := s.lookupSession(sessionID)
 	if !ok {
 		return MCPTarget{}, false
 	}

@@ -751,9 +751,14 @@ func TestSessionWSFreshLookupRejectsUnknownAndArchivedSessions(t *testing.T) {
 	}
 }
 
-func TestSessionMCPAndSkillsListsFindNewSession(t *testing.T) {
-	for _, route := range []string{"mcps", "skills"} {
-		t.Run(route, func(t *testing.T) {
+func TestSessionMCPAndSkillsFindNewSession(t *testing.T) {
+	for _, tc := range []struct{ method, route string }{
+		{http.MethodGet, "mcps"},
+		{http.MethodPost, "mcps/exa"},
+		{http.MethodGet, "skills"},
+		{http.MethodPost, "skills/review"},
+	} {
+		t.Run(tc.method+" "+tc.route, func(t *testing.T) {
 			svc := wsSessionDataService("previous", "")
 			menu := NewMemoryMenuData(svc)
 			if _, err := menu.LoadMenuSnapshot(); err != nil {
@@ -766,9 +771,11 @@ func TestSessionMCPAndSkillsListsFindNewSession(t *testing.T) {
 			svc.refreshTmuxCaches = func() { t.Error("session lookup ran the menu status pass") }
 			srv := newMCPTestServer(t, newFakeMCPManager(), true)
 			srv.menuData = menu
-			srv.skills = &fakeSkillsService{}
+			srv.skills = &fakeSkillsService{attachFn: func(string, string, string, string) (*session.ProjectSkillAttachment, error) {
+				return &session.ProjectSkillAttachment{}, nil
+			}}
 			reply := httptest.NewRecorder()
-			srv.Handler().ServeHTTP(reply, newLocalRequest(http.MethodGet, "/api/sessions/new/"+route, nil))
+			srv.Handler().ServeHTTP(reply, newLocalRequest(tc.method, "/api/sessions/new/"+tc.route, nil))
 			if reply.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200, body = %s", reply.Code, reply.Body.String())
 			}
