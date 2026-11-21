@@ -5,8 +5,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestCreateSessionToolOpenCode2(t *testing.T) {
@@ -24,6 +26,24 @@ func TestCreateSessionToolOpenCode2(t *testing.T) {
 				t.Fatalf("new session lost launcher: display=%q picker=%q", inst.DisplayToolThreadSafe(), inst.OpenCodeCommandName())
 			}
 		})
+	}
+}
+
+func TestOpenCode2ForkDialogFollowsDiscovery(t *testing.T) {
+	h := NewHome()
+	h.width, h.height = 120, 40
+	inst := session.NewInstanceWithTool("fresh", t.TempDir(), "opencode2")
+	h.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: inst}}
+	key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'F'}}
+	h.Update(key)
+	if h.forkDialog.IsVisible() {
+		t.Fatal("unbound OpenCode session offered a fork dialog")
+	}
+	inst.OpenCodeSessionID = "ses_launch"
+	inst.OpenCodeDetectedAt = time.Now()
+	h.Update(key)
+	if !h.forkDialog.IsVisible() {
+		t.Fatal("bound OpenCode session did not offer a fork dialog")
 	}
 }
 

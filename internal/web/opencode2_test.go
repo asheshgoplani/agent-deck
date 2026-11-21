@@ -3,9 +3,22 @@ package web
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func TestOpenCode2MenuForkabilityFollowsDiscovery(t *testing.T) {
+	inst := session.NewInstanceWithTool("fresh", t.TempDir(), "opencode2")
+	if toMenuSession(inst).CanFork {
+		t.Fatal("unbound OpenCode session exposed the Fork action")
+	}
+	inst.OpenCodeSessionID = "ses_launch"
+	inst.OpenCodeDetectedAt = time.Now()
+	if !toMenuSession(inst).CanFork {
+		t.Fatal("bound OpenCode session did not expose the Fork action")
+	}
+}
 
 func TestOpenCode2SettingsModelCatalog(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

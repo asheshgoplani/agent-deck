@@ -362,6 +362,11 @@ func handleSessionFork(profile string, args []string) {
 	if isClaudeFork && inst.ClaudeSessionID == "" && inst.Exists() {
 		inst.PostStartSync(2 * time.Second)
 	}
+	// The CLI may load the row before the background poll has saved the ID
+	// that OpenCode's launch command recorded in its tmux session.
+	if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" && inst.Exists() {
+		inst.SyncOpenCodeLaunchID()
+	}
 
 	// Verify it can be forked.
 	if !inst.CanFork() {
