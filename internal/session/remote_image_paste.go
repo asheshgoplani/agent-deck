@@ -33,7 +33,7 @@ import (
 // `session image-upload` (the Mac app's route, into the session's
 // macapp-uploads folder there) and types the host path the way the
 // composer expects: `@<path>` for Claude and Gemini, a bracketed bare path
-// for OpenCode 2. Text pastes and a Ctrl+V with no image are untouched.
+// for OpenCode. Text pastes and a Ctrl+V with no image are untouched.
 //
 // The key is taken only when the session's harness supports pasted image paths
 // and its composer is on screen. In an editor, shell, dialog, or when that
@@ -195,6 +195,12 @@ func pasteFailedNotice(remote string, err error) string {
 	return "agent-deck: the image could not reach " + remote + ": " + oneLine(errText(err), 80)
 }
 
+// pasteUploadedNotPastedNotice names the host path so it can be typed by
+// hand when the composer check after the upload fails.
+func pasteUploadedNotPastedNotice(remote, path, reason string) string {
+	return "agent-deck: image uploaded to " + remote + " as " + path + " but not pasted (" + reason + "); paste it by hand"
+}
+
 func oneLine(s string, limit int) string {
 	s = strings.Join(strings.Fields(stripControls(s)), " ")
 	if r := []rune(s); len(r) > limit {
@@ -263,16 +269,21 @@ func isImagePasteKey(data []byte) bool {
 }
 
 // Check before reading the clipboard so the macOS pasteboard privacy prompt
-// can't appear when Ctrl+V was meant for a shell, editor or dialog.
-func (p *remoteImagePaste) composer() string {
+// can't appear when Ctrl+V was meant for a shell, editor or dialog. The error
+// is returned separately so a failed pane read after an upload is not
+// reported as the composer having moved.
+func (p *remoteImagePaste) composer() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), pasteTargetTimeout)
 	defer cancel()
 	tool, pane, err := p.target(ctx)
 	agent := pasteAgent(tool)
-	if err != nil || agent == "" || !tmux.AgentComposerVisible(agent, pane) {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return agent
+	if agent == "" || !tmux.AgentComposerVisible(agent, pane) {
+		return "", nil
+	}
+	return agent, nil
 }
 
 // take reports whether data (one read of the owner's keys) is a Ctrl+V this
@@ -287,8 +298,8 @@ func (p *remoteImagePaste) take(data []byte) bool {
 	if busy {
 		return false // one upload at a time; a Ctrl+V meanwhile reaches the program as typed
 	}
-	agent := p.composer()
-	if agent == "" {
+	agent, err := p.composer()
+	if err != nil || agent == "" {
 		return false // not a supported composer, or it cannot be told
 	}
 	clip := p.readImage()
@@ -332,13 +343,16 @@ func (p *remoteImagePaste) send(image []byte, ext, agent string) {
 		p.alertf(pasteFailedNotice(p.remote, err))
 		return
 	}
-	if p.composer() != agent {
-		p.alertf("agent-deck: image uploaded but not pasted (the composer is no longer active)")
+	if nowAgent, err := p.composer(); err != nil {
+		p.alertf(pasteUploadedNotPastedNotice(p.remote, path, "could not check the composer: "+oneLine(errText(err), 60)))
+		return
+	} else if nowAgent != agent {
+		p.alertf(pasteUploadedNotPastedNotice(p.remote, path, "the composer is no longer active"))
 		return
 	}
 	text := []byte(pastedPaths([]string{path}, agent))
 	if agent == "opencode" || (p.bracketed != nil && p.bracketed()) {
-		// OpenCode 2 recognizes image paths in its paste handler, not as typed keys.
+		// OpenCode recognizes image paths in its paste handler, not as typed keys.
 		text = append(append([]byte("\x1b[200~"), text...), []byte("\x1b[201~")...)
 	}
 	p.notice("")

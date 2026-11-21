@@ -26,14 +26,22 @@ func TestAgentComposerVisible(t *testing.T) {
 		{"a shell tool never", "shell", claude, false},
 		{"codex never", "codex", claude, false},
 		{"empty", "claude", "", false},
-		{"OpenCode 2 home", "opencode2", "  ┃  Ask anything…\n" + openCodeFrame + openCodeFooter + "\n\n  2.3.2\n", true},
-		{"OpenCode 2 session with draft and sidebar", "opencode", "  ┃  Existing draft\n" + openCodeFrame + openCodeFooter + "    ~/work\n\n", true},
-		{"OpenCode 2 modal over the frame", "opencode", "  ┃  Exis    Search\n  ╹▀▀▀▀▀▀    Switch model    ▀▀▀▀▀▀\n" + openCodeFooter, false},
-		{"OpenCode 2 modal above intact frame", "opencode", "                       Settings                   esc\n\n" +
+		{"OpenCode home", "opencode2", "  ┃  Ask anything…\n" + openCodeFrame + openCodeFooter + "\n\n  2.3.2\n", true},
+		{"OpenCode home with a prerelease version", "opencode2", "  ┃  Ask anything…\n" + openCodeFrame + openCodeFooter + "\n\n  0.0.0-beta-19271\n", true},
+		{"OpenCode session with draft and sidebar", "opencode", "  ┃  Existing draft\n" + openCodeFrame + openCodeFooter + "    ~/work\n\n", true},
+		{"OpenCode narrow pane hides the shortcut hints", "opencode", "  ┃  Existing draft\n" + openCodeFrame + "\n", true},
+		{"OpenCode usage readout replaces the hints", "opencode", "  ┃  Existing draft\n" + openCodeFrame + "  ~/work    12% · $0.05\n", true},
+		{"OpenCode rebound command palette shortcut", "opencode", "  ┃  Existing draft\n" + openCodeFrame + "  ~/work    shift+tab agents  ctrl+k commands\n", true},
+		{"OpenCode dialog over a full-width transcript row", "opencode", "  ┃  line 06 yyyyyyyyyyyyyyyyy    Commands                                         esc    yyyyy\n" + openCodeFrame + openCodeFooter, false},
+		{"OpenCode help dialog", "opencode", "\n                       Help                   esc/enter\n\n", false},
+		{"OpenCode modal over the frame", "opencode", "  ┃  Exis    Search\n  ╹▀▀▀▀▀▀    Switch model    ▀▀▀▀▀▀\n" + openCodeFooter, false},
+		{"OpenCode modal above intact frame", "opencode", "                       Settings                   esc\n\n" +
 			"                       Search\n\n" + openCodeFrame + openCodeFooter + "    ~/work\n\n", false},
-		{"OpenCode 2 shell mode", "opencode", openCodeFrame + "  ~/work    esc exit shell mode    ~/work\n", false},
-		{"OpenCode 2 exited to shell", "opencode", openCodeFrame + openCodeFooter + "\nuser@box:~/work$ ", false},
-		{"OpenCode 1-style status text is not the V2 composer", "opencode", "Ask anything\npress enter to send\n", false},
+		{"OpenCode shell mode", "opencode", openCodeFrame + "  ~/work    esc exit shell mode    ~/work\n", false},
+		{"OpenCode narrow shell mode", "opencode", openCodeFrame + "  esc shell\n", false},
+		{"OpenCode busy footer", "opencode", "  ┃  Existing draft\n" + openCodeFrame + "  esc interrupt\n", false},
+		{"OpenCode exited to shell", "opencode", openCodeFrame + openCodeFooter + "\nuser@box:~/work$ ", false},
+		{"OpenCode 1-style status text is not the frame composer", "opencode", "Ask anything\npress enter to send\n", false},
 	}
 	for _, tc := range cases {
 		if got := AgentComposerVisible(tc.tool, tc.pane); got != tc.want {

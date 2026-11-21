@@ -222,7 +222,7 @@ func printRemoteSubcommandUsage(command string) {
 		printRemoteDrainUsage(os.Stdout)
 	case "attach":
 		fmt.Println("Usage: agent-deck remote attach <remote-name> <session-title-or-id>")
-		fmt.Println("\nCtrl+V with an image on this machine's clipboard sends it to the session's Claude, Gemini, or OpenCode 2 composer; off with [remote] paste_images = false.")
+		fmt.Println("\nCtrl+V with an image on this machine's clipboard sends it to the session's Claude, Gemini, or OpenCode composer; off with [remote] paste_images = false.")
 	case "rename":
 		fmt.Println("Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>")
 	case "update":

@@ -205,6 +205,42 @@ func TestRemoteImagePaste_RechecksComposerAfterUpload(t *testing.T) {
 	}
 }
 
+// The recheck after an upload reports a failed pane read separately from a
+// composer that moved, and names the uploaded host path so it can be pasted
+// by hand.
+func TestRemoteImagePaste_RecheckFailureNamesTheUploadedPath(t *testing.T) {
+	rec := &pasteRecorder{}
+	paste := newTestPasteOn(rec, pngBytes, nil, "opencode", openCodeDraftPane, nil, true)
+	var broken atomic.Bool
+	finishUpload := make(chan struct{})
+	paste.upload = func(ctx context.Context, _ []byte, _ string) (string, error) {
+		select {
+		case <-finishUpload:
+			return "/home/u/macapp-uploads/s1/A.png", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	paste.target = func(context.Context) (string, string, error) {
+		if broken.Load() {
+			return "", "", errors.New("ssh: connection to deckbox lost")
+		}
+		return "opencode", openCodeDraftPane, nil
+	}
+	input := sshAttachInput{writer: rec, paste: paste}
+	_, _ = input.forward([]byte{0x16})
+	broken.Store(true)
+	close(finishUpload)
+	waitFor(t, func() bool { _, notices, _ := rec.snapshot(); return len(notices) == 2 })
+	typed, notices, _ := rec.snapshot()
+	got := notices[len(notices)-1]
+	if typed != "" || !strings.Contains(got, "not pasted") ||
+		!strings.Contains(got, "could not check the composer") ||
+		!strings.Contains(got, "/home/u/macapp-uploads/s1/A.png") {
+		t.Fatalf("want the path and the read error in the notice: typed %q, notices %q", typed, notices)
+	}
+}
+
 func TestRemoteImagePaste_NoImageLeavesCtrlVToTheHost(t *testing.T) {
 	rec := &pasteRecorder{}
 	input := sshAttachInput{writer: rec, paste: newTestPaste(rec, nil, nil, "claude", false)}

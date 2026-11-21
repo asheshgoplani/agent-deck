@@ -1087,7 +1087,7 @@ func claudeFooterBelow(lines []string) bool {
 }
 
 // AgentComposerVisible reports whether the pane shows the input composer of
-// an agent that reads pasted image paths (Claude Code, Gemini, OpenCode 2).
+// an agent that reads pasted image paths (Claude Code, Gemini, OpenCode).
 // Remote attach turns Ctrl+V with a clipboard image into an upload only then,
 // not in an editor, shell, or dialog that happens to run in the pane. For Claude the
 // composer is its prompt line (❯, or > on older builds; empty or with a draft)
@@ -1127,30 +1127,60 @@ func AgentComposerVisible(tool, content string) bool {
 	return false
 }
 
-// OpenCode 2 keeps this frame and footer even when the placeholder has been
-// replaced by a draft. Require the intact frame near the bottom: a dialog can
-// leave fragments of the composer visible behind it.
+// OpenCode keeps this frame and a footer below it even when the placeholder
+// has been replaced by a draft. Require the intact frame near the bottom: a
+// dialog can leave fragments of the composer visible behind it.
 func hasOpenCodeComposer(content string) bool {
-	// A centered modal can leave the entire composer visible on tall panes.
+	// A dialog leaves the composer visible behind its semi-transparent
+	// backdrop, and the transcript beside it keeps its text, so match the
+	// close label anywhere on the row rather than at the line start.
 	if openCodeModalHeader.MatchString(content) {
 		return false
 	}
 	lines := recentTailLines(content, 4)
-	// The home screen may show a version below the footer.
-	if len(lines) > 0 && openCodeVersionLine.MatchString(strings.TrimSpace(lines[len(lines)-1])) {
-		lines = lines[:len(lines)-1]
+	// The home screen may show a version (including prereleases) below the frame.
+	if n := len(lines); n > 0 && openCodeVersionLine.MatchString(strings.TrimSpace(lines[n-1])) {
+		lines = lines[:n-1]
 	}
-	if len(lines) < 3 || !openCodeComposerFooter.MatchString(lines[len(lines)-1]) {
+	// The hints under the frame are optional: OpenCode hides them below 44
+	// columns and when the usage readout leaves no room, and either the
+	// readout or nothing at all can be the last line instead.
+	if n := len(lines); n > 1 && !openCodeFrameBorder(lines[n-1]) {
+		if !openCodeComposerFooterLine(lines[n-1]) {
+			return false
+		}
+		lines = lines[:n-1]
+	}
+	n := len(lines)
+	if n < 2 || !openCodeFrameBorder(lines[n-1]) {
 		return false
 	}
-	rule := strings.TrimSpace(lines[len(lines)-2])
+	return strings.HasPrefix(strings.TrimSpace(lines[n-2]), "┃")
+}
+
+// openCodeFrameBorder matches the composer's bottom rule: a left spine and
+// then only the upper-half block, with nothing after it.
+func openCodeFrameBorder(line string) bool {
+	rule := strings.TrimSpace(line)
 	return strings.HasPrefix(rule, "╹▀▀▀▀▀") &&
-		strings.Trim(strings.TrimPrefix(rule, "╹"), "▀") == "" &&
-		strings.HasPrefix(strings.TrimSpace(lines[len(lines)-3]), "┃")
+		strings.Trim(strings.TrimPrefix(rule, "╹"), "▀") == ""
+}
+
+// openCodeComposerFooterLine reports whether a line below the frame is
+// compatible with the composer's footer. The command-palette shortcut is
+// user-configurable and the hint may be absent, so only what proves the pane
+// is somewhere else is rejected: shell mode, an interrupted turn, or a shell
+// prompt where the agent used to be.
+func openCodeComposerFooterLine(line string) bool {
+	return !openCodeFooterElsewhere.MatchString(line)
 }
 
 var (
-	openCodeVersionLine    = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
-	openCodeComposerFooter = regexp.MustCompile(` +ctrl\+p commands(?: {2,}.*)? *$`)
-	openCodeModalHeader    = regexp.MustCompile(`(?m)^ {2,}\S[^\n]* {4,}esc *$`)
+	openCodeVersionLine = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`)
+	// A dialog title or footer row: the close label sits a few columns right
+	// of some text, followed by padding or the end of the line. Shell mode
+	// reads "esc exit shell mode", which the optional label does not match.
+	openCodeModalHeader = regexp.MustCompile(`(?m)\S {4,}esc(?:/enter| close)?(?: {2,}| *$)`)
+	// Footers that mean the pane is not sitting at an idle composer.
+	openCodeFooterElsewhere = regexp.MustCompile(`(?i)\besc (?:interrupt|exit shell mode|shell)\b|^\s*[$%#>] |^\s*[\w.-]+@[\w.-]+:`)
 )
