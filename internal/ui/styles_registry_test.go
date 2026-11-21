@@ -22,20 +22,21 @@ func TestToolIconColor_RegistryMatchesLegacySwitch(t *testing.T) {
 		icon  string
 		color lipgloss.Color
 	}{
-		"claude":   {"🤖", ColorOrange},
-		"gemini":   {"✨", ColorPurple},
-		"opencode": {"🌐", ColorTextDim},
-		"codex":    {"💻", ColorCyan},
-		"pi":       {"π", ColorAccent},
-		"omp":      {"⌥", ColorAccent},
-		"copilot":  {"🐙", ColorAccent},
-		"crush":    {"💘", ColorPurple},
-		"cursor":   {"📝", ColorAccent},
-		"muse":     {"🔮", ColorGreen},
-		"hermes":   {"☤", ColorYellow},
-		"deepseek": {"🐋", ColorCyan},
-		"aider":    {"🐚", ColorRed},
-		"shell":    {"🐚", ColorTextDim},
+		"claude":      {"🤖", ColorOrange},
+		"gemini":      {"✨", ColorPurple},
+		"antigravity": {"🪐", ColorAccent},
+		"opencode":    {"🌐", ColorTextDim},
+		"codex":       {"💻", ColorCyan},
+		"pi":          {"π", ColorAccent},
+		"omp":         {"⌥", ColorAccent},
+		"copilot":     {"🐙", ColorAccent},
+		"crush":       {"💘", ColorPurple},
+		"cursor":      {"📝", ColorAccent},
+		"muse":        {"🔮", ColorGreen},
+		"hermes":      {"☤", ColorYellow},
+		"deepseek":    {"🐋", ColorCyan},
+		"aider":       {"🐚", ColorRed},
+		"shell":       {"🐚", ColorTextDim},
 	}
 
 	builtins := session.Init(nil).All()
