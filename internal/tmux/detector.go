@@ -1087,9 +1087,9 @@ func claudeFooterBelow(lines []string) bool {
 }
 
 // AgentComposerVisible reports whether the pane shows the input composer of
-// an agent that reads a pasted @path (Claude Code, Gemini): the remote attach
-// turns Ctrl+V with a clipboard image into an upload only then, never in an
-// editor, a shell or a dialog that happens to run in the pane. For Claude the
+// an agent that reads pasted image paths (Claude Code, Gemini, OpenCode 2).
+// Remote attach turns Ctrl+V with a clipboard image into an upload only then,
+// not in an editor, shell, or dialog that happens to run in the pane. For Claude the
 // composer is its prompt line (❯, or > on older builds; empty or with a draft)
 // between two horizontal rules, the lower one in the pane's last 8 lines;
 // a busy turn keeps the composer, so a paste then queues as typed text does.
@@ -1121,6 +1121,36 @@ func AgentComposerVisible(tool, content string) bool {
 		return false
 	case "gemini":
 		return NewPromptDetector("gemini").HasPrompt(content)
+	case "opencode", "opencode2":
+		return hasOpenCodeComposer(content)
 	}
 	return false
 }
+
+// OpenCode 2 keeps this frame and footer even when the placeholder has been
+// replaced by a draft. Require the intact frame near the bottom: a dialog can
+// leave fragments of the composer visible behind it.
+func hasOpenCodeComposer(content string) bool {
+	// A centered modal can leave the entire composer visible on tall panes.
+	if openCodeModalHeader.MatchString(content) {
+		return false
+	}
+	lines := recentTailLines(content, 4)
+	// The home screen may show a version below the footer.
+	if len(lines) > 0 && openCodeVersionLine.MatchString(strings.TrimSpace(lines[len(lines)-1])) {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) < 3 || !openCodeComposerFooter.MatchString(lines[len(lines)-1]) {
+		return false
+	}
+	rule := strings.TrimSpace(lines[len(lines)-2])
+	return strings.HasPrefix(rule, "╹▀▀▀▀▀") &&
+		strings.Trim(strings.TrimPrefix(rule, "╹"), "▀") == "" &&
+		strings.HasPrefix(strings.TrimSpace(lines[len(lines)-3]), "┃")
+}
+
+var (
+	openCodeVersionLine    = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	openCodeComposerFooter = regexp.MustCompile(` +ctrl\+p commands(?: {2,}.*)? *$`)
+	openCodeModalHeader    = regexp.MustCompile(`(?m)^ {2,}\S[^\n]* {4,}esc *$`)
+)
