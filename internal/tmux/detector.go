@@ -1137,7 +1137,7 @@ func hasOpenCodeComposer(content string) bool {
 	if openCodeModalHeader.MatchString(content) {
 		return false
 	}
-	lines := recentTailLines(content, 4)
+	lines := recentTailLines(content, 8)
 	// The home screen may show a version (including prereleases) below the frame.
 	if n := len(lines); n > 0 && openCodeVersionLine.MatchString(strings.TrimSpace(lines[n-1])) {
 		lines = lines[:n-1]
@@ -1155,7 +1155,15 @@ func hasOpenCodeComposer(content string) bool {
 	if n < 2 || !openCodeFrameBorder(lines[n-1]) {
 		return false
 	}
-	return strings.HasPrefix(strings.TrimSpace(lines[n-2]), "┃")
+	// A real composer draws at least three consecutive spine rows above the
+	// guide (blank, draft, blank, "Build · …"). A dialog can leave the guide
+	// and footer visible while covering all but one or two rows above it, so
+	// counting the spine keeps that pane closed to a paste.
+	spines := 0
+	for i := n - 2; i >= 0 && strings.HasPrefix(strings.TrimSpace(lines[i]), "┃"); i-- {
+		spines++
+	}
+	return spines >= 3
 }
 
 // openCodeFrameBorder matches the composer's bottom rule: a left spine and
@@ -1181,6 +1189,8 @@ var (
 	// of some text, followed by padding or the end of the line. Shell mode
 	// reads "esc exit shell mode", which the optional label does not match.
 	openCodeModalHeader = regexp.MustCompile(`(?m)\S {4,}esc(?:/enter| close)?(?: {2,}| *$)`)
-	// Footers that mean the pane is not sitting at an idle composer.
-	openCodeFooterElsewhere = regexp.MustCompile(`(?i)\besc (?:interrupt|exit shell mode|shell)\b|^\s*[$%#>] |^\s*[\w.-]+@[\w.-]+:`)
+	// Footers that mean the pane is not sitting at an idle composer. Shell
+	// prompts count even when the frame above them survived: a footerless
+	// pane can end on `❯`, `➜` or `bash-5.2$` after OpenCode exits.
+	openCodeFooterElsewhere = regexp.MustCompile(`(?i)\besc (?:again to interrupt|interrupt|exit shell mode|shell)\b|^\s*[$%#❯➜>](?:\s|$)|^\s*[\w.-]+@[\w.-]+:|[$#❯➜>]\s*$`)
 )

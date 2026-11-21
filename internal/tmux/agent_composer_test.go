@@ -10,7 +10,7 @@ func TestAgentComposerVisible(t *testing.T) {
 	claude := "⏺ Done.\n\n\x1b[38;5;244m────────────────────────── work ─\n\x1b[38;5;246m❯ \x1b[39m\n" +
 		"\x1b[38;5;244m──────────────────────────────────\n  Model X | Context 41.0% | 5h 24.0%\n  ⏵⏵ bypass permissions on\n\n\n"
 	draft := "──────────────────────────────────\n❯ look at this and then fix the\n  wrapped draft line\n──────────────────────────────────\n  ? for shortcuts\n"
-	openCodeFrame := "  ┃\n  ┃  Build · Big Pickle OpenCode\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n"
+	openCodeFrame := "  ┃\n  ┃  Reviewing the change\n  ┃\n  ┃  Build · Big Pickle OpenCode\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n"
 	openCodeFooter := "  ~/work    shift+tab agents  ctrl+p commands"
 	cases := []struct {
 		name, tool, pane string
@@ -40,7 +40,23 @@ func TestAgentComposerVisible(t *testing.T) {
 		{"OpenCode shell mode", "opencode", openCodeFrame + "  ~/work    esc exit shell mode    ~/work\n", false},
 		{"OpenCode narrow shell mode", "opencode", openCodeFrame + "  esc shell\n", false},
 		{"OpenCode busy footer", "opencode", "  ┃  Existing draft\n" + openCodeFrame + "  esc interrupt\n", false},
+		{"OpenCode armed interrupt footer", "opencode", "  ┃  Existing draft\n" + openCodeFrame + "  esc again to interrupt\n", false},
 		{"OpenCode exited to shell", "opencode", openCodeFrame + openCodeFooter + "\nuser@box:~/work$ ", false},
+		{"OpenCode exited to a footerless prompt", "opencode", openCodeFrame + "❯ ", false},
+		{"OpenCode exited to a footerless bash prompt", "opencode", openCodeFrame + "bash-5.2$ ", false},
+		{"OpenCode exited to a footerless starship prompt", "opencode", openCodeFrame + "➜  repo git:(main) ", false},
+		{"OpenCode frame with only two spine rows", "opencode", "  ┃\n  ┃  Build · Big Pickle OpenCode\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n", false},
+		{"OpenCode footerless frame with the minimum spine rows", "opencode", "  ┃\n  ┃  Draft\n  ┃  Build · Big Pickle OpenCode\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n", true},
+		{"OpenCode sessions dialog on a narrow pane", "opencode",
+			"     Sessionfor work-a-really-long-project-directory-sc\n" +
+				"     s     name-for-review-3232\n" +
+				"     Search\n" +
+				"     No sessions available\n" +
+				"     delete ctrl+d  rename ctrl+r     all projects ctrl+a\n" +
+				"  ┃\n" +
+				"  ┃  Build · Big Pickle OpenCode\n" +
+				"  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n" +
+				"  /…/work-a-really-lon…  shift+tab agents  ctrl+p commands\n", false},
 		{"OpenCode 1-style status text is not the frame composer", "opencode", "Ask anything\npress enter to send\n", false},
 	}
 	for _, tc := range cases {
