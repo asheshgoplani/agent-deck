@@ -173,15 +173,6 @@ func antigravityHasSessionSelector(command, wrapper string) bool {
 	return false
 }
 
-func antigravityHasPromptInteractiveFlag(command string) bool {
-	for _, tok := range splitAntigravityTokens(command) {
-		if tok == "-i" || tok == "--prompt-interactive" || strings.HasPrefix(tok, "--prompt-interactive=") {
-			return true
-		}
-	}
-	return false
-}
-
 func antigravityHasAddDir(command, dir string) bool {
 	want := normalizePath(dir)
 	if want == "" {
@@ -678,23 +669,18 @@ func (i *Instance) CanForkAntigravity() bool {
 // buildAntigravityForkCommandForTarget builds the one-shot launch command for
 // a forked Antigravity CLI session.
 //
-// Antigravity CLI (`agy`) exposes `--conversation <id>` and
-// `--prompt-interactive <text>`, plus the in-TUI `/fork` slash command (there
-// is no standalone `--fork` CLI flag). When no custom wrapper prevents flag
-// injection, the launch command embeds `--prompt-interactive /fork` so `agy`
-// forks immediately on startup. When a custom wrapper is configured, the
-// command launches `--conversation <parent-id>` and returns embeddedFork=false
-// so Start() delivers `/fork` through tmux once the composer prompt is ready.
-func (i *Instance) buildAntigravityForkCommandForTarget(target *Instance, baseCommand string) (string, bool, error) {
+// Open the parent conversation first. Start or StartWithMessage delivers the
+// /fork slash command through tmux once the composer is ready.
+func (i *Instance) buildAntigravityForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
 	if target == nil {
-		return "", false, fmt.Errorf("cannot build Antigravity fork command: target instance is nil")
+		return "", fmt.Errorf("cannot build Antigravity fork command: target instance is nil")
 	}
 	if !i.CanForkAntigravity() {
-		return "", false, fmt.Errorf("cannot fork: no resumable Antigravity conversation")
+		return "", fmt.Errorf("cannot fork: no resumable Antigravity conversation")
 	}
 	parentID, err := normalizeToolSessionID(FieldAntigravitySessionID, i.effectiveAntigravitySessionID())
 	if err != nil || parentID == "" {
-		return "", false, fmt.Errorf("cannot fork: invalid Antigravity conversation id")
+		return "", fmt.Errorf("cannot fork: invalid Antigravity conversation id")
 	}
 
 	resolvedBase := strings.TrimSpace(baseCommand)
@@ -718,18 +704,13 @@ func (i *Instance) buildAntigravityForkCommandForTarget(target *Instance, baseCo
 		parts = append(parts, "--add-dir", shellescape.Quote(target.ProjectPath))
 	}
 
-	embeddedFork := strings.TrimSpace(target.Wrapper) == "" && !antigravityHasPromptInteractiveFlag(resolvedBase)
-	if embeddedFork {
-		parts = append(parts, "--prompt-interactive", shellescape.Quote("/fork"))
-	}
-
 	cmd := strings.Join(parts, " ")
 	if strings.TrimSpace(target.Wrapper) == "" {
 		if envPrefix := target.buildEnvSourceCommand(); envPrefix != "" {
 			cmd = envPrefix + cmd
 		}
 	}
-	return cmd, embeddedFork, nil
+	return cmd, nil
 }
 
 // CreateForkedAntigravityInstanceWithOptions creates a forked Antigravity CLI
@@ -767,15 +748,13 @@ func (i *Instance) CreateForkedAntigravityInstanceWithOptions(
 	}
 	forked.Command = baseCommand
 
-	cmd, embeddedFork, err := i.buildAntigravityForkCommandForTarget(forked, i.antigravityCommand())
+	cmd, err := i.buildAntigravityForkCommandForTarget(forked, i.antigravityCommand())
 	if err != nil {
 		return nil, "", err
 	}
 	forked.ForkStartCommand = cmd
 	forked.IsForkAwaitingStart = true
 	forked.antigravityForkParentID = parentID
-	forked.antigravityEmbeddedFork = embeddedFork
-	forked.antigravityNeedsTmuxFork = !embeddedFork
 
 	if opts != nil && opts.WorktreePath != "" {
 		forked.WorktreePath = opts.WorktreePath
