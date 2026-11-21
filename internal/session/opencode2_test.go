@@ -202,6 +202,23 @@ func TestOpenCode2FreshLaunchCreatesSessionWithoutOverrides(t *testing.T) {
 	}
 }
 
+func TestOpenCode2FreshLaunchWithoutOverridesOnTarget(t *testing.T) {
+	isolateOpenCodeConfig(t, "opencode")
+	for _, target := range []string{"ssh", "sandbox"} {
+		t.Run(target, func(t *testing.T) {
+			inst := NewInstanceWithTool("target", t.TempDir(), "opencode2")
+			if target == "ssh" {
+				inst.SSHHost = "devbox"
+			} else {
+				inst.Sandbox = &SandboxConfig{Enabled: true}
+			}
+			if got := inst.buildOpenCodeV2Command(inst.Command); got != "opencode2" {
+				t.Fatalf("launch = %q, want bare opencode2", got)
+			}
+		})
+	}
+}
+
 func TestOpenCode2FreshLaunchAppliesOptions(t *testing.T) {
 	isolateOpenCodeConfig(t, "opencode")
 	inst := NewInstanceWithTool(`title "quoted"`, t.TempDir(), "opencode2")

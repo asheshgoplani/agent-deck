@@ -365,7 +365,7 @@ func handleSessionFork(profile string, args []string) {
 	// The CLI may load the row before the background poll has saved the ID
 	// that OpenCode's launch command recorded in its tmux session.
 	if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" && inst.Exists() {
-		inst.UpdateOpenCodeSession()
+		inst.SyncOpenCodeLaunchID()
 	}
 
 	// Verify it can be forked.

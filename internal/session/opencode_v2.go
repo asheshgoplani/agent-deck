@@ -122,6 +122,9 @@ func (i *Instance) buildOpenCodeV2Command(command string) string {
 		// The TUI selects the last session; do not create a replacement for it.
 		return bin + " -c"
 	}
+	if opts.Model == "" && opts.Agent == "" && (i.IsSSH() || i.IsSandboxed()) {
+		return bin
+	}
 	body := map[string]any{"title": i.Title, "location": map[string]string{"directory": i.ProjectPath}}
 	if opts.Agent != "" {
 		body["agent"] = opts.Agent

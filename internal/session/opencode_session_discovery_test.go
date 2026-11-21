@@ -449,10 +449,14 @@ func TestQueryOpenCodeSession_V2RunsConfiguredBinary(t *testing.T) {
 func TestUpdateOpenCodeSession_V2UsesOwnLaunchID(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 	pinOpenCodeMajorVersion(t, 2, true)
-	setFakeOpenCodePath(t, "#!/bin/sh\nprintf '%s\\n' '{\"data\":[]}'", true)
+	project := t.TempDir()
+	now := time.Now().UnixMilli()
+	reply := fmt.Sprintf(`{"data":[{"id":"ses_sibling","location":{"directory":%q},"time":{"created":%d,"updated":%d}}]}`, project, now, now)
+	setFakeOpenCodePath(t, "#!/bin/sh\nprintf '%s\\n' '"+reply+"'", true)
 	configureFakeOpenCode(t)
 
-	inst := NewInstanceWithTool("open-code-launch-id", t.TempDir(), "opencode")
+	inst := NewInstanceWithTool("open-code-launch-id", project, "opencode")
+	inst.OpenCodeStartedAt = now - 1000
 	inst.tmuxSession = tmux.NewSession(inst.Title, inst.ProjectPath)
 	if err := inst.tmuxSession.Start("sleep 300"); err != nil {
 		t.Fatal(err)
@@ -465,6 +469,21 @@ func TestUpdateOpenCodeSession_V2UsesOwnLaunchID(t *testing.T) {
 	inst.UpdateOpenCodeSession()
 	if inst.OpenCodeSessionID != "ses_launch" || !inst.CanFork() {
 		t.Fatalf("session = %q, canFork = %t; want the launch's own ID and immediate forking", inst.OpenCodeSessionID, inst.CanFork())
+	}
+	for _, target := range []string{"ssh", "sandbox"} {
+		t.Run(target, func(t *testing.T) {
+			targetInst := NewInstanceWithTool("target", project, "opencode2")
+			targetInst.tmuxSession = inst.tmuxSession
+			if target == "ssh" {
+				targetInst.SSHHost = "devbox"
+			} else {
+				targetInst.Sandbox = &SandboxConfig{Enabled: true}
+			}
+			targetInst.SyncOpenCodeLaunchID()
+			if targetInst.OpenCodeSessionID != "" {
+				t.Fatalf("%s launch adopted local tmux ID %q", target, targetInst.OpenCodeSessionID)
+			}
+		})
 	}
 }
 
