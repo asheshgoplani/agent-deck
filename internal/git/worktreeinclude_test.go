@@ -351,6 +351,72 @@ func TestProcessWorktreeInclude_NoFileIsNoop(t *testing.T) {
 	}
 }
 
+func TestIncludeWalkRoots_AnchoredPatternSkipsTheRestOfTheCheckout(t *testing.T) {
+	roots, walkAll := includeWalkRoots([]string{".claude/rules/personal/"})
+	if walkAll {
+		t.Fatal("an anchored directory pattern must not walk the whole checkout")
+	}
+	if len(roots) != 1 || roots[0] != filepath.Join(".claude", "rules", "personal") {
+		t.Fatalf("roots = %v", roots)
+	}
+
+	roots, walkAll = includeWalkRoots([]string{"logs/*.txt", ".secrets/tokens/"})
+	if walkAll || len(roots) != 2 {
+		t.Fatalf("walkAll=%v roots=%v", walkAll, roots)
+	}
+
+	for _, pattern := range []string{".env", "*.env", "temp", "**/*.pem", "!keep"} {
+		if _, walkAll := includeWalkRoots([]string{pattern}); !walkAll {
+			t.Fatalf("%q should still walk the whole checkout", pattern)
+		}
+	}
+}
+
+func TestProcessWorktreeInclude_AnchoredPatternDoesNotWalkUnrelatedTrees(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), ".claude/\nunrelated/\n")
+	gitAdd(t, repoDir, ".gitignore")
+	gitCommit(t, repoDir, "ignore local trees")
+
+	secret := filepath.Join(repoDir, ".claude", "rules", "personal", "notes.txt")
+	writeFile(t, secret, "local rule")
+	writeFile(t, filepath.Join(repoDir, "unrelated", "big.bin"), "not a candidate")
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), ".claude/rules/personal/\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "add worktreeinclude")
+
+	prev := walkDir
+	var visited []string
+	walkDir = func(root string, fn filepath.WalkFunc) error {
+		visited = append(visited, root)
+		return prev(root, fn)
+	}
+	t.Cleanup(func() { walkDir = prev })
+
+	worktreeDir := t.TempDir()
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("ProcessWorktreeInclude: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(worktreeDir, ".claude", "rules", "personal", "notes.txt"))
+	if err != nil || string(got) != "local rule" {
+		t.Fatalf("anchored file was not copied: %q %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "unrelated")); !os.IsNotExist(err) {
+		t.Fatalf("unrelated tree was copied: %v", err)
+	}
+	for _, root := range visited {
+		if root == repoDir || strings.HasSuffix(root, string(filepath.Separator)+"unrelated") {
+			t.Fatalf("walk visited %s, roots %v", root, visited)
+		}
+	}
+	if len(visited) != 1 {
+		t.Fatalf("visited %v, want only the anchored directory", visited)
+	}
+}
+
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{
