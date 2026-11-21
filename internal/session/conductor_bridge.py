@@ -2059,6 +2059,25 @@ def slack_reply_thread_ts(event: dict) -> str | None:
     return event.get("thread_ts") or event.get("ts")
 
 
+def slack_affinity_key(event: dict) -> str | None:
+    """Key under which routing remembers the conductor for one inbound event.
+
+    Inside a thread (and for any channel message, which the bridge answers
+    in a thread) it is the thread's ts, as before. A top-level 1:1 DM is
+    answered top-level, so there is no thread to remember: the key is the
+    DM channel itself, namespaced so it can never collide with a ts. An
+    unprefixed top-level DM then goes to the conductor the previous one
+    went to. Only inbound messages set it; the bridge's own posts (alerts,
+    digests) tag their own ts and leave the DM key alone.
+    """
+    thread_ts = slack_reply_thread_ts(event)
+    if thread_ts:
+        return thread_ts
+    if event.get("channel_type") == "im" and event.get("channel"):
+        return f"im:{event['channel']}"
+    return None
+
+
 def resolve_slack_routing(
     text: str,
     thread_ts: str | None,
@@ -3295,8 +3314,15 @@ def create_slack_app(config: dict):
     async def _handle_slack_text(
         text: str, say, thread_ts: str = None,
         user_id: str = None, event_channel: str = None,
+        affinity_key: str = None,
     ):
-        """Shared handler for Slack messages and mentions."""
+        """Shared handler for Slack messages and mentions.
+
+        affinity_key (see slack_affinity_key) is where routing looks up and
+        records the conductor; it defaults to thread_ts.
+        """
+        if affinity_key is None:
+            affinity_key = thread_ts
         # One discovery snapshot for both lists (CodeRabbit, #2548): two
         # separate calls can race, leaving conductor_names empty while
         # conductors is not — the no-default prompt would then IndexError on
@@ -3305,7 +3331,7 @@ def create_slack_app(config: dict):
         conductor_names = [c["name"] for c in conductors]
 
         target, cleaned_msg, reason = resolve_slack_routing(
-            text, thread_ts, conductor_names, conductors, default_conductor,
+            text, affinity_key, conductor_names, conductors, default_conductor,
         )
         if target is None:
             if reason == "none":
@@ -3335,8 +3361,7 @@ def create_slack_app(config: dict):
             log.info("Slack unprefixed message not routed (reason: %s)", reason)
             return
         log.info("Slack routing -> [%s] (%s)", target["name"], reason)
-        if thread_ts:
-            remember_thread_conductor(thread_ts, target["name"])
+        remember_thread_conductor(affinity_key, target["name"])
 
         if not cleaned_msg:
             cleaned_msg = text
@@ -3515,6 +3540,7 @@ def create_slack_app(config: dict):
             text, say,
             thread_ts=thread_ts,
             user_id=user_id, event_channel=event.get("channel"),
+            affinity_key=slack_affinity_key(event),
         )
 
     @app.event("app_mention")
@@ -3549,6 +3575,7 @@ def create_slack_app(config: dict):
             text, say,
             thread_ts=thread_ts,
             user_id=user_id, event_channel=event.get("channel"),
+            affinity_key=slack_affinity_key(event),
         )
 
     @app.command("/ad-status")
