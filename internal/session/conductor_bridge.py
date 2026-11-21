@@ -3471,7 +3471,9 @@ def create_slack_app(config: dict):
 
         log.info("Conductor [%s] response: %s", target["name"], response[:100])
 
-        for chunk in split_message(response if response.strip() else NO_OUTPUT_REPLY, max_len=SLACK_MAX_LENGTH):
+        if not response.strip():
+            response = NO_OUTPUT_REPLY
+        for chunk in split_message(response, max_len=SLACK_MAX_LENGTH):
             prefixed = f"{name_tag}{chunk}" if name_tag else chunk
             await _safe_say(say, text=prefixed, thread_ts=thread_ts)
 
@@ -4100,9 +4102,9 @@ def create_discord_bot(config: dict):
         name_tag = (
             f"[{target['name']}] " if len(conductors) > 1 else ""
         )
-        await send_discord_output(
-            message.channel, response if response.strip() else NO_OUTPUT_REPLY, name_tag=name_tag,
-        )
+        if not response.strip():
+            response = NO_OUTPUT_REPLY
+        await send_discord_output(message.channel, response, name_tag=name_tag)
 
     log.info(
         "Discord bot initialized (guild=%d, channel=%d)",
@@ -4736,7 +4738,9 @@ class MattermostBridge:
 
         if ok:
             log.info("Conductor [%s] response: %s", target["name"], response[:100])
-            await reply(f"{name_tag}{response if response.strip() else NO_OUTPUT_REPLY}")
+            if not response.strip():
+                response = NO_OUTPUT_REPLY
+            await reply(f"{name_tag}{response}")
             return
         if not still_running:
             await reply(f"[Failed to send message to conductor {target['name']}.]")
