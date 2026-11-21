@@ -64,6 +64,7 @@ The Slack bot supports both prefix routing and slash commands:
 | `/ad-help` | List available commands |
 
 Responses come in threads to keep the channel clean.
+In a direct message with the bot, a top-level message is answered in the conversation itself, not in a thread; a reply inside a DM thread stays in that thread.
 
 ## One bot per conductor
 

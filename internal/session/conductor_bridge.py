@@ -2046,6 +2046,19 @@ def remember_thread_conductor(
         affinity.popitem(last=False)
 
 
+def slack_reply_thread_ts(event: dict) -> str | None:
+    """Thread the bridge replies in for one inbound Slack event.
+
+    In a channel every reply goes in a thread under the user's message, to
+    keep the channel clean. A direct message (channel_type "im") has no
+    channel to keep clean, so a top-level DM is answered top-level and only
+    a reply inside a DM thread stays in that thread.
+    """
+    if event.get("channel_type") == "im":
+        return event.get("thread_ts")
+    return event.get("thread_ts") or event.get("ts")
+
+
 def resolve_slack_routing(
     text: str,
     thread_ts: str | None,
@@ -3486,7 +3499,7 @@ def create_slack_app(config: dict):
 
         # Authorization check
         user_id = event.get("user", "")
-        thread_ts = event.get("thread_ts") or event.get("ts")
+        thread_ts = slack_reply_thread_ts(event)
         reason = slack_refusal(
             user_id, event.get("channel"), (body or {}).get("team_id"), False, event.get("team"),
         )
@@ -3518,7 +3531,7 @@ def create_slack_app(config: dict):
 
         # Authorization check
         user_id = event.get("user", "")
-        thread_ts = event.get("thread_ts") or event.get("ts")
+        thread_ts = slack_reply_thread_ts(event)
         reason = slack_refusal(
             user_id, event.get("channel"), (body or {}).get("team_id"), True, event.get("team"),
         )
