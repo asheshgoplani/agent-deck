@@ -1889,7 +1889,7 @@ func PanePIDOfSession(socketName, sessionName string) (int, error) {
 		stderr := strings.TrimSpace(string(exitErr.Stderr))
 		if tmuxSessionMissing(stderr) || stderr == "no sessions" ||
 			strings.HasPrefix(stderr, "can't find window:") || strings.HasPrefix(stderr, "can't find pane:") {
-			return 0, fmt.Errorf("%w: %w", ErrPaneTargetGone, err)
+			return 0, fmt.Errorf("%w: tmux list-panes: %s: %w", ErrPaneTargetGone, stderr, err)
 		}
 		if stderr != "" {
 			return 0, fmt.Errorf("tmux list-panes: %s: %w", stderr, err)

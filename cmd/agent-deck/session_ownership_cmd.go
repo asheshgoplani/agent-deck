@@ -49,7 +49,8 @@ func printSessionOwnershipHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  inspect <id>     Show the ownership receipt and what it verifies to (read-only)")
 	fmt.Println("  reconcile <id>   Terminate every process the receipt owns, verify, and clear it")
-	fmt.Println("                   (--yes required only when the session's pane is still running)")
+	fmt.Println("                   (--yes required when the session's pane is still running")
+	fmt.Println("                   or could not be checked)")
 	fmt.Println("  abandon <id>     Discard an unverifiable receipt WITHOUT signalling anything")
 	fmt.Println()
 	fmt.Println("A session records, at spawn, the pid of its pane process bound to that")
@@ -234,7 +235,11 @@ func renderOwnershipStatus(inst *session.Instance, status session.OwnershipStatu
 	fmt.Fprintf(&b, "Receipt:  generation %d, state %s, provider %s\n", r.Generation, r.State, r.Provider)
 	fmt.Fprintf(&b, "Leader:   %s\n", r.Leader)
 	fmt.Fprintf(&b, "Members:  %d recorded\n", len(r.Members))
-	fmt.Fprintf(&b, "Pane:     %s\n", paneAttachmentLabel(status.PaneAttached))
+	if status.PaneCheckErr != nil {
+		fmt.Fprintf(&b, "Pane:     could not be checked: %v\n", status.PaneCheckErr)
+	} else {
+		fmt.Fprintf(&b, "Pane:     %s\n", paneAttachmentLabel(status.PaneAttached))
+	}
 	fmt.Fprintf(&b, "Verdict:  %s\n", status.Report.Describe())
 	if r.State == procowner.StateUnverifiedSpawn {
 		fmt.Fprintf(&b, "\nThe last spawn's pane process (pid %d) could not be identified, so anything it\n", r.Leader.PID)
@@ -270,6 +275,11 @@ func ownershipPayload(status session.OwnershipStatus) map[string]interface{} {
 	}
 	if status.LoadErr != nil {
 		payload["receipt_error"] = status.LoadErr.Error()
+	}
+	// pane_attached stays a bool for existing consumers; when this is set,
+	// its false means "unknown", not "no live pane".
+	if status.PaneCheckErr != nil {
+		payload["pane_check_error"] = status.PaneCheckErr.Error()
 	}
 	if status.Receipt != nil {
 		payload["generation"] = status.Receipt.Generation

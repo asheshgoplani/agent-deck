@@ -188,6 +188,14 @@ esac
 exec "$0-isolated" "$@"
 `), 0o755))
 
+	// inspect must report the failed check, not "no live pane".
+	out, err = runRemoveCLI(t, sb, "session", "ownership", "inspect", id)
+	assert.Error(t, err, "%s", out)
+	assert.Contains(t, out, "Pane:     could not be checked: ")
+	assert.NotContains(t, out, "no live pane accounts for this receipt")
+	out, _ = runRemoveCLI(t, sb, "session", "ownership", "inspect", id, "--json")
+	assert.Contains(t, out, `"pane_check_error"`)
+
 	out, err = runRemoveCLI(t, sb, "session", "ownership", "reconcile", id)
 	assert.Error(t, err, "%s", out)
 	assert.Contains(t, out, "could not check the session's tmux pane")

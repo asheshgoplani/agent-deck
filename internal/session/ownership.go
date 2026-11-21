@@ -166,7 +166,8 @@ func (e *OwnedProcessRecoveryRequiredError) Error() string {
 	}
 	fmt.Fprintf(&b, "\nNothing was started and nothing was signalled.")
 	if e.paneCheckFailed {
-		fmt.Fprintf(&b, "\nTo continue, retry the %s.", e.Action)
+		fmt.Fprintf(&b, "\nTo continue, run the %s again.", e.Action)
+		fmt.Fprintf(&b, "\nIf the check keeps failing, inspect: agent-deck session ownership inspect %s", e.InstanceID)
 		return b.String()
 	}
 	fmt.Fprintf(&b, "\nInspect: agent-deck session ownership inspect %s", e.InstanceID)
