@@ -35,8 +35,8 @@ type MemoryMenuData struct {
 	// callers that only need a session lookup (the terminal websocket) skip
 	// waiting behind an inline fallback reload. InvalidateCache clears it:
 	// a mutation (restart, start) can recreate the tmux session under a new
-	// name, so callers must take the full LoadMenuSnapshot path until the
-	// next complete snapshot is published.
+	// name, so a lookup that misses it must read storage (ResolveMenuSession)
+	// until the next complete snapshot is published.
 	published atomic.Pointer[MenuSnapshot]
 }
 
@@ -175,6 +175,17 @@ func (m *MemoryMenuData) CachedMenuSnapshot() *MenuSnapshot {
 		return nil
 	}
 	return m.published.Load()
+}
+
+// ResolveMenuSession delegates to the storage fallback without waiting on a
+// snapshot refresh. Fallback is set once by NewMemoryMenuData.
+func (m *MemoryMenuData) ResolveMenuSession(id string) (*MenuSession, string, error) {
+	if m != nil {
+		if resolver, ok := m.fallback.(MenuSessionResolver); ok {
+			return resolver.ResolveMenuSession(id)
+		}
+	}
+	return resolveMenuSessionFromSnapshot(m, id)
 }
 
 // LoadArchivedMenuSnapshot returns archived sessions from the storage fallback.
