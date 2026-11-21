@@ -704,13 +704,7 @@ func (i *Instance) buildAntigravityForkCommandForTarget(target *Instance, baseCo
 		parts = append(parts, "--add-dir", shellescape.Quote(target.ProjectPath))
 	}
 
-	cmd := strings.Join(parts, " ")
-	if strings.TrimSpace(target.Wrapper) == "" {
-		if envPrefix := target.buildEnvSourceCommand(); envPrefix != "" {
-			cmd = envPrefix + cmd
-		}
-	}
-	return cmd, nil
+	return strings.Join(parts, " "), nil
 }
 
 // CreateForkedAntigravityInstanceWithOptions creates a forked Antigravity CLI

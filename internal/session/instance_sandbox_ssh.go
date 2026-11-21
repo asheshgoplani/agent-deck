@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -211,17 +211,20 @@ func (i *Instance) wrapExitToShell(command string) string {
 	if command == "" || i.IsSandboxed() || !i.exitToShellEnabled() || !isBuiltinAgentTool(i.Tool) {
 		return command
 	}
-	rewritten := command
-	if loc := execLauncherRe.FindStringSubmatchIndex(command); loc != nil {
-		rewritten = command[:loc[2]] + command[loc[3]:]
+	commands, ok := shellwords.Commands(command)
+	if ok {
+		offset := 0
+		for _, part := range commands {
+			offset += strings.Index(command[offset:], part)
+			if strings.HasPrefix(part, "exec ") {
+				command = command[:offset] + command[offset+len("exec "):]
+				break
+			}
+			offset += len(part)
+		}
 	}
-	return rewritten + `; exec "$SHELL" -i`
+	return command + `; exec "$SHELL" -i`
 }
-
-// execLauncherRe matches the first `exec ` in shell command position: at the
-// start of the command or after whitespace or a separator. Group 1 is the
-// `exec ` to strip.
-var execLauncherRe = regexp.MustCompile(`(?:^|[\s;&|(])(exec )`)
 
 // launchShellEnabled returns whether the session should wrap agent commands
 // with a shell invocation that loads startup files before launching the agent.

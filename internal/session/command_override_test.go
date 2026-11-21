@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"al.essio.dev/pkg/shellescape"
 )
@@ -74,6 +75,52 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 			t.Errorf("GetToolCommand(%q) = %q, want %q", tt.tool, got, tt.expected)
 		}
 	}
+}
+
+func TestAntigravityLaunchAndRestartEnvironment(t *testing.T) {
+	requireTmux(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", home+string(os.PathListSeparator)+os.Getenv("PATH"))
+	envFile := filepath.Join(home, "launch.env")
+	if err := os.WriteFile(envFile, []byte("export AGY_TEST_FILE=sourced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restore := resetUserConfigCache(t, &UserConfig{Shell: ShellSettings{
+		EnvFiles:   []string{envFile},
+		InitScript: "export AGY_TEST_INIT=initialized",
+	}})
+	defer restore()
+	stub := `#!/bin/sh
+printf 'agy env: %s/%s/%s argv: %s\n' "$AGY_TEST_FILE" "$AGY_TEST_INIT" "$AGY_TEST_RESTART" "$*"
+exec sleep 30
+`
+	if err := os.WriteFile(filepath.Join(home, "agy"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inst := NewInstanceWithGroupAndTool("agy-env", home, "", "antigravity")
+	inst.Command = "agy"
+	t.Cleanup(func() { _ = inst.Kill() })
+	if err := inst.StartWithMessage("hello"); err != nil {
+		t.Fatal(err)
+	}
+	waitForPaneFull(t, inst, "agy env: sourced/initialized/ argv: --prompt-interactive hello", 5*time.Second)
+	if !inst.CanRestart() {
+		t.Error("live Antigravity session should be restartable")
+	}
+	inst.Command = "agy --conversation test-conversation"
+	if err := inst.RestartWithEnv(map[string]string{"AGY_TEST_RESTART": "overridden"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForPaneFull(t, inst, "agy env: sourced/initialized/overridden argv: --conversation test-conversation", 5*time.Second)
+
+	fresh := NewInstanceWithGroupAndTool("agy-env-fresh", home, "", "antigravity")
+	fresh.Command = "agy"
+	t.Cleanup(func() { _ = fresh.Kill() })
+	if err := fresh.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPaneFull(t, fresh, "agy env: sourced/initialized/ argv:", 5*time.Second)
 }
 
 func TestAntigravityCommand(t *testing.T) {

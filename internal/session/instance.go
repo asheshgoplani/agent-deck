@@ -1689,18 +1689,17 @@ func (i *Instance) Start() (startErr error) {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "antigravity":
+		i.AntigravityStartedAt = time.Now().UnixMilli()
 		if i.IsForkAwaitingStart {
-			command = i.consumeForkStartCommand()
+			command = i.buildEnvSourceCommand() + i.consumeForkStartCommand()
 			antigravityTmuxFork = true
-			i.AntigravityStartedAt = time.Now().UnixMilli()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
 				slog.String("path", i.ProjectPath),
 				slog.String("reason", "fork_awaiting_start"))
 			break
 		}
-		command = i.buildAntigravityResumeCommand()
-		i.AntigravityStartedAt = time.Now().UnixMilli()
+		command = i.buildEnvSourceCommand() + i.buildAntigravityResumeCommand()
 	case i.Tool == "copilot":
 		command = buildCopilotCommand(i)
 		// Record start time for session ID detection (Unix millis)
@@ -2121,10 +2120,10 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "antigravity":
+		i.AntigravityStartedAt = time.Now().UnixMilli()
 		if i.IsForkAwaitingStart {
-			command = i.consumeForkStartCommand()
+			command = i.buildEnvSourceCommand() + i.consumeForkStartCommand()
 			antigravityTmuxFork = true
-			i.AntigravityStartedAt = time.Now().UnixMilli()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
 				slog.String("path", i.ProjectPath),
@@ -2132,7 +2131,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 			break
 		}
 		command, promptEmbeddedInCommand = i.buildAntigravityCommandWithPrompt(message)
-		i.AntigravityStartedAt = time.Now().UnixMilli()
+		command = i.buildEnvSourceCommand() + command
 	case i.Tool == "opencode":
 		if i.IsForkAwaitingStart {
 			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())

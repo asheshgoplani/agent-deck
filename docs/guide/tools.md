@@ -29,10 +29,14 @@ choose `antigravity` in the session picker or run `agent-deck launch -c antigrav
 Complete Google's sign-in and workspace trust prompts in the session. Agent Deck
 binds the session's Antigravity conversation ID from `--conversation` or
 `~/.gemini/antigravity-cli/cache/` so restarts resume it and forks (`f` / `F` /
-`agent-deck session fork`) launch `agy --conversation <id> --prompt-interactive /fork`
-(falling back to sending `/fork` after the composer is ready when a custom
-wrapper is configured). Hooks and MCP management for Antigravity remain out of
-scope.
+`agent-deck session fork`) open the parent conversation and send `/fork`
+through tmux after the Antigravity composer is ready. Hooks and MCP management
+for Antigravity remain out of scope.
+
+If you previously used `[tools.antigravity]` as a custom tool, the built-in
+preset keeps its `command` and detection patterns. To keep custom fields such
+as `env`, `env_file`, or `wrapper`, rename that tool (for example,
+`[tools.my-agy]`) and set `compatible_with = "antigravity"`.
 
 Select `opencode2` in the new/edit session picker, web picker, or default-tool settings,
 or create a session with `agent-deck add -c opencode2`. The `opencode2` launcher must
