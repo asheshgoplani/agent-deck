@@ -183,3 +183,27 @@ func TestOpenCode2SettingsAndRemotePicker(t *testing.T) {
 		t.Fatal("remote v2 model catalog was not used")
 	}
 }
+
+// Remote OpenCode rows fork on their own host: F must not open the local fork
+// dialog, which inspects local git state. The notice points at f, which routes
+// the fork over SSH (internal/ui/remote_fork_test.go).
+func TestOpenCode2ForkDialogRemoteSessionNotApplicable(t *testing.T) {
+	h := NewHome()
+	h.width, h.height = 120, 40
+	h.flatItems = []session.Item{{
+		Type:       session.ItemTypeRemoteSession,
+		RemoteName: "lab",
+		RemoteSession: &session.RemoteSessionInfo{
+			ID:    "remote-oc2",
+			Title: "remote opencode2",
+			Tool:  "opencode2",
+		},
+	}}
+	h.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'F'}})
+	if h.forkDialog.IsVisible() {
+		t.Fatal("remote OpenCode 2 row opened the local fork dialog")
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "not available for remote sessions") {
+		t.Fatalf("expected the remote fork notice, got %v", h.err)
+	}
+}

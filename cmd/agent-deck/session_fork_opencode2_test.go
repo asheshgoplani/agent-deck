@@ -69,3 +69,42 @@ esac
 		t.Fatalf("child is not a forkable bound session (%d): %s\n%s", code, stdout, stderr)
 	}
 }
+
+// Remote OpenCode rows keep their launch ID on the owning host. The local
+// pre-sync must not adopt this machine's tmux env, so an unbound remote row
+// stays unforkable here; the remote's own `session fork` runs there instead.
+func TestSessionForkOpenCode2RemoteSkipsLocalLaunchID(t *testing.T) {
+	testutil.RequireTmux(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	parent := session.NewInstanceWithTool("remote-parent", t.TempDir(), "opencode2")
+	parent.SSHHost = "lab"
+	pane := parent.GetTmuxSession()
+	if err := pane.Start("sleep 300"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pane.Kill() })
+	if err := pane.SetEnvironment("OPENCODE_SESSION_ID", "ses_local_only"); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := session.NewStorageWithProfile("ch_support_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	if err := storage.SaveWithGroups([]*session.Instance{parent}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home, "session", "fork", parent.ID, "-t", "child", "--json")
+	if code == 0 || !strings.Contains(stdout, "no resumable session") {
+		t.Fatalf("remote fork adopted the local launch ID (%d): %s\n%s", code, stdout, stderr)
+	}
+	out, _, _ := runAgentDeck(t, home, "list", "--json")
+	if strings.Contains(out, `"child"`) {
+		t.Fatalf("refused remote fork still created a local child: %s", out)
+	}
+}
