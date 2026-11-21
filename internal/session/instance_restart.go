@@ -1078,7 +1078,8 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		case i.Tool == "gemini":
 			command = i.buildGeminiCommand(i.Command)
 		case i.Tool == "antigravity":
-			command = i.buildEnvSourceCommand() + i.antigravityCommand()
+			command = i.buildEnvSourceCommand() + i.buildAntigravityResumeCommand()
+			i.AntigravityStartedAt = time.Now().UnixMilli()
 		case i.Tool == "opencode":
 			command = i.buildOpenCodeCommand(i.Command)
 			// Record start time for async session ID detection

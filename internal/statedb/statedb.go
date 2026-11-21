@@ -1710,6 +1710,13 @@ func (s *StateDB) WriteKimiSessionBinding(id, sessionID string, detectedAt time.
 	return s.writeHarnessSessionBinding(id, sessionID, "kimi", detectedAt)
 }
 
+// WriteAntigravitySessionBinding records the Antigravity CLI conversation id
+// for an instance inside tool_data and session_links without overwriting
+// unrelated keys. Empty sessionID clears the stored binding.
+func (s *StateDB) WriteAntigravitySessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return s.writeHarnessSessionBinding(id, sessionID, "antigravity", detectedAt)
+}
+
 // WriteGenericSessionBinding persists a custom-tool conversation id
 // (tools configured via [tools.*] with resume_flag) into tool_data.
 // Mirrors WriteClaudeSessionBinding's json_set / withBusyRetry shape so a

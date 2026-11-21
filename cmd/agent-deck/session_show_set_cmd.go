@@ -223,6 +223,9 @@ func handleSessionShow(profile string, args []string) {
 	if inst.Tool == "opencode" {
 		jsonData["opencode_session_id"] = inst.OpenCodeSessionID
 	}
+	if inst.Tool == "antigravity" {
+		jsonData["antigravity_session_id"] = inst.AntigravitySessionID
+	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		jsonData["claude_session_id"] = inst.ClaudeSessionID
 		jsonData["can_restart"] = inst.CanRestart()

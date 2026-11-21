@@ -311,6 +311,18 @@ type Instance struct {
 	GeminiModel      string                  `json:"gemini_model,omitempty"`     // Active model for this session
 	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"` // Per-session analytics
 
+	// Antigravity CLI integration. Persisted in the tool_data extras zone
+	// (antigravity.go), so no schema change is needed and older binaries
+	// carry it forward untouched.
+	AntigravitySessionID      string    `json:"-"`
+	AntigravityDetectedAt     time.Time `json:"-"`
+	AntigravityStartedAt      int64     `json:"-"` // Unix millis when Antigravity started (for session matching, not persisted)
+	lastAntigravityScanAt     time.Time // Rate-limits ~/.gemini/antigravity-cli metadata scans
+	antigravitySessionCleared bool      // Set on explicit SetField clear so sticky merge clears it
+	antigravityForkParentID   string    // Transient: source conversation ID during a fork's first start
+	antigravityNeedsTmuxFork  bool      // Transient: true when Start() must send /fork over tmux after composer ready
+	antigravityEmbeddedFork   bool      // Transient: true when ForkStartCommand embeds --prompt-interactive /fork
+
 	// OpenCode CLI integration
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
 	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
@@ -1644,6 +1656,7 @@ func (i *Instance) Start() (startErr error) {
 	// Build command based on tool type
 	// Priority: claude-compatible (built-in + custom wrapping claude) → built-in tools → custom tools → raw command
 	var command string
+	var antigravityTmuxFork bool
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: a fork target arrives here with a pre-built
@@ -1690,7 +1703,17 @@ func (i *Instance) Start() (startErr error) {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "antigravity":
-		command = i.buildEnvSourceCommand() + i.antigravityCommand()
+		i.AntigravityStartedAt = time.Now().UnixMilli()
+		if i.IsForkAwaitingStart {
+			command = i.buildEnvSourceCommand() + i.consumeForkStartCommand()
+			antigravityTmuxFork = true
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
+		command = i.buildEnvSourceCommand() + i.buildAntigravityResumeCommand()
 	case i.Tool == "copilot":
 		command = buildCopilotCommand(i)
 		// Record start time for session ID detection (Unix millis)
@@ -1909,6 +1932,9 @@ func (i *Instance) Start() (startErr error) {
 	if i.GeminiSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
 	}
+	if i.AntigravitySessionID != "" {
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_SESSION_ID", i.AntigravitySessionID)
+	}
 	if i.Tool == "gemini" {
 		yoloVal := "false"
 		if i.GeminiYoloMode != nil && *i.GeminiYoloMode {
@@ -1968,6 +1994,11 @@ func (i *Instance) Start() (startErr error) {
 	}
 
 	i.recoverConductorAfterSpawn()
+	if antigravityTmuxFork {
+		if err := i.sendMessageWhenReady("/fork"); err != nil {
+			return fmt.Errorf("sending /fork to Antigravity session: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -2059,6 +2090,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	// DeepSeek headless profile is the same shape — `dsh --profile headless
 	// "<task>"` IS the whole invocation — so the flag is tool-neutral.
 	promptEmbeddedInCommand := false
+	antigravityTmuxFork := false
 	switch {
 	case i.crossHarnessLaunch != nil:
 		var launchErr error
@@ -2108,6 +2140,18 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "antigravity":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			antigravityTmuxFork = i.antigravityNeedsTmuxFork
+			i.antigravityNeedsTmuxFork = false
+			i.antigravityEmbeddedFork = false
+			i.AntigravityStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command, promptEmbeddedInCommand = i.buildAntigravityCommandWithPrompt(message)
 		command = i.buildEnvSourceCommand() + command
 	case i.Tool == "opencode":
@@ -2297,6 +2341,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	if i.GeminiSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
 	}
+	if i.AntigravitySessionID != "" {
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_SESSION_ID", i.AntigravitySessionID)
+	}
 	if i.Tool == "gemini" {
 		yoloVal := "false"
 		if i.GeminiYoloMode != nil && *i.GeminiYoloMode {
@@ -2332,6 +2379,11 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
+	if antigravityTmuxFork {
+		if err := i.sendMessageWhenReady("/fork"); err != nil {
+			return fmt.Errorf("sending /fork to Antigravity session: %w", err)
+		}
+	}
 	if message != "" && !promptEmbeddedInCommand {
 		return i.sendMessageWhenReady(message)
 	}
@@ -3003,6 +3055,10 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			if i.GeminiSessionID == "" {
 				interval = 500 * time.Millisecond
 			}
+		case i.Tool == "antigravity":
+			if i.AntigravitySessionID == "" {
+				interval = 500 * time.Millisecond
+			}
 		case IsCodexCompatible(i.Tool):
 			if i.CodexSessionID == "" {
 				interval = 500 * time.Millisecond
@@ -3032,6 +3088,14 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			if i.Tool == "opencode" {
 				i.mu.Unlock()
 				i.UpdateOpenCodeSession()
+				i.mu.Lock()
+			}
+
+			// Update Antigravity conversation ID tracking outside i.mu so disk
+			// and tmux reads do not stall render-path RLocks.
+			if i.Tool == "antigravity" {
+				i.mu.Unlock()
+				i.UpdateAntigravitySession()
 				i.mu.Lock()
 			}
 		}

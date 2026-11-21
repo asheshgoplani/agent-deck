@@ -399,6 +399,8 @@ func (i *Instance) PostStartSync(maxWait time.Duration) {
 		i.autoConfirmClaudeResumePicker()
 	case i.Tool == "gemini":
 		i.UpdateGeminiSession(nil)
+	case i.Tool == "antigravity":
+		i.postStartSyncAntigravity(maxWait)
 	case i.Tool == "copilot":
 		// Copilot uses async detection via detectCopilotSessionAsync().
 		// If the session was not yet detected, attempt a quick sync check.
