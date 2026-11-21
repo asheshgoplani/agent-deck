@@ -93,6 +93,7 @@ Set command fields:
   claude-session-id  Claude conversation ID (for fork/resume)
   favorite           Favourite flag: true or false (favorite in list/show --json)
   gemini-session-id  Gemini conversation ID (for resume)
+  antigravity-session-id  Antigravity CLI conversation ID (empty starts fresh)
   tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)
 
 Set examples:

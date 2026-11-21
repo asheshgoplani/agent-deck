@@ -478,6 +478,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
+		fmt.Println("  antigravity-session-id  Antigravity CLI conversation ID (empty clears and starts fresh)")
 		fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (for resume_flag after reboot)")
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
 		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")

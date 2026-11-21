@@ -241,6 +241,7 @@ func printSessionHelp() {
 	fmt.Println("  claude-session-id  Claude conversation ID (for fork/resume)")
 	fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 	fmt.Println("  gemini-session-id  Gemini conversation ID (for resume)")
+	fmt.Println("  antigravity-session-id  Antigravity CLI conversation ID (empty starts fresh)")
 	fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)")
 	fmt.Println()
 	fmt.Println("Set examples:")

@@ -319,7 +319,13 @@ type Instance struct {
 	AntigravityStartedAt      int64     `json:"-"` // Unix millis when Antigravity started (for session matching, not persisted)
 	lastAntigravityScanAt     time.Time // Rate-limits ~/.gemini/antigravity-cli metadata scans
 	antigravitySessionCleared bool      // Set on explicit SetField clear so sticky merge clears it
-	antigravityForkParentID   string    // Transient: source conversation ID during a fork's first start
+	antigravityForkParentID   string    // Source conversation of a fork whose child has not bound its own ID
+	antigravityPendingID      string    // Workspace candidate awaiting a second observation
+	antigravityPendingAt      time.Time // When antigravityPendingID was first seen
+	antigravityBindingPending bool      // Bound in memory but not yet written to SQLite
+	// antigravitySyncMu serializes discovery and its tmux/SQLite writes, so a
+	// slower scan cannot publish an older binding after a newer one.
+	antigravitySyncMu sync.Mutex
 
 	// OpenCode CLI integration
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
@@ -1993,8 +1999,8 @@ func (i *Instance) Start() (startErr error) {
 
 	i.recoverConductorAfterSpawn()
 	if antigravityTmuxFork {
-		if err := i.sendMessageWhenReady("/fork"); err != nil {
-			return fmt.Errorf("sending /fork to Antigravity session: %w", err)
+		if err := i.forkAntigravityInPane(); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -2376,8 +2382,20 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
 	if antigravityTmuxFork {
-		if err := i.sendMessageWhenReady("/fork"); err != nil {
-			return fmt.Errorf("sending /fork to Antigravity session: %w", err)
+		var knownBefore map[string]bool
+		if message != "" && !promptEmbeddedInCommand {
+			knownBefore = i.antigravityKnownConversations()
+		}
+		forkSentAt := time.Now()
+		if err := i.forkAntigravityInPane(); err != nil {
+			return err
+		}
+		// The ready prompt can return while the parent's composer is still on
+		// screen. Hold the initial message until /fork has produced a child
+		// conversation, or the message lands in the parent.
+		if message != "" && !promptEmbeddedInCommand &&
+			!i.waitForAntigravityForkChild(forkSentAt, knownBefore, antigravityForkChildTimeout) {
+			return fmt.Errorf("waiting for the forked Antigravity conversation: /fork did not create a child conversation")
 		}
 	}
 	if message != "" && !promptEmbeddedInCommand {

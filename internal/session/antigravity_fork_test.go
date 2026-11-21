@@ -95,14 +95,25 @@ func TestCanForkAntigravity(t *testing.T) {
 		}
 	})
 
-	t.Run("SSH session with bound ID skips local disk check", func(t *testing.T) {
-		inst := NewInstanceWithGroupAndTool("agy-ssh", "/remote/repo", "default", "antigravity")
-		inst.Command = "agy"
-		inst.SSHHost = "devbox"
-		inst.AntigravitySessionID = "remote-conv-9"
-		inst.AntigravityDetectedAt = time.Now().Add(-2 * time.Hour)
-		if !inst.CanFork() {
-			t.Fatal("CanFork() = false for remote Antigravity session with bound ID, want true")
+	t.Run("SSH and sandboxed sessions cannot fork locally", func(t *testing.T) {
+		// The fork child would run agy on this host against a conversation
+		// that lives on the parent's host, so the fork is refused.
+		ssh := NewInstanceWithGroupAndTool("agy-ssh", "/remote/repo", "default", "antigravity")
+		ssh.Command = "agy"
+		ssh.SSHHost = "devbox"
+		ssh.AntigravitySessionID = "remote-conv-9"
+		ssh.AntigravityDetectedAt = time.Now()
+		if ssh.CanFork() {
+			t.Fatal("CanFork() = true for SSH Antigravity session, want false")
+		}
+
+		sandboxed := NewInstanceWithGroupAndTool("agy-sandbox", home, "default", "antigravity")
+		sandboxed.Command = "agy"
+		sandboxed.Sandbox = &SandboxConfig{Enabled: true}
+		sandboxed.AntigravitySessionID = convID
+		sandboxed.AntigravityDetectedAt = time.Now()
+		if sandboxed.CanFork() {
+			t.Fatal("CanFork() = true for sandboxed Antigravity session, want false")
 		}
 	})
 }
@@ -429,6 +440,8 @@ done
 		if err := os.WriteFile(filepath.Join(cacheDir, "conversation_metadata.json"), rawMeta, 0o600); err != nil {
 			t.Fatalf("write metadata: %v", err)
 		}
+		// The fork parent exclusion is evidence enough to bind on the first
+		// scan that sees the child.
 		if got := forked.SyncAntigravitySessionID(); got != "child-conv-e2e" {
 			t.Fatalf("SyncAntigravitySessionID() = %q, want child-conv-e2e (never parent)", got)
 		}
@@ -448,6 +461,32 @@ done
 			t.Fatalf("CreateForkedInstanceForTool: %v", err)
 		}
 		t.Cleanup(func() { _ = forked.Kill() })
+
+		// Antigravity creates the child conversation only after /fork runs;
+		// publish it then so the initial message waits for the switch. Watch
+		// until the test ends rather than a fixed window, since the readiness
+		// wait can take several seconds.
+		stopPublisher := make(chan struct{})
+		t.Cleanup(func() { close(stopPublisher) })
+		go func() {
+			for {
+				select {
+				case <-stopPublisher:
+					return
+				default:
+				}
+				if raw, err := os.ReadFile(stdinLog); err == nil && strings.Contains(string(raw), "/fork") {
+					cacheDir := filepath.Join(home, ".gemini", "antigravity-cli", "cache")
+					_ = os.MkdirAll(cacheDir, 0o755)
+					rawMeta, _ := json.Marshal(map[string]any{"conversations": map[string]any{
+						"child-wrap-e2e": antigravityTestConversationEntry("child-wrap-e2e", home, time.Now(), false),
+					}})
+					_ = os.WriteFile(filepath.Join(cacheDir, "conversation_metadata.json"), rawMeta, 0o600)
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}()
 
 		if err := forked.StartWithMessage("hello child"); err != nil {
 			t.Fatalf("forked.StartWithMessage: %v", err)

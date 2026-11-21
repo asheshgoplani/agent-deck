@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -70,5 +71,35 @@ func TestForkInstanceDeps_OpenCodeUsesResolvedWorktreeDir(t *testing.T) {
 	}
 	if inst.WorktreePath != "/tmp/original-wt" || inst.WorktreeRepoRoot != "/tmp/original" || inst.WorktreeBranch != "fork/oc-parent" {
 		t.Fatalf("OpenCode fork worktree metadata not copied: %+v", inst)
+	}
+}
+
+// The TUI fork path goes through defaultForkInstanceDeps().createInstance; an
+// Antigravity fork must reach the Antigravity builder and an unbound session
+// must be refused before anything starts.
+func TestForkInstanceDeps_Antigravity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	src := session.NewInstanceWithTool("agy parent", "/tmp/agy-proj", "antigravity")
+	src.AntigravitySessionID = "conv-ui-parent"
+	src.AntigravityDetectedAt = time.Now()
+
+	inst, err := defaultForkInstanceDeps().createInstance(src, "agy parent (fork)", "team", nil, session.ForkParent{})
+	if err != nil {
+		t.Fatalf("createInstance: %v", err)
+	}
+	if inst.Tool != "antigravity" {
+		t.Fatalf("fork tool = %q, want antigravity", inst.Tool)
+	}
+	if !inst.IsForkAwaitingStart || !strings.Contains(inst.ForkStartCommand, "--conversation conv-ui-parent") {
+		t.Fatalf("fork launch not deferred onto the parent conversation: awaiting=%v cmd=%q", inst.IsForkAwaitingStart, inst.ForkStartCommand)
+	}
+
+	unbound := session.NewInstanceWithTool("agy unbound", "/tmp/agy-proj", "antigravity")
+	if _, err := defaultForkInstanceDeps().createInstance(unbound, "agy unbound (fork)", "", nil, session.ForkParent{}); err == nil {
+		t.Fatal("an unbound Antigravity session was forked")
 	}
 }

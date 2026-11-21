@@ -30,9 +30,12 @@ choose `antigravity` in the session picker or run `agent-deck launch -c antigrav
 Complete Google's sign-in and workspace trust prompts in the session. Agent Deck
 binds the session's Antigravity conversation ID from `--conversation` or
 `~/.gemini/antigravity-cli/cache/` so restarts resume it and forks (`f` / `F` /
-`agent-deck session fork`) launch `agy --conversation <id> --prompt-interactive /fork`
-(falling back to sending `/fork` after the composer is ready when a custom
-wrapper is configured). Hooks and MCP management for Antigravity remain out of
+`agent-deck session fork`) open the parent conversation and send `/fork` through
+the ready composer. The fork waits for the child conversation before sending an
+initial message, and SSH or sandboxed Antigravity sessions cannot fork because
+the child would run on the wrong host. A custom wrapper that carries `{command}`
+resumes the bound conversation; an opaque wrapper (no `{command}`) cannot
+receive the resume flag. Hooks and MCP management for Antigravity remain out of
 scope.
 
 If you previously used `[tools.antigravity]` as a custom tool, the built-in
