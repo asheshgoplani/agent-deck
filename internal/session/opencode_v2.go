@@ -99,7 +99,8 @@ func openCodeV2OptionCommands(bin, sessionID string, opts *OpenCodeOptions) []st
 }
 
 // buildOpenCodeV2Command preserves model and agent options without v1 TUI flags.
-// Fresh sessions with overrides are created through the API, then opened by ID.
+// Fresh sessions are created through the API and opened by ID so Agent Deck
+// can fork them as soon as they start, even before the first prompt.
 func (i *Instance) buildOpenCodeV2Command(command string) string {
 	bin := quoteOpenCodeArg(command)
 	opts := i.GetOpenCodeOptions()
@@ -120,9 +121,6 @@ func (i *Instance) buildOpenCodeV2Command(command string) string {
 	if opts.SessionMode == "continue" && opts.Model == "" && opts.Agent == "" {
 		// The TUI selects the last session; do not create a replacement for it.
 		return bin + " -c"
-	}
-	if opts.Model == "" && opts.Agent == "" {
-		return bin
 	}
 	body := map[string]any{"title": i.Title, "location": map[string]string{"directory": i.ProjectPath}}
 	if opts.Agent != "" {

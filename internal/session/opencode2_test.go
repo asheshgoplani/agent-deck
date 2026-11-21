@@ -189,6 +189,19 @@ fi
 	return string(calls)
 }
 
+func TestOpenCode2FreshLaunchCreatesSessionWithoutOverrides(t *testing.T) {
+	isolateOpenCodeConfig(t, "opencode")
+	inst := NewInstanceWithTool("fork-probe", t.TempDir(), "opencode2")
+	command := inst.buildOpenCodeCommand(inst.Command)
+	calls := runOpenCode2Launch(t, inst, command, `{"id":"ses_fork_probe"}`, false)
+	want := []string{"api\tsession.create", `"title":"fork-probe"`, "CALL\t-s\tses_fork_probe"}
+	for _, arg := range want {
+		if !strings.Contains(calls, arg) {
+			t.Errorf("launch missing %q:\n%s", arg, calls)
+		}
+	}
+}
+
 func TestOpenCode2FreshLaunchAppliesOptions(t *testing.T) {
 	isolateOpenCodeConfig(t, "opencode")
 	inst := NewInstanceWithTool(`title "quoted"`, t.TempDir(), "opencode2")

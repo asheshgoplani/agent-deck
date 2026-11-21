@@ -334,11 +334,22 @@ func (i *Instance) queryOpenCodeSession() string {
 	currentID := i.OpenCodeSessionID
 	startedAt := i.OpenCodeStartedAt
 	lastStartedAt := i.LastStartedAt
+	tmuxSession := i.tmuxSession
 	i.mu.RUnlock()
 
 	sharedService := port == 0 && i.openCodeRejectsV1LaunchFlags()
 	var minCreated int64
 	if sharedService && currentID == "" {
+		// The V2 launch command records the ID returned by session.create
+		// before opening the pane. Prefer that ID over any same-project
+		// conversation found in the shared service listing.
+		if tmuxSession != nil && !i.IsSSH() && !i.IsSandboxed() {
+			if id, err := tmuxSession.GetEnvironment("OPENCODE_SESSION_ID"); err == nil {
+				if id, err := normalizeToolSessionID(FieldOpenCodeSessionID, id); err == nil && strings.HasPrefix(id, "ses_") && len(id) > len("ses_") {
+					return id
+				}
+			}
+		}
 		// OpenCodeStartedAt is not persisted, so a reloaded instance falls back to its last start.
 		if startedAt <= 0 && !lastStartedAt.IsZero() {
 			startedAt = lastStartedAt.UnixMilli()
@@ -677,11 +688,13 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 			return "", "", fmt.Errorf("opencode fork: cannot resolve the configured opencode binary")
 		}
 		binary := i.openCodeForkBinary()
-		childID, err := i.forkOpenCodeSessionViaService(binary, i.OpenCodeSessionID, workDir)
+		childID, createdAtDestination, err := i.forkOpenCodeSessionViaService(binary, i.OpenCodeSessionID, workDir)
 		if err != nil {
 			return "", "", err
 		}
-		err = i.moveOpenCodeForkViaService(binary, childID, workDir)
+		if !createdAtDestination {
+			err = i.moveOpenCodeForkViaService(binary, childID, workDir)
+		}
 		if err == nil {
 			err = applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts)
 		}
@@ -725,30 +738,44 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 // resumes it with a plain `-s` and a later restart does the same. The 1.x
 // -m/--agent fork flags are not emitted: 2.x exits on them, so model and agent
 // overrides are applied to the child session by applyOpenCodeForkOverridesViaService.
-func (i *Instance) forkOpenCodeSessionViaService(binary, parentID, workDir string) (string, error) {
+func (i *Instance) forkOpenCodeSessionViaService(binary, parentID, workDir string) (childID string, createdAtDestination bool, err error) {
 	output, err := runOpenCodeServiceCall(binary, workDir, "session.fork", parentID, "{}")
 	if err != nil {
-		return "", fmt.Errorf("opencode fork via service failed: %w", err)
+		var reply struct {
+			Tag  string `json:"_tag"`
+			Kind string `json:"kind"`
+		}
+		if json.Unmarshal(output, &reply) != nil || reply.Tag != "InvalidRequestError" || reply.Kind != "empty_session" {
+			return "", false, fmt.Errorf("opencode fork via service failed: %w", err)
+		}
+		// OpenCode refuses to fork an empty transcript. A new conversation
+		// is equivalent in that case; never fall back for other failures.
+		body, _ := json.Marshal(map[string]map[string]string{"location": {"directory": workDir}})
+		output, err = runOpenCodeServiceCall(binary, workDir, "session.create", "", string(body))
+		if err != nil {
+			return "", false, fmt.Errorf("opencode fork: create empty child session: %w", err)
+		}
+		createdAtDestination = true
 	}
 
 	var reply struct {
 		Data openCodeHTTPSessionMetadata `json:"data"`
 	}
 	if err := json.Unmarshal(output, &reply); err != nil {
-		return "", fmt.Errorf("opencode fork via service: unexpected reply: %w", err)
+		return "", false, fmt.Errorf("opencode fork via service: unexpected reply: %w", err)
 	}
-	childID, err := normalizeToolSessionID(FieldOpenCodeSessionID, reply.Data.ID)
+	childID, err = normalizeToolSessionID(FieldOpenCodeSessionID, reply.Data.ID)
 	if err != nil {
-		return "", fmt.Errorf("opencode fork via service: %w", err)
+		return "", false, fmt.Errorf("opencode fork via service: %w", err)
 	}
 	if childID == "" {
-		return "", fmt.Errorf("opencode fork via service: reply carries no session id")
+		return "", false, fmt.Errorf("opencode fork via service: reply carries no session id")
 	}
 	sessionLog.Info("opencode_forked_via_service",
 		slog.String("instance_id", i.ID),
 		slog.String("parent_session_id", parentID),
 		slog.String("child_session_id", childID))
-	return childID, nil
+	return childID, createdAtDestination, nil
 }
 
 // moveOpenCodeForkViaService moves a 2.x fork child onto workDir when the
@@ -836,7 +863,10 @@ func runOpenCodeServiceCallContext(ctx context.Context, binary, workDir, operati
 	// openCodeLaunchBinary, operation is a constant at every call site,
 	// sessionID passed a shell-safe identifier check, and the JSON body is
 	// passed as a single argv element.
-	args := []string{"api", operation, "--param", "sessionID=" + sessionID}
+	args := []string{"api", operation}
+	if sessionID != "" {
+		args = append(args, "--param", "sessionID="+sessionID)
+	}
 	if body != "" {
 		args = append(args, "-d", body)
 	}
@@ -849,9 +879,9 @@ func runOpenCodeServiceCallContext(ctx context.Context, binary, workDir, operati
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return nil, errors.New(strings.TrimSpace(string(exitErr.Stderr)))
+			return output, errors.New(strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		return nil, err
+		return output, err
 	}
 	return output, nil
 }

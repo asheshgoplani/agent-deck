@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 func setFakeOpenCodePath(t *testing.T, script string, includeSystemPath bool) {
@@ -441,6 +443,28 @@ func TestQueryOpenCodeSession_V2RunsConfiguredBinary(t *testing.T) {
 	inst := &Instance{Tool: "opencode", ProjectPath: projectPath, OpenCodeStartedAt: fixtureSpawnedAt}
 	if got := inst.queryOpenCodeSession(); got != "ses_CONFIGURED" {
 		t.Fatalf("session ID = %q, want ses_CONFIGURED (discovery must run the configured binary)", got)
+	}
+}
+
+func TestUpdateOpenCodeSession_V2UsesOwnLaunchID(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	pinOpenCodeMajorVersion(t, 2, true)
+	setFakeOpenCodePath(t, "#!/bin/sh\nprintf '%s\\n' '{\"data\":[]}'", true)
+	configureFakeOpenCode(t)
+
+	inst := NewInstanceWithTool("open-code-launch-id", t.TempDir(), "opencode")
+	inst.tmuxSession = tmux.NewSession(inst.Title, inst.ProjectPath)
+	if err := inst.tmuxSession.Start("sleep 300"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inst.tmuxSession.Kill() })
+	if err := inst.tmuxSession.SetEnvironment("OPENCODE_SESSION_ID", "ses_launch"); err != nil {
+		t.Fatal(err)
+	}
+
+	inst.UpdateOpenCodeSession()
+	if inst.OpenCodeSessionID != "ses_launch" || !inst.CanFork() {
+		t.Fatalf("session = %q, canFork = %t; want the launch's own ID and immediate forking", inst.OpenCodeSessionID, inst.CanFork())
 	}
 }
 

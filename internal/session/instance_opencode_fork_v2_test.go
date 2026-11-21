@@ -112,6 +112,43 @@ func TestOpenCodeForkV2_ForksThroughServiceAndResumesChild(t *testing.T) {
 	}
 }
 
+func TestOpenCodeForkV2_EmptySessionCreatesBlankFork(t *testing.T) {
+	pinOpenCodeMajorVersion(t, 2, true)
+	project := t.TempDir()
+	worktree := t.TempDir()
+	calls := filepath.Join(t.TempDir(), "calls")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$@" >> %s
+case "$2" in
+session.fork)
+  printf '%%s\n' '{"_tag":"InvalidRequestError","kind":"empty_session"}'
+  printf '%%s\n' 'HTTP 400 Bad Request' >&2
+  exit 1 ;;
+session.create) printf '%%s\n' '{"data":{"id":"ses_blank"}}' ;;
+esac
+`, shellescape.Quote(calls))
+	setFakeOpenCodePath(t, script, false)
+	configureFakeOpenCode(t)
+	parent := NewInstanceWithTool("parent", project, "opencode")
+	parent.OpenCodeSessionID = "ses_parent"
+	parent.OpenCodeDetectedAt = time.Now()
+
+	child, _, err := parent.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir("blank child", "", nil, worktree, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.OpenCodeSessionID != "ses_blank" {
+		t.Fatalf("child ID = %q, want ses_blank", child.OpenCodeSessionID)
+	}
+	argv, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(argv), "api\nsession.create\n-d\n") || !strings.Contains(string(argv), worktree) || strings.Contains(string(argv), "session.move") {
+		t.Fatalf("blank fork must be created directly in the destination:\n%s", argv)
+	}
+}
+
 func TestOpenCodeForkV2_ServiceFailureIsAnError(t *testing.T) {
 	pinOpenCodeMajorVersion(t, 2, true)
 	fakeOpenCodeForkService(t, "ses_child_456", 1)
