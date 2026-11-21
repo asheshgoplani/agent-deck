@@ -185,6 +185,11 @@ IMAGE_MARKER_RE = re.compile(r"\[IMAGE:(?P<path>[^\]]+)\]")
 # How long to wait for conductor to respond (seconds)
 RESPONSE_TIMEOUT = 300
 
+# Posted in place of a conductor reply with no text (for example a turn that
+# ended without visible output). Chat APIs reject an empty message, and the
+# user would otherwise be left looking at the "⏳" placeholder.
+NO_OUTPUT_REPLY = "[No output from conductor.]"
+
 # issue #1981 / #1999: the interactive-state guard skips a heartbeat while a
 # picker or unsent draft is on screen. Its evidence is a single tmux pane
 # capture, which can LIE — a stale glyph buffer (#1999) keeps showing composer
@@ -1440,7 +1445,7 @@ async def _drain_queue() -> None:
                 )
                 if ok:
                     if reply_callback is not None:
-                        text = response.strip() or "[No output from conductor.]"
+                        text = response.strip() or NO_OUTPUT_REPLY
                         loop.create_task(_fire_callback(reply_callback, text))
                     continue
 
@@ -1534,7 +1539,7 @@ async def _watch_pending_reply(
                 None, functools.partial(get_session_output, session, profile=profile),
             )
             await _fire_callback(
-                reply_callback, output.strip() or "[No output from conductor.]",
+                reply_callback, output.strip() or NO_OUTPUT_REPLY,
             )
             return
         output, generation = await loop.run_in_executor(
@@ -1542,7 +1547,7 @@ async def _watch_pending_reply(
         )
         if generation == receipt["turn_generation"]:
             text = output.strip()
-            await _fire_callback(reply_callback, text or "[No output from conductor.]")
+            await _fire_callback(reply_callback, text or NO_OUTPUT_REPLY)
             log.info(
                 "Pending reply %s for %s delivered after matching Codex completion",
                 receipt["receipt_id"], session,
@@ -3026,8 +3031,9 @@ def create_telegram_bot(config: dict):
         log.info("Conductor [%s] response: %s", target_profile, response[:100])
 
         # Convert to HTML first, then split to respect post-conversion length
+        reply_text = response if response.strip() else NO_OUTPUT_REPLY
         html_response = md_to_tg_html(
-            f"{profile_tag}{response}" if profile_tag else response
+            f"{profile_tag}{reply_text}" if profile_tag else reply_text
         )
         for chunk in split_message(html_response):
             await message.answer(chunk, parse_mode="HTML")
@@ -3465,7 +3471,7 @@ def create_slack_app(config: dict):
 
         log.info("Conductor [%s] response: %s", target["name"], response[:100])
 
-        for chunk in split_message(response, max_len=SLACK_MAX_LENGTH):
+        for chunk in split_message(response if response.strip() else NO_OUTPUT_REPLY, max_len=SLACK_MAX_LENGTH):
             prefixed = f"{name_tag}{chunk}" if name_tag else chunk
             await _safe_say(say, text=prefixed, thread_ts=thread_ts)
 
@@ -4094,7 +4100,9 @@ def create_discord_bot(config: dict):
         name_tag = (
             f"[{target['name']}] " if len(conductors) > 1 else ""
         )
-        await send_discord_output(message.channel, response, name_tag=name_tag)
+        await send_discord_output(
+            message.channel, response if response.strip() else NO_OUTPUT_REPLY, name_tag=name_tag,
+        )
 
     log.info(
         "Discord bot initialized (guild=%d, channel=%d)",
@@ -4728,7 +4736,7 @@ class MattermostBridge:
 
         if ok:
             log.info("Conductor [%s] response: %s", target["name"], response[:100])
-            await reply(f"{name_tag}{response}")
+            await reply(f"{name_tag}{response if response.strip() else NO_OUTPUT_REPLY}")
             return
         if not still_running:
             await reply(f"[Failed to send message to conductor {target['name']}.]")
