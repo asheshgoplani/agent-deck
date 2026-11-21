@@ -172,6 +172,20 @@ func TestExitToShell_EmptyCommandNoop(t *testing.T) {
 	}
 }
 
+func TestExitToShell_PreservesExecInQuotedPrompt(t *testing.T) {
+	for tool, command := range map[string]string{
+		"antigravity": `agy --prompt-interactive 'Please exec ls; exec pwd'`,
+		"gemini":      `gemini --prompt "Please exec ls"`,
+	} {
+		t.Run(tool, func(t *testing.T) {
+			inst := &Instance{Tool: tool, ExitToShell: boolPtr(true)}
+			if got, want := inst.wrapExitToShell(command), command+`; exec "$SHELL" -i`; got != want {
+				t.Errorf("wrapExitToShell() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // --- Config default is OFF (opt-in) -----------------------------------------
 
 func TestExitToShell_ConfigDefaultOff(t *testing.T) {

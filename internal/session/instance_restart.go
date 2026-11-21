@@ -1064,7 +1064,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		case i.Tool == "gemini":
 			command = i.buildGeminiCommand(i.Command)
 		case i.Tool == "antigravity":
-			command = i.buildRestartEnvPrefix() + i.antigravityCommand()
+			command = i.buildEnvSourceCommand() + i.antigravityCommand()
 		case i.Tool == "opencode":
 			command = i.buildOpenCodeCommand(i.Command)
 			// Record start time for async session ID detection
@@ -1484,6 +1484,12 @@ func (i *Instance) CanRestart() bool {
 		if i.deepSeekPromptDelivery() == DeepSeekPromptCommandLine {
 			return strings.TrimSpace(i.DeepSeekTask) != ""
 		}
+		return true
+	}
+
+	// Antigravity restarts with its stored command, including any explicit
+	// --conversation flag. Without one, it starts a fresh conversation.
+	if i.Tool == "antigravity" {
 		return true
 	}
 

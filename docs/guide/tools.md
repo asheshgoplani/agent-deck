@@ -31,6 +31,11 @@ conversation, use Antigravity's `/resume` picker or launch explicitly with
 `agent-deck launch -c 'agy --conversation <id>' .`. Agent Deck does not
 automatically bind Antigravity conversation IDs or manage its hooks or MCP servers.
 
+If you previously used `[tools.antigravity]` as a custom tool, the built-in
+preset keeps its `command` and detection patterns. To keep custom fields such
+as `env`, `env_file`, or `wrapper`, rename that tool (for example,
+`[tools.my-agy]`) and set `compatible_with = "antigravity"`.
+
 Select `opencode2` in the new/edit session picker, web picker, or default-tool settings,
 or create a session with `agent-deck add -c opencode2`. The `opencode2` launcher must
 be installed on the session's host. Sessions retain OpenCode's tool identity while

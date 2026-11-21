@@ -208,10 +208,11 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	}
 
 	if err := send.WaitForAgentReady(i.tmuxSession, i.Tool, send.DefaultAgentReadyTimeout, send.PromptGates{
-		ClaudeComposer: IsClaudeCompatible(i.Tool),
-		CodexPrompt:    IsCodexCompatible(i.Tool),
+		ClaudeComposer:      IsClaudeCompatible(i.Tool),
+		CodexPrompt:         IsCodexCompatible(i.Tool),
+		AntigravityComposer: IsAntigravityCompatible(i.Tool),
 	}); err != nil {
-		return fmt.Errorf("timeout waiting for agent to be ready")
+		return fmt.Errorf("waiting for agent to be ready: %w", err)
 	}
 
 	// Pre-send provenance probe for the #1777 attribution gate: Claude

@@ -65,7 +65,8 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		return d.hasGeminiPrompt(content)
 
 	case "antigravity":
-		return antigravityPrompt.MatchString(StripANSI(content))
+		content = StripANSI(content)
+		return antigravityPrompt.MatchString(content) && !antigravityBusy.MatchString(content)
 
 	case "codex":
 		// Codex/OpenAI CLI patterns.
@@ -106,13 +107,18 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 // footer at the end of the pane: inline mode can leave old frames in view.
 // A bare '>' also appears in transcripts and onboarding menus.
 const (
-	antigravityComposerFrame = `(?m)^─{5,}[ \t]*\n>[^\n]*(?:\n[ \t]+[^\n]*)*\n─{5,}[ \t]*\n[ \t]*`
-	antigravityFooterEnd     = `(?:[ \t]{2,}[^\n]*)?[ \t]*(?:\n[ \t]*)*\z`
-	antigravityReadyFooter   = antigravityComposerFrame + `\? for shortcuts` + antigravityFooterEnd
-	antigravityBusyFooter    = antigravityComposerFrame + `esc to (?:cancel|interrupt)` + antigravityFooterEnd
+	antigravityComposerFrame = `(?m)^[ \t]*─{5,}[ \t]*\n[ \t]*>[^\n]*(?:\n[ \t]*(?:[^─ \t\n][^\n]*)?)*\n[ \t]*─{5,}[ \t]*\n[^\n]*`
+	// Allow a toast or extra status rows, but not enough lines for a newer
+	// composer to have replaced the matched one.
+	antigravityFooterEnd   = `[^\n]*(?:\n[^\n]*){0,3}(?:\n[ \t]*)*\z`
+	antigravityReadyFooter = antigravityComposerFrame + `\? for shortcuts\b` + antigravityFooterEnd
+	antigravityBusyFooter  = antigravityComposerFrame + `(?i:\besc to (?:cancel|interrupt)\b)` + antigravityFooterEnd
 )
 
-var antigravityPrompt = regexp.MustCompile(antigravityReadyFooter)
+var (
+	antigravityPrompt = regexp.MustCompile(antigravityReadyFooter)
+	antigravityBusy   = regexp.MustCompile(antigravityBusyFooter)
+)
 
 func (d *PromptDetector) hasOMPPrompt(content string) bool {
 	if strings.Contains(content, "⟨esc⟩") {

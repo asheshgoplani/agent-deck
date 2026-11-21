@@ -5006,6 +5006,16 @@ func IsCodexCompatible(toolName string) bool {
 	return false
 }
 
+// IsAntigravityCompatible reports whether sends must wait for the Antigravity
+// composer rather than accepting any waiting state (which includes menus).
+func IsAntigravityCompatible(toolName string) bool {
+	if toolName == "antigravity" {
+		return true
+	}
+	def := GetToolDef(toolName)
+	return def != nil && strings.EqualFold(strings.TrimSpace(def.CompatibleWith), "antigravity")
+}
+
 // IsDevinCompatible returns true if the tool is "devin" or a custom tool
 // whose underlying command is "devin". Use this for capability gates where
 // custom tools wrapping Devin should inherit Devin's composer behavior

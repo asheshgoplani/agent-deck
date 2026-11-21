@@ -761,8 +761,14 @@ func TestAntigravityPaneStatus(t *testing.T) {
 	}{
 		{"idle", frame + "? for shortcuts    Gemini Flash\n\n", false, true},
 		{"busy", frame + "esc to cancel    Gemini Flash", true, false},
+		{"busy status row", frame + "Gemini Flash · (Esc to cancel)\nActive items: 1", true, false},
 		{"old busy footer", frame + "esc to cancel\n" + frame + "? for shortcuts", false, true},
+		{"old ready footer", frame + "? for shortcuts\n" + frame + "(Esc to cancel)", true, false},
+		{"multiline draft", "  ────────────\n  > first line\n\n    third line\n  ────────────\nGemini Flash · ? for shortcuts\nToast below the footer", false, true},
 		{"login menu", " Select login method:\n> 1. Google OAuth\n  2. Use a Google Cloud project", false, true},
+		{"trust menu", "Trust this folder?\nDo you trust the contents of this project?\n> Yes\n  No", false, true},
+		{"appearance menu", "Select a color scheme\n> Dark\n  Light", false, true},
+		{"rendering menu", "Select a rendering mode\n> Default\n  Alternate", false, true},
 		{"footer quoted in transcript", "? for shortcuts\n> A previous turn", false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
