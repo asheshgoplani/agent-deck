@@ -21,7 +21,7 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 | Harness | Live signal (wins while fresh) | Frame cues for running | Frame cues for waiting | Frame cues for error |
 |---|---|---|---|---|
 | claude | Hooks: UserPromptSubmit / PreToolUse → running, Stop / PermissionRequest / Notification(permission) → waiting, SessionEnd → dead. Fresh for 2 min. PreToolUse (synchronous, status only) also covers turns that start without a typed prompt; PostToolUse is not subscribed, so a long tool or a long thinking phase falls back to the pane 2 min after its last hook. See [Claude status hooks](claude-status-hooks.md). | Spinner line `^[✳✽✶✻✢·] Word… (…)`, `esc to interrupt`, Braille spinner in pane title, `Waiting for N background agent to finish` | Bare `❯`, `❯ draft` between the two input-box rules, menu footers (`Enter to select`, `Enter to confirm`, `Allow once`, feedback picker), trust prompt | `API Error: 401`, `Please run /login`, `socket connection closed`, `Crunched for 0s` model-unavailable no-op |
-| codex | `codex-notify` hook: turn start → running (fresh 20 s), turn end → waiting (fresh 5 s). Absent unless `codex-hooks install` ran. Pane title Braille spinner. | `• Word (9m 41s • esc to interrupt)` status line in the live slot (the last `•` block above the `› ` composer, only blank and `  └ …` lines between; `codexLiveStatusLine`), `esc to interrupt` within the last 3 lines, Braille spinner | `› ` composer (`Ask Codex to do anything`), `Press enter to confirm or esc to go back` | Column-0 `■` banners: usage limit, not logged in |
+| codex | `codex-notify` hook: turn start → running (fresh 20 s), turn end → waiting (fresh 5 s). Installed by CLI creation with `--install-codex-hooks` when `notify` is absent, or manually with `codex-hooks install`. Pane title Braille spinner. | `• Word (9m 41s • esc to interrupt)` status line in the live slot (the last `•` block above the `› ` composer, only blank and `  └ …` lines between; `codexLiveStatusLine`), `esc to interrupt` within the last 3 lines, Braille spinner | `› ` composer (`Ask Codex to do anything`), `Press enter to confirm or esc to go back` | Column-0 `■` banners: usage limit, not logged in |
 | gemini | Hooks BeforeAgent / AfterAgent (2 min) | `esc to cancel` | `gemini>`, `Type your message`, line ending in `>` | none |
 | opencode | SSE `/event` stream, TUI only (30 s) | `thinking...`, `generating...`, pulse glyphs `█▓▒░` | `Ask anything`, `enter submit` | none |
 | pi | Hooks turn_start / turn_end (2 min), excluded from the flip debounce | `── ⠹ Working ──` banner, `[subagent]`, `[running]` (a plain `delegate_task` in prose is not a cue) | `pi>`, the `↑… ↓… ` token/cost status line under the composer | none |
@@ -215,7 +215,7 @@ running rows out):
   turn that thinks before its first tool keeps the previous Stop's waiting
   until the pane shows a live spinner above the composer or the hook ages out. A Claude turn that redraws without its spinner for more
   than the 6 s grace plus one debounce sample reads as waiting.
-- Codex without `codex-hooks install` is pane-only; its title spinner and the
+- Codex without an installed notify hook is pane-only; its title spinner and the
   `• Working (…)` line are the only running cues.
 - OpenCode is pane-only outside the TUI (the SSE watcher is TUI-owned).
 - Shell prompts that are not a prompt glyph (a `Password:` line) carry no cue.
