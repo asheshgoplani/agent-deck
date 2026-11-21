@@ -145,7 +145,7 @@ func (s *Server) handleSessionMCPs(w http.ResponseWriter, r *http.Request, sessi
 		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "session id is required")
 		return
 	}
-	target, ok := s.lookupSessionMCPTarget(sessionID)
+	target, ok := s.lookupSessionMCPTarget(sessionID, r.Method == http.MethodGet)
 	if !ok {
 		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "session not found")
 		return
@@ -299,22 +299,17 @@ func (s *Server) handleMCPMove(w http.ResponseWriter, r *http.Request, target MC
 }
 
 // lookupSessionMCPTarget resolves a session id to the tool + project path that
-// together select an on-disk MCP store. Both halves come from the same menu
-// snapshot entry, so they cannot disagree.
-func (s *Server) lookupSessionMCPTarget(sessionID string) (MCPTarget, bool) {
+// together select an on-disk MCP store. Both halves come from the same
+// session entry, so they cannot disagree. fresh is passed to lookupSession.
+func (s *Server) lookupSessionMCPTarget(sessionID string, fresh bool) (MCPTarget, bool) {
 	if s.menuData == nil {
 		return MCPTarget{}, false
 	}
-	snap, err := s.menuData.LoadMenuSnapshot()
-	if err != nil || snap == nil {
+	sess, ok := s.lookupSession(sessionID, fresh)
+	if !ok {
 		return MCPTarget{}, false
 	}
-	for _, item := range snap.Items {
-		if item.Type == MenuItemTypeSession && item.Session != nil && item.Session.ID == sessionID {
-			return MCPTarget{Tool: item.Session.Tool, ProjectPath: item.Session.ProjectPath}, true
-		}
-	}
-	return MCPTarget{}, false
+	return MCPTarget{Tool: sess.Tool, ProjectPath: sess.ProjectPath}, true
 }
 
 func (s *Server) detectAttachedScope(target MCPTarget, name string) string {
