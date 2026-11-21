@@ -122,6 +122,7 @@ default_conductor = "ops"   # unprefixed messages go to the "ops" conductor
 ```
 
 When the key is absent, unprefixed messages go to the alphabetically first conductor, as before.
+With `default_conductor = ""`, the first unprefixed DM gets the conductor list and the prefix syntax; once a message names a conductor, later unprefixed DMs follow it (step 3), the same way replies in a routed thread do.
 A name that matches no conductor routes nothing and logs a warning, so a typo never silently picks a conductor.
 Thread and DM routing is kept in memory (the most recent 500 threads and DMs), so it starts empty after the bridge restarts.
 This applies to Slack only for now; Telegram and Discord still use the first conductor for unprefixed messages.
