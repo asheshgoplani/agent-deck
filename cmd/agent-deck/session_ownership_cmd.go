@@ -107,7 +107,7 @@ func handleSessionOwnershipInspect(profile string, args []string) {
 func handleSessionOwnershipReconcile(profile string, args []string) {
 	fs := flag.NewFlagSet("session ownership reconcile", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	yes := fs.Bool("yes", false, "Confirm reconciling a session whose pane is still running")
+	yes := fs.Bool("yes", false, "Confirm reconciling a session whose pane is still running or could not be checked")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session ownership reconcile <id|title> [--yes] [--json]")
 		fmt.Println()
@@ -115,9 +115,11 @@ func handleSessionOwnershipReconcile(profile string, args []string) {
 		fmt.Println("SIGTERM then SIGKILL, death verified — and clear the receipt.")
 		fmt.Println()
 		fmt.Println("Reaping an escaped tree needs no confirmation: its pane is already gone,")
-		fmt.Println("which is why the restart was refused. --yes is required only when the")
+		fmt.Println("which is why the restart was refused. --yes is required when the")
 		fmt.Println("receipt's leader is still the live pane process, because reconciling then")
 		fmt.Println("stops the running session rather than cleaning up after a dead one.")
+		fmt.Println("It is also required when the pane could not be checked, because the")
+		fmt.Println("session may still be running.")
 	}
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
@@ -130,7 +132,8 @@ func handleSessionOwnershipReconcile(profile string, args []string) {
 	// escaped tree whose pane died — is not that case, and making it demand a
 	// flag would train people to pass --yes reflexively, which is how a
 	// confirmation gate stops being one.
-	if status := inst.OwnershipStatus(); status.PaneAttached && !*yes {
+	status := inst.OwnershipStatus()
+	if status.PaneAttached && !*yes {
 		out.Error(fmt.Sprintf(
 			"session %s is still running: reconciling would stop its live pane process. "+
 				"Re-run with --yes, or use `agent-deck session stop %s`", inst.Title, inst.ID),
@@ -138,6 +141,13 @@ func handleSessionOwnershipReconcile(profile string, args []string) {
 		if !*jsonOutput {
 			fmt.Fprintln(os.Stderr, renderOwnershipStatus(inst, status))
 		}
+		exitCLI(1)
+	}
+	// A failed pane check leaves attachment unknown: the pane may still run
+	// the receipt's leader, so it gets the same confirmation.
+	if status.PaneCheckErr != nil && !*yes {
+		out.Error(status.Reason()+". Reconciling may stop a running session. To proceed, re-run with --yes",
+			ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 
