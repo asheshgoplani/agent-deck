@@ -208,10 +208,11 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	}
 
 	if err := send.WaitForAgentReady(i.tmuxSession, i.Tool, send.DefaultAgentReadyTimeout, send.PromptGates{
-		ClaudeComposer: IsClaudeCompatible(i.Tool),
-		CodexPrompt:    IsCodexCompatible(i.Tool),
+		ClaudeComposer:      IsClaudeCompatible(i.Tool),
+		CodexPrompt:         IsCodexCompatible(i.Tool),
+		AntigravityComposer: IsAntigravityCompatible(i.Tool),
 	}); err != nil {
-		return fmt.Errorf("timeout waiting for agent to be ready")
+		return fmt.Errorf("waiting for agent to be ready: %w", err)
 	}
 
 	// Pre-send provenance probe for the #1777 attribution gate: Claude
@@ -398,6 +399,8 @@ func (i *Instance) PostStartSync(maxWait time.Duration) {
 		i.autoConfirmClaudeResumePicker()
 	case i.Tool == "gemini":
 		i.UpdateGeminiSession(nil)
+	case i.Tool == "antigravity":
+		i.postStartSyncAntigravity(maxWait)
 	case i.Tool == "copilot":
 		// Copilot uses async detection via detectCopilotSessionAsync().
 		// If the session was not yet detected, attempt a quick sync check.

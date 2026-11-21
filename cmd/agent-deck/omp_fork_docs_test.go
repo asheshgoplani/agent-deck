@@ -12,10 +12,10 @@ func TestAgentDeckSkillDocumentsOMPForkSupport(t *testing.T) {
 
 	checks := map[string][]string{
 		filepath.Join("..", "..", "skills", "agent-deck", "SKILL.md"): {
-			"| `agent-deck session fork <name>` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi conversation |",
+			"| `agent-deck session fork <name>` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi/Antigravity conversation |",
 		},
 		filepath.Join("..", "..", "skills", "agent-deck", "references", "tui-reference.md"): {
-			"| `f` / `F` | Quick fork / fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi) (**rebindable**) |",
+			"| `f` / `F` | Quick fork / fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi/Antigravity) (**rebindable**) |",
 		},
 	}
 

@@ -753,6 +753,37 @@ func BenchmarkDetectToolIgnoresScreenText(b *testing.B) {
 	}
 }
 
+func TestAntigravityPaneStatus(t *testing.T) {
+	frame := "────────────────\n>\n────────────────\n"
+	for _, tt := range []struct {
+		name, pane    string
+		busy, waiting bool
+	}{
+		{"idle", frame + "? for shortcuts    Gemini Flash\n\n", false, true},
+		{"busy", frame + "esc to cancel    Gemini Flash", true, false},
+		{"busy status row", frame + "Gemini Flash · (Esc to cancel)\nActive items: 1", true, false},
+		{"old busy footer", frame + "esc to cancel\n" + frame + "? for shortcuts", false, true},
+		{"old ready footer", frame + "? for shortcuts\n" + frame + "(Esc to cancel)", true, false},
+		{"multiline draft", "  ────────────\n  > first line\n\n    third line\n  ────────────\nGemini Flash · ? for shortcuts\nToast below the footer", false, true},
+		{"login menu", " Select login method:\n> 1. Google OAuth\n  2. Use a Google Cloud project", false, true},
+		{"trust menu", "Trust this folder?\nDo you trust the contents of this project?\n> Yes\n  No", false, true},
+		{"appearance menu", "Select a color scheme\n> Dark\n  Light", false, true},
+		{"rendering menu", "Select a rendering mode\n> Default\n  Alternate", false, true},
+		{"footer quoted in transcript", "? for shortcuts\n> A previous turn", false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewSession("antigravity-status", t.TempDir())
+			s.Command = "agy"
+			if got := s.hasBusyIndicator(tt.pane); got != tt.busy {
+				t.Errorf("busy = %v, want %v", got, tt.busy)
+			}
+			if got := s.hasPromptIndicator(tt.pane); got != tt.waiting {
+				t.Errorf("waiting = %v, want %v", got, tt.waiting)
+			}
+		})
+	}
+}
+
 func TestDetectToolFromCommand(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -761,6 +792,9 @@ func TestDetectToolFromCommand(t *testing.T) {
 	}{
 		{name: "claude", command: "claude", want: "claude"},
 		{name: "gemini", command: "gemini --yolo", want: "gemini"},
+		{name: "antigravity", command: "agy --model gemini-flash", want: "antigravity"},
+		{name: "antigravity absolute path", command: "/opt/bin/agy --conversation abc", want: "antigravity"},
+		{name: "antigravity not an argument", command: "echo agy", want: ""},
 		{name: "opencode", command: "open-code --continue", want: "opencode"},
 		{name: "codex", command: "codex --dangerously-bypass-approvals-and-sandbox", want: "codex"},
 		{name: "pi", command: "pi --model fast", want: "pi"},

@@ -299,6 +299,18 @@ func TestResolveSessionCommand(t *testing.T) {
 			wantRawCommand: false,
 		},
 		{
+			name:     "Antigravity preset",
+			raw:      "antigravity",
+			wantTool: "antigravity",
+		},
+		{
+			name:        "Antigravity conversation",
+			raw:         "agy --conversation abc",
+			wantTool:    "antigravity",
+			wantWrapper: "{command} --conversation abc",
+			wantNote:    true,
+		},
+		{
 			name:           "tool with args auto-wrapper",
 			raw:            "codex --dangerously-bypass-approvals-and-sandbox",
 			wantTool:       "codex",

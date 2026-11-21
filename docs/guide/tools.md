@@ -10,6 +10,7 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
+| **Antigravity CLI** (`agy`) | Launch, terminal status detection, organization, resume, fork |
 | **OpenCode** | Status detection, MCP, organization, fork |
 | **OpenCode 2** (`opencode2`) | Status detection, MCP, model/agent selection, launch, resume, fork |
 | **Codex** | Status detection, MCP, organization, conductor, fork |
@@ -22,6 +23,20 @@ Agent Deck works with any terminal-based AI tool:
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
+
+Install [Antigravity CLI](https://antigravity.google/docs/getting-started/), then
+choose `antigravity` in the session picker or run `agent-deck launch -c antigravity .`.
+Complete Google's sign-in and workspace trust prompts in the session. Agent Deck
+binds the session's Antigravity conversation ID from `--conversation` or
+`~/.gemini/antigravity-cli/cache/` so restarts resume it and forks (`f` / `F` /
+`agent-deck session fork`) open the parent conversation and send `/fork`
+through tmux after the Antigravity composer is ready. Hooks and MCP management
+for Antigravity remain out of scope.
+
+If you previously used `[tools.antigravity]` as a custom tool, the built-in
+preset keeps its `command` and detection patterns. To keep custom fields such
+as `env`, `env_file`, or `wrapper`, rename that tool (for example,
+`[tools.my-agy]`) and set `compatible_with = "antigravity"`.
 
 Select `opencode2` in the new/edit session picker, web picker, or default-tool settings,
 or create a session with `agent-deck add -c opencode2`. The `opencode2` launcher must

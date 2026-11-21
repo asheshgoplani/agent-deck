@@ -53,7 +53,7 @@ func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand str
 func SupportsNativeFork(tool string) bool {
 	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "pi" || tool == "opencode" ||
-		IsCodexCompatible(tool) || tool == "omp"
+		IsCodexCompatible(tool) || tool == "omp" || tool == "antigravity"
 }
 
 // CanFork returns true if this session currently has the source state needed
@@ -62,6 +62,12 @@ func (i *Instance) CanFork() bool {
 	// Gemini CLI doesn't support forking
 	if i.Tool == "gemini" {
 		return false
+	}
+
+	// Antigravity CLI sessions fork from a bound or explicit --conversation ID
+	// via `agy --conversation <id>` + `/fork`.
+	if i.Tool == "antigravity" {
+		return i.CanForkAntigravity()
 	}
 
 	// DeepSeek Harness 0.1.0-rc.6 has no fork/branch command: the launcher owns
@@ -491,6 +497,8 @@ func (i *Instance) CreateForkedInstanceForToolUnder(newTitle, newGroupPath strin
 		forked, cmd, err = i.CreateForkedOMPInstanceWithOptions(newTitle, newGroupPath, opts)
 	case IsCodexCompatible(i.Tool):
 		forked, cmd, err = i.CreateForkedCodexInstanceWithOptions(newTitle, newGroupPath, opts)
+	case i.Tool == "antigravity":
+		forked, cmd, err = i.CreateForkedAntigravityInstanceWithOptions(newTitle, newGroupPath, opts)
 	default:
 		return i.createForkedClaudeInstance(newTitle, newGroupPath, opts, parent)
 	}

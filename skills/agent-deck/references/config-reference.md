@@ -10,6 +10,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides)
 - [[group_defaults] Section](#group_defaults-section)
 - [[gemini] Section](#gemini-section)
+- [[antigravity] Section](#antigravity-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
 - [[models] Section](#models-section)
@@ -282,6 +283,20 @@ command = "gemini"                   # Binary/invocation override
 | `default_model` | string | `""` | Model to use (e.g., `"gemini-2.5-flash"`). Empty uses Gemini's default. |
 | `env_file` | string | `""` | A .env file sourced for Gemini sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"gemini"` | Override the binary/invocation. Supports flags. |
+
+## [antigravity] Section
+
+The built-in `antigravity` preset launches Google's `agy` CLI. Override the
+invocation for the preset with:
+
+```toml
+[antigravity]
+command = "agy --mode plan" # Default: "agy"
+```
+
+An existing `[tools.antigravity].command` is used if `[antigravity].command` is
+unset. Set terminal detection overrides under `[tools.antigravity]`. Gemini CLI
+remains a separate tool with its own settings.
 
 ## [opencode] Section
 
@@ -671,7 +686,7 @@ branch_prefix       = "fork/" # Auto branch name = <branch_prefix><sanitized-tit
 | `docker` | string | `"auto"` | Docker isolation for the fork: `"auto"` matches the parent (sandboxed parent → a fresh container; otherwise none), `"on"` always sandboxes, `"off"` never. |
 | `branch_prefix` | string | `"fork/"` | Prefix for the auto-suggested fork branch name. Applies to both quick fork and the `Shift+F` dialog. |
 
-> **Note:** Forking is supported across Claude, OpenCode, Pi, Codex, and Oh My Pi (and Codex-compatible custom tools) via each tool's native fork, in the TUI, CLI (`agent-deck session fork <id>`), and Web UI. The Web/API endpoint (`POST /api/sessions/{id}/fork`) performs a plain tool-native fork and does **not** apply these `[fork]` worktree/state/Docker defaults — those are TUI quick-fork/dialog scope. Codex forking requires a codex CLI with `codex fork <session-id>` support.
+> **Note:** Forking is supported across Claude, OpenCode, Pi, Codex, Oh My Pi, and Antigravity (and Codex-compatible custom tools) via each tool's fork flow, in the TUI, CLI (`agent-deck session fork <id>`), and Web UI. The Web/API endpoint (`POST /api/sessions/{id}/fork`) performs a plain tool-native fork and does **not** apply these `[fork]` worktree/state/Docker defaults — those are TUI quick-fork/dialog scope. Codex forking requires a codex CLI with `codex fork <session-id>` support.
 
 ## [conductor] Section
 

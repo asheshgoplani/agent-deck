@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,15 @@ func TestSettingsGET(t *testing.T) {
 	}
 	if !strings.Contains(body, `"work"`) {
 		t.Errorf("expected profile value 'work', got: %s", body)
+	}
+	var settings SettingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &settings); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"gemini", "antigravity"} {
+		if !slices.Contains(settings.PickerTools, tool) {
+			t.Errorf("web picker is missing %q: %v", tool, settings.PickerTools)
+		}
 	}
 }
 

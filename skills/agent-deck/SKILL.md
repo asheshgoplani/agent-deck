@@ -35,7 +35,7 @@ Plugin installs resolve to `~/.claude/plugins/cache/agent-deck/agent-deck/<hash>
 | `agent-deck session output <name>` | Get bounded, ANSI-clean last response (JSON/quiet/copy preserve full source) |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
-| `agent-deck session fork <name>` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi conversation |
+| `agent-deck session fork <name>` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi/Antigravity conversation |
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |

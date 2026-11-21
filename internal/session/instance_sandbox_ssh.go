@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -147,15 +147,16 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 // pane's initial process and whose clean exit (e.g. `/exit`) can fall back to
 // an interactive shell when exit_to_shell is enabled (issue #1161).
 var builtinAgentTools = map[string]bool{
-	"claude":   true,
-	"gemini":   true,
-	"opencode": true,
-	"codex":    true,
-	"copilot":  true,
-	"cursor":   true,
-	"hermes":   true,
-	"crush":    true,
-	"muse":     true,
+	"antigravity": true,
+	"claude":      true,
+	"gemini":      true,
+	"opencode":    true,
+	"codex":       true,
+	"copilot":     true,
+	"cursor":      true,
+	"hermes":      true,
+	"crush":       true,
+	"muse":        true,
 	// pi and omp (Oh My Pi) launch with the same `<env>; AGENTDECK_... pi
 	// --continue ...` shape; they were left out of this list, so exit_to_shell
 	// silently skipped them (issue #2556).
@@ -210,17 +211,20 @@ func (i *Instance) wrapExitToShell(command string) string {
 	if command == "" || i.IsSandboxed() || !i.exitToShellEnabled() || !isBuiltinAgentTool(i.Tool) {
 		return command
 	}
-	rewritten := command
-	if loc := execLauncherRe.FindStringSubmatchIndex(command); loc != nil {
-		rewritten = command[:loc[2]] + command[loc[3]:]
+	commands, ok := shellwords.Commands(command)
+	if ok {
+		offset := 0
+		for _, part := range commands {
+			offset += strings.Index(command[offset:], part)
+			if strings.HasPrefix(part, "exec ") {
+				command = command[:offset] + command[offset+len("exec "):]
+				break
+			}
+			offset += len(part)
+		}
 	}
-	return rewritten + `; exec "$SHELL" -i`
+	return command + `; exec "$SHELL" -i`
 }
-
-// execLauncherRe matches the first `exec ` in shell command position: at the
-// start of the command or after whitespace or a separator. Group 1 is the
-// `exec ` to strip.
-var execLauncherRe = regexp.MustCompile(`(?:^|[\s;&|(])(exec )`)
 
 // launchShellEnabled returns whether the session should wrap agent commands
 // with a shell invocation that loads startup files before launching the agent.
