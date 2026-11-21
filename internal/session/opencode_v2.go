@@ -115,7 +115,7 @@ func (i *Instance) buildOpenCodeV2Command(command string) string {
 	if sessionID != "" {
 		quotedID := shellescape.Quote(sessionID)
 		steps := openCodeV2OptionCommands(bin, quotedID, opts)
-		steps = append(steps, fmt.Sprintf("%s -s %s", bin, quotedID))
+		steps = append(steps, fmt.Sprintf("%s -s %s%s", bin, quotedID, i.openCodeResumeDirArg()))
 		return strings.Join(steps, " && ")
 	}
 	if opts.SessionMode == "continue" && opts.Model == "" && opts.Agent == "" {

@@ -383,7 +383,7 @@ func TestOpenCode2DiscoveryUsesSelectedLauncherAndNestedAPITimes(t *testing.T) {
 	project := t.TempDir()
 	bin := t.TempDir()
 	marker := filepath.Join(bin, "args")
-	response := fmt.Sprintf(`{"data":[{"id":"ses_child","parentID":"ses_parent","location":{"directory":%q},"time":{"created":1000,"updated":2000}},{"id":"ses_v2","location":{"directory":%q},"time":{"created":1000,"updated":2000}}],"cursor":{}}`, project, project)
+	response := fmt.Sprintf(`{"data":{"id":"ses_v2","location":{"directory":%q},"time":{"created":1000,"updated":2000}}}`, project)
 	stub := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %s\nprintf '%%s\\n' %s\n", shellescape.Quote(marker), shellescape.Quote(response))
 	if err := os.WriteFile(filepath.Join(bin, "opencode2"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
@@ -402,7 +402,7 @@ func TestOpenCode2DiscoveryUsesSelectedLauncherAndNestedAPITimes(t *testing.T) {
 		t.Fatal("discovered v2 session must enable fork and quick fork")
 	}
 	args, err := os.ReadFile(marker)
-	if err != nil || !strings.Contains(string(args), "session.list") || !strings.Contains(string(args), "directory="+project) {
+	if err != nil || !strings.Contains(string(args), "session.get") || !strings.Contains(string(args), "sessionID=ses_v2") {
 		t.Fatalf("API args: %s, error %v", args, err)
 	}
 	// The same directory queried through v1 must not receive v2's cached IDs.
