@@ -80,7 +80,7 @@ Options:
   -no-transition-notify
     	Suppress transition event notifications to parent session
   -no-wait
-    	Don't wait for agent to be ready before sending message
+    	Don't wait for agent to be ready before sending message (Antigravity embeds it when the launcher is agy; a wrapper or custom tool waits for the composer)
   -p string
     	Parent session (short)
   -parent string

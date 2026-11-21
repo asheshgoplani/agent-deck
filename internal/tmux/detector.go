@@ -66,7 +66,9 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 
 	case "antigravity":
 		content = StripANSI(content)
-		return antigravityPrompt.MatchString(content) && !antigravityBusy.MatchString(content)
+		return antigravityPrompt.MatchString(content) &&
+			!antigravityBusy.MatchString(content) &&
+			!antigravityMenuAfterFooter(content)
 
 	case "codex":
 		// Codex/OpenAI CLI patterns.
@@ -118,7 +120,43 @@ const (
 var (
 	antigravityPrompt = regexp.MustCompile(antigravityReadyFooter)
 	antigravityBusy   = regexp.MustCompile(antigravityBusyFooter)
+	// antigravityMenuRow matches a sign-in, workspace-trust or first-run row.
+	antigravityMenuRow = regexp.MustCompile(`(?i)(?:Trust this folder\?|Do you trust the contents of this project\?|Select login method:|\d+\. Google OAuth\b|(?:Choose|Select) (?:your |a )?(?:colou?r scheme|rendering mode)|Rendering mode\b)`)
 )
+
+// antigravityMenuAfterFooter rejects a matched ready footer when a menu row
+// follows it. Inline redraw can leave an old composer and its footer visible
+// above a sign-in, workspace-trust or first-run menu, and those rows fit in
+// the footer tail; typing into them (Enter selects the highlighted row) can
+// grant workspace trust.
+func antigravityMenuAfterFooter(content string) bool {
+	// The last footer is the live one; an earlier mention may be a quoted
+	// transcript line above a stale composer.
+	idx := strings.LastIndex(content, "? for shortcuts")
+	if idx < 0 {
+		return false
+	}
+	rest := content[idx:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[nl+1:]
+	} else {
+		return false
+	}
+	seen := 0
+	for _, line := range strings.Split(rest, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if antigravityMenuRow.MatchString(line) {
+			return true
+		}
+		if seen++; seen >= 3 {
+			// The ready footer allows a toast or status rows, not a menu.
+			return false
+		}
+	}
+	return false
+}
 
 func (d *PromptDetector) hasOMPPrompt(content string) bool {
 	if strings.Contains(content, "⟨esc⟩") {

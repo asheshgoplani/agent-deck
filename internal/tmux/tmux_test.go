@@ -784,6 +784,30 @@ func TestAntigravityPaneStatus(t *testing.T) {
 	}
 }
 
+// A stale composer left above a person-facing menu must not read as ready:
+// typing the startup message there and pressing Enter could grant workspace
+// trust or pick a sign-in option.
+func TestAntigravityReadyRejectsMenuUnderStaleComposer(t *testing.T) {
+	frame := "────────────────\n>\n────────────────\n? for shortcuts\n"
+	for _, tt := range []struct {
+		name, pane string
+		ready      bool
+	}{
+		{"trust menu below a stale composer", frame + "Trust this folder?\n> Yes\n  No\n", false},
+		{"login menu below a stale composer", frame + "Select login method:\n> 1. Google OAuth\n  2. Use a Google Cloud project\n", false},
+		{"appearance menu below a stale composer", frame + "Select a color scheme\n> Dark\n  Light\n", false},
+		{"rendering menu below a stale composer", frame + "Select a rendering mode\n> Default\n  Alternate\n", false},
+		{"toast below the footer stays ready", frame + "Toast: settings saved\n", true},
+		{"status row below the footer stays ready", frame + "Gemini Flash · 12% context\n", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NewPromptDetector("antigravity").HasPrompt(tt.pane); got != tt.ready {
+				t.Errorf("HasPrompt = %v, want %v", got, tt.ready)
+			}
+		})
+	}
+}
+
 func TestDetectToolFromCommand(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -1324,9 +1325,17 @@ func (i *Instance) antigravityCommand() string {
 
 func (i *Instance) buildAntigravityCommandWithPrompt(prompt string) (string, bool) {
 	command := i.antigravityCommand()
-	if command != "agy" || i.Wrapper != "" || strings.TrimSpace(prompt) == "" {
-		// Don't inject flags into a user-provided command. Use the shared
-		// post-start delivery path for wrappers and non-default invocations.
+	if i.Wrapper != "" || strings.TrimSpace(prompt) == "" {
+		// A wrapper's argv shape is the user's, so the shared post-start
+		// delivery path types the prompt at the composer instead.
+		return command, false
+	}
+	// Embed whenever the launcher is agy, including option-bearing and
+	// custom-path invocations (`agy --mode plan`, `/opt/bin/agy`): the prompt
+	// then never touches the composer, so `launch -m ... --no-wait` returns
+	// without waiting and cannot type into a sign-in or trust menu.
+	fields := strings.Fields(command)
+	if len(fields) == 0 || path.Base(fields[0]) != "agy" {
 		return command, false
 	}
 	return command + " --prompt-interactive " + shellescape.Quote(prompt), true

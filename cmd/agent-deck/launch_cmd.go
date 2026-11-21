@@ -56,7 +56,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send (short)")
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
-	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready before sending message")
+	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready before sending message (Antigravity embeds it when the launcher is agy; a wrapper or custom tool waits for the composer)")
 	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	assertDone := fs.Bool("assert-done", false, "Append a completion-sentinel instruction to the message (default on for -c claude)")
 	noAssertDone := fs.Bool("no-assert-done", false, "Disable the completion-sentinel instruction")

@@ -89,14 +89,17 @@ func Split(command string) ([]string, bool) {
 
 // Commands separates a command line into its simple commands at unquoted
 // control operators (&&, ||, ;, |, and newlines), keeping each command's text,
-// quotes included, so it can be passed to Split. Like Split it performs no
-// expansion, and the boolean is false for an unterminated quote or trailing
-// escape.
+// quotes included, so it can be passed to Split. An unquoted # that starts a
+// word begins a shell comment through the end of that line; quote characters
+// inside it are ordinary text, and the newline still separates commands. Like
+// Split it performs no expansion, and the boolean is false for an unterminated
+// quote or trailing escape.
 func Commands(command string) ([]string, bool) {
 	var commands []string
 	var current strings.Builder
 	var quote rune
 	escaped := false
+	inComment := false
 
 	flush := func() {
 		if text := strings.TrimSpace(current.String()); text != "" {
@@ -108,6 +111,13 @@ func Commands(command string) ([]string, bool) {
 	runes := []rune(command)
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
+		if inComment {
+			if r == '\n' {
+				inComment = false
+				flush()
+			}
+			continue
+		}
 		switch {
 		case escaped:
 			escaped = false
@@ -123,6 +133,11 @@ func Commands(command string) ([]string, bool) {
 			}
 		case r == '\'' || r == '"':
 			quote = r
+		case r == '#' && startsShellWord(runes, i):
+			// An unquoted # that starts a word is a comment, so an apostrophe
+			// in it cannot open a quote that never closes.
+			inComment = true
+			continue
 		case r == ';' || r == '\n':
 			flush()
 			continue
@@ -236,4 +251,15 @@ func isAssignment(word string) bool {
 		}
 	}
 	return true
+}
+
+// startsShellWord reports whether position i begins a word: at the start of
+// the input, after whitespace, or after a control operator. A # only starts a
+// comment there; in `a#b` it is part of the word.
+func startsShellWord(runes []rune, i int) bool {
+	if i == 0 {
+		return true
+	}
+	prev := runes[i-1]
+	return unicode.IsSpace(prev) || strings.ContainsRune(";&|()", prev)
 }

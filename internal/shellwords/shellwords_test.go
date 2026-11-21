@@ -49,6 +49,12 @@ func TestCommands(t *testing.T) {
 		{`export X='1;2' && echo "a && b"`, []string{`export X='1;2'`, `echo "a && b"`}, true},
 		{`printf '%s\n' "$code" > /x`, []string{`printf '%s\n' "$code" > /x`}, true},
 		{`echo a\;b; c`, []string{`echo a\;b`, "c"}, true},
+		{"printf 'one' # it's a comment\nagy --prompt-interactive 'two'", []string{"printf 'one'", "agy --prompt-interactive 'two'"}, true},
+		{`echo 'a # b' # comment with ; && and a ' quote
+x`, []string{`echo 'a # b'`, "x"}, true},
+		{`a#b ; c`, []string{`a#b`, "c"}, true},
+		{`a;# note with an apostrophe
+b`, []string{"a", "b"}, true},
 		{`"unterminated && x`, nil, false},
 		{``, nil, true},
 	}

@@ -47,6 +47,42 @@ func exitToShellTestEnv(t *testing.T) {
 
 // --- Happy path: flag ON wraps the claude spawn command ---------------------
 
+// A tab is shell whitespace, so `exec\tagy` is the launcher too; leaving it
+// in place makes agy replace the pane's shell and the fallback never runs.
+func TestExitToShell_TabSeparatedExecLauncher(t *testing.T) {
+	exitToShellTestEnv(t)
+
+	inst := NewInstanceWithTool("e2s-tab-exec", t.TempDir(), "antigravity")
+	inst.ExitToShell = boolPtr(true)
+
+	wrapped := inst.wrapExitToShell("exec\tagy")
+	if !strings.HasSuffix(wrapped, exitToShellSuffix) {
+		t.Fatalf("wrapped command must end with %q, got:\n%s", exitToShellSuffix, wrapped)
+	}
+	if got := strings.TrimSuffix(wrapped, exitToShellSuffix); got != "agy" {
+		t.Fatalf("tab-separated exec launcher not stripped: %q", wrapped)
+	}
+}
+
+// An apostrophe in an inline init script's # comment must not open a quote
+// that hides the launcher: the pane would keep `exec` and close on exit
+// instead of falling back to the shell.
+func TestExitToShell_CommentWithApostropheKeepsFallback(t *testing.T) {
+	exitToShellTestEnv(t)
+
+	inst := NewInstanceWithTool("e2s-comment", t.TempDir(), "antigravity")
+	inst.ExitToShell = boolPtr(true)
+
+	raw := "source ./env.sh # don't skip the fallback\n exec agy"
+	wrapped := inst.wrapExitToShell(raw)
+	if !strings.HasSuffix(wrapped, exitToShellSuffix) {
+		t.Fatalf("wrapped command must end with %q, got:\n%s", exitToShellSuffix, wrapped)
+	}
+	if got := strings.TrimSuffix(wrapped, exitToShellSuffix); strings.Contains(got, "exec agy") {
+		t.Fatalf("launcher kept behind the comment: %q", wrapped)
+	}
+}
+
 func TestExitToShell_ClaudeWrappedWhenEnabled(t *testing.T) {
 	exitToShellTestEnv(t)
 

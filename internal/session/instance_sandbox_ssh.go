@@ -216,8 +216,16 @@ func (i *Instance) wrapExitToShell(command string) string {
 		offset := 0
 		for _, part := range commands {
 			offset += strings.Index(command[offset:], part)
-			if strings.HasPrefix(part, "exec ") {
-				command = command[:offset] + command[offset+len("exec "):]
+			// A launcher is `exec` followed by shell whitespace (space or a
+			// tab, which the shell accepts) in command position. Anything
+			// after it is the exec'd command.
+			if launcher := len("exec"); len(part) > launcher &&
+				part[:launcher] == "exec" && (part[launcher] == ' ' || part[launcher] == '\t') {
+				strip := launcher
+				for strip < len(part) && (part[strip] == ' ' || part[strip] == '\t') {
+					strip++
+				}
+				command = command[:offset] + command[offset+strip:]
 				break
 			}
 			offset += len(part)
