@@ -1596,7 +1596,8 @@ func pinBridgePackages(names []string, pyVersion string) []string {
 	return pinned
 }
 
-// installPythonDeps installs Python dependencies for the bridge.
+// installPythonDeps checks for the bridge's Python dependencies and installs
+// them only if needed.
 // Returns true on success. On failure it prints a formatted, actionable error
 // (PEP 668 gets a special-cased remediation block listing three fix options;
 // other failures pass the raw pip stderr through) and returns false so the
@@ -1625,24 +1626,38 @@ func installPythonDeps() bool {
 	if len(packages) == 1 {
 		packages = append(packages, "aiogram", "slack-bolt", "slack-sdk", "aiohttp", "discord.py")
 	}
-	// Try with --user first; fall back to no --user (venvs, containers).
-	// We capture stderr on the second attempt so a failure can be classified
-	// and surfaced with a remediation message.
 	// Resolve the interpreter the generated daemon unit will actually run
-	// (session.FindPython3 prefers the conductor venv) instead of whatever
-	// "python3" means on the current PATH. Installing into a different
-	// interpreter than the daemon uses is how a "successful" setup still
-	// produced a bridge that could not import aiogram — and, in the PEP 668
-	// case, how the remediation the message printed could not take effect:
-	// the user built the venv, re-ran setup, and setup went straight back to
-	// the externally-managed PATH python and refused to install the daemon.
+	// (session.FindPython3 prefers the conductor venv).
 	python := session.FindPython3()
 	if python == "" {
 		python = "python3"
 	}
+
+	modules := make([]string, 0, len(packages))
+	for _, pkg := range packages {
+		switch pkg {
+		case "slack-bolt":
+			modules = append(modules, "slack_bolt")
+		case "slack-sdk":
+			modules = append(modules, "slack_sdk")
+		case "discord.py":
+			modules = append(modules, "discord")
+		default:
+			modules = append(modules, pkg)
+		}
+	}
+	// Avoid importing from the caller's working directory, which Python -c
+	// adds to sys.path but the bridge daemon does not use.
+	probe := "import sys; sys.path[:] = [path for path in sys.path if path]; import " + strings.Join(modules, ", ")
+	if err := exec.Command(python, "-c", probe).Run(); err == nil {
+		return true
+	}
+
 	_, pyVersion := probePythonInterpreter(python)
 	packages = pinBridgePackages(packages, pyVersion)
 
+	// Try with --user first; fall back to no --user (venvs, containers).
+	// Capture stderr on the second attempt for the remediation message.
 	args := append([]string{"-m", "pip", "install", "--quiet", "--user"}, packages...)
 	if err := exec.Command(python, args...).Run(); err == nil {
 		return true

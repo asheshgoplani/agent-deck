@@ -3,11 +3,92 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func TestInstallPythonDepsChecksImportsBeforePip(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, imports, probeResult string
+		wantPip                            []string
+	}{
+		{
+			name:    "all configured integrations already importable without pip",
+			config:  "[conductor.telegram]\ntoken = 't'\n[conductor.slack]\nbot_token = 's'\n[conductor.discord]\nbot_token = 'd'\n[conductor.mattermost]\nbot_token = 'm'\n",
+			imports: "import toml, aiogram, slack_bolt, slack_sdk, aiohttp, discord",
+		},
+		{
+			name:    "telegram only does not need other integrations",
+			config:  "[conductor.telegram]\ntoken = 't'\n",
+			imports: "import toml, aiogram",
+		},
+		{
+			name:        "missing dependency falls back to pinned pip install",
+			config:      "[conductor.telegram]\ntoken = 't'\n",
+			imports:     "import toml, aiogram",
+			probeResult: "1",
+			wantPip:     []string{"-m", "pip", "install", "--quiet", "--user", "toml==0.10.2", "aiogram==3.13.1"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sandboxConductorHome(t)
+			cfgPath, err := session.GetUserConfigPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfgPath, []byte(tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			session.ClearUserConfigCache()
+			t.Cleanup(session.ClearUserConfigCache)
+
+			bin := t.TempDir()
+			t.Setenv("PATH", bin)
+			t.Setenv("WANT_IMPORTS", tc.imports)
+			t.Setenv("PROBE_RESULT", tc.probeResult)
+			pipLog := filepath.Join(bin, "pip-argv")
+			t.Setenv("PIP_LOG", pipLog)
+			const fake = `#!/bin/sh
+if [ "$1" = "-c" ] && [ "${2##*; }" = "$WANT_IMPORTS" ]; then
+  : > "$PIP_LOG.probed"
+  exit "${PROBE_RESULT:-0}"
+fi
+if [ "$1" = "-c" ] && [ "${2#import sys;}" != "$2" ]; then
+  printf '%s\n' "$0" 3.9.18
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  printf '%s\n' "$@" >> "$PIP_LOG"
+  if [ "$PROBE_RESULT" = "1" ] && [ -f "$PIP_LOG.probed" ]; then exit 0; fi
+  echo 'No module named pip' >&2
+fi
+exit 1
+`
+			if err := os.WriteFile(filepath.Join(bin, "python3"), []byte(fake), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if !installPythonDeps() {
+				t.Error("bridge dependencies should be available")
+			}
+			raw, err := os.ReadFile(pipLog)
+			if tc.wantPip == nil {
+				if !os.IsNotExist(err) {
+					t.Fatalf("pip should not have run: argv=%q, err=%v", raw, err)
+				}
+			} else if err != nil {
+				t.Fatalf("reading pip argv: %v", err)
+			} else if got := strings.Split(strings.TrimSpace(string(raw)), "\n"); !slices.Equal(got, tc.wantPip) {
+				t.Errorf("pip argv = %q, want %q", got, tc.wantPip)
+			}
+		})
+	}
+}
 
 // TestInstallPythonDepsPinsEveryPackage: conductor setup installs the bridge's
 // Python packages at exact versions, and the manual-install commands it
