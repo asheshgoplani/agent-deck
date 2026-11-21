@@ -64,6 +64,10 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 	case "gemini":
 		return d.hasGeminiPrompt(content)
 
+	case "antigravity":
+		content = StripANSI(content)
+		return antigravityPrompt.MatchString(content) && !antigravityBusy.MatchString(content)
+
 	case "codex":
 		// Codex/OpenAI CLI patterns.
 		// Busy indicators take priority over prompt markers, but only when the
@@ -98,6 +102,23 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		return d.hasShellPrompt(content)
 	}
 }
+
+// Antigravity places its status footer below the ruled composer. Require the
+// footer at the end of the pane: inline mode can leave old frames in view.
+// A bare '>' also appears in transcripts and onboarding menus.
+const (
+	antigravityComposerFrame = `(?m)^[ \t]*─{5,}[ \t]*\n[ \t]*>[^\n]*(?:\n[ \t]*(?:[^─ \t\n][^\n]*)?)*\n[ \t]*─{5,}[ \t]*\n[^\n]*`
+	// Allow a toast or extra status rows, but not enough lines for a newer
+	// composer to have replaced the matched one.
+	antigravityFooterEnd   = `[^\n]*(?:\n[^\n]*){0,3}(?:\n[ \t]*)*\z`
+	antigravityReadyFooter = antigravityComposerFrame + `\? for shortcuts\b` + antigravityFooterEnd
+	antigravityBusyFooter  = antigravityComposerFrame + `(?i:\besc to (?:cancel|interrupt)\b)` + antigravityFooterEnd
+)
+
+var (
+	antigravityPrompt = regexp.MustCompile(antigravityReadyFooter)
+	antigravityBusy   = regexp.MustCompile(antigravityBusyFooter)
+)
 
 func (d *PromptDetector) hasOMPPrompt(content string) bool {
 	if strings.Contains(content, "⟨esc⟩") {

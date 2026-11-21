@@ -115,7 +115,7 @@ func dialogFitCases() []dialogFitCase {
 				s.cursor = len(s.results) - 1 // the eleventh result; the ten-row window follows it
 				return s.View()
 			}},
-			dialogFitCase{name: "wizard-tool-last", w: w, h: h, mustShow: []string{"[Tool]", "omp", "Esc: back"}, view: func() string {
+			dialogFitCase{name: "wizard-tool-last", w: w, h: h, mustShow: []string{"[Tool]", "antigravity", "Esc: back"}, view: func() string {
 				wz := NewSetupWizard()
 				wz.SetSize(w, h)
 				wz.Show()

@@ -907,9 +907,13 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// outright. Embed it instead. There is nothing to wait for in that case
 	// either: the process is already answering by the time it exists, so
 	// --no-wait loses nothing.
-	promptRidesArgv := initialMessage != "" && newInstance.PromptRidesCommandLine()
+	// Antigravity must not use the unchecked post-start paste below: Enter
+	// could select a sign-in or trust option. StartWithMessage embeds a
+	// prompt for bare agy and otherwise waits for the actual composer.
+	startWithMessage := initialMessage != "" &&
+		(!*noWait || newInstance.PromptRidesCommandLine() || session.IsAntigravityCompatible(newInstance.Tool))
 
-	if initialMessage != "" && (!*noWait || promptRidesArgv) {
+	if startWithMessage {
 		if err := creationRollback.run("start session", func() error { return newInstance.StartWithMessage(initialMessage) }); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
@@ -952,7 +956,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// sendWithRetryTarget pass, run verifyPromptConsumedAfterLaunch to catch
 	// the welcome-screen race where claude eats the first Enter. 10s budget
 	// per window + single retry + stderr warning on persistent no-op.
-	if initialMessage != "" && *noWait && !promptRidesArgv {
+	if initialMessage != "" && !startWithMessage {
 		tmuxSess := newInstance.GetTmuxSession()
 		if tmuxSess != nil {
 			// One pre-send probe (#1777) shared with the recovery pass
