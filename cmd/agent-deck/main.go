@@ -3919,16 +3919,27 @@ func statusInstances(instances []*session.Instance) []*session.Instance {
 	return session.FilterInstancesByArchive(instances, false)
 }
 
-// countByStatus counts sessions by their status
-func countByStatus(instances []*session.Instance) statusCounts {
+func anyStatus(session.Status) bool { return true }
+
+// countByStatus returns the substate of each session wantSubstate accepts, read before the status it can settle.
+func countByStatus(instances []*session.Instance, wantSubstate func(session.Status) bool) (statusCounts, map[*session.Instance]session.Substate) {
 	instances = statusInstances(instances)
 	// Warm tmux pane-title cache + load hook statuses so `status`/`status --json`
 	// reports the same counts the TUI header and /api/menu do (issue #610).
 	// All three leave archived sessions out.
 	session.RefreshInstancesForCLIStatus(instances)
+	// A count needs live status only; native session discovery belongs to the poller.
+	var pass session.StatusUpdatePass
 	var counts statusCounts
+	var substates map[*session.Instance]session.Substate
+	if wantSubstate != nil {
+		substates = make(map[*session.Instance]session.Substate, len(instances))
+	}
 	for _, inst := range instances {
-		_ = inst.UpdateStatus() // Refresh status from tmux
+		_ = pass.UpdateStatusOnly(inst)
+		if wantSubstate != nil && wantSubstate(inst.Status) {
+			substates[inst] = inst.Substate()
+		}
 		switch summaryBucket(inst.Status) {
 		case session.StatusRunning:
 			counts.running++
@@ -3943,7 +3954,7 @@ func countByStatus(instances []*session.Instance) statusCounts {
 		}
 		counts.total++
 	}
-	return counts
+	return counts, substates
 }
 
 // handleStatus shows session status summary
@@ -4033,74 +4044,76 @@ func handleStatus(profile string, args []string) {
 		return
 	}
 
-	// Count by status
-	counts := countByStatus(instances)
+	type statusSessionJSON struct {
+		ID           string `json:"id"`
+		Title        string `json:"title"`
+		Tool         string `json:"tool"`
+		ModelID      string `json:"model_id,omitempty"`
+		Model        string `json:"model,omitempty"`
+		ModelVersion string `json:"model_version,omitempty"`
+		Status       string `json:"status"`
+		// Added, never renamed: omitempty keeps existing output byte-stable.
+		Substate       string `json:"substate,omitempty"`
+		ExitCode       *int   `json:"exit_code,omitempty"`
+		SubstateDetail string `json:"substate_detail,omitempty"`
+		Path           string `json:"path"`
+
+		// BackgroundWork: see buildListJSON (issue #2473).
+		BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
+	}
+	type statusJSON struct {
+		Waiting  int                 `json:"waiting"`
+		Running  int                 `json:"running"`
+		Idle     int                 `json:"idle"`
+		Error    int                 `json:"error"`
+		Stopped  int                 `json:"stopped"`
+		Total    int                 `json:"total"`
+		Sessions []statusSessionJSON `json:"sessions,omitempty"`
+	}
+	// Quiet text output prints only the waiting count, so it needs no per-row substate.
+	showRows := (*verbose || *verboseShort) && (*jsonOutput || !(*quiet || *quietShort))
+	var wantSubstate func(session.Status) bool
+	if showRows {
+		wantSubstate = anyStatus
+	}
+	counts, substates := countByStatus(instances, wantSubstate)
+	var rows []statusSessionJSON
+	if *jsonOutput && showRows {
+		for _, inst := range instances {
+			substate, counted := substates[inst]
+			if !counted {
+				continue
+			}
+			sj := statusSessionJSON{
+				ID:             inst.ID,
+				Title:          inst.Title,
+				Tool:           inst.Tool,
+				Status:         StatusString(inst.Status),
+				Substate:       string(substate),
+				ExitCode:       inst.ExitCode(),
+				SubstateDetail: inst.SubstateDetail(),
+				BackgroundWork: inst.BackgroundWorkJSON(),
+				Path:           inst.ProjectPath,
+			}
+			if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
+				sj.ModelID = modelInfo.ModelID
+				sj.Model = modelInfo.ModelID
+				sj.ModelVersion = modelInfo.Version
+			}
+			rows = append(rows, sj)
+		}
+	}
 
 	// Output based on flags
 	if *jsonOutput {
-		type statusSessionJSON struct {
-			ID           string `json:"id"`
-			Title        string `json:"title"`
-			Tool         string `json:"tool"`
-			ModelID      string `json:"model_id,omitempty"`
-			Model        string `json:"model,omitempty"`
-			ModelVersion string `json:"model_version,omitempty"`
-			Status       string `json:"status"`
-			// Substate is the additive Honest-Status-v2 refinement
-			// (model-unavailable, auth-401, idle-at-empty-prompt, running).
-			// ADDED, never renamed: existing fields stay byte-stable; omitempty
-			// so the default "" never appears in output.
-			Substate string `json:"substate,omitempty"`
-			ExitCode *int   `json:"exit_code,omitempty"`
-			// SubstateDetail is free text for the substate (today the codex
-			// usage-limit retry time). Same omitempty contract.
-			SubstateDetail string `json:"substate_detail,omitempty"`
-			Path           string `json:"path"`
-
-			// BackgroundWork: see buildListJSON (issue #2473).
-			BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
-		}
-		type statusJSON struct {
-			Waiting  int                 `json:"waiting"`
-			Running  int                 `json:"running"`
-			Idle     int                 `json:"idle"`
-			Error    int                 `json:"error"`
-			Stopped  int                 `json:"stopped"`
-			Total    int                 `json:"total"`
-			Sessions []statusSessionJSON `json:"sessions,omitempty"`
-		}
 		resp := statusJSON{
-			Waiting: counts.waiting,
-			Running: counts.running,
-			Idle:    counts.idle,
-			Error:   counts.err,
-			Stopped: counts.stopped,
-			Total:   counts.total,
-		}
-		if *verbose || *verboseShort {
-			session.RefreshInstancesForCLIStatus(instances)
-			resp.Sessions = make([]statusSessionJSON, 0, len(instances))
-			for _, inst := range instances {
-				_ = inst.UpdateStatus()
-				substate := string(inst.Substate()) // before Status: see buildListJSON
-				sj := statusSessionJSON{
-					ID:             inst.ID,
-					Title:          inst.Title,
-					Tool:           inst.Tool,
-					Status:         StatusString(inst.Status),
-					Substate:       substate,
-					ExitCode:       inst.ExitCode(),
-					SubstateDetail: inst.SubstateDetail(),
-					BackgroundWork: inst.BackgroundWorkJSON(),
-					Path:           inst.ProjectPath,
-				}
-				if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
-					sj.ModelID = modelInfo.ModelID
-					sj.Model = modelInfo.ModelID
-					sj.ModelVersion = modelInfo.Version
-				}
-				resp.Sessions = append(resp.Sessions, sj)
-			}
+			Waiting:  counts.waiting,
+			Running:  counts.running,
+			Idle:     counts.idle,
+			Error:    counts.err,
+			Stopped:  counts.stopped,
+			Total:    counts.total,
+			Sessions: rows,
 		}
 		output, _ := json.Marshal(resp)
 		fmt.Println(string(output))
@@ -4122,7 +4135,7 @@ func handleStatus(profile string, args []string) {
 			for _, inst := range matching {
 				path := FormatPath(inst.ProjectPath)
 				suffix := ""
-				sub := inst.Substate()
+				sub := substates[inst]
 				if lbl := SubstateLabel(sub); lbl != "" {
 					if work := inst.BackgroundWork(); work.InFlight() {
 						lbl += ": " + work.Summary() // issue #2473
