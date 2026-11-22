@@ -202,3 +202,45 @@ func TestKimiOwnedSessionIDValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestRestartKimiSeedFailureRestoresLiveBinding covers a failure after the
+// fallback recreate has replaced the in-memory tmux binding but before the
+// replacement has been started. The initial restart generation seed succeeds;
+// the kill-session shim then makes the later waiting-baseline seed fail while
+// leaving the old pane alive. Restart must not strand that pane by retaining
+// the name of a replacement that does not exist.
+func TestRestartKimiSeedFailureRestoresLiveBinding(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	const oldName = "agentdeck_restartbinding_kimi_seed"
+	_, inst := restartPersistFixture(t, "_test_restart_binding_kimi_seed", oldName)
+	inst.Tool = "kimi"
+	realTmux := seedRealTmuxSession(t, oldName)
+	killSessionsCreatedDuring(t, realTmux)
+
+	generationPath := filepath.Join(GetHooksDir(), inst.ID+".generation.json")
+	shimDir := t.TempDir()
+	script := "#!/bin/sh\ncase \" $* \" in\n" +
+		`  *" kill-session "*) rm -f ` + generationPath + `; mkdir ` + generationPath + `; kill -9 $$ ;;` + "\n" +
+		"esac\nexec " + realTmux + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write tmux shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := inst.Restart()
+	if err == nil || !strings.Contains(err.Error(), "seed kimi restart baseline") {
+		t.Fatalf("Restart() error = %v, want the waiting-baseline seed failure", err)
+	}
+	if !realTmuxHasSession(realTmux, oldName) {
+		t.Fatalf("fixture: old session %q is gone; this test needs it alive", oldName)
+	}
+	live := inst.GetTmuxSession()
+	if live == nil || live.Name != oldName {
+		name := "<nil>"
+		if live != nil {
+			name = live.Name
+		}
+		t.Fatalf("binding after failed Kimi seed = %q, want the still-live %q", name, oldName)
+	}
+}

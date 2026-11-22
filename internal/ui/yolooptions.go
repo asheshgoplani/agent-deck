@@ -5,9 +5,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// YoloOptionsPanel is a UI panel for a tool's single YOLO mode option.
+// YoloOptionsPanel is a UI panel for YOLO/dangerous mode options.
+// Used for Gemini and Codex in NewDialog, matching ClaudeOptionsPanel's visual style.
 type YoloOptionsPanel struct {
-	toolName string
+	toolName string // "Gemini" or "Codex"
 	label    string // Checkbox label text
 	yoloMode bool
 	focused  bool
