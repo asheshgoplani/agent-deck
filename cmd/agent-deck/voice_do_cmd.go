@@ -684,12 +684,13 @@ func (d *cliVoiceDeck) OpenPage(ctx context.Context, s voicedesk.Session) (voice
 // feat/voice-state-stream), so every screen shows the same answer. Best
 // effort, bounded: a binary without it, or a slow bus, never changes the
 // result. The heard sentence is never in the result; say and the confirm
-// token are dropped by the publisher.
+// token are dropped by the publisher, and voicedesk.ForFrame drops every
+// to-do text first.
 func publishVoiceResult(self, profile, from string, res voicedesk.Result) {
 	if !res.Handled || res.DryRun {
 		return
 	}
-	b, err := json.Marshal(res)
+	b, err := json.Marshal(voicedesk.ForFrame(res)) // no to-do text in a frame
 	if err != nil {
 		return
 	}

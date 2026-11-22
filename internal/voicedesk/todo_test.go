@@ -57,11 +57,11 @@ func TestTodoByVoice(t *testing.T) {
 		{"read my to-dos", IntentTodoList, LangEN, "Four to-dos: call the bank, buy milk, buy oat milk, and 1 more on screen.", ""},
 		{"meri list sunao", IntentTodoList, LangHI, "Four to-dos: call the bank, buy milk, buy oat milk, and 1 more on screen.", ""},
 		{"meri to-do list batao", IntentTodoList, LangHI, "Four to-dos: call the bank, buy milk, buy oat milk, and 1 more on screen.", ""},
-		{"the bank is done", IntentTodoDone, LangEN, "Ticked off: call the bank.", ""},
+		{"call the bank is done", IntentTodoDone, LangEN, "Ticked off: call the bank.", ""},
 		{"mark renew the passport as done", IntentTodoDone, LangEN, "Ticked off: renew the passport.", ""},
-		{"bank wala ho gaya", IntentTodoDone, LangHI, "Ticked off: call the bank.", ""},
-		{"paasport ho gaya", IntentTodoDone, LangHI, "Ticked off: renew the passport.", ""},
-		{"milk is done", IntentTodoDone, LangEN, "Did you mean buy milk or buy oat milk?", "choice"},
+		{"bank wala ho gaya", IntentTodoDone, LangHI, "Tick off call the bank?", "choice"},
+		{"renew the paasport ho gaya", IntentTodoDone, LangHI, "Ticked off: renew the passport.", ""},
+		{"tick off milk", IntentTodoDone, LangEN, "Did you mean buy milk or buy oat milk?", "choice"},
 	}
 	for _, r := range rows {
 		t.Run(r.sentence, func(t *testing.T) {
@@ -83,7 +83,7 @@ func TestTodoByVoice(t *testing.T) {
 
 func TestTodoDoneChoice(t *testing.T) {
 	h, tf := todoHarness(t)
-	ask := h.say("milk is done")
+	ask := h.say("tick off milk")
 	got := h.do(Request{Sentence: "second", Pending: ask.Confirm.Token, AnswerDelayMs: 600, HasAnswerDelay: true})
 	if got.Intent != IntentChoice || got.Say != "Ticked off: buy oat milk." || strings.Join(tf.done, ",") != "3" {
 		t.Fatalf("got %+v done=%v", got, tf.done)
@@ -92,7 +92,8 @@ func TestTodoDoneChoice(t *testing.T) {
 
 // "X is done" without a matching open item is talk to the session.
 func TestTodoDoneNotMine(t *testing.T) {
-	for _, s := range []string{"the build is done", "the tests are done", "deploy ho gaya", "kaam ho gaya", "old thing is done", "done with the refactor"} {
+	for _, s := range []string{"the build is done", "the tests are done", "deploy ho gaya", "kaam ho gaya", "old thing is done", "done with the refactor",
+		"the bank is done", "paasport ho gaya", "milk is done"} {
 		t.Run(s, func(t *testing.T) {
 			h, tf := todoHarness(t)
 			if got := h.say(s); got.Handled || len(tf.done) != 0 {
@@ -107,7 +108,7 @@ func TestTodoWithoutTheCommand(t *testing.T) {
 	if got := h.say("what is on my list"); got.Say != "To-dos are not available in this build." {
 		t.Fatalf("got %+v", got)
 	}
-	if got := h.say("milk is done"); got.Handled {
+	if got := h.say("tick off milk"); got.Handled {
 		t.Fatalf("got %+v", got)
 	}
 }

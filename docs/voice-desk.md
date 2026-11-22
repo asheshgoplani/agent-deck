@@ -104,6 +104,9 @@ yours called …"; it is never typed into the session as plain text.
 | `workers` | "what are X's workers doing" | "X ke workers kya kar rahe hain" | `session children` (this machine); only his own sessions are listed |
 | `next` | "take me to the next one" | "agla wala kholo" | switch to the first waiting session he is not on |
 | `refuse` | "delete the X session" | "X session delete karo" | nothing: voice never deletes, pushes or pays |
+| `todo_add` | "add a to-do: X", "put X on my list", "remind me to X" | "to-do mein daalo: X", "X list mein daal do" | `todo add`; "add this to my list" and "add a todo comment" are talk |
+| `todo_list` | "what is on my list", "read my to-dos" | "meri list sunao", "mere to-do batao" | `todo list`; "what is left to do" is talk |
+| `todo_done` | "tick off X", "mark X done", "X is done" | "X wala ho gaya", "X ho gaya" | the whole item ticks at once; part of it after "tick off" / "wala" asks "Tick off fix the build?"; a bare "the build is done" / "build ho gaya" is talk |
 
 Every launch, stop, restart and archive is read back and needs a yes within 10 s; the yes re-checks each session.
 An unknown name after stop/restart/archive is not the desk's ("stop listening" belongs to the voice daemon).
