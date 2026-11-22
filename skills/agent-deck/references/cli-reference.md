@@ -104,6 +104,7 @@ Notes:
 - `--trust-folder` (also on `add`): add the session's folder to `[security] trusted_folders`, so agent-deck pre-trusts it for Claude, Codex and Cursor and sources a relative `env_file` from it. Needed on a new install (v1.16.34+, where `auto_trust_folders` is off) for a headless launch in a folder the tool has never been allowed to open; without it Claude shows its "trust the files in this folder?" prompt first and the launch prints a note on stderr and, with `--json`, adds `"warnings": [{"code": "FOLDER_NOT_TRUSTED", "folder": "<dir>", "hint": "..."}]` to the result (a queued start logs `queued_start_folder_not_trusted` with the same code). The flag edits config.toml in place, so comments and layout are kept. Installs from before v1.16.34 keep pre-trusting every folder (config-reference.md, `[security]`).
 - Kickoff envelope (#3131): when `launch` runs inside a session and links that session as the parent, a Claude child's initial message starts with the same `[agent-deck from:<parent id>]` line `session send` uses. The child's first turn is then a reply to its parent: an urgent result (completion sentinel, question, error) wakes an idle Claude parent even when it is not a conductor, and a plain answer stays info (unless the parent's `[inbox] wake_on` includes `info`). `--no-tag` or `[send] tag_sends = false` turns it off. Never tagged: a launch from a human shell, a `--parent` that is not the calling session (including a nested launch linked to the caller's own parent), a non-Claude parent or child, a bare slash command, and a child whose turns are not reported (`--no-transition-notify`, or `[notifications]` transition events off), because such a child answers an enveloped message with an explicit `session send`. A typed wake into a Claude session that is not a conductor (inbox and `remote drain` wakes) is sent with `--require-input-prompt`, so it is skipped while that session shows a menu or a permission dialog, and, like every wake, it never types over text left in the input box; the record then arrives on the session's next turn. `--json` carries `"tagged": true|false` when there is a message.
 - `--no-identity` (also on `add`): skip the harness identity injection for this session only. By default every spawn tells the model it runs inside agent-deck, its session metadata and how to use the CLI (`[launch] inject_identity` in config-reference.md, `documentation/HARNESS_IDENTITY.md`). Persisted, so restarts honour it.
+- `--instructions-file <path>` (also on `add`; repeatable, or comma-separated): standing instructions for this session (a role, team rules). Each file is read at every start, restart, resume and fork and appended as a "Session instructions" section to the identity block, so every harness gets it the way it gets that block; editing the file takes effect on the next start or restart. Absolute paths only (`~` and `$VAR` expanded); only regular UTF-8 text files, control characters other than newline and tab dropped, 32 KB per file; `--no-identity` and context level `none` suppress it. Change the list later with `session set <id> instructions-file`; `session show --json` and `session primer` report each file's state. `-capabilities --json` marks the flag `"repeatable": true`. Details: `documentation/HARNESS_IDENTITY.md`.
 
 ### accounts - List named account slots
 
@@ -122,7 +123,7 @@ agent-deck list [--json] [--all] [--no-archived]
 agent-deck ls  # Alias
 ```
 
-`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
+`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`; the single-profile table shows the same live status in a `STATUS` column, `archived` for an archived session. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
 
 A live `list --json` captures every live pane with one tmux call per socket. When that call times out (a host too loaded to answer it), the listing does not fall back to one `capture-pane` per session: those rows carry `"status_source": "stale"`: status is the last one observed in this process (the default for a fresh process), `substate` is the last one seen or absent, and `--stats` reports how many panes were skipped as `captures_skipped` (absent when none).
 
@@ -143,7 +144,7 @@ agent-deck rm  # Alias
 agent-deck status [-v|-q|--json]
 ```
 
-- Default: `2 waiting - 5 running - 3 idle`
+- Default: `2 waiting • 5 running • 3 idle`, then `• N stopped` and `• N error` when not zero. Every status summary (this line, `--json`, `group list`, the TUI header, the web chips) counts the same five buckets over non-archived sessions; `starting` and `queued` count as idle. The web group panel uses the same buckets but its total also counts the archived rows it lists.
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
 - Archived sessions are not counted or listed: archiving stops the pane on purpose, so their stopped/error status is not news. `list --json` still includes them, each with `"archived": true`.
@@ -460,6 +461,8 @@ agent-deck session primer my-project --json
 #  "identity_file":"/.../identity.md","text":"..."}
 ```
 
+When the session has instruction files (`--instructions-file`), the text includes their section and the output lists each file with its state: `ok` (in the block), `unreadable` (missing, not a regular file, not UTF-8 text) or `not_delivered` (over the per-file cap or the inline budget, so a pointer line stands in for it, or context level `none`), with a `reason`; `--json` has them as `instructions_files: [{"path","state","reason"}]` (also in `session show --json`).
+
 `--json` adds `skip_reason` when the level is `none`; SSH/sandboxed sessions inject like local ones (the block travels inline in the launch command `delivery` says so and `identity_file` is empty). Against an older remote (`agent-deck remote <r> session primer`) that predates this command, the controller prints a one-line "remote does not support 'session primer'" message instead of forwarding raw stderr.
 
 ### session set
@@ -468,7 +471,7 @@ agent-deck session primer my-project --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, tool-session-id, account, idle-timeout, context-level, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
+**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, tool-session-id, account, idle-timeout, context-level, instructions-file, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -477,6 +480,13 @@ Setting `account` auto-migrates the Claude conversation into the target account'
 ```bash
 agent-deck session set my-project context-level primer
 agent-deck session set my-project context-level ""       # clear: inherit group/global
+```
+
+`instructions-file` replaces the session's list of instruction files (#3206) with a comma-separated list of absolute paths (`~` and `$VAR` expanded; an unset variable is refused); an empty value clears it. Applied on the next start/restart, like `--instructions-file` on `add`/`launch`.
+
+```bash
+agent-deck session set Review instructions-file "$HOME/team/roles/review.md,$HOME/team/rules.md"
+agent-deck session set Review instructions-file ""       # clear
 ```
 
 `prompt-suggestions` sets the per-session override for Claude Code prompt suggestions: `children-off`, `on` or `off` (also `true`/`false`), applied on the next start/restart. `children-off` turns them off when the session has a parent and leaves a root session alone; an empty value clears the override so the session follows `[profiles.<profile>.claude].prompt_suggestions`, then `[launch].prompt_suggestions` (default `children-off`; see `config-reference.md`).
@@ -513,7 +523,11 @@ agent-deck session send <id|title> --message-file <file|-> [--wait|--stream|--no
 
 Use `--message-file` for long or multiline messages, or `--message-file -` for stdin. Do not combine it with an inline message.
 
-Send envelope: a send made from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one line `[agent-deck from:<your session id>]`. The receiver's reply turn is then classified as a `send` (not a human prompt); when you are not the receiver's parent, the reply is also committed to YOUR inbox (also when the receiver has no parent: a peer, or your top-level conductor) as an urgent record with `target_kind:"reply"` (rendered `- [urgent] reply from=<child id> <title>: <status>` by the prompt-time drain and `inbox drain`/`peek`), and an idle sender is woken for it whatever its title. The reply does not wait on the receiver's parent: it lands even while the parent's inbox is full (a stopped parent), and a retried turn never duplicates it or wakes you twice. The receiver's parent keeps its own copy; when the parent itself asked, that copy is its reply, and an idle Claude parent is woken for it whatever its title (an urgent reply: a question back, a completion sentinel or an error; a plain answer is info). A `launch` kickoff from inside the parent carries the same envelope, so a child's first turn counts as that reply. A turn too long for the transcript tail window is attributed from the sender the hook recorded when the prompt was submitted. `--no-tag` or `[send] tag_sends = false` turns tagging off; a human shell (no env), a sender that is not a Claude-compatible session in the target's profile (shell, Codex, Gemini: it has no prompt-time drain for the reply), `--draft`, a bare slash command, a conductor heartbeat, a send to yourself, a non-Claude target and an already-enveloped message are never tagged. Every `--json` receipt (sync, queued, draft, skipped) carries `"tagged": true|false`; the envelope counts toward `line_too_long` and every other delivery guard. A receiver with `no_transition_notify` never reports its turns, so its identity block tells it to answer with an explicit `session send` instead.
+Send envelope: a Claude-to-Claude send (`AGENTDECK_INSTANCE_ID` set) starts with `[agent-deck from:<your session id>]`. The receiver's reply is classified as a `send`; when you are not its parent, the reply also reaches your inbox as an urgent `reply` record and wakes an idle Claude sender, including when the receiver has no parent. This does not wait on the receiver's parent's backlog; the parent retains its own copy, and retries do not duplicate the reply. When the parent itself asked, its existing copy is the reply. The existing Claude `launch` kickoff and long-turn attribution behavior remain unchanged.
+
+Pi-to-Pi and Pi-to-Claude sends include the same envelope as source attribution. A receiver that does not know the sender runs `agent-deck session show <sender-id> --json` and reads `tool`; when it is `pi`, results come back explicitly with `agent-deck session send <sender-id> "answer"`, never as an assumed automatic inbox reply. This does not opt Pi into Claude-compatible transport or transcript handling, and does not change Pi launch kickoff behavior.
+
+`--no-tag` or `[send] tag_sends = false` disables attribution. Human shells, unsupported sender/target pairs, drafts, bare slash commands, Pi `!`/`!!` commands, heartbeats, self-sends and already-enveloped messages stay unchanged. Every JSON receipt reports `tagged`; the prefix counts toward all delivery and length guards. A receiver whose turns are not reported must answer explicitly with `session send`.
 
 `--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
 
@@ -1133,7 +1147,7 @@ agent-deck group update <name> [--default-path <dir> | --clear-default-path] [--
 agent-deck group delete <name> [--force]
 ```
 
-`--force`: Move sessions to parent and delete.
+`--force`: Move the sessions of the group and its subgroups to the parent group (to My Sessions for a root group) and delete.
 
 ### group move
 
@@ -1310,7 +1324,7 @@ In the TUI, remote sessions use the same status indicators and nested group tree
 ### remote conversation and status reads
 
 ```bash
-agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
+agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N] [--kinds a,b] [--skip-empty-body]
 agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
 agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--profile <name>]
 agent-deck remote <name> events publish --kind macapp.open.ack|macapp.switch.ack|macapp.browser.response|macapp.app.focus|macapp.ask.seen --session <id> --data-file - < reply.json
@@ -1424,8 +1438,8 @@ agent-deck health --json --since 1h
 ### inbox - Durable completion/transition records
 
 ```bash
-agent-deck inbox <session-id>                          # summary for a session's inbox
-agent-deck inbox drain [--json] <session-id>            # consume pending completion events
+agent-deck inbox <session-id|title|self>               # legacy form: reads AND clears; resolves the target like drain, unknown target exits 2
+agent-deck inbox drain [--json] [--strict] [<id>|self]  # consume pending completion events
 agent-deck inbox export [--json] [--profile <name>]     # read-only: this profile's records on this host, nothing consumed
 agent-deck inbox export --json --after '<cursor>' [--with-writer]  # read-only: only records newer than the cursor
 agent-deck inbox cursor [--json] [<remote>]             # the remote-talkback cursors this machine keeps

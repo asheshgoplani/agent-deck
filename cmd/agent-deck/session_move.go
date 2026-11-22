@@ -152,7 +152,12 @@ func handleSessionMove(profile string, args []string) {
 		}
 		targetGroupPath = resolved
 		if _, ok := groupTree.Groups[targetGroupPath]; !ok && targetGroupPath != session.DefaultGroupPath {
-			targetGroupPath = groupTree.CreateGroup(targetGroupPath).Path
+			// A new group: made level by level from the name as typed, as
+			// add does, so it nests on "/" and each level keeps its display
+			// name ("Org/New Team" is "New Team" at path "Org/New-Team").
+			if leaf := groupTree.CreateGroupPathTyped(targetGroupPath, *group); leaf != nil {
+				targetGroupPath = leaf.Path
+			}
 		}
 	}
 

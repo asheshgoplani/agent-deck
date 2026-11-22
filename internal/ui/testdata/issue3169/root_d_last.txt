@@ -1,0 +1,6 @@
+1·▾ conductor (1)
+   └─ ○ A claude
+2·▾ workers (3)
+   ├─ ○ B claude
+   ├─ ○ C claude
+  ▶└─ ○ D claude

@@ -1,0 +1,47 @@
+{
+  "schema": "agent-deck.recall.rows/v2",
+  "session": {
+    "harness": "claude",
+    "path": "claude-session.jsonl"
+  },
+  "source": "native",
+  "turns": [
+    {
+      "id": "u7",
+      "kind": "system",
+      "ts": "2026-09-23T08:00:30.000Z",
+      "title": "Compaction summary",
+      "body": "This session is being continued...",
+      "raw_type": "user"
+    },
+    {
+      "id": "s5",
+      "kind": "command",
+      "ts": "2026-09-23T08:00:31.000Z",
+      "title": "/model opus",
+      "body": "\u003ccommand-name\u003e/model\u003c/command-name\u003e\n\u003ccommand-args\u003eopus\u003c/command-args\u003e",
+      "raw_type": "system/local_command"
+    },
+    {
+      "id": "o1",
+      "kind": "other",
+      "ts": "2026-09-23T08:00:34.000Z",
+      "title": "brand-new-row",
+      "meta": {
+        "raw": {
+          "type": "brand-new-row",
+          "payload": {
+            "k": 1
+          },
+          "uuid": "o1",
+          "timestamp": "2026-09-23T08:00:34.000Z",
+          "sessionId": "11111111-2222-3333-4444-555555555555",
+          "isSidechain": false
+        }
+      },
+      "raw_type": "brand-new-row"
+    }
+  ],
+  "through_cursor": "eyJ2IjoyLCJwIjoiY2xhdWRlLXNlc3Npb24uanNvbmwiLCJvIjoxMDQzOCwiYSI6Ijk2ZTY5ZGI4ODg1OTYxNDUiLCJzIjp7InIiOlsiM2VkYzMwZDk2Y2RhIl19fQ",
+  "before_cursor": "eyJ2IjoyLCJwIjoiY2xhdWRlLXNlc3Npb24uanNvbmwiLCJvIjoxMDQzOCwiYSI6Ijk2ZTY5ZGI4ODg1OTYxNDUiLCJzIjp7fSwiYiI6InU3In0"
+}

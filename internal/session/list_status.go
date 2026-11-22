@@ -88,3 +88,22 @@ func (i *Instance) classifyAbsentError(sess *tmux.Session) {
 	i.setTerminatedPaneExitCode(exitCode, haveExitCode)
 	i.refreshAuthHoldOnDeathLocked()
 }
+
+// RefreshLiveStatus gives instances the status `list --json`, `status` and
+// `session show` report: the same candidate filter, hook cold-load and status
+// pass, then the substate read that can settle a status under hook lag
+// (hook_lag.go). A command that decides on a status (session remove, the
+// restart guard, switch) calls it first, so it never refuses, skips or ranks
+// on the stored status while `list` shows another.
+func RefreshLiveStatus(instances []*Instance) {
+	refresh, _ := CLIStatusCandidates(instances)
+	RefreshInstancesForCLIStatus(refresh)
+	var pass StatusUpdatePass
+	for _, inst := range refresh {
+		if inst == nil {
+			continue
+		}
+		_ = pass.UpdateStatusOnly(inst)
+		_ = inst.Substate()
+	}
+}

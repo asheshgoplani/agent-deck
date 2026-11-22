@@ -22,7 +22,8 @@ import (
 // sessionDeletedMsg signals that a session was deleted
 type sessionDeletedMsg struct {
 	deletedID string
-	killErr   error // Error from Kill() if any
+	killErr   error         // Error from Kill() if any
+	prev      undoPrevState // state before the delete, for ctrl+z
 }
 
 // sessionClosedMsg signals that a session process was closed without deleting metadata.
@@ -42,9 +43,10 @@ type sessionUnarchivedMsg struct {
 
 // sessionRestoredMsg signals that an undo-delete restore completed
 type sessionRestoredMsg struct {
-	instance *session.Instance
-	err      error
-	warning  string
+	instance  *session.Instance
+	err       error
+	warning   string
+	restarted bool // false: brought back stopped/errored/archived, no process
 }
 
 // deleteSession deletes a session
@@ -70,6 +72,8 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		h.instancesMu.RUnlock()
 	}
 	return func() tea.Msg {
+		// Before the kill, which writes StatusStopped (TUI-7).
+		prev := captureUndoState(inst)
 		killErr := inst.Kill()
 		inst.RecordTelemetryEnd(telemetry.EndDelete)
 		if isWorktree && sharedWorktree {
@@ -106,7 +110,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 				}
 			}
 		}
-		return sessionDeletedMsg{deletedID: id, killErr: killErr}
+		return sessionDeletedMsg{deletedID: id, killErr: killErr, prev: prev}
 	}
 }
 
@@ -222,8 +226,9 @@ func (h *Home) unarchiveSession(inst *session.Instance) tea.Cmd {
 // handler in Update persists the change.
 func (h *Home) removeSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
+	prev := captureUndoState(inst)
 	return func() tea.Msg {
-		return sessionDeletedMsg{deletedID: id}
+		return sessionDeletedMsg{deletedID: id, prev: prev}
 	}
 }
 
@@ -233,19 +238,21 @@ func (h *Home) removeSession(inst *session.Instance) tea.Cmd {
 func (h *Home) bulkRemoveErrored() tea.Cmd {
 	h.instancesMu.RLock()
 	ids := make([]string, 0, len(h.instances))
+	prevs := make([]undoPrevState, 0, len(h.instances))
 	for _, inst := range h.instances {
 		// pin-protects-from-stop: pinned errored sessions are left alone in
 		// bulk removal; an explicit Shift+D on the session still works.
 		if inst.Status == session.StatusError && inst.Pin == session.PinNone {
 			ids = append(ids, inst.ID)
+			prevs = append(prevs, captureUndoState(inst))
 		}
 	}
 	h.instancesMu.RUnlock()
 
 	cmds := make([]tea.Cmd, 0, len(ids))
-	for _, id := range ids {
-		id := id
-		cmds = append(cmds, func() tea.Msg { return sessionDeletedMsg{deletedID: id} })
+	for i, id := range ids {
+		id, prev := id, prevs[i]
+		cmds = append(cmds, func() tea.Msg { return sessionDeletedMsg{deletedID: id, prev: prev} })
 	}
 	return tea.Batch(cmds...)
 }

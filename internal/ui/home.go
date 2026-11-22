@@ -3066,6 +3066,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cleanupDone = make(chan struct{})
 			h.undoMu.Lock()
 			h.undoStack[len(h.undoStack)-1].cleanupDone = cleanupDone
+			h.undoStack[len(h.undoStack)-1].prev = msg.prev
 			h.undoMu.Unlock()
 			// Save to recent sessions for quick re-creation
 			if err := h.storage.SaveRecentSession(deletedInstance); err != nil {
@@ -3209,8 +3210,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.instancesMu.Unlock()
 		h.cachedStatusCounts.valid.Store(false)
 
-		// Track as launching for animation
-		h.launchingSessions[msg.instance.ID] = time.Now()
+		// Track as launching for animation (only a restarted session launches)
+		if msg.restarted {
+			h.launchingSessions[msg.instance.ID] = time.Now()
+		}
 
 		// Expand the group so the restored session is visible
 		if msg.instance.GroupPath != "" {
@@ -6467,7 +6470,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					fmt.Sprintf("%q is the default\ngroup and can't be deleted.\n\nSessions always need a home.", session.DefaultGroupName),
 				)
 			} else if item.Type == session.ItemTypeGroup && item.Path != h.groupScope {
-				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
+				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name, h.groupTree.DeleteGroupDestinationName(item.Path))
 			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
 				h.setError(fmt.Errorf("cannot delete the scoped root group"))
 			}
@@ -6950,11 +6953,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if entry.cleanupDone != nil {
 				<-entry.cleanupDone
 			}
-			err := inst.Restart()
+			// TUI-7: bring the session back as it was; only one that was
+			// active when it was deleted is started again.
+			restarted, err := restoreForUndo(inst, entry.prev)
+			warning := ""
+			if restarted {
+				warning = inst.ConsumeCodexRestartWarning()
+			}
 			return sessionRestoredMsg{
-				instance: inst,
-				err:      err,
-				warning:  inst.ConsumeCodexRestartWarning(),
+				instance:  inst,
+				err:       err,
+				warning:   warning,
+				restarted: restarted,
 			}
 		}
 
@@ -8316,10 +8326,15 @@ func (h *Home) renderSessionItem(
 	// Calculate base indentation for parent levels
 	// Level 1 means direct child of root group, Level 2 means child of nested group, etc.
 	baseIndent := ""
+	// A row is drawn as a child only when it sits under a parent row of its
+	// own group. A sub-session whose parent is in another group (or gone) is
+	// emitted at top-level depth and must look like its top-level siblings,
+	// cursor included (#3169). It keeps IsSubSession for event routing.
+	nested := item.DrawsNested()
 	if item.Level > 1 {
 		// For deeply nested items, add spacing for parent levels
 		// Sub-sessions get extra indentation (they're at Level = groupLevel + 2)
-		if item.IsSubSession {
+		if nested {
 			// Sub-session: indent for group level, then continuation line for parent
 			// Add leading space so │ aligns with ├ in regular items (both at position 1)
 			groupIndent := strings.Repeat(treeEmpty, item.Level-2)
@@ -8336,7 +8351,7 @@ func (h *Home) renderSessionItem(
 
 	// Tree connector: └─ for last item, ├─ for others
 	treeConnector := treeBranch
-	if item.IsSubSession {
+	if nested {
 		// Sub-session uses its own last-in-group logic
 		if item.IsLastSubSession {
 			treeConnector = subLast
@@ -8404,7 +8419,7 @@ func (h *Home) renderSessionItem(
 		// Rebuild baseIndent with selection arrow for sub-sessions
 		// Replace the │ (or empty space) with ▶ so the arrow doesn't squeeze
 		// between tree connector characters (e.g. " │▶├─" → " ▶ ├─")
-		if item.IsSubSession {
+		if nested {
 			groupIndent := strings.Repeat(treeEmpty, max(0, item.Level-2))
 			baseIndent = groupIndent + SessionSelectionPrefix.Render(" ▶")
 			selectionPrefix = " "

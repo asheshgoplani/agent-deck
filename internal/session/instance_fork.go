@@ -397,6 +397,7 @@ func (i *Instance) createForkedClaudeInstance(
 		projectPath = opts.WorkDir
 	}
 	forked := NewInstance(newTitle, projectPath)
+	forked.InstructionsFiles = append([]string(nil), i.InstructionsFiles...) // #3206: a fork keeps its source's instruction files
 	forked.Account = i.Account
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
@@ -519,6 +520,7 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	}
 
 	forked := NewInstance(newTitle, projectPath)
+	forked.InstructionsFiles = append([]string(nil), i.InstructionsFiles...) // #3206: a fork keeps its source's instruction files
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
@@ -605,7 +607,16 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 		}
 		envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 	}
-	return envPrefix + fmt.Sprintf("%s%s%s%s fork %s", command, yoloFlag, modelFlag, reasoningFlag, shellescape.Quote(i.CodexSessionID)), nil
+	// A codex fork's first spawn carries only AGENTDECK_IDENTITY_FILE, no
+	// developer_instructions (its later restarts do carry them). A fork with
+	// instruction files (#3206) gets the override on this spawn too, so its
+	// standing instructions reach the model from the start; without them the
+	// command is unchanged.
+	identityFlag := ""
+	if len(target.InstructionsFiles) > 0 {
+		identityFlag = target.codexIdentityFlag(target.codexHomeForCommand(command), target.EffectiveWorkingDir())
+	}
+	return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s", command, yoloFlag, modelFlag, reasoningFlag, identityFlag, shellescape.Quote(i.CodexSessionID)), nil
 }
 
 // CreateForkedCodexInstanceWithOptions creates a forked Codex instance. Mirrors
@@ -621,6 +632,7 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	}
 
 	forked := NewInstance(newTitle, projectPath)
+	forked.InstructionsFiles = append([]string(nil), i.InstructionsFiles...) // #3206: a fork keeps its source's instruction files
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {

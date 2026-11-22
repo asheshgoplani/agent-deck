@@ -129,7 +129,7 @@ func handleSwitch(profile string, args []string) {
 			if err != nil {
 				return nil, err
 			}
-			return switchTargets(instances), nil
+			return withLiveSwitchStatus(switchTargets(instances), liveSwitchStatuses(resolved)), nil
 		},
 		delivery: func(jsonOut, noAttach bool) switchDelivery {
 			return switchDelivery{
