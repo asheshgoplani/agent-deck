@@ -113,7 +113,9 @@ An unknown name after stop/restart/archive is not the desk's ("stop listening" b
 1. **Only the owner's sessions** (`[voice]` in config.toml, see the config reference). Another person's session is
    refused by name ("That is Sam's session.") and never acted on. Every spoken name word must be in the title or
    group (two spoken words may make one title word: "mac app" → `macapp`); the switch matcher's number rule holds
-   ("audit 0956" is not `audit-0955`). A name that only looks like a title (edit distance) is never silently the
+   ("audit 0956" is not `audit-0955`). A number word after a name word is its digits: "worker one" is `worker-1`,
+   never `worker-11`; one to twenty, and the Hindi ek to das ("worker do" is `worker-2` unless a session has the
+   word "do" in its name). A name that only looks like a title (edit distance) is never silently the
    target: the desk asks "Did you mean voice test?". Several equal hits: "Did you mean A or B?". Archived sessions
    are never targets.
 2. **Never another profile, never a conductor.** The desk lists only the profile it runs in (`-p`), plus the

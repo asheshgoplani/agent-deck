@@ -667,8 +667,15 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	}
 	// talk in a soft desk form is decided from the words, before any
 	// listing (no ssh for "read the file and fix the bug")
+	// A number word at the end that is also an ordinary word ("worker do
+	// band karo": the verb do; "test ten" folds like "then") makes the
+	// name a session only when it resolves to exactly one.
+	onlyIfOne := false
 	if q0 := newNameQuery(p.Name, nil); p.Soft && talkLike(q0.words) {
-		return notMine(p.Lang), nil
+		if !numberLast(q0) {
+			return notMine(p.Lang), nil
+		}
+		onlyIfOne = true
 	}
 	all, _ := d.sessions(ctx)
 	req.onShared = idCount(all, req.On) > 1
@@ -690,6 +697,9 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 				return r, nil
 			}
 		}
+	}
+	if onlyIfOne && res.Kind != resolvedOne {
+		return notMine(p.Lang), nil
 	}
 	// "status of the build", "test ko bolo ki ...": a name of only coding
 	// nouns is talk unless it says a session's whole title
@@ -1095,7 +1105,11 @@ func saysWholeTitle(q nameQuery, res resolution) bool {
 	for _, s := range cands {
 		all := true
 		for _, tw := range splitWords(s.Title) {
-			if wordMeets(tw.folded, tw.roman, false, q.words, q.roman) != wordSure {
+			num := "" // a title's digits are said as a number word too ("test one" / test-1)
+			if strings.Trim(tw.folded, "0123456789") == "" {
+				num = tw.folded
+			}
+			if wordMeets(tw.folded, tw.roman, false, q.words, q.roman, num) != wordSure {
 				all = false
 				break
 			}
