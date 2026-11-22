@@ -2417,9 +2417,9 @@ func (c *UserConfig) GetSendTransport() string {
 
 // SendSettings is the [send] section.
 type SendSettings struct {
-	// TagSends prefixes a send made from inside an agent-deck session with
-	// one "[agent-deck from:<sender-id>]" line so the receiver's reply is
-	// routed back to the sender (comms redesign PR5). Default true (nil).
+	// TagSends prefixes Claude-to-Claude, Pi-to-Pi and Pi-to-Claude sends
+	// with one "[agent-deck from:<sender-id>]" line. Claude reply routing
+	// is automatic; Pi attribution requires an explicit reply. Default true (nil).
 	TagSends *bool `toml:"tag_sends,omitempty"`
 }
 
