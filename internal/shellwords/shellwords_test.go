@@ -53,6 +53,7 @@ func TestCommands(t *testing.T) {
 		{`echo 'a # b' # comment with ; && and a ' quote
 x`, []string{`echo 'a # b'`, "x"}, true},
 		{`a#b ; c`, []string{`a#b`, "c"}, true},
+		{"echo a\u00a0#b; exec claude", []string{"echo a\u00a0#b", "exec claude"}, true},
 		{`a;# note with an apostrophe
 b`, []string{"a", "b"}, true},
 		{`"unterminated && x`, nil, false},

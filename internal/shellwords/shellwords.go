@@ -261,5 +261,7 @@ func startsShellWord(runes []rune, i int) bool {
 		return true
 	}
 	prev := runes[i-1]
-	return unicode.IsSpace(prev) || strings.ContainsRune(";&|()", prev)
+	// Only the shell's blank characters separate words; a non-breaking space
+	// is an ordinary character to the shell and must not start a comment.
+	return prev == ' ' || prev == '\t' || prev == '\n' || strings.ContainsRune(";&|()", prev)
 }

@@ -138,6 +138,10 @@ func TestAntigravityCommand(t *testing.T) {
 		{"agy", "{command} --conversation abc", "agy", false},
 		{"/opt/bin/agy --conversation abc", "", "/opt/bin/agy --conversation abc --prompt-interactive " + shellescape.Quote(prompt), true},
 		{"my-agy-wrapper", "", "my-agy-wrapper", false},
+		{"agy # my note", "", "agy # my note", false},
+		{"agy 2>&1 | tee ~/agy.log", "", "agy 2>&1 | tee ~/agy.log", false},
+		{"sh -c 'agy'", "", "sh -c 'agy'", false},
+		{"FOO=1 agy", "", "FOO=1 agy --prompt-interactive " + shellescape.Quote(prompt), true},
 	} {
 		inst := &Instance{Tool: "antigravity", Command: tt.command, Wrapper: tt.wrapper}
 		if got, embedded := inst.buildAntigravityCommandWithPrompt(prompt); got != tt.want || embedded != tt.embedded {

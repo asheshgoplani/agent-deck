@@ -45,6 +45,9 @@ func TestLaunchAntigravityNoWaitEmbedsPrompt(t *testing.T) {
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"AGY_TEST_ARGV=" + argvPath,
 		"AGY_TEST_STDIN=" + stdinPath,
+		// A private tmux socket keeps a sibling test's server environment out
+		// of the pane; otherwise the stub agy/PATH can be lost.
+		"TMUX_TMPDIR=" + t.TempDir(),
 	}
 	t.Cleanup(func() { _, _, _ = runAgentDeck(t, home, "session", "stop", "agy-no-wait") })
 

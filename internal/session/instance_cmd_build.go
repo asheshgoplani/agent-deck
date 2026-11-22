@@ -12,6 +12,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -1330,15 +1331,33 @@ func (i *Instance) buildAntigravityCommandWithPrompt(prompt string) (string, boo
 		// delivery path types the prompt at the composer instead.
 		return command, false
 	}
-	// Embed whenever the launcher is agy, including option-bearing and
-	// custom-path invocations (`agy --mode plan`, `/opt/bin/agy`): the prompt
-	// then never touches the composer, so `launch -m ... --no-wait` returns
-	// without waiting and cannot type into a sign-in or trust menu.
-	fields := strings.Fields(command)
-	if len(fields) == 0 || path.Base(fields[0]) != "agy" {
+	// Embed when the command is one simple agy invocation, including
+	// option-bearing and custom-path ones (`agy --mode plan`, `/opt/bin/agy`):
+	// the prompt then never touches the composer, so `launch -m ... --no-wait`
+	// returns without waiting and cannot type into a sign-in or trust menu.
+	// Pipes, redirections, comments and other shell syntax keep ownership of
+	// the appended text, so they use the composer-gated path instead.
+	if !antigravityBareLauncher(command) {
 		return command, false
 	}
 	return command + " --prompt-interactive " + shellescape.Quote(prompt), true
+}
+
+// antigravityBareLauncher reports whether command is exactly one simple
+// command whose executable is agy, so appending an argument reaches agy
+// itself rather than a comment, a pipe, or another program.
+func antigravityBareLauncher(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	commands, ok := shellwords.Commands(trimmed)
+	if !ok || len(commands) != 1 || commands[0] != trimmed {
+		return false
+	}
+	words, ok := shellwords.Split(trimmed)
+	if !ok {
+		return false
+	}
+	words = shellwords.CommandWords(words)
+	return len(words) > 0 && path.Base(words[0]) == "agy"
 }
 
 func (i *Instance) buildCodexCommandWithPrompt(baseCommand, prompt string) (string, bool) {
