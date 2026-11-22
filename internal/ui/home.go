@@ -6447,7 +6447,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					fmt.Sprintf("%q is the default\ngroup and can't be deleted.\n\nSessions always need a home.", session.DefaultGroupName),
 				)
 			} else if item.Type == session.ItemTypeGroup && item.Path != h.groupScope {
-				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
+				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name, h.groupTree.DeleteGroupDestinationName(item.Path))
 			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
 				h.setError(fmt.Errorf("cannot delete the scoped root group"))
 			}

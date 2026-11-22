@@ -164,6 +164,12 @@ func (s *Server) handleGroupByPath(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.mutator.DeleteGroup(groupPath); err != nil {
+			// A path that names no group is 404, as for rename and
+			// collapse, never a 200 "deleted".
+			if isGroupNotFound(err) {
+				writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "group not found")
+				return
+			}
 			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
 			return
 		}

@@ -64,6 +64,9 @@ type ConfirmDialog struct {
 
 	remoteName string // Remote name for remote session confirmations.
 
+	// destName is the group a deleted group's sessions move to (ConfirmDeleteGroup).
+	destName string
+
 	// sessionCount is how many sessions a ConfirmDestroySandbox stops;
 	// confirming agrees to stop at most that many.
 	sessionCount int
@@ -305,12 +308,15 @@ func (c *ConfirmDialog) ShowBulkRemoveErrored(count int) {
 	c.focusedButton = 1
 }
 
-// ShowDeleteGroup shows confirmation for group deletion
-func (c *ConfirmDialog) ShowDeleteGroup(groupPath, groupName string) {
+// ShowDeleteGroup shows confirmation for group deletion. destName is the
+// display name of the group the sessions move to
+// (session.GroupTree.DeleteGroupDestinationName).
+func (c *ConfirmDialog) ShowDeleteGroup(groupPath, groupName, destName string) {
 	c.visible = true
 	c.confirmType = ConfirmDeleteGroup
 	c.targetID = groupPath
 	c.targetName = groupName
+	c.destName = destName
 	c.buttonCount = 2
 	c.focusedButton = 1
 }
@@ -851,7 +857,7 @@ func (c *ConfirmDialog) View() string {
 	case ConfirmDeleteGroup:
 		title = "⚠  Delete Group?"
 		warning = fmt.Sprintf("This will delete the group:\n\n  \"%s\"", c.targetName)
-		details = "• All sessions will be MOVED to 'default' group\n• Sessions will NOT be killed\n• The group structure will be lost"
+		details = fmt.Sprintf("• All sessions will be MOVED to the '%s' group\n• Sessions will NOT be killed\n• The group structure will be lost", c.destName)
 		borderColor = ColorRed
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Delete", ColorRed, c.focusedButton == 0), "  ",
