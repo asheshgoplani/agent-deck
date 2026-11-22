@@ -98,7 +98,7 @@ fi
 if [[ "${REMOVE_SESSION}" =~ ^[Yy] ]]; then
     for PROFILE in ${PROFILES}; do
         SESSION_TITLE="conductor-${PROFILE}"
-        agent-deck -p "${PROFILE}" remove "${SESSION_TITLE}" 2>/dev/null && \
+        agent-deck -p "${PROFILE}" remove --force "${SESSION_TITLE}" 2>/dev/null && \
             ok "Removed session ${SESSION_TITLE} from ${PROFILE}" || \
             warn "Could not remove ${SESSION_TITLE} (remove manually from TUI)"
     done

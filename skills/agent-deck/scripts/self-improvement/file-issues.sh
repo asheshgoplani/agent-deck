@@ -134,7 +134,7 @@ Read the prompt for the schema, then read FINDINGS_PATH, locate the finding matc
         "$DRAFTER_PROMPT" \
         --path "$CONDUCTOR_DIR" --wait --timeout 300 >/dev/null 2>&1
     agent-deck session stop "draft-issue-${idx}" --quiet >/dev/null 2>&1 || true
-    agent-deck rm "draft-issue-${idx}" >/dev/null 2>&1 || true
+    agent-deck rm --force "draft-issue-${idx}" >/dev/null 2>&1 || true
 
     if [[ ! -s "$DRAFT_PATH" ]]; then
         red "  drafter produced no output. Skipping."
@@ -159,7 +159,7 @@ Read the auditor.md prompt, then read INPUT_PATH with adversarial fresh eyes for
         "$AUDITOR_PROMPT" \
         --path "$CONDUCTOR_DIR" --wait --timeout 300 >/dev/null 2>&1
     agent-deck session stop "audit-issue-${idx}" --quiet >/dev/null 2>&1 || true
-    agent-deck rm "audit-issue-${idx}" >/dev/null 2>&1 || true
+    agent-deck rm --force "audit-issue-${idx}" >/dev/null 2>&1 || true
 
     if [[ ! -s "$AUDIT_PATH" ]]; then
         red "  auditor produced no output. Cannot file safely. Skipping."
@@ -217,7 +217,7 @@ Read the auditor.md prompt, then read INPUT_PATH with adversarial fresh eyes for
                     "reaudit-issue-${idx}" \
                     "Follow $PROMPTS_DIR/auditor.md with {INPUT_PATH}=$DRAFT_PATH {OUTPUT_PATH}=$AUDIT_PATH then print DONE and exit." \
                     --path "$CONDUCTOR_DIR" --wait --timeout 300 >/dev/null 2>&1
-                agent-deck rm "reaudit-issue-${idx}" >/dev/null 2>&1 || true
+                agent-deck rm --force "reaudit-issue-${idx}" >/dev/null 2>&1 || true
                 VERDICT=$(grep -E "^\*\*Overall:\*\*" "$AUDIT_PATH" | head -1 | sed -E 's/.*\*\*Overall:\*\*\s*(\S+).*/\1/')
                 echo "  re-audit verdict: $VERDICT"
                 ;;

@@ -1466,7 +1466,7 @@
     {
       "id": 34,
       "prompt": "Ask Gemini for a second opinion on my database schema design and give me its answer, then tidy up.",
-      "expected_output": "Runs `$SKILL_DIR/scripts/launch-subagent.sh \"Consult Gemini\" \"...\" --tool gemini --wait --timeout 120`, returns the output, then runs `agent-deck remove \"Consult Gemini\"`. Does not create the session manually with agent-deck add.",
+      "expected_output": "Runs `$SKILL_DIR/scripts/launch-subagent.sh \"Consult Gemini\" \"...\" --tool gemini --wait --timeout 120`, returns the output, then runs `agent-deck remove --force \"Consult Gemini\"`. Does not create the session manually with agent-deck add.",
       "files": [],
       "area": "core",
       "promises": [

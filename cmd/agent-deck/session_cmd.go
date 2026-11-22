@@ -153,7 +153,7 @@ func printSessionHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  start <id>              Start a session's tmux process")
 	fmt.Println("  stop <id>               Stop/kill session process")
-	fmt.Println("  remove <id>             Remove session from registry (stopped/error only; --force to bypass)")
+	fmt.Println("  remove <id>             Remove session from registry (live process needs --force)")
 	fmt.Println("  cleanup [--days N]      Purge dead sessions idle N+ days (dry-run unless --yes)")
 	fmt.Println("  archive <id|title>      Stop session and hide it from active lists (retained in storage)")
 	fmt.Println("  unarchive <id|title>    Restore an archived session (does not restart it)")

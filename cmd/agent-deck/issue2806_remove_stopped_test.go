@@ -129,7 +129,7 @@ func TestIssue2806_RemoveSavesStoppedBeforeWorktreeRemoval(t *testing.T) {
 			return []string{"session", "remove", "--all-errored", "--prune-worktree", "--json"}
 		}},
 		{"remove", session.StatusWaiting, func(id string) []string {
-			return []string{"remove", id, "--json"}
+			return []string{"remove", id, "--force", "--json"}
 		}},
 	}
 	for _, tc := range cases {

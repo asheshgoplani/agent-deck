@@ -103,7 +103,7 @@ GUARD_LOG="$LOG_DIR/tmux-calls.log"
 trash() { if command -v gio >/dev/null 2>&1; then gio trash "$1" 2>/dev/null || rm -rf "$1"; else rm -rf "$1"; fi; }
 SESSIONS=()
 cleanup() {
-    for s in "${SESSIONS[@]}"; do ad session stop "$s" >/dev/null 2>&1; ad remove "$s" >/dev/null 2>&1; done
+    for s in "${SESSIONS[@]}"; do ad session stop "$s" >/dev/null 2>&1; ad remove --force "$s" >/dev/null 2>&1; done
     if [ -n "$KEEP" ]; then echo "kept sandbox: $ROOT"; else trash "$ROOT"; fi
 }
 trap cleanup EXIT
