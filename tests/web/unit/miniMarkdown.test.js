@@ -336,4 +336,11 @@ describe('miniMarkdown nesting limits', () => {
     expect(c.querySelectorAll('li')).toHaveLength(items.length)
     expect(c.textContent).toBe(items.join(''))
   })
+
+  it('drops the fence indentation from code lines, as CommonMark does', () => {
+    const inList = mount('- a\n     ```\n     x\n       y\n     ```')
+    expect(inList.querySelector('li pre code').textContent).toBe('x\n  y')
+    const top = mount('  ```\n  x\n z\n    w\n  ```')
+    expect(top.querySelector('pre code').textContent).toBe('x\nz\n  w')
+  })
 })

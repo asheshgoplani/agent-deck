@@ -72,7 +72,9 @@ function fenceMarker(line) {
   return delimiter ? { delimiter, info: line.slice(delimiter.length) } : null
 }
 
-function parseFence(lines, index, marker, indent = 0) {
+// fenceIndent is how far the opening fence sits past indent. As in
+// CommonMark, each code line loses up to that many leading spaces.
+function parseFence(lines, index, marker, indent = 0, fenceIndent = 0) {
   const { delimiter, info } = marker
   const language = info.trim().split(/\s+/)[0] || ''
   const prefix = ' '.repeat(indent)
@@ -84,7 +86,8 @@ function parseFence(lines, index, marker, indent = 0) {
     index++
     const closer = fenceMarker(line)
     if (closer && closer.delimiter[0] === delimiter[0] && closer.delimiter.length >= delimiter.length && !closer.info) break
-    code.push(raw.slice(indent))
+    const rest = raw.slice(indent)
+    code.push(rest.slice(Math.min(fenceIndent, rest.search(/[^ ]|$/))))
   }
   return [html`<${MarkdownCodeBlock} code=${code.join('\n')} language=${language}/>`, index]
 }
@@ -173,7 +176,7 @@ function parseList(lines, start, first, depth) {
     if (!match && raw.search(/[^ ]/) < (marker ? item.contentIndent : indent + 1)) break
     index++
     if (marker) {
-      const [block, next] = parseFence(lines, index, marker, item.contentIndent)
+      const [block, next] = parseFence(lines, index, marker, item.contentIndent, match ? 0 : raw.search(/[^ ]/) - item.contentIndent)
       appendItemBlock(item, block)
       index = next
     } else {
@@ -202,7 +205,7 @@ export function renderMarkdown(src, depth = 0) {
     const marker = fenceMarker(line)
     if (marker) {
       flushPara()
-      const [block, next] = parseFence(lines, index + 1, marker)
+      const [block, next] = parseFence(lines, index + 1, marker, 0, raw.search(/[^ ]/))
       blocks.push(block)
       index = next - 1
       continue
