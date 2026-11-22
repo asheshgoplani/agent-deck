@@ -1043,6 +1043,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	} else if i.Tool == "kimi" {
 		i.prepareKimiResume()
 		if _, err := i.seedHermesHookGeneration("waiting", false); err != nil {
+			i.restoreTmuxBindingOnFailure(prevTmux, prevKilled)
 			return fmt.Errorf("seed kimi restart baseline: %w", err)
 		}
 		command = i.buildKimiCommand(i.Command)
