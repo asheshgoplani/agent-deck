@@ -515,15 +515,26 @@ func (d *cliVoiceDeck) Search(ctx context.Context, query string) ([]voicedesk.Se
 	}
 	args = append(args, "--", query)
 	out, err := d.run(ctx, "", args...)
+	// The real shape (handleRecallSearch): local hits under result.hits,
+	// each remote's under remotes[].hits. deck_id is the deck session the
+	// conversation belongs to (empty when recall could not map it); the
+	// desk's owner rules filter on it.
+	type recallHit struct {
+		Title   string `json:"title"`
+		DeckID  string `json:"deck_id"`
+		Snippet string `json:"snippet"`
+	}
 	var v struct {
 		Success *bool  `json:"success"`
 		Error   string `json:"error"`
-		Hits    []struct {
-			Title   string `json:"title"`
-			DeckID  string `json:"deck_id"`
-			Remote  string `json:"remote"`
-			Snippet string `json:"snippet"`
-		} `json:"hits"`
+		Result  *struct {
+			Hits []recallHit `json:"hits"`
+		} `json:"result"`
+		Remotes []struct {
+			Remote string      `json:"remote"`
+			Hits   []recallHit `json:"hits"`
+			Error  string      `json:"error"`
+		} `json:"remotes"`
 	}
 	if jerr := json.Unmarshal(bytes.TrimSpace(out), &v); jerr != nil {
 		if err == nil {
@@ -531,15 +542,27 @@ func (d *cliVoiceDeck) Search(ctx context.Context, query string) ([]voicedesk.Se
 		}
 		return nil, err
 	}
-	if v.Success != nil && !*v.Success {
+	// success=false with a result means a remote did not answer (recall
+	// exits 1 then): the local hits and the other remotes' hits stand.
+	if v.Success != nil && !*v.Success && v.Result == nil {
 		if strings.Contains(v.Error, "recall is off") {
 			return nil, voicedesk.ErrSearchOff
 		}
 		return nil, errors.New("recall search failed")
 	}
-	hits := make([]voicedesk.SearchHit, 0, len(v.Hits))
-	for _, h := range v.Hits {
-		hits = append(hits, voicedesk.SearchHit{Title: h.Title, DeckID: h.DeckID, Host: h.Remote, Snippet: h.Snippet})
+	var hits []voicedesk.SearchHit
+	if v.Result != nil {
+		for _, h := range v.Result.Hits {
+			hits = append(hits, voicedesk.SearchHit{Title: h.Title, DeckID: h.DeckID, Snippet: h.Snippet})
+		}
+	}
+	for _, r := range v.Remotes {
+		if r.Remote == "" {
+			continue
+		}
+		for _, h := range r.Hits {
+			hits = append(hits, voicedesk.SearchHit{Title: h.Title, DeckID: h.DeckID, Host: r.Remote, Snippet: h.Snippet})
+		}
 	}
 	return hits, nil
 }
