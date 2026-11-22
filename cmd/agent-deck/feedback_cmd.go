@@ -384,7 +384,7 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 	steps := fs.String("steps", "", "steps to reproduce (idea: alternatives considered)")
 	tool := fs.String("tool", "", "agent tool involved (claude, codex, ...)")
 	surface := fs.String("surface", "cli", "where the report is filed from (cli, tui, mac app)")
-	dryRun := fs.Bool("dry-run", false, "print the exact issue and the fallback URL; send nothing")
+	dryRun := fs.Bool("dry-run", false, "preview the issue without sending it")
 	jsonOut := fs.Bool("json", false, "machine output; never prompts")
 	yes := fs.Bool("yes", false, "confirm sending (required with --json)")
 	noOpen := fs.Bool("no-open", false, "print the prefilled URL instead of opening a browser")
@@ -537,7 +537,16 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 		fmt.Fprintln(w, "Dry run: nothing is sent.")
 		fmt.Fprintln(w)
 		printIssuePreview(w, is)
-		if feedbackGhReady(ctx) {
+		ready := feedbackGhReady(ctx)
+		if *fromAgent {
+			if ready {
+				fmt.Fprintln(w, "Would file with: gh (or comment on a matching open agent report)")
+			} else {
+				fmt.Fprintln(w, "Cannot file: --from-agent requires a logged-in GitHub CLI (install gh and run `gh auth login`)")
+			}
+			return 0
+		}
+		if ready {
 			fmt.Fprintln(w, "Would file with: gh issue create (gh is installed and logged in)")
 		} else {
 			fmt.Fprintln(w, "Would file with: your browser (gh is not installed or not logged in)")
@@ -765,7 +774,7 @@ func printFeedbackReportHelp(w io.Writer, kind issuereport.Kind) {
 		fmt.Fprintln(w, "  --steps TEXT     steps to reproduce (optional)")
 	}
 	fmt.Fprintln(w, "  --tool T         agent tool involved (claude, codex, ...)")
-	fmt.Fprintln(w, "  --dry-run        print the exact issue and the prefilled URL; send nothing")
+	fmt.Fprintln(w, "  --dry-run        preview the issue without sending it")
 	fmt.Fprintln(w, "  --json           JSON output, never prompts; sending also needs --yes")
 	fmt.Fprintln(w, "  --yes            confirm sending without the y/N prompt")
 	fmt.Fprintln(w, "  --no-open        print the prefilled URL instead of opening a browser")

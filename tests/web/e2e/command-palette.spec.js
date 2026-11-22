@@ -11,10 +11,9 @@
 //   - Clicking a session row selects it + switches to the terminal tab;
 //     clicking a command row (Costs dashboard) switches tabs.
 //   - Esc closes the palette.
-//
-// Deliberately NOT covered: arrow-key navigation / Enter-to-run inside the
-// palette — CommandPalette.js only handles Escape on the input; there is no
-// ArrowUp/ArrowDown/Enter selection logic to test.
+//   - Keyboard only: ArrowDown/ArrowUp move the highlighted row and Enter
+//     runs it (desktop and phone; before, Enter did nothing and only a mouse
+//     click could run a row).
 
 import { test, expect } from '@playwright/test'
 
@@ -135,5 +134,52 @@ test.describe('command palette (Ctrl/Cmd+K)', () => {
     await openPalette(page)
     await page.keyboard.press('Escape')
     await expect(page.locator('[data-testid="command-palette"]')).toHaveCount(0)
+  })
+})
+
+test.describe('command palette from the keyboard only', () => {
+  test.beforeEach(async ({ page, request }, testInfo) => {
+    if (testInfo.project.name === 'chromium-phone') await page.setViewportSize({ width: 390, height: 844 })
+    await request.post('/__fixture/reset')
+    await page.goto('/')
+    await page.waitForSelector('.sess', { state: 'attached', timeout: 5000 })
+  })
+
+  test('type a session name and press Enter opens that session', async ({ page }) => {
+    await openPalette(page)
+    await page.keyboard.type('frontend')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="command-palette"]')).toHaveCount(0)
+    await expect(page.locator('.work-head .cur')).toHaveText('frontend')
+  })
+
+  test('arrow keys move the highlighted row and Enter runs the highlighted one', async ({ page }) => {
+    await openPalette(page)
+    await page.keyboard.type('en')
+    const rows = page.locator('[data-testid="command-palette"] .row')
+    await expect(rows.nth(0)).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.press('ArrowDown')
+    await expect(rows.nth(0)).toHaveAttribute('aria-selected', 'false')
+    await expect(rows.nth(1)).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.press('ArrowUp')
+    await expect(rows.nth(0)).toHaveAttribute('aria-selected', 'true')
+
+    // Walk to the "frontend" session row and run it with Enter.
+    const labels = await rows.evaluateAll(els => els.map(el => el.firstElementChild.textContent))
+    const target = labels.indexOf('frontend')
+    expect(target).toBeGreaterThan(0)
+    for (let i = 0; i < target; i++) await page.keyboard.press('ArrowDown')
+    await expect(rows.nth(target)).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="command-palette"]')).toHaveCount(0)
+    await expect(page.locator('.work-head .cur')).toHaveText('frontend')
+  })
+
+  test('Enter on a command row runs the command', async ({ page }) => {
+    await openPalette(page)
+    await page.keyboard.type('costs')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="command-palette"]')).toHaveCount(0)
+    await expect(page.locator('.costs')).toBeVisible()
   })
 })

@@ -32,9 +32,11 @@ type seed struct {
 // hand-crafted SQLite row (except where noted below).
 func (s *suite) seedStore() (*seed, error) {
 	for _, args := range [][]string{
-		{"group", "create", "alpha"},
-		{"group", "create", "backend", "--parent", "alpha"},
-		{"group", "create", "beta"},
+		// The gallery starts several sessions per group: no session cap, or
+		// every start after a group's first would be queued.
+		{"group", "create", "alpha", "--max-concurrent", "0"},
+		{"group", "create", "backend", "--parent", "alpha", "--max-concurrent", "0"},
+		{"group", "create", "beta", "--max-concurrent", "0"},
 	} {
 		if _, err := s.cmd(args...); err != nil {
 			return nil, fmt.Errorf("seed %v: %w", args, err)

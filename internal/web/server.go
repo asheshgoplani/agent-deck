@@ -76,6 +76,7 @@ type Server struct {
 	mcpMgr          MCPManager
 	remoteFleet     RemoteFleetLoader
 	mutationLimiter *rate.Limiter
+	systemStats     *systemStatsCache
 
 	// hookStatusLoader returns the latest hook payload for every instance
 	// whose hook file is present on disk. Defaults to defaultLoadHookStatuses
@@ -122,6 +123,7 @@ func NewServer(cfg Config) *Server {
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
 		annotationReader: &stateDBAnnotationReader{},
+		systemStats:      &systemStatsCache{},
 	}
 	s.annotationLoader = s.annotationReader.load
 	if s.remoteFleet == nil {

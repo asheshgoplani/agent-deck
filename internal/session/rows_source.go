@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 )
@@ -57,9 +58,32 @@ func LiveRowsSource(inst *Instance, peers []*Instance) (query.RowsSource, query.
 	if err != nil {
 		return query.RowsSource{}, query.RowsSession{}, err
 	}
-	src := query.RowsSource{Harness: h, Path: path, Resolve: resolve}
+	follow := resolve
+	if h == "pi" {
+		// A Pi session that stops resolving to one document mid-follow (a
+		// second file after /new, no saved identity) is a source change.
+		follow = func() (string, error) {
+			doc, err := piSessionDocument(inst)
+			if err != nil {
+				return "", piFollowError(err)
+			}
+			return doc.Path, nil
+		}
+	}
+	src := query.RowsSource{Harness: h, Path: path, Resolve: follow}
 	sess := query.RowsSession{ID: inst.ID, Harness: h, NativeID: native, Path: path, Title: inst.Title, Cwd: inst.EffectiveWorkingDir()}
 	return src, sess, nil
+}
+
+// piFollowError marks a Pi resolve failure as a source change, except an
+// I/O error on a path that still exists (EMFILE, EIO), which the follow loop
+// retries on its next tick.
+func piFollowError(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", query.ErrSourceUnresolved, err)
 }
 
 // piSessionDocument is a local Pi session's exact session document: the

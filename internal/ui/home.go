@@ -3635,6 +3635,22 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setError(fmt.Errorf("deleted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
+	case remoteSessionRemovedMsg:
+		h.setRemotePending(msg.sessionID, "")
+		h.noteRemoteActionSettled(msg.remoteName)
+		if session.IsRemoteInterrupted(msg.err) {
+			// The remote may have removed it: the row stays until the
+			// fetch says.
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
+		if msg.err != nil {
+			h.setError(fmt.Errorf("failed to remove '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
+			return h, nil
+		}
+		h.dropRemoteSession(msg.remoteName, msg.sessionID)
+		h.setError(fmt.Errorf("removed '%s' from the registry on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "remove", msg.sessionID)))
+		return h, h.fetchRemoteSessions
+
 	case remoteSessionClosedMsg:
 		h.setRemotePending(msg.sessionID, "")
 		h.noteRemoteActionSettled(msg.remoteName)
@@ -6498,6 +6514,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "X":
 		// Status-gated registry-only remove. For stopped/errored sessions only;
 		// use 'd' for destructive delete (kills process + removes worktree).
+		// Remote rows get the same treatment, evaluated against the status the
+		// remote reported: before this branch existed the key was a silent
+		// no-op on a remote session, so it looked broken instead of refused.
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -6506,6 +6525,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.confirmDialog.ShowRemoveSession(item.Session.ID, item.Session.Title)
 				} else {
 					h.setError(fmt.Errorf("session must be stopped or errored to remove; use 'd' to destructively delete a %s session", status))
+				}
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				status := item.RemoteSession.Status
+				if status == string(session.StatusStopped) || status == string(session.StatusError) {
+					h.confirmDialog.ShowRemoveRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+				} else {
+					h.setError(fmt.Errorf("session must be stopped or errored to remove; use 'd' to destructively delete a %s session on %s", status, item.RemoteName))
 				}
 			}
 		}
