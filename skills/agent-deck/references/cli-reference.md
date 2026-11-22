@@ -1166,7 +1166,7 @@ Use `""` or `root` to move to default group. `session move` moves a session to a
 ```bash
 agent-deck profile list
 agent-deck profile create <name>
-agent-deck profile delete <name>
+agent-deck profile delete <name> [--yes]   # refuses while any of its sessions runs; --json needs --yes
 agent-deck profile default [name]
 ```
 

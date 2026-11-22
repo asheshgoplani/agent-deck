@@ -883,7 +883,7 @@ func handleGroupUpdate(profile string, args []string) {
 // handleGroupDelete deletes a group
 func handleGroupDelete(profile string, args []string) {
 	fs := flag.NewFlagSet("group delete", flag.ContinueOnError)
-	force := fs.Bool("force", false, "Move sessions to the parent group (to My Sessions for a root group) and delete")
+	force := fs.Bool("force", false, "Move sessions (also those of its subgroups) to the parent group (to My Sessions for a root group) and delete the group and its subgroups")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -978,17 +978,25 @@ func handleGroupDelete(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	// Count sessions in group and subgroups
+	// Count sessions in group and subgroups; the subgroups are deleted with
+	// it, so they are named in the refusal and the result.
 	sessionCount := len(group.Sessions)
+	subgroups := []string{}
 	for path, g := range groupTree.Groups {
 		if strings.HasPrefix(path, groupPath+"/") {
 			sessionCount += len(g.Sessions)
+			subgroups = append(subgroups, path)
 		}
+	}
+	sort.Strings(subgroups)
+	alsoDeleted := ""
+	if len(subgroups) > 0 {
+		alsoDeleted = fmt.Sprintf(" (and its subgroups: %s)", strings.Join(subgroups, ", "))
 	}
 
 	// Check if group has sessions and --force not specified
 	if sessionCount > 0 && !*force {
-		out.Error(fmt.Sprintf("group '%s' has %d sessions. Use --force to move them to the '%s' group.", name, sessionCount, groupTree.DeleteGroupDestinationName(groupPath)), ErrCodeGroupNotEmpty)
+		out.Error(fmt.Sprintf("group '%s'%s has %d sessions. Use --force to move them to the '%s' group.", name, alsoDeleted, sessionCount, groupTree.DeleteGroupDestinationName(groupPath)), ErrCodeGroupNotEmpty)
 		exitCLI(1)
 	}
 
@@ -1003,11 +1011,12 @@ func handleGroupDelete(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	out.Success(fmt.Sprintf("Deleted group: %s", name), map[string]interface{}{
-		"success":        true,
-		"name":           name,
-		"sessions_moved": len(movedSessions),
-		"moved_to":       movedTo,
+	out.Success(fmt.Sprintf("Deleted group: %s%s", name, alsoDeleted), map[string]interface{}{
+		"success":           true,
+		"name":              name,
+		"sessions_moved":    len(movedSessions),
+		"moved_to":          movedTo,
+		"subgroups_deleted": subgroups,
 	})
 }
 
