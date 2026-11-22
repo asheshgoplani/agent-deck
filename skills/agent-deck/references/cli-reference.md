@@ -1506,8 +1506,9 @@ See [docs/tools/deepseek.md](../../../docs/tools/deepseek.md) for the full guide
 ## Session Resolution
 
 Commands accept:
-- **Title:** `"My Project"` (exact match)
-- **ID prefix:** `abc123` (6+ chars)
+- **ID:** the full session id
+- **Title:** `"My Project"` (the exact title; if none matches, case and a leading emoji marker such as the microphone are ignored)
+- **ID prefix:** `abc1` (4+ chars, when only one session has it)
 - **Path:** `/path/to/project`
 - **Current:** Omit ID in tmux (uses env var)
 
