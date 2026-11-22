@@ -25,7 +25,12 @@ const (
 	ConfirmCloseRemoteSession
 	ConfirmArchiveRemoteSession
 	ConfirmUnarchiveRemoteSession
-	ConfirmRemoveSession     // status-gated registry-only remove (TUI 'X')
+	ConfirmRemoveSession // status-gated registry-only remove (TUI 'X')
+	// ConfirmRemoveRemoteSession is the same status-gated registry-only remove
+	// for a row on a remote deck. Before it existed, 'X' had no branch at all
+	// for remote rows and did nothing, silently: the key looked broken rather
+	// than refused.
+	ConfirmRemoveRemoteSession
 	ConfirmBulkRemoveErrored // bulk remove of all errored sessions (TUI Ctrl+X)
 	ConfirmArchiveSession
 	ConfirmUnarchiveSession
@@ -174,6 +179,18 @@ func (c *ConfirmDialog) ShowCloseSession(sessionID string, sessionName string, s
 	c.targetID = sessionID
 	c.targetName = sessionName
 	c.sandboxed = sandboxed
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// ShowRemoveRemoteSession shows the registry-only remove confirmation for a
+// session on a remote deck — the remote counterpart of ShowRemoveSession.
+func (c *ConfirmDialog) ShowRemoveRemoteSession(remoteName, sessionID, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmRemoveRemoteSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.remoteName = remoteName
 	c.buttonCount = 2
 	c.focusedButton = 1
 }
@@ -802,6 +819,17 @@ func (c *ConfirmDialog) View() string {
 		title = "Remove Session?"
 		warning = fmt.Sprintf("Remove this session from the registry:\n\n  \"%s\"", c.targetName)
 		details = "• The session record will be deleted from agent-deck\n• Claude transcripts (~/.claude/projects/) are preserved\n• Git worktrees are preserved (use 'd' to destroy them)"
+		borderColor = ColorYellow
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Remove", ColorYellow, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render(glueHintGroups("y remove · n cancel · ←/→ navigate · Enter select · Esc")))
+
+	case ConfirmRemoveRemoteSession:
+		title = "Remove Remote Session?"
+		warning = fmt.Sprintf("Remove this session from the remote's registry:\n\n  \"%s\" on %s", c.targetName, c.remoteName)
+		details = "• The session record is deleted on the remote\n• Transcripts on the remote are preserved\n• Use 'd' instead to kill it and delete it"
 		borderColor = ColorYellow
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Remove", ColorYellow, c.focusedButton == 0), "  ",
