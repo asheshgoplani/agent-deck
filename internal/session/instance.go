@@ -330,6 +330,7 @@ type Instance struct {
 	// before /fork, so status polling cannot adopt a sibling while the child's
 	// own conversation is still being created.
 	antigravityForkKnownIDs map[string]bool
+	antigravityForkSentAt   time.Time // When /fork was sent; only newer conversations can be the child
 	// antigravitySyncMu serializes discovery and its tmux/SQLite writes, so a
 	// slower scan cannot publish an older binding after a newer one.
 	antigravitySyncMu sync.Mutex
@@ -2009,6 +2010,10 @@ func (i *Instance) Start() (startErr error) {
 
 	i.recoverConductorAfterSpawn()
 	if antigravityTmuxFork {
+		forkSentAt := time.Now()
+		i.mu.Lock()
+		i.antigravityForkSentAt = forkSentAt
+		i.mu.Unlock()
 		if err := i.forkAntigravityInPane(); err != nil {
 			return err
 		}
@@ -2402,6 +2407,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 			i.mu.RUnlock()
 		}
 		forkSentAt := time.Now()
+		i.mu.Lock()
+		i.antigravityForkSentAt = forkSentAt
+		i.mu.Unlock()
 		if err := i.forkAntigravityInPane(); err != nil {
 			return err
 		}

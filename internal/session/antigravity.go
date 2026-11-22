@@ -443,21 +443,22 @@ func stripAntigravitySessionFlags(command string) (string, bool) {
 	if !commandsOK || len(commands) != 1 || commands[0] != trimmed {
 		return "", false
 	}
-	agyLauncher := len(shellwords.CommandWords(tokens)) > 0 &&
-		shellwords.ExecutableBase(shellwords.CommandWords(tokens)) == "agy"
+	words := shellwords.CommandWords(tokens)
+	cmdStart := len(tokens) - len(words)
+	agyLauncher := len(words) > 0 && shellwords.ExecutableBase(words) == "agy"
 	kept := make([]string, 0, len(tokens))
 	for idx := 0; idx < len(tokens); idx++ {
 		tok := tokens[idx]
 		switch {
-		case tok == "--conversation" || tok == "--prompt-interactive":
+		case idx >= cmdStart && (tok == "--conversation" || tok == "--prompt-interactive"):
 			idx++ // skip paired value
 			continue
-		case agyLauncher && tok == "-i":
+		case idx >= cmdStart && agyLauncher && tok == "-i":
 			idx++ // skip paired value
 			continue
-		case strings.HasPrefix(tok, "--conversation=") || strings.HasPrefix(tok, "--prompt-interactive="):
+		case idx >= cmdStart && (strings.HasPrefix(tok, "--conversation=") || strings.HasPrefix(tok, "--prompt-interactive=")):
 			continue
-		case agyLauncher && (tok == "-c" || tok == "--continue"):
+		case idx >= cmdStart && agyLauncher && (tok == "-c" || tok == "--continue"):
 			continue
 		}
 		quoted, ok := quoteAntigravityToken(tok, true)
@@ -479,6 +480,12 @@ func stripAntigravityConversationFromWrapper(wrapper string) (string, bool) {
 	trimmed := strings.TrimSpace(wrapper)
 	if trimmed == "" {
 		return "", true
+	}
+	// Rebuilding a wrapper around its {command} word must not turn a trailing
+	// shell comment or a second command into agy arguments.
+	commands, commandsOK := shellwords.Commands(trimmed)
+	if !commandsOK || len(commands) != 1 || commands[0] != trimmed {
+		return "", false
 	}
 	// A standalone {command} word can be rewritten in place. A quoted or
 	// embedded placeholder is opaque, but a wrapper with no selector needs no
@@ -1024,6 +1031,12 @@ func (i *Instance) antigravityUnboundSiblingSharesWorkspace() bool {
 			if row.ID == i.ID || row.Tool != "antigravity" || !row.ArchivedAt.IsZero() {
 				continue
 			}
+			// A stopped, errored or queued row cannot have created a new
+			// conversation, so it must not make a live sibling ambiguous.
+			switch Status(row.Status) {
+			case StatusStopped, StatusError, StatusQueued:
+				continue
+			}
 			if strings.TrimSpace(ReadAntigravitySessionIDFromToolData(row.ToolData)) != "" {
 				continue
 			}
@@ -1205,10 +1218,25 @@ func (i *Instance) SyncAntigravitySessionID() string {
 			i.clearAntigravityPending()
 			return ""
 		}
-		if excludeID != "" && i.antigravityForkKnownCandidate(candidate) {
-			// The child's conversation is created by /fork, so a conversation
-			// that was already there belongs to someone else.
-			return ""
+		if excludeID != "" {
+			if i.antigravityForkKnownCandidate(candidate) {
+				// The child's conversation is created by /fork, so a
+				// conversation that was already there belongs to someone else.
+				return ""
+			}
+			i.mu.RLock()
+			forkSentAt := i.antigravityForkSentAt
+			forkKnown := i.antigravityForkKnownIDs
+			i.mu.RUnlock()
+			if !forkSentAt.IsZero() {
+				newIDs := antigravityUnknownConversations(
+					antigravityConversationsSince(antigravityDataDir(), i.antigravityWorkspaceDirs(), excludeID, forkSentAt),
+					forkKnown,
+				)
+				if len(newIDs) != 1 || newIDs[0] != candidate {
+					return ""
+				}
+			}
 		}
 		if excludeID == "" && i.antigravityUnboundSiblingSharesWorkspace() {
 			sessionLog.Debug("antigravity_binding_ambiguous_workspace",
@@ -1357,6 +1385,60 @@ func (i *Instance) antigravityKnownConversations() map[string]bool {
 	return known
 }
 
+// antigravityConversationsSince lists workspace conversations created or
+// updated at or after since. Fork binding requires exactly one of these: a
+// sibling fork can create its own child after our launch snapshot, and a
+// conversation that existed before /fork was sent cannot be ours.
+func antigravityConversationsSince(dataDir string, wantDirs []string, excludeID string, since time.Time) []string {
+	if dataDir == "" || len(wantDirs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, 2)
+	if meta, _, ok := readAntigravityMetadata(filepath.Join(dataDir, "cache", "conversation_metadata.json")); ok {
+		for mapID, entry := range meta.Conversations {
+			if entry.IsInternal || entry.Summary.Internal {
+				continue
+			}
+			id := antigravityConversationEntryID(mapID, entry)
+			if id == "" || (excludeID != "" && id == excludeID) {
+				continue
+			}
+			if !antigravityWorkspaceMatches(entry.Summary.WorkspaceURIs, wantDirs) {
+				continue
+			}
+			ts := parseAntigravityTimestamp(entry.Summary.UpdatedAt, entry.LastModifiedTime)
+			if ts.IsZero() || ts.Before(since) {
+				continue
+			}
+			ids = append(ids, id)
+		}
+	}
+	if last, ok := readAntigravityLastConversations(filepath.Join(dataDir, "cache", "last_conversations.json")); ok {
+		for dir, rawID := range last {
+			id := antigravityValidConversationID(rawID)
+			if id == "" || (excludeID != "" && id == excludeID) || !antigravityWorkspaceMatches([]string{dir}, wantDirs) {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(dataDir, "conversations", id+".db"))
+			if err != nil || info.ModTime().Before(since) {
+				continue
+			}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func antigravityUnknownConversations(ids []string, known map[string]bool) []string {
+	unknown := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !known[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	return unknown
+}
+
 // waitForAntigravityForkChild waits until /fork creates a conversation that
 // did not exist before the send and binds it. The ready prompt can return while
 // the parent's composer is still on screen, so an initial message must not be
@@ -1382,31 +1464,39 @@ func (i *Instance) waitForAntigravityForkChild(forkSentAt time.Time, knownBefore
 		if parentID == "" {
 			return false // no exclusion to compare against; cannot confirm
 		}
-		candidate := discoverAntigravityConversationFromDisk(
-			antigravityDataDir(), i.EffectiveWorkingDir(), i.ProjectPath, "", parentID, forkSentAt.UnixMilli())
-		if candidate != "" && !knownBefore[candidate] && i.antigravitySessionIDBoundElsewhere(candidate) {
-			if i.noteAntigravityOwnedCandidate(candidate) {
-				sessionLog.Info("antigravity_fork_candidate_owned_elsewhere",
-					slog.String("instance_id", logging.SanitizeValue(i.ID)),
-					slog.String("session_id", logging.SanitizeValue(candidate)))
+		// Exactly one new conversation means /fork produced our child. Two
+		// concurrent forks in one workspace make it ambiguous, so keep waiting
+		// and let the timeout fail loudly rather than bind a sibling's child.
+		newIDs := antigravityUnknownConversations(
+			antigravityConversationsSince(antigravityDataDir(), i.antigravityWorkspaceDirs(), parentID, forkSentAt),
+			knownBefore,
+		)
+		if len(newIDs) == 1 {
+			candidate := newIDs[0]
+			if i.antigravitySessionIDBoundElsewhere(candidate) {
+				if i.noteAntigravityOwnedCandidate(candidate) {
+					sessionLog.Info("antigravity_fork_candidate_owned_elsewhere",
+						slog.String("instance_id", logging.SanitizeValue(i.ID)),
+						slog.String("session_id", logging.SanitizeValue(candidate)))
+				}
+				newIDs = nil
 			}
-			candidate = ""
-		}
-		if candidate != "" && !knownBefore[candidate] {
-			// Hold the sync lock only for the bind, not across the 20s scan
-			// window, so a status poll is never blocked behind this wait.
-			i.antigravitySyncMu.Lock()
-			i.mu.RLock()
-			currentID = strings.TrimSpace(i.AntigravitySessionID)
-			parentID = strings.TrimSpace(i.antigravityForkParentID)
-			i.mu.RUnlock()
-			if currentID != "" && currentID != parentID {
+			if len(newIDs) == 1 {
+				// Hold the sync lock only for the bind, not across the 20s scan
+				// window, so a status poll is never blocked behind this wait.
+				i.antigravitySyncMu.Lock()
+				i.mu.RLock()
+				currentID = strings.TrimSpace(i.AntigravitySessionID)
+				parentID = strings.TrimSpace(i.antigravityForkParentID)
+				i.mu.RUnlock()
+				if currentID != "" && currentID != parentID {
+					i.antigravitySyncMu.Unlock()
+					return true
+				}
+				i.bindAntigravityConversation(candidate)
 				i.antigravitySyncMu.Unlock()
 				return true
 			}
-			i.bindAntigravityConversation(candidate)
-			i.antigravitySyncMu.Unlock()
-			return true
 		}
 		if time.Now().After(deadline) {
 			return false
