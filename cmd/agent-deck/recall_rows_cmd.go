@@ -184,7 +184,7 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 		return &rowsTarget{direct: true, storage: storage, src: query.RowsSource{Harness: h, Path: path}, session: query.RowsSession{Harness: h, NativeID: ref, Path: path}}, nil
 	}
 	if lk.env == nil && lk.envErr == nil {
-		if !lk.inBatch {
+		if !lk.inBatch && piErr == nil {
 			lk.env = openRecallEnv(lk.profile, NewCLIOutput(true, false))
 		} else if env, err := openRecallEnvErr(lk.profile, NewCLIOutput(true, false)); err != nil {
 			lk.envErr = fmt.Errorf("%w: %v", errRecallIndexUnavailable, err)

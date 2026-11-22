@@ -122,7 +122,7 @@ agent-deck list [--json] [--all] [--no-archived]
 agent-deck ls  # Alias
 ```
 
-`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
+`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`; the single-profile table shows the same live status in a `STATUS` column, `archived` for an archived session. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
 
 A live `list --json` captures every live pane with one tmux call per socket. When that call times out (a host too loaded to answer it), the listing does not fall back to one `capture-pane` per session: those rows carry `"status_source": "stale"`: status is the last one observed in this process (the default for a fresh process), `substate` is the last one seen or absent, and `--stats` reports how many panes were skipped as `captures_skipped` (absent when none).
 
@@ -143,7 +143,7 @@ agent-deck rm  # Alias
 agent-deck status [-v|-q|--json]
 ```
 
-- Default: `2 waiting - 5 running - 3 idle`
+- Default: `2 waiting • 5 running • 3 idle`, then `• N stopped` and `• N error` when not zero. Every status summary (this line, `--json`, `group list`, the TUI header, the web chips) counts the same five buckets over non-archived sessions; `starting` and `queued` count as idle. The web group panel uses the same buckets but its total also counts the archived rows it lists.
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
 - Archived sessions are not counted or listed: archiving stops the pane on purpose, so their stopped/error status is not news. `list --json` still includes them, each with `"archived": true`.
@@ -501,6 +501,8 @@ agent-deck session send-keys <id|title> --text "TEXT" | --enter | --named-key KE
 ```
 
 Low-level keystroke forwarding (exactly one of `--text`, `--enter`, `--named-key`; `--stream` is the TUI insert-mode transport). On a Claude session, `--enter`, `--named-key` Enter, Tab or Right, and a `--text` that is only a CR, a TAB or the cursor-right sequence are checked against the composer first. Key names match the way tmux reads them: in any case (`enter`, `TAB`, `right`), with `^X`, `C-X` and `c-x` as the same control key (`C-m`/`^M` is Enter, `C-i`/`^I` is Tab), plus `KPEnter` and the hex codes `0xd`/`0x9`; a key with another modifier (`S-Enter`, `M-Right`) is not checked. When the composer shows a prompt suggestion (or Claude's dim `Try "..."` placeholder, which uses the same renderer), Escape is pressed once (not while a turn is running, where Escape would interrupt it) and, because Claude does not clear a suggestion on Escape, the key is withheld with exit 1, `code: DELIVERY_FAILED`, `delivery: "composer_blocked"`, `reason: "prompt_suggestion"`. Type the text first (`--text`, then `--enter`) to submit. `--stream` and the TUI insert mode are a human at the keyboard and are not guarded. `--enter` is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft.
+
+`remote <name> session send-keys …` forwards the one-shot forms to the remote (this is how the Mac app's Stop button and Esc interrupt a session there: `--named-key Escape`). `--stream` and unknown options are refused before the remote is contacted, exit 2; a remote whose core lacks an option answers with its own error.
 
 ### session send
 
@@ -1367,7 +1369,7 @@ Renames a session on a remote instance.
 agent-deck remote <name> <command> [arguments]
 ```
 
-`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`, and the read-only `limits [--json]` (the remote's own accounts and 5h/7d windows; a remote whose agent-deck predates `limits` answers `unsupported remote command "limits" on remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}` under `--json`). Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
+`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session send-keys` (one `--named-key`, `--text` or `--enter` per call; `--stream` is not forwarded), `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`, and the read-only `limits [--json]` (the remote's own accounts and 5h/7d windows; a remote whose agent-deck predates `limits` answers `unsupported remote command "limits" on remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}` under `--json`). Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
 
 `session switch`/`switch-preview` forwarded this way runs the remote's own switch engine with the same guards as a local switch (ownership revalidation, managed-source refusal, journaled account/harness moves) — the CLI only forwards a closed set of subcommands, so no local path or credential can reach it. `switch-preview --json` previews losses/warnings before committing; the confirmed switch reports `verified`, `pending`, or `failed` with `recovery_required` when applicable. This requires the remote to already be a target you can reach and administer — it does not let a controller switch accounts *for* a remote it doesn't own.
 

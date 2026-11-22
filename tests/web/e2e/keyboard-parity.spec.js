@@ -146,7 +146,7 @@ test.describe('keyboard parity (#780)', () => {
     await expect(dialog).toBeVisible()
   })
 
-  test('r surfaces the rename-not-supported toast (web API gap)', async ({ page }) => {
+  test('r on a focused session opens the Edit dialog to rename it', async ({ page }) => {
     // Focus a session explicitly first (j×2 — the first j lands on the
     // `work` group header) — the `r` fallback to an implicit first session
     // was removed once groups became selectable.
@@ -155,9 +155,10 @@ test.describe('keyboard parity (#780)', () => {
     await page.waitForSelector('.sess.sel', { timeout: 2000 })
 
     await page.keyboard.press('r')
-    // Toast container shows the info-level message.
-    const toast = page.locator('.toast', { hasText: /rename/i }).first()
-    await expect(toast).toBeVisible({ timeout: 2000 })
+    // The Edit dialog's title field renames the session (PATCH
+    // /api/sessions/{id}); r used to toast that rename was TUI-only.
+    await expect(page.getByTestId('edit-session-title')).toBeVisible({ timeout: 2000 })
+    await expect(page.locator('.toast', { hasText: /not implemented/i })).toHaveCount(0)
   })
 
   test('Shift+D opens the stop-session confirm dialog', async ({ page }) => {

@@ -170,7 +170,7 @@ Row:
 | `kind` | `user`, `assistant`, `thinking`, `tool`, `bash`, `edit`, `read`, `subagent`, `todo`, `question`, `skill`, `command`, `system`, `compaction`, `turn_end`, `other` |
 | `ts` | Native timestamp (for an absorbed queued message: when Claude absorbed it) |
 | `title` | The one line a client shows: tool description, `Edit <path>`, `/command args`, `Worked for 7s`, `Context compacted · 844.0k → 19.0k`, first line of a hook or system injection, the question |
-| `body` | Full text: prose, thinking, system body, sub-agent prompt; for a tool row its output (capped at 32 KiB, `meta.truncated`) |
+| `body` | Full text: prose, thinking, system body, sub-agent prompt; for a tool row its output (capped at 32 KiB, `meta.truncated`; also set when Pi truncated a direct shell command's output itself) |
 | `summary` | The terminal's `⎿` wording: `Read 120 lines`, `Added 3 lines, removed 1 line`, `Backgrounded agent`, `Done (4 tool uses)`, `2 of 5 done`, `Which? → A`, `Exit code 2`, `… +12 lines` |
 | `detail` | The dim mono line: command, path or pattern, sub-agent type |
 | `tool_id` | Native tool call id on tool rows |
@@ -215,7 +215,7 @@ Follow frames, one JSON object per line:
 | `update` | `row` with `id` and only what changed (a tool gaining its result, a queued message absorbed, a sub-agent's children) | merge the present fields into that row, meta keys merged; `queued:false` with a `ts` moves the row to the end; ignore unknown ids |
 | `remove` | `id` | drop that row |
 | `status` (with `--status`) | `session_id, running, session_status, verb, elapsed_s, tokens, current_tool, facts{account,model,cwd,ctx,in,out,5h,7d \| model,context_left,weekly_left,window}, permission, auto_compact_pct, queued[], notice` | the live status strip; sent once a second while the session runs and once when it stops |
-| `resync_required` | `reason`: `invalid_cursor`, `source_rewritten`, `source_shortened`, `source_replaced`, `source_missing`, `source_moved` | call timeline again |
+| `resync_required` | `reason`: `invalid_cursor`, `source_rewritten`, `source_shortened`, `source_replaced`, `source_missing`, `source_moved`, `source_unresolved` | call timeline again |
 
 Only the last frame produced by one native line carries `cursor`, so every
 cursor is a clean resume point: resuming neither loses nor duplicates a
@@ -223,6 +223,8 @@ frame. The cursor holds the byte offset, a hash of the 256 bytes before it,
 and the pending queue ids. Follow polls every 200 ms and reads only the new
 bytes. `--after end` starts at the current end. `source_moved` fires when a
 Codex session's live rollout changes (docs/macapp-core.md, Codex identity).
+`source_unresolved` fires when a Pi session stops resolving to one session
+document while it is followed (a second file after `/new`, no saved identity).
 The status frame comes from the session's state.db status and, while it
 runs, a read-only capture of its pane (the `✻ Verb… (1m 12s · ↓ 3.7k tokens)`
 or `• Working (30m 26s • esc to interrupt)` line, the `⎿` line under it, the

@@ -80,14 +80,14 @@ test.describe('rename group (#2555)', () => {
     expect(g.group.name).toBe('work')
   })
 
-  test('r on a session still shows the session-rename notice, not the group dialog', async ({ page }) => {
+  test('r on a session opens the session Edit dialog, not the group dialog', async ({ page }) => {
     // Keyboard focus, as keyboard-parity.spec.js does (the first j lands on
     // the `work` header): a click on tablet hands focus to the terminal.
     await page.keyboard.press('j')
     await page.keyboard.press('j')
     await page.waitForSelector('.sess.sel', { timeout: 2000 })
     await page.keyboard.press('r')
-    await expect(page.locator('.toast', { hasText: /rename/i }).first()).toBeVisible({ timeout: 2000 })
-    await expect(dialog(page)).toHaveCount(0)
+    await expect(page.getByTestId('edit-session-title')).toBeVisible({ timeout: 2000 })
+    await expect(dialog(page).locator('.kicker', { hasText: 'RENAME' })).toHaveCount(0)
   })
 })

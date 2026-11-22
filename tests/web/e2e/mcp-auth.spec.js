@@ -301,11 +301,11 @@ test.describe('MCP management — authenticated browser path', () => {
     // here, the passing test above would not be proving anything about the
     // Authorization header.
     await page.goto(`${baseURL}/s/${SESSION_ID}`)
-    await page.getByRole('button', { name: 'MCPs', exact: true }).click()
 
-    // Deliberately no assertion that the pane mounts: with the menu SSE
-    // rejected there is no session to select, so the MCP pane is never reached
-    // at all. What matters is that nothing actionable appears.
+    // The menu load 401s, so the app shows its sign-in screen instead of the
+    // shell (auth-required.spec.js); the MCP pane is never reached at all.
+    // What matters is that nothing actionable appears.
+    await expect(page.getByTestId('auth-required')).toBeVisible()
     await expect(page.getByTestId('mcp-attach-exa')).toHaveCount(0)
     await expect(page.getByTestId('mcp-attached-exa')).toHaveCount(0)
     await expect(page.getByTestId('mcp-catalog')).toHaveCount(0)

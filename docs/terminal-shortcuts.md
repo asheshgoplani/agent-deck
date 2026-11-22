@@ -29,12 +29,13 @@ OSC 52 fallback so they also work over SSH:
 | Key | Copies |
 | --- | ------ |
 | `c` | Last AI response |
-| `C` | Session info — repo / path / branch |
+| `B` | Session info — repo / path / branch |
 | `V` | Current visible terminal pane, links included |
 | `Y` | A fenced code block from output (picker when there are several) |
 
-`c` and `V` are rebindable under `[hotkeys]` as `copy_output` and `copy_pane`;
-`C` and `Y` are fixed.
+`c`, `B` and `V` are rebindable under `[hotkeys]` as `copy_output`, `copy_info`
+and `copy_pane`; `Y` is fixed. `C` opens the context inspector (copy info moved
+from `C` to `B`).
 
 If your terminal has no selection bypass, you can disable tmux mouse mode for
 new and reconnected sessions — this trades away tmux scrolling, pane resizing
@@ -48,6 +49,18 @@ mouse = false
 Note that this applies to **attached sessions only**. The agent-deck list view
 keeps its own mouse capture either way, so `Shift`+drag and the copy keys remain
 the route there.
+
+## Remove sessions from the list, and quick open
+
+These keys work on the session list and are fixed (not under `[hotkeys]`):
+
+| Key | What happens |
+| --- | ------------ |
+| `X` | Remove the selected session from the list, after a confirm. Only for a stopped or errored session; nothing is killed and no files or worktrees are deleted. On any other session a footer line points to `d` (delete). |
+| `Ctrl+X` | Remove every errored session from the list, after a confirm that says how many. |
+| `z` | Quick open: pick a recent directory (recents, group defaults and zoxide) and start a session there. |
+
+The help overlay (`?`, then `Tab` for all keys) lists every key the list handles.
 
 ## Detach from an attached session
 

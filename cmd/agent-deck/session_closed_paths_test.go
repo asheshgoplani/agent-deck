@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -17,9 +18,9 @@ func TestBulkRemovePublishesSessionClosedPerRow(t *testing.T) {
 	}
 	home := t.TempDir()
 	first := addTestSession(t, home, filepath.Join(home, "err-a"), "err-a")
-	forceSetStatus(t, home, first, session.StatusError)
+	forceSetStartedStatus(t, home, first, session.StatusError, time.Now().Add(-time.Hour))
 	second := addTestSession(t, home, filepath.Join(home, "err-b"), "err-b")
-	forceSetStatus(t, home, second, session.StatusError)
+	forceSetStartedStatus(t, home, second, session.StatusError, time.Now().Add(-time.Hour))
 	if stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--json"); code != 0 {
 		t.Fatalf("--all-errored: %d %s %s", code, stdout, stderr)
 	}

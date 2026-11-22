@@ -723,6 +723,12 @@ func (h *Home) confirmAction() tea.Cmd {
 			h.confirmDialog.Hide()
 			return h.removeSession(inst)
 		}
+	case ConfirmRemoveRemoteSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		remoteName := h.confirmDialog.GetRemoteName()
+		title := h.confirmDialog.targetName
+		h.confirmDialog.Hide()
+		return h.removeRemoteSession(remoteName, sessionID, title)
 	case ConfirmBulkRemoveErrored:
 		h.confirmDialog.Hide()
 		return h.bulkRemoveErrored()

@@ -206,7 +206,7 @@ func buildGroupListJSON(groupTree *session.GroupTree) ([]byte, error) {
 		status := groupStatusJSON{}
 		sessions := groupListSessions(groupTree, g.Path)
 		for _, sess := range sessions {
-			switch sess.Status {
+			switch summaryBucket(sess.Status) {
 			case session.StatusRunning:
 				status.Running++
 			case session.StatusWaiting:
@@ -384,16 +384,20 @@ func handleGroupList(profile string, args []string) {
 		sessCount := len(sessions)
 		statusStr := ""
 		if sessCount > 0 {
-			running, waiting, idle := 0, 0, 0
+			running, waiting, idle, stopped, errored := 0, 0, 0, 0, 0
 			// Count status recursively for all sessions in this group and subgroups
 			for _, sess := range sessions {
-				switch sess.Status {
+				switch summaryBucket(sess.Status) {
 				case session.StatusRunning:
 					running++
 				case session.StatusWaiting:
 					waiting++
 				case session.StatusIdle:
 					idle++
+				case session.StatusStopped:
+					stopped++
+				case session.StatusError:
+					errored++
 				}
 			}
 			var parts []string
@@ -405,6 +409,12 @@ func handleGroupList(profile string, args []string) {
 			}
 			if idle > 0 {
 				parts = append(parts, fmt.Sprintf("○ %d", idle))
+			}
+			if stopped > 0 {
+				parts = append(parts, fmt.Sprintf("■ %d", stopped))
+			}
+			if errored > 0 {
+				parts = append(parts, fmt.Sprintf("✕ %d", errored))
 			}
 			statusStr = strings.Join(parts, " ")
 		}

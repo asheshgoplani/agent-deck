@@ -1,16 +1,16 @@
  ●●○ Agent Deck  11 sessions                                           <version>
-  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+  All    ● 1   ◐ 2   ○ 6   ■ 1   ✕ 1   !@#& filter • 0 all • % open • …
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
 ▶ ▸ alpha (7) ● 1 ◐ 1        │ 📁 alpha
 2·▾ beta (4) ◐ 1             │
-   ├─ ✕ gemini-idle          │ 4 sessions
-   ├─ ✕ pi-idle              │
-   ├─ ◐ claude-i18n          │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+   ├─ ○ gemini-idle          │ 4 sessions
+   ├─ ○ pi-idle              │
+   ├─ ◐ claude-i18n          │ ◐ 1 waiting  ○ 2 idle  ■ 1 stopped
    └─ ○ shell-live           │
   ▾ remotes/lab (0) · host … │ ───────────────── Sessions ─────────────────
-                             │   ■ opencode-idle opencode
-                             │   ✕ claude-idle claude
+                             │   ○ opencode-idle opencode
+                             │   ○ claude-idle claude
                              │   ◐ claude-waiting claude
                              │   ■ claude-stopped claude
                              │

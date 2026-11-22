@@ -2310,6 +2310,22 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	return nil
 }
 
+// holdStartingInGraceLocked is the start grace's verdict for a session whose
+// tmux does not exist yet: starting, unless the row already holds a verdict
+// the grace must not erase. Running, idle and stopped are kept as before. An
+// error is kept too: within the grace it is a start that already failed
+// (spawn failure, failed queued start, missing project directory), and
+// rewriting it to starting made the next refresh after the grace read the
+// row as never started, so a fresh failure went error, starting, idle.
+// Caller holds i.mu.
+func (i *Instance) holdStartingInGraceLocked() {
+	switch i.Status {
+	case StatusRunning, StatusIdle, StatusStopped, StatusError:
+		return
+	}
+	i.Status = StatusStarting
+}
+
 // updateStatus refreshes i.Status from tmux, hooks and the pane. A session
 // still queued for group capacity keeps StatusQueued until its tmux pane
 // exists; a missing pane is not an error for it (issue #2526).
@@ -2347,9 +2363,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
 		if i.tmuxSession == nil {
-			if i.Status != StatusRunning && i.Status != StatusIdle && i.Status != StatusStopped {
-				i.Status = StatusStarting
-			}
+			i.holdStartingInGraceLocked()
 			return nil
 		}
 		var current bool
@@ -2359,9 +2373,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		}
 		checkedExists = true
 		if !exists {
-			if i.Status != StatusRunning && i.Status != StatusIdle && i.Status != StatusStopped {
-				i.Status = StatusStarting
-			}
+			i.holdStartingInGraceLocked()
 			return nil
 		}
 		// Session exists - allow normal status detection below
