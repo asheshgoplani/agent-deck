@@ -855,6 +855,17 @@ agent-deck switch docs --no-attach --wait 5s
 
 Resolves exact id, unique id prefix, exact title (any case), then a fuzzy title and group match; numbers must match exactly and archived sessions are left out. On the Mac it opens `agentdeck://focus?session=<id>`; elsewhere it publishes `macapp.switch` and waits `--wait` (default 2s) for `macapp.switch.ack`. With no app it attaches in the terminal, or with `--json`/`--no-attach` reports `queued`. Exit 2 = no match, exit 3 = ambiguous (up to five `candidates`). Not `session switch`, which changes a session's harness or account. Details: `docs/switch.md`.
 
+### todo - The owner's to-do list
+
+```bash
+agent-deck todo add "call the bank" [--source voice|cli|phone|mac|tui] [--session <id>] [--json]
+agent-deck todo list [--all] [--json]   # {todos:[item], open, done}
+agent-deck todo done bank --json        # by id or words: {status:"done", todo, open}
+agent-deck todo undo 3 ; agent-deck todo remove 3
+```
+
+One list per host (`<data dir>/todos.json`), shared by every profile; it lives on the host the clients read, and two hosts have two unsynced lists. An item is `{id, text, created_at, done_at|null, source, session_id?}`; ids are short numbers that are never reused. `done` with words ticks off the one open item whose text has every word (the same word, or a 4+ letter prefix at most 2 letters short; Devanagari words keep their vowel signs); look-alikes never match, an exact whole-text match wins, a repeat answers `already_done`, a query of only filler words names nothing, and a number (`12`, `#12`) is only ever an id. Two or more matches change nothing: exit 3 with `{status:"ambiguous", candidates}`. Exit 2 = no match (`not_found`), 1 = error. `--source` on `done`/`undo`/`remove` is the event's `by`. Every change publishes `todo.changed` `{action, id, open, by}` (no text) on every profile's events bus. Web: `GET/POST /api/todos`, `POST /api/todos/{id}/done|undo|remove`. TUI: `alt+o`. Details: `docs/todos.md`.
+
 ### open - Show a page in the macOS app Browser panel
 
 ```bash

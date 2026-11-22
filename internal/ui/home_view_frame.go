@@ -569,6 +569,9 @@ func (h *Home) renderFrame() string {
 	if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 		return h.deadLetterPanel.View()
 	}
+	if h.todosPanel.IsVisible() {
+		return h.todosPanel.View()
+	}
 	if h.agentsPanel.IsVisible() {
 		return h.agentsPanel.View()
 	}
