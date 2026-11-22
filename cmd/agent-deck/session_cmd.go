@@ -363,6 +363,14 @@ func handleSessionFork(profile string, args []string) {
 	if isClaudeFork && inst.ClaudeSessionID == "" && inst.Exists() {
 		inst.PostStartSync(2 * time.Second)
 	}
+	// The CLI may load the row before the background poll has saved the ID
+	// that OpenCode's launch command recorded in its tmux session. Only a
+	// local V2 launch records that variable; SyncOpenCodeLaunchID is a no-op
+	// for SSH and sandboxed rows, whose fork runs as this same command on the
+	// owning host rather than against a local pane.
+	if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" && inst.Exists() {
+		inst.SyncOpenCodeLaunchID()
+	}
 
 	// Verify it can be forked.
 	if !inst.CanFork() {
