@@ -64,6 +64,8 @@ The Slack bot supports both prefix routing and slash commands:
 | `/ad-help` | List available commands |
 
 Responses come in threads to keep the channel clean.
+In a direct message with the bot, a top-level message is answered in the conversation itself, not in a thread; a reply inside a DM thread stays in that thread.
+Group DMs (several people with the bot) and channels still get their replies in a thread.
 
 ## One bot per conductor
 
@@ -110,7 +112,8 @@ A Slack message is routed in this order:
 
 1. A `name: message` prefix always wins.
 2. A reply inside a thread the bridge already routed for a conductor (started by a message the bridge routed there, or by an alert, digest or outbox message it posted for that conductor) goes back to that conductor.
-3. Otherwise `default_conductor` decides:
+3. In a direct message with the bot, a top-level message goes to the conductor the previous top-level DM went to. So after `alpha: status`, a follow-up like `and the logs?` also goes to `alpha`, until a message names another conductor. Alerts and digests the bridge posts in the DM do not change this; reply in an alert's thread to answer its conductor.
+4. Otherwise `default_conductor` decides:
 
 ```toml
 [conductor.slack]
@@ -119,8 +122,9 @@ default_conductor = "ops"   # unprefixed messages go to the "ops" conductor
 ```
 
 When the key is absent, unprefixed messages go to the alphabetically first conductor, as before.
+With `default_conductor = ""`, the first unprefixed DM gets the conductor list and the prefix syntax; once a message names a conductor, later unprefixed DMs follow it (step 3), the same way replies in a routed thread do.
 A name that matches no conductor routes nothing and logs a warning, so a typo never silently picks a conductor.
-Thread routing is kept in memory (the most recent 500 threads), so it starts empty after the bridge restarts.
+Thread and DM routing is kept in memory (the most recent 500 threads and DMs), so it starts empty after the bridge restarts.
 This applies to Slack only for now; Telegram and Discord still use the first conductor for unprefixed messages.
 
 ## Debugging tips
