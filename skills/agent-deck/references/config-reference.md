@@ -1082,7 +1082,7 @@ index_rate_limit = 20       # Files/second for indexing
 
 ## [recall] Section
 
-Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...` and the TUI `G` key), one machine-global `recall.db` in the data dir beside `profiles/` covering Claude (every profile), Codex, pi, Gemini, OpenCode and Hermes. It also gates the web timeline route `GET /api/sessions/{id}/timeline`, which reads transcripts without the index.
+Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...` and the TUI `G` key), one machine-global `recall.db` in the data dir beside `profiles/` covering Claude (every profile), Codex, pi, Gemini, OpenCode and Hermes. It also gates the web timeline routes `GET /api/sessions/{id}/timeline` and `.../timeline/stream`, which read transcripts without the index.
 
 ```toml
 [recall]
@@ -1199,7 +1199,7 @@ tag_sends = true   # prefix agent-originated sends with [agent-deck from:<id>]
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `tag_sends` | bool | `true` | A `session send` from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one `[agent-deck from:<sender-id>]` line, so the receiver's reply is classified as a send and, when the sender is not the receiver's parent, committed to the sender's inbox as an urgent `reply` record that wakes it (also when the receiver has no parent). `false` turns tagging off for every send (`--no-tag` does it per send). The same tag goes on a `launch` initial message when the calling session is the child's linked parent and the child's turns are reported to it (#3131; `launch --no-tag` per launch), so the child's first turn answers the parent. Human shells, senders that are not Claude-compatible sessions, `--draft`, bare slash commands, heartbeats, sends to oneself and non-Claude targets are never tagged. |
+| `tag_sends` | bool | `true` | Claude-to-Claude `session send` messages (`AGENTDECK_INSTANCE_ID` set) start with `[agent-deck from:<sender-id>]`, so the receiver's reply is classified as a send and, when the sender is not its parent, committed to the sender's inbox as an urgent `reply` record that wakes it (also when the receiver has no parent). Pi-to-Pi and Pi-to-Claude messages include the same source ID; the receiver reads the sender's `tool` from `session show <sender-id> --json` and replies explicitly with `session send <sender-id> "answer"`, because attribution does not guarantee automatic Pi reply delivery. `false` disables tagging globally; `--no-tag` disables it per send. Claude `launch` initial messages retain the existing kickoff tag when the caller is the child's linked parent and its turns are reported (#3131). Human shells, unsupported sender/target pairs, drafts, bare slash commands, Pi `!`/`!!` commands, heartbeats, self-sends and already-enveloped messages remain unchanged. |
 
 ## [costs.budgets] and [costs.run_budget]
 

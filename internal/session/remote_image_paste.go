@@ -25,19 +25,19 @@ import (
 
 // Image paste into a remote attach (owner report 2026-10-18). In a terminal
 // attached to a remote session, Ctrl+V reaches the harness on the host, and
-// Claude Code there reads the host's clipboard, never the one on the machine
+// the harness there reads the host's clipboard, never the one on the machine
 // the owner copied the screenshot on, so the image could never arrive. The
 // attach (agent-deck attach, the TUI's Enter; ssh or mosh) is the one place
 // that sees both sides: on a lone Ctrl+V with an image on this machine's
 // clipboard it sends the image up through the remote's own
 // `session image-upload` (the Mac app's route, into the session's
 // macapp-uploads folder there) and types the host path the way the
-// composer's --image does: `@<path>` for Claude and Gemini, the bare path for
-// other harnesses. Text pastes and a Ctrl+V with no image are untouched.
+// composer expects: `@<path>` for Claude and Gemini, a bracketed bare path
+// for OpenCode. Text pastes and a Ctrl+V with no image are untouched.
 //
-// The key is taken only when the session's harness reads a pasted @path
-// (Claude-compatible, Gemini) and its composer is on screen; in an editor, a
-// shell, a dialog, or when that cannot be told, Ctrl+V goes on as typed.
+// The key is taken only when the session's harness supports pasted image paths
+// and its composer is on screen. In an editor, shell, dialog, or when that
+// cannot be told, Ctrl+V goes on as typed.
 // `[remote] paste_images = false` turns the whole route off.
 //
 // A plain `ssh host` + `tmux attach` without agent-deck has no such hop: the
@@ -123,15 +123,15 @@ func (r *SSHRunner) PasteTarget(ctx context.Context, sessionID string) (tool, pa
 	return shown.Tool, shown.Content, nil
 }
 
-// pasteAgent is the harness a pasted @path is typed for: Claude-compatible
-// tools and Gemini read it; every other tool (a shell, Codex, an editor
-// session) never gets its Ctrl+V taken. "" for those.
+// pasteAgent normalizes the tools that accept pasted image paths.
 func pasteAgent(tool string) string {
 	switch {
 	case IsClaudeCompatible(tool):
 		return "claude"
 	case strings.EqualFold(tool, "gemini"):
 		return "gemini"
+	case strings.EqualFold(tool, "opencode"), strings.EqualFold(tool, "opencode2"):
+		return "opencode"
 	}
 	return ""
 }
@@ -160,8 +160,8 @@ type remoteImagePaste struct {
 	readImage func() clipboardRead
 	upload    func(ctx context.Context, data []byte, ext string) (string, error)
 	// target returns the session's harness and its pane now: the key is taken
-	// only when that harness reads a pasted @path and its composer is on
-	// screen (tmux.AgentComposerVisible), never in an editor or a shell.
+	// only when that harness's composer is on screen (tmux.AgentComposerVisible),
+	// never in an editor or a shell.
 	target func(ctx context.Context) (tool, pane string, err error)
 	// write types into the remote session (the attach's input side).
 	write func([]byte) error
@@ -195,6 +195,12 @@ func pasteFailedNotice(remote string, err error) string {
 	return "agent-deck: the image could not reach " + remote + ": " + oneLine(errText(err), 80)
 }
 
+// pasteUploadedNotPastedNotice names the host path so it can be typed by
+// hand when the composer check after the upload fails.
+func pasteUploadedNotPastedNotice(remote, path, reason string) string {
+	return "agent-deck: image uploaded to " + remote + " as " + path + " but not pasted (" + reason + "); paste it by hand"
+}
+
 func oneLine(s string, limit int) string {
 	s = strings.Join(strings.Fields(stripControls(s)), " ")
 	if r := []rune(s); len(r) > limit {
@@ -220,7 +226,11 @@ func stripControls(s string) string {
 
 // pastedPaths is what gets typed for uploaded host paths.
 func pastedPaths(paths []string, tool string) string {
-	mention := IsClaudeCompatible(tool) || strings.EqualFold(tool, "gemini")
+	agent := pasteAgent(tool)
+	if agent == "opencode" {
+		return strings.Join(paths, " ")
+	}
+	mention := agent == "claude" || agent == "gemini"
 	parts := make([]string, len(paths))
 	for i, p := range paths {
 		if mention {
@@ -258,6 +268,24 @@ func isImagePasteKey(data []byte) bool {
 	return false
 }
 
+// Check before reading the clipboard so the macOS pasteboard privacy prompt
+// can't appear when Ctrl+V was meant for a shell, editor or dialog. The error
+// is returned separately so a failed pane read after an upload is not
+// reported as the composer having moved.
+func (p *remoteImagePaste) composer() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), pasteTargetTimeout)
+	defer cancel()
+	tool, pane, err := p.target(ctx)
+	agent := pasteAgent(tool)
+	if err != nil {
+		return "", err
+	}
+	if agent == "" || !tmux.AgentComposerVisible(agent, pane) {
+		return "", nil
+	}
+	return agent, nil
+}
+
 // take reports whether data (one read of the owner's keys) is a Ctrl+V this
 // paste handles; false leaves it to be forwarded as it is.
 func (p *remoteImagePaste) take(data []byte) bool {
@@ -270,16 +298,9 @@ func (p *remoteImagePaste) take(data []byte) bool {
 	if busy {
 		return false // one upload at a time; a Ctrl+V meanwhile reaches the program as typed
 	}
-	// The composer check comes before the clipboard read. On macOS a read
-	// that is not the user's own paste can raise the pasteboard privacy
-	// prompt, so the clipboard is read only when the key will be taken as an
-	// image paste: never for Ctrl+V in an editor, a shell or a pager.
-	ctx, cancel := context.WithTimeout(context.Background(), pasteTargetTimeout)
-	tool, pane, err := p.target(ctx)
-	cancel()
-	agent := pasteAgent(tool)
-	if err != nil || agent == "" || !tmux.AgentComposerVisible(agent, pane) {
-		return false // not an agent's composer, or it cannot be told: the key goes on as typed
+	agent, err := p.composer()
+	if err != nil || agent == "" {
+		return false // not a supported composer, or it cannot be told
 	}
 	clip := p.readImage()
 	if len(clip.data) == 0 && !clip.tooLarge && !clip.timedOut {
@@ -322,8 +343,16 @@ func (p *remoteImagePaste) send(image []byte, ext, agent string) {
 		p.alertf(pasteFailedNotice(p.remote, err))
 		return
 	}
+	if nowAgent, err := p.composer(); err != nil {
+		p.alertf(pasteUploadedNotPastedNotice(p.remote, path, "could not check the composer: "+oneLine(errText(err), 60)))
+		return
+	} else if nowAgent != agent {
+		p.alertf(pasteUploadedNotPastedNotice(p.remote, path, "the composer is no longer active"))
+		return
+	}
 	text := []byte(pastedPaths([]string{path}, agent))
-	if p.bracketed != nil && p.bracketed() {
+	if agent == "opencode" || (p.bracketed != nil && p.bracketed()) {
+		// OpenCode recognizes image paths in its paste handler, not as typed keys.
 		text = append(append([]byte("\x1b[200~"), text...), []byte("\x1b[201~")...)
 	}
 	p.notice("")

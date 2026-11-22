@@ -53,6 +53,7 @@ var Version = "1.16.39" // overridden at build time via -ldflags "-X main.Versio
 // Table column widths for list command output
 const (
 	tableColTitle     = 20
+	tableColStatus    = 8
 	tableColGroup     = 15
 	tableColPath      = 40
 	tableColIDDisplay = 12
@@ -162,7 +163,9 @@ func writeVersionOutput(w io.Writer, currentVersion string) {
 // A core that predates this list prints the plain version line instead of
 // JSON for `version --json`; clients treat that as "no features".
 //   - recall_timeline_batch: `recall timeline --json [--tail N] --sessions a,b,...`
-var coreFeatures = []string{"recall_timeline_batch"}
+//   - recall_timeline_kinds: `recall timeline --kinds a,b` and
+//     `--skip-empty-body`, filtered on this host, with next_cursor
+var coreFeatures = []string{"recall_timeline_batch", "recall_timeline_kinds"}
 
 // writeVersionJSON prints {"version": "...", "features": [...]}.
 func writeVersionJSON(w io.Writer, currentVersion string) {
@@ -1858,14 +1861,15 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"c": true, "cmd": true,
 		"m": true, "message": true, "message-file": true,
 		"p": true, "parent": true,
-		"mcp":           true,
-		"channel":       true,
-		"plugin":        true,
-		"extra-arg":     true,
-		"wrapper":       true,
-		"model":         true,
-		"effort":        true,
-		"startup-query": true, "additional-path": true,
+		"mcp":               true,
+		"channel":           true,
+		"plugin":            true,
+		"extra-arg":         true,
+		"instructions-file": true,
+		"wrapper":           true,
+		"model":             true,
+		"effort":            true,
+		"startup-query":     true, "additional-path": true,
 		"w":              true,
 		"worktree":       true,
 		"location":       true,
@@ -1968,6 +1972,8 @@ func resolveAutoParentInstanceChecked(instances []*session.Instance) (*session.I
 
 // resolveGroupPathForAdd resolves a user-provided group selector to a stored group path.
 // It accepts exact paths, normalized paths, and case-insensitive group display names.
+// A selector matching no group names a new one and resolves to the path `group
+// create` would store for it (session.CanonicalGroupPath).
 // A display name shared by several groups is an error listing the candidate
 // paths; the selector is still returned so callers that ignore it keep it as is.
 func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) (string, error) {
@@ -1994,6 +2000,15 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 	}
 	switch len(matches) {
 	case 0:
+		// A new group: the path `group create` would store for this name, so
+		// the session and the group created for it share one path.
+		canonical, err := newGroupPath(groupTree, groupSelector)
+		if err != nil {
+			return groupSelector, err
+		}
+		if canonical != "" {
+			return canonical, nil
+		}
 		return groupSelector, nil
 	case 1:
 		return matches[0], nil
@@ -2001,6 +2016,61 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 		sort.Strings(matches)
 		return groupSelector, fmt.Errorf("group %q is ambiguous: %s; use the full path", groupSelector, strings.Join(matches, ", "))
 	}
+}
+
+// newGroupPath returns the path a group named by a selector that matches no
+// group gets: session.CanonicalGroupPath, level by level, where a level that
+// matches an existing group's path in another case is that group ("big
+// org/New" lands under an existing "Big-Org"). A level that matches several
+// existing groups in another case is an error listing them, as for a whole
+// selector, instead of a further group next to them.
+func newGroupPath(groupTree *session.GroupTree, selector string) (string, error) {
+	path := ""
+	for _, level := range strings.Split(session.CanonicalGroupPath(selector), "/") {
+		if level == "" {
+			continue
+		}
+		candidate := strings.TrimPrefix(path+"/"+level, "/")
+		if _, ok := groupTree.Groups[candidate]; !ok {
+			var folded []string
+			for existing := range groupTree.Groups {
+				if strings.EqualFold(existing, candidate) {
+					folded = append(folded, existing)
+				}
+			}
+			switch len(folded) {
+			case 0:
+			case 1:
+				candidate = folded[0]
+			default:
+				sort.Strings(folded)
+				return "", fmt.Errorf("group %q is ambiguous: %s; use the full path", selector, strings.Join(folded, ", "))
+			}
+		}
+		path = candidate
+	}
+	return path, nil
+}
+
+// derivedGroupPath returns the group path a new session gets when no group is
+// named and derived is the name taken from its project directory
+// (session.GroupPathForProject). A group stored under exactly that name is kept:
+// older sessions may be in it. Otherwise it is the path `group create` would
+// store, so a directory "My Proj" makes the one group "My-Proj", not that plus
+// a second group at the raw name.
+func derivedGroupPath(groupTree *session.GroupTree, derived string) string {
+	if derived == "" || derived == session.DefaultGroupPath || derived == session.DefaultGroupName {
+		return derived
+	}
+	if groupTree != nil {
+		if _, ok := groupTree.Groups[derived]; ok {
+			return derived
+		}
+	}
+	if canonical := session.CanonicalGroupPath(derived); canonical != "" {
+		return canonical
+	}
+	return derived
 }
 
 // shouldLockTitle is the #1615-class chokepoint deciding whether a new CLI
@@ -2096,6 +2166,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		extraArgFlags = append(extraArgFlags, s)
 		return nil
 	})
+	instructionsFileFlags := registerInstructionsFileFlag(fs)
 
 	// --create-dir is what the TUI's remote new-session dialog forwards after
 	// the user confirms creating a missing directory on the server; the local
@@ -2225,6 +2296,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	validatedAdditionalPaths, pathValidationErr := validateCreationPaths(additionalPaths)
 	if pathValidationErr != nil {
 		NewCLIOutput(*jsonOutput, false).Error(pathValidationErr.Error(), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	instructionsFiles, instructionsErr := normalizeInstructionsFileFlag(*instructionsFileFlags)
+	if instructionsErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error("--instructions-file: "+instructionsErr.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 
@@ -2364,6 +2440,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	}
 
 	// Resolve group selector to a canonical path when possible.
+	typedGroup := sessionGroup
 	if sessionGroup != "" {
 		sessionGroup, err = resolveGroupPathForAdd(groupTree, sessionGroup)
 		if err != nil {
@@ -2665,6 +2742,9 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		newInstance = session.NewInstanceWithGroup(sessionTitle, path, sessionGroup)
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
+		// The group taken from the project directory follows the -g path rule.
+		typedGroup = newInstance.GroupPath
+		newInstance.GroupPath = derivedGroupPath(groupTree, typedGroup)
 	}
 
 	// Quick mode generated a machine-named adjective-noun handle; mark it so the
@@ -2708,6 +2788,9 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	if *noIdentity {
 		newInstance.IdentityInjectionDisabled = true
 	}
+	// #3206: per-session instruction files, read into the identity block at
+	// every spawn.
+	newInstance.InstructionsFiles = instructionsFiles
 
 	// Set command if provided
 	if sessionCommandInput != "" {
@@ -2860,9 +2943,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	mainCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = mainCfg.GroupDefaults.MaxConcurrent
 	// Ensure the session's group exists
-	if newInstance.GroupPath != "" {
-		groupTree.CreateGroupPath(newInstance.GroupPath)
-	}
+	groupTree.EnsureGroupForNewSession(newInstance, typedGroup)
 
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		fmt.Printf("Error: failed to save session: %v\n", err)
@@ -3195,10 +3276,11 @@ func handleList(profile string, args []string) {
 		return
 	}
 
-	// Table output
+	// Table output. STATUS is the live status list --json reports.
+	refreshLiveStatus(instances)
 	fmt.Printf("Profile: %s\n\n", storage.Profile())
-	fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
-	fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
+	fmt.Printf("%-*s %-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColStatus, "STATUS", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
+	fmt.Println(strings.Repeat("-", tableColTitle+tableColStatus+tableColGroup+tableColPath+tableColIDDisplay+6))
 	for _, inst := range instances {
 		title := truncate(inst.Title, tableColTitle)
 		group := truncate(inst.GroupPath, tableColGroup)
@@ -3208,7 +3290,7 @@ func handleList(profile string, args []string) {
 		if len(idDisplay) > tableColIDDisplay {
 			idDisplay = idDisplay[:tableColIDDisplay]
 		}
-		fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
+		fmt.Printf("%-*s %-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColStatus, listTableStatus(inst.Status, inst.IsArchived()), tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
 	}
 	fmt.Printf("\nTotal: %d sessions\n", len(instances))
 
@@ -3599,6 +3681,8 @@ func handleRemove(profile string, args []string) {
 		}
 		exitCLI(1)
 	}
+	// The guard reads the status list shows, not the stored one.
+	refreshLiveStatus([]*session.Instance{inst})
 	refuseRunningRemoval(out, inst, *force)
 
 	removedID := inst.ID
@@ -3825,7 +3909,7 @@ func countByStatus(instances []*session.Instance) statusCounts {
 	var counts statusCounts
 	for _, inst := range instances {
 		_ = inst.UpdateStatus() // Refresh status from tmux
-		switch inst.Status {
+		switch summaryBucket(inst.Status) {
 		case session.StatusRunning:
 			counts.running++
 		case session.StatusWaiting:
@@ -4007,7 +4091,7 @@ func handleStatus(profile string, args []string) {
 		printStatusGroup := func(label, symbol string, status session.Status) {
 			var matching []*session.Instance
 			for _, inst := range instances {
-				if inst.Status == status {
+				if summaryBucket(inst.Status) == status {
 					matching = append(matching, inst)
 				}
 			}
@@ -4048,8 +4132,7 @@ func handleStatus(profile string, args []string) {
 		fmt.Printf("Total: %d sessions in profile '%s'\n", counts.total, storage.Profile())
 	} else {
 		// Compact output
-		fmt.Printf("%d waiting • %d running • %d idle\n",
-			counts.waiting, counts.running, counts.idle)
+		fmt.Println(compactStatusLine(counts.waiting, counts.running, counts.idle, counts.stopped, counts.err))
 	}
 
 	// Show update notice if available (skip for JSON/quiet output)
@@ -4785,7 +4868,7 @@ func printHelp() {
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
 	fmt.Println("  accounts         List configured named account slots")
-	fmt.Println("  harness          Installed harnesses, login and hook state, install/login commands [--json]")
+	fmt.Println("  harness          Installed harnesses, login and hook state: harness list|status <name> [--json]")
 	fmt.Println("  limits           Claude 5h/7d and Codex weekly usage per account [--json] ([macapp] plugins)")
 	fmt.Println("  doctor           Check accounts and runtime health")
 	fmt.Println("  health           Runtime health snapshots and budgets [--json] [--since 1h]")
@@ -4829,6 +4912,12 @@ func printHelp() {
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
+	fmt.Println("  inbox            Read completion records: inbox [drain|peek|stats|export] [<id>|self] [--json]")
+	fmt.Println("  msg              Read the comms ledger: msg read|peek|ack|export|stats [--json]")
+	fmt.Println("  events           Follow, publish and count events: events follow|stats|publish [--jsonl]")
+	fmt.Println("  feedback         File a bug or idea, rate this version, see your reports: feedback bug|idea|mine|fixed")
+	fmt.Println("  costs            Spend per session and day: costs summary [--json]")
+	fmt.Println("  hooks            Manage Claude Code hook integration: hooks install|uninstall|status [--json]")
 	fmt.Println("  whats-new        What changed since the version you last saw, your fixed reports first")
 	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
@@ -4839,6 +4928,7 @@ func printHelp() {
 	fmt.Println("  completion       Print a shell completion script (bash, zsh, fish)")
 	fmt.Println()
 	fmt.Println("Session Commands:")
+	fmt.Println("  session send <id> <msg>   Send a message to a session (--wait, --no-wait, --json, --queue)")
 	fmt.Println("  session start <id>        Start a session's tmux process")
 	fmt.Println("  session stop <id>         Stop session process")
 	fmt.Println("  session restart <id>      Restart session (reload MCPs)")

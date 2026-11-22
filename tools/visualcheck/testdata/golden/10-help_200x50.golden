@@ -15,6 +15,7 @@
                                                            │  NAVIGATION                                                                    │
                                                            │    j / Down       Move down                                                    │
                                                            │    k / Up         Move up                                                      │
+                                                           │    Ctrl+p/n       Move up / down                                               │
                                                            │    Ctrl+u/d       Half page up/down                                            │
                                                            │    PgUp / PgDn    Half page up/down                                            │
                                                            │    Ctrl+f/b       Full page up/down                                            │
@@ -38,10 +39,9 @@
                                                            │                                                                                │
                                                            │  SESSIONS                                                                      │
                                                            │    n/N            New / quick create                                           │
+                                                           │    z              Quick open: new session in a recent directory (zoxide)       │
+                                                           │    I              Insert mode: type into the selected session (Esc exits)      │
                                                            │    r              Rename session                                               │
-                                                           │    R              Restart session                                              │
-                                                           │    T              Restart with new session ID                                  │
-                                                           │    d              Delete session                                               │
                                                            │  ▼ more below                                                                  │
                                                            │                                                                                │
                                                            │  j/k scroll • Tab 5 keys • any other key to close                              │

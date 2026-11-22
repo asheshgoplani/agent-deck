@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 )
 
@@ -22,6 +24,7 @@ type CopyResult struct {
 var (
 	nativeCopyFn = copyNative
 	osc52WriteFn = copyOSC52
+	runClipCmdFn = runClipCmd
 	getenv       = os.Getenv
 )
 
@@ -105,24 +108,24 @@ func copyNative(ctx context.Context, text string) (string, error) {
 
 	switch p {
 	case platform.PlatformMacOS:
-		return "pbcopy", runClipCmd(ctx, "pbcopy", nil, text)
+		return "pbcopy", runClipCmdFn(ctx, "pbcopy", nil, pbcopyEnv(childenv.ForLaunch("")), text)
 
 	case platform.PlatformWSL1, platform.PlatformWSL2:
-		return "clip.exe", runClipCmd(ctx, "clip.exe", nil, text)
+		return "clip.exe", runClipCmd(ctx, "clip.exe", nil, nil, text)
 
 	case platform.PlatformLinux:
 		// Wayland takes priority over X11
 		if os.Getenv("WAYLAND_DISPLAY") != "" {
 			if path, err := exec.LookPath("wl-copy"); err == nil {
-				return "wl-copy", runClipCmd(ctx, path, nil, text)
+				return "wl-copy", runClipCmd(ctx, path, nil, nil, text)
 			}
 		}
 		// X11: try xclip first, then xsel
 		if path, err := exec.LookPath("xclip"); err == nil {
-			return "xclip", runClipCmd(ctx, path, []string{"-selection", "clipboard"}, text)
+			return "xclip", runClipCmd(ctx, path, []string{"-selection", "clipboard"}, nil, text)
 		}
 		if path, err := exec.LookPath("xsel"); err == nil {
-			return "xsel", runClipCmd(ctx, path, []string{"--clipboard", "--input"}, text)
+			return "xsel", runClipCmd(ctx, path, []string{"--clipboard", "--input"}, nil, text)
 		}
 		return "", fmt.Errorf("no clipboard command found on Linux")
 
@@ -131,9 +134,18 @@ func copyNative(ctx context.Context, text string) (string, error) {
 	}
 }
 
-// runClipCmd executes a clipboard command, piping text to its stdin.
-func runClipCmd(ctx context.Context, name string, args []string, text string) error {
+// pbcopyEnv forces a UTF-8 locale: pbcopy decodes stdin by its inherited
+// locale and falls back to Mac Roman, so a launch without LANG turns "ö" into
+// "√∂". The text is always UTF-8, so the user's locale is irrelevant here.
+func pbcopyEnv(environ []string) []string {
+	return append(slices.Clip(environ), "LC_ALL=en_US.UTF-8")
+}
+
+// runClipCmd executes a clipboard command, piping text to its stdin. A nil env
+// inherits this process's environment.
+func runClipCmd(ctx context.Context, name string, args, env []string, text string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = env
 	cmd.Stdin = strings.NewReader(text)
 	return cmd.Run()
 }

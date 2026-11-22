@@ -3,11 +3,132 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func TestInstallPythonDepsChecksImportsBeforePip(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, missing string
+		wantProbe             []string // fragments the import probe must contain
+		wantPip               []string
+	}{
+		{
+			name:   "all configured integrations already importable without pip",
+			config: "[conductor.telegram]\ntoken = 't'\n[conductor.slack]\nbot_token = 's'\n[conductor.discord]\nbot_token = 'd'\n[conductor.mattermost]\nbot_token = 'm'\n",
+			wantProbe: []string{
+				"import toml",
+				"from aiogram import Bot, Dispatcher, types",
+				"from aiogram.filters import Command, CommandStart",
+				"from aiogram.client.session.aiohttp import AiohttpSession",
+				"from slack_bolt.async_app import AsyncApp",
+				"from slack_bolt.authorization import AuthorizeResult",
+				"from slack_sdk.web.async_client import AsyncWebClient",
+				"import aiohttp",
+				"import discord; from discord import app_commands",
+			},
+		},
+		{
+			name:      "telegram only does not need other integrations",
+			config:    "[conductor.telegram]\ntoken = 't'\n",
+			wantProbe: []string{"from aiogram.filters import Command, CommandStart"},
+		},
+		{
+			name:    "missing dependency falls back to pinned pip install",
+			config:  "[conductor.telegram]\ntoken = 't'\n",
+			missing: "from aiogram import Bot, Dispatcher, types",
+			wantPip: []string{"-m", "pip", "install", "--quiet", "--user", "toml==0.10.2", "aiogram==3.13.1"},
+		},
+		{
+			// aiogram 2.x provides the root module but not aiogram.filters or
+			// aiogram.client.session.aiohttp, so a root-only probe would skip
+			// pip and leave the bridge silently disabled.
+			name:    "incompatible aiogram major falls back to pinned pip install",
+			config:  "[conductor.telegram]\ntoken = 't'\n",
+			missing: "from aiogram.client.session.aiohttp import AiohttpSession",
+			wantPip: []string{"-m", "pip", "install", "--quiet", "--user", "toml==0.10.2", "aiogram==3.13.1"},
+		},
+		{
+			// discord.py 1.x imports discord but has no app_commands module.
+			name:    "incompatible discord.py major falls back to pinned pip install",
+			config:  "[conductor.discord]\nbot_token = 'd'\n",
+			missing: "from discord import app_commands",
+			wantPip: []string{"-m", "pip", "install", "--quiet", "--user", "toml==0.10.2", "discord.py==2.7.1"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sandboxConductorHome(t)
+			cfgPath, err := session.GetUserConfigPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfgPath, []byte(tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			session.ClearUserConfigCache()
+			t.Cleanup(session.ClearUserConfigCache)
+
+			bin := t.TempDir()
+			t.Setenv("PATH", bin)
+			t.Setenv("MISSING_SYMBOL", tc.missing)
+			pipLog := filepath.Join(bin, "pip-argv")
+			probeLog := filepath.Join(bin, "probes")
+			t.Setenv("PIP_LOG", pipLog)
+			t.Setenv("PROBE_LOG", probeLog)
+			// The probe call carries "sys.path"; fails when the statement
+			// names MISSING_SYMBOL, as an incompatible major would.
+			const fake = `#!/bin/sh
+if [ "$1" = "-c" ] && [ "${2#*sys.path}" != "$2" ]; then
+  printf '%s\n' "$2" >> "$PROBE_LOG"
+  if [ -n "$MISSING_SYMBOL" ]; then
+    case "$2" in *"$MISSING_SYMBOL"*) exit 1 ;; esac
+  fi
+  exit 0
+fi
+if [ "$1" = "-c" ] && [ "${2#import sys;}" != "$2" ]; then
+  printf '%s\n' "$0" 3.9.18
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  printf '%s\n' "$@" >> "$PIP_LOG"
+  exit 0
+fi
+exit 1
+`
+			if err := os.WriteFile(filepath.Join(bin, "python3"), []byte(fake), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if !installPythonDeps() {
+				t.Error("bridge dependencies should be available")
+			}
+			probes, err := os.ReadFile(probeLog)
+			if err != nil {
+				t.Fatalf("the import probe never ran: %v", err)
+			}
+			for _, fragment := range tc.wantProbe {
+				if !strings.Contains(string(probes), fragment) {
+					t.Errorf("import probe does not contain %q:\n%s", fragment, probes)
+				}
+			}
+			raw, err := os.ReadFile(pipLog)
+			if tc.wantPip == nil {
+				if !os.IsNotExist(err) {
+					t.Fatalf("pip should not have run: argv=%q, err=%v", raw, err)
+				}
+			} else if err != nil {
+				t.Fatalf("reading pip argv: %v", err)
+			} else if got := strings.Split(strings.TrimSpace(string(raw)), "\n"); !slices.Equal(got, tc.wantPip) {
+				t.Errorf("pip argv = %q, want %q", got, tc.wantPip)
+			}
+		})
+	}
+}
 
 // TestInstallPythonDepsPinsEveryPackage: conductor setup installs the bridge's
 // Python packages at exact versions, and the manual-install commands it

@@ -280,6 +280,10 @@ func reloadInstanceForParityTestWithPrev(base *Instance, previousStatus string) 
 		Tool:        base.Tool,
 		Status:      StatusIdle,
 		CreatedAt:   time.Now().Add(-10 * time.Second), // past grace window
+		// The session was started (runParitySetup), and a real reload
+		// carries that start stamp from tool_data; without it the reloaded
+		// row would read as never started.
+		LastStartedAt: time.Now().Add(-10 * time.Second),
 	}
 	reloaded.tmuxSession = tmux.ReconnectSessionLazy(
 		base.tmuxSession.Name,

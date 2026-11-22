@@ -1,24 +1,24 @@
  ●●○ Agent Deck  11 sessions                                           <version>
-  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+  All    ● 1   ◐ 2   ○ 6   ■ 1   ✕ 1   !@#& filter • 0 all • % open • …
 SESSIONS                     │ PREVIEW
-──────────────────────────── │ ─────────────────────────────────────────────────
-1·▾ alpha (7) ● 1 ◐ 1        │ claude-waiting  ◐ waiting
-   ├─ ■ opencode-idle        │ ╭─────────────────────────────────────────────╮
-   ├─ ✕ claude-idle          │ │                                             │
-  ▶├─ ◐ claude-waiting       │ │  Switch session                             │
-   └─ ■ claude-stopped       │ │                                             │
-    ▾ backend (3) ● 1        │ │  > ◐ claude-waiting (claude)                │
-     ├─ ✕ codex-idle         │ │    ● claude-running (claude)                │
-     ├─ ● claude-running     │ │    ◐ claude-i18n (claude)                   │
-     └─ ✕ claude-error       │ │    ○ shell-live (shell)                     │
-2·▾ beta (4) ◐ 1             │ │                                             │
-   ├─ ✕ gemini-idle          │ │  Ctrl+S next · Ctrl+A prev                  │
-   ├─ ✕ pi-idle              │ │  ↑/↓ browse · Enter attach · Esc close      │
+──────────────────────────── │ ╭─────────────────────────────────────────────╮ ─
+1·▾ alpha (7) ● 1 ◐ 1        │ │                                             │
+   ├─ ○ opencode-idle        │ │  Switch session                             │
+   ├─ ○ claude-idle          │ │                                             │
+  ▶├─ ◐ claude-waiting       │ │    ○ gemini-idle (gemini)                   │
+   └─ ■ claude-stopped       │ │    ○ opencode-idle (opencode)               │
+    ▾ backend (3) ● 1        │ │    ○ codex-idle (codex)                     │
+     ├─ ○ codex-idle         │ │    ○ pi-idle (pi)                           │
+     ├─ ● claude-running     │ │    ○ claude-idle (claude)                   │
+     └─ ✕ claude-error       │ │  > ◐ claude-waiting (claude)                │
+2·▾ beta (4) ◐ 1             │ │    ● claude-running (claude)                │
+   ├─ ○ gemini-idle          │ │    ◐ claude-i18n (claude)                   │
+   ├─ ○ pi-idle              │ │    ○ shell-live (shell)                     │
    ├─ ◐ claude-i18n          │ │                                             │
-   └─ ○ shell-live           │ ╰─────────────────────────────────────────────╯
-  ▾ remotes/lab (0) · host … │
-                             │
-                             │
+   └─ ○ shell-live           │ │  Ctrl+S next · Ctrl+A prev                  │
+  ▾ remotes/lab (0) · host … │ │  ↑/↓ browse · Enter attach · Esc close      │
+                             │ │                                             │
+                             │ ╰─────────────────────────────────────────────╯
                              │
 ────────────────────────────────────────────────────────────────────────────────
 ⏎ Attach n/N New R Restart o Send │    ↑↓ Nav / Search S Settings ? Help q Quit

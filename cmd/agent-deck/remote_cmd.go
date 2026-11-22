@@ -222,7 +222,7 @@ func printRemoteSubcommandUsage(command string) {
 		printRemoteDrainUsage(os.Stdout)
 	case "attach":
 		fmt.Println("Usage: agent-deck remote attach <remote-name> <session-title-or-id>")
-		fmt.Println("\nCtrl+V with an image on this machine's clipboard sends it to the session's Claude or Gemini composer; off with [remote] paste_images = false.")
+		fmt.Println("\nCtrl+V with an image on this machine's clipboard sends it to the session's Claude, Gemini, or OpenCode composer; off with [remote] paste_images = false.")
 	case "rename":
 		fmt.Println("Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>")
 	case "update":
@@ -257,6 +257,7 @@ func printRemoteUsage() {
 	fmt.Println("  session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),")
 	fmt.Println("  recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,")
 	fmt.Println("  session queue list/release/cancel (queue entry IDs; --json supported),")
+	fmt.Println("  session send-keys <id|title> --named-key KEY | --text TEXT | --enter (one key per call; Escape interrupts),")
 	fmt.Println("  session ownership inspect <id> [--json] (read-only receipt),")
 	fmt.Println("  triggers (read-only list: --session/--kind/--health/--all/--json),")
 	fmt.Println("  events publish forwards the Mac app's replies only (macapp.open.ack, macapp.browser.response,")
@@ -827,6 +828,21 @@ func handleRemoteSessions(args []string) {
 		exitCLI(1)
 	}
 
+	// A named remote that is not configured is an error, also when no remote
+	// is configured at all: an empty list would read as "no sessions there".
+	if remoteName != "" {
+		if _, exists := config.Remotes[remoteName]; !exists {
+			if envelope {
+				writeRemoteSessionsJSON(remoteSessionsOutput{
+					Errors: []remoteSessionError{{Name: remoteName, Error: "remote not found"}},
+				})
+			} else {
+				fmt.Printf("Error: remote '%s' not found\n", remoteName)
+			}
+			exitCLI(1)
+		}
+	}
+
 	if len(config.Remotes) == 0 {
 		switch {
 		case envelope:
@@ -844,19 +860,6 @@ func handleRemoteSessions(args []string) {
 	// (master died on a remote update / network drop) doesn't hang this command
 	// forever on the ControlMaster=auto reuse.
 	session.CleanStaleSSHSockets()
-
-	if remoteName != "" {
-		if _, exists := config.Remotes[remoteName]; !exists {
-			if envelope {
-				writeRemoteSessionsJSON(remoteSessionsOutput{
-					Errors: []remoteSessionError{{Name: remoteName, Error: "remote not found"}},
-				})
-			} else {
-				fmt.Printf("Error: remote '%s' not found\n", remoteName)
-			}
-			exitCLI(1)
-		}
-	}
 
 	ctx := context.Background()
 
@@ -1054,7 +1057,9 @@ func handleRemoteUpdate(args []string) {
 		exitCLI(1)
 	}
 
-	if len(config.Remotes) == 0 {
+	// Only the sweep over every remote is an empty answer with nothing
+	// configured; a named remote that does not exist is refused below.
+	if len(config.Remotes) == 0 && fs.Arg(0) == "" {
 		if *jsonOutput {
 			fmt.Println("[]")
 		} else {

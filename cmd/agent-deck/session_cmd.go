@@ -335,6 +335,7 @@ func handleSessionFork(profile string, args []string) {
 	// -g means what it means for add and launch: a unique group name resolves
 	// to its stored path and an ambiguous one is an error, before any worktree
 	// or session is created.
+	typedGroup := forkGroup
 	if forkGroup != "" {
 		groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 		if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
@@ -361,6 +362,14 @@ func handleSessionFork(profile string, args []string) {
 	// Try to capture Claude session ID from tmux if missing (handles pre-fix sessions).
 	if isClaudeFork && inst.ClaudeSessionID == "" && inst.Exists() {
 		inst.PostStartSync(2 * time.Second)
+	}
+	// The CLI may load the row before the background poll has saved the ID
+	// that OpenCode's launch command recorded in its tmux session. Only a
+	// local V2 launch records that variable; SyncOpenCodeLaunchID is a no-op
+	// for SSH and sandboxed rows, whose fork runs as this same command on the
+	// owning host rather than against a local pane.
+	if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" && inst.Exists() {
+		inst.SyncOpenCodeLaunchID()
 	}
 
 	// Verify it can be forked.
@@ -693,9 +702,7 @@ func handleSessionFork(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	forkCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = forkCfg.GroupDefaults.MaxConcurrent
-	if forkedInst.GroupPath != "" {
-		groupTree.CreateGroupPath(forkedInst.GroupPath)
-	}
+	groupTree.EnsureGroupForNewSession(forkedInst, typedGroup)
 
 	// Save
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {

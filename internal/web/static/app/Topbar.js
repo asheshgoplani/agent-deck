@@ -7,7 +7,7 @@
 import { html } from 'htm/preact'
 import { Logo, Icon, ICONS } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
-import { connectionSignal, profilesSignal, commandCenterSignal } from './state.js'
+import { connectionSignal, profilesSignal, commandCenterSignal, openTab } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
   railSignal, profileSignal,
@@ -49,7 +49,7 @@ export function Topbar() {
           ${TABS.map(t => html`
             <button key=${t.id}
               class=${`top-tab ${activeTab === t.id ? 'active' : ''}`}
-              onClick=${() => (activeTabSignal.value = t.id)}>
+              onClick=${() => openTab(t.id)}>
               ${t.label}
               ${t.id === 'conductor' && pendingNeeds > 0 && html`<span class="badge">${pendingNeeds}</span>`}
               ${t.id === 'fleet' && sessionsBadge > 0 && html`<span class="badge">${sessionsBadge}</span>`}

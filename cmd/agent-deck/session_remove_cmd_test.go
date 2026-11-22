@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
@@ -127,6 +128,36 @@ func TestSessionRemove_RunningWithoutForce_Rejected(t *testing.T) {
 	}
 }
 
+// TestSessionRemove_StaleStoppedStatusLivePane_RefusedWithoutForce: the stored
+// status says stopped but the pane is alive (another process started it). The
+// guard must read the live status, as `list` does, and refuse without --force.
+func TestSessionRemove_StaleStoppedStatusLivePane_RefusedWithoutForce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	testutil.RequireTmux(t) // starts a real session pane
+	home := t.TempDir()
+	id := addOpenTestSession(t, home, "remove-stale-stopped")
+	if stdout, stderr, code := runAgentDeck(t, home, "session", "start", id); code != 0 {
+		t.Fatalf("session start: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	t.Cleanup(func() { _, _, _ = runAgentDeck(t, home, "session", "stop", id) })
+	forceSetStatus(t, home, id, session.StatusStopped)
+
+	for _, args := range [][]string{
+		{"session", "remove", id, "--json"},
+		{"remove", id, "--json"},
+	} {
+		stdout, stderr, code := runAgentDeck(t, home, args...)
+		if code == 0 {
+			t.Fatalf("%v: stale stopped row with a live pane was removed without --force; stdout=%s stderr=%s", args, stdout, stderr)
+		}
+	}
+	if listJSON := readSessionsJSON(t, home); !strings.Contains(listJSON, id) {
+		t.Errorf("live session was removed despite refusal; list:\n%s", listJSON)
+	}
+}
+
 // TestSessionRemove_RunningWithForce_Succeeds confirms --force bypasses the gate.
 func TestSessionRemove_RunningWithForce_Succeeds(t *testing.T) {
 	if testing.Short() {
@@ -155,7 +186,7 @@ func TestSessionRemove_AllErrored_RemovesOnlyErrored(t *testing.T) {
 	}
 	home := t.TempDir()
 	errID := addTestSession(t, home, filepath.Join(home, "err-proj"), "err-one")
-	forceSetStatus(t, home, errID, session.StatusError)
+	forceSetStartedStatus(t, home, errID, session.StatusError, time.Now().Add(-time.Hour))
 	stoppedID := addTestSession(t, home, filepath.Join(home, "stop-proj"), "stopped-one")
 	forceSetStatus(t, home, stoppedID, session.StatusStopped)
 	idleID := addTestSession(t, home, filepath.Join(home, "idle-proj"), "idle-one")
@@ -195,8 +226,8 @@ func TestSessionRemove_AllErrored_SkipsPinned(t *testing.T) {
 	if _, stderr, code := runAgentDeck(t, home, "session", "set", pinnedID, "pin", "top"); code != 0 {
 		t.Fatalf("set pin failed: %s", stderr)
 	}
-	forceSetStatus(t, home, pinnedID, session.StatusError)
-	forceSetStatus(t, home, plainID, session.StatusError)
+	forceSetStartedStatus(t, home, pinnedID, session.StatusError, time.Now().Add(-time.Hour))
+	forceSetStartedStatus(t, home, plainID, session.StatusError, time.Now().Add(-time.Hour))
 
 	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--json")
 	if code != 0 {
@@ -221,7 +252,7 @@ func TestSessionRemove_AllErrored_ForceIncludesPinned(t *testing.T) {
 	if _, stderr, code := runAgentDeck(t, home, "session", "set", pinnedID, "pin", "top"); code != 0 {
 		t.Fatalf("set pin failed: %s", stderr)
 	}
-	forceSetStatus(t, home, pinnedID, session.StatusError)
+	forceSetStartedStatus(t, home, pinnedID, session.StatusError, time.Now().Add(-time.Hour))
 
 	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--force", "--json")
 	if code != 0 {

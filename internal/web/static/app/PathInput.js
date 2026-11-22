@@ -71,6 +71,39 @@ export function PathInput({ value, onInput }) {
     return () => observer.disconnect()
   }, [index, paths])
 
+  // A blur caused by pressing the pointer somewhere else (the Create session
+  // button, a tool button) must not collapse the suggestion list until that
+  // press is over: collapsing shrinks the centred dialog under the pointer,
+  // the release lands on a different element (often the backdrop) and the
+  // click the user aimed is lost. Track whether a press is in progress and,
+  // if so, collapse right after its click instead of on blur.
+  const pressing = useRef(false)
+  useEffect(() => {
+    const down = () => { pressing.current = true }
+    const up = () => { pressing.current = false }
+    window.addEventListener('pointerdown', down, true)
+    window.addEventListener('pointerup', up, true)
+    window.addEventListener('pointercancel', up, true)
+    return () => {
+      window.removeEventListener('pointerdown', down, true)
+      window.removeEventListener('pointerup', up, true)
+      window.removeEventListener('pointercancel', up, true)
+    }
+  }, [])
+
+  function handleBlur() {
+    const collapse = () => { dismiss(); setFocused(false) }
+    if (!pressing.current) { collapse(); return }
+    const after = () => {
+      window.removeEventListener('pointerup', after, true)
+      window.removeEventListener('pointercancel', after, true)
+      // The click is dispatched right after pointerup in the same task.
+      setTimeout(() => { if (document.activeElement !== inputRef.current) collapse() }, 0)
+    }
+    window.addEventListener('pointerup', after, true)
+    window.addEventListener('pointercancel', after, true)
+  }
+
   function dismiss() {
     ++generation.current
     setDismissed(true)
@@ -114,7 +147,7 @@ export function PathInput({ value, onInput }) {
              aria-activedescendant=${index >= 0 && paths.length ? 'create-session-path-' + index : undefined}
              onInput=${handleInput} onKeyDown=${handleKey}
              onFocus=${() => { setFocused(true); setDismissed(false) }}
-             onBlur=${() => { dismiss(); setFocused(false) }}
+             onBlur=${handleBlur}
              placeholder="/absolute/path/to/project"/>
       ${paths.length > 0 && html`
         <div id="create-session-path-list" class="path-suggestions" role="listbox" aria-label="Directories" ref=${listRef}>

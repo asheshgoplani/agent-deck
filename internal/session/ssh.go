@@ -3087,6 +3087,15 @@ func (r *SSHRunner) DeleteSession(ctx context.Context, sessionID string) error {
 	return err
 }
 
+// RemoveSession drops a session from the remote's registry only, through the
+// remote's own `session remove`. That command applies the same stopped/error
+// gate locally, so a live session is refused by the remote rather than
+// silently killed: the caller sees the refusal and can steer the user to 'd'.
+func (r *SSHRunner) RemoveSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "remove", sessionID)
+	return err
+}
+
 // StopSession stops a session process on the remote host without removing metadata.
 func (r *SSHRunner) StopSession(ctx context.Context, sessionID string) error {
 	_, err := r.Run(ctx, "session", "stop", sessionID)

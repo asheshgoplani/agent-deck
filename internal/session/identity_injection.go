@@ -217,16 +217,6 @@ func (i *Instance) identityRunsElsewhere() bool {
 	return i != nil && (i.IsSSH() || i.IsSandboxed())
 }
 
-// identityText renders the block this spawn carries, or ok=false when
-// injection is off. It writes nothing.
-func (i *Instance) identityText() (string, bool) {
-	if !i.identityInjectionEnabled() {
-		return "", false
-	}
-	level, _ := i.EffectiveContextLevel()
-	return i.BuildContextPromptForLevel(level), true
-}
-
 // identityInlineMaxBytes caps the identity payload an SSH/sandboxed launch
 // command carries (the encoded block, plus codex's TOML override). tmux
 // refuses a pane command over ~16 KB, and the rest of a remote launch (env
@@ -236,13 +226,17 @@ func (i *Instance) identityText() (string, bool) {
 // too big to carry at all is not injected on that spawn (as before ASK-105).
 const identityInlineMaxBytes = 8 << 10
 
-// identityRemoteText is identityText for an SSH/sandboxed spawn, or ok=false
-// when the encoded block alone exceeds identityInlineMaxBytes.
+// identityRemoteText renders the block an SSH/sandboxed spawn carries, or
+// ok=false when injection is off or the encoded block alone exceeds
+// identityInlineMaxBytes. It writes nothing.
 func (i *Instance) identityRemoteText() (string, bool) {
-	text, ok := i.identityText()
-	if !ok {
+	if !i.identityInjectionEnabled() {
 		return "", false
 	}
+	// Instruction files (#3206) are fitted into the inline budget here, file
+	// by file; without them this is BuildContextPromptForLevel(level).
+	level, _ := i.EffectiveContextLevel()
+	text, _ := i.contextBlock(level, i.spawnBudget(), i.codexBudgetExisting())
 	if n := len(identityPrintfArg(text)); n > identityInlineMaxBytes {
 		sessionLog.Warn("identity_remote_block_too_large",
 			slog.String("instance_id", i.ID),
@@ -263,6 +257,9 @@ func (i *Instance) identityRemoteText() (string, bool) {
 func identityPrintfArg(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, "\n", `\n`)
+	// A tab can only come from an instruction file (#3206); the block itself
+	// never has one, so its encoding is unchanged.
+	s = strings.ReplaceAll(s, "\t", `\t`)
 	return shellescape.Quote(identityLaunchSafe(s, `\0047`, `exec\0040`))
 }
 
@@ -415,8 +412,15 @@ func (i *Instance) BuildIdentityPrompt() string {
 		// This session's turns are never reported, so an answer reaches
 		// nobody unless it is sent back explicitly.
 		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; this session's turns are not reported, so reply with `agent-deck session send <id> \"answer\"`.\n")
+	} else if i.Tool == "pi" {
+		b.WriteString("- Messages from other agent-deck sessions can start with `[agent-deck from:<id>]`; use that id to return your answer with `agent-deck session send <id> \"answer\"`.\n")
 	} else {
 		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.\n")
+		// The promise above holds for a Claude-compatible sender only: the
+		// envelope carries an id and nothing else, so name the lookup that
+		// tells this receiver the sender is Pi and needs an explicit reply
+		// (a review finding: an unreachable rule is not a rule).
+		b.WriteString("- A Pi sender gets no automatic reply: check the sender with `agent-deck session show <id> --json` (its `tool`), and when it is `pi` answer explicitly with `agent-deck session send <id> \"answer\"`.\n")
 	}
 	b.WriteString(identityNoOpNoticeRule)
 	b.WriteString("- `agent-deck session output <id-or-title>` — read another session's last response\n")
@@ -633,19 +637,29 @@ func (i *Instance) ensureIdentityFile() (dir, file string, ok bool) {
 	// block. Regeneration on start/restart still happens whenever the record
 	// changed, because the rendered content then differs.
 	level, _ := i.EffectiveContextLevel()
-	content := []byte(i.BuildContextPromptForLevel(level))
+	text, _ := i.contextBlock(level, budgetFile, "")
+	content := []byte(text)
 	names := []string{identityFileName, geminiIdentityFileName}
 	if i.Tool == "copilot" {
 		if err := os.MkdirAll(filepath.Join(dir, copilotIdentitySubdir), 0o755); err == nil {
 			names = append(names, filepath.Join(copilotIdentitySubdir, copilotIdentityFileName))
 		}
 	}
+	// With instruction files (#3206) the block carries their text, so the
+	// copies are owner-only and never more readable than a private source
+	// file; without them the mode is 0644 as before.
+	perm := os.FileMode(0o644)
+	if len(i.InstructionsFiles) > 0 {
+		perm = 0o600
+	}
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, content) {
-			continue
+			if st, err := os.Stat(path); err == nil && st.Mode().Perm() == perm {
+				continue
+			}
 		}
-		if err := atomicWriteFile(path, content, 0o644); err != nil {
+		if err := atomicWriteFile(path, content, perm); err != nil {
 			sessionLog.Warn("identity_file_write_failed",
 				slog.String("path", path),
 				slog.String("error", err.Error()))
@@ -727,9 +741,10 @@ func (i *Instance) codexIdentityFlag(codexHome, projectPath string) string {
 // documentation/HARNESS_IDENTITY.md; opt out per session with --no-identity).
 // A sandbox mounts this host's codex home, so it merges as a local spawn does.
 func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string, bool) {
-	var merged string
+	var merged, text string
 	if i.identityRunsElsewhere() {
-		text, ok := i.identityRemoteText()
+		var ok bool
+		text, ok = i.identityRemoteText()
 		if !ok {
 			return "", false
 		}
@@ -752,11 +767,27 @@ func (i *Instance) codexIdentityOverride(codexHome, projectPath string) (string,
 	// exactly what it would have plus our block. An explicit empty override
 	// (found, value=="") contributes no prefix — codex would apply nothing —
 	// but must NOT resurrect a shadowed user/ancestor value; found gates that.
-	if existing, found := codexEffectiveDeveloperInstructions(codexHome, projectPath); found && existing != "" {
+	// Read once: the same value is fitted against and emitted.
+	existing, found := codexEffectiveDeveloperInstructions(codexHome, projectPath)
+	if !found {
+		existing = ""
+	}
+	if !i.identityRunsElsewhere() && len(i.InstructionsFiles) > 0 {
+		// The file carries every instruction file in full; the inline
+		// override fits them into codex's budget together with the
+		// configured developer_instructions it is merged with, a pointer
+		// line standing in for each one that does not fit (#3206; #3215
+		// review R-2).
+		level, _ := i.EffectiveContextLevel()
+		merged, _ = i.contextBlock(level, budgetCodexLocal, existing)
+	}
+	if existing != "" {
 		merged = existing + "\n\n" + merged
 	}
 	if i.identityRunsElsewhere() {
-		return i.codexRemoteOverrideWithinBudget(merged, merged)
+		// text, not merged: the printf payload carries the block once, the
+		// override carries existing + block — the same sum fits() measured.
+		return i.codexRemoteOverrideWithinBudget(text, merged)
 	}
 	return "developer_instructions=" + identityTOMLString(merged), true
 }

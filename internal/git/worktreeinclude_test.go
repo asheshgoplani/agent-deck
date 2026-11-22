@@ -2,11 +2,15 @@ package git
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	ignore "github.com/sabhiram/go-gitignore"
 )
 
 // Behavior: .worktreeinclude with a matching gitignored file copies it to the worktree.
@@ -348,6 +352,414 @@ func TestProcessWorktreeInclude_NoFileIsNoop(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("expected no output, got stderr=%q", stderr.String())
+	}
+}
+
+func TestWalkRoots(t *testing.T) {
+	tests := []struct {
+		name     string
+		patterns []string
+		want     []string
+	}{
+		{
+			name:     "bare name matches at any depth",
+			patterns: []string{".env"},
+			want:     []string{"."},
+		},
+		{
+			name:     "leading glob matches at any depth",
+			patterns: []string{"*.env"},
+			want:     []string{"."},
+		},
+		{
+			name:     "directory pattern prunes to its parent",
+			patterns: []string{".claude/rules/personal/"},
+			want:     []string{".claude/rules"},
+		},
+		{
+			name:     "file pattern prunes to its directory",
+			patterns: []string{"config/local.json"},
+			want:     []string{"config"},
+		},
+		{
+			name:     "anchored file pattern prunes to its directory",
+			patterns: []string{"/config/local.json"},
+			want:     []string{"config"},
+		},
+		{
+			name:     "glob inside a static prefix keeps the prefix",
+			patterns: []string{"config/*/local.json"},
+			want:     []string{"config"},
+		},
+		{
+			name:     "nested roots collapse",
+			patterns: []string{"a/b/c.txt", "a/b/d.txt"},
+			want:     []string{"a/b"},
+		},
+		{
+			name:     "a full walk wins over pruned roots",
+			patterns: []string{"config/x.txt", ".env"},
+			want:     []string{"."},
+		},
+		{
+			name:     "a negation does not widen the walk",
+			patterns: []string{"config/x.txt", "!secret"},
+			want:     []string{"config"},
+		},
+		{
+			name:     "a negation alone keeps no roots",
+			patterns: []string{"!secret"},
+			want:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := walkRoots(tt.patterns)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("walkRoots(%q) = %q, want %q", tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAnchorPatterns(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string
+	}{
+		{".env", ".env"},
+		{"*.env", "*.env"},
+		{"config/", "config/"},
+		{"config/local.json", "/config/local.json"},
+		{"/config/local.json", "/config/local.json"},
+		{"config/*/local.json", "/config/*/local.json"},
+		{"**/x.env", "**/x.env"},
+		{"!**/x", "!**/x"},
+		{"!config/local.json", "!/config/local.json"},
+		{"!sub/.env", "!/sub/.env"},
+	}
+	for _, tt := range tests {
+		if got := anchorPattern(tt.pattern); got != tt.want {
+			t.Errorf("anchorPattern(%q) = %q, want %q", tt.pattern, got, tt.want)
+		}
+	}
+}
+
+// recordingFS records every path the walk opens, so a test can prove the walk
+// stayed inside the pattern roots.
+type recordingFS struct {
+	fsys   fs.FS
+	opened []string
+}
+
+func (r *recordingFS) Open(name string) (fs.File, error) {
+	r.opened = append(r.opened, name)
+	return r.fsys.Open(name)
+}
+
+// Regression: a narrow pattern must not walk the rest of the checkout. Large
+// build directories hold millions of entries, and a full walk there takes
+// about a minute (duolingo-android: 7.9M entries, 45s with find).
+func TestWalkIncludeRoots_StaysInsidePatternRoot(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFile(t, filepath.Join(repoDir, ".claude", "rules", "personal", "rule.md"), "RULE")
+	writeFile(t, filepath.Join(repoDir, "build", "output.bin"), "BIG")
+	writeFile(t, filepath.Join(repoDir, "build", "nested", "deep.bin"), "BIG")
+
+	patterns := []string{".claude/rules/personal/"}
+	matcher := ignore.CompileIgnoreLines(patterns...)
+
+	rec := &recordingFS{fsys: os.DirFS(repoDir)}
+	candidates, err := walkIncludeRoots(rec, walkRoots(patterns), matcher)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !reflect.DeepEqual(candidates, []string{".claude/rules/personal/rule.md"}) {
+		t.Errorf("candidates = %q, want [.claude/rules/personal/rule.md]", candidates)
+	}
+	for _, opened := range rec.opened {
+		if opened == "build" || strings.HasPrefix(opened, "build/") {
+			t.Errorf("walk opened %q, which is outside the pattern root", opened)
+		}
+	}
+}
+
+// Interleaved roots must not defeat pruning: config/cache sits under config,
+// and config-local must survive between them.
+func TestWalkRootsPrunesInterleavedNestedRoots(t *testing.T) {
+	got := walkRoots([]string{"config/a.env", "config-local/a.env", "config/cache/b.env"})
+	want := []string{"config", "config-local"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("walkRoots() = %q, want %q", got, want)
+	}
+}
+
+// A pattern that names a path inside a nested worktree must not read that
+// worktree, even though the walk now starts below the repository root.
+func TestWalkIncludeRoots_SkipsRootInsideNestedRepository(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFile(t, filepath.Join(repoDir, ".worktrees", "other", ".git"), "gitdir: elsewhere")
+	writeFile(t, filepath.Join(repoDir, ".worktrees", "other", "config", "local.json"), "NESTED")
+
+	patterns := []string{".worktrees/other/config/local.json"}
+	matcher := ignore.CompileIgnoreLines(patterns...)
+
+	rec := &recordingFS{fsys: os.DirFS(repoDir)}
+	candidates, err := walkIncludeRoots(rec, walkRoots(patterns), matcher)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("candidates = %q, want none", candidates)
+	}
+	for _, opened := range rec.opened {
+		if strings.HasSuffix(opened, "local.json") {
+			t.Errorf("walk opened %q inside a nested repository", opened)
+		}
+	}
+}
+
+// A walk root that is a symbolic link must not be walked. git check-ignore
+// rejects a path whose leading component is a link, and the whole copy stage
+// then stops.
+func TestWalkIncludeRoots_SkipsSymlinkedRoot(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFile(t, filepath.Join(repoDir, "real", "local.json"), "LINKED")
+	if err := os.Symlink("real", filepath.Join(repoDir, "config")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	patterns := []string{"config/local.json"}
+	matcher := ignore.CompileIgnoreLines(patterns...)
+
+	rec := &recordingFS{fsys: os.DirFS(repoDir)}
+	candidates, err := walkIncludeRoots(rec, walkRoots(patterns), matcher)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("candidates = %q, want none", candidates)
+	}
+}
+
+// A symlinked pattern root must not stop the other includes: the copy stage
+// runs for the files it can resolve.
+func TestProcessWorktreeInclude_SymlinkedRootDoesNotBlockOtherIncludes(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), ".claude/rules/personal/\nreal/\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, ".claude", "rules", "personal", "rule.md"), "RULE")
+	writeFile(t, filepath.Join(repoDir, "real", "local.json"), `{"linked": true}`)
+	if err := os.Symlink("real", filepath.Join(repoDir, "config")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), ".claude/rules/personal/\nconfig/local.json\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".claude", "rules", "personal", "rule.md")); err != nil {
+		t.Errorf("expected the personal rule to be copied: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "config", "local.json")); !os.IsNotExist(err) {
+		t.Errorf("symlinked root must not be copied (err=%v)", err)
+	}
+}
+
+// A "." root must win even when another root sorts before it. A leading "-"
+// sorts below "." in byte order, so the list has to be checked as a whole.
+func TestWalkRootsFullWalkWithDotRootSortedLast(t *testing.T) {
+	got := walkRoots([]string{"/build/", "-dash/x"})
+	want := []string{"."}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("walkRoots() = %q, want %q", got, want)
+	}
+}
+
+// The previous repository-wide walk never read .git, so a root inside it must
+// not be walked now.
+func TestWalkIncludeRoots_SkipsGitDirectoryRoot(t *testing.T) {
+	repoDir := t.TempDir()
+	writeFile(t, filepath.Join(repoDir, ".git", "info", "exclude"), "SECRET")
+	writeFile(t, filepath.Join(repoDir, ".git", "hooks", "pre-commit"), "#!/bin/sh")
+
+	for _, pattern := range []string{".git/info/exclude", ".git/hooks/pre-commit"} {
+		matcher := ignore.CompileIgnoreLines(pattern)
+		rec := &recordingFS{fsys: os.DirFS(repoDir)}
+		candidates, err := walkIncludeRoots(rec, walkRoots([]string{pattern}), matcher)
+		if err != nil {
+			t.Fatalf("pattern %q: unexpected error: %v", pattern, err)
+		}
+		if len(candidates) != 0 {
+			t.Errorf("pattern %q: candidates = %q, want none", pattern, candidates)
+		}
+	}
+}
+
+// A pattern with a separator in the middle is anchored at the repository root,
+// as gitignore specifies. The matcher would also accept the same relative path
+// under a subdirectory; this test records that the narrowed walk does not
+// discover it.
+func TestProcessWorktreeInclude_AnchoredPatternSkipsNestedMatch(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "config/local.json\nsub/config/\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "config", "local.json"), `{"root": true}`)
+	writeFile(t, filepath.Join(repoDir, "sub", "config", "local.json"), `{"nested": true}`)
+
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "config/local.json\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(worktreeDir, "config", "local.json")); err != nil {
+		t.Errorf("expected config/local.json to be copied: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "config", "local.json")); !os.IsNotExist(err) {
+		t.Errorf("nested sub/config/local.json must not be copied (err=%v)", err)
+	}
+}
+
+// Anchoring must not depend on the other patterns. A bare ".env" forces a full
+// walk, and the anchored pattern must still reject the nested match on that
+// walk.
+func TestProcessWorktreeInclude_MixedPatternsKeepAnchoring(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "config/local.json\nsub/config/\n.env\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "config", "local.json"), `{"root": true}`)
+	writeFile(t, filepath.Join(repoDir, "sub", "config", "local.json"), `{"nested": true}`)
+	writeFile(t, filepath.Join(repoDir, ".env"), "ROOT=1")
+	writeFile(t, filepath.Join(repoDir, "sub", ".env"), "NESTED=1")
+
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "config/local.json\n.env\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, want := range []string{"config/local.json", "sub/.env"} {
+		if _, err := os.Stat(filepath.Join(worktreeDir, want)); err != nil {
+			t.Errorf("expected %s to be copied: %v", want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "config", "local.json")); !os.IsNotExist(err) {
+		t.Errorf("nested sub/config/local.json must not be copied (err=%v)", err)
+	}
+}
+
+// An anchored negation only un-ignores the root path. The nested path keeps
+// the bare-name match, as gitignore does.
+func TestProcessWorktreeInclude_AnchoredNegationKeepsNestedMatch(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "local.json\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "config", "local.json"), `{"root": true}`)
+	writeFile(t, filepath.Join(repoDir, "sub", "config", "local.json"), `{"nested": true}`)
+
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "local.json\n!config/local.json\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(worktreeDir, "config", "local.json")); !os.IsNotExist(err) {
+		t.Errorf("negated config/local.json must not be copied (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "config", "local.json")); err != nil {
+		t.Errorf("expected sub/config/local.json to keep the bare-name match: %v", err)
+	}
+}
+
+// A "**" pattern keeps matching at any depth after the anchor step.
+func TestProcessWorktreeInclude_DoubleStarMatchesAnyDepth(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), "*.env\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "sub", "x.env"), "DEEP=1")
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), "**/x.env\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(worktreeDir, "sub", "x.env")); err != nil {
+		t.Errorf("expected sub/x.env to be copied: %v", err)
+	}
+}
+
+// A bare name matches at any depth, so the walk falls back to the repository
+// root and still finds the file in a subdirectory.
+func TestProcessWorktreeInclude_BareNameMatchesAtAnyDepth(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), ".env\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, "sub", ".env"), "NESTED=1")
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), ".env\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(worktreeDir, "sub", ".env"))
+	if err != nil {
+		t.Fatalf("expected sub/.env to be copied: %v", err)
+	}
+	if string(got) != "NESTED=1" {
+		t.Errorf("got %q, want %q", got, "NESTED=1")
 	}
 }
 

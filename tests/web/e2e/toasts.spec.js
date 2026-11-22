@@ -13,9 +13,11 @@
 //     → "Restored session <id>" success toast auto-dismisses within ~5s.
 //   - History drawer: dismissed toasts appear behind the topbar's
 //     data-testid="toast-history-toggle" button, newest first.
-//   - Stack cap: 4 rapid `r` (rename-gap info) toasts cap the visible
-//     stack at 3 (oldest non-error evicted). Eviction ORDER semantics are
-//     pinned by unit/toast.test.js; here we assert the visible cap only.
+//   - Stack cap: 4 rapid Ctrl+Z restores (4 success toasts) cap the
+//     visible stack at 3 (oldest non-error evicted). Eviction ORDER
+//     semantics are pinned by unit/toast.test.js; here we assert the visible
+//     cap only. (These cases used the `r` "rename not implemented" info
+//     toast as their source; `r` now opens the Edit dialog instead.)
 //
 // Viewport-agnostic: toasts are fixed-position overlays rendered on every
 // viewport, keyboard shortcuts attach to `window`, and the history toggle
@@ -73,21 +75,20 @@ test.describe('toast notifications', () => {
     await expect(successToast).toHaveCount(0, { timeout: 7000 })
   })
 
-  test('dismissed toasts appear in the history drawer, newest first', async ({ page }) => {
-    // Toast A: focus the first session explicitly (j×2 — the first j lands on
-    // the `work` group header) and fire the rename-gap info toast.
-    await page.keyboard.press('j')
-    await page.keyboard.press('j')
-    await page.keyboard.press('r')
-    const toastA = page.locator('[data-testid="toast"]', { hasText: 'Rename "agent-deck"' })
+  test('dismissed toasts appear in the history drawer, newest first', async ({ page, request }) => {
+    // Two distinct real toasts: delete two sessions server-side, then each
+    // Ctrl+Z restores the most recent one and toasts "Restored session <id>".
+    expect((await request.delete('/api/sessions/sess-003')).status()).toBe(200)
+    expect((await request.delete('/api/sessions/sess-004')).status()).toBe(200)
+
+    await page.keyboard.press('Control+z')
+    const toastA = page.locator('[data-testid="toast"]', { hasText: 'Restored session sess-004' })
     await expect(toastA).toBeVisible({ timeout: 3000 })
     await toastA.locator('[data-testid="toast-dismiss"]').click()
     await expect(toastA).toHaveCount(0)
 
-    // Toast B: one more j → the second session ("frontend"). Repeat.
-    await page.keyboard.press('j')
-    await page.keyboard.press('r')
-    const toastB = page.locator('[data-testid="toast"]', { hasText: 'Rename "frontend"' })
+    await page.keyboard.press('Control+z')
+    const toastB = page.locator('[data-testid="toast"]', { hasText: 'Restored session sess-003' })
     await expect(toastB).toBeVisible({ timeout: 3000 })
     await toastB.locator('[data-testid="toast-dismiss"]').click()
     await expect(toastB).toHaveCount(0)
@@ -97,20 +98,16 @@ test.describe('toast notifications', () => {
     await expect(page.locator('[data-testid="toast-history-drawer"]')).toBeVisible()
     const entries = page.locator('[data-testid="toast-history-entry"]')
     await expect(entries).toHaveCount(2)
-    await expect(entries.nth(0)).toContainText('Rename "frontend"')
-    await expect(entries.nth(1)).toContainText('Rename "agent-deck"')
+    await expect(entries.nth(0)).toContainText('Restored session sess-003')
+    await expect(entries.nth(1)).toContainText('Restored session sess-004')
     // Drawer metadata line shows the toast type.
-    await expect(entries.nth(0)).toContainText('info')
+    await expect(entries.nth(0)).toContainText('success')
   })
 
-  test('expired (auto-dismissed) toasts also land in the history drawer', async ({ page }) => {
-    // Focus the first session explicitly (j×2 — the first j lands on the
-    // `work` group header; the `r` fallback to an implicit first session was
-    // removed once groups became selectable).
-    await page.keyboard.press('j')
-    await page.keyboard.press('j')
-    await page.keyboard.press('r')
-    const toast = page.locator('[data-testid="toast"]', { hasText: 'Rename "agent-deck"' })
+  test('expired (auto-dismissed) toasts also land in the history drawer', async ({ page, request }) => {
+    expect((await request.delete('/api/sessions/sess-004')).status()).toBe(200)
+    await page.keyboard.press('Control+z')
+    const toast = page.locator('[data-testid="toast"]', { hasText: 'Restored session sess-004' })
     await expect(toast).toBeVisible({ timeout: 3000 })
     // Don't touch it — let the 5s auto-dismiss timer expire it.
     await expect(toast).toHaveCount(0, { timeout: 7000 })
@@ -118,21 +115,22 @@ test.describe('toast notifications', () => {
     await page.locator('[data-testid="toast-history-toggle"]').click()
     const entries = page.locator('[data-testid="toast-history-entry"]')
     await expect(entries).toHaveCount(1)
-    await expect(entries.first()).toContainText('Rename "agent-deck"')
+    await expect(entries.first()).toContainText('Restored session sess-004')
   })
 
-  test('visible toast stack caps at 3', async ({ page }) => {
-    // Focus the first session explicitly (j×2) before firing the rapid `r`
-    // presses below — nothing is focused by default now that groups are
-    // selectable too.
-    await page.keyboard.press('j')
-    await page.keyboard.press('j')
-    // 4 rapid `r` presses create 4 info toasts through the real keyboard
-    // path; Toast.js evicts the oldest non-error so only 3 ever render.
-    // (Exact eviction-order semantics are pinned in unit/toast.test.js.)
-    for (let i = 0; i < 4; i++) {
-      await page.keyboard.press('r')
+  test('visible toast stack caps at 3', async ({ page, request }) => {
+    // 4 deletes, then 4 rapid Ctrl+Z restores create 4 success toasts through
+    // the real keyboard path; Toast.js evicts the oldest non-error so only 3
+    // ever render. (Exact eviction-order semantics are pinned in
+    // unit/toast.test.js.)
+    for (const id of ['sess-001', 'sess-002', 'sess-003', 'sess-004']) {
+      expect((await request.delete(`/api/sessions/${id}`)).status()).toBe(200)
     }
+    for (let i = 0; i < 4; i++) {
+      await page.keyboard.press('Control+z')
+      await expect(page.locator('[data-testid="toast"]', { hasText: 'Restored session' }).first()).toBeVisible({ timeout: 3000 })
+    }
+    await expect(page.locator('[data-testid="toast"]', { hasText: 'Restored session sess-001' })).toBeVisible()
     await expect(page.locator('[data-testid="toast"]')).toHaveCount(3)
   })
 })

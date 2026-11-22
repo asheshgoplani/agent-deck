@@ -2,9 +2,52 @@ package web
 
 import (
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
+	"golang.org/x/sync/singleflight"
 )
+
+// systemStatsMaxAge matches the web UI's 5 s stats poll.
+const systemStatsMaxAge = 5 * time.Second
+
+// systemStatsCache collects system stats on request and shares the result,
+// the same way tmux's CapturePane cache does. A sample younger than
+// systemStatsMaxAge is served as is. Otherwise one collection runs in the
+// requesting goroutine and concurrent requests wait for its result, so an
+// idle server runs no probes and many polling tabs run at most one at a time.
+type systemStatsCache struct {
+	mu        sync.RWMutex
+	stats     sysinfo.Stats
+	collected time.Time
+	sf        singleflight.Group
+}
+
+func (c *systemStatsCache) get() sysinfo.Stats {
+	if stats, ok := c.fresh(); ok {
+		return stats
+	}
+	v, _, _ := c.sf.Do("collect", func() (any, error) {
+		// Double-check: another request may have just collected.
+		if stats, ok := c.fresh(); ok {
+			return stats, nil
+		}
+		stats := sysinfo.Collect()
+		c.mu.Lock()
+		c.stats, c.collected = stats, time.Now()
+		c.mu.Unlock()
+		return stats, nil
+	})
+	stats, _ := v.(sysinfo.Stats)
+	return stats
+}
+
+func (c *systemStatsCache) fresh() (sysinfo.Stats, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.stats, !c.collected.IsZero() && time.Since(c.collected) < systemStatsMaxAge
+}
 
 func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -16,9 +59,12 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats := sysinfo.Collect()
-
 	resp := map[string]any{}
+	if s.systemStats == nil {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	stats := s.systemStats.get()
 
 	if stats.CPU.Available {
 		resp["cpu"] = map[string]any{

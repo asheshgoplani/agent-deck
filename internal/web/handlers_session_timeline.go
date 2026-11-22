@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -15,7 +16,8 @@ import (
 // of `agent-deck recall timeline <id> --json`. It answers the same
 // agent-deck.recall.rows/v2 object, read straight from the session's native
 // Claude Code or Codex transcript, with the same paging parameters:
-// since, before (with limit), limit, tail and agent. The live pane status
+// since, before (with limit), limit, tail and agent, and the same row
+// filter: kinds and skip-empty-body (with next_cursor). The live pane status
 // the CLI adds is left out; the menu stream already carries session status.
 func (s *Server) handleSessionTimeline(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodGet {
@@ -31,37 +33,8 @@ func (s *Server) handleSessionTimeline(w http.ResponseWriter, r *http.Request, s
 		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		return
 	}
-	// `agent-deck web` wraps its SessionDataService in a MemoryMenuData
-	// (cmd/agent-deck/main.go), which does not expose the instances, so the
-	// route opens the server's profile itself. Tests set a
-	// SessionDataService with fake storage instead.
-	service, ok := s.menuData.(*SessionDataService)
+	src, sess, _, ok := s.timelineSource(w, sessionID, opts)
 	if !ok {
-		service = NewSessionDataService(s.cfg.Profile)
-	}
-	inst, peers, err := loadTimelineSession(service, sessionID)
-	if err != nil {
-		if errors.Is(err, errTimelineSessionNotFound) {
-			writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "session not found")
-			return
-		}
-		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to load session data")
-		return
-	}
-	src, sess, err := session.LiveRowsSource(inst, peers)
-	switch {
-	case errors.Is(err, query.ErrRowsUnsupported):
-		writeAPIError(w, http.StatusNotImplemented, ErrCodeNotImplemented, "timeline is available for Claude Code, Codex and Pi sessions only")
-		return
-	case errors.Is(err, session.ErrNoNativeTranscript):
-		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
-		return
-	case err != nil:
-		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to resolve the session transcript")
-		return
-	}
-	if opts.AgentID != "" && src.Harness != "claude" {
-		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "agent is supported for Claude Code sessions only")
 		return
 	}
 	timeline, err := query.ReadRows(r.Context(), src, opts)
@@ -83,6 +56,45 @@ func (s *Server) handleSessionTimeline(w http.ResponseWriter, r *http.Request, s
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, timeline)
+}
+
+// timelineSource resolves the session's native transcript for the timeline
+// routes, or writes the error response and returns false.
+func (s *Server) timelineSource(w http.ResponseWriter, sessionID string, opts query.RowsOptions) (query.RowsSource, query.RowsSession, *SessionDataService, bool) {
+	// `agent-deck web` wraps its SessionDataService in a MemoryMenuData
+	// (cmd/agent-deck/main.go), which does not expose the instances, so the
+	// route opens the server's profile itself. Tests set a
+	// SessionDataService with fake storage instead.
+	service, ok := s.menuData.(*SessionDataService)
+	if !ok {
+		service = NewSessionDataService(s.cfg.Profile)
+	}
+	inst, peers, err := loadTimelineSession(service, sessionID)
+	if err != nil {
+		if errors.Is(err, errTimelineSessionNotFound) {
+			writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "session not found")
+			return query.RowsSource{}, query.RowsSession{}, nil, false
+		}
+		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to load session data")
+		return query.RowsSource{}, query.RowsSession{}, nil, false
+	}
+	src, sess, err := session.LiveRowsSource(inst, peers)
+	switch {
+	case errors.Is(err, query.ErrRowsUnsupported):
+		writeAPIError(w, http.StatusNotImplemented, ErrCodeNotImplemented, "timeline is available for Claude Code, Codex and Pi sessions only")
+		return src, sess, nil, false
+	case errors.Is(err, session.ErrNoNativeTranscript):
+		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return src, sess, nil, false
+	case err != nil:
+		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to resolve the session transcript")
+		return src, sess, nil, false
+	}
+	if opts.AgentID != "" && src.Harness != "claude" {
+		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "agent is supported for Claude Code sessions only")
+		return src, sess, nil, false
+	}
+	return src, sess, service, true
 }
 
 var errTimelineSessionNotFound = errors.New("session not found")
@@ -131,5 +143,34 @@ func timelineOptions(r *http.Request) (query.RowsOptions, error) {
 			*p.dst = n
 		}
 	}
+	if err := timelineFilter(q, &opts); err != nil {
+		return opts, err
+	}
 	return opts, query.ValidateRowsOptions(opts)
+}
+
+// timelineFilter reads the CLI's filter flags, under the same names:
+// kinds (a comma-separated allowlist; present but empty is an error, as
+// --kinds "" is) and skip-empty-body (a boolean; present without a value
+// means true).
+func timelineFilter(q url.Values, opts *query.RowsOptions) error {
+	if q.Has("kinds") {
+		kinds, err := query.ParseRowKinds(q.Get("kinds"))
+		if err != nil {
+			return err
+		}
+		opts.Kinds = kinds
+	}
+	if q.Has("skip-empty-body") {
+		v := q.Get("skip-empty-body")
+		if v == "" {
+			v = "true"
+		}
+		skip, err := strconv.ParseBool(v)
+		if err != nil {
+			return errors.New("skip-empty-body must be true or false")
+		}
+		opts.SkipEmptyBody = skip
+	}
+	return nil
 }

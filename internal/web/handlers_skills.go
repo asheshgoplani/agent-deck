@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -188,19 +189,13 @@ func writeSkillError(w http.ResponseWriter, err error) {
 	}
 }
 
-// lookupSession resolves a sessionID to its MenuSession via the menu
-// snapshot. Used by per-session handlers that need projectPath + tool.
+// lookupSession resolves a sessionID to its MenuSession from the persisted
+// session, so it does not wait for a menu refresh and finds a session saved
+// inside the refresh throttle. Used by per-session handlers that need
+// projectPath + tool; reads and changes resolve the same way.
 func (s *Server) lookupSession(sessionID string) (*MenuSession, bool) {
-	snapshot, err := s.menuData.LoadMenuSnapshot()
-	if err != nil || snapshot == nil {
-		return nil, false
-	}
-	for _, item := range snapshot.Items {
-		if item.Type == MenuItemTypeSession && item.Session != nil && item.Session.ID == sessionID {
-			return item.Session, true
-		}
-	}
-	return nil, false
+	sess, _, err := menudata.ResolveMenuSession(s.menuData, sessionID)
+	return sess, err == nil && sess != nil
 }
 
 func (s *Server) skillsServiceOrDefault() SkillsService {

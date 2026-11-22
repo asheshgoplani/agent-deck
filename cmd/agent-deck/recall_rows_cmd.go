@@ -184,7 +184,7 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 		return &rowsTarget{direct: true, storage: storage, src: query.RowsSource{Harness: h, Path: path}, session: query.RowsSession{Harness: h, NativeID: ref, Path: path}}, nil
 	}
 	if lk.env == nil && lk.envErr == nil {
-		if !lk.inBatch {
+		if !lk.inBatch && piErr == nil {
 			lk.env = openRecallEnv(lk.profile, NewCLIOutput(true, false))
 		} else if env, err := openRecallEnvErr(lk.profile, NewCLIOutput(true, false)); err != nil {
 			lk.envErr = fmt.Errorf("%w: %v", errRecallIndexUnavailable, err)
@@ -291,9 +291,7 @@ func readRowsTimeline(t *rowsTarget, opts query.RowsOptions) (query.RowsTimeline
 		err = fmt.Errorf("recall timeline: --before is unsupported for harness %s", t.src.Harness)
 	} else {
 		result.Turns, err = query.TimelineTurnsForSource(context.Background(), t.src.Harness, t.src.Path, t.native)
-		if err == nil && opts.Tail > 0 && len(result.Turns) > opts.Tail {
-			result.Turns = result.Turns[len(result.Turns)-opts.Tail:]
-		}
+		result.Turns = boundIndexRows(result.Turns, opts)
 	}
 	if err != nil {
 		code := ErrCodeInvalidOperation
@@ -318,6 +316,26 @@ func readRowsTimeline(t *rowsTarget, opts query.RowsOptions) (query.RowsTimeline
 		result.Status = fn()
 	}
 	return result, "", nil
+}
+
+// boundIndexRows applies --tail and the filter to index-backed rows, which
+// have no cursor. The filter runs first, so --tail and --limit count kept
+// rows as on the native path; --tail takes precedence over --limit.
+// --limit (the first N rows) applies only with
+// a filter: the unfiltered index answer has always ignored it, and stays
+// byte-identical.
+func boundIndexRows(rows []query.Row, opts query.RowsOptions) []query.Row {
+	rows = query.FilterRows(rows, opts)
+	switch {
+	case opts.Tail > 0:
+		// --tail wins over --limit, as on the native path.
+		if len(rows) > opts.Tail {
+			rows = rows[len(rows)-opts.Tail:]
+		}
+	case opts.Filtered() && opts.Limit > 0 && len(rows) > opts.Limit:
+		rows = rows[:opts.Limit]
+	}
+	return rows
 }
 
 func handleRecallFollowRows(profile, ref, after string, f rowsFlags, withStatus bool) {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/tests/eval/harness"
@@ -71,7 +72,10 @@ func TestListJSON_HistoricalErrorRowsUseSocketInventory(t *testing.T) {
 			ID: id, Title: id, ProjectPath: sb.Home, GroupPath: "my-sessions",
 			Tool: "shell", Status: "error", TmuxSession: "agentdeck_" + id,
 			TmuxSocketName: "list-history-regression-absent",
-			CreatedAt:      time.Now().Add(-time.Hour), ToolData: json.RawMessage(`{}`),
+			// last_started_at: these rows ran (an errored row did); without
+			// the stamp a reloaded row reads as never started.
+			CreatedAt: time.Now().Add(-time.Hour),
+			ToolData:  session.WriteLastStartedAtToToolData(json.RawMessage(`{}`), time.Now().Add(-time.Hour)),
 		}
 	}
 	if err := db.SaveInstances(rows); err != nil {

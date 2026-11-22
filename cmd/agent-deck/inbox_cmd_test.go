@@ -31,6 +31,7 @@ func TestHandleInbox_PrintsAndTruncates(t *testing.T) {
 	}
 
 	parent := "parent-cli-inbox"
+	registerInboxDrainTarget(t, parent)
 	ev := session.TransitionNotificationEvent{
 		ChildSessionID:  "child-cli-x",
 		ChildTitle:      "worker",
