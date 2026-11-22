@@ -22,6 +22,9 @@ const (
 	// ErrCodeResyncRequired: a since/before cursor that no longer describes
 	// the session's transcript; the client reloads without it.
 	ErrCodeResyncRequired = "RESYNC_REQUIRED"
+	// ErrCodeRemoteOffline: a remote route while the fleet scan sees that
+	// remote offline.
+	ErrCodeRemoteOffline = "REMOTE_OFFLINE"
 )
 
 // CreateSessionRequest is the body for POST /api/sessions.

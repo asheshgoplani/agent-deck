@@ -184,6 +184,12 @@ printf '%s' ` + shellQuote(readReady) + `
 exec ` + command
 		command = "exec sh -c " + shellQuote(gate)
 	}
+	if _, ok := ctx.Deadline(); ok && !follow && payload == nil {
+		// A finite read gets the remote-side deadline, as in RunIO, so the
+		// remote ends it even when the local ssh is gone. A publish writes
+		// and is only ended locally.
+		command = remoteCommandWithDeadline(ctx, strings.TrimPrefix(command, "exec "))
+	}
 	if follow && !help {
 		command = followRemoteCommand(command)
 	}
