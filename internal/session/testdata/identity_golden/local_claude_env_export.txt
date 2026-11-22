@@ -1,0 +1,1 @@
+export AGENTDECK_IDENTITY_FILE=<HOME>/.local/share/agent-deck/runtime/identity/abc12345-1700000000/identity.md

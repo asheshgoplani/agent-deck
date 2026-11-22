@@ -510,6 +510,14 @@ type Instance struct {
 	// `session set <id> context-level <none|primer|full>` (empty clears).
 	ContextLevel string `json:"context_level,omitempty"`
 
+	// InstructionsFiles is the per-session list of operator instruction files
+	// (issue #3206): absolute paths, read at every spawn and appended as their
+	// own section to the identity block (instructions_files.go). Persisted in
+	// the tool_data extras zone (instructions_files_persist.go). CLI:
+	// `add|launch --instructions-file <path>` (repeatable) and
+	// `session set <id> instructions-file "<path>[,<path>...]"` (empty clears).
+	InstructionsFiles []string `json:"instructions_files,omitempty"`
+
 	// QueuedMessage is the -m prompt of a session queued at its group's
 	// max_concurrent cap. Every path off the queue (Storage.StartQueued, a
 	// direct or TUI start, a restart) takes it off the row in the same write
@@ -1938,7 +1946,7 @@ func (i *Instance) Start() (startErr error) {
 	// Start async session ID detection for Codex
 	// This runs in background and captures the session ID once Codex creates it
 	if IsCodexCompatible(i.Tool) {
-		go i.detectCodexSessionAsync()
+		i.startCodexDetection()
 	}
 
 	// Start async session ID detection for Copilot
@@ -2298,7 +2306,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		go i.detectOpenCodeSessionAsync()
 	}
 	if IsCodexCompatible(i.Tool) {
-		go i.detectCodexSessionAsync()
+		i.startCodexDetection()
 	}
 
 	// Send message synchronously (CLI will wait). Codex may already carry the

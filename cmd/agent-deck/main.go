@@ -1861,14 +1861,15 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"c": true, "cmd": true,
 		"m": true, "message": true, "message-file": true,
 		"p": true, "parent": true,
-		"mcp":           true,
-		"channel":       true,
-		"plugin":        true,
-		"extra-arg":     true,
-		"wrapper":       true,
-		"model":         true,
-		"effort":        true,
-		"startup-query": true, "additional-path": true,
+		"mcp":               true,
+		"channel":           true,
+		"plugin":            true,
+		"extra-arg":         true,
+		"instructions-file": true,
+		"wrapper":           true,
+		"model":             true,
+		"effort":            true,
+		"startup-query":     true, "additional-path": true,
 		"w":              true,
 		"worktree":       true,
 		"location":       true,
@@ -2165,6 +2166,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		extraArgFlags = append(extraArgFlags, s)
 		return nil
 	})
+	instructionsFileFlags := registerInstructionsFileFlag(fs)
 
 	// --create-dir is what the TUI's remote new-session dialog forwards after
 	// the user confirms creating a missing directory on the server; the local
@@ -2294,6 +2296,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	validatedAdditionalPaths, pathValidationErr := validateCreationPaths(additionalPaths)
 	if pathValidationErr != nil {
 		NewCLIOutput(*jsonOutput, false).Error(pathValidationErr.Error(), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	instructionsFiles, instructionsErr := normalizeInstructionsFileFlag(*instructionsFileFlags)
+	if instructionsErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error("--instructions-file: "+instructionsErr.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 
@@ -2781,6 +2788,9 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	if *noIdentity {
 		newInstance.IdentityInjectionDisabled = true
 	}
+	// #3206: per-session instruction files, read into the identity block at
+	// every spawn.
+	newInstance.InstructionsFiles = instructionsFiles
 
 	// Set command if provided
 	if sessionCommandInput != "" {
