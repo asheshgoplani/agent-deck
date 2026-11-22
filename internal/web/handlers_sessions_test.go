@@ -895,6 +895,32 @@ func TestSessionPatchUpdatesTitle(t *testing.T) {
 	}
 }
 
+// A rename onto a title another session holds at the same location is the
+// CLI's ALREADY_EXISTS refusal: 409, not a 500 and not a silent 200.
+func TestSessionPatchTitleTakenIsConflict(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		updateSessionFn: func(id string, updates map[string]string) ([]string, bool, error) {
+			return nil, false, &session.TitleConflictError{Title: updates["title"], Location: session.LocalLocation("/tmp/alpha"), ConflictID: "sess-000"}
+		},
+	}
+
+	req := newLocalRequest(http.MethodPatch, "/api/sessions/sess-001", strings.NewReader(`{"title":"Alpha API"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusConflict, rr.Code, rr.Body.String())
+	}
+	for _, want := range []string{`"code":"ALREADY_EXISTS"`, `session with title \"Alpha API\" already exists at`, `(id: sess-000)`} {
+		if !strings.Contains(rr.Body.String(), want) {
+			t.Errorf("body %s lacks %s", rr.Body.String(), want)
+		}
+	}
+}
+
 func TestSessionPatchForwardsAllSupportedFields(t *testing.T) {
 	srv := NewServer(Config{
 		ListenAddr:   "127.0.0.1:0",
