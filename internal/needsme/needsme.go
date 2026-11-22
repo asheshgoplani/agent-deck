@@ -30,6 +30,10 @@ type Row struct {
 	WaitingSince string `json:"waiting_since"`
 	CreatedAt    string `json:"created_at"`
 	Archived     bool   `json:"archived"`
+	// ConductorName is set for a conductor session (from its conductor
+	// flag, so a renamed conductor keeps it); "" for every other session
+	// and from a host too old to send it.
+	ConductorName string `json:"conductor_name,omitempty"`
 }
 
 // Source is one place to ask: a local profile or a remote host.
@@ -58,6 +62,8 @@ type Session struct {
 	Reason         string `json:"reason"`
 	Since          string `json:"since"`
 	WaitingSeconds int64  `json:"waiting_seconds"`
+	// ConductorName: the session is a conductor (absent otherwise).
+	ConductorName string `json:"conductor_name,omitempty"`
 }
 
 // HostError is a host that could not be asked.
@@ -198,7 +204,8 @@ func Collect(ctx context.Context, opts Options) Result {
 			}
 			seen[key] = true
 			s := Session{ID: r.ID, Title: r.Title, Group: r.Group, Profile: profile, Host: src.Host,
-				Status: "waiting", Substate: r.Substate, Reason: Reason(r.Substate, r.SubstateDetail)}
+				Status: "waiting", Substate: r.Substate, Reason: Reason(r.Substate, r.SubstateDetail),
+				ConductorName: r.ConductorName}
 			// Only an explicit waiting_since counts (`list --json` writes it
 			// from state.db's status-change stamp). last_activity_at can be
 			// the creation time, which would give a wrong wait and order. A

@@ -3255,6 +3255,11 @@ type RemoteSessionInfo struct {
 	// row renders flat.
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 
+	// ConductorName is the remote's `list --json` conductor_name: set for a
+	// conductor session (from its conductor flag, so it survives a rename).
+	// "" for other sessions and from a remote too old to send it.
+	ConductorName string `json:"conductor_name,omitempty"`
+
 	// Favorite is the remote session's favourite flag, as `list --json` on
 	// the remote reports it, so a remote favourite reaches the controller
 	// (and `remote sessions --json`) without a second `remote <name> list

@@ -2,6 +2,7 @@ package needsme
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -94,5 +95,32 @@ func TestProfileSourcesListOnlyTheCurrentProfile(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("needs-me asks %v, want both profiles", all)
+	}
+}
+
+// A conductor is known by what it is: `list --json` names it in
+// conductor_name (set from the conductor flag, so a renamed conductor keeps
+// it). The rows, local and remote, and the needs-me sessions carry it, so
+// the voice desk can keep every conductor out of find, switch and next.
+func TestConductorNameReachesRowsAndSessions(t *testing.T) {
+	var row Row
+	if err := json.Unmarshal([]byte(`{"id":"c1","title":"night-boss","status":"waiting","conductor_name":"ops"}`), &row); err != nil {
+		t.Fatal(err)
+	}
+	if row.ConductorName != "ops" {
+		t.Fatalf("local row lost conductor_name: %+v", row)
+	}
+	var info session.RemoteSessionInfo
+	if err := json.Unmarshal([]byte(`{"id":"r1","title":"night-boss","status":"waiting","conductor_name":"ops"}`), &info); err != nil {
+		t.Fatal(err)
+	}
+	if rr := remoteRows([]session.RemoteSessionInfo{info}, "default"); rr[0].ConductorName != "ops" {
+		t.Fatalf("remote row lost conductor_name: %+v", rr[0])
+	}
+	res := Collect(context.Background(), Options{Sources: []Source{{Fetch: func(context.Context) ([]Row, error) {
+		return []Row{row}, nil
+	}}}, Timeout: time.Second, Now: fixed})
+	if len(res.Sessions) != 1 || res.Sessions[0].ConductorName != "ops" {
+		t.Fatalf("needs-me session lost conductor_name: %+v", res.Sessions)
 	}
 }
