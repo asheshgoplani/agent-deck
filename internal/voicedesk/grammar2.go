@@ -55,10 +55,11 @@ func grammarEarly() []pattern {
 		"{msg} ke bare|baare mein kya baat hui [thi]",
 	)
 	// the next one that needs me
+	// (an optional part is one word: "[that needs me]" would never match)
 	a.add(IntentNext, LangEN, false, false,
-		"take me to the next one", "next one that needs me", "go to the next one [that needs me]",
+		"take me to the next one", "next one that needs me", "go to the next one", "go to the next one that needs me",
 		"take me to the next waiting session", "next waiting session", "who is next",
-		"show me the next one [that needs me]",
+		"show me the next one", "show me the next one that needs me",
 	)
 	a.add(IntentNext, LangHI, false, false,
 		"agla|agle wala|wale kholo|dikhao", "agle wale pe|par chalo|jao", "agli session kholo|dikhao",
