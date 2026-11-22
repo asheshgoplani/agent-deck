@@ -117,8 +117,8 @@ func trimKimiToCurrentTurn(content string) string {
 // follows the retry/generation evidence still visible above it. A later busy
 // line keeps its priority; submitted prompt glyphs are not turn boundaries.
 func (s *Session) kimiApprovalOutranksBusy(content string) bool {
-	if inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand()) != "kimi" ||
-		!strings.Contains(content, "▶ Run this command?") {
+	if !strings.Contains(content, "▶ Run this command?") ||
+		inferToolFromSessionFields(s.detectedTool, s.customToolName, s.launchCommand()) != "kimi" {
 		return false
 	}
 	approvalAt := -1
