@@ -90,7 +90,9 @@ func collectNetworkDarwin() NetworkStat {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "netstat", "-ibn").Output()
+	cmd := exec.CommandContext(ctx, "netstat", "-ibn")
+	cmd.WaitDelay = time.Second // like the GPU probes: a child holding stdout cannot outlast the timeout
+	out, err := cmd.Output()
 	if err != nil {
 		return NetworkStat{}
 	}

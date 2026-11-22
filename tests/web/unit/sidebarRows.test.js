@@ -80,7 +80,7 @@ describe('isGroupOpen', () => {
 })
 
 // Status chips are multi-select and bucket the same way the group stats panel
-// does (statusBucket): `starting` counts as running, `queued` as idle. Before
+// does (statusBucket): `starting` and `queued` count as idle, as in the TUI. Before
 // this, sessionMatches did an exact `statuses.includes(s.status)`, so a
 // starting/queued session matched NO chip and vanished from the sidebar the
 // moment any filter was activated.
@@ -96,15 +96,15 @@ describe('sessionMatches status bucketing', () => {
     expect(sessionMatches(sess('waiting'), '', ['waiting'])).toBe(true)
   })
 
-  it('folds starting into the running chip and queued into idle', async () => {
+  it('folds starting and queued into the idle chip', async () => {
     const { sessionMatches } = await import(dataModelModulePath)
-    expect(sessionMatches(sess('starting'), '', ['running'])).toBe(true)
+    expect(sessionMatches(sess('starting'), '', ['idle'])).toBe(true)
     expect(sessionMatches(sess('queued'), '', ['idle'])).toBe(true)
   })
 
   it('never lets a session match every chip', async () => {
     const { sessionMatches } = await import(dataModelModulePath)
-    expect(sessionMatches(sess('starting'), '', ['idle'])).toBe(false)
+    expect(sessionMatches(sess('starting'), '', ['running'])).toBe(false)
     expect(sessionMatches(sess('stopped'), '', ['running'])).toBe(false)
     expect(sessionMatches(sess('error'), '', ['idle'])).toBe(false)
   })

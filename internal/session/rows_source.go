@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 )
@@ -30,10 +31,24 @@ func RowsHarness(tool string) string {
 // `recall timeline` and the web timeline route share it.
 func LiveRowsSource(inst *Instance, peers []*Instance) (query.RowsSource, query.RowsSession, error) {
 	h := RowsHarness(inst.Tool)
-	if h != "claude" && h != "codex" {
+	if !query.SupportsDirectRows(h) {
 		return query.RowsSource{}, query.RowsSession{}, fmt.Errorf("%w: %s", query.ErrRowsUnsupported, inst.Tool)
 	}
+	native := inst.ClaudeSessionID
+	if native == "" {
+		native = inst.CodexSessionID
+	}
 	resolve := func() (string, error) {
+		if h == "pi" {
+			// Pi: the exact session document, or why there is none (no
+			// file yet, several files and no saved identity, a remote).
+			doc, err := piSessionDocument(inst)
+			if err != nil {
+				return "", fmt.Errorf("session %s has %w: %v", inst.Title, ErrNoNativeTranscript, err)
+			}
+			native = doc.SessionID
+			return doc.Path, nil
+		}
 		if p := LiveTranscriptPath(inst, peers); p != "" {
 			return p, nil
 		}
@@ -43,11 +58,41 @@ func LiveRowsSource(inst *Instance, peers []*Instance) (query.RowsSource, query.
 	if err != nil {
 		return query.RowsSource{}, query.RowsSession{}, err
 	}
-	native := inst.ClaudeSessionID
-	if native == "" {
-		native = inst.CodexSessionID
+	follow := resolve
+	if h == "pi" {
+		// A Pi session that stops resolving to one document mid-follow (a
+		// second file after /new, no saved identity) is a source change.
+		follow = func() (string, error) {
+			doc, err := piSessionDocument(inst)
+			if err != nil {
+				return "", piFollowError(err)
+			}
+			return doc.Path, nil
+		}
 	}
-	src := query.RowsSource{Harness: h, Path: path, Resolve: resolve}
+	src := query.RowsSource{Harness: h, Path: path, Resolve: follow}
 	sess := query.RowsSession{ID: inst.ID, Harness: h, NativeID: native, Path: path, Title: inst.Title, Cwd: inst.EffectiveWorkingDir()}
 	return src, sess, nil
+}
+
+// piFollowError marks a Pi resolve failure as a source change, except an
+// I/O error on a path that still exists (EMFILE, EIO), which the follow loop
+// retries on its next tick.
+func piFollowError(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", query.ErrSourceUnresolved, err)
+}
+
+// piSessionDocument is a local Pi session's exact session document: the
+// saved PiSessionID/PiSessionPath pair, or the single validated file in the
+// instance's own Pi directory. A remote session, no file, or several files
+// without a saved identity is an error that says which.
+func piSessionDocument(inst *Instance) (piSessionArtifact, error) {
+	if !inst.TranscriptIsResolvableLocally() {
+		return piSessionArtifact{}, fmt.Errorf("the Pi session is not on this machine")
+	}
+	return resolveExactPiSessionArtifact(inst)
 }

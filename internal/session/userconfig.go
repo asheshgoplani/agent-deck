@@ -1229,7 +1229,7 @@ type OpenClawSettings struct {
 type RemoteAttachSettings struct {
 	// PasteImages lets Ctrl+V with an image on this machine's clipboard upload
 	// it to the attached remote session and type its host path, when that
-	// session's agent (Claude, Gemini) shows its input composer. Default on;
+	// session's agent (Claude, Gemini, OpenCode) shows its input composer. Default on;
 	// false leaves Ctrl+V to the remote untouched.
 	PasteImages *bool `toml:"paste_images,omitempty"`
 }
@@ -2417,9 +2417,9 @@ func (c *UserConfig) GetSendTransport() string {
 
 // SendSettings is the [send] section.
 type SendSettings struct {
-	// TagSends prefixes a send made from inside an agent-deck session with
-	// one "[agent-deck from:<sender-id>]" line so the receiver's reply is
-	// routed back to the sender (comms redesign PR5). Default true (nil).
+	// TagSends prefixes Claude-to-Claude, Pi-to-Pi and Pi-to-Claude sends
+	// with one "[agent-deck from:<sender-id>]" line. Claude reply routing
+	// is automatic; Pi attribution requires an explicit reply. Default true (nil).
 	TagSends *bool `toml:"tag_sends,omitempty"`
 }
 

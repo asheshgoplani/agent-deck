@@ -5,9 +5,9 @@
 // selected session (/s/{id}); applyPath is shared by popstate (here) and
 // cold boot (main.js's applyRouteSelection) so the two paths cannot drift.
 import { html } from 'htm/preact'
-import { useEffect } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { AppShell } from './AppShell.js'
-import { selectedIdSignal, selectedGroupSignal, selectSession, selectGroup } from './state.js'
+import { selectedIdSignal, selectedGroupSignal, selectSession, selectGroup, authRequiredSignal } from './state.js'
 import { activeTabSignal } from './uiState.js'
 import { PANES } from './paneRegistry.js'
 
@@ -70,7 +70,49 @@ export function App() {
     }
   }, [selectedIdSignal.value, selectedGroupSignal.value])
 
+  if (authRequiredSignal.value) return html`<${AuthRequired} reason=${authRequiredSignal.value}/>`
   return html`
     <${AppShell} />
+  `
+}
+
+// AuthRequired replaces the shell when the server answered 401: it says the
+// server needs an access token and takes one. Signing in reloads the page
+// with ?token=, the same link `agent-deck web` prints; main.js reads the
+// token into memory and strips it from the address bar.
+function AuthRequired({ reason }) {
+  const [token, setToken] = useState('')
+  const submit = (e) => {
+    e.preventDefault()
+    const t = token.trim()
+    if (!t) return
+    const params = new URLSearchParams(window.location.search)
+    params.set('token', t)
+    window.location.replace(window.location.pathname + '?' + params.toString() + window.location.hash)
+  }
+  return html`
+    <div class="overlay" data-testid="auth-required">
+      <form class="dialog" style="max-width: 460px;" onSubmit=${submit}>
+        <div class="dh">
+          <span class="kicker">SIGN IN</span>
+          <div class="t">This server needs an access token</div>
+        </div>
+        <div class="db">
+          <p style="margin: 0 0 12px; color: var(--text-dim); font-size: 12.5px;">
+            ${reason === 'rejected'
+              ? 'The token in this link was rejected. Paste the current token to sign in.'
+              : 'It was started with --token or --token-file. Open the link it printed, or paste the token here.'}
+          </p>
+          <div class="field">
+            <label for="auth-token-input">Access token</label>
+            <input id="auth-token-input" type="password" autocomplete="off" autofocus required
+                   value=${token} onInput=${e => setToken(e.target.value)}/>
+          </div>
+        </div>
+        <div class="df">
+          <button type="submit" class="btn primary" disabled=${!token.trim()}>Sign in</button>
+        </div>
+      </form>
+    </div>
   `
 }

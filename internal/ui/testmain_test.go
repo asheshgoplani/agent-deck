@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"os"
 	"os/exec"
 	"strings"
@@ -24,6 +25,9 @@ func TestMain(m *testing.M) {
 // the isolated TMUX_TMPDIR and HOME temp dirs are removed (2026-06-07
 // pty-exhaustion incident class).
 func runTestMain(m *testing.M) int {
+	// Fixtures create Claude sessions on bare temp HOMEs; the unauthenticated
+	// default-config refusal is covered in internal/session.
+	session.ClaudeLoginProbe = func(string) bool { return true }
 	// Disable Go toolchain telemetry for every `go` invocation this test
 	// binary makes (build caches probe, `go build` of the CLI under a
 	// TempDir HOME). The telemetry writer forks a detached child that

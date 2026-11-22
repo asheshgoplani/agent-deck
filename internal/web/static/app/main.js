@@ -2,7 +2,7 @@
 // Handles: auth token extraction, SSE connection, route sync, service worker registration
 import { render, html } from 'htm/preact'
 import { App, applyPath } from './App.js'
-import { apiFetch, authHeaders } from './api.js'
+import { authHeaders } from './api.js'
 import {
   sessionsSignal,
   sessionsLoadedSignal,
@@ -11,6 +11,7 @@ import {
   commandCenterSignal,
   selectedGroupSignal,
   loadArchivedSessions,
+  authRequiredSignal,
 } from './state.js'
 import { addToast } from './Toast.js'
 import { initPush } from './push.js'
@@ -290,7 +291,16 @@ document.addEventListener('visibilitychange', () => {
 
 export async function loadMenu() {
   try {
-    const data = await apiFetch('GET', '/api/menu')
+    const res = await fetch('/api/menu', { headers: authHeaders() })
+    if (res.status === 401) {
+      // A token-protected server: every API call and both streams would 401
+      // and the page would look like an empty deck. Ask for the token.
+      authRequiredSignal.value = authTokenSignal.value ? 'rejected' : 'missing'
+      connectionSignal.value = 'disconnected'
+      return
+    }
+    if (!res.ok) throw new Error('menu load failed: ' + res.status)
+    const data = await res.json()
     sessionsSignal.value = data.items || []
     // POL-1: first real data arrived — unmount the skeleton. Do NOT set
     // this in the catch branch; the skeleton is the correct state when

@@ -84,7 +84,7 @@ func hookDrivenBusy(inst *session.Instance) (busy, known bool) {
 func handleSessionSend(profile string, args []string) {
 	fs := flag.NewFlagSet("session send", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
-	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	jsonOutput := fs.Bool("json", false, "Output as JSON; on its own (no --wait/--stream/--draft/--no-wait) it delivers through the queue and returns a send_id")
 	quiet := fs.Bool("q", false, "Quiet mode: nothing on a confirmed delivery; one stderr line when delivery is unconfirmed or queued; errors as usual")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
 	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (Claude socket waits share --timeout between observing a fresh turn and its completed reply; returns immediately with wait_outcome=unverified_busy_target/unverified_busy_probe_failed if the target could not be shown idle)")
@@ -136,7 +136,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project \"what is this?\" --image shot.png")
 		fmt.Println("  agent-deck session send my-project --no-wait -- \"-v is the message\"   # text after -- is never a flag")
 		fmt.Println()
-		fmt.Println("--json (without --wait/--stream/--draft/--no-wait) and --queue return a durable")
+		fmt.Println("--json (without --wait/--stream/--draft/--no-wait) and --queue deliver through the queue and return a durable")
 		fmt.Println("  send_id with verdict queued. Claude accepts input while busy; other harnesses wait")
 		fmt.Println("  for idle. send-status and delivery events upgrade the verdict when evidence arrives.")
 		fmt.Println("  The send is watched until its text lands in")
@@ -144,10 +144,11 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  target_busy) is retried with a doubling wait capped at 1m; after the 30m budget the send")
 		fmt.Println("  fails with a reason, and a sender session gets the failure in its inbox.")
 		fmt.Println("  Exit 0 queued, 1 failed at once (e.g. target not running).")
-		fmt.Println("From inside an agent-deck session, a send to a Claude target starts with one")
-		fmt.Println("  [agent-deck from:<your session id>] line so the reply is routed back to you")
-		fmt.Println("  (urgent in your inbox). --no-tag or [send] tag_sends = false turns it off;")
-		fmt.Println("  slash commands, --draft and heartbeats are never tagged. --json reports tagged.")
+		fmt.Println("Claude-to-Claude sends start with [agent-deck from:<your session id>];")
+		fmt.Println("  the receiver's reply is routed back to your inbox. Pi-to-Pi and Pi-to-Claude")
+		fmt.Println("  sends include the same source id, but require an explicit session send reply.")
+		fmt.Println("  --no-tag or [send] tag_sends = false turns it off. Slash commands, --draft,")
+		fmt.Println("  heartbeats and Pi !/!! shell commands are never tagged. --json reports tagged.")
 		fmt.Println("--image: Claude Code and Gemini receive @path; Codex takes images only at launch (-i), so a")
 		fmt.Println("  running Codex session exits 2, as does any other harness. Exit codes: 0 sent/queued,")
 		fmt.Println("  1 delivery failed, 2 usage error, unknown session or unsupported image.")
@@ -193,6 +194,11 @@ func handleSessionSend(profile string, args []string) {
 	message, err := resolveMessageInput(strings.Join(remaining[1:], " "), *messageFile, os.Stdin)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+
+	if strings.TrimSpace(message) == "" && len(images) == 0 {
+		out.Error("message is empty: nothing to send", ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 

@@ -111,6 +111,7 @@ func TestIssue1225_InboxDrainCLI_EmptyInbox(t *testing.T) {
 func TestIssue1225_InboxCLI_LegacyFormStillWorks(t *testing.T) {
 	cliInboxTestHome(t)
 	parent := "conductor-cli-legacy"
+	registerInboxDrainTarget(t, parent)
 	if err := session.CommitToInbox(parent, session.TransitionNotificationEvent{
 		ChildSessionID: "child-legacy", ChildTitle: "w", Profile: "personal",
 		FromStatus: "running", ToStatus: "waiting", Timestamp: time.Now(),

@@ -8,6 +8,7 @@ const (
 	ErrCodeForbidden        = "MUTATIONS_DISABLED"
 	ErrCodeCSRF             = "CROSS_ORIGIN_BLOCKED"
 	ErrCodeNotFound         = "NOT_FOUND"
+	ErrCodeAlreadyExists    = "ALREADY_EXISTS"
 	ErrCodeBadRequest       = "INVALID_REQUEST"
 	ErrCodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
 	ErrCodeRateLimited      = "RATE_LIMITED"

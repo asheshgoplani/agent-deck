@@ -960,3 +960,29 @@ func TestParseRemoteSessions_SubstateDetail(t *testing.T) {
 		t.Fatalf("missing key must decode to empty, got %q", sessions[1].SubstateDetail)
 	}
 }
+
+// TestSSHRunnerRemoveSession_UsesSessionRemove pins the verbs behind the
+// registry-only remove. `session remove` applies the remote's stopped/error
+// gate and leaves the process alone; a bare `remove` kills the session and
+// deletes the row unconditionally, so swapping the two would turn the TUI's
+// 'X' into a destructive 'd'.
+func TestSSHRunnerRemoveSession_UsesSessionRemove(t *testing.T) {
+	var calls [][]string
+	runner := &SSHRunner{
+		runFn: func(_ context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return nil, nil
+		},
+	}
+
+	if err := runner.RemoveSession(context.Background(), "abc-123"); err != nil {
+		t.Fatalf("RemoveSession: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one remote command, got %v", calls)
+	}
+	want := []string{"session", "remove", "abc-123"}
+	if !reflect.DeepEqual(calls[0], want) {
+		t.Fatalf("argv = %v, want %v (a bare 'remove' kills the session instead of dropping its row)", calls[0], want)
+	}
+}

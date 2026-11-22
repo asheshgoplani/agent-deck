@@ -164,7 +164,7 @@ func groupSessions(tree *session.GroupTree, path string) []*session.Instance {
 func groupStatus(sessions []*session.Instance) GroupStatus {
 	var st GroupStatus
 	for _, sess := range sessions {
-		switch sess.Status {
+		switch session.SummaryBucket(sess.Status) {
 		case session.StatusRunning:
 			st.Running++
 		case session.StatusWaiting:

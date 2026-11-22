@@ -18,6 +18,7 @@ type deletedSessionEntry struct {
 	instance    *session.Instance
 	deletedAt   time.Time
 	cleanupDone <-chan struct{}
+	prev        undoPrevState // state before the delete, restored by ctrl+z
 }
 
 // Messages

@@ -13,4 +13,5 @@ Commands:
                the wake socket is on (or why not) and any stopped socket wakes
 
 Status options:
+  --json                Print the shared {kind,state,config,version} JSON instead of text
   -p, --profile <name>  Profile to check the socket path for (default: current)

@@ -30,7 +30,7 @@ func handleCursorHooks(args []string) {
 	case "uninstall":
 		handleCursorHooksUninstall()
 	case "status":
-		handleCursorHooksStatus()
+		runCursorHooksStatus(hooksStatusWantsJSON(args[1:]))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown cursor-hooks subcommand: %s\n", args[0])
 		printCursorHooksUsage(os.Stderr)
@@ -46,7 +46,7 @@ func printCursorHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  install      Install agent-deck Cursor hooks")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Cursor hooks")
-	fmt.Fprintln(w, "  status       Show Cursor hooks install status")
+	fmt.Fprintln(w, "  status       Show Cursor hooks install status (--json for machine output)")
 }
 
 func handleCursorHooksInstall() {
@@ -99,10 +99,22 @@ func handleCursorHooksUninstall() {
 	}
 }
 
-func handleCursorHooksStatus() {
+func handleCursorHooksStatus() { runCursorHooksStatus(false) }
+
+func runCursorHooksStatus(asJSON bool) {
 	configDir := getCursorConfigDirForHooks()
 	installed := session.CheckCursorHooksInstalled(configDir)
 	configPath := filepath.Join(configDir, "hooks.json")
+	if asJSON {
+		st := hooksStatusJSON{Kind: "cursor", State: simpleHooksState(installed), Config: configPath}
+		if cfg, err := session.LoadUserConfig(); err != nil {
+			st.Details = append(st.Details, fmt.Sprintf("auto-install unknown: could not read config.toml: %v", err))
+		} else if cfg != nil && !cfg.Cursor.GetHooksEnabled() {
+			st.Details = append(st.Details, "auto-install disabled ([cursor] hooks_enabled = false in config.toml)")
+		}
+		printHooksStatusJSON(st)
+		return
+	}
 
 	if installed {
 		fmt.Println("Status: INSTALLED")
