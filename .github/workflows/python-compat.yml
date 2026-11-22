@@ -29,7 +29,10 @@ concurrency:
 
 jobs:
   bridge-import:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest now resolves to Ubuntu 26.04, where setup-python
+    # cannot find Python 3.8/3.9 (no x64 builds published for it). 24.04 still
+    # offers every version in the matrix. Revisit when 3.8/3.9 are dropped.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -55,7 +58,10 @@ jobs:
         run: python -m pytest conductor/tests/test_stage_report.py -v
 
   watchdog-tests:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest now resolves to Ubuntu 26.04, where setup-python
+    # cannot find Python 3.8/3.9 (no x64 builds published for it). 24.04 still
+    # offers every version in the matrix. Revisit when 3.8/3.9 are dropped.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
