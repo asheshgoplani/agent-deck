@@ -8306,10 +8306,15 @@ func (h *Home) renderSessionItem(
 	// Calculate base indentation for parent levels
 	// Level 1 means direct child of root group, Level 2 means child of nested group, etc.
 	baseIndent := ""
+	// A row is drawn as a child only when it sits under a parent row of its
+	// own group. A sub-session whose parent is in another group (or gone) is
+	// emitted at top-level depth and must look like its top-level siblings,
+	// cursor included (#3169). It keeps IsSubSession for event routing.
+	nested := item.DrawsNested()
 	if item.Level > 1 {
 		// For deeply nested items, add spacing for parent levels
 		// Sub-sessions get extra indentation (they're at Level = groupLevel + 2)
-		if item.IsSubSession {
+		if nested {
 			// Sub-session: indent for group level, then continuation line for parent
 			// Add leading space so │ aligns with ├ in regular items (both at position 1)
 			groupIndent := strings.Repeat(treeEmpty, item.Level-2)
@@ -8326,7 +8331,7 @@ func (h *Home) renderSessionItem(
 
 	// Tree connector: └─ for last item, ├─ for others
 	treeConnector := treeBranch
-	if item.IsSubSession {
+	if nested {
 		// Sub-session uses its own last-in-group logic
 		if item.IsLastSubSession {
 			treeConnector = subLast
@@ -8394,7 +8399,7 @@ func (h *Home) renderSessionItem(
 		// Rebuild baseIndent with selection arrow for sub-sessions
 		// Replace the │ (or empty space) with ▶ so the arrow doesn't squeeze
 		// between tree connector characters (e.g. " │▶├─" → " ▶ ├─")
-		if item.IsSubSession {
+		if nested {
 			groupIndent := strings.Repeat(treeEmpty, max(0, item.Level-2))
 			baseIndent = groupIndent + SessionSelectionPrefix.Render(" ▶")
 			selectionPrefix = " "

@@ -1969,6 +1969,8 @@ func resolveAutoParentInstanceChecked(instances []*session.Instance) (*session.I
 
 // resolveGroupPathForAdd resolves a user-provided group selector to a stored group path.
 // It accepts exact paths, normalized paths, and case-insensitive group display names.
+// A selector matching no group names a new one and resolves to the path `group
+// create` would store for it (session.CanonicalGroupPath).
 // A display name shared by several groups is an error listing the candidate
 // paths; the selector is still returned so callers that ignore it keep it as is.
 func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) (string, error) {
@@ -1995,6 +1997,15 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 	}
 	switch len(matches) {
 	case 0:
+		// A new group: the path `group create` would store for this name, so
+		// the session and the group created for it share one path.
+		canonical, err := newGroupPath(groupTree, groupSelector)
+		if err != nil {
+			return groupSelector, err
+		}
+		if canonical != "" {
+			return canonical, nil
+		}
 		return groupSelector, nil
 	case 1:
 		return matches[0], nil
@@ -2002,6 +2013,61 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 		sort.Strings(matches)
 		return groupSelector, fmt.Errorf("group %q is ambiguous: %s; use the full path", groupSelector, strings.Join(matches, ", "))
 	}
+}
+
+// newGroupPath returns the path a group named by a selector that matches no
+// group gets: session.CanonicalGroupPath, level by level, where a level that
+// matches an existing group's path in another case is that group ("big
+// org/New" lands under an existing "Big-Org"). A level that matches several
+// existing groups in another case is an error listing them, as for a whole
+// selector, instead of a further group next to them.
+func newGroupPath(groupTree *session.GroupTree, selector string) (string, error) {
+	path := ""
+	for _, level := range strings.Split(session.CanonicalGroupPath(selector), "/") {
+		if level == "" {
+			continue
+		}
+		candidate := strings.TrimPrefix(path+"/"+level, "/")
+		if _, ok := groupTree.Groups[candidate]; !ok {
+			var folded []string
+			for existing := range groupTree.Groups {
+				if strings.EqualFold(existing, candidate) {
+					folded = append(folded, existing)
+				}
+			}
+			switch len(folded) {
+			case 0:
+			case 1:
+				candidate = folded[0]
+			default:
+				sort.Strings(folded)
+				return "", fmt.Errorf("group %q is ambiguous: %s; use the full path", selector, strings.Join(folded, ", "))
+			}
+		}
+		path = candidate
+	}
+	return path, nil
+}
+
+// derivedGroupPath returns the group path a new session gets when no group is
+// named and derived is the name taken from its project directory
+// (session.GroupPathForProject). A group stored under exactly that name is kept:
+// older sessions may be in it. Otherwise it is the path `group create` would
+// store, so a directory "My Proj" makes the one group "My-Proj", not that plus
+// a second group at the raw name.
+func derivedGroupPath(groupTree *session.GroupTree, derived string) string {
+	if derived == "" || derived == session.DefaultGroupPath || derived == session.DefaultGroupName {
+		return derived
+	}
+	if groupTree != nil {
+		if _, ok := groupTree.Groups[derived]; ok {
+			return derived
+		}
+	}
+	if canonical := session.CanonicalGroupPath(derived); canonical != "" {
+		return canonical
+	}
+	return derived
 }
 
 // shouldLockTitle is the #1615-class chokepoint deciding whether a new CLI
@@ -2365,6 +2431,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	}
 
 	// Resolve group selector to a canonical path when possible.
+	typedGroup := sessionGroup
 	if sessionGroup != "" {
 		sessionGroup, err = resolveGroupPathForAdd(groupTree, sessionGroup)
 		if err != nil {
@@ -2666,6 +2733,9 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		newInstance = session.NewInstanceWithGroup(sessionTitle, path, sessionGroup)
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
+		// The group taken from the project directory follows the -g path rule.
+		typedGroup = newInstance.GroupPath
+		newInstance.GroupPath = derivedGroupPath(groupTree, typedGroup)
 	}
 
 	// Quick mode generated a machine-named adjective-noun handle; mark it so the
@@ -2861,9 +2931,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	mainCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = mainCfg.GroupDefaults.MaxConcurrent
 	// Ensure the session's group exists
-	if newInstance.GroupPath != "" {
-		groupTree.CreateGroupPath(newInstance.GroupPath)
-	}
+	groupTree.EnsureGroupForNewSession(newInstance, typedGroup)
 
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		fmt.Printf("Error: failed to save session: %v\n", err)

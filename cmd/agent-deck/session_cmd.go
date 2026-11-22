@@ -335,6 +335,7 @@ func handleSessionFork(profile string, args []string) {
 	// -g means what it means for add and launch: a unique group name resolves
 	// to its stored path and an ambiguous one is an error, before any worktree
 	// or session is created.
+	typedGroup := forkGroup
 	if forkGroup != "" {
 		groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 		if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
@@ -693,9 +694,7 @@ func handleSessionFork(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	forkCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = forkCfg.GroupDefaults.MaxConcurrent
-	if forkedInst.GroupPath != "" {
-		groupTree.CreateGroupPath(forkedInst.GroupPath)
-	}
+	groupTree.EnsureGroupForNewSession(forkedInst, typedGroup)
 
 	// Save
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {

@@ -112,14 +112,16 @@ func recomputeSegment(items []Item, start, end int) {
 			it.ParentIsLastInGroup = false
 			if it.IsSubSession {
 				// Two independent defects share this branch, both gated on
-				// IsSubSession in renderSessionItem — do not "simplify" this
-				// into just one of the two assignments below.
+				// the nested layout in renderSessionItem — do not "simplify"
+				// this into just one of the two assignments below.
 				//
-				// 1. Connector glyph: a structural orphan or a child cut off
-				//    from its parent by view-mode partitioning still renders
-				//    at top-level indent, but renderSessionItem branches on
-				//    IsSubSession first and never reads IsLastInGroup for a
-				//    sub-session row — its glyph comes from IsLastSubSession.
+				// 1. Connector glyph: a child cut off from its parent by
+				//    view-mode partitioning keeps its nested depth, so
+				//    renderSessionItem (Item.DrawsNested) takes its glyph from
+				//    IsLastSubSession, never IsLastInGroup. A structural orphan
+				//    (parent in another group, #3169) is emitted at top-level
+				//    depth and reads IsLastInGroup; window injection still
+				//    reads IsLastSubSession for it, so both must agree.
 				it.IsLastSubSession = i == lastTopLevelIdx
 				// 2. Gutter: the same branch reads ParentIsLastInGroup to
 				//    decide the leading space vs. "│" continuation. This row's
