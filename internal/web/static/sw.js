@@ -6,8 +6,6 @@ const APP_SHELL_URLS = [
   "/static/index.html",
   "/static/styles.css",
   "/static/app/main.js",
-  "/static/app/SessionChat.js",
-  "/static/app/chatRows.js",
   "/static/icons/logo.svg",
 ]
 
