@@ -1,6 +1,7 @@
 Usage: agent-deck remove <id|title>
 
-Remove a session by ID or title.
+Remove a session by ID or title. Its worktree is removed too, unless
+another session still uses it.
 
 Examples:
   agent-deck remove abc12345

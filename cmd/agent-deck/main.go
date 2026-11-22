@@ -3634,7 +3634,8 @@ func handleRemove(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck remove <id|title>")
 		fmt.Println()
-		fmt.Println("Remove a session by ID or title.")
+		fmt.Println("Remove a session by ID or title. Its worktree is removed too, unless")
+		fmt.Println("another session still uses it.")
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck remove abc12345")
@@ -3711,8 +3712,15 @@ func handleRemove(profile string, args []string) {
 	// this removal was never allowed to touch.
 	_ = inst.RetireServiceUnit(serviceUnitOwnership)
 
-	// Clean up worktree directory if this is a worktree session
+	// Clean up worktree directory if this is a worktree session, unless
+	// another session in this or another local profile still uses it (#1449,
+	// as the TUI delete does). remove has no --force, so an unreadable other
+	// profile keeps the worktree too.
+	worktreeKept := false
 	if inst.IsWorktree() {
+		worktreeKept, _ = keepSharedWorktree(inst, instances, newWorktreeRemovalGuard(profile), false, *jsonOutput)
+	}
+	if inst.IsWorktree() && !worktreeKept {
 		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
 			if err := backend.RemoveWorktree(inst.WorktreePath, false); err != nil {
 				if !*jsonOutput {
@@ -3757,11 +3765,12 @@ func handleRemove(profile string, args []string) {
 	out.Success(
 		fmt.Sprintf("Removed session: %s (from profile '%s')", removedTitle, storage.Profile()),
 		map[string]interface{}{
-			"success": true,
-			"id":      removedID,
-			"title":   removedTitle,
-			"removed": true,
-			"profile": storage.Profile(),
+			"success":       true,
+			"id":            removedID,
+			"title":         removedTitle,
+			"removed":       true,
+			"profile":       storage.Profile(),
+			"worktree_kept": worktreeKept, // another session still uses it
 		},
 	)
 }
