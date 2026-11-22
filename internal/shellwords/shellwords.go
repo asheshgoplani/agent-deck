@@ -143,10 +143,9 @@ func CommandSpans(command string) ([]CommandSpan, bool) {
 			skipNext = false
 			continue
 		}
-		size := utf8.RuneLen(r)
-		if size < 1 {
-			size = 1
-		}
+		// DecodeRuneInString gives the consumed byte width, which is 1 for an
+		// invalid byte even though RuneLen(RuneError) is 3.
+		_, size := utf8.DecodeRuneInString(command[i:])
 		if inComment {
 			if r == '\n' {
 				inComment = false
@@ -164,6 +163,13 @@ func CommandSpans(command string) ([]CommandSpan, bool) {
 				quote = 0
 			}
 		case r == '\\':
+			if i+1 < len(command) && command[i+1] == '\n' {
+				// A backslash-newline pair disappears before tokenization:
+				// it neither starts nor ends a word, and the raw bytes stay
+				// inside the span when later data extends it.
+				skipNext = true
+				continue
+			}
 			escaped = true
 		case quote == '"':
 			if r == '"' {
