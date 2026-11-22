@@ -14,6 +14,7 @@ import { html } from 'htm/preact'
 import { useEffect, useRef } from 'preact/hooks'
 import { Icon, ICONS } from './icons.js'
 import { confirmDialogSignal } from './state.js'
+import { backdropDismiss } from './uiState.js'
 
 // Presentation per tone. Kicker tones are classes, not `style=` attributes, so
 // app.css owns the colors; a style attribute would beat any stylesheet rule.
@@ -63,7 +64,7 @@ export function ConfirmDialog({ message, onConfirm, tone, confirmLabel, title })
   const onKeyDown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close() } }
 
   return html`
-    <div class="overlay" onClick=${(e) => e.target === e.currentTarget && close()}>
+    <div class="overlay" ...${backdropDismiss(close)}>
       <div role="dialog" aria-modal="true" aria-label="Confirm action"
            class="dialog" style="max-width: 460px;"
            onClick=${e => e.stopPropagation()}
