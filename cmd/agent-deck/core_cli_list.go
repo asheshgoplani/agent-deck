@@ -59,7 +59,7 @@ func cliList(profile string, args []string) {
 		AllProfiles:       *allProfiles,
 		IncludeSuperseded: *includeSuperseded,
 		ExcludeArchived:   *noArchived,
-		LiveStatus:        jsonOutput.enabled() && !*allProfiles,
+		LiveStatus:        !*allProfiles, // the table's STATUS column is the live status too
 	}, nil)
 	if jsonOutput.envelope() {
 		printEnvelope(res)
@@ -108,21 +108,36 @@ func cliList(profile string, args []string) {
 	}
 
 	fmt.Printf("Profile: %s\n\n", listed.Profile)
-	printSessionTable(listed.Sessions)
+	printSessionTable(listed.Sessions, true)
 	fmt.Printf("\nTotal: %d sessions\n", len(listed.Sessions))
 
 	printUpdateNotice()
 }
 
 // printSessionTable prints the TITLE/GROUP/PATH/ID/ACCOUNT table header and
-// rows shared by the single- and all-profile listings.
-func printSessionTable(rows []core.SessionRow) {
-	fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
-	fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
+// rows shared by the single- and all-profile listings. withStatus adds the
+// STATUS column (single profile, whose rows carry the live status).
+func printSessionTable(rows []core.SessionRow, withStatus bool) {
+	if withStatus {
+		fmt.Printf("%-*s %-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColStatus, "STATUS", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
+		fmt.Println(strings.Repeat("-", tableColTitle+tableColStatus+tableColGroup+tableColPath+tableColIDDisplay+6))
+	} else {
+		fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
+		fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
+	}
 	for _, row := range rows {
 		idDisplay := row.ID
 		if len(idDisplay) > tableColIDDisplay {
 			idDisplay = idDisplay[:tableColIDDisplay]
+		}
+		if withStatus {
+			fmt.Printf("%-*s %-*s %-*s %-*s %-*s %s\n",
+				tableColTitle, truncate(row.Title, tableColTitle),
+				tableColStatus, listTableStatus(session.Status(row.Status), row.Archived),
+				tableColGroup, truncate(row.Group, tableColGroup),
+				tableColPath, truncate(row.Path, tableColPath),
+				tableColIDDisplay, idDisplay, strconv.Quote(row.Account))
+			continue
 		}
 		fmt.Printf("%-*s %-*s %-*s %-*s %s\n",
 			tableColTitle, truncate(row.Title, tableColTitle),
@@ -130,6 +145,16 @@ func printSessionTable(rows []core.SessionRow) {
 			tableColPath, truncate(row.Path, tableColPath),
 			tableColIDDisplay, idDisplay, strconv.Quote(row.Account))
 	}
+}
+
+// listTableStatus is the STATUS cell of the `list` table: the live status
+// `list --json` reports, or "archived" for an archived session (the TUI's
+// label for it), so an archived row no longer reads like a live one.
+func listTableStatus(status session.Status, archived bool) string {
+	if archived {
+		return "archived"
+	}
+	return StatusString(status)
 }
 
 // allProfilesSessionJSON is the per-session shape of `list --all --json`.
@@ -200,7 +225,7 @@ func renderListAllProfiles(listed core.SessionListOut, jsonOutput bool) {
 			continue
 		}
 		fmt.Printf("\n═══ Profile: %s ═══\n\n", p.Profile)
-		printSessionTable(p.Sessions)
+		printSessionTable(p.Sessions, false)
 		fmt.Printf("(%d sessions)\n", len(p.Sessions))
 		total += len(p.Sessions)
 	}
@@ -310,6 +335,12 @@ func renderGroupTable(listed core.GroupListOut) string {
 			}
 			if g.Status.Idle > 0 {
 				parts = append(parts, fmt.Sprintf("○ %d", g.Status.Idle))
+			}
+			if g.Status.Stopped > 0 {
+				parts = append(parts, fmt.Sprintf("■ %d", g.Status.Stopped))
+			}
+			if g.Status.Error > 0 {
+				parts = append(parts, fmt.Sprintf("✕ %d", g.Status.Error))
 			}
 			statusStr = strings.Join(parts, " ")
 		}

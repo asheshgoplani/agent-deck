@@ -49,7 +49,7 @@ describe('groupStats', () => {
     expect(groupStats('work').fragments.map((f) => f.id)).toEqual(['running'])
   })
 
-  it('folds starting into running and queued into idle so counts sum to the total', async () => {
+  it('folds starting and queued into idle so counts sum to the total', async () => {
     const { sessionsSignal } = await import(stateModulePath)
     const { groupStats } = await import(groupPanelDataPath)
 
@@ -63,9 +63,9 @@ describe('groupStats', () => {
     const stats = groupStats('work')
     const sum = stats.fragments.reduce((n, f) => n + f.count, 0)
     expect(sum).toBe(stats.total)
-    expect(stats.fragments.find((f) => f.id === 'running').count).toBe(2)
-    // idle absorbs queued and any unrecognized status.
-    expect(stats.fragments.find((f) => f.id === 'idle').count).toBe(3)
+    expect(stats.fragments.find((f) => f.id === 'running').count).toBe(1)
+    // idle absorbs starting, queued and any unrecognized status (TUI rule).
+    expect(stats.fragments.find((f) => f.id === 'idle').count).toBe(4)
   })
 
   it('counts direct members only, never subgroups', async () => {
