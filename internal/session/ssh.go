@@ -3076,8 +3076,21 @@ func (e *RemoteSessionQueuedError) Error() string {
 }
 
 // DeleteSession removes a session on the remote host.
+//
+// It runs the remote's `remove`, which kills the tmux session and deletes the
+// registry row unconditionally. For the status-gated registry-only path the
+// TUI's 'X' uses, see RemoveSession.
 func (r *SSHRunner) DeleteSession(ctx context.Context, sessionID string) error {
 	_, err := r.Run(ctx, "remove", sessionID)
+	return err
+}
+
+// RemoveSession drops a session from the remote's registry only, through the
+// remote's own `session remove`. That command applies the same stopped/error
+// gate locally, so a live session is refused by the remote rather than
+// silently killed: the caller sees the refusal and can steer the user to 'd'.
+func (r *SSHRunner) RemoveSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "remove", sessionID)
 	return err
 }
 

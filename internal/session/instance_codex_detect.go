@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
@@ -35,6 +36,23 @@ func codexRolloutExistsInHome(sessionID, codexHome string) bool {
 // Call this for restored sessions that don't have a session ID yet
 func (i *Instance) DetectCodexSession() {
 	i.detectCodexSessionAsync()
+}
+
+// codexDetections tracks the detectCodexSessionAsync goroutines a Start or
+// Restart launches. Nothing in the product waits on them (each ends on its
+// own a few seconds after the spawn); tests that spawn codex wait on it so
+// no detection outlives them, which also orders its logger reads before a
+// later test's logger swap for the race detector.
+var codexDetections sync.WaitGroup
+
+// startCodexDetection runs detectCodexSessionAsync in the background,
+// tracked by codexDetections.
+func (i *Instance) startCodexDetection() {
+	codexDetections.Add(1)
+	go func() {
+		defer codexDetections.Done()
+		i.detectCodexSessionAsync()
+	}()
 }
 
 // detectCodexSessionAsync detects the Codex session ID after startup

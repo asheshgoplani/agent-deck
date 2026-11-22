@@ -6,4 +6,4 @@ Commands:
   help         Show this help
   install      Install or upgrade agent-deck Claude Code hooks
   uninstall    Remove agent-deck Claude Code hooks
-  status       Show current hook install status
+  status       Show current hook install status (--json for machine output)

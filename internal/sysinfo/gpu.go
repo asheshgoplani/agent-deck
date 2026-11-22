@@ -1,10 +1,12 @@
 package sysinfo
 
 import (
+	"context"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // gpuProbe caches the result of GPU tool detection at startup.
@@ -51,11 +53,18 @@ func collectGPU() GPUStat {
 
 // collectGPUNvidia queries NVIDIA GPU utilization.
 func collectGPUNvidia() GPUStat {
-	out, err := exec.Command(
+	// Bounded like netstat: a wedged GPU tool is killed, and WaitDelay stops a
+	// child still holding its output from stalling the collector.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx,
 		"nvidia-smi",
 		"--query-gpu=utilization.gpu,name",
 		"--format=csv,noheader,nounits",
-	).Output()
+	)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
 	if err != nil {
 		return GPUStat{}
 	}
@@ -86,7 +95,14 @@ func collectGPUNvidia() GPUStat {
 
 // collectGPURocm queries AMD GPU utilization via rocm-smi.
 func collectGPURocm() GPUStat {
-	out, err := exec.Command("rocm-smi", "--showuse", "--csv").Output()
+	// Bounded like netstat: a wedged GPU tool is killed, and WaitDelay stops a
+	// child still holding its output from stalling the collector.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "rocm-smi", "--showuse", "--csv")
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
 	if err != nil {
 		return GPUStat{}
 	}

@@ -799,7 +799,9 @@ func handleSessionRestart(profile string, args []string) {
 	// Issue #30: freshness guard. Skip the restart (keep the current tmux
 	// scope intact) when the session is healthy and was started very
 	// recently. A watchdog racing `start` → `restart` on the same session
-	// must not tear down the fresh scope.
+	// must not tear down the fresh scope. It reads the status list shows,
+	// not the stored one.
+	refreshLiveStatus([]*session.Instance{inst})
 	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), *force || len(envFlags.Map()) > 0); skip {
 		data := map[string]interface{}{
 			"success": true,

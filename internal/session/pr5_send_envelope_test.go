@@ -382,6 +382,43 @@ func TestPR5_IdentityPromptExplainsEnvelope(t *testing.T) {
 	}
 }
 
+func TestPR5_IdentityPromptPiSenderNeedsExplicitReply(t *testing.T) {
+	// The envelope carries only the sender id, so the rule has to name the
+	// lookup a receiver runs before it can tell the sender is Pi (a review
+	// finding: an unreachable rule is not a rule). It belongs in the one
+	// branch that promises an automatic reply (turns reported, not Pi), and
+	// nowhere else: the other two branches already say to answer explicitly.
+	claude := (&Instance{ID: "receiver-1", Title: "receiver", Tool: "claude"}).BuildIdentityPrompt()
+	if !strings.Contains(claude, "reply by answering normally, the sender is notified") {
+		t.Fatalf("claude receiver keeps the automatic-reply promise:\n%s", claude)
+	}
+	if !strings.Contains(claude, "explicitly with `agent-deck session send <id> \"answer\"`") {
+		t.Fatalf("identity must give Pi senders an explicit return path:\n%s", claude)
+	}
+	if !strings.Contains(claude, "agent-deck session show <id> --json") {
+		t.Fatalf("identity must say how the receiver learns the sender is Pi:\n%s", claude)
+	}
+	if n := strings.Count(claude, "A Pi sender gets no automatic reply"); n != 1 {
+		t.Fatalf("claude receiver must carry the Pi-sender rule once, got %d:\n%s", n, claude)
+	}
+
+	pi := (&Instance{ID: "receiver-1", Title: "receiver", Tool: "pi"}).BuildIdentityPrompt()
+	if strings.Contains(pi, "reply by answering normally, the sender is notified") {
+		t.Fatal("Pi attribution must not promise automatic reply routing")
+	}
+	if strings.Contains(pi, "A Pi sender gets no automatic reply") {
+		t.Fatalf("the Pi branch already answers explicitly, the rule would repeat it:\n%s", pi)
+	}
+
+	muted := (&Instance{ID: "receiver-1", Title: "receiver", Tool: "claude", NoTransitionNotify: true}).BuildIdentityPrompt()
+	if strings.Contains(muted, "A Pi sender gets no automatic reply") {
+		t.Fatalf("the no-transition branch already answers explicitly, the rule would repeat it:\n%s", muted)
+	}
+	if !strings.Contains(muted, "this session's turns are not reported, so reply with `agent-deck session send") {
+		t.Fatalf("the no-transition branch keeps its own explicit-reply rule:\n%s", muted)
+	}
+}
+
 func TestPR5_TagSendsConfigDefaultsOn(t *testing.T) {
 	var nilCfg *UserConfig
 	off := false

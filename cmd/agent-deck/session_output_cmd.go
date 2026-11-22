@@ -448,9 +448,11 @@ func handleSessionPrimer(profileArg string, args []string) {
 		skipReason = "context level is none: no text is generated"
 	}
 
-	text := ""
-	if active {
-		text = inst.BuildContextPromptForLevel(level)
+	// The text the harness gets, instruction files (#3206) included; without
+	// them it is BuildContextPromptForLevel(level).
+	text, instructionsFiles := inst.InstructionsFilesReport()
+	if !active {
+		text = ""
 	}
 
 	identityFile, _ := inst.IdentityFilePath()
@@ -475,6 +477,9 @@ func handleSessionPrimer(profileArg string, args []string) {
 	if skipReason != "" {
 		jsonData["skip_reason"] = skipReason
 	}
+	if len(instructionsFiles) > 0 {
+		jsonData["instructions_files"] = instructionsFiles
+	}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Session:       %s (%s)\n", inst.Title, inst.ID)
@@ -484,6 +489,9 @@ func handleSessionPrimer(profileArg string, args []string) {
 	fmt.Fprintf(&sb, "Delivery:      %s\n", delivery)
 	if skipReason != "" {
 		fmt.Fprintf(&sb, "Skipped:       %s\n", skipReason)
+	}
+	for _, f := range instructionsFiles {
+		fmt.Fprintf(&sb, "Instructions:  %s\n", formatInstructionsFileStatus(f))
 	}
 	sb.WriteString("\n")
 	if text == "" {
@@ -508,4 +516,13 @@ func remotePrimerUnsupported(remote string, args []string, code int, stderr stri
 
 func isSessionPrimerArgs(args []string) bool {
 	return len(args) > 1 && args[0] == "session" && args[1] == "primer"
+}
+
+// formatInstructionsFileStatus renders one instruction file's state for the
+// human output of `session primer` and `session show` (#3206).
+func formatInstructionsFileStatus(f session.InstructionsFileStatus) string {
+	if f.Reason == "" {
+		return fmt.Sprintf("%s (%s)", f.Path, f.State)
+	}
+	return fmt.Sprintf("%s (%s: %s)", f.Path, f.State, f.Reason)
 }

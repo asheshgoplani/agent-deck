@@ -510,6 +510,14 @@ type Instance struct {
 	// `session set <id> context-level <none|primer|full>` (empty clears).
 	ContextLevel string `json:"context_level,omitempty"`
 
+	// InstructionsFiles is the per-session list of operator instruction files
+	// (issue #3206): absolute paths, read at every spawn and appended as their
+	// own section to the identity block (instructions_files.go). Persisted in
+	// the tool_data extras zone (instructions_files_persist.go). CLI:
+	// `add|launch --instructions-file <path>` (repeatable) and
+	// `session set <id> instructions-file "<path>[,<path>...]"` (empty clears).
+	InstructionsFiles []string `json:"instructions_files,omitempty"`
+
 	// QueuedMessage is the -m prompt of a session queued at its group's
 	// max_concurrent cap. Every path off the queue (Storage.StartQueued, a
 	// direct or TUI start, a restart) takes it off the row in the same write
@@ -1938,7 +1946,7 @@ func (i *Instance) Start() (startErr error) {
 	// Start async session ID detection for Codex
 	// This runs in background and captures the session ID once Codex creates it
 	if IsCodexCompatible(i.Tool) {
-		go i.detectCodexSessionAsync()
+		i.startCodexDetection()
 	}
 
 	// Start async session ID detection for Copilot
@@ -2298,7 +2306,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		go i.detectOpenCodeSessionAsync()
 	}
 	if IsCodexCompatible(i.Tool) {
-		go i.detectCodexSessionAsync()
+		i.startCodexDetection()
 	}
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
@@ -2308,6 +2316,22 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	}
 
 	return nil
+}
+
+// holdStartingInGraceLocked is the start grace's verdict for a session whose
+// tmux does not exist yet: starting, unless the row already holds a verdict
+// the grace must not erase. Running, idle and stopped are kept as before. An
+// error is kept too: within the grace it is a start that already failed
+// (spawn failure, failed queued start, missing project directory), and
+// rewriting it to starting made the next refresh after the grace read the
+// row as never started, so a fresh failure went error, starting, idle.
+// Caller holds i.mu.
+func (i *Instance) holdStartingInGraceLocked() {
+	switch i.Status {
+	case StatusRunning, StatusIdle, StatusStopped, StatusError:
+		return
+	}
+	i.Status = StatusStarting
 }
 
 // updateStatus refreshes i.Status from tmux, hooks and the pane. A session
@@ -2347,9 +2371,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
 		if i.tmuxSession == nil {
-			if i.Status != StatusRunning && i.Status != StatusIdle && i.Status != StatusStopped {
-				i.Status = StatusStarting
-			}
+			i.holdStartingInGraceLocked()
 			return nil
 		}
 		var current bool
@@ -2359,9 +2381,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		}
 		checkedExists = true
 		if !exists {
-			if i.Status != StatusRunning && i.Status != StatusIdle && i.Status != StatusStopped {
-				i.Status = StatusStarting
-			}
+			i.holdStartingInGraceLocked()
 			return nil
 		}
 		// Session exists - allow normal status detection below

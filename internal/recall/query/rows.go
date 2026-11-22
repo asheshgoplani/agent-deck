@@ -301,6 +301,9 @@ func piBashExecutionRow(msg map[string]json.RawMessage, ts, id string) Row {
 	if cancelled {
 		row.Meta["cancelled"] = true
 	}
+	if string(msg["truncated"]) == "true" {
+		row.Meta["truncated"] = true
+	}
 	return row
 }
 

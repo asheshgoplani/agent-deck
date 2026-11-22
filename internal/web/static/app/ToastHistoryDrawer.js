@@ -3,6 +3,7 @@
 import { html } from 'htm/preact'
 import { Icon, ICONS } from './icons.js'
 import { toastHistorySignal, toastHistoryOpenSignal } from './state.js'
+import { backdropDismiss } from './uiState.js'
 
 function formatTime(ms) {
   if (!ms) return ''
@@ -42,7 +43,7 @@ export function ToastHistoryDrawer() {
     <div class="overlay" role="dialog" aria-modal="true" aria-label="Toast history"
          data-testid="toast-history-drawer"
          style="justify-content: flex-end; padding: 0;"
-         onClick=${(e) => { if (e.target === e.currentTarget) close() }}>
+         ...${backdropDismiss(close)}>
       <div class="dialog" style="width: 420px; max-width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; border-right: 0;"
            onClick=${e => e.stopPropagation()}>
         <div class="dh">

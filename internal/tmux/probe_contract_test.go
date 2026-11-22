@@ -4,8 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // socket_waitdelay_test.go pins the RUNTIME half of the WaitDelay contract:
@@ -61,6 +66,35 @@ func TestParsePanePID_TakesFirstLineOnly(t *testing.T) {
 	if pid != 101 {
 		t.Fatalf("multi-pane output must yield the first pane_pid; got %d", pid)
 	}
+}
+
+func TestPanePIDOfSessionConfirmsMissingTargets(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	socket := fmt.Sprintf("ad-pane-gone-%d", os.Getpid())
+	const name = "pane-probe-live"
+	out, err := commandCombinedOutput(tmuxExec(socket, "new-session", "-d", "-s", name, "sleep 30"))
+	require.NoError(t, err, "%s", out)
+	t.Cleanup(func() { _ = commandRun(tmuxExec(socket, "kill-server")) })
+
+	pid, err := PanePIDOfSession(socket, name)
+	require.NoError(t, err)
+	require.Positive(t, pid)
+
+	t.Run("missing session", func(t *testing.T) {
+		pid, err := PanePIDOfSession(socket, "missing-pane-probe-session")
+		require.ErrorIs(t, err, ErrPaneTargetGone)
+		require.Zero(t, pid)
+	})
+
+	t.Run("killed server", func(t *testing.T) {
+		out, err := commandCombinedOutput(tmuxExec(socket, "kill-server"))
+		require.NoError(t, err, "%s", out)
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			pid, err := PanePIDOfSession(socket, name)
+			assert.ErrorIs(c, err, ErrPaneTargetGone)
+			assert.Zero(c, pid)
+		}, 3*time.Second, 20*time.Millisecond)
+	})
 }
 
 // annotateDeadline is what lets a caller tell "we gave up on tmux" from "tmux

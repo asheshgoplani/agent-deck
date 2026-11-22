@@ -1,9 +1,10 @@
-Usage: agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]
+Usage: agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>] [--kinds a,b] [--skip-empty-body]
        agent-deck recall timeline --json --transcript <file> --harness claude|codex|pi
-       agent-deck recall timeline --json [--tail N] --sessions <id1>,<id2>,...   (batch: one entry per id, at most 50)
+       agent-deck recall timeline --json [--tail N] [--kinds a,b] [--skip-empty-body] --sessions <id1>,<id2>,...   (batch: one entry per id, at most 50)
        agent-deck recall timeline <session> --json --v1   (slice-6 turn shape)
 <session>: deck session id, title or id prefix; a Claude, Codex or Pi conversation id; or #n / any id the index knows.
 Rows are parsed from the native transcript directly, whatever the index or its deferral state. Needs [recall] enabled = true.
+With --kinds or --skip-empty-body, --tail and --limit count kept rows. A native read then carries next_cursor: pass it to --since (never a cursor made from the last kept row). --agent sidechains and index-backed rows have no cursor.
   -agent string
     	One Claude Code sub-agent sidechain by agent id
   -before string
@@ -12,12 +13,16 @@ Rows are parsed from the native transcript directly, whatever the index or its d
     	With --transcript: claude, codex or pi
   -json
     	Output canonical JSON
+  -kinds string
+    	Comma-separated row kinds to keep (user, assistant, thinking, tool, bash, edit, read, subagent, todo, question, skill, command, system, compaction, turn_end, other); filtered here, before output, sub-agent children included. Native reads other than --agent resume with next_cursor
   -limit int
     	Maximum older rows with --before; otherwise stop after N new rows and resume with --since
   -sessions string
-    	Comma-separated session ids: one call answers each id's timeline (at most 50; only --tail combines with it)
+    	Comma-separated session ids: one call answers each id's timeline (at most 50; only --tail, --kinds and --skip-empty-body combine with it)
   -since string
     	Only what changed after this cursor: new rows in turns, changes to earlier rows in updates/removed
+  -skip-empty-body
+    	Drop rows whose body is empty or only whitespace (a tool call still waiting for its result is kept); filtered here, before output, sub-agent children included. Native reads other than --agent resume with next_cursor
   -tail int
     	Only the last N rows, read from the end of the transcript (fast first paint)
   -transcript string

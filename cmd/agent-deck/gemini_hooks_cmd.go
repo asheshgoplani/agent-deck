@@ -30,7 +30,7 @@ func handleGeminiHooks(args []string) {
 	case "uninstall":
 		handleGeminiHooksUninstall()
 	case "status":
-		handleGeminiHooksStatus()
+		runGeminiHooksStatus(hooksStatusWantsJSON(args[1:]))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown gemini-hooks subcommand: %s\n", args[0])
 		printGeminiHooksUsage(os.Stderr)
@@ -46,7 +46,7 @@ func printGeminiHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  install      Install agent-deck Gemini hooks")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Gemini hooks")
-	fmt.Fprintln(w, "  status       Show Gemini hooks install status")
+	fmt.Fprintln(w, "  status       Show Gemini hooks install status (--json for machine output)")
 }
 
 func handleGeminiHooksInstall() {
@@ -78,10 +78,14 @@ func handleGeminiHooksUninstall() {
 	}
 }
 
-func handleGeminiHooksStatus() {
+func runGeminiHooksStatus(asJSON bool) {
 	configDir := getGeminiConfigDirForHooks()
 	installed := session.CheckGeminiHooksInstalled(configDir)
 	configPath := filepath.Join(configDir, "settings.json")
+	if asJSON {
+		printHooksStatusJSON(hooksStatusJSON{Kind: "gemini", State: simpleHooksState(installed), Config: configPath})
+		return
+	}
 
 	if installed {
 		fmt.Println("Status: INSTALLED")

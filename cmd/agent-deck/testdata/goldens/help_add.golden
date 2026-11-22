@@ -45,6 +45,8 @@ Options:
     	Durable hint key=value for recall (repeatable; e.g. --hint purpose="fix flaky auth test")
   -install-codex-hooks
     	Install a missing Codex notify hook in the shared Codex home; persists independently of this session
+  -instructions-file value
+    	Instruction file appended to this session's identity block at every start, restart, resume and fork (repeatable, or comma-separated; absolute path, ~ and $VAR expanded; #3206)
   -json
     	Output as JSON
   -location string

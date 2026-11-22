@@ -5,6 +5,7 @@ import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
 import { Icon, ICONS } from './icons.js'
 import { groupNameDialogSignal } from './state.js'
+import { backdropDismiss } from './uiState.js'
 import { apiFetch } from './api.js'
 import { groupApiUrl } from './dataModel.js'
 
@@ -36,7 +37,7 @@ export function GroupNameDialog({ mode, groupPath, currentName, onSubmit }) {
   }
 
   return html`
-    <div class="overlay" onClick=${(e) => e.target === e.currentTarget && close()}>
+    <div class="overlay" ...${backdropDismiss(close)}>
       <form class="dialog" style="max-width: 460px;"
             onClick=${e => e.stopPropagation()}
             onSubmit=${handleSubmit}>
