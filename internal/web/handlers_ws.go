@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/gorilla/websocket"
 )
 
@@ -95,28 +96,27 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// Resolve the session from the cached snapshot first. LoadMenuSnapshot
 	// can hold the menu-data lock for a full inline refresh (seconds on a
 	// busy host with many sessions), and the terminal open only needs the
-	// tmux target. Unknown ids still go through the full load so new
-	// sessions and the 404 path behave as before (#2663).
+	// tmux target. Unknown ids are read from storage without that refresh,
+	// so new sessions and the 404 path do not wait for it either (#2663).
 	var (
-		snapshot    *MenuSnapshot
 		menuSession *MenuSession
-		found       bool
-		fromCache   bool
+		profile     string
 		err         error
 	)
 	if cached, ok := s.menuData.(interface{ CachedMenuSnapshot() *MenuSnapshot }); ok {
-		snapshot = cached.CachedMenuSnapshot()
-		menuSession, found = snapshotSessionByID(snapshot, sessionID)
-		fromCache = found
+		snapshot := cached.CachedMenuSnapshot()
+		if menuSession = snapshot.SessionByID(sessionID); menuSession != nil {
+			profile = snapshot.Profile
+		}
 	}
-	if !found {
-		snapshot, err = s.menuData.LoadMenuSnapshot()
+	fromCache := menuSession != nil
+	if !fromCache {
+		menuSession, profile, err = menudata.ResolveMenuSession(s.menuData, sessionID)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load session data")
 			return
 		}
-		menuSession, found = snapshotSessionByID(snapshot, sessionID)
-		if !found {
+		if menuSession == nil {
 			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
@@ -170,7 +170,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		Type:      "status",
 		Event:     "connected",
 		SessionID: sessionID,
-		Profile:   snapshot.Profile,
+		Profile:   profile,
 		ReadOnly:  s.cfg.ReadOnly,
 		Time:      time.Now().UTC(),
 	})
@@ -192,15 +192,13 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 			// The cached snapshot can name a tmux session that was replaced
 			// since it was published (restart/start recreate the tmux session
 			// under a new name, possibly from the CLI or TUI). Re-resolve
-			// through the full load and retry once if the target changed.
-			if fresh, loadErr := s.menuData.LoadMenuSnapshot(); loadErr == nil {
-				if freshSession, ok := snapshotSessionByID(fresh, sessionID); ok &&
-					freshSession.TmuxSession != "" &&
-					(freshSession.TmuxSession != menuSession.TmuxSession ||
-						freshSession.TmuxSocketName != menuSession.TmuxSocketName) {
-					menuSession = freshSession
-					bridge, err = attach(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
-				}
+			// from storage and retry once if the target changed.
+			freshSession, _, loadErr := menudata.ResolveMenuSession(s.menuData, sessionID)
+			if loadErr == nil && freshSession != nil && freshSession.TmuxSession != "" &&
+				(freshSession.TmuxSession != menuSession.TmuxSession ||
+					freshSession.TmuxSocketName != menuSession.TmuxSocketName) {
+				menuSession = freshSession
+				bridge, err = attach(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
 			}
 		}
 		if err != nil {
@@ -348,19 +346,4 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-}
-
-func snapshotSessionByID(snapshot *MenuSnapshot, sessionID string) (*MenuSession, bool) {
-	if snapshot == nil {
-		return nil, false
-	}
-	for _, item := range snapshot.Items {
-		if item.Type != MenuItemTypeSession || item.Session == nil {
-			continue
-		}
-		if item.Session.ID == sessionID {
-			return item.Session, true
-		}
-	}
-	return nil, false
 }

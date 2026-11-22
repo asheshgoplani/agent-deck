@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/gorilla/websocket"
 )
 
@@ -637,4 +639,164 @@ func TestSessionWSRetriesFullLoadWhenCachedTmuxIsGone(t *testing.T) {
 	if got := strings.Join(names(), ","); got != "agentdeck_old,agentdeck_new" {
 		t.Fatalf("attach targets = %q, want agentdeck_old,agentdeck_new", got)
 	}
+}
+
+func TestSessionWSFreshLookupDoesNotWaitForStatusRefresh(t *testing.T) {
+	for _, scenario := range []string{"in progress", "after invalidation"} {
+		t.Run(scenario, func(t *testing.T) {
+			svc := wsSessionDataService("sess-1", "")
+			menu := NewMemoryMenuData(svc)
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			if scenario == "after invalidation" {
+				if _, err := menu.LoadMenuSnapshot(); err != nil {
+					t.Fatal(err)
+				}
+				menu.InvalidateCache()
+				svc.refreshTmuxCaches = func() { t.Error("attach ran the menu status pass") }
+			} else {
+				svc.refreshTmuxCaches = func() {
+					close(entered)
+					<-release
+				}
+				go func() {
+					defer close(done)
+					if _, err := menu.LoadMenuSnapshot(); err != nil {
+						t.Error(err)
+					}
+				}()
+				defer func() {
+					close(release)
+					<-done
+				}()
+				select {
+				case <-entered:
+				case <-time.After(3 * time.Second):
+					t.Fatal("menu load never entered status refresh")
+				}
+			}
+
+			srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "work"})
+			srv.menuData = menu
+			server := httptest.NewServer(srv.Handler())
+			t.Cleanup(server.Close)
+			dialer := *websocket.DefaultDialer
+			dialer.HandshakeTimeout = time.Second
+			conn, _, err := dialer.Dial(wsURL(server.URL, "/ws/session/sess-1"), nil)
+			if err != nil {
+				t.Fatalf("upgrade during status refresh: %v", err)
+			}
+			defer conn.Close()
+			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+			var msg wsServerMessage
+			if err := conn.ReadJSON(&msg); err != nil || msg.Event != "connected" || msg.Profile != "resolved" {
+				t.Fatalf("connected event = %+v, error = %v", msg, err)
+			}
+		})
+	}
+}
+
+func TestSessionWSFreshLookupUsesStorage(t *testing.T) {
+	for _, scenario := range []string{"CLI create", "CLI restart", "TUI snapshot miss"} {
+		t.Run(scenario, func(t *testing.T) {
+			initialID := "previous"
+			if scenario == "CLI restart" {
+				initialID = "sess-1"
+			}
+			svc := wsSessionDataService(initialID, "agentdeck_old")
+			svc.refreshLiveState = false
+			menu := NewMemoryMenuData(svc)
+			if scenario == "TUI snapshot miss" {
+				menu.SetSnapshot(menuWithSession(initialID, "/tmp/previous", "shell"))
+			} else if _, err := menu.LoadMenuSnapshot(); err != nil {
+				t.Fatal(err)
+			}
+			fresh := wsSessionDataService("sess-1", "agentdeck_new")
+			svc.openStorage = fresh.openStorage
+			svc.refreshLiveState = true
+			svc.refreshTmuxCaches = func() { t.Error("attach ran the menu status pass") }
+			srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "work"})
+			srv.menuData = menu
+			names := recordTmuxAttach(t, func(name string) error {
+				if name == "agentdeck_old" {
+					return ErrTmuxSessionNotFound
+				}
+				return errors.New("stub attach")
+			})
+
+			dialSessionWSUntilError(t, srv, "sess-1")
+			want := "agentdeck_new"
+			if scenario == "CLI restart" {
+				want = "agentdeck_old,agentdeck_new"
+			}
+			if got := strings.Join(names(), ","); got != want {
+				t.Fatalf("attach targets = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestSessionWSFreshLookupRejectsUnknownAndArchivedSessions(t *testing.T) {
+	for _, id := range []string{"unknown", "archived"} {
+		t.Run(id, func(t *testing.T) {
+			svc := wsSessionDataService("archived", "")
+			svc.refreshTmuxCaches = func() { t.Error("attach ran the menu status pass") }
+			srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "work"})
+			srv.menuData = NewMemoryMenuData(svc)
+			reply := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(reply, newLocalRequest(http.MethodGet, "/ws/session/"+id, nil))
+			if reply.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404, body = %s", reply.Code, reply.Body.String())
+			}
+		})
+	}
+}
+
+func TestSessionMCPAndSkillsFindNewSession(t *testing.T) {
+	for _, tc := range []struct{ method, route string }{
+		{http.MethodGet, "mcps"},
+		{http.MethodPost, "mcps/exa"},
+		{http.MethodGet, "skills"},
+		{http.MethodPost, "skills/review"},
+	} {
+		t.Run(tc.method+" "+tc.route, func(t *testing.T) {
+			svc := wsSessionDataService("previous", "")
+			menu := NewMemoryMenuData(svc)
+			if _, err := menu.LoadMenuSnapshot(); err != nil {
+				t.Fatal(err)
+			}
+			svc.openStorage = func(string) (storageLoader, error) {
+				inst := &session.Instance{ID: "new", GroupPath: "my-sessions", Tool: "claude", ProjectPath: "/tmp/new"}
+				return &fakeStorage{instances: []*session.Instance{inst}, updatedAt: time.Now()}, nil
+			}
+			svc.refreshTmuxCaches = func() { t.Error("session lookup ran the menu status pass") }
+			srv := newMCPTestServer(t, newFakeMCPManager(), true)
+			srv.menuData = menu
+			srv.skills = &fakeSkillsService{attachFn: func(string, string, string, string) (*session.ProjectSkillAttachment, error) {
+				return &session.ProjectSkillAttachment{}, nil
+			}}
+			reply := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(reply, newLocalRequest(tc.method, "/api/sessions/new/"+tc.route, nil))
+			if reply.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200, body = %s", reply.Code, reply.Body.String())
+			}
+		})
+	}
+}
+
+func wsSessionDataService(id, tmuxName string) *SessionDataService {
+	svc := NewSessionDataService("work")
+	svc.refreshTmuxCaches = func() {}
+	svc.loadHookStatuses = nil
+	revision := time.Now()
+	svc.openStorage = func(string) (storageLoader, error) {
+		inst := &session.Instance{ID: id, Title: id, GroupPath: "my-sessions", Tool: "shell"}
+		if tmuxName != "" {
+			inst.SetTmuxSessionForTest(tmux.ReconnectSessionLazy(tmuxName, id, "/tmp", "", "inactive"))
+		}
+		if id == "archived" {
+			inst.ArchivedAt = revision
+		}
+		return &fakeStorage{instances: []*session.Instance{inst}, profile: "resolved", updatedAt: revision}, nil
+	}
+	return svc
 }
