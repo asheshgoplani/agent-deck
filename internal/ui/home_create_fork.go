@@ -1207,6 +1207,15 @@ func completeFork(
 		inst.TitleLocked = true
 	}
 
+	// An Antigravity fork resumes a conversation that lives on the parent's
+	// host, so it cannot run inside a Docker sandbox.
+	if toggles.Sandbox && inst.Tool == "antigravity" {
+		if withStateWorktreeCreated {
+			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+		}
+		return nil, fmt.Errorf("cannot fork an Antigravity session into a Docker sandbox")
+	}
+
 	// Apply sandbox config to forked instance.
 	if toggles.Sandbox {
 		inst.Sandbox = session.NewSandboxConfig("")

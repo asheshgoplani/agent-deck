@@ -323,6 +323,13 @@ type Instance struct {
 	antigravityPendingID      string    // Workspace candidate awaiting a second observation
 	antigravityPendingAt      time.Time // When antigravityPendingID was first seen
 	antigravityBindingPending bool      // Bound in memory but not yet written to SQLite
+	antigravityBindingRetries int       // Failed SQLite writes, for retry backoff
+	antigravityBindingRetryAt time.Time // Earliest next retry for a failed binding write
+	antigravityOwnedLoggedID  string    // Sibling-owned candidate already logged (avoids per-scan noise)
+	// antigravityForkKnownIDs snapshots the workspace conversations that existed
+	// before /fork, so status polling cannot adopt a sibling while the child's
+	// own conversation is still being created.
+	antigravityForkKnownIDs map[string]bool
 	// antigravitySyncMu serializes discovery and its tmux/SQLite writes, so a
 	// slower scan cannot publish an older binding after a newer one.
 	antigravitySyncMu sync.Mutex
@@ -1856,6 +1863,9 @@ func (i *Instance) Start() (startErr error) {
 	}
 	i.retireFastDeathWatchers() // #2805
 	i.setInteractiveShellLaunchEnv()
+	if antigravityTmuxFork {
+		i.captureAntigravityForkKnownConversations()
+	}
 	noteFreshStart(i, time.Now()) // #2954: before the spawn, so the daemon judges its boot
 	if err := i.tmuxSession.Start(command); err != nil {
 		clearFreshStartToken(i.ID)
@@ -2145,7 +2155,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "antigravity":
 		if i.IsForkAwaitingStart {
-			command = i.consumeForkStartCommand()
+			command = i.buildEnvSourceCommand() + i.consumeForkStartCommand()
 			antigravityTmuxFork = true
 			i.AntigravityStartedAt = time.Now().UnixMilli()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
@@ -2289,6 +2299,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	}
 	i.retireFastDeathWatchers() // #2805
 	i.setInteractiveShellLaunchEnv()
+	if antigravityTmuxFork {
+		i.captureAntigravityForkKnownConversations()
+	}
 	noteFreshStart(i, time.Now()) // #2954, sister path to Start()
 	if err := i.tmuxSession.Start(command); err != nil {
 		clearFreshStartToken(i.ID)
@@ -2384,7 +2397,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	if antigravityTmuxFork {
 		var knownBefore map[string]bool
 		if message != "" && !promptEmbeddedInCommand {
-			knownBefore = i.antigravityKnownConversations()
+			i.mu.RLock()
+			knownBefore = i.antigravityForkKnownIDs
+			i.mu.RUnlock()
 		}
 		forkSentAt := time.Now()
 		if err := i.forkAntigravityInPane(); err != nil {
@@ -2395,7 +2410,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		// conversation, or the message lands in the parent.
 		if message != "" && !promptEmbeddedInCommand &&
 			!i.waitForAntigravityForkChild(forkSentAt, knownBefore, antigravityForkChildTimeout) {
-			return fmt.Errorf("waiting for the forked Antigravity conversation: /fork did not create a child conversation")
+			return i.stopAntigravityForkPane(fmt.Errorf("waiting for the forked Antigravity conversation: /fork did not create a child conversation"))
 		}
 	}
 	if message != "" && !promptEmbeddedInCommand {

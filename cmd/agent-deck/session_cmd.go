@@ -352,6 +352,10 @@ func handleSessionFork(profile string, args []string) {
 
 	// Verify this tool has a session-fork implementation.
 	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
+	if *sandbox && inst.Tool == "antigravity" {
+		out.Error("cannot fork an Antigravity session into a Docker sandbox: the fork runs agy --conversation on the parent's host", ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
 	if !session.SupportsNativeFork(inst.Tool) {
 		out.Error(
 			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
@@ -373,9 +377,10 @@ func handleSessionFork(profile string, args []string) {
 		inst.SyncOpenCodeLaunchID()
 	}
 	// Sync an Antigravity conversation ID from tmux env or local cache if
-	// background status polling has not persisted it yet.
+	// background status polling has not persisted it yet. A workspace binding
+	// needs two sightings, so poll briefly instead of giving up after one scan.
 	if inst.Tool == "antigravity" && inst.AntigravitySessionID == "" && inst.Exists() {
-		inst.SyncAntigravitySessionID()
+		inst.WaitForAntigravitySession(session.AntigravityConfirmWait)
 	}
 
 	// Verify it can be forked.

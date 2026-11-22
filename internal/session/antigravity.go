@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -37,7 +38,10 @@ const (
 	// antigravityForkReadyTimeout bounds the wait for the composer before
 	// /fork, so a fork on a sign-in or trust screen cannot hold a web
 	// mutation lock for the full launch readiness budget.
-	antigravityForkReadyTimeout      = 90 * time.Second
+	antigravityForkReadyTimeout = 90 * time.Second
+	// AntigravityConfirmWait leaves room for the two workspace sightings a
+	// binding requires (antigravityScanMinInterval apart) plus the final poll.
+	AntigravityConfirmWait           = antigravityScanMinInterval + 4*time.Second
 	toolDataAntigravityForkParentKey = "antigravity_fork_parent_id"
 )
 
@@ -192,9 +196,11 @@ func (i *Instance) persistAntigravitySessionBinding(sessionID string, detectedAt
 		// (CodeQL go/log-injection).
 		normalized, err := normalizeToolSessionID(FieldAntigravitySessionID, sessionID)
 		if err != nil || normalized != sessionID {
+			// Log only the length: the value failed validation, so it is
+			// arbitrary input and has no length bound (CodeQL go/log-injection).
 			sessionLog.Warn("antigravity_session_bind_invalid_id",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
-				slog.String("session_id", logging.SanitizeValue(sessionID)))
+				slog.Int("session_id_length", len(sessionID)))
 			return false
 		}
 	}
@@ -268,16 +274,54 @@ func extractAntigravityConversationID(command, wrapper string) string {
 }
 
 func antigravityHasSessionSelector(command, wrapper string) bool {
-	for _, raw := range []string{command, wrapper} {
-		tokens := splitAntigravityTokens(raw)
-		for idx := 0; idx < len(tokens); idx++ {
-			tok := tokens[idx]
-			switch {
-			case tok == "--conversation" || strings.HasPrefix(tok, "--conversation=") || tok == "-c" || tok == "--continue":
-				return true
-			case antigravityValueOptions[tok]:
-				idx++
-			}
+	if antigravityTokensHaveSessionSelector(splitAntigravityTokens(command), true) {
+		return true
+	}
+	if strings.TrimSpace(wrapper) == "" {
+		return false
+	}
+	// A wrapper's own flags belong to the wrapper, not to agy. Only a
+	// -c/--continue after {command} can be an agy --continue; a wrapper like
+	// sh -c '{command}' owns its -c.
+	return antigravityWrapperHasSessionSelector(splitAntigravityTokens(wrapper))
+}
+
+func antigravityTokensHaveSessionSelector(tokens []string, continueFlags bool) bool {
+	for idx := 0; idx < len(tokens); idx++ {
+		tok := tokens[idx]
+		switch {
+		case tok == "--conversation" || strings.HasPrefix(tok, "--conversation="):
+			return true
+		case continueFlags && (tok == "-c" || tok == "--continue"):
+			return true
+		case antigravityValueOptions[tok]:
+			idx++
+		}
+	}
+	return false
+}
+
+// antigravityWrapperHasSessionSelector looks for agy selectors in a wrapper.
+// --conversation is agy's flag anywhere in the wrapper's argv; a bare -c or
+// --continue only counts after {command}, where an auto-wrapped parent's
+// selector is appended.
+func antigravityWrapperHasSessionSelector(tokens []string) bool {
+	placeholderAt := -1
+	for idx, tok := range tokens {
+		if strings.Contains(tok, wrapperPlaceholder) {
+			placeholderAt = idx
+			break
+		}
+	}
+	for idx := 0; idx < len(tokens); idx++ {
+		tok := tokens[idx]
+		switch {
+		case tok == "--conversation" || strings.HasPrefix(tok, "--conversation="):
+			return true
+		case (tok == "-c" || tok == "--continue") && placeholderAt >= 0 && idx > placeholderAt:
+			return true
+		case antigravityValueOptions[tok]:
+			idx++
 		}
 	}
 	return false
@@ -309,19 +353,24 @@ func antigravityHasAddDir(command, dir string) bool {
 }
 
 // antigravityTokenNeedsShell reports whether a token carries shell syntax that
-// re-quoting cannot preserve (expansions, globs, operators). Such a launcher
-// is rejected rather than rewritten into something with a different meaning.
-func antigravityTokenNeedsShell(tok string) bool {
+// re-quoting cannot preserve (expansions, globs). operators says the token
+// came from a single simple command, where control characters must have been
+// quoted and can be re-quoted losslessly. Such a launcher is otherwise
+// rejected rather than rewritten into something with a different meaning.
+func antigravityTokenNeedsShell(tok string, operators bool) bool {
 	if tok == "" {
 		return false
 	}
-	if strings.ContainsAny(tok, ";&|<>`$()") {
+	if strings.ContainsAny(tok, "`$<>()") || strings.ContainsAny(tok, "*?[]") || strings.HasPrefix(tok, "~") {
 		return true
 	}
-	if strings.ContainsAny(tok, "*?[]") {
-		return true
+	if !operators {
+		return strings.ContainsAny(tok, ";&|")
 	}
-	return strings.HasPrefix(tok, "~")
+	// Commands splits on ; | || &&, so those left inside one simple command
+	// must have been quoted. A lone & is not modeled there and would
+	// background the command, so only && is safe.
+	return strings.Contains(tok, "&") && !strings.Contains(tok, "&&")
 }
 
 // antigravityAssignment splits a leading shell assignment (NAME=value) from a
@@ -343,20 +392,32 @@ func antigravityAssignment(tok string) (name, value string, ok bool) {
 // quoteAntigravityToken re-quotes one shell word without changing its meaning:
 // assignments keep NAME=value syntax and the wrapper placeholder stays
 // literal. It reports false for shell syntax the rewrite cannot preserve.
-func quoteAntigravityToken(tok string) (string, bool) {
+func quoteAntigravityToken(tok string, operators bool) (string, bool) {
 	if tok == wrapperPlaceholder {
 		return tok, true
 	}
 	if name, value, ok := antigravityAssignment(tok); ok {
-		if antigravityTokenNeedsShell(value) {
+		if antigravityTokenNeedsShell(value, operators) {
 			return "", false
 		}
 		return name + "=" + shellescape.Quote(value), true
 	}
-	if antigravityTokenNeedsShell(tok) {
+	if antigravityTokenNeedsShell(tok, operators) {
 		return "", false
 	}
 	return quoteAntigravityArg(tok), true
+}
+
+// antigravityOpaqueWrapperHasSelector looks inside a quoted {command} token,
+// whose content is agy's command string rather than the wrapper's argv.
+func antigravityOpaqueWrapperHasSelector(tokens []string) bool {
+	for _, tok := range tokens {
+		if strings.Contains(tok, wrapperPlaceholder) &&
+			antigravityWrapperHasSessionSelector(splitAntigravityTokens(tok)) {
+			return true
+		}
+	}
+	return false
 }
 
 // stripAntigravitySessionFlags removes conversation-selection and one-shot
@@ -365,23 +426,41 @@ func quoteAntigravityToken(tok string) (string, bool) {
 // reports false when the command uses shell syntax that cannot be rewritten
 // safely; the fork is rejected rather than launched with a changed meaning.
 func stripAntigravitySessionFlags(command string) (string, bool) {
-	tokens := splitAntigravityTokens(command)
-	if len(tokens) == 0 {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
 		return "", true
 	}
+	tokens, ok := shellwords.Split(trimmed)
+	if !ok {
+		return "", false
+	}
+	// Appending flags is only safe to exactly one simple command. A pipeline,
+	// redirection, comment or line break owns the rest of the line, so the
+	// fork is refused instead of rewriting it into a different command. Within
+	// one simple command, control characters left in a token must have been
+	// quoted, so re-quoting them is lossless.
+	commands, commandsOK := shellwords.Commands(trimmed)
+	if !commandsOK || len(commands) != 1 || commands[0] != trimmed {
+		return "", false
+	}
+	agyLauncher := len(shellwords.CommandWords(tokens)) > 0 &&
+		shellwords.ExecutableBase(shellwords.CommandWords(tokens)) == "agy"
 	kept := make([]string, 0, len(tokens))
 	for idx := 0; idx < len(tokens); idx++ {
 		tok := tokens[idx]
 		switch {
-		case tok == "--conversation" || tok == "-i" || tok == "--prompt-interactive":
+		case tok == "--conversation" || tok == "--prompt-interactive":
+			idx++ // skip paired value
+			continue
+		case agyLauncher && tok == "-i":
 			idx++ // skip paired value
 			continue
 		case strings.HasPrefix(tok, "--conversation=") || strings.HasPrefix(tok, "--prompt-interactive="):
 			continue
-		case tok == "-c" || tok == "--continue":
+		case agyLauncher && (tok == "-c" || tok == "--continue"):
 			continue
 		}
-		quoted, ok := quoteAntigravityToken(tok)
+		quoted, ok := quoteAntigravityToken(tok, true)
 		if !ok {
 			return "", false
 		}
@@ -401,42 +480,49 @@ func stripAntigravityConversationFromWrapper(wrapper string) (string, bool) {
 	if trimmed == "" {
 		return "", true
 	}
-	// Only a standalone, unquoted {command} word can be rewritten without
-	// guessing the wrapper's quote context: `bash -lc "{command}"` and
-	// `x{command}` are opaque.
-	hasPlaceholder := false
-	for _, field := range strings.Fields(trimmed) {
-		if field == wrapperPlaceholder {
-			hasPlaceholder = true
-			break
-		}
-	}
-	if !hasPlaceholder {
-		return "", false
-	}
+	// A standalone {command} word can be rewritten in place. A quoted or
+	// embedded placeholder is opaque, but a wrapper with no selector needs no
+	// rewrite; only one carrying a selector is rejected.
 	tokens := splitAntigravityTokens(trimmed)
-	for _, tok := range tokens {
+	standalone := false
+	placeholderAt := -1
+	for idx, tok := range tokens {
 		if tok == wrapperPlaceholder {
-			hasPlaceholder = true
+			standalone = true
+			placeholderAt = idx
 			break
 		}
+		if placeholderAt < 0 && strings.Contains(tok, wrapperPlaceholder) {
+			placeholderAt = idx
+		}
 	}
-	if !hasPlaceholder {
+	if placeholderAt < 0 {
 		return "", false
+	}
+	if !standalone {
+		// A quoted or embedded {command} leaves the wrapper's own argv opaque,
+		// but a wrapper with no selector needs no rewrite.
+		if antigravityWrapperHasSessionSelector(tokens) || antigravityOpaqueWrapperHasSelector(tokens) {
+			return "", false
+		}
+		return trimmed, true
 	}
 	kept := make([]string, 0, len(tokens))
 	for idx := 0; idx < len(tokens); idx++ {
 		tok := tokens[idx]
 		switch {
-		case tok == "--conversation" || tok == "-i" || tok == "--prompt-interactive":
+		case tok == "--conversation" || tok == "--prompt-interactive":
 			idx++
+			continue
+		case tok == "-i" && idx > placeholderAt:
+			idx++
+			continue
+		case (tok == "-c" || tok == "--continue") && idx > placeholderAt:
 			continue
 		case strings.HasPrefix(tok, "--conversation=") || strings.HasPrefix(tok, "--prompt-interactive="):
 			continue
-		case tok == "-c" || tok == "--continue":
-			continue
 		}
-		quoted, ok := quoteAntigravityToken(tok)
+		quoted, ok := quoteAntigravityToken(tok, false)
 		if !ok {
 			return "", false
 		}
@@ -548,21 +634,15 @@ func antigravityConversationExistsInDir(dataDir, sessionID string) bool {
 	if info, err := os.Stat(filepath.Join(dataDir, "conversations", sessionID+".db")); err == nil && !info.IsDir() {
 		return true
 	}
-	if data, err := os.ReadFile(filepath.Join(dataDir, "cache", "conversation_metadata.json")); err == nil {
-		var meta antigravityConversationMetadataFile
-		if json.Unmarshal(data, &meta) == nil {
-			if entry, ok := meta.Conversations[sessionID]; ok && !entry.IsInternal && !entry.Summary.Internal {
-				return true
-			}
+	if meta, _, ok := readAntigravityMetadata(filepath.Join(dataDir, "cache", "conversation_metadata.json")); ok {
+		if entry, found := meta.Conversations[sessionID]; found && !entry.IsInternal && !entry.Summary.Internal {
+			return true
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(dataDir, "cache", "last_conversations.json")); err == nil {
-		var last map[string]string
-		if json.Unmarshal(data, &last) == nil {
-			for _, id := range last {
-				if strings.TrimSpace(id) == sessionID {
-					return true
-				}
+	if last, ok := readAntigravityLastConversations(filepath.Join(dataDir, "cache", "last_conversations.json")); ok {
+		for _, id := range last {
+			if strings.TrimSpace(id) == sessionID {
+				return true
 			}
 		}
 	}
@@ -601,16 +681,66 @@ func antigravityConversationEntryID(mapID string, entry antigravityConversationE
 	return id
 }
 
-// readAntigravityMetadata reads the CLI's conversation metadata, bounded so a
-// large cache can never stall a status pass. It also returns the internal IDs
-// the scan must keep out of every discovery path, including the
+// antigravityCacheKey identifies one parsed cache generation. The CLI rewrites
+// these files in place; size plus mtime is enough to notice a change without
+// decoding every poll from every unbound session.
+type antigravityCacheKey struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
+type antigravityMetadataCacheEntry struct {
+	meta     antigravityConversationMetadataFile
+	internal map[string]bool
+	ok       bool
+}
+
+type antigravityLastCacheEntry struct {
+	last map[string]string
+	ok   bool
+}
+
+var (
+	antigravityMetadataCache struct {
+		sync.Mutex
+		key   antigravityCacheKey
+		entry antigravityMetadataCacheEntry
+	}
+	antigravityLastCache struct {
+		sync.Mutex
+		key   antigravityCacheKey
+		entry antigravityLastCacheEntry
+	}
+)
+
+func antigravityCacheKeyFor(path string) (antigravityCacheKey, bool) {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() > antigravityMetadataMaxBytes {
+		return antigravityCacheKey{}, false
+	}
+	return antigravityCacheKey{path: path, size: info.Size(), modTime: info.ModTime()}, true
+}
+
+// readAntigravityMetadata reads the CLI's conversation metadata, bounded and
+// cached so a large cache can never stall repeated status passes. The returned
+// maps are shared and must be treated as read-only. It also returns the
+// internal IDs the scan must keep out of every discovery path, including the
 // last_conversations fallback.
 func readAntigravityMetadata(path string) (antigravityConversationMetadataFile, map[string]bool, bool) {
 	var meta antigravityConversationMetadataFile
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() || info.Size() > antigravityMetadataMaxBytes {
+	key, statOK := antigravityCacheKeyFor(path)
+	if !statOK {
 		return meta, nil, false
 	}
+	antigravityMetadataCache.Lock()
+	if antigravityMetadataCache.key == key {
+		entry := antigravityMetadataCache.entry
+		antigravityMetadataCache.Unlock()
+		return entry.meta, entry.internal, entry.ok
+	}
+	antigravityMetadataCache.Unlock()
+
 	data, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(data, &meta) != nil {
 		return meta, nil, false
@@ -623,7 +753,41 @@ func readAntigravityMetadata(path string) (antigravityConversationMetadataFile, 
 			}
 		}
 	}
+	antigravityMetadataCache.Lock()
+	antigravityMetadataCache.key = key
+	antigravityMetadataCache.entry = antigravityMetadataCacheEntry{meta: meta, internal: internal, ok: true}
+	antigravityMetadataCache.Unlock()
 	return meta, internal, true
+}
+
+// readAntigravityLastConversations reads the workspace -> conversation map with
+// the same size cap and parsed cache as the metadata file.
+func readAntigravityLastConversations(path string) (map[string]string, bool) {
+	key, statOK := antigravityCacheKeyFor(path)
+	if !statOK {
+		return nil, false
+	}
+	antigravityLastCache.Lock()
+	if antigravityLastCache.key == key {
+		entry := antigravityLastCache.entry
+		antigravityLastCache.Unlock()
+		return entry.last, entry.ok
+	}
+	antigravityLastCache.Unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var last map[string]string
+	if json.Unmarshal(data, &last) != nil {
+		return nil, false
+	}
+	antigravityLastCache.Lock()
+	antigravityLastCache.key = key
+	antigravityLastCache.entry = antigravityLastCacheEntry{last: last, ok: true}
+	antigravityLastCache.Unlock()
+	return last, true
 }
 
 // discoverAntigravityConversationFromDisk finds the Antigravity conversation ID
@@ -707,47 +871,44 @@ func discoverAntigravityConversationFromDisk(dataDir, workDir, projectPath, curr
 
 	// Fallback: cache/last_conversations.json maps workspace path -> conversation ID.
 	lastPath := filepath.Join(dataDir, "cache", "last_conversations.json")
-	if data, err := os.ReadFile(lastPath); err == nil {
-		var last map[string]string
-		if json.Unmarshal(data, &last) == nil {
-			for dir, rawID := range last {
-				id := strings.TrimSpace(rawID)
-				if id == "" || !antigravitySessionIDPattern.MatchString(id) {
-					continue
-				}
-				if internalIDs[id] {
-					continue
-				}
-				if excludeID != "" && id == excludeID {
-					continue
-				}
-				normDir := normalizePath(dir)
-				matched := false
-				for _, want := range wantDirs {
-					if normDir == want {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					continue
-				}
-				if currentID != "" && id == currentID {
-					return currentID
-				}
-				if currentID == "" && !threshold.IsZero() {
-					var modTime time.Time
-					if dbInfo, err := os.Stat(filepath.Join(dataDir, "conversations", id+".db")); err == nil {
-						modTime = dbInfo.ModTime()
-					} else if fileInfo, err := os.Stat(lastPath); err == nil {
-						modTime = fileInfo.ModTime()
-					}
-					if !modTime.IsZero() && modTime.Before(threshold) {
-						continue
-					}
-				}
-				return id
+	if last, ok := readAntigravityLastConversations(lastPath); ok {
+		for dir, rawID := range last {
+			id := strings.TrimSpace(rawID)
+			if id == "" || !antigravitySessionIDPattern.MatchString(id) {
+				continue
 			}
+			if internalIDs[id] {
+				continue
+			}
+			if excludeID != "" && id == excludeID {
+				continue
+			}
+			normDir := normalizePath(dir)
+			matched := false
+			for _, want := range wantDirs {
+				if normDir == want {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			if currentID != "" && id == currentID {
+				return currentID
+			}
+			if currentID == "" && !threshold.IsZero() {
+				var modTime time.Time
+				if dbInfo, err := os.Stat(filepath.Join(dataDir, "conversations", id+".db")); err == nil {
+					modTime = dbInfo.ModTime()
+				} else if fileInfo, err := os.Stat(lastPath); err == nil {
+					modTime = fileInfo.ModTime()
+				}
+				if !modTime.IsZero() && modTime.Before(threshold) {
+					continue
+				}
+			}
+			return id
 		}
 	}
 
@@ -831,6 +992,93 @@ func (i *Instance) antigravitySessionIDBoundElsewhere(candidate string) bool {
 	return bound
 }
 
+// antigravityWorkspaceDirs lists the directories whose conversations this pane
+// may have created. Used by sibling and known-at-launch checks.
+func (i *Instance) antigravityWorkspaceDirs() []string {
+	dirs := make([]string, 0, 2)
+	if norm := normalizePath(i.EffectiveWorkingDir()); norm != "" {
+		dirs = append(dirs, norm)
+	}
+	if norm := normalizePath(i.ProjectPath); norm != "" && (len(dirs) == 0 || dirs[0] != norm) {
+		dirs = append(dirs, norm)
+	}
+	return dirs
+}
+
+// antigravityUnboundSiblingSharesWorkspace reports whether another unbound
+// Antigravity session in this profile works in the same directory. Shared
+// workspace metadata cannot say which unbound pane created a conversation, so
+// a new ID there is ambiguous and neither pane may adopt it.
+func (i *Instance) antigravityUnboundSiblingSharesWorkspace() bool {
+	wantDirs := i.antigravityWorkspaceDirs()
+	if len(wantDirs) == 0 {
+		return false
+	}
+	ambiguous := false
+	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
+		rows, err := db.LoadInstances()
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.ID == i.ID || row.Tool != "antigravity" || !row.ArchivedAt.IsZero() {
+				continue
+			}
+			if strings.TrimSpace(ReadAntigravitySessionIDFromToolData(row.ToolData)) != "" {
+				continue
+			}
+			path := row.WorktreePath
+			if strings.TrimSpace(path) == "" {
+				path = row.ProjectPath
+			}
+			norm := normalizePath(path)
+			for _, want := range wantDirs {
+				if norm != "" && norm == want {
+					ambiguous = true
+					return nil
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errNoStateDB) {
+		sessionLog.Warn("antigravity_sibling_lookup_failed",
+			slog.String("instance_id", logging.SanitizeValue(i.ID)),
+			slog.String("error", err.Error()))
+		return true // fail closed: ambiguity is safer than stealing
+	}
+	return ambiguous
+}
+
+// noteAntigravityOwnedCandidate reports whether this owned-elsewhere sighting
+// should be logged. A sibling stays owned across scans, so logging every scan
+// only adds noise.
+func (i *Instance) noteAntigravityOwnedCandidate(candidate string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.antigravityOwnedLoggedID == candidate {
+		return false
+	}
+	i.antigravityOwnedLoggedID = candidate
+	return true
+}
+
+// captureAntigravityForkKnownConversations snapshots the workspace's existing
+// conversations before /fork, so neither the wait loop nor status polling can
+// mistake a sibling for the child.
+func (i *Instance) captureAntigravityForkKnownConversations() {
+	known := i.antigravityKnownConversations()
+	i.mu.Lock()
+	i.antigravityForkKnownIDs = known
+	i.mu.Unlock()
+}
+
+func (i *Instance) antigravityForkKnownCandidate(candidate string) bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.antigravityForkKnownIDs != nil && i.antigravityForkKnownIDs[candidate]
+}
+
 // bindAntigravityConversation publishes a binding to memory, tmux and SQLite.
 // The caller holds antigravitySyncMu, so the external writes cannot interleave
 // with another scan that would publish a newer result.
@@ -891,14 +1139,31 @@ func (i *Instance) SyncAntigravitySessionID() string {
 	i.mu.RUnlock()
 
 	// A binding that reached memory but not SQLite is retried before the early
-	// return; otherwise a recovered database would never see it again.
+	// return; otherwise a recovered database would never see it. Failures back
+	// off so an unavailable database does not warn on every scan.
 	if currentID != "" {
-		if bindingPending && i.persistAntigravitySessionBinding(currentID, detectedAt) {
-			i.mu.Lock()
-			if i.AntigravitySessionID == currentID {
-				i.antigravityBindingPending = false
+		i.mu.RLock()
+		retryAt := i.antigravityBindingRetryAt
+		i.mu.RUnlock()
+		if bindingPending && (retryAt.IsZero() || !time.Now().Before(retryAt)) {
+			if i.persistAntigravitySessionBinding(currentID, detectedAt) {
+				i.mu.Lock()
+				if i.AntigravitySessionID == currentID {
+					i.antigravityBindingPending = false
+					i.antigravityBindingRetries = 0
+					i.antigravityBindingRetryAt = time.Time{}
+				}
+				i.mu.Unlock()
+			} else {
+				i.mu.Lock()
+				i.antigravityBindingRetries++
+				delay := antigravityScanMinInterval << min(i.antigravityBindingRetries, 4)
+				if delay > 30*time.Second {
+					delay = 30 * time.Second
+				}
+				i.antigravityBindingRetryAt = time.Now().Add(delay)
+				i.mu.Unlock()
 			}
-			i.mu.Unlock()
 		}
 		return currentID
 	}
@@ -922,18 +1187,32 @@ func (i *Instance) SyncAntigravitySessionID() string {
 	if candidate == "" {
 		return currentID
 	}
-	// A fork child has strong evidence: the parent is excluded and the child
-	// can only appear after /fork. A plain unbound session has only shared
-	// workspace metadata, so it needs a second observation and must not take
-	// an ID another session already owns.
-	if !trusted && excludeID == "" {
-		if !i.confirmAntigravityWorkspaceCandidate(candidate) {
+	// A fork child has stronger evidence: the parent is excluded and the child
+	// can only appear after /fork. Even so, it must never adopt a conversation
+	// another session already owns or one that existed before the fork. A
+	// plain unbound session also needs a second observation, and two unbound
+	// panes in one directory make a new ID ambiguous for both.
+	if !trusted {
+		if excludeID == "" && !i.confirmAntigravityWorkspaceCandidate(candidate) {
 			return ""
 		}
 		if i.antigravitySessionIDBoundElsewhere(candidate) {
-			sessionLog.Info("antigravity_binding_owned_elsewhere",
-				slog.String("instance_id", logging.SanitizeValue(i.ID)),
-				slog.String("session_id", logging.SanitizeValue(candidate)))
+			if i.noteAntigravityOwnedCandidate(candidate) {
+				sessionLog.Info("antigravity_binding_owned_elsewhere",
+					slog.String("instance_id", logging.SanitizeValue(i.ID)),
+					slog.String("session_id", logging.SanitizeValue(candidate)))
+			}
+			i.clearAntigravityPending()
+			return ""
+		}
+		if excludeID != "" && i.antigravityForkKnownCandidate(candidate) {
+			// The child's conversation is created by /fork, so a conversation
+			// that was already there belongs to someone else.
+			return ""
+		}
+		if excludeID == "" && i.antigravityUnboundSiblingSharesWorkspace() {
+			sessionLog.Debug("antigravity_binding_ambiguous_workspace",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)))
 			i.clearAntigravityPending()
 			return ""
 		}
@@ -970,21 +1249,32 @@ func (i *Instance) postStartSyncAntigravity(maxWait time.Duration) {
 	if i.Tool != "antigravity" {
 		return
 	}
-	if id := i.SyncAntigravitySessionID(); id != "" {
-		return
+	if maxWait <= 0 || maxWait > AntigravityConfirmWait {
+		maxWait = AntigravityConfirmWait
+	}
+	i.WaitForAntigravitySession(maxWait)
+}
+
+// WaitForAntigravitySession polls discovery until it binds a conversation or
+// the deadline passes. A workspace binding needs two sightings, so a single
+// scan right after launch (or before a CLI fork) would report "not forkable"
+// for a session that is about to bind.
+func (i *Instance) WaitForAntigravitySession(maxWait time.Duration) string {
+	if i.Tool != "antigravity" {
+		return ""
 	}
 	if maxWait <= 0 {
-		return
-	}
-	if maxWait > 2*time.Second {
-		maxWait = 2 * time.Second
+		maxWait = AntigravityConfirmWait
 	}
 	deadline := time.Now().Add(maxWait)
-	for time.Now().Before(deadline) {
-		time.Sleep(200 * time.Millisecond)
+	for {
 		if id := i.SyncAntigravitySessionID(); id != "" {
-			return
+			return id
 		}
+		if !time.Now().Before(deadline) {
+			return ""
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -1054,16 +1344,13 @@ func (i *Instance) antigravityKnownConversations() map[string]bool {
 			}
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(dataDir, "cache", "last_conversations.json")); err == nil {
-		var last map[string]string
-		if json.Unmarshal(data, &last) == nil {
-			for dir, rawID := range last {
-				if !antigravityWorkspaceMatches([]string{dir}, wantDirs) {
-					continue
-				}
-				if id := antigravityValidConversationID(rawID); id != "" {
-					known[id] = true
-				}
+	if last, ok := readAntigravityLastConversations(filepath.Join(dataDir, "cache", "last_conversations.json")); ok {
+		for dir, rawID := range last {
+			if !antigravityWorkspaceMatches([]string{dir}, wantDirs) {
+				continue
+			}
+			if id := antigravityValidConversationID(rawID); id != "" {
+				known[id] = true
 			}
 		}
 	}
@@ -1078,9 +1365,11 @@ func (i *Instance) waitForAntigravityForkChild(forkSentAt time.Time, knownBefore
 	if timeout <= 0 {
 		timeout = antigravityForkChildTimeout
 	}
-	i.antigravitySyncMu.Lock()
-	defer i.antigravitySyncMu.Unlock()
-
+	if knownBefore == nil {
+		i.mu.RLock()
+		knownBefore = i.antigravityForkKnownIDs
+		i.mu.RUnlock()
+	}
 	deadline := time.Now().Add(timeout)
 	for {
 		i.mu.RLock()
@@ -1095,8 +1384,28 @@ func (i *Instance) waitForAntigravityForkChild(forkSentAt time.Time, knownBefore
 		}
 		candidate := discoverAntigravityConversationFromDisk(
 			antigravityDataDir(), i.EffectiveWorkingDir(), i.ProjectPath, "", parentID, forkSentAt.UnixMilli())
+		if candidate != "" && !knownBefore[candidate] && i.antigravitySessionIDBoundElsewhere(candidate) {
+			if i.noteAntigravityOwnedCandidate(candidate) {
+				sessionLog.Info("antigravity_fork_candidate_owned_elsewhere",
+					slog.String("instance_id", logging.SanitizeValue(i.ID)),
+					slog.String("session_id", logging.SanitizeValue(candidate)))
+			}
+			candidate = ""
+		}
 		if candidate != "" && !knownBefore[candidate] {
+			// Hold the sync lock only for the bind, not across the 20s scan
+			// window, so a status poll is never blocked behind this wait.
+			i.antigravitySyncMu.Lock()
+			i.mu.RLock()
+			currentID = strings.TrimSpace(i.AntigravitySessionID)
+			parentID = strings.TrimSpace(i.antigravityForkParentID)
+			i.mu.RUnlock()
+			if currentID != "" && currentID != parentID {
+				i.antigravitySyncMu.Unlock()
+				return true
+			}
 			i.bindAntigravityConversation(candidate)
+			i.antigravitySyncMu.Unlock()
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -1130,6 +1439,14 @@ func (i *Instance) CanForkAntigravity() bool {
 	detectedAt := i.AntigravityDetectedAt
 	explicit := extractAntigravityConversationID(i.Command, i.Wrapper) != ""
 	i.mu.RUnlock()
+	if _, ok := stripAntigravitySessionFlags(i.antigravityCommand()); !ok {
+		// CanFork drives the TUI/Web affordance; a command the fork builder
+		// would refuse must not offer the key in the first place.
+		return false
+	}
+	if _, ok := stripAntigravityConversationFromWrapper(i.Wrapper); !ok {
+		return false
+	}
 	if explicit || (!detectedAt.IsZero() && time.Since(detectedAt) < 5*time.Minute) {
 		return true
 	}

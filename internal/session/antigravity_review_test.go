@@ -41,6 +41,9 @@ func TestAntigravityForkRewritePreservesLauncherSyntax(t *testing.T) {
 		{"compound command is rejected", "source ./env.sh && agy --conversation conv-a", "", false},
 		{"expansion is rejected", `agy --add-dir "$HOME/lib" --conversation conv-a`, "", false},
 		{"prompt is removed whole", "agy --conversation conv-a --prompt-interactive 'review --conversation=b'", "agy", true},
+		{"quoted literal keeps its meaning", `agy --model "a;b" --conversation conv-a`, "agy --model 'a;b'", true},
+		{"trailing comment is rejected", "agy --conversation conv-a # note", "", false},
+		{"redirection is rejected", "agy --conversation conv-a > ~/agy.log", "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := stripAntigravitySessionFlags(tt.command)
@@ -59,7 +62,8 @@ func TestAntigravityWrapperRewrite(t *testing.T) {
 		{"selector removed anywhere", "nice {command} --conversation conv-a", "nice {command}", true},
 		{"only the placeholder remains", "{command} --continue", "", true},
 		{"opaque wrapper is rejected", "my-launcher --conversation conv-a", "", false},
-		{"quoted placeholder is rejected", `bash -lc "{command}"`, "", false},
+		{"quoted placeholder without a selector is kept", `bash -lc "{command}"`, "bash -lc {command}", true},
+		{"quoted placeholder with a selector is rejected", `bash -lc "{command} --conversation conv-a"`, "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := stripAntigravityConversationFromWrapper(tt.wrapper)
@@ -78,6 +82,7 @@ func TestAntigravityResumeCommandUsesWrappers(t *testing.T) {
 		{"bound", "agy", "", "conv-a", "agy --conversation conv-a"},
 		{"explicit command selector wins", "agy --conversation explicit", "", "conv-a", "agy --conversation explicit"},
 		{"argument-preserving wrapper", "agy", "nice {command}", "conv-a", "agy --conversation conv-a"},
+		{"shell -c wrapper resumes", "agy", "sh -c '{command}'", "conv-a", "agy --conversation conv-a"},
 		{"wrapper selector wins", "agy", "{command} --conversation explicit", "conv-a", "agy"},
 		{"opaque wrapper cannot resume", "agy", "my-launcher", "conv-a", "agy"},
 	} {
@@ -420,5 +425,165 @@ func TestAntigravityForkWaitIgnoresKnownSiblings(t *testing.T) {
 	}
 	if inst.AntigravitySessionID != "conv-child" {
 		t.Fatalf("bound %q, want conv-child", inst.AntigravitySessionID)
+	}
+}
+
+func TestAntigravityCanForkChecksLauncherRewrite(t *testing.T) {
+	recent := time.Now()
+	for _, tt := range []struct {
+		name, command, wrapper string
+		want                   bool
+	}{
+		{"plain agy", "agy", "", true},
+		{"quoted literal is rewritable", `agy --model "a;b"`, "", true},
+		{"pipeline is not rewritable", "agy 2>&1 | tee ~/agy.log", "", false},
+		{"opaque wrapper is not rewritable", "agy", "my-launcher", false},
+		{"shell -c wrapper is forkable", "agy", "sh -c '{command}'", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := &Instance{
+				Tool: "antigravity", Command: tt.command, Wrapper: tt.wrapper,
+				AntigravitySessionID: "conv-a", AntigravityDetectedAt: recent,
+			}
+			if got := inst.CanFork(); got != tt.want {
+				t.Fatalf("CanFork() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Two unbound sessions in one directory cannot tell which one created a new
+// conversation, so neither may adopt it. Once the sibling is gone, the normal
+// two-sighting rule binds it again.
+func TestAntigravityWorkspaceCandidateAmbiguousWithUnboundSibling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "project")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAntigravityMetadata(t, filepath.Join(home, ".gemini", "antigravity-cli"), map[string]any{
+		"conv-shared": antigravityTestConversationEntry("conv-shared", workDir, time.Now(), false),
+	})
+
+	storage := newTestStorage(t)
+	prev := statedb.GetGlobal()
+	statedb.SetGlobal(storage.GetDB())
+	t.Cleanup(func() { statedb.SetGlobal(prev) })
+
+	a := NewInstance("agy-a", workDir)
+	a.Tool, a.Command = "antigravity", "agy"
+	a.AntigravityStartedAt = time.Now().Add(-time.Minute).UnixMilli()
+	b := NewInstance("agy-b", workDir)
+	b.Tool, b.Command = "antigravity", "agy"
+	b.AntigravityStartedAt = time.Now().Add(-time.Minute).UnixMilli()
+	if err := storage.SaveWithGroups([]*Instance{a, b}, NewGroupTreeWithGroups([]*Instance{a, b}, nil)); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if got := a.SyncAntigravitySessionID(); got != "" {
+		t.Fatalf("first scan bound %q", got)
+	}
+	a.mu.Lock()
+	a.antigravityPendingAt = time.Now().Add(-antigravityScanMinInterval)
+	a.mu.Unlock()
+	if got := a.SyncAntigravitySessionID(); got != "" {
+		t.Fatalf("adopted a conversation two unbound sessions could have created: %q", got)
+	}
+
+	// A fresh profile with only this session is unambiguous again.
+	loneStorage := newTestStorage(t)
+	statedb.SetGlobal(loneStorage.GetDB())
+	lone := NewInstance("agy-lone", workDir)
+	lone.Tool, lone.Command = "antigravity", "agy"
+	lone.AntigravityStartedAt = time.Now().Add(-time.Minute).UnixMilli()
+	if err := loneStorage.SaveWithGroups([]*Instance{lone}, NewGroupTreeWithGroups([]*Instance{lone}, nil)); err != nil {
+		t.Fatalf("save lone: %v", err)
+	}
+	if got := lone.WaitForAntigravitySession(AntigravityConfirmWait); got != "conv-shared" {
+		t.Fatalf("lone session bound %q, want conv-shared", got)
+	}
+}
+
+// Status polling must not bind a conversation that existed before /fork while
+// the child's own conversation is still being created.
+func TestAntigravityForkStatusPollSkipsPreForkConversations(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "project")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	writeAntigravityMetadata(t, dataDir, map[string]any{
+		"conv-sibling": antigravityTestConversationEntry("conv-sibling", workDir, time.Now().Add(-30*time.Second), false),
+	})
+
+	inst := NewInstance("agy-fork-poll", workDir)
+	inst.Tool, inst.Command = "antigravity", "agy"
+	inst.AntigravityStartedAt = time.Now().Add(-time.Minute).UnixMilli()
+	inst.antigravityForkParentID = "conv-parent"
+	inst.antigravityForkKnownIDs = map[string]bool{"conv-sibling": true}
+	if got := inst.SyncAntigravitySessionID(); got != "" {
+		t.Fatalf("bound a pre-fork sibling: %q", got)
+	}
+
+	writeAntigravityMetadata(t, dataDir, map[string]any{
+		"conv-sibling": antigravityTestConversationEntry("conv-sibling", workDir, time.Now().Add(-30*time.Second), false),
+		"conv-child":   antigravityTestConversationEntry("conv-child", workDir, time.Now(), false),
+	})
+	if got := inst.SyncAntigravitySessionID(); got != "conv-child" {
+		t.Fatalf("fork child bound %q, want conv-child", got)
+	}
+}
+
+func TestAntigravityWaitForSessionAllowsSecondSighting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "project")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAntigravityMetadata(t, filepath.Join(home, ".gemini", "antigravity-cli"), map[string]any{
+		"conv-new": antigravityTestConversationEntry("conv-new", workDir, time.Now(), false),
+	})
+	statedb.SetGlobal(nil)
+
+	inst := NewInstance("agy-wait", workDir)
+	inst.Tool, inst.Command = "antigravity", "agy"
+	inst.AntigravityStartedAt = time.Now().Add(-time.Minute).UnixMilli()
+	if got := inst.WaitForAntigravitySession(AntigravityConfirmWait); got != "conv-new" {
+		t.Fatalf("WaitForAntigravitySession() = %q, want conv-new", got)
+	}
+}
+
+func TestAntigravityMetadataCacheInvalidatesAndKeepsTheSizeCap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "project")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	metaPath := filepath.Join(dataDir, "cache", "conversation_metadata.json")
+	writeAntigravityMetadata(t, dataDir, map[string]any{
+		"conv-a": antigravityTestConversationEntry("conv-a", workDir, time.Now(), false),
+	})
+	if meta, _, ok := readAntigravityMetadata(metaPath); !ok || len(meta.Conversations) != 1 {
+		t.Fatalf("first read = %d conversations, ok=%v", len(meta.Conversations), ok)
+	}
+	writeAntigravityMetadata(t, dataDir, map[string]any{
+		"conv-a": antigravityTestConversationEntry("conv-a", workDir, time.Now(), false),
+		"conv-b": antigravityTestConversationEntry("conv-b", workDir, time.Now(), false),
+	})
+	if meta, _, ok := readAntigravityMetadata(metaPath); !ok || len(meta.Conversations) != 2 {
+		t.Fatalf("rewritten read = %d conversations, ok=%v", len(meta.Conversations), ok)
+	}
+
+	if err := os.WriteFile(metaPath, []byte(strings.Repeat("x", antigravityMetadataMaxBytes+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if antigravityConversationExistsOnDisk("conv-a") {
+		t.Fatal("an oversized metadata file was read past the size cap")
 	}
 }
