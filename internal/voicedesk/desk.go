@@ -298,7 +298,20 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 		switch kind {
 		case AnswerYes, AnswerChoice:
 			r := d.base(answerIntent(kind), lang, req.DryRun)
-			refuse(&r, RefusedExpired, sayTooLate)
+			// a foreign token still names its action; a used one is
+			// remembered by the store; only a send says "nothing sent"
+			action := p.Action
+			if err != nil {
+				action = ""
+				if u, ok := d.Store.(usedActions); ok {
+					action = u.UsedAction(req.Pending)
+				}
+			}
+			say := sayTooLate
+			if action != "" && action != actionSend {
+				say = sayTooLateDone
+			}
+			refuse(&r, RefusedExpired, say)
 			return r, true, nil
 		case AnswerNo:
 			r := d.base(IntentConfirmNo, lang, req.DryRun)
@@ -796,6 +809,9 @@ func (d *Desk) pend(req Request, r Result, p Pending, prompt string) (Result, er
 		}
 	}
 	r.Confirm = &Confirm{Token: tok, Kind: p.Kind, Prompt: prompt, ExpiresMs: AnswerWindow.Milliseconds()}
+	if req.DryRun {
+		r.Confirm.Token = "" // nothing was stored: there is no token to answer
+	}
 	return r, nil
 }
 

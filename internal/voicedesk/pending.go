@@ -177,7 +177,11 @@ func (f FileStore) Take(token string) (Pending, error) {
 		return Pending{}, ErrNoPending
 	}
 	defer os.Remove(claimed)
-	return readPending(claimed)
+	p, err := readPending(claimed)
+	if err == nil && p.Action != "" {
+		_ = os.WriteFile(path+".used", []byte(p.Action), 0o600)
+	}
+	return p, err
 }
 
 func (f FileStore) Peek(token string) (Pending, error) {
@@ -209,7 +213,7 @@ func (f FileStore) Sweep() {
 	cutoff := f.now().Add(-HardTTL)
 	for _, e := range ents {
 		name := e.Name()
-		if !strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, ".taken") && !strings.HasPrefix(name, ".pending-") {
+		if !strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, ".taken") && !strings.HasSuffix(name, ".used") && !strings.HasPrefix(name, ".pending-") {
 			continue
 		}
 		info, err := e.Info()
@@ -221,9 +225,15 @@ func (f FileStore) Sweep() {
 }
 
 // MemStore is a Store in memory (tests).
-type MemStore struct{ m map[string]Pending }
+type MemStore struct {
+	m    map[string]Pending
+	used map[string]string
+}
 
-func NewMemStore() *MemStore { return &MemStore{m: map[string]Pending{}} }
+func NewMemStore() *MemStore { return &MemStore{m: map[string]Pending{}, used: map[string]string{}} }
+
+// UsedAction: see FileStore.UsedAction.
+func (s *MemStore) UsedAction(token string) string { return s.used[token] }
 
 func (s *MemStore) Put(p Pending) error { s.m[p.Token] = p; return nil }
 
@@ -235,6 +245,9 @@ func (s *MemStore) Take(token string) (Pending, error) {
 		return Pending{}, ErrNoPending
 	}
 	delete(s.m, token)
+	if s.used != nil {
+		s.used[token] = p.Action
+	}
 	return p, nil
 }
 
@@ -248,3 +261,24 @@ func (s *MemStore) Peek(token string) (Pending, error) {
 
 // Len is the number of stored questions (tests).
 func (s *MemStore) Len() int { return len(s.m) }
+
+// UsedAction is the action of a token that was already taken ("stop",
+// "send"), or "" when the store does not know it: the too-late line of a
+// reused token then says "nothing done" or "nothing sent" as fits. Only
+// the action word is kept, never the message, and it dies with the sweep.
+func (f FileStore) UsedAction(token string) string {
+	path, err := f.path(token)
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(path + ".used")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// usedActions is a Store that remembers the action of a taken token.
+type usedActions interface {
+	UsedAction(token string) string
+}
