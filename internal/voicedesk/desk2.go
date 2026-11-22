@@ -219,9 +219,30 @@ func (d *Desk) launch(ctx context.Context, req Request, r Result, p Parsed) (Res
 	if spec.Host != "" {
 		where += " on " + spec.Host
 	}
-	prompt := "Start a new session " + spokenTitle(spec.Title, "") + where + "? Yes?"
+	// The folder is the group's own default folder, read by the deck; with
+	// none, nothing starts (no guessed folder, never a heard path).
+	folder, line := "", ""
+	if pl, ok := d.Deck.(LaunchPlanner); ok {
+		planned, err := pl.PlanLaunch(ctx, spec)
+		switch {
+		case errors.Is(err, ErrNoFolder):
+			g := spec.Group
+			if g == "" {
+				g = "this group"
+			}
+			refuse(&r, RefusedNotFound, "The group "+g+" has no default folder, so I will not start it. Set one on a screen first.")
+			return r, nil
+		case err != nil:
+			r.Say = "I could not read the folder of " + spec.Group + "."
+			return r, nil
+		}
+		spec = planned
+		folder = ", in folder " + spokenFolder(spec.Path) + ", with " + spec.Tool
+		line = " · " + spec.Path + " · " + spec.Tool
+	}
+	prompt := "Start a new session " + spokenTitle(spec.Title, "") + where + folder + "? Yes?"
 	r.Say = prompt
-	r.Show = Show{Kind: "confirm", Items: []ShowItem{{Title: spec.Title, Host: spec.Host, Line: "new session" + where}}}
+	r.Show = Show{Kind: "confirm", Items: []ShowItem{{Title: spec.Title, Host: spec.Host, Line: "new session" + where + line}}}
 	return d.pend(req, r, Pending{Profile: req.Profile, Kind: "yes", Action: actionLaunch, Intent: IntentLaunch, Lang: p.Lang, Launch: &spec}, prompt)
 }
 
@@ -239,6 +260,18 @@ func plainName(title string) bool {
 		}
 	}
 	return true
+}
+
+// spokenFolder is the last part of a folder, said as words.
+func spokenFolder(p string) string {
+	p = strings.TrimRight(p, "/")
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		p = p[i+1:]
+	}
+	if p == "" {
+		return "root"
+	}
+	return spokenTitle(p, "")
 }
 
 // launchGroup picks the group of a new session: the spoken one (matched to

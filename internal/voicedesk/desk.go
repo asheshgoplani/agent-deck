@@ -49,6 +49,18 @@ type LaunchSpec struct {
 	Group   string `json:"group"`
 	Host    string `json:"host"`
 	Profile string `json:"profile"`
+	// Path is the folder the session starts in: the group's own default
+	// folder (never a word he said, never a guess). Tool is the agent it
+	// runs. Both are read back in the question and bound to the yes.
+	Path string `json:"path,omitempty"`
+	Tool string `json:"tool,omitempty"`
+}
+
+// LaunchPlanner is a Deck that fills a new session's folder and tool before
+// the question is asked, so the read-back can say them. ErrNoFolder: the
+// group has no default folder of its own, and the desk refuses.
+type LaunchPlanner interface {
+	PlanLaunch(ctx context.Context, spec LaunchSpec) (LaunchSpec, error)
 }
 
 // SearchHit is one conversation that mentions the words.
@@ -63,6 +75,7 @@ type SearchHit struct {
 var (
 	ErrUnsupported = errors.New("not supported")
 	ErrSearchOff   = errors.New("search is off")
+	ErrNoFolder    = errors.New("group has no default folder")
 )
 
 // HostError is one host (or one local profile, Host "") that did not answer.

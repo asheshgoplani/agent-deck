@@ -65,7 +65,7 @@ func (p Pending) binding() string {
 		fmt.Fprintf(h, "t%s\x00%s\x00", c.ID, c.Host)
 	}
 	if p.Launch != nil {
-		fmt.Fprintf(h, "l%s\x00%s\x00%s\x00%s\x00", p.Launch.Title, p.Launch.Group, p.Launch.Host, p.Launch.Profile)
+		fmt.Fprintf(h, "l%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00", p.Launch.Title, p.Launch.Group, p.Launch.Host, p.Launch.Profile, p.Launch.Path, p.Launch.Tool)
 	}
 	fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d", p.Message, p.Left, p.Retries, p.CreatedAt.UnixNano())
 	return hex.EncodeToString(h.Sum(nil))

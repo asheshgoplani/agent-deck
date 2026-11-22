@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -472,13 +473,72 @@ func (d *cliVoiceDeck) Act(ctx context.Context, s voicedesk.Session, verb string
 	return nil
 }
 
-// Launch starts a session with `launch -t <title> -g <group> --json`; the
-// path and tool come from the group's defaults as for a typed launch.
+// voiceToolRe is a plain tool name (claude, codex, gemini...): a
+// configured default_tool that is a whole command line is not used.
+var voiceToolRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+// voiceLaunchTool is the agent a voice launch runs: [default_tool] when it
+// is a plain tool name, else claude.
+func voiceLaunchTool() string {
+	if t := strings.TrimSpace(session.GetDefaultTool()); voiceToolRe.MatchString(t) {
+		return t
+	}
+	return "claude"
+}
+
+// PlanLaunch fills the folder and tool of a voice launch before the
+// question is asked. The folder is only the group's own default_path
+// (`group show --json`, explicit_default_path), read on the host the
+// session will run on; never the folder of the group's latest session and
+// never a word that was heard. ErrNoFolder when there is none.
+func (d *cliVoiceDeck) PlanLaunch(ctx context.Context, spec voicedesk.LaunchSpec) (voicedesk.LaunchSpec, error) {
+	if strings.TrimSpace(spec.Group) == "" {
+		return spec, voicedesk.ErrNoFolder
+	}
+	args := []string{"group", "show", spec.Group, "--json"}
+	if spec.Host != "" {
+		args = append([]string{"remote", spec.Host}, args...)
+	} else {
+		profile := spec.Profile
+		if profile == "" {
+			profile = d.profile
+		}
+		args = append([]string{"-p", profile}, args...)
+	}
+	out, err := d.run(ctx, "", args...)
+	var v struct {
+		Success  bool   `json:"success"`
+		Explicit string `json:"explicit_default_path"`
+	}
+	if jerr := json.Unmarshal(bytes.TrimSpace(out), &v); jerr != nil || !v.Success {
+		if err == nil {
+			err = errors.New("group show did not succeed")
+		}
+		return spec, err
+	}
+	folder := strings.TrimSpace(v.Explicit)
+	// Absolute on the host it runs on; a relative or "-" value could be
+	// read as a flag by launch.
+	if folder == "" || !strings.HasPrefix(folder, "/") || strings.ContainsAny(folder, "\x00\n") {
+		return spec, voicedesk.ErrNoFolder
+	}
+	spec.Path, spec.Tool = filepath.Clean(folder), voiceLaunchTool()
+	return spec, nil
+}
+
+// Launch starts a session with
+// `launch -t <title> -c <tool> -g <group> --json <folder>`. The folder and
+// tool come from PlanLaunch and were read back before the yes; without
+// them nothing is started (no guessed folder, no bare shell).
 func (d *cliVoiceDeck) Launch(ctx context.Context, spec voicedesk.LaunchSpec) (voicedesk.Session, error) {
-	args := []string{"launch", "-t", spec.Title, "--json"}
+	if !strings.HasPrefix(spec.Path, "/") || !voiceToolRe.MatchString(spec.Tool) {
+		return voicedesk.Session{}, errors.New("voice launch has no folder or tool")
+	}
+	args := []string{"launch", "-t", spec.Title, "-c", spec.Tool}
 	if spec.Group != "" {
 		args = append(args, "-g", spec.Group)
 	}
+	args = append(args, "--json", spec.Path)
 	if spec.Host != "" {
 		args = append([]string{"remote", spec.Host}, args...)
 	} else {

@@ -97,7 +97,7 @@ yours called …"; it is never typed into the session as plain text.
 
 | Intent | English | Roman Hindi | Does (after a yes where marked) |
 |---|---|---|---|
-| `launch` | "start a new session called X in G", "launch a new session named X" | "ek nayi session shuru karo naam X", "G mein nayi session shuru karo naam X" | yes: `launch -t x -g G` (or on a remote) |
+| `launch` | "start a new session called X in G", "launch a new session named X" | "ek nayi session shuru karo naam X", "G mein nayi session shuru karo naam X" | yes: `launch -t x -c <tool> -g G <folder>` (or on a remote) |
 | `stop` / `restart` / `archive` | "stop X", "restart X", "archive X" | "X band karo", "X restart karo", "X archive karo" | yes: `session stop|restart|archive` |
 | plural | "stop all workers" | "sab workers band karo" | names every session it will act on, at most five per yes; leaves conductors and the session the mic is on out unless named; "No workers are running." when none is |
 | `search` | "where did we talk about X", "search what was said about X" | "X ki baat kahan hui thi" | `recall search` (read-only; needs `[recall] enabled`); only hits from his own sessions are spoken or shown |
@@ -109,6 +109,9 @@ yours called …"; it is never typed into the session as plain text.
 | `todo_done` | "tick off X", "mark X done", "X is done" | "X wala ho gaya", "X ho gaya" | the whole item ticks at once; part of it after "tick off" / "wala" asks "Tick off fix the build?"; a bare "the build is done" / "build ho gaya" is talk |
 
 Every launch, stop, restart and archive is read back and needs a yes within 10 s; the yes re-checks each session.
+A launch starts only in the group's own default folder (`group update G --default-path ...`) and says it with the
+tool: "Start a new session x in G, in folder alpha, with claude? Yes?". A group without one is refused; the folder is
+never taken from what was heard. The tool is `default_tool` from config.toml when it is a plain name, else claude.
 An unknown name after stop/restart/archive is not the desk's ("stop listening" belongs to the voice daemon).
 A sentence with a delete verb (delete, remove, erase, wipe, drop, get rid of, hata, mita, nikal, uda, khatam, and
 their Devanagari and misheard forms) is refused when what is left names a session (his, someone else's, or one of
