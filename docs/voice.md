@@ -38,4 +38,4 @@ Sessions whose status is `waiting`, longest first, across every local profile an
 
 **Errors.** `errors` entries carry fixed words: `timeout`; `unreachable` (a remote that could not be asked: ssh failed, or its agent-deck is missing or exited non-zero); `bad-reply` (the reply was not a session list); `failed` (a local profile that could not be listed, or a source that crashed, local or remote). A remote is `host: "<name>"`; this machine is `host: ""` plus `profile`. Raw ssh text is never shown. `--timeout` is more than 0 and at most 3 s. Plain text prints one line per session (`title [host]: reason, waiting 2m`); errors go to stderr.
 
-The Go entry point is `needsme.Collect(ctx, needsme.Options{Sources: needsme.DefaultSources(self, profile)})` in `internal/needsme`.
+The Go entry point is `needsme.Collect(ctx, needsme.Options{Sources: needsme.DefaultSources(self, profile)})` in `internal/needsme`. Voice uses `needsme.ProfileSources(self, profile)` instead: the current profile only, plus the remotes. Voice never lists or targets a session of another local profile.

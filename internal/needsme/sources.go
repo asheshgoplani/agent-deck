@@ -31,11 +31,28 @@ func DefaultSources(selfPath, fallbackProfile string) []Source {
 		profiles = []string{fallbackProfile}
 	}
 	for _, p := range profiles {
-		p := p
-		srcs = append(srcs, Source{Profile: p, Fetch: func(ctx context.Context) ([]Row, error) {
-			return runList(ctx, selfPath, p)
-		}})
+		srcs = append(srcs, localSource(selfPath, p))
 	}
+	return append(srcs, remoteSources()...)
+}
+
+// ProfileSources is the voice desk's list: the one given (current) local
+// profile plus every configured remote. Voice never targets a session of
+// another local profile, so those are never asked; `needs-me` keeps
+// DefaultSources (every local profile, as docs/voice.md says).
+func ProfileSources(selfPath, profile string) []Source {
+	return append([]Source{localSource(selfPath, profile)}, remoteSources()...)
+}
+
+func localSource(selfPath, profile string) Source {
+	return Source{Profile: profile, Fetch: func(ctx context.Context) ([]Row, error) {
+		return runList(ctx, selfPath, profile)
+	}}
+}
+
+// remoteSources is one source per configured remote, in name order.
+func remoteSources() []Source {
+	var srcs []Source
 	cfg, err := session.LoadUserConfig()
 	if err == nil && cfg != nil {
 		names := make([]string, 0, len(cfg.Remotes))
