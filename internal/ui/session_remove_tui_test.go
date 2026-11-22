@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -221,5 +224,82 @@ func TestSessionRemoveTUI_ConfirmRemoteRemove_RunsRemoteSessionRemove(t *testing
 	}
 	if msg.err == nil {
 		t.Fatalf("expected an error for an unconfigured remote %q", "box")
+	}
+}
+
+// TestRemoteSessionRemoved_SuccessDropsRow — a confirmed registry remove drops
+// the row at once and asks the remote for its listing, so the controller never
+// keeps a row the remote no longer has.
+func TestRemoteSessionRemoved_SuccessDropsRow(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, nil)
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"box": {remoteInfo("box", "rid-1", "doomed", string(session.StatusStopped)), remoteInfo("box", "rid-2", "kept", string(session.StatusStopped))},
+	}
+	home.setRemotePending("rid-1", "removing…")
+
+	model, cmd := home.Update(remoteSessionRemovedMsg{remoteName: "box", sessionID: "rid-1", title: "doomed"})
+	h := model.(*Home)
+
+	if got := remoteTitles(h, "box"); len(got) != 1 || got[0] != "kept" {
+		t.Fatalf("a confirmed remove must drop the row; got %v", got)
+	}
+	if _, pending := h.remotePending["rid-1"]; pending {
+		t.Fatal("the pending marker must be cleared")
+	}
+	if cmd == nil {
+		t.Fatal("a confirmed remove must refetch the remote's listing")
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "removed 'doomed' from the registry on box") {
+		t.Fatalf("footer = %v", h.err)
+	}
+}
+
+// TestRemoteSessionRemoved_ErrorKeepsRow — a refusal (the remote's own status
+// gate firing between the keypress and the call) keeps the row and says why,
+// because nothing was removed.
+func TestRemoteSessionRemoved_ErrorKeepsRow(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, nil)
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"box": {remoteInfo("box", "rid-1", "went-live", string(session.StatusRunning))},
+	}
+	home.setRemotePending("rid-1", "removing…")
+
+	refusal := errors.New("session 'went-live' is in state 'running'; only stopped/error sessions may be removed without --force")
+	model, _ := home.Update(remoteSessionRemovedMsg{remoteName: "box", sessionID: "rid-1", title: "went-live", err: refusal})
+	h := model.(*Home)
+
+	if got := remoteTitles(h, "box"); len(got) != 1 || got[0] != "went-live" {
+		t.Fatalf("a refused remove must keep the row; got %v", got)
+	}
+	if _, pending := h.remotePending["rid-1"]; pending {
+		t.Fatal("the pending marker must be cleared")
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "failed to remove 'went-live' on box") {
+		t.Fatalf("footer = %v", h.err)
+	}
+}
+
+// TestRemoteSessionRemoved_InterruptKeepsRow — a reply lost with the channel
+// (#3) leaves the outcome unknown: the row stays, the footer says so, and a
+// fetch decides.
+func TestRemoteSessionRemoved_InterruptKeepsRow(t *testing.T) {
+	interrupted := fmt.Errorf("ssh wrapper: %w", session.ErrRemoteInterrupted)
+	home := newTestHomeWithItems(100, 30, nil)
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"box": {remoteInfo("box", "rid-1", "maybe-gone", string(session.StatusStopped))},
+	}
+	home.setRemotePending("rid-1", "removing…")
+
+	model, cmd := home.Update(remoteSessionRemovedMsg{remoteName: "box", sessionID: "rid-1", title: "maybe-gone", err: interrupted})
+	h := model.(*Home)
+
+	if got := remoteTitles(h, "box"); len(got) != 1 || got[0] != "maybe-gone" {
+		t.Fatalf("an interrupted remove must keep the row until the fetch decides; got %v", got)
+	}
+	if cmd == nil {
+		t.Fatal("an interrupted remove must start a fetch")
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "connection dropped before the reply, refreshing") {
+		t.Fatalf("footer = %v", h.err)
 	}
 }
