@@ -205,7 +205,8 @@ func TestPhase2ActOnlyAfterYes(t *testing.T) {
 	t.Run("next skips the session he is on", func(t *testing.T) {
 		h := phase2Harness(t)
 		got := h.do(Request{Sentence: "take me to the next one", On: idTsFix})
-		if got.Then == nil || got.Then.Target.ID != idConductor {
+		// the waiting conductor is never picked (owner rule): phone build
+		if got.Then == nil || got.Then.Target.ID != idPhone {
 			t.Fatalf("got %+v", got)
 		}
 	})

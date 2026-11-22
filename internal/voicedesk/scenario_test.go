@@ -8,13 +8,13 @@ import "testing"
 // --on that session.
 func TestScenarioSwitchAskOpenFollowUp(t *testing.T) {
 	h, pf := pageHarness(t)
-	// 1. switch: "find the deck conductor session" -> yes -> then.switch
-	ask := h.say("find the deck conductor session")
-	sw := h.yes(ask)
-	if sw.Then == nil || sw.Then.Target.ID != idConductor {
-		t.Fatalf("switch: %+v", sw)
+	// 1. voice never switches to a conductor (owner rule): "find the deck
+	// conductor session" asks nothing and switches nothing; he moves the
+	// mic to it himself, so the next steps run with --on that session
+	if ask := h.say("find the deck conductor session"); ask.Confirm != nil || ask.Then != nil {
+		t.Fatalf("voice offered to switch to a conductor: %+v", ask)
 	}
-	on := sw.Then.Target.ID
+	on := idConductor
 	// 2. ask: he is on it now, a plain question is sent at once and said back
 	got := h.do(Request{Sentence: "ask deck conductor what changed since yesterday", On: on})
 	if got.Say != "Sent to conductor deck alex." || len(h.deck.sent) != 1 || h.deck.sent[0].msg != "what changed since yesterday" {

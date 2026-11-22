@@ -216,7 +216,7 @@ func (d *Desk) todoDone(ctx context.Context, req Request, r Result, p Parsed, td
 		}
 		if todoPart(q, it.Text) {
 			part = append(part, it)
-		} else if ok, level, _ := coverage(q, Session{Title: it.Text}); ok && level >= wordPhonetic {
+		} else if ok, level, _ := coverage(q, Session{Title: it.Text}); (ok && level >= wordPhonetic) || todoPrefixOnly(q, it.Text) {
 			near = true
 		}
 	}
@@ -335,19 +335,54 @@ func todoHasWord(items []Todo, w string) bool {
 	return false
 }
 
-// todoSameWord: equal, a plural ending (s, es), or for a word heard in
-// Devanagari the same vowel classes. A prefix ("rent"/"rental") or a sound
-// alike ("bill"/"build") is not the same word.
+// todoSameWord: equal, a plural ending (s; es only after s, x, z, ch, sh,
+// as the CLI's close match), or for a word heard in Devanagari the same
+// vowel classes. A prefix ("rent"/"rental"), a sound alike ("bill"/"build")
+// or another word plus "es" ("jon"/"jones", "not"/"notes", "plan"/"planes")
+// is not the same word.
 func todoSameWord(a, b string, deva bool) bool {
-	if a == b {
+	if a == b || a+"s" == b || b+"s" == a {
 		return true
 	}
-	for _, suf := range []string{"s", "es"} {
-		if a+suf == b || b+suf == a {
+	if esPlural(a, b) || esPlural(b, a) {
+		return true
+	}
+	return deva && utf8.RuneCountInString(a) >= 3 && vowelClass(a) == vowelClass(b)
+}
+
+// todoPrefixOnly: every spoken word is a word of the item or the start (3
+// runes or more) of one ("call jon" for "call jones", "plan" for "book the
+// planes"): a close match, never ticked.
+func todoPrefixOnly(q nameQuery, text string) bool {
+	iw := splitWords(text)
+	for i, w := range q.words {
+		found := false
+		for _, x := range iw {
+			if todoSameWord(w, x.folded, q.deva[i] || x.deva) ||
+				(utf8.RuneCountInString(w) >= 3 && strings.HasPrefix(x.folded, w)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return len(q.words) > 0
+}
+
+// esPlural: plural is stem+"es", the stem is 3 runes or more and ends in s,
+// x, z, ch or sh (the CLI's rule).
+func esPlural(stem, plural string) bool {
+	if stem+"es" != plural || utf8.RuneCountInString(stem) < 3 {
+		return false
+	}
+	for _, end := range []string{"s", "x", "z", "ch", "sh"} {
+		if strings.HasSuffix(stem, end) {
 			return true
 		}
 	}
-	return deva && utf8.RuneCountInString(a) >= 3 && vowelClass(a) == vowelClass(b)
+	return false
 }
 
 // todoGlue are small words of an item he need not say ("write tests is done"

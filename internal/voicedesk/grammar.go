@@ -37,6 +37,9 @@ type Parsed struct {
 	// Phonetic: the session was found by sound only (set by the desk)
 	Phonetic bool
 	Title    string // launch: the new session's spoken name
+	// TitleRaw is the name as typed or heard, with the signs before its
+	// first word ("-p other" keeps its "-"), for the plain-name check.
+	TitleRaw string
 	Group    string // launch: the spoken group ("" = default)
 	// All: "stop all workers": every session the name fits (max 5 per yes)
 	All bool
@@ -380,6 +383,11 @@ func parseWith(sentence string, grammar []pattern) Parsed {
 		}
 		if c.hasTitle {
 			out.Title = cut(ws[c.title.from:c.title.to])
+			start := 0
+			if c.title.from > 0 {
+				start = ws[c.title.from-1].end
+			}
+			out.TitleRaw = strings.TrimSpace(sentence[start:ws[c.title.to-1].end])
 		}
 		if c.hasGroup {
 			gw := trimNameNoise(ws[c.group.from:c.group.to])

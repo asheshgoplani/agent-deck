@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Phase 2: launch, stop, restart, archive (each after a yes), search what
@@ -29,13 +30,14 @@ func (d *Desk) runPhase2(ctx context.Context, req Request, r Result, p Parsed) (
 	switch p.Intent {
 	case IntentNext:
 		rows, errs := d.Deck.NeedsMe(ctx)
-		for _, s := range d.Config.mine(rows) {
+		// never a conductor, never another profile (owner rule)
+		for _, s := range switchableOnly(d.Config.mine(cleanAll(rows)), req.Profile) {
 			if s.ID == req.On {
 				continue
 			}
 			d.switchTo(ctx, req, &r, s)
 			if s.Reason != "" {
-				r.Say = "Switching to " + spokenTitle(s.Title, s.Host) + ", it " + s.Reason + "."
+				r.Say = "Switching to " + spokenTitle(s.Title, s.Host) + ", " + whyWaiting(s.Reason) + "."
 			}
 			r.Show = Show{Kind: "sessions", Items: items([]Session{s}, d.now())}
 			return r, nil
@@ -43,7 +45,7 @@ func (d *Desk) runPhase2(ctx context.Context, req Request, r Result, p Parsed) (
 		r.Say = "Nobody else is waiting for you." + unreachable(errs)
 		return r, nil
 	case IntentSearch:
-		return d.search(ctx, r, p)
+		return d.search(ctx, req, r, p)
 	case IntentLaunch:
 		return d.launch(ctx, req, r, p)
 	case IntentTodoAdd, IntentTodoList, IntentTodoDone:
@@ -52,7 +54,25 @@ func (d *Desk) runPhase2(ctx context.Context, req Request, r Result, p Parsed) (
 	return r, errors.New("not a phase 2 intent: " + p.Intent)
 }
 
-func (d *Desk) search(ctx context.Context, r Result, p Parsed) (Result, error) {
+// whyWaiting makes a needs-me reason a clause about the session: "it is
+// waiting for you", "it asks a question", "its model is unavailable".
+func whyWaiting(reason string) string {
+	switch {
+	case reason == "waiting for you":
+		return "it is waiting for you"
+	case reason == "finished, waiting for your next message":
+		return "it finished and is waiting for your next message"
+	case reason == "model unavailable":
+		return "its model is unavailable"
+	case reason == "process exited":
+		return "its process exited"
+	case strings.HasPrefix(reason, "account blocked"):
+		return "its account is blocked" + strings.TrimPrefix(reason, "account blocked")
+	}
+	return "it " + reason
+}
+
+func (d *Desk) search(ctx context.Context, req Request, r Result, p Parsed) (Result, error) {
 	query := strings.TrimSpace(strings.TrimRight(p.Message, ".?!"))
 	qw := trimNameNoise(splitWords(query))
 	if len(qw) == 0 {
@@ -75,7 +95,7 @@ func (d *Desk) search(ctx context.Context, r Result, p Parsed) (Result, error) {
 		r.Say = "Nothing found about " + query + "."
 		return r, nil
 	}
-	hits = d.hisHits(ctx, hits)
+	hits = d.hisHits(ctx, hits, req.Profile)
 	if len(hits) == 0 {
 		r.Say = "Nothing found about " + query + "."
 		return r, nil
@@ -104,8 +124,9 @@ func (d *Desk) search(ctx context.Context, r Result, p Parsed) (Result, error) {
 // on the machine and its remotes, so a hit with no deck session, or with a
 // deck id the session list does not know, could be anyone's: it is dropped.
 // When no hit is left the answer is "nothing found", which says nothing
-// about other people's conversations.
-func (d *Desk) hisHits(ctx context.Context, hits []SearchHit) []SearchHit {
+// about other people's conversations. A hit of another local profile is
+// dropped too: voice keeps to the profile it runs in.
+func (d *Desk) hisHits(ctx context.Context, hits []SearchHit, profile string) []SearchHit {
 	all, _ := d.sessions(ctx)
 	var out []SearchHit
 	for _, h := range hits {
@@ -116,7 +137,7 @@ func (d *Desk) hisHits(ctx context.Context, hits []SearchHit) []SearchHit {
 			if s.ID != h.DeckID || s.Host != h.Host {
 				continue
 			}
-			if k, _ := d.Config.ownerOf(s); k == ownerMine {
+			if k, _ := d.Config.ownerOf(s); k == ownerMine && inProfile(s, profile) {
 				out = append(out, h)
 			}
 			break
@@ -191,7 +212,7 @@ func (d *Desk) launch(ctx context.Context, req Request, r Result, p Parsed) (Res
 	if len(tw) == 0 {
 		return notMine(p.Lang), nil
 	}
-	if !plainName(p.Title) {
+	if !plainName(p.Title) || !plainName(p.TitleRaw) {
 		refuse(&r, RefusedUnsafe, "A session name can only use plain words; type it instead.")
 		return r, nil
 	}
@@ -255,8 +276,16 @@ func plainName(title string) bool {
 		return false
 	}
 	for _, f := range strings.Fields(t) {
-		if strings.HasPrefix(f, "-") {
-			return false
+		// each word starts with a letter or a digit: no flag sign ("-p",
+		// "--cmd", an en dash) and no lookalike punctuation (fullwidth
+		// "．", "／"); inside a word only - _ ' . are kept
+		for i, c := range f {
+			switch {
+			case unicode.IsLetter(c) || unicode.IsDigit(c) || unicode.IsMark(c):
+			case i > 0 && strings.ContainsRune("-_'.", c):
+			default:
+				return false
+			}
 		}
 	}
 	return true
