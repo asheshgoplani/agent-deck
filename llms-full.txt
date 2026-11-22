@@ -232,7 +232,7 @@ agent-deck mcp attach my-proj exa # Attach MCP to session
 | `/` / `G` | Search / Global search |
 | `r` | Restart session |
 | `d` | Delete |
-| `?` | Full help |
+| `?` | Help (`Tab` for all keys) |
 
 See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all shortcuts and [CLI Reference](skills/agent-deck/references/cli-reference.md) for all commands.
 
