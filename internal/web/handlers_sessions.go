@@ -160,6 +160,12 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionTimeline(w, r, sessionID)
 		return
 	}
+	// GET /api/sessions/{id}/timeline/stream: the SSE form of
+	// `agent-deck recall follow <id> --after <cursor|end> --jsonl`.
+	if action == "timeline/stream" {
+		s.handleSessionTimelineStream(w, r, sessionID)
+		return
+	}
 
 	// Worktree sub-route: POST /api/sessions/{id}/worktree/finish
 	// (issue #1126 — closes the "Finish worktree" MISSING row in

@@ -453,8 +453,16 @@ func TestRowsFollowResync(t *testing.T) {
 	lines := fixtureLines(t, "claude")
 	appendFile(t, path, bytes.Join(lines[:6], nil))
 	_, cursor := readRowsT(t, "claude", path, RowsOptions{})
+	// CheckFollowCursor, which a server calls before it takes a stream
+	// slot, gives the reason the follow's resync_required frame carries.
 	run := func(src RowsSource, after string) RowFrame {
 		var got RowFrame
+		defer func() {
+			var re *ResyncError
+			if err := CheckFollowCursor(src, after); !errors.As(err, &re) || re.Reason != got.Reason {
+				t.Errorf("CheckFollowCursor(%q) = %v, want resync %s", after, err, got.Reason)
+			}
+		}()
 		err := FollowRows(context.Background(), src, after, 10*time.Millisecond, nil, nil, func(f RowFrame) error {
 			got = f
 			if f.Frame == "resync_required" {
@@ -468,6 +476,9 @@ func TestRowsFollowResync(t *testing.T) {
 		return got
 	}
 	src := RowsSource{Harness: "claude", Path: path}
+	if err := CheckFollowCursor(src, cursor); err != nil {
+		t.Fatalf("CheckFollowCursor(valid) = %v", err)
+	}
 	if f := run(src, "not-a-cursor"); f.Reason != "invalid_cursor" {
 		t.Errorf("invalid cursor: %+v", f)
 	}

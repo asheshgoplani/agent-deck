@@ -193,7 +193,12 @@ behavior and can independently contain a large transcript.
 `GET /api/sessions/{id}/timeline` answers the same rows v2 object for a deck
 session id, so a web or other HTTP client reads what `recall timeline <id>
 --json` prints. The query parameters are the CLI's flags: `tail`, `limit`,
-`since`, `before` (with `limit`) and `agent`, with the same rules. It reads
+`since`, `before` (with `limit`), `agent`, `kinds` and `skip-empty-body`,
+with the same rules. `kinds=user,assistant` is the allowlist; a present but
+empty `kinds` or an unknown kind is a 400 that lists the valid kinds.
+`skip-empty-body` takes `true`/`false` (present without a value means
+`true`). A filtered answer carries `next_cursor`, the cursor to pass to
+`since` next. It reads
 the session's live Claude Code, Codex or Pi transcript and never touches the
 index. The route follows the web server's token like every other `/api`
 route and needs `[recall] enabled = true` like the CLI.
@@ -213,6 +218,50 @@ another file is refused rather than read.
 | 404 | `NOT_FOUND` | no such session, its transcript does not exist on this machine yet, or no sub-agent sidechain matches `agent` |
 | 409 | `RESYNC_REQUIRED` | the cursor is malformed or no longer describes the transcript (rewritten, moved, or not this session's); reload without it |
 | 500 | `INTERNAL_ERROR` | the session data or the transcript could not be read |
+
+#### Stream (`timeline/stream`)
+
+`GET /api/sessions/{id}/timeline/stream?after=<cursor|end>` is the SSE form
+of `recall follow <id> --after <cursor|end> --jsonl`. Each event is one
+follow frame: the event name is the frame (`row`, `update`, `remove`,
+`status`, `resync_required`) and `data` is the frame's JSON, the same line
+the CLI prints. A frame's `cursor` is also the event `id`, and a
+`Last-Event-ID` header wins over `after`, so an EventSource that reconnects
+resumes where it stopped.
+
+```text
+id: eyJ2IjoyLC...
+event: row
+data: {"frame":"row","row":{"id":"…","kind":"assistant","body":"…"},"cursor":"eyJ2IjoyLC..."}
+```
+
+- `after` (required): a `through_cursor`, `next_cursor` or frame cursor, or
+  `end` to start at the current end. The first block is always an id-only
+  event with the start cursor (for `end`, the resolved end), so a client
+  that drops before the first frame reconnects without skipping the rows
+  written in between.
+- `kinds`, `skip-empty-body`: the timeline filter. Rows the filter drops are
+  not sent, nor their later `update`/`remove` frames. When a held-back frame
+  carried a cursor, the stream sends an id-only event (an `id:` line, no
+  data): that id is the stream's `next_cursor`. Keep the last id you saw,
+  not the cursor of the last row you rendered, or a resume re-reads the
+  filtered window.
+- `status=true`: a `status` frame with `session_id`, `session_status` and
+  `running`, every second while the session runs and once when it stops.
+  The pane facts the CLI adds (verb, tokens, current tool) are left out.
+
+The stream uses the same token check as the snapshot route (the
+`Authorization` header or the web UI's token cookie; a `?token=` query is
+refused). It ends after `resync_required`, and when the client disconnects;
+an idle stream sends a `: keepalive` comment every 15 seconds. On
+`resync_required`, close the EventSource and reload with a fresh snapshot:
+an EventSource left open reconnects with the same stale `Last-Event-ID` and
+gets `resync_required` again. A server keeps at most 32 timeline streams
+open; past that a new one gets 429 `RATE_LIMITED` until a client
+disconnects. An open stream does not hold back a headless `agent-deck web`
+from restarting into a new build, as with `/events/*`. Before the
+first event, errors are JSON as on the snapshot route (a missing `after`
+is a 400).
 | 501 | `NOT_IMPLEMENTED` | the session's tool is not Claude Code, Codex or Pi; the CLI falls back to the index for those, the route does not |
 | 503 | `RECALL_DISABLED` | `[recall] enabled` is false |
 
