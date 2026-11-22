@@ -197,9 +197,12 @@ func CommandSpans(command string) ([]CommandSpan, bool) {
 			data = false
 		case r == '&' || r == '(' || r == ')':
 			// Word separators to the shell, though the command keeps them.
+			if start < 0 {
+				start = i
+			}
+			end = i + size
 			atWordStart = true
-		default:
-			atWordStart = false
+			continue
 		}
 		if !data {
 			continue
@@ -208,6 +211,9 @@ func CommandSpans(command string) ([]CommandSpan, bool) {
 			start = i
 		}
 		end = i + size
+		// Any written part of a word, including a quote or an escaped rune,
+		// means the next character is no longer at a word start.
+		atWordStart = false
 	}
 	if escaped || quote != 0 {
 		return nil, false
