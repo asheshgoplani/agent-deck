@@ -40,13 +40,14 @@ describe('TerminalPanel lazy xterm load', () => {
 
   async function mount(id) {
     const { render, h: ph } = await import('preact')
+    const { act } = await import('preact/test-utils')
     const state = await import('../../../internal/web/static/app/state.js')
     const { TerminalPanel } = await import('../../../internal/web/static/app/TerminalPanel.js')
     state.sessionsSignal.value = [{ id: 'a', title: 'a' }, { id: 'b', title: 'b' }]
     state.selectedIdSignal.value = id
     const root = document.createElement('div'); document.body.appendChild(root)
-    render(ph(TerminalPanel, {}), root)
-    return { root, render, ph, TerminalPanel, state }
+    act(() => { render(ph(TerminalPanel, {}), root) }) // flush render + effects now, not on preact's rAF timer
+    return { root, render, ph, TerminalPanel, state, act }
   }
   const tick = () => new Promise(r => setTimeout(r, 20))
 
@@ -60,8 +61,12 @@ describe('TerminalPanel lazy xterm load', () => {
 
   it('switching sessions while loading yields exactly one terminal, for the newest', async () => {
     const m = await mount('a'); await tick()
-    m.state.selectedIdSignal.value = 'b'; await tick()
-    h.release(); await tick()
+    // Flush the re-render and its effects synchronously. Waiting a fixed 20 ms let
+    // the effect for 'b' run after the gate opened on a loaded machine, so the stale
+    // 'a' effect built a terminal before being replaced (2 terminals, 1 in 60 runs).
+    m.act(() => { m.state.selectedIdSignal.value = 'b' })
+    h.release()
+    await vi.waitFor(() => expect(h.terms.length).toBeGreaterThan(0))
     expect(h.terms).toHaveLength(1)
     expect(h.ws).toHaveLength(1)
     expect(h.ws[0].url).toContain('/b')

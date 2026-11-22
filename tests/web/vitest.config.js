@@ -58,6 +58,7 @@ export default defineConfig({
     // first test imported a module that pulls in preact/hooks.
     alias: {
       'preact/hooks': aliasFor('preact/hooks'),
+      'preact/test-utils': aliasFor('preact/test-utils'),
       'preact/jsx-runtime': aliasFor('preact/jsx-runtime'),
       'preact': aliasFor('preact'),
       'htm/preact': aliasFor('htm/preact'),
