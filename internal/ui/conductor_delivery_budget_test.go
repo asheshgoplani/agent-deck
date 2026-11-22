@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,6 +138,17 @@ func TestScheduleClearAndHeartbeatBudgetResult(t *testing.T) {
 				}
 				if body != "/clear" {
 					t.Fatalf("first delivery = %q, want /clear", body)
+				}
+				// The scheduling goroutine types the heartbeat after its
+				// settle delay. Wait for it, so it cannot outlive this
+				// subtest and type into the next one's delivery hook.
+				select {
+				case hb := <-typed:
+					if !strings.HasPrefix(hb, "Heartbeat:") {
+						t.Fatalf("second delivery = %q, want the heartbeat", hb)
+					}
+				case <-time.After(15 * time.Second):
+					t.Fatal("the heartbeat was never typed after /clear")
 				}
 			case <-time.After(2 * time.Second):
 				if tc.scheduled {
