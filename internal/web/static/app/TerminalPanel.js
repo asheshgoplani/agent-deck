@@ -5,9 +5,6 @@ import { useEffect, useRef, useCallback, useState } from 'preact/hooks'
 import { effect } from '@preact/signals'
 import { selectedIdSignal, sessionsSignal, authTokenSignal, wsStateSignal, readOnlySignal } from './state.js'
 import { apiFetch } from './api.js'
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
 import { terminalKeymap } from './terminalKeys.js'
 import { createPasteHandler } from './terminalPaste.js'
@@ -15,6 +12,22 @@ import { installTerminalTouch } from './terminalTouch.js'
 import { registerOsc52Handler } from './terminalClipboard.js'
 import { createTerminalLinkHandler, installModifierClickLinks } from './terminalLinks.js'
 import { observeSession, shouldReattach, sessionStartedSignal, noteSessionStarted } from './terminalReconnect.js'
+
+// xterm and its addons are ~145 KB gzipped and only needed once a session is
+// selected, so they load on demand instead of in the first-paint payload (the
+// page is under the total-byte-weight budget in .lighthouserc.json). All three
+// resolve together, before the Terminal is built, so the WebGL renderer is
+// attached on first paint exactly as when they were static imports.
+let xtermModules = null
+function loadXterm() {
+  if (!xtermModules) {
+    xtermModules = Promise.all([
+      import('@xterm/xterm'), import('@xterm/addon-fit'), import('@xterm/addon-webgl'),
+    ]).then(([x, f, w]) => ({ Terminal: x.Terminal, FitAddon: f.FitAddon, WebglAddon: w.WebglAddon }))
+    xtermModules.catch(() => { xtermModules = null })
+  }
+  return xtermModules
+}
 
 // Mobile detection: pointer:coarse for touch devices
 function isMobileDevice() {
@@ -91,6 +104,18 @@ export function TerminalPanel() {
     // #782: a fresh session connection clears any prior fatal banner.
     setFatalError(null)
 
+    let cancelled = false
+    let teardown = null
+    loadXterm().then(({ Terminal, FitAddon, WebglAddon }) => {
+      if (cancelled) return
+      teardown = start(Terminal, FitAddon, WebglAddon)
+    }).catch(() => {})
+    return () => {
+      cancelled = true
+      if (teardown) teardown()
+    }
+
+    function start(Terminal, FitAddon, WebglAddon) {
     const container = containerRef.current
     const token = authTokenSignal.value
     const mobile = isMobileDevice()
@@ -172,12 +197,10 @@ export function TerminalPanel() {
     const controller = new AbortController()
 
     // PERF-D: hint the browser to preload the WebGL addon in parallel with
-    // the WebSocket open. The static import at the top of this file still
-    // does the actual load — the <link rel="preload"> tag only nudges the
-    // browser to fetch the bytes early rather than deferring until the
-    // module graph walks to addon-webgl. Pitfall 5: we do NOT switch to a
-    // dynamic import() here because that causes a renderer switch FOUC +
-    // tmux byte race during the gap. Desktop only (mobile skips WebGL).
+    // the WebSocket open. loadXterm() (top of this file) does the actual
+    // load, before the Terminal exists, so there is no renderer switch FOUC
+    // or tmux byte race; this tag only nudges an early fetch. Desktop only
+    // (mobile skips WebGL).
     // The preload <link> is bound to controller.signal so it is removed
     // when the terminal unmounts, preventing stale tags from accumulating
     // across session reconnects.
@@ -410,6 +433,7 @@ export function TerminalPanel() {
       inputDisposable.dispose()
       clearTimeout(resizeTimer)
       cleanup()
+    }
     }
   }, [sessionId, reconnectKey, cleanup])
 
