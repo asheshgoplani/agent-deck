@@ -1,16 +1,16 @@
  ●●○ Agent Deck  11 sessions                                           <version>
-  Running   ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+  Running   ● 1   ◐ 2   ○ 6   ■ 1   ✕ 1   !@#& filter • 0 all • % open • …
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
 ▶ ▾ alpha (7) ● 1 ◐ 1        │ 📁 alpha
     ▾ backend (3) ● 1        │
      └─ ● claude-running     │ 4 sessions
                              │
-                             │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+                             │ ◐ 1 waiting  ○ 2 idle  ■ 1 stopped
                              │
                              │ ───────────────── Sessions ─────────────────
-                             │   ■ opencode-idle opencode
-                             │   ✕ claude-idle claude
+                             │   ○ opencode-idle opencode
+                             │   ○ claude-idle claude
                              │   ◐ claude-waiting claude
                              │   ■ claude-stopped claude
                              │
