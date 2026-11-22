@@ -639,7 +639,7 @@ func (d *cliVoiceDeck) TodoDone(ctx context.Context, id string) (voicedesk.Todo,
 // OpenPage opens the newest page a session made on his phone and Mac app:
 // `open --last --session <id> --json` (branch feat/open-phone, planned
 // interface: {status: opened|queued, where, session, title, path}; exit 2 =
-// the session has no page). A binary without --last answers unsupported.
+// the session has no page). A binary without --last answers ErrPageUnavailable.
 func (d *cliVoiceDeck) OpenPage(ctx context.Context, s voicedesk.Session) (voicedesk.Page, error) {
 	if s.Host != "" {
 		return voicedesk.Page{}, voicedesk.ErrUnsupported
@@ -669,8 +669,9 @@ func (d *cliVoiceDeck) OpenPage(ctx context.Context, s voicedesk.Session) (voice
 			title = d.pageTitle(ctx, s, v.PageID, v.Path)
 		}
 		return voicedesk.Page{Title: title, Path: v.Path, Where: where}, nil
-	case errors.As(err, &ee) && ee.ExitCode() == 2 && strings.Contains(errb.String()+out.String(), "flag provided but not defined"):
-		return voicedesk.Page{}, voicedesk.ErrUnsupported
+	case errors.As(err, &ee) && strings.Contains(errb.String()+out.String(), "flag provided but not defined"):
+		// a build without `open --last` (runOpen exits 1 on a flag error)
+		return voicedesk.Page{}, voicedesk.ErrPageUnavailable
 	case errors.As(err, &ee) && ee.ExitCode() == 2:
 		return voicedesk.Page{}, voicedesk.ErrNoPage
 	case err != nil:

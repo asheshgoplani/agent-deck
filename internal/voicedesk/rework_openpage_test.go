@@ -1,6 +1,9 @@
 package voicedesk
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // S1: the open forms are soft and need his session's own words.
 func TestReworkOpenPageSoft(t *testing.T) {
@@ -20,5 +23,18 @@ func TestReworkOpenPageSoft(t *testing.T) {
 	h, pf := pageHarness(t)
 	if r := h.say("open the page from proactive audit"); r.Say != "Opening Audit report from proactive audit." || len(pf.opened) != 1 {
 		t.Fatalf("named open: %+v", r)
+	}
+}
+
+type noOpenLast struct{ *fakeDeck }
+
+func (noOpenLast) OpenPage(context.Context, Session) (Page, error) { return Page{}, ErrPageUnavailable }
+
+// N6: a build without `open --last` says so.
+func TestReworkOpenPageNotInBuild(t *testing.T) {
+	h := newHarness(t)
+	h.desk.Deck = noOpenLast{h.deck}
+	if r := h.say("open the page from proactive audit"); r.Say != "Opening pages is not available in this build." {
+		t.Fatalf("say=%q", r.Say)
 	}
 }

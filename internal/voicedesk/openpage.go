@@ -28,6 +28,9 @@ type PageDeck interface {
 // ErrNoPage: the session made no page.
 var ErrNoPage = errors.New("no page")
 
+// ErrPageUnavailable: this build of agent-deck has no `open --last`.
+var ErrPageUnavailable = errors.New("opening pages is not in this build")
+
 func grammarOpenPage(a *patternAdder) {
 	// soft: a name that is not exactly one of his sessions is talk
 	// ("open the coverage report", "open the test report")
@@ -60,6 +63,9 @@ func (d *Desk) openPage(ctx context.Context, req Request, r Result, p Parsed, s 
 	switch {
 	case errors.Is(err, ErrNoPage):
 		r.Say = name + " has made no page yet."
+		return r, nil
+	case errors.Is(err, ErrPageUnavailable):
+		r.Say = "Opening pages is not available in this build."
 		return r, nil
 	case errors.Is(err, ErrUnsupported):
 		r.Say = "Pages of " + name + " cannot be opened by voice yet."
