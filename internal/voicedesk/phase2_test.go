@@ -13,7 +13,8 @@ import (
 func phase2Harness(t *testing.T) *harness {
 	h := newHarness(t)
 	h.deck.hits = []SearchHit{
-		{Title: "billing-notes", DeckID: "x1", Snippet: "we agreed the invoice goes out on Friday"},
+		{Title: "billing-notes", DeckID: idTsNotes, // a deck session of his (a hit is shown only then)
+			Snippet: "we agreed the invoice goes out on Friday"},
 		{Title: "release-notes", DeckID: idRelease, Snippet: "the invoice template needs a logo"},
 	}
 	h.deck.children = map[string][]Session{
@@ -49,8 +50,8 @@ func TestPhase2IntentTable(t *testing.T) {
 		{"proactive audit ko phir se shuru karo", IntentRestart, LangHI, idAudit, "", "yes", "Restart proactive audit? Yes?", true},
 		{"archive tailscale notes", IntentArchive, LangEN, idTsNotes, "", "yes", "Archive tailscale notes? Yes?", true},
 		{"tailscale notes archive karo", IntentArchive, LangHI, idTsNotes, "", "yes", "Archive tailscale notes? Yes?", true},
-		{"stop all workers", IntentStop, LangEN, "", "", "yes", "Stop the first five of seven: phone build, tailscale fix on boxone, macapp redesign1, and 2 more on screen. Yes?", true},
-		{"sab workers band karo", IntentStop, LangHI, "", "", "yes", "Stop the first five of seven: phone build, tailscale fix on boxone, macapp redesign1, and 2 more on screen. Yes?", true},
+		{"stop all workers", IntentStop, LangEN, "", "", "yes", "Stop the first five of seven: phone build, tailscale fix on boxone, macapp redesign1, voice test, proactive audit. Yes?", true},
+		{"sab workers band karo", IntentStop, LangHI, "", "", "yes", "Stop the first five of seven: phone build, tailscale fix on boxone, macapp redesign1, voice test, proactive audit. Yes?", true},
 		{"restart all the tailscale sessions", IntentRestart, LangEN, "", "", "yes", "Restart two: tailscale fix on boxone, tailscale notes. Yes?", true},
 
 		{"where did we talk about the invoice", IntentSearch, LangEN, "", "", "", "Two conversations: billing notes, release notes.", true},

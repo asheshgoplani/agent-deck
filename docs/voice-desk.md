@@ -99,9 +99,9 @@ yours called …"; it is never typed into the session as plain text.
 |---|---|---|---|
 | `launch` | "start a new session called X in G", "launch a new session named X" | "ek nayi session shuru karo naam X", "G mein nayi session shuru karo naam X" | yes: `launch -t x -g G` (or on a remote) |
 | `stop` / `restart` / `archive` | "stop X", "restart X", "archive X" | "X band karo", "X restart karo", "X archive karo" | yes: `session stop|restart|archive` |
-| plural | "stop all workers" | "sab workers band karo" | lists first, at most five per yes |
-| `search` | "where did we talk about X", "search what was said about X" | "X ki baat kahan hui thi" | `recall search` (read-only; needs `[recall] enabled`) |
-| `workers` | "what are X's workers doing" | "X ke workers kya kar rahe hain" | `session children` (this machine) |
+| plural | "stop all workers" | "sab workers band karo" | names every session it will act on, at most five per yes; leaves conductors and the session the mic is on out unless named; "No workers are running." when none is |
+| `search` | "where did we talk about X", "search what was said about X" | "X ki baat kahan hui thi" | `recall search` (read-only; needs `[recall] enabled`); only hits from his own sessions are spoken or shown |
+| `workers` | "what are X's workers doing" | "X ke workers kya kar rahe hain" | `session children` (this machine); only his own sessions are listed |
 | `next` | "take me to the next one" | "agla wala kholo" | switch to the first waiting session he is not on |
 | `refuse` | "delete the X session" | "X session delete karo" | nothing: voice never deletes, pushes or pays |
 

@@ -75,6 +75,11 @@ func (d *Desk) search(ctx context.Context, r Result, p Parsed) (Result, error) {
 		r.Say = "Nothing found about " + query + "."
 		return r, nil
 	}
+	hits = d.hisHits(ctx, hits)
+	if len(hits) == 0 {
+		r.Say = "Nothing found about " + query + "."
+		return r, nil
+	}
 	names := make([]string, 0, len(hits))
 	r.Show = Show{Kind: "search", Items: []ShowItem{}}
 	for _, h := range hits {
@@ -91,6 +96,56 @@ func (d *Desk) search(ctx context.Context, r Result, p Parsed) (Result, error) {
 		r.Say = "One conversation: " + names[0] + "."
 	}
 	return r, nil
+}
+
+// hisHits keeps the search hits whose deck session is his by the owner
+// rules (the same rules as stop and archive; an archived session of his
+// still counts: it is his conversation). Recall indexes every conversation
+// on the machine and its remotes, so a hit with no deck session, or with a
+// deck id the session list does not know, could be anyone's: it is dropped.
+// When no hit is left the answer is "nothing found", which says nothing
+// about other people's conversations.
+func (d *Desk) hisHits(ctx context.Context, hits []SearchHit) []SearchHit {
+	all, _ := d.sessions(ctx)
+	var out []SearchHit
+	for _, h := range hits {
+		if h.DeckID == "" {
+			continue
+		}
+		for _, s := range all {
+			if s.ID != h.DeckID || s.Host != h.Host {
+				continue
+			}
+			if k, _ := d.Config.ownerOf(s); k == ownerMine {
+				out = append(out, h)
+			}
+			break
+		}
+	}
+	return out
+}
+
+// hisKids keeps the workers that are his sessions. A child carries no
+// group, so each one is looked up in the session list; a child the list
+// does not know, or someone else's (a worker another person started under
+// his conductor), is left out.
+func (d *Desk) hisKids(ctx context.Context, kids []Session) []Session {
+	if len(kids) == 0 {
+		return kids
+	}
+	all, _ := d.sessions(ctx)
+	var out []Session
+	for _, k := range kids {
+		for _, s := range all {
+			if s.ID == k.ID && s.Host == k.Host {
+				if kind, _ := d.Config.ownerOf(s); kind == ownerMine && !s.Archived {
+					out = append(out, k)
+				}
+				break
+			}
+		}
+	}
+	return out
 }
 
 // kebab turns spoken words into a session title: "test one" -> "test-one".
@@ -123,18 +178,31 @@ func (d *Desk) launch(ctx context.Context, req Request, r Result, p Parsed) (Res
 			}
 		}
 	}
+	// "test one in workers on boxone": the host comes after the group
+	spokenGroup := p.Group
+	if gw := splitWords(spokenGroup); spec.Host == "" && len(gw) >= 3 && hostLead[gw[len(gw)-2].folded] {
+		for _, h := range hosts {
+			if h != "" && gw[len(gw)-1].folded == foldPhrase(h) {
+				spec.Host, spokenGroup = h, rawJoin(gw[:len(gw)-2])
+			}
+		}
+	}
 	tw = trimNameNoise(tw)
 	if len(tw) == 0 {
 		return notMine(p.Lang), nil
+	}
+	if !plainName(p.Title) {
+		refuse(&r, RefusedUnsafe, "A session name can only use plain words; type it instead.")
+		return r, nil
 	}
 	spec.Title = kebab(tw)
 	if HasSecret(spec.Title) {
 		refuse(&r, RefusedUnsafe, "That name looks like a secret; type it instead.")
 		return r, nil
 	}
-	group, profile, ok := d.launchGroup(p.Group, req.On, spec.Host, all)
+	group, profile, ok := d.launchGroup(spokenGroup, req.On, spec.Host, all)
 	if !ok {
-		refuse(&r, RefusedNotFound, "I found no group of yours called "+p.Group+".")
+		refuse(&r, RefusedNotFound, "I found no group of yours called "+spokenGroup+".")
 		return r, nil
 	}
 	spec.Group, spec.Profile = group, profile
@@ -155,6 +223,22 @@ func (d *Desk) launch(ctx context.Context, req Request, r Result, p Parsed) (Res
 	r.Say = prompt
 	r.Show = Show{Kind: "confirm", Items: []ShowItem{{Title: spec.Title, Host: spec.Host, Line: "new session" + where}}}
 	return d.pend(req, r, Pending{Profile: req.Profile, Kind: "yes", Action: actionLaunch, Intent: IntentLaunch, Lang: p.Lang, Launch: &spec}, prompt)
+}
+
+// plainName: a spoken name is words, not a path, a flag or a shell
+// command ("../../etc/passwd", "foo; rm", "--cmd bash"). Such a name is
+// refused with its own line; a secret is still refused as a secret.
+func plainName(title string) bool {
+	t := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(title), ".?!"))
+	if strings.ContainsAny(t, "/\\;|&$`\"<>(){}[]*~#=\n\r") || strings.Contains(t, "..") {
+		return false
+	}
+	for _, f := range strings.Fields(t) {
+		if strings.HasPrefix(f, "-") {
+			return false
+		}
+	}
+	return true
 }
 
 // launchGroup picks the group of a new session: the spoken one (matched to
@@ -212,6 +296,9 @@ func (d *Desk) withTargetPhase2(ctx context.Context, req Request, r Result, p Pa
 	case IntentWorkers:
 		kids, err := d.Deck.Children(ctx, s)
 		kids = cleanAll(kids)
+		if err == nil {
+			kids = d.hisKids(ctx, kids)
+		}
 		switch {
 		case errors.Is(err, ErrUnsupported):
 			r.Say = "Workers of " + name + " are not reachable by voice yet."
@@ -255,25 +342,65 @@ func plural2(n int, one, many string) string {
 }
 
 // many: "stop all workers" lists every session of his the name fits, and
-// asks once for at most five of them.
+// asks once for at most five of them. Every session the yes acts on is
+// named in the question (on glasses there is no screen). A conductor and
+// the session the mic is on are left out of a bulk list unless the words
+// name them ("stop all conductors", or the session's whole title).
 func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q nameQuery, all []Session) (Result, error) {
 	action, present, _ := verbOf(p.Intent)
 	if action == "" || len(q.words) == 0 {
 		return notMine(p.Lang), nil
 	}
-	var hits []Session
-	for _, s := range d.Config.mine(all) {
+	var hits, matched, archived, left []Session
+	for _, s := range all {
+		if k, _ := d.Config.ownerOf(s); k != ownerMine {
+			continue
+		}
 		if q.host != "" && s.Host != q.host {
 			continue
 		}
+		if ok, level, _ := coverage(q, s); !ok || level < wordPhonetic {
+			continue
+		}
+		if s.Archived {
+			archived = append(archived, s)
+			continue
+		}
+		matched = append(matched, s)
 		if p.Intent == IntentStop && s.Status == "stopped" {
 			continue
 		}
-		if ok, level, _ := coverage(q, s); ok && level >= wordPhonetic {
-			hits = append(hits, s)
+		if (isConductor(s) && !namesConductor(q, s)) || (req.On != "" && s.ID == req.On && !namesWhole(q, s)) {
+			left = append(left, s)
+			continue
 		}
+		hits = append(hits, s)
 	}
 	if len(hits) == 0 {
+		name := strings.TrimSpace(q.raw)
+		switch {
+		case len(left) > 0:
+			names := make([]string, len(left))
+			for i, s := range left {
+				names[i] = spokenTitle(s.Title, s.Host)
+			}
+			refuse(&r, RefusedUnsafe, "Nothing done: I leave "+strings.Join(firstN(names, maxSpokenItems), ", ")+
+				" out of a group "+strings.ToLower(present)+"; name it on its own.")
+			return r, nil
+		case len(matched) > 0 && p.Intent == IntentStop:
+			r.Say = "No " + name + " are running."
+			return r, nil
+		case len(matched) == 0 && len(archived) > 0:
+			switch p.Intent {
+			case IntentStop:
+				r.Say = "No " + name + " are running."
+			case IntentArchive:
+				r.Say = "No " + name + " left to archive."
+			default:
+				r.Say = "No " + name + " left to restart; they are archived."
+			}
+			return r, nil
+		}
 		if who := d.Config.personNamed(q.words); who != "" {
 			refuse(&r, RefusedOtherPerson, otherLine(who)+" Nothing done.")
 			return r, nil
@@ -295,15 +422,33 @@ func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q name
 	if len(hits) > len(asked) {
 		head = present + " the first " + lowerCount(len(asked)) + " of " + lowerCount(len(hits))
 	}
-	list := strings.Join(firstN(names, maxSpokenItems), ", ")
-	if len(names) > maxSpokenItems {
-		list += fmt.Sprintf(", and %d more on screen", len(names)-maxSpokenItems)
-	}
-	prompt := head + ": " + list + ". Yes?"
+	// every name is spoken: the yes acts on exactly these
+	prompt := head + ": " + strings.Join(names, ", ") + ". Yes?"
 	r.Say = prompt
 	r.Show = Show{Kind: "confirm", Items: items(asked, d.now())}
 	return d.pend(req, r, Pending{Profile: req.Profile, Kind: "yes", Action: action, Intent: p.Intent, Lang: p.Lang,
 		Targets: refs, Left: len(hits) - len(asked)}, prompt)
+}
+
+// isConductor: agent-deck titles a conductor "conductor-<name>".
+func isConductor(s Session) bool {
+	t := strings.ToLower(cleanTitle(s.Title))
+	return t == "conductor" || strings.HasPrefix(t, "conductor-")
+}
+
+// namesConductor: the words say "conductor(s)" or the whole title.
+func namesConductor(q nameQuery, s Session) bool {
+	for _, w := range q.words {
+		if w == foldPhrase("conductor") || w == foldPhrase("conductors") {
+			return true
+		}
+	}
+	return namesWhole(q, s)
+}
+
+// namesWhole: every word of the session's title is said.
+func namesWhole(q nameQuery, s Session) bool {
+	return saysWholeTitle(q, resolution{Kind: resolvedOne, Session: s})
 }
 
 // actPhase2 carries out a confirmed launch or a lifecycle verb on several sessions.
