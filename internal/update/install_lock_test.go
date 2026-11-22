@@ -1,6 +1,7 @@
 package update
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,5 +87,31 @@ func TestInstallSelfUpdateBinary_ConcurrentInstallsAreSafe(t *testing.T) {
 		if e.Name() != "agent-deck" && e.Name() != "agent-deck.lock" {
 			t.Errorf("stray file left behind: %s", e.Name())
 		}
+	}
+}
+
+// A second installer that cannot get the lock reports a clean, typed error
+// and leaves the binary alone.
+func TestInstallSelfUpdateBinary_LockHeldReportsInProgress(t *testing.T) {
+	dir := t.TempDir()
+	execPath := filepath.Join(dir, "agent-deck")
+	if err := os.WriteFile(execPath, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := acquireInstallLock(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	orig := installLockWait
+	installLockWait = 100 * time.Millisecond
+	t.Cleanup(func() { installLockWait = orig })
+
+	err = installSelfUpdateBinary(execPath, []byte("new"))
+	if !errors.Is(err, ErrUpdateInProgress) {
+		t.Fatalf("got %v, want ErrUpdateInProgress", err)
+	}
+	if got, _ := os.ReadFile(execPath); string(got) != "old" {
+		t.Errorf("binary must be untouched, got %q", got)
 	}
 }
