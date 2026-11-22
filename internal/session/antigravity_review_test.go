@@ -540,6 +540,69 @@ func TestAntigravityStoppedSiblingDoesNotBlockBinding(t *testing.T) {
 	}
 }
 
+// A child reloaded while still unbound has no send time, so status polling
+// must leave it unbound rather than adopt a conversation from the workspace.
+func TestAntigravityReloadedForkChildStaysUnbound(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "project")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	writeAntigravityMetadata(t, dataDir, map[string]any{
+		"conv-sibling": antigravityTestConversationEntry("conv-sibling", workDir, time.Now(), false),
+	})
+	statedb.SetGlobal(nil)
+
+	inst := NewInstance("agy-reloaded-fork", workDir)
+	inst.Tool, inst.Command = "antigravity", "agy"
+	inst.AntigravityStartedAt = time.Now().Add(-time.Minute).UnixMilli()
+	inst.antigravityForkParentID = "conv-parent"
+	// A reload loses antigravityForkSentAt and antigravityForkKnownIDs.
+	if got := inst.SyncAntigravitySessionID(); got != "" {
+		t.Fatalf("reloaded fork child bound %q", got)
+	}
+	inst.mu.Lock()
+	inst.antigravityPendingAt = time.Now().Add(-antigravityScanMinInterval)
+	inst.mu.Unlock()
+	if got := inst.SyncAntigravitySessionID(); got != "" {
+		t.Fatalf("reloaded fork child adopted a sibling: %q", got)
+	}
+}
+
+// Even with the send time present, status polling needs two sightings before a
+// fork child binds; waitForAntigravityForkChild remains the fast path.
+func TestAntigravityForkStatusPollRequiresTwoSightings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workDir := filepath.Join(home, "project")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	writeAntigravityMetadata(t, dataDir, map[string]any{
+		"conv-child": antigravityTestConversationEntry("conv-child", workDir, time.Now(), false),
+	})
+	statedb.SetGlobal(nil)
+
+	inst := NewInstance("agy-fork-poll", workDir)
+	inst.Tool, inst.Command = "antigravity", "agy"
+	inst.AntigravityStartedAt = time.Now().Add(-time.Minute).UnixMilli()
+	inst.antigravityForkParentID = "conv-parent"
+	inst.antigravityForkSentAt = time.Now().Add(-time.Second)
+	inst.antigravityForkKnownIDs = map[string]bool{}
+	if got := inst.SyncAntigravitySessionID(); got != "" {
+		t.Fatalf("first status poll bound %q", got)
+	}
+	inst.mu.Lock()
+	inst.antigravityPendingAt = time.Now().Add(-antigravityScanMinInterval)
+	inst.mu.Unlock()
+	if got := inst.SyncAntigravitySessionID(); got != "conv-child" {
+		t.Fatalf("second status poll bound %q, want conv-child", got)
+	}
+}
+
 // Concurrent forks of one parent each see both new children; neither may bind
 // one, because the conversation no longer proves which /fork produced it.
 func TestAntigravityForkWaitRejectsTwoNewConversations(t *testing.T) {
@@ -583,6 +646,7 @@ func TestAntigravityForkStatusPollSkipsPreForkConversations(t *testing.T) {
 	inst.Tool, inst.Command = "antigravity", "agy"
 	inst.AntigravityStartedAt = time.Now().Add(-time.Minute).UnixMilli()
 	inst.antigravityForkParentID = "conv-parent"
+	inst.antigravityForkSentAt = time.Now().Add(-time.Second)
 	inst.antigravityForkKnownIDs = map[string]bool{"conv-sibling": true}
 	if got := inst.SyncAntigravitySessionID(); got != "" {
 		t.Fatalf("bound a pre-fork sibling: %q", got)
@@ -592,6 +656,12 @@ func TestAntigravityForkStatusPollSkipsPreForkConversations(t *testing.T) {
 		"conv-sibling": antigravityTestConversationEntry("conv-sibling", workDir, time.Now().Add(-30*time.Second), false),
 		"conv-child":   antigravityTestConversationEntry("conv-child", workDir, time.Now(), false),
 	})
+	if got := inst.SyncAntigravitySessionID(); got != "" {
+		t.Fatalf("first status scan bound %q", got)
+	}
+	inst.mu.Lock()
+	inst.antigravityPendingAt = time.Now().Add(-antigravityScanMinInterval)
+	inst.mu.Unlock()
 	if got := inst.SyncAntigravitySessionID(); got != "conv-child" {
 		t.Fatalf("fork child bound %q, want conv-child", got)
 	}

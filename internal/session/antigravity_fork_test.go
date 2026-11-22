@@ -440,8 +440,14 @@ done
 		if err := os.WriteFile(filepath.Join(cacheDir, "conversation_metadata.json"), rawMeta, 0o600); err != nil {
 			t.Fatalf("write metadata: %v", err)
 		}
-		// The fork parent exclusion is evidence enough to bind on the first
-		// scan that sees the child.
+		// Status polling binds a fork child only after two sightings; the
+		// forking process's wait is the immediate binder.
+		if got := forked.SyncAntigravitySessionID(); got != "" {
+			t.Fatalf("first status scan bound %q", got)
+		}
+		forked.mu.Lock()
+		forked.antigravityPendingAt = time.Now().Add(-antigravityScanMinInterval)
+		forked.mu.Unlock()
 		if got := forked.SyncAntigravitySessionID(); got != "child-conv-e2e" {
 			t.Fatalf("SyncAntigravitySessionID() = %q, want child-conv-e2e (never parent)", got)
 		}

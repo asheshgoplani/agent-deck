@@ -1086,12 +1086,6 @@ func (i *Instance) captureAntigravityForkKnownConversations() {
 	i.mu.Unlock()
 }
 
-func (i *Instance) antigravityForkKnownCandidate(candidate string) bool {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return i.antigravityForkKnownIDs != nil && i.antigravityForkKnownIDs[candidate]
-}
-
 // bindAntigravityConversation publishes a binding to memory, tmux and SQLite.
 // The caller holds antigravitySyncMu, so the external writes cannot interleave
 // with another scan that would publish a newer result.
@@ -1200,13 +1194,36 @@ func (i *Instance) SyncAntigravitySessionID() string {
 	if candidate == "" {
 		return currentID
 	}
-	// A fork child has stronger evidence: the parent is excluded and the child
-	// can only appear after /fork. Even so, it must never adopt a conversation
-	// another session already owns or one that existed before the fork. A
-	// plain unbound session also needs a second observation, and two unbound
-	// panes in one directory make a new ID ambiguous for both.
+	// A fork child is bound by the process that sent /fork: it records the send
+	// time and the pre-fork snapshot, so status polling can require exactly one
+	// new conversation since then and two sightings. A child reloaded without
+	// that state stays unbound (fail safe) instead of adopting a sibling; the
+	// forking process's wait remains the only binder.
 	if !trusted {
-		if excludeID == "" && !i.confirmAntigravityWorkspaceCandidate(candidate) {
+		if excludeID != "" {
+			i.mu.RLock()
+			forkSentAt := i.antigravityForkSentAt
+			forkKnown := i.antigravityForkKnownIDs
+			i.mu.RUnlock()
+			if forkSentAt.IsZero() {
+				sessionLog.Debug("antigravity_fork_poll_without_send_time",
+					slog.String("instance_id", logging.SanitizeValue(i.ID)))
+				return ""
+			}
+			if forkKnown != nil && forkKnown[candidate] {
+				// The child's conversation is created by /fork, so a
+				// conversation that was already there belongs to someone else.
+				return ""
+			}
+			newIDs := antigravityUnknownConversations(
+				antigravityConversationsSince(antigravityDataDir(), i.antigravityWorkspaceDirs(), excludeID, forkSentAt),
+				forkKnown,
+			)
+			if len(newIDs) != 1 || newIDs[0] != candidate {
+				return ""
+			}
+		}
+		if !i.confirmAntigravityWorkspaceCandidate(candidate) {
 			return ""
 		}
 		if i.antigravitySessionIDBoundElsewhere(candidate) {
@@ -1217,26 +1234,6 @@ func (i *Instance) SyncAntigravitySessionID() string {
 			}
 			i.clearAntigravityPending()
 			return ""
-		}
-		if excludeID != "" {
-			if i.antigravityForkKnownCandidate(candidate) {
-				// The child's conversation is created by /fork, so a
-				// conversation that was already there belongs to someone else.
-				return ""
-			}
-			i.mu.RLock()
-			forkSentAt := i.antigravityForkSentAt
-			forkKnown := i.antigravityForkKnownIDs
-			i.mu.RUnlock()
-			if !forkSentAt.IsZero() {
-				newIDs := antigravityUnknownConversations(
-					antigravityConversationsSince(antigravityDataDir(), i.antigravityWorkspaceDirs(), excludeID, forkSentAt),
-					forkKnown,
-				)
-				if len(newIDs) != 1 || newIDs[0] != candidate {
-					return ""
-				}
-			}
 		}
 		if excludeID == "" && i.antigravityUnboundSiblingSharesWorkspace() {
 			sessionLog.Debug("antigravity_binding_ambiguous_workspace",
