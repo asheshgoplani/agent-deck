@@ -239,3 +239,28 @@ func TestR2G6_3_ItWaitingForYou(t *testing.T) {
 		}
 	}
 }
+
+func TestR2G3CodingTalk(t *testing.T) {
+	code := []string{"fix the build", "write the tests", "deploy the server", "buy a new phone"}
+	g3probe(t, []g3row{
+		{code, "the tests are done", "talk"},
+		{code, "the build is done", "talk"},
+		{code, "tests are finished", "talk"},
+		{code, "the new one is done", "talk"},
+		{code, "the build one is done", "talk"},
+		{code, "the test one is done", "talk"},
+		{code, "the server one is done", "talk"},
+		{code, "this one is done", "talk"},
+		{code, "the first one is done", "talk"},
+		{code, "the phone one is done", "ask"},
+	})
+}
+
+func TestR2G3CodingItemTheXOne(t *testing.T) {
+	g3probe(t, []g3row{
+		{[]string{"build"}, "the build one is done", "talk"},
+		{[]string{"tests"}, "the test one is done", "talk"},
+		{[]string{"deploy"}, "the deploy one is done", "talk"},
+		{[]string{"fix the build"}, "the fix the build one is done", "tick:1"},
+	})
+}

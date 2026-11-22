@@ -34,8 +34,8 @@ func TestScenarioSwitchAskOpenFollowUp(t *testing.T) {
 	if got.Confirm == nil || len(h.deck.sent) != 1 {
 		t.Fatalf("risky follow-up sent without a yes: %+v", got)
 	}
-	// and "archive" of a session is never done by the plain sentence
-	if got = h.say("archive deck conductor"); got.Confirm == nil || len(h.deck.acts) != 0 {
-		t.Fatalf("archive without a yes: %+v", got)
+	// and a conductor is never archived by voice: refused, no question (R20)
+	if got = h.say("archive deck conductor"); got.Confirm != nil || refusedOf(got) == "" || len(h.deck.acts) != 0 {
+		t.Fatalf("archive of a conductor by voice: %+v", got)
 	}
 }

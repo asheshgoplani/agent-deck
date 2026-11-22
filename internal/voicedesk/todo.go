@@ -199,6 +199,10 @@ func (d *Desk) todoDone(ctx context.Context, req Request, r Result, p Parsed, td
 	// explicit form for "bank" (it asks), unless an item has the word "one".
 	if n := len(q.words); n > 1 && (q.words[n-1] == "one" || q.words[n-1] == "1") && !todoHasWord(items, q.words[n-1]) {
 		q.words, q.roman, q.deva = q.words[:n-1], q.roman[:n-1], q.deva[:n-1]
+		if bare && genericOnlyQ(q) {
+			// "the build one is done", "the test one is done": coding talk
+			return notMine(p.Lang), nil
+		}
 		bare = false
 	}
 	if bare && genericOnlyQ(q) {

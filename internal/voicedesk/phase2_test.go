@@ -175,7 +175,7 @@ func TestPhase2ActOnlyAfterYes(t *testing.T) {
 	})
 	t.Run("ambiguous stop asks which, then asks yes", func(t *testing.T) {
 		h := phase2Harness(t)
-		ask := h.say("stop conductor")
+		ask := h.say("stop tailscale")
 		if ask.Confirm == nil || ask.Confirm.Kind != "choice" {
 			t.Fatalf("ask %+v", ask)
 		}

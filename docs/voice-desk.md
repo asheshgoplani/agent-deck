@@ -98,7 +98,7 @@ yours called …"; it is never typed into the session as plain text.
 | Intent | English | Roman Hindi | Does (after a yes where marked) |
 |---|---|---|---|
 | `launch` | "start a new session called X in G", "launch a new session named X" | "ek nayi session shuru karo naam X", "G mein nayi session shuru karo naam X" | yes: `launch -t x -c <tool> -g G <folder>` (or on a remote) |
-| `stop` / `restart` / `archive` | "stop X", "restart X", "archive X" | "X band karo", "X restart karo", "X archive karo" | yes: `session stop|restart|archive` |
+| `stop` / `restart` / `archive` | "stop X", "restart X", "archive X" | "X band karo", "X restart karo", "X archive karo" | yes: `session stop|restart|archive`; a conductor (renamed too), the session the mic is on, or a session of another profile is refused at once, no question: "X is a conductor; do that on screen." |
 | plural | "stop all workers" | "sab workers band karo" | names every session it will act on, at most five per yes; leaves conductors and the session the mic is on out unless named; "No workers are running." when none is |
 | `search` | "where did we talk about X", "search what was said about X" | "X ki baat kahan hui thi" | `recall search` (read-only; needs `[recall] enabled`); only hits from his own sessions of this profile (and the remotes) are spoken or shown |
 | `workers` | "what are X's workers doing" | "X ke workers kya kar rahe hain" | `session children` (this machine); only his own sessions are listed |

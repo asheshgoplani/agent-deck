@@ -385,6 +385,19 @@ func (d *Desk) withTargetPhase2(ctx context.Context, req Request, r Result, p Pa
 		return r, nil
 	}
 	action, present, _ := verbOf(p.Intent)
+	// never by voice: a conductor (renamed too), the session the mic is
+	// on, a session of another profile. Refused at once, no question.
+	switch {
+	case isConductor(s):
+		refuse(&r, RefusedUnsafe, capitalize(name)+" is a conductor; do that on screen.")
+		return r, nil
+	case req.On != "" && s.ID == req.On:
+		refuse(&r, RefusedUnsafe, "You are on "+name+"; do that on screen.")
+		return r, nil
+	case !inProfile(s, req.Profile):
+		refuse(&r, RefusedNotFound, capitalize(name)+" is in another profile; nothing done.")
+		return r, nil
+	}
 	if p.Intent == IntentStop && s.Status == "stopped" {
 		r.Say = name + " is already stopped."
 		return r, nil
@@ -562,8 +575,9 @@ func (d *Desk) lifecycle(ctx context.Context, req Request, r *Result, action str
 	var done, failed []string
 	for _, s := range ss {
 		name := spokenTitle(s.Title, s.Host)
-		if _, why, _ := d.recheckFresh(ctx, s, false); why != "" {
-			failed = append(failed, name)
+		fresh, why, _ := d.recheckFresh(ctx, s, false)
+		if why != "" || !inProfile(fresh, req.Profile) {
+			failed = append(failed, name) // gone, not his, or another profile
 			continue
 		}
 		if !req.DryRun {
