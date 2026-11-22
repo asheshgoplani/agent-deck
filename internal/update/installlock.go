@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -15,11 +16,11 @@ var ErrUpdateInProgress = errors.New("update already in progress")
 // giving up with ErrUpdateInProgress. A var so tests can shorten it.
 var installLockWait = 60 * time.Second
 
-// acquireInstallLock takes an exclusive flock on <execPath>.lock. The lock
-// file is never removed (removing it would let two installers lock different
-// inodes). The returned func releases the lock and reports the Close error.
+// acquireInstallLock takes an exclusive flock on the directory holding the
+// binary, so no lock file is left next to it. The returned func releases the
+// lock and reports the Close error.
 func acquireInstallLock(execPath string) (func() error, error) {
-	f, err := os.OpenFile(execPath+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.Open(filepath.Dir(execPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open install lock: %w", err)
 	}

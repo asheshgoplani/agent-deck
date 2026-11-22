@@ -84,7 +84,7 @@ func TestInstallSelfUpdateBinary_ConcurrentInstallsAreSafe(t *testing.T) {
 	}
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if e.Name() != "agent-deck" && e.Name() != "agent-deck.lock" {
+		if e.Name() != "agent-deck" {
 			t.Errorf("stray file left behind: %s", e.Name())
 		}
 	}
