@@ -3,6 +3,7 @@ package voicedesk
 import (
 	"context"
 	"errors"
+	"strings"
 )
 
 // Open a page a session made: the newest HTML or Markdown page it produced,
@@ -28,11 +29,13 @@ type PageDeck interface {
 var ErrNoPage = errors.New("no page")
 
 func grammarOpenPage(a *patternAdder) {
-	a.add(IntentOpenPage, LangEN, false, false,
+	// soft: a name that is not exactly one of his sessions is talk
+	// ("open the coverage report", "open the test report")
+	a.add(IntentOpenPage, LangEN, true, false,
 		"open [the] [last|latest|newest] page|report from|of {name}", "open [the] [last|latest|newest] page|report {name} made",
 		"open {name} page|report", "show me what {name} made", "show me the page|report from|of {name}",
 	)
-	a.add(IntentOpenPage, LangHI, false, false,
+	a.add(IntentOpenPage, LangHI, true, false,
 		"{name} ka|ki|ke page|report kholo|dikhao", "{name} ne jo [page|report] banaya woh|vo|wo kholo|dikhao",
 	)
 	// no name: the session the mic is on (--on)
@@ -89,4 +92,58 @@ func (d *Desk) openPageOn(ctx context.Context, req Request, r Result, p Parsed) 
 	}
 	refuse(&r, RefusedNotFound, "Which session's page? Say its name.")
 	return r, nil
+}
+
+// exactWords: every spoken word is a word of the session's title or group
+// as it is written ("test" is not "tests", "proactiv" is not "proactive").
+func exactWords(q nameQuery, s Session) bool {
+	ok, _, exact := coverage(q, s)
+	return ok && exact >= len(q.words)
+}
+
+// openPageNamed: "open the page from X". The open forms overlap with
+// plain talk ("open the coverage report"), so only a name that is one of
+// his sessions word for word opens a page; anything else is talk.
+func (d *Desk) openPageNamed(ctx context.Context, req Request, r Result, p Parsed) (Result, error) {
+	// "proactive audit's page": the possessive is not part of the name
+	p.Name = strings.TrimSpace(strings.NewReplacer("'s ", " ", "’s ", " ").Replace(p.Name + " "))
+	if q0 := newNameQuery(p.Name, nil); len(q0.words) == 0 || talkWords(q0.words) {
+		return notMine(p.Lang), nil // decided before any listing
+	}
+	all, _ := d.sessions(ctx)
+	q := newNameQuery(p.Name, hostsOf(all))
+	res := resolve(q, all, d.Config)
+	switch res.Kind {
+	case resolvedOther:
+		refuse(&r, RefusedOtherPerson, otherLine(res.Person))
+		return r, nil
+	case resolvedOne:
+		if !exactWords(q, res.Session) {
+			return notMine(p.Lang), nil
+		}
+	case resolvedAmbiguous:
+		var exact []Session
+		for _, s := range res.Choices {
+			if exactWords(q, s) {
+				exact = append(exact, s)
+			}
+		}
+		switch {
+		case len(exact) == 0 || !res.Sure:
+			return notMine(p.Lang), nil
+		case len(exact) == 1:
+			res = resolution{Kind: resolvedOne, Session: exact[0]}
+		default:
+			res.Choices = exact
+		}
+	default:
+		return notMine(p.Lang), nil
+	}
+	if genericOnlyQ(q) && !saysWholeTitle(q, res) {
+		return notMine(p.Lang), nil // "open the build report"
+	}
+	if res.Kind == resolvedAmbiguous {
+		return d.ask(req, r, p, res)
+	}
+	return d.withTarget(ctx, req, p, res.Session, false)
 }

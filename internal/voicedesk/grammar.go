@@ -307,9 +307,10 @@ func foldSet(ws ...string) map[string]bool {
 // nameNoise is dropped from a captured name before resolving it.
 var nameNoise = foldSet("the", "my", "a", "an", "session", "sessions", "seshan", "seshans", "sesan", "सेशन", "सेशन्स", "wali", "wala", "wale", "vali", "vala", "ka", "ki", "ke")
 
-// Parse finds the desk intent of a sentence. It touches nothing outside
+// parseForms finds the desk intent of a sentence by the forms (Parse adds
+// the delete check). It touches nothing outside
 // this package (no session list, no disk): "not mine" is decided here.
-func Parse(sentence string) Parsed { return parseWith(sentence, grammar) }
+func parseForms(sentence string) Parsed { return parseWith(sentence, grammar) }
 
 // switchGrammar: the switch words the Mac voice daemon handles itself
 // (testdata/daemon_phrases.json). From any other caller they are find

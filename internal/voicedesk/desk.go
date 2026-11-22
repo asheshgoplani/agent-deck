@@ -678,6 +678,12 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	if p.Intent == IntentOpenPage && p.Name == "" {
 		return d.openPageOn(ctx, req, r, p)
 	}
+	switch p.Intent {
+	case IntentOpenPage:
+		return d.openPageNamed(ctx, req, r, p)
+	case IntentRefuse:
+		return d.refuseDelete(ctx, r, p)
+	}
 	// talk in a soft desk form is decided from the words, before any
 	// listing (no ssh for "read the file and fix the bug")
 	// A number word at the end that is also an ordinary word ("worker do

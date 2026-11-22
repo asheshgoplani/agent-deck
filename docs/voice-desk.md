@@ -103,13 +103,19 @@ yours called …"; it is never typed into the session as plain text.
 | `search` | "where did we talk about X", "search what was said about X" | "X ki baat kahan hui thi" | `recall search` (read-only; needs `[recall] enabled`); only hits from his own sessions are spoken or shown |
 | `workers` | "what are X's workers doing" | "X ke workers kya kar rahe hain" | `session children` (this machine); only his own sessions are listed |
 | `next` | "take me to the next one" | "agla wala kholo" | switch to the first waiting session he is not on |
-| `refuse` | "delete the X session" | "X session delete karo" | nothing: voice never deletes, pushes or pays |
+| `refuse` | "delete X", "remove the X session", "delete all workers", "stop X and delete it" | "X hata do", "X ko mita do", "sab workers hata do", "X band karo aur hata do" | nothing: "I never delete a session by voice; do it on screen." |
 | `todo_add` | "add a to-do: X", "put X on my list", "remind me to X" | "to-do mein daalo: X", "X list mein daal do" | `todo add`; "add this to my list" and "add a todo comment" are talk |
 | `todo_list` | "what is on my list", "read my to-dos" | "meri list sunao", "mere to-do batao" | `todo list`; "what is left to do" is talk |
 | `todo_done` | "tick off X", "mark X done", "X is done" | "X wala ho gaya", "X ho gaya" | the whole item ticks at once; part of it after "tick off" / "wala" asks "Tick off fix the build?"; a bare "the build is done" / "build ho gaya" is talk |
 
 Every launch, stop, restart and archive is read back and needs a yes within 10 s; the yes re-checks each session.
 An unknown name after stop/restart/archive is not the desk's ("stop listening" belongs to the voice daemon).
+A sentence with a delete verb (delete, remove, erase, wipe, drop, get rid of, hata, mita, nikal, uda, khatam, and
+their Devanagari and misheard forms) is refused when what is left names a session (his, someone else's, or one of
+nobody's said by its own words) or a group of his; it never reaches the session the mic is on. A delete that names
+no session is talk ("delete the session cookie", "remove the unused import", "hata do ye function").
+"Open the page from X" opens a page only when X is one of his sessions word for word; anything else
+("open the coverage report", "open the test report") is talk.
 
 ## Safety
 
