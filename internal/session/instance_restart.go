@@ -878,7 +878,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 
 		// If no session ID, start async detection
 		if i.CodexSessionID == "" {
-			go i.detectCodexSessionAsync()
+			i.startCodexDetection()
 		}
 
 		sessionLog.Info("restart_codex_respawn_succeeded")
@@ -1189,7 +1189,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 
 	// Start async session ID detection for Codex (if no ID yet)
 	if IsCodexCompatible(i.Tool) && i.CodexSessionID == "" {
-		go i.detectCodexSessionAsync()
+		i.startCodexDetection()
 	}
 
 	// Start as WAITING - will go GREEN on next tick if Claude shows busy indicator

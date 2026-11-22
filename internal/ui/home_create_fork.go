@@ -59,6 +59,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	tempID string,
 	autoName bool,
 ) tea.Cmd {
+	// Resolved here, on the UI goroutine, so the create path hands the account
+	// resolver the same parent conductor the dialog validated with.
+	accountParent := h.getInstanceByID(parentSessionID)
 	return func() tea.Msg {
 		var setupWarning string // non-fatal worktree setup-script failure, if any
 
@@ -71,6 +74,13 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
 			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err), tempID: tempID}
+		}
+
+		// Resolve the account BEFORE anything is created: a refusal here must
+		// leave no worktree, branch or session behind.
+		resolvedAccount, accErr := resolveCreateAccount(claudeAccount, tool, command, sandboxEnabled, effectiveCreateGroup(groupPath, path, worktreePath, worktreeRepoRoot, worktreeBranch, multiRepoEnabled), accountParent)
+		if accErr != nil {
+			return sessionCreatedMsg{err: accErr, tempID: tempID}
 		}
 
 		var worktreeBackend vcs.Backend
@@ -194,6 +204,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// changing the slot LATER goes through session.SwitchAccount.
 		if claudeAccount != "" && session.IsClaudeCompatible(tool) {
 			inst.Account = claudeAccount
+		}
+		if inst.Account == "" && resolvedAccount != "" {
+			inst.Account = resolvedAccount
 		}
 
 		// Apply sandbox config.
@@ -1471,4 +1484,37 @@ func forkWithStateWorkspaceJJ(parentPath, repoRoot, workspacePath, branch string
 		return fmt.Errorf("failed to materialize parent state: %w; new workspace cleaned up", err)
 	}
 	return nil
+}
+
+// resolveCreateAccount is the new-session account fallback. A default account
+// on a host whose ~/.claude has no login would open Claude's first-run screen,
+// so it falls back to a logged-in account, or refuses. It touches nothing, so
+// callers run it before creating any worktree. An explicit account, a sandbox,
+// an ambient CLAUDE_CONFIG_DIR and non-Claude tools are left alone.
+func resolveCreateAccount(claudeAccount, tool, command string, sandboxEnabled bool, groupPath string, parent *session.Instance) (string, error) {
+	if tool == "" {
+		tool, _ = createSessionTool(command)
+	}
+	if claudeAccount != "" || sandboxEnabled || !session.IsClaudeCompatible(tool) || session.AmbientClaudeConfigDir() != "" {
+		return "", nil
+	}
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		return "", nil
+	}
+	return session.ResolveNewSessionAccount(cfg, tool, groupPath, parent)
+}
+
+// effectiveCreateGroup is the group the new instance will land in: the given
+// group, or (quick create passes none) the one derived from the project path,
+// which is the worktree path for a single-repo worktree. The account resolver
+// needs it, not the raw value, to see a group's config_dir.
+func effectiveCreateGroup(groupPath, path, worktreePath, worktreeRepoRoot, worktreeBranch string, multiRepo bool) string {
+	if groupPath != "" {
+		return groupPath
+	}
+	if worktreePath != "" && worktreeRepoRoot != "" && worktreeBranch != "" && !multiRepo {
+		path = worktreePath
+	}
+	return session.GroupPathForProject(path)
 }

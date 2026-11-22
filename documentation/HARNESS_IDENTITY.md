@@ -249,6 +249,82 @@ session record render as `(none)` (or `(none: this is a root session)` for
 the parent) exactly as the full block does — the command never invents a
 value that isn't on the record.
 
+## Per-session instruction files (issue #3206)
+
+Requested in #3206. Several sessions in one repository often need different
+standing instructions (one plans, one implements, one reviews), and those
+must survive `session restart`, a resume and a reboot. Project files
+(`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) are per folder, and `launch -m` is
+one-shot. A session can instead carry a list of instruction files:
+
+```bash
+agent-deck add . -t Review -c codex --instructions-file ~/team/roles/review.md --instructions-file ~/team/rules.md
+agent-deck launch . -t Develop -c claude --instructions-file ~/team/roles/develop.md
+agent-deck session set Review instructions-file "$HOME/team/roles/review.md,$HOME/team/rules.md"   # replaces the list
+agent-deck session set Review instructions-file ""                                                  # clears it
+agent-deck session primer Review --json   # "instructions_files": [{"path": "...", "state": "ok"}]
+```
+
+There is no new delivery path. At every spawn (start, restart, resume and
+fork) each file is read and appended to the identity block as its own
+section, so every harness in the table above gets it exactly the way it
+gets the block, including env-only tools through `AGENTDECK_IDENTITY_FILE`:
+
+```
+## Session instructions
+Standing instructions for this session from your operator, read from these files at every start/restart (...):
+
+### /home/you/team/roles/review.md
+<the file's text>
+```
+
+- Stored on the session record; the files themselves are read at each
+  spawn, so editing one takes effect on the next start or restart. Forks,
+  and a session switched to another harness, keep the list of their source.
+- Absolute paths only: `~` and `$VAR` are expanded when the list is set (an
+  unset variable is refused); a comma separates entries, so a path cannot
+  contain one. At most 16 files.
+- Only regular UTF-8 text files are read. A missing file, a directory, a
+  FIFO or device (also through a symlink), or binary or non-UTF-8 content is
+  reported as `unreadable` and named in the block by one line instead of its
+  content. A non-regular file is never opened, so a FIFO cannot block a
+  spawn, `session show` or `session primer`. Control characters other than
+  newline and tab (a CR of a CRLF file, escape sequences) and a leading BOM
+  are dropped, so a file cannot break the launch command.
+- A file over 32 KB is not read; a one-line pointer names it.
+- Where the block rides inline in the launch command with a budget (codex's
+  `-c developer_instructions`, and every SSH or sandboxed launch, 8 KB as
+  above), the files are fitted in order: a file that does not fit is replaced
+  by a one-line pointer, and a later, smaller file can still go in. For
+  codex the budget counts the `developer_instructions` from your codex
+  config that the override is merged with. When not even one pointer per
+  file fits (an SSH or sandboxed codex launch carries the block twice), one
+  summary line names every file instead. When the block and your configured
+  `developer_instructions` already fill the budget, the override stays
+  exactly as without instruction files (so a session that started before
+  still starts), and `session show`/`session primer` report each file as
+  `not_delivered` with the reason. A local codex session's identity file
+  keeps every file in full. With instruction files the identity files are
+  written owner-only (0600), so a private instruction file's text is never
+  more readable in its copy. Over SSH and in a
+  sandbox the controller's path does not exist where the harness runs, so
+  the content travels inline within that budget and the pointer says the
+  file is on the agent-deck host.
+- Context level `none`, `--no-identity` and `inject_identity = false`
+  suppress the section with the rest of the block. `primer` and `full` both
+  carry it.
+- `session show --json` and `session primer` list each file with its state:
+  `ok`, `unreadable`, or `not_delivered` (over the cap or the budget, or
+  context level `none`), with a `reason`. `add|launch -capabilities --json`
+  marks `instructions-file` as `"repeatable": true`, so a script can detect a
+  build that has it.
+- Without instruction files nothing changes: the block, the codex override
+  and the SSH/sandbox launch are byte-identical to a build without this
+  feature (pinned by `internal/session/identity_golden_test.go`).
+
+Instruction files are set per session only; a group or global default may
+follow later.
+
 ## Verifying
 
 Inside any session: `echo $AGENTDECK_IDENTITY_FILE`, `cat` it, or run

@@ -25,7 +25,12 @@ const (
 	ConfirmCloseRemoteSession
 	ConfirmArchiveRemoteSession
 	ConfirmUnarchiveRemoteSession
-	ConfirmRemoveSession     // status-gated registry-only remove (TUI 'X')
+	ConfirmRemoveSession // status-gated registry-only remove (TUI 'X')
+	// ConfirmRemoveRemoteSession is the same status-gated registry-only remove
+	// for a row on a remote deck. Before it existed, 'X' had no branch at all
+	// for remote rows and did nothing, silently: the key looked broken rather
+	// than refused.
+	ConfirmRemoveRemoteSession
 	ConfirmBulkRemoveErrored // bulk remove of all errored sessions (TUI Ctrl+X)
 	ConfirmArchiveSession
 	ConfirmUnarchiveSession
@@ -58,6 +63,9 @@ type ConfirmDialog struct {
 	hookEvents  []string
 
 	remoteName string // Remote name for remote session confirmations.
+
+	// destName is the group a deleted group's sessions move to (ConfirmDeleteGroup).
+	destName string
 
 	// sessionCount is how many sessions a ConfirmDestroySandbox stops;
 	// confirming agrees to stop at most that many.
@@ -178,6 +186,18 @@ func (c *ConfirmDialog) ShowCloseSession(sessionID string, sessionName string, s
 	c.focusedButton = 1
 }
 
+// ShowRemoveRemoteSession shows the registry-only remove confirmation for a
+// session on a remote deck — the remote counterpart of ShowRemoveSession.
+func (c *ConfirmDialog) ShowRemoveRemoteSession(remoteName, sessionID, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmRemoveRemoteSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.remoteName = remoteName
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
 // ShowDeleteRemoteSession shows confirmation for deleting a remote session.
 func (c *ConfirmDialog) ShowDeleteRemoteSession(remoteName, sessionID, sessionName string) {
 	c.visible = true
@@ -288,12 +308,15 @@ func (c *ConfirmDialog) ShowBulkRemoveErrored(count int) {
 	c.focusedButton = 1
 }
 
-// ShowDeleteGroup shows confirmation for group deletion
-func (c *ConfirmDialog) ShowDeleteGroup(groupPath, groupName string) {
+// ShowDeleteGroup shows confirmation for group deletion. destName is the
+// display name of the group the sessions move to
+// (session.GroupTree.DeleteGroupDestinationName).
+func (c *ConfirmDialog) ShowDeleteGroup(groupPath, groupName, destName string) {
 	c.visible = true
 	c.confirmType = ConfirmDeleteGroup
 	c.targetID = groupPath
 	c.targetName = groupName
+	c.destName = destName
 	c.buttonCount = 2
 	c.focusedButton = 1
 }
@@ -668,7 +691,7 @@ func (c *ConfirmDialog) View() string {
 	switch c.confirmType {
 	case ConfirmDeleteSession:
 		title = "⚠  Delete Session?"
-		warning = fmt.Sprintf("This will permanently delete the session:\n\n  \"%s\"", c.targetName)
+		warning = fmt.Sprintf("This will delete the session:\n\n  \"%s\"", c.targetName)
 		details = "• The tmux session will be terminated\n• Any running processes will be killed\n• Terminal history will be lost"
 		if c.worktree {
 			details += "\n• The git worktree directory will be removed"
@@ -809,6 +832,17 @@ func (c *ConfirmDialog) View() string {
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render(glueHintGroups("y remove · n cancel · ←/→ navigate · Enter select · Esc")))
 
+	case ConfirmRemoveRemoteSession:
+		title = "Remove Remote Session?"
+		warning = fmt.Sprintf("Remove this session from the remote's registry:\n\n  \"%s\" on %s", c.targetName, c.remoteName)
+		details = "• The session record is deleted on the remote\n• Transcripts on the remote are preserved\n• Use 'd' instead to kill it and delete it"
+		borderColor = ColorYellow
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Remove", ColorYellow, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render(glueHintGroups("y remove · n cancel · ←/→ navigate · Enter select · Esc")))
+
 	case ConfirmBulkRemoveErrored:
 		title = "Remove All Errored Sessions?"
 		warning = fmt.Sprintf("Remove %d errored session(s) from the registry.", c.mcpCount)
@@ -823,7 +857,7 @@ func (c *ConfirmDialog) View() string {
 	case ConfirmDeleteGroup:
 		title = "⚠  Delete Group?"
 		warning = fmt.Sprintf("This will delete the group:\n\n  \"%s\"", c.targetName)
-		details = "• All sessions will be MOVED to 'default' group\n• Sessions will NOT be killed\n• The group structure will be lost"
+		details = fmt.Sprintf("• All sessions will be MOVED to the '%s' group\n• Sessions will NOT be killed\n• The group structure will be lost", c.destName)
 		borderColor = ColorRed
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Delete", ColorRed, c.focusedButton == 0), "  ",

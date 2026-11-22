@@ -33,7 +33,7 @@ func handleTmuxHooks(args []string) {
 	case "uninstall":
 		handleTmuxHooksUninstall()
 	case "status":
-		handleTmuxHooksStatus()
+		runTmuxHooksStatus(hooksStatusWantsJSON(args[1:]))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown tmux-hooks subcommand: %s\n", args[0])
 		printTmuxHooksUsage(os.Stderr)
@@ -52,7 +52,7 @@ func printTmuxHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  install      Install or refresh the hook (every session start does this too)")
 	fmt.Fprintln(w, "  uninstall    Remove the hook, only if the slot holds agent-deck's")
-	fmt.Fprintln(w, "  status       Show whether the slot is absent, agent-deck's, or foreign")
+	fmt.Fprintln(w, "  status       Show whether the slot is absent, agent-deck's, or foreign (--json for machine output)")
 	fmt.Fprintln(w, "  help         Show this help message")
 }
 
@@ -86,10 +86,21 @@ func handleTmuxHooksUninstall() {
 	}
 }
 
-func handleTmuxHooksStatus() {
+func runTmuxHooksStatus(asJSON bool) {
 	socket := tmux.DefaultSocketName()
 	state, err := tmux.WindowPolicyHookStatus(socket)
 	exitOnTmuxHookError("reading", err)
+	if asJSON {
+		st := hooksStatusJSON{Kind: "tmux", State: "not-installed", Config: tmuxHookSlotDescription(socket)}
+		switch state {
+		case tmux.WindowPolicyHookOwned:
+			st.State = "installed"
+		case tmux.WindowPolicyHookForeign:
+			st.State = "foreign"
+		}
+		printHooksStatusJSON(st)
+		return
+	}
 	fmt.Printf("Status: %s\n", tmuxHookStatusLabel(state))
 	fmt.Printf("Slot: %s\n", tmuxHookSlotDescription(socket))
 	if state == tmux.WindowPolicyHookAbsent {

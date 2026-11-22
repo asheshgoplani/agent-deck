@@ -2,9 +2,13 @@ package session
 
 import "strings"
 
-// canonicalGroupPath returns the stored path CreateGroupPath produces for the
-// given input.
-func canonicalGroupPath(path string) string {
+// CanonicalGroupPath returns the stored path CreateGroupPath produces for the
+// given input: every level sanitized like CreateGroup does, spaces turned
+// into hyphens, empty levels dropped. Callers that put a typed or
+// directory-derived group path on a new session use it so the session and the
+// group created for it agree on one path ("My Team" is the group "My-Team",
+// never a second group).
+func CanonicalGroupPath(path string) string {
 	segments := make([]string, 0)
 	for _, segment := range strings.Split(path, "/") {
 		if strings.TrimSpace(segment) == "" {
@@ -35,7 +39,7 @@ func ReconcileDeclarativeGroups(tree *GroupTree, cfg *UserConfig) bool {
 		if !settings.Create && settings.DefaultPath == "" {
 			continue
 		}
-		path := canonicalGroupPath(key)
+		path := CanonicalGroupPath(key)
 		if path == "" {
 			continue
 		}

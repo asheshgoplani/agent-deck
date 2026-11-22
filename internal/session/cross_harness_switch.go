@@ -345,6 +345,9 @@ func ExecuteCrossHarnessSwitch(ctx context.Context, cfg *UserConfig, source *Ins
 		target.ParentSessionID = source.ParentSessionID
 		target.ParentProjectPath = source.ParentProjectPath
 		target.NoTransitionNotify = source.NoTransitionNotify
+		// #3206: the session's standing instructions follow it to the new
+		// harness; its identity block carries them from the first spawn.
+		target.InstructionsFiles = append([]string(nil), source.InstructionsFiles...)
 		// Keep an unready destination out of the default active list. The target
 		// remains durable and directly addressable for recovery, while the source
 		// remains the sole visible row until final atomic supersession.

@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -150,6 +153,7 @@ func TestReapOutcomePayload(t *testing.T) {
 // reconciling stops a running session. The escaped-tree case — the one the
 // refusal message tells the operator to run — has no live pane by definition,
 // and requiring a flag there would train people to pass --yes without reading.
+// A pane check that failed counts as a possibly live pane.
 func TestReconcileConfirmation_ScopedToALivePane(t *testing.T) {
 	live := session.OwnershipStatus{
 		InstanceID:   "inst-live",
@@ -166,4 +170,41 @@ func TestReconcileConfirmation_ScopedToALivePane(t *testing.T) {
 	assert.True(t, live.PaneAttached, "a live pane must require --yes")
 	assert.False(t, escaped.PaneAttached, "an escaped tree must not")
 	assert.False(t, escaped.Admissible(), "and it must still block a restart until reconciled")
+}
+
+func TestOwnershipReconcileWithPaneProbeTimeoutRequiresConfirmation(t *testing.T) {
+	sb := removeSandbox(t)
+	id, tmuxName, panePID := startLiveShellSession(t, sb, "ownership-timeout")
+	out, err := runRemoveCLI(t, sb, "session", "ownership", "inspect", id)
+	require.NoError(t, err, "%s", out)
+	require.Contains(t, out, "the live pane runs this receipt's leader")
+
+	shim := filepath.Join(sb.ShimDir, "tmux")
+	require.NoError(t, os.Rename(shim, shim+"-isolated"))
+	require.NoError(t, os.WriteFile(shim, []byte(`#!/bin/sh
+case " $* " in
+  *" list-panes -t "*" -F #{pane_pid} "*) exec sleep 30 ;;
+esac
+exec "$0-isolated" "$@"
+`), 0o755))
+
+	// inspect must report the failed check, not "no live pane".
+	out, err = runRemoveCLI(t, sb, "session", "ownership", "inspect", id)
+	assert.Error(t, err, "%s", out)
+	assert.Contains(t, out, "Pane:     could not be checked: ")
+	assert.NotContains(t, out, "no live pane accounts for this receipt")
+	out, _ = runRemoveCLI(t, sb, "session", "ownership", "inspect", id, "--json")
+	assert.Contains(t, out, `"pane_check_error"`)
+
+	out, err = runRemoveCLI(t, sb, "session", "ownership", "reconcile", id)
+	assert.Error(t, err, "%s", out)
+	assert.Contains(t, out, "could not check the session's tmux pane")
+	assert.Contains(t, out, "tmux command exceeded its deadline")
+	assert.Contains(t, out, "re-run with --yes")
+	assert.NotContains(t, out, "no live pane accounts for this receipt")
+	assert.NotContains(t, out, "alive outside")
+	pane, err := sb.TmuxTry("display-message", "-p", "-t", tmuxName+":", "#{pane_pid}")
+	assert.NoError(t, err, "%s", pane)
+	assert.Equal(t, fmt.Sprint(panePID), strings.TrimSpace(pane), "the original pane process must survive")
+	assert.True(t, procowner.Alive(panePID), "the original pane process must still be alive")
 }

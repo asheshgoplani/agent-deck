@@ -54,8 +54,8 @@ func handleInbox(profile string, args []string) {
 }
 
 func printInboxUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: agent-deck inbox <session-id>")
-	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
+	fmt.Fprintln(w, "Usage: agent-deck inbox <session-id> (a title or self also works; reads and clears)")
+	fmt.Fprintln(w, "       agent-deck inbox drain [--json] [--strict] [<session-id>|self]")
 	fmt.Fprintln(w, "       agent-deck inbox export [--json] [--profile <name>] [--after '<cursor-json>' [--with-writer]]")
 	fmt.Fprintln(w, "       agent-deck inbox cursor [--json] [<remote>]")
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
@@ -225,7 +225,17 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 		fs.Usage()
 		return fmt.Errorf("expected exactly one session id argument")
 	}
-	sessionID := fs.Arg(0)
+	// Resolve the target exactly as `inbox drain` does: a title, short id or
+	// `self` reaches the real inbox, and an unknown name is an error (exit 2),
+	// never "No pending events."
+	sessionID, err := resolveDrainTarget(fs.Args())
+	if err != nil {
+		return err
+	}
+	sessionID, err = resolveInboxDrainSessionInProfile(sessionID, explicitProfile)
+	if err != nil {
+		return err
+	}
 
 	events, err := session.ReadAndTruncateInbox(sessionID)
 	if err != nil {

@@ -723,6 +723,12 @@ func (h *Home) confirmAction() tea.Cmd {
 			h.confirmDialog.Hide()
 			return h.removeSession(inst)
 		}
+	case ConfirmRemoveRemoteSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		remoteName := h.confirmDialog.GetRemoteName()
+		title := h.confirmDialog.targetName
+		h.confirmDialog.Hide()
+		return h.removeRemoteSession(remoteName, sessionID, title)
 	case ConfirmBulkRemoveErrored:
 		h.confirmDialog.Hide()
 		return h.bulkRemoveErrored()
@@ -1259,6 +1265,18 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		hadRestartRequired := false
 		var postCommits []func()
 		h.instancesMu.Lock()
+		// Same guard as the CLI rename and the r-hotkey rename, before any
+		// field is written.
+		for _, c := range orderedChanges {
+			if c.Field != session.FieldTitle {
+				continue
+			}
+			if err := session.CheckTitleConflict(h.instances, inst, c.Value); err != nil {
+				h.instancesMu.Unlock()
+				h.editSessionDialog.SetError(err.Error())
+				return h, nil
+			}
+		}
 		for _, c := range orderedChanges {
 			_, postCommit, err := session.SetField(inst, c.Field, c.Value, nil)
 			if err != nil {
@@ -1704,7 +1722,11 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					var setErr error
 					h.instancesMu.Lock()
 					if inst := h.getInstanceByID(sessionID); inst != nil {
-						_, postCommit, setErr = session.SetField(inst, session.FieldTitle, newName, nil)
+						// The CLI's guard: a title another session holds at
+						// the same location is refused, here too.
+						if setErr = session.CheckTitleConflict(h.instances, inst, newName); setErr == nil {
+							_, postCommit, setErr = session.SetField(inst, session.FieldTitle, newName, nil)
+						}
 						locked = inst.TitleLocked
 						telCmd = telemetryFeatureFromTUI("rename", setErr != nil)
 					}

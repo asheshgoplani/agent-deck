@@ -57,7 +57,24 @@ func handleSessionRemove(profile string, args []string) {
 	}
 
 	if *allErrored {
-		removeAllErrored(out, storage, instances, groups, *pruneWorktree, *force, newWorktreeRemovalGuard(profile))
+		// A bulk delete needs two agreeing reads: the stored status and
+		// the status list shows must both be error. Live alone would delete
+		// a healthy row whose tmux is gone for one sample (another process
+		// mid-restart); stored alone deleted rows list showed as idle.
+		storedErrored := make(map[*session.Instance]bool)
+		for _, inst := range instances {
+			if inst != nil && inst.Status == session.StatusError {
+				storedErrored[inst] = true
+			}
+		}
+		refreshLiveStatus(instances)
+		var errored []*session.Instance
+		for _, inst := range instances {
+			if storedErrored[inst] {
+				errored = append(errored, inst)
+			}
+		}
+		removeAllErrored(out, storage, instances, errored, groups, *pruneWorktree, *force, newWorktreeRemovalGuard(profile))
 		return
 	}
 
@@ -77,6 +94,8 @@ func handleSessionRemove(profile string, args []string) {
 		return
 	}
 
+	// The guard reads the status list shows, not the stored one.
+	refreshLiveStatus([]*session.Instance{inst})
 	if !*force && !isRemovableStatus(inst.Status) {
 		out.Error(
 			fmt.Sprintf(
@@ -150,6 +169,7 @@ func removeAllErrored(
 	out *CLIOutput,
 	storage *session.Storage,
 	instances []*session.Instance,
+	candidates []*session.Instance,
 	groups []*session.GroupData,
 	pruneWorktree bool,
 	force bool,
@@ -157,7 +177,7 @@ func removeAllErrored(
 ) {
 	var doomed []*session.Instance
 	skipped := 0
-	for _, inst := range instances {
+	for _, inst := range candidates {
 		if inst.Status != session.StatusError {
 			continue
 		}

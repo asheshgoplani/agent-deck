@@ -107,6 +107,7 @@ func TestRemoteCommandParity(t *testing.T) {
 		{"session", "stop", "missing", "--json"}, {"session", "restart", "missing", "--json"},
 		{"session", "archive", "missing", "--json"}, {"session", "unarchive", "missing", "--json"},
 		{"session", "fork", "missing", "--json"},
+		{"session", "send-keys", "missing", "--named-key", "Escape", "--json"},
 		{"worktree", "info", "missing", "--json"}, {"mcp", "list", "--json"}, {"mcp", "attach", "missing", "none", "--json"},
 		{"skill", "list", "--json"}, {"skill", "attach", "missing", "none"},
 		{"skill", "detach", "missing", "none"}, {"skill", "attached", "missing", "--json"},
@@ -332,6 +333,15 @@ func TestRemoteCommandParity(t *testing.T) {
 			t.Fatalf("successful output differs: %s %s", local, forwarded)
 		}
 	}
+	// Interrupt (the app's Stop button and Esc): a named key sent through the
+	// passthrough reaches the pane of the session on the remote.
+	mustRun("session", "send-keys", "receiver", "--named-key", "Escape", "--json")
+	mustRun("session", "send-keys", "receiver", "--enter", "--json")
+	escReceipt := fmt.Sprintf("RX:%x:1", sha256.Sum256([]byte{0x1b}))
+	waitFor("Escape reaches the remote session", func() bool {
+		out, _, _ := run(remote, "", "session", "output", "receiver", "--json")
+		return strings.Contains(out, escReceipt)
+	})
 	// Destructive cleanup is restricted to a disposable merged orphan created
 	// by this fixture. Confirm via streamed stdin and inspect Git + filesystem.
 	if out, err := exec.Command("git", "-C", remote, "update-ref", "refs/remotes/origin/main", "HEAD").CombinedOutput(); err != nil {
@@ -422,6 +432,41 @@ func TestRemoteCommandArgsSessionArchiveVerbs(t *testing.T) {
 	}
 	if _, err := remoteCommandArgs([]string{"session", "remove", "id"}); err == nil {
 		t.Fatal("session remove must stay unsupported")
+	}
+}
+
+// `session send-keys` types one key into the session's pane on the server.
+// The app's Stop button and Esc send `--named-key Escape` this way, so the
+// passthrough forwards the one-shot forms; the stdin stream stays local.
+func TestRemoteCommandArgsSessionSendKeys(t *testing.T) {
+	for _, args := range [][]string{
+		{"session", "send-keys", "id", "--named-key", "Escape", "--json"},
+		{"session", "send-keys", "--named-key=C-c", "my session"},
+		{"session", "send-keys", "id", "--text", "-y", "--primary"},
+		{"session", "send-keys", "id", "--enter", "-q"},
+		{"session", "send-keys", "--help"},
+	} {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Errorf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"session", "send-keys", "id", "--stream"}, "--stream is not forwarded"},
+		{[]string{"session", "send-keys", "id", "--profile", "x"}, "unsupported option"},
+		{[]string{"session", "send-keys", "id", "--named-key"}, "needs a value"},
+		{[]string{"session", "send-keys", "id", "--text="}, "needs a value"},
+		{[]string{"session", "send-keys", "id", "--enter=true"}, "takes no value"},
+		{[]string{"session", "send-keys", "--enter"}, "expects 1 session"},
+		{[]string{"session", "send-keys", "a", "b", "--enter"}, "expects 1 session"},
+		{[]string{"send-keys", "id", "--enter"}, "unsupported remote command"},
+	} {
+		if _, err := remoteCommandArgs(tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("remoteCommandArgs(%v) error = %v, want one containing %q", tc.args, err, tc.want)
+		}
 	}
 }
 
@@ -568,6 +613,31 @@ func TestRemoteCommandArgsSessionOwnershipInspect(t *testing.T) {
 	} {
 		if got, err := remoteCommandArgs(args); err == nil {
 			t.Fatalf("remoteCommandArgs(%v) = %v; must stay unsupported", args, got)
+		}
+	}
+}
+
+// `--` ends the options of `session send-keys` as it does locally, so a
+// session titled "-worker" can be targeted remotely. Exactly one session is
+// still required after the separator.
+func TestRemoteCommandArgsSessionSendKeysDoubleDash(t *testing.T) {
+	for _, args := range [][]string{
+		{"session", "send-keys", "--named-key", "Escape", "--", "-worker"},
+		{"session", "send-keys", "--enter", "--", "--json"},
+		{"session", "send-keys", "--", "id"},
+	} {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Errorf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"session", "send-keys", "--named-key", "Escape", "--"},
+		{"session", "send-keys", "--named-key", "Escape", "--", "-worker", "extra"},
+		{"session", "send-keys", "id", "--enter", "--", "-worker"},
+	} {
+		if _, err := remoteCommandArgs(args); err == nil || !strings.Contains(err.Error(), "expects 1 session") {
+			t.Errorf("remoteCommandArgs(%v) error = %v, want one containing %q", args, err, "expects 1 session")
 		}
 	}
 }

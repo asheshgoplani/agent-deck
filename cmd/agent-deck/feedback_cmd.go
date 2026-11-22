@@ -37,11 +37,30 @@ var ghUserLogin = func() string {
 	return strings.TrimSpace(string(out))
 }
 
+// feedbackErrOut is where a plain-text error line goes: stderr when the
+// command writes to the real stdout, so a script's stdout stays clean; the
+// given writer otherwise (tests, and --json, which keeps errors in its JSON).
+func feedbackErrOut(w io.Writer) io.Writer {
+	if f, ok := w.(*os.File); ok && f == os.Stdout {
+		return os.Stderr
+	}
+	return w
+}
+
 // handleFeedback is the public dispatch entry point for the "agent-deck feedback" subcommand.
 // It delegates to handleFeedbackWithSender wired to real stdin/stdout so prompts print
 // interactively as they are emitted (see #679 follow-up: a previous strings.Builder wrapper
 // hid every prompt until after the function returned, leaving users typing at a blank cursor).
 func handleFeedback(args []string) {
+	// An unknown subcommand is an error, not the start of the rating prompt.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") && args[0] != "help" {
+		switch args[0] {
+		case "mine", "fixed", "agent-consent", string(issuereport.KindBug), string(issuereport.KindIdea):
+		default:
+			fmt.Fprintf(os.Stderr, "Error: unknown feedback subcommand %q (use: bug, idea, mine, fixed, agent-consent; run 'agent-deck feedback' alone to rate this version)\n", args[0])
+			exitCLI(2)
+		}
+	}
 	// `agent-deck feedback bug|idea` files a structured GitHub issue
 	// (ASK-109); plain `agent-deck feedback` keeps the rating flow below.
 	if len(args) > 0 && (args[0] == "mine" || args[0] == "fixed" || args[0] == "agent-consent") {
@@ -187,7 +206,7 @@ func handleFeedbackWithSender(args []string, version string, sender *feedback.Se
 			"-f", "body="+body,
 		)
 		if ghErr != nil {
-			fmt.Fprintln(w, "Error: could not post via gh. Feedback was NOT sent.")
+			fmt.Fprintln(feedbackErrOut(w), "Error: could not post via gh. Feedback was NOT sent.")
 			fmt.Fprintln(w, "Make sure `gh auth status` shows you are logged in.")
 			return fmt.Errorf("feedback: gh post failed: %w", ghErr)
 		}
@@ -384,7 +403,7 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 	steps := fs.String("steps", "", "steps to reproduce (idea: alternatives considered)")
 	tool := fs.String("tool", "", "agent tool involved (claude, codex, ...)")
 	surface := fs.String("surface", "cli", "where the report is filed from (cli, tui, mac app)")
-	dryRun := fs.Bool("dry-run", false, "print the exact issue and the fallback URL; send nothing")
+	dryRun := fs.Bool("dry-run", false, "preview the issue without sending it")
 	jsonOut := fs.Bool("json", false, "machine output; never prompts")
 	yes := fs.Bool("yes", false, "confirm sending (required with --json)")
 	noOpen := fs.Bool("no-open", false, "print the prefilled URL instead of opening a browser")
@@ -402,10 +421,10 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 			} else {
 				msg = ": " + msg
 			}
-			fmt.Fprintln(w, "Error"+msg)
+			fmt.Fprintln(feedbackErrOut(w), "Error"+msg)
 			if url != "" {
-				fmt.Fprintln(w, "You can still file it in your browser:")
-				fmt.Fprintln(w, url)
+				fmt.Fprintln(feedbackErrOut(w), "You can still file it in your browser:")
+				fmt.Fprintln(feedbackErrOut(w), url)
 			}
 		}
 		return 1
@@ -537,7 +556,16 @@ func runFeedbackReport(ctx context.Context, kind issuereport.Kind, args []string
 		fmt.Fprintln(w, "Dry run: nothing is sent.")
 		fmt.Fprintln(w)
 		printIssuePreview(w, is)
-		if feedbackGhReady(ctx) {
+		ready := feedbackGhReady(ctx)
+		if *fromAgent {
+			if ready {
+				fmt.Fprintln(w, "Would file with: gh (or comment on a matching open agent report)")
+			} else {
+				fmt.Fprintln(w, "Cannot file: --from-agent requires a logged-in GitHub CLI (install gh and run `gh auth login`)")
+			}
+			return 0
+		}
+		if ready {
 			fmt.Fprintln(w, "Would file with: gh issue create (gh is installed and logged in)")
 		} else {
 			fmt.Fprintln(w, "Would file with: your browser (gh is not installed or not logged in)")
@@ -765,7 +793,7 @@ func printFeedbackReportHelp(w io.Writer, kind issuereport.Kind) {
 		fmt.Fprintln(w, "  --steps TEXT     steps to reproduce (optional)")
 	}
 	fmt.Fprintln(w, "  --tool T         agent tool involved (claude, codex, ...)")
-	fmt.Fprintln(w, "  --dry-run        print the exact issue and the prefilled URL; send nothing")
+	fmt.Fprintln(w, "  --dry-run        preview the issue without sending it")
 	fmt.Fprintln(w, "  --json           JSON output, never prompts; sending also needs --yes")
 	fmt.Fprintln(w, "  --yes            confirm sending without the y/N prompt")
 	fmt.Fprintln(w, "  --no-open        print the prefilled URL instead of opening a browser")

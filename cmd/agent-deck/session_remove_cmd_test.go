@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -149,7 +150,7 @@ func TestSessionRemove_AllErrored_RemovesOnlyErrored(t *testing.T) {
 	}
 	home := t.TempDir()
 	errID := addTestSession(t, home, filepath.Join(home, "err-proj"), "err-one")
-	forceSetStatus(t, home, errID, session.StatusError)
+	forceSetStartedStatus(t, home, errID, session.StatusError, time.Now().Add(-time.Hour))
 	stoppedID := addTestSession(t, home, filepath.Join(home, "stop-proj"), "stopped-one")
 	forceSetStatus(t, home, stoppedID, session.StatusStopped)
 	idleID := addTestSession(t, home, filepath.Join(home, "idle-proj"), "idle-one")
@@ -189,8 +190,8 @@ func TestSessionRemove_AllErrored_SkipsPinned(t *testing.T) {
 	if _, stderr, code := runAgentDeck(t, home, "session", "set", pinnedID, "pin", "top"); code != 0 {
 		t.Fatalf("set pin failed: %s", stderr)
 	}
-	forceSetStatus(t, home, pinnedID, session.StatusError)
-	forceSetStatus(t, home, plainID, session.StatusError)
+	forceSetStartedStatus(t, home, pinnedID, session.StatusError, time.Now().Add(-time.Hour))
+	forceSetStartedStatus(t, home, plainID, session.StatusError, time.Now().Add(-time.Hour))
 
 	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--json")
 	if code != 0 {
@@ -215,7 +216,7 @@ func TestSessionRemove_AllErrored_ForceIncludesPinned(t *testing.T) {
 	if _, stderr, code := runAgentDeck(t, home, "session", "set", pinnedID, "pin", "top"); code != 0 {
 		t.Fatalf("set pin failed: %s", stderr)
 	}
-	forceSetStatus(t, home, pinnedID, session.StatusError)
+	forceSetStartedStatus(t, home, pinnedID, session.StatusError, time.Now().Add(-time.Hour))
 
 	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--force", "--json")
 	if code != 0 {

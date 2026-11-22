@@ -43,6 +43,8 @@ export function groupMembers(groupPath) {
   return [...active, ...archived]
 }
 
+// Counts every row the panel lists, archived included, so the total matches
+// the rows shown. Status buckets follow the TUI rule (statusBucket).
 export function groupStats(groupPath) {
   const members = groupMembers(groupPath)
   const counts = { running: 0, waiting: 0, idle: 0, stopped: 0, error: 0 }
