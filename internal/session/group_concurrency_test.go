@@ -171,3 +171,15 @@ func TestGroup_CountRunningInGroup(t *testing.T) {
 		t.Errorf("CountRunningInGroup: expected 2, got %d", got)
 	}
 }
+
+// A stored "starting" row whose tmux session is gone holds no launch slot:
+// only a live starting session does (see CountLaunchSlotsHeldInGroup).
+func TestGroup_StaleStartingRowDoesNotBlockALaunch(t *testing.T) {
+	instances := []*Instance{{ID: "a", GroupPath: "g", Status: StatusStarting}}
+	if ShouldQueue(instances, "g", 1) {
+		t.Error("a starting row with no live tmux session queued a new launch")
+	}
+	if got := CountOccupiedInGroup(instances, "g"); got != 1 {
+		t.Errorf("drain occupancy = %d, want 1 (drains still count a starting row)", got)
+	}
+}

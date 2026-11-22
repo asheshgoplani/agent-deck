@@ -47,10 +47,10 @@ of the background index sweep and meets the two second local append target.
 ## Rows (default, schema `agent-deck.recall.rows/v2`)
 
 ```
-agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]
+agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>] [--kinds a,b] [--skip-empty-body]
 agent-deck recall follow   <session> --after <cursor|end> --jsonl [--status]
 agent-deck recall timeline --json --transcript <file> --harness claude|codex|pi
-agent-deck recall timeline --json [--tail N] --sessions <id1>,<id2>,...
+agent-deck recall timeline --json [--tail N] [--kinds a,b] [--skip-empty-body] --sessions <id1>,<id2>,...
 ```
 
 Both need `[recall] enabled = true` (exit 2 otherwise) but never need the
@@ -92,6 +92,60 @@ changed after a cursor: new rows in `turns`, changes to earlier rows in
 `--limit`/`--since` until the cursor stops moving yields exactly the full
 timeline. `--agent <id>` returns one Claude sub-agent sidechain.
 
+### Only some rows (`--kinds`, `--skip-empty-body`)
+
+A client that shows a conversation as messages, not as a full activity log,
+can ask the owner host to drop the other rows before they are printed, so
+they never cross an SSH link:
+
+```
+agent-deck recall timeline <session> --json --kinds user,assistant --tail 100
+agent-deck recall timeline <session> --json --kinds user,assistant --since <next_cursor>
+agent-deck recall timeline <session> --json --skip-empty-body --tail 100
+```
+
+- `--kinds` keeps only rows whose `kind` is in the comma-separated list:
+  `user`, `assistant`, `thinking`, `tool`, `bash`, `edit`, `read`,
+  `subagent`, `todo`, `question`, `skill`, `command`, `system`,
+  `compaction`, `turn_end`, `other`. An unknown or empty kind is refused
+  with exit 2 (`INVALID_OPERATION`) and the list of valid kinds.
+- `--skip-empty-body` drops rows whose `body` is empty or only whitespace.
+  A tool call still waiting for its result (`finished: false`) is kept: its
+  output arrives later as an update to that row, and a client can only merge
+  an update into a row it already holds. Both flags can be combined.
+- `--tail N`, `--limit N` and `--before <cursor> --limit N` count rows that
+  are kept: `--kinds user --tail 20` answers the last 20 user rows, however
+  many other rows sit between them.
+- A filtered answer carries `next_cursor`. Resume with
+  `--since <next_cursor>`, never with a cursor built from the last row in
+  `turns`: when the newest rows were filtered out, that row is older than
+  what this read covered, and the next call would fetch the same window
+  again. `next_cursor` equals `through_cursor`, which already covers every
+  row the read passed, kept or not. Without a filter `next_cursor` is
+  absent and the output is byte for byte what it was before the flags
+  existed.
+- `before_cursor` names the first kept row, so older pages with the same
+  filter continue exactly where the last one stopped.
+- In `--since` answers, `updates` for rows the filter dropped do not cross
+  the wire. A filtered cursor lists the open rows it dropped (a tool call
+  waiting for its result, a queued message; the newest 64), so the result
+  patch that arrives later is dropped too, and the id leaves the cursor once
+  its result has been swallowed. An update that names a kind outside the
+  list is also dropped. Other updates are for rows the client holds and are
+  kept. `removed` is unchanged.
+- Sub-agent children attached to a kept `subagent` row are filtered the
+  same way, so a sidechain's dropped kinds do not ride along.
+- Rows read from the index (`source: "index"`) and `--agent` sidechains
+  are filtered the same way; they have no cursor and no `next_cursor`.
+  On the index path `--limit N` keeps the first N kept rows.
+- Filtering runs on the owner host, so `remote <name> recall timeline
+  --kinds ...` and an `ssh <host> agent-deck recall timeline --kinds ...`
+  both carry only the kept rows. `--v1` is refused with a filter.
+
+`agent-deck version --json` lists `recall_timeline_kinds` in `features` on
+cores that filter; an older core rejects `--kinds` as an unknown flag, and
+`remote <name>` reports it as predating `recall timeline --kinds`.
+
 ### First screens in one call (`--sessions`)
 
 `--sessions <id1>,<id2>,...` answers up to 50 sessions in one call, so a
@@ -107,7 +161,7 @@ round trip per session:
 
 Entries follow the input order, and each `timeline` equals the single-id
 answer. One id failing never fails the batch: the call exits 0 once the request
-is valid. Only `--tail` combines with `--sessions`; `--since`, `--before`,
+is valid. Only `--tail`, `--kinds` and `--skip-empty-body` combine with `--sessions`; `--since`, `--before`,
 `--limit`, `--agent`, `--v1`, `--transcript` and a positional `<session>` are
 refused with `INVALID_OPERATION` (exit 2), as are more than 50 ids or an empty
 id. Sessions and the recall index are opened once per call and transcripts are
@@ -139,7 +193,12 @@ behavior and can independently contain a large transcript.
 `GET /api/sessions/{id}/timeline` answers the same rows v2 object for a deck
 session id, so a web or other HTTP client reads what `recall timeline <id>
 --json` prints. The query parameters are the CLI's flags: `tail`, `limit`,
-`since`, `before` (with `limit`) and `agent`, with the same rules. It reads
+`since`, `before` (with `limit`), `agent`, `kinds` and `skip-empty-body`,
+with the same rules. `kinds=user,assistant` is the allowlist; a present but
+empty `kinds` or an unknown kind is a 400 that lists the valid kinds.
+`skip-empty-body` takes `true`/`false` (present without a value means
+`true`). A filtered answer carries `next_cursor`, the cursor to pass to
+`since` next. It reads
 the session's live Claude Code, Codex or Pi transcript and never touches the
 index. The route follows the web server's token like every other `/api`
 route and needs `[recall] enabled = true` like the CLI.
@@ -159,6 +218,50 @@ another file is refused rather than read.
 | 404 | `NOT_FOUND` | no such session, its transcript does not exist on this machine yet, or no sub-agent sidechain matches `agent` |
 | 409 | `RESYNC_REQUIRED` | the cursor is malformed or no longer describes the transcript (rewritten, moved, or not this session's); reload without it |
 | 500 | `INTERNAL_ERROR` | the session data or the transcript could not be read |
+
+#### Stream (`timeline/stream`)
+
+`GET /api/sessions/{id}/timeline/stream?after=<cursor|end>` is the SSE form
+of `recall follow <id> --after <cursor|end> --jsonl`. Each event is one
+follow frame: the event name is the frame (`row`, `update`, `remove`,
+`status`, `resync_required`) and `data` is the frame's JSON, the same line
+the CLI prints. A frame's `cursor` is also the event `id`, and a
+`Last-Event-ID` header wins over `after`, so an EventSource that reconnects
+resumes where it stopped.
+
+```text
+id: eyJ2IjoyLC...
+event: row
+data: {"frame":"row","row":{"id":"…","kind":"assistant","body":"…"},"cursor":"eyJ2IjoyLC..."}
+```
+
+- `after` (required): a `through_cursor`, `next_cursor` or frame cursor, or
+  `end` to start at the current end. The first block is always an id-only
+  event with the start cursor (for `end`, the resolved end), so a client
+  that drops before the first frame reconnects without skipping the rows
+  written in between.
+- `kinds`, `skip-empty-body`: the timeline filter. Rows the filter drops are
+  not sent, nor their later `update`/`remove` frames. When a held-back frame
+  carried a cursor, the stream sends an id-only event (an `id:` line, no
+  data): that id is the stream's `next_cursor`. Keep the last id you saw,
+  not the cursor of the last row you rendered, or a resume re-reads the
+  filtered window.
+- `status=true`: a `status` frame with `session_id`, `session_status` and
+  `running`, every second while the session runs and once when it stops.
+  The pane facts the CLI adds (verb, tokens, current tool) are left out.
+
+The stream uses the same token check as the snapshot route (the
+`Authorization` header or the web UI's token cookie; a `?token=` query is
+refused). It ends after `resync_required`, and when the client disconnects;
+an idle stream sends a `: keepalive` comment every 15 seconds. On
+`resync_required`, close the EventSource and reload with a fresh snapshot:
+an EventSource left open reconnects with the same stale `Last-Event-ID` and
+gets `resync_required` again. A server keeps at most 32 timeline streams
+open; past that a new one gets 429 `RATE_LIMITED` until a client
+disconnects. An open stream does not hold back a headless `agent-deck web`
+from restarting into a new build, as with `/events/*`. Before the
+first event, errors are JSON as on the snapshot route (a missing `after`
+is a 400).
 | 501 | `NOT_IMPLEMENTED` | the session's tool is not Claude Code, Codex or Pi; the CLI falls back to the index for those, the route does not |
 | 503 | `RECALL_DISABLED` | `[recall] enabled` is false |
 
@@ -170,7 +273,7 @@ Row:
 | `kind` | `user`, `assistant`, `thinking`, `tool`, `bash`, `edit`, `read`, `subagent`, `todo`, `question`, `skill`, `command`, `system`, `compaction`, `turn_end`, `other` |
 | `ts` | Native timestamp (for an absorbed queued message: when Claude absorbed it) |
 | `title` | The one line a client shows: tool description, `Edit <path>`, `/command args`, `Worked for 7s`, `Context compacted · 844.0k → 19.0k`, first line of a hook or system injection, the question |
-| `body` | Full text: prose, thinking, system body, sub-agent prompt; for a tool row its output (capped at 32 KiB, `meta.truncated`) |
+| `body` | Full text: prose, thinking, system body, sub-agent prompt; for a tool row its output (capped at 32 KiB, `meta.truncated`; also set when Pi truncated a direct shell command's output itself) |
 | `summary` | The terminal's `⎿` wording: `Read 120 lines`, `Added 3 lines, removed 1 line`, `Backgrounded agent`, `Done (4 tool uses)`, `2 of 5 done`, `Which? → A`, `Exit code 2`, `… +12 lines` |
 | `detail` | The dim mono line: command, path or pattern, sub-agent type |
 | `tool_id` | Native tool call id on tool rows |
@@ -215,7 +318,7 @@ Follow frames, one JSON object per line:
 | `update` | `row` with `id` and only what changed (a tool gaining its result, a queued message absorbed, a sub-agent's children) | merge the present fields into that row, meta keys merged; `queued:false` with a `ts` moves the row to the end; ignore unknown ids |
 | `remove` | `id` | drop that row |
 | `status` (with `--status`) | `session_id, running, session_status, verb, elapsed_s, tokens, current_tool, facts{account,model,cwd,ctx,in,out,5h,7d \| model,context_left,weekly_left,window}, permission, auto_compact_pct, queued[], notice` | the live status strip; sent once a second while the session runs and once when it stops |
-| `resync_required` | `reason`: `invalid_cursor`, `source_rewritten`, `source_shortened`, `source_replaced`, `source_missing`, `source_moved` | call timeline again |
+| `resync_required` | `reason`: `invalid_cursor`, `source_rewritten`, `source_shortened`, `source_replaced`, `source_missing`, `source_moved`, `source_unresolved` | call timeline again |
 
 Only the last frame produced by one native line carries `cursor`, so every
 cursor is a clean resume point: resuming neither loses nor duplicates a
@@ -223,6 +326,8 @@ frame. The cursor holds the byte offset, a hash of the 256 bytes before it,
 and the pending queue ids. Follow polls every 200 ms and reads only the new
 bytes. `--after end` starts at the current end. `source_moved` fires when a
 Codex session's live rollout changes (docs/macapp-core.md, Codex identity).
+`source_unresolved` fires when a Pi session stops resolving to one session
+document while it is followed (a second file after `/new`, no saved identity).
 The status frame comes from the session's state.db status and, while it
 runs, a read-only capture of its pane (the `✻ Verb… (1m 12s · ↓ 3.7k tokens)`
 or `• Working (30m 26s • esc to interrupt)` line, the `⎿` line under it, the

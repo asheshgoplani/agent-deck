@@ -383,7 +383,7 @@ func runFeedbackMine(ctx context.Context, args []string, version string, w io.Wr
 	help := fs.Bool("help", false, "show help")
 	fs.BoolVar(help, "h", false, "show help")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(w, "Error: "+err.Error())
+		fmt.Fprintln(feedbackErrOut(w), "Error: "+err.Error())
 		return 1
 	}
 	if *help {
@@ -403,7 +403,7 @@ func runFeedbackMine(ctx context.Context, args []string, version string, w io.Wr
 		if *jsonOut {
 			writeFeedbackJSON(w, feedbackReportJSON{ErrorCode: "store_failed", Message: err.Error()})
 		} else {
-			fmt.Fprintln(w, "Error: "+err.Error())
+			fmt.Fprintln(feedbackErrOut(w), "Error: "+err.Error())
 		}
 		return 1
 	}
@@ -522,9 +522,9 @@ func runFeedbackFixed(ctx context.Context, args []string, version string, in io.
 		if *jsonOut {
 			writeLoopJSON(w, feedbackFixedJSON{ErrorCode: code, Message: msg})
 		} else if code == errCodeConfirmRequired || code == errCodeConsentRequired {
-			fmt.Fprintln(w, "Error ("+code+"): "+msg)
+			fmt.Fprintln(feedbackErrOut(w), "Error ("+code+"): "+msg)
 		} else {
-			fmt.Fprintln(w, "Error: "+msg)
+			fmt.Fprintln(feedbackErrOut(w), "Error: "+msg)
 		}
 		return 1
 	}
@@ -702,7 +702,7 @@ func runFeedbackAgentConsent(ctx context.Context, args []string, in io.Reader, w
 		if err != nil {
 			msg = err.Error()
 		}
-		fmt.Fprintln(w, "Error: "+msg)
+		fmt.Fprintln(feedbackErrOut(w), "Error: "+msg)
 		return 1
 	}
 	if *help {
@@ -711,13 +711,13 @@ func runFeedbackAgentConsent(ctx context.Context, args []string, in io.Reader, w
 	}
 	cfg, err := session.LoadUserConfig()
 	if err != nil || cfg == nil {
-		fmt.Fprintf(w, "Error: reading config.toml: %v\n", err)
+		fmt.Fprintf(feedbackErrOut(w), "Error: reading config.toml: %v\n", err)
 		return 1
 	}
 	save := func(on bool) int {
 		cfg.Feedback.AgentReports = on
 		if err := session.SaveUserConfig(cfg); err != nil {
-			fmt.Fprintf(w, "Error: saving config.toml: %v\n", err)
+			fmt.Fprintf(feedbackErrOut(w), "Error: saving config.toml: %v\n", err)
 			return 1
 		}
 		session.ClearUserConfigCache()
@@ -733,12 +733,12 @@ func runFeedbackAgentConsent(ctx context.Context, args []string, in io.Reader, w
 	// Turning agent posting on is a person's decision at a terminal, never
 	// a piped "y" (an agent can pipe one), whatever the environment says.
 	if !readerIsTerminal(in) {
-		fmt.Fprintln(w, "Error ("+errCodeConfirmRequired+"): a person turns this on in their own terminal; stdin here is not a terminal. Nothing changed: agent reports stay off.")
+		fmt.Fprintln(feedbackErrOut(w), "Error ("+errCodeConfirmRequired+"): a person turns this on in their own terminal; stdin here is not a terminal. Nothing changed: agent reports stay off.")
 		return 1
 	}
 	// Not from inside an agent session either: an agent can fake a terminal.
 	if inAgentSession() {
-		fmt.Fprintln(w, "Error ("+errCodeConfirmRequired+"): this runs inside an agent session ("+agentInstanceEnv+" is set); a person turns this on in a terminal outside agent-deck sessions. Nothing changed: agent reports stay off.")
+		fmt.Fprintln(feedbackErrOut(w), "Error ("+errCodeConfirmRequired+"): this runs inside an agent session ("+agentInstanceEnv+" is set); a person turns this on in a terminal outside agent-deck sessions. Nothing changed: agent reports stay off.")
 		return 1
 	}
 	renderAgentConsentDisclosure(w, ghUserLogin())

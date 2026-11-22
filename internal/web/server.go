@@ -70,12 +70,19 @@ type Server struct {
 	menuSubscribersMu sync.Mutex
 	menuSubscribers   map[chan struct{}]struct{}
 
+	// timelineStreams counts open /timeline/stream handlers, capped at
+	// timelineStreamMax; each handler decrements it when it returns.
+	timelineStreams atomic.Int64
+	timelineSlotsMu sync.Mutex
+	timelineSlots   []*timelineSlot
+
 	costStore       *costs.Store
 	mutator         SessionMutator
 	skills          SkillsService
 	mcpMgr          MCPManager
 	remoteFleet     RemoteFleetLoader
 	mutationLimiter *rate.Limiter
+	systemStats     *systemStatsCache
 
 	// hookStatusLoader returns the latest hook payload for every instance
 	// whose hook file is present on disk. Defaults to defaultLoadHookStatuses
@@ -122,6 +129,7 @@ func NewServer(cfg Config) *Server {
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
 		annotationReader: &stateDBAnnotationReader{},
+		systemStats:      &systemStatsCache{},
 	}
 	s.annotationLoader = s.annotationReader.load
 	if s.remoteFleet == nil {
@@ -358,7 +366,8 @@ func isStreamPath(path string) bool {
 			return true
 		}
 	}
-	return false
+	// GET /api/sessions/{id}/timeline/stream, one session's follow frames.
+	return strings.HasPrefix(path, "/api/sessions/") && strings.HasSuffix(path, "/timeline/stream")
 }
 
 // trackInFlight counts requests from handler entry to exit so Idle can

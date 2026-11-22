@@ -1,5 +1,5 @@
-Usage: agent-deck inbox <session-id>
-       agent-deck inbox drain [--json] <session-id>
+Usage: agent-deck inbox <session-id> (a title or self also works; reads and clears)
+       agent-deck inbox drain [--json] [--strict] [<session-id>|self]
        agent-deck inbox export [--json] [--profile <name>] [--after '<cursor-json>' [--with-writer]]
        agent-deck inbox cursor [--json] [<remote>]
        agent-deck inbox writer-status [--json]

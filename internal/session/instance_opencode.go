@@ -334,11 +334,18 @@ func (i *Instance) queryOpenCodeSession() string {
 	currentID := i.OpenCodeSessionID
 	startedAt := i.OpenCodeStartedAt
 	lastStartedAt := i.LastStartedAt
+	tmuxSession := i.tmuxSession
 	i.mu.RUnlock()
 
 	sharedService := port == 0 && i.openCodeRejectsV1LaunchFlags()
 	var minCreated int64
 	if sharedService && currentID == "" {
+		// The V2 launch command records the ID returned by session.create
+		// before opening the pane. Prefer that ID over any same-project
+		// conversation found in the shared service listing.
+		if id := i.openCodeLaunchID(tmuxSession); id != "" {
+			return id
+		}
 		// OpenCodeStartedAt is not persisted, so a reloaded instance falls back to its last start.
 		if startedAt <= 0 && !lastStartedAt.IsZero() {
 			startedAt = lastStartedAt.UnixMilli()
@@ -381,6 +388,46 @@ func (i *Instance) queryOpenCodeSession() string {
 		slog.String("current_id", currentID),
 	)
 	return bestMatch
+}
+
+func (i *Instance) openCodeLaunchID(tmuxSession *tmux.Session) string {
+	if tmuxSession == nil || i.IsSSH() || i.IsSandboxed() {
+		return ""
+	}
+	// Uncached: the launch shell records the ID with an external
+	// `tmux set-environment`, which cannot clear this handle's env cache. A
+	// discovery pass that read before the write would otherwise serve a
+	// cached miss and fall back to the same-directory search.
+	raw, err := tmuxSession.ReadEnvironment("OPENCODE_SESSION_ID")
+	if err != nil {
+		return ""
+	}
+	id, err := normalizeToolSessionID(FieldOpenCodeSessionID, raw)
+	if err != nil || !strings.HasPrefix(id, "ses_") || len(id) == len("ses_") {
+		return ""
+	}
+	return id
+}
+
+// SyncOpenCodeLaunchID binds a local V2 session from its own tmux environment
+// without searching the shared service for conversations in the directory.
+func (i *Instance) SyncOpenCodeLaunchID() {
+	if i.Tool != "opencode" || i.IsSSH() || i.IsSandboxed() || !i.openCodeUsesV2CLI() {
+		return
+	}
+	i.mu.RLock()
+	tmuxSession, currentID := i.tmuxSession, i.OpenCodeSessionID
+	i.mu.RUnlock()
+	if currentID != "" {
+		return
+	}
+	if id := i.openCodeLaunchID(tmuxSession); id != "" {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		if i.OpenCodeSessionID == "" && i.tmuxSession == tmuxSession {
+			i.setOpenCodeSessionLocked(id)
+		}
+	}
 }
 
 func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]openCodeSessionMetadata, error) {
@@ -629,7 +676,7 @@ func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
 // which branches the parent transcript into a fresh session while leaving the
 // parent intact, plus any model/agent flags.
 func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (string, error) {
-	cmd, _, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
+	cmd, _, _, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
 	return cmd, err
 }
 
@@ -649,9 +696,9 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 // picks up; the previous export/import clone relied on the same path (and the
 // same `cd`), so no id is pre-assigned here. The env prefix is applied once by
 // buildOpenCodeCommand at start time.
-func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, string, error) {
+func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, string, *OpenCodeOptions, error) {
 	if !i.CanForkOpenCode() {
-		return "", "", fmt.Errorf("cannot fork: no active OpenCode session")
+		return "", "", nil, fmt.Errorf("cannot fork: no active OpenCode session")
 	}
 	if strings.TrimSpace(workDir) == "" {
 		workDir = i.ProjectPath
@@ -659,7 +706,7 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 
 	if i.openCodeRejectsV1LaunchFlags() {
 		if i.IsSSH() || i.IsSandboxed() {
-			return "", "", fmt.Errorf("opencode fork: service-based forks must run on the target host")
+			return "", "", nil, fmt.Errorf("opencode fork: service-based forks must run on the target host")
 		}
 		serviceOpts := opts
 		if serviceOpts == nil {
@@ -669,35 +716,39 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 		}
 		if serviceOpts != nil && serviceOpts.Model != "" {
 			if _, err := openCodeModelRef(serviceOpts.Model); err != nil {
-				return "", "", err
+				return "", "", nil, err
 			}
 		}
 		// The 2.x verdict came from the configured binary, which a bare name may not reach.
 		if _, ok := i.openCodeLaunchBinary(); !ok {
-			return "", "", fmt.Errorf("opencode fork: cannot resolve the configured opencode binary")
+			return "", "", nil, fmt.Errorf("opencode fork: cannot resolve the configured opencode binary")
 		}
 		binary := i.openCodeForkBinary()
-		childID, err := i.forkOpenCodeSessionViaService(binary, i.OpenCodeSessionID, workDir)
+		childID, blankOpts, err := i.forkOpenCodeSessionViaService(binary, i.OpenCodeSessionID, workDir, opts, serviceOpts)
 		if err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
-		err = i.moveOpenCodeForkViaService(binary, childID, workDir)
-		if err == nil {
-			err = applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts)
+		if blankOpts == nil {
+			err = i.moveOpenCodeForkViaService(binary, childID, workDir)
+			if err == nil {
+				err = applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts)
+			}
+		} else {
+			opts = blankOpts
 		}
 		if err == nil {
 			err = setOpenCodeForkTitleViaService(binary, childID, workDir, newTitle)
 		}
 		if err != nil {
 			if _, rmErr := runOpenCodeServiceCall(binary, workDir, "session.remove", childID, ""); rmErr != nil {
-				return "", "", fmt.Errorf("%w (remove child session %s: %v)", err, childID, rmErr)
+				return "", "", nil, fmt.Errorf("%w (remove child session %s: %v)", err, childID, rmErr)
 			}
-			return "", "", err
+			return "", "", nil, err
 		}
 		// Launch through the selected launcher, as a restart does
 		// (buildOpenCodeCommand): a bare `opencode` may be missing from PATH or
 		// be a 1.x binary that does not know the 2.x child session.
-		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(childID)), childID, nil
+		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(childID)), childID, opts, nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).
@@ -716,7 +767,7 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 	// workDir and the session id are shell-quoted to keep the launch command
 	// injection-safe (the id is also charset-validated upstream by CanForkOpenCode).
 	return fmt.Sprintf("cd %s && %s -s %s --fork%s",
-		shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(i.OpenCodeSessionID), extraFlags), "", nil
+		shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(i.OpenCodeSessionID), extraFlags), "", opts, nil
 }
 
 // forkOpenCodeSessionViaService forks parentID in the OpenCode 2.x shared
@@ -725,30 +776,73 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 // resumes it with a plain `-s` and a later restart does the same. The 1.x
 // -m/--agent fork flags are not emitted: 2.x exits on them, so model and agent
 // overrides are applied to the child session by applyOpenCodeForkOverridesViaService.
-func (i *Instance) forkOpenCodeSessionViaService(binary, parentID, workDir string) (string, error) {
+func (i *Instance) forkOpenCodeSessionViaService(binary, parentID, workDir string, overrides, defaults *OpenCodeOptions) (childID string, blankOpts *OpenCodeOptions, err error) {
 	output, err := runOpenCodeServiceCall(binary, workDir, "session.fork", parentID, "{}")
 	if err != nil {
-		return "", fmt.Errorf("opencode fork via service failed: %w", err)
+		var reply struct {
+			Tag  string `json:"_tag"`
+			Kind string `json:"kind"`
+		}
+		if json.Unmarshal(output, &reply) != nil || reply.Tag != "InvalidRequestError" || reply.Kind != "empty_session" {
+			return "", nil, fmt.Errorf("opencode fork via service failed: %w", err)
+		}
+		// OpenCode refuses to fork an empty transcript. A new conversation
+		// is equivalent in that case; never fall back for other failures.
+		blankOpts = &OpenCodeOptions{}
+		for _, source := range []*OpenCodeOptions{defaults, i.GetOpenCodeOptions(), overrides} {
+			if source == nil {
+				continue
+			}
+			if source.Model != "" {
+				blankOpts.Model = source.Model
+			}
+			if source.Agent != "" {
+				blankOpts.Agent = source.Agent
+			}
+		}
+		payload := map[string]any{"location": map[string]string{"directory": workDir}}
+		if blankOpts.Model != "" {
+			model, err := openCodeModelRef(blankOpts.Model)
+			if err != nil {
+				return "", nil, err
+			}
+			payload["model"] = model
+		}
+		if blankOpts.Agent != "" {
+			payload["agent"] = blankOpts.Agent
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return "", nil, fmt.Errorf("opencode fork: encode empty child session: %w", err)
+		}
+		output, err = runOpenCodeServiceCall(binary, workDir, "session.create", "", string(body))
+		if err != nil {
+			return "", nil, fmt.Errorf("opencode fork: create empty child session: %w", err)
+		}
 	}
 
 	var reply struct {
 		Data openCodeHTTPSessionMetadata `json:"data"`
 	}
 	if err := json.Unmarshal(output, &reply); err != nil {
-		return "", fmt.Errorf("opencode fork via service: unexpected reply: %w", err)
+		return "", nil, fmt.Errorf("opencode fork via service: unexpected reply: %w", err)
 	}
-	childID, err := normalizeToolSessionID(FieldOpenCodeSessionID, reply.Data.ID)
+	childID, err = normalizeToolSessionID(FieldOpenCodeSessionID, reply.Data.ID)
 	if err != nil {
-		return "", fmt.Errorf("opencode fork via service: %w", err)
+		return "", nil, fmt.Errorf("opencode fork via service: %w", err)
 	}
 	if childID == "" {
-		return "", fmt.Errorf("opencode fork via service: reply carries no session id")
+		return "", nil, fmt.Errorf("opencode fork via service: reply carries no session id")
 	}
-	sessionLog.Info("opencode_forked_via_service",
+	event := "opencode_forked_via_service"
+	if blankOpts != nil {
+		event = "opencode_blank_fork_created_via_service"
+	}
+	sessionLog.Info(event,
 		slog.String("instance_id", i.ID),
 		slog.String("parent_session_id", parentID),
 		slog.String("child_session_id", childID))
-	return childID, nil
+	return childID, blankOpts, nil
 }
 
 // moveOpenCodeForkViaService moves a 2.x fork child onto workDir when the
@@ -836,7 +930,10 @@ func runOpenCodeServiceCallContext(ctx context.Context, binary, workDir, operati
 	// openCodeLaunchBinary, operation is a constant at every call site,
 	// sessionID passed a shell-safe identifier check, and the JSON body is
 	// passed as a single argv element.
-	args := []string{"api", operation, "--param", "sessionID=" + sessionID}
+	args := []string{"api", operation}
+	if sessionID != "" {
+		args = append(args, "--param", "sessionID="+sessionID)
+	}
 	if body != "" {
 		args = append(args, "-d", body)
 	}
@@ -849,9 +946,9 @@ func runOpenCodeServiceCallContext(ctx context.Context, binary, workDir, operati
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return nil, errors.New(strings.TrimSpace(string(exitErr.Stderr)))
+			return output, errors.New(strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		return nil, err
+		return output, err
 	}
 	return output, nil
 }
@@ -880,12 +977,13 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	if strings.TrimSpace(workDir) == "" {
 		workDir = i.ProjectPath
 	}
-	cmd, childID, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, workDir)
+	cmd, childID, childOpts, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, workDir)
 	if err != nil {
 		return nil, "", err
 	}
 
 	forked := NewInstance(newTitle, workDir)
+	forked.InstructionsFiles = append([]string(nil), i.InstructionsFiles...) // #3206: a fork keeps its source's instruction files
 	if childID != "" {
 		forked.OpenCodeSessionID = childID
 		forked.OpenCodeDetectedAt = time.Now()
@@ -911,8 +1009,8 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	}
 
 	// Store options in the new instance for persistence
-	if opts != nil {
-		if err := forked.SetOpenCodeOptions(opts); err != nil {
+	if childOpts != nil {
+		if err := forked.SetOpenCodeOptions(childOpts); err != nil {
 			sessionLog.Warn("set_opencode_options_failed", slog.String("error", err.Error()))
 		}
 	}

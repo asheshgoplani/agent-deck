@@ -55,7 +55,7 @@ The keys you need first:
 | `/` | Search |
 | `Alt+W` | Show me around: what you can do, your agents and sign-in |
 | `Alt+N` | What's new: this version's highlights and your reports it fixed |
-| `?` | Full help |
+| `?` | Help (`Tab` for all keys) |
 
 More commands and every key: [Quick start and keys](docs/guide/quick-start.md).
 

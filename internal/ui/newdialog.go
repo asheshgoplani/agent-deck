@@ -1922,6 +1922,22 @@ func (d *NewDialog) validate() (string, focusTarget) {
 		}
 	}
 
+	// Default account on a host whose ~/.claude has no login would open
+	// Claude's first-run screen; refuse here, where the user can still act.
+	// A sandboxed session logs in through its own credential store, so skip it.
+	if !d.createsOffMachine() && !d.sandboxEnabled && d.isClaudeSelected() && d.GetClaudeAccount() == "" && session.AmbientClaudeConfigDir() == "" {
+		if cfg, err := session.LoadUserConfig(); err == nil {
+			group := d.parentGroupPath
+			if group == "" {
+				_, projectPath, _ := d.GetValues()
+				group = session.GroupPathForProject(projectPath)
+			}
+			if _, accErr := session.ResolveNewSessionAccount(cfg, d.presetCommands[d.commandCursor], group, d.selectedConductor()); accErr != nil {
+				return accErr.Error(), focusName
+			}
+		}
+	}
+
 	return "", focusName // Valid
 }
 

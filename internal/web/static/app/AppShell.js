@@ -24,7 +24,7 @@ import {
 import {
   selectedIdSignal, selectedGroupSignal, selectSession, selectGroup, createSessionDialogSignal, confirmDialogSignal,
   groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal, editSessionDialogSignal, toastHistoryOpenSignal,
-  profilesSignal, systemStatsSignal,
+  profilesSignal, systemStatsSignal, sessionsLoadedSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
   hiddenToolsSignal, pickerToolsSignal, modelCatalogSignal,
   trustedDomainsSignal, confirmLinkOpenSignal, fileLinkRootsSignal, fileLinkHostSignal,
@@ -68,8 +68,29 @@ function WorkHead() {
     `
   }
 
-  const session = sessions.find(s => s.id === selected) || sessions[0]
-  if (!session) return null
+  // Only the session the user selected owns the head. With nothing selected
+  // (or a /s/{id} link to an id that is not in the list) the head must not
+  // borrow sessions[0]: its Start/Stop/Restart would act on a session the
+  // user never chose.
+  const session = selected ? sessions.find(s => s.id === selected) : null
+  if (!session) {
+    return html`
+      <div class="work-head" data-testid="work-head-empty">
+        <div class="path">
+          <span class="cur">No session selected</span>
+          ${selected && sessionsLoadedSignal.value && html`<span class="seg">· "${selected}" not found</span>`}
+        </div>
+        <span class="spacer"/>
+        ${canMutate && html`
+          <div class="actions">
+            <button class="btn primary" onClick=${() => openCreateSessionForGroup(currentGroupPath())}>
+              <${Icon} d=${ICONS.plus} size=${12}/>New <span class="kbd">n</span>
+            </button>
+          </div>
+        `}
+      </div>
+    `
+  }
 
   const kindLabel = (session.kind || 'agent').toUpperCase()
   const modelLabel = session.model
@@ -452,10 +473,13 @@ export function AppShell() {
           else openRenameGroupDialog(g)
           return
         }
-        // Web has no session-rename API yet (matrix gap); surface the gap
-        // honestly instead of silently no-op'ing.
+        // On a selected session, `r` opens the Edit dialog, whose title field
+        // renames it (PATCH /api/sessions/{id}), like the TUI's `r`.
         const s = focusedSession()
-        if (s) addToast(`Rename "${s.title}": use the TUI (web rename API not implemented yet)`, 'info')
+        if (!s) return
+        e.preventDefault()
+        if (!mutationsEnabledSignal.value) addToast('mutations disabled')
+        else editSessionDialogSignal.value = { sessionId: s.id }
       } else if (e.key === 'D') {
         // Shift+D — non-destructive close of focused session. Mirrors
         // TUI's `D` (closeSession): kills the tmux process but keeps the

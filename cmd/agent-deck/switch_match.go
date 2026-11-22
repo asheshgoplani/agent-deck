@@ -60,6 +60,18 @@ func switchTargets(instances []*session.InstanceData) []switchTarget {
 	return out
 }
 
+// withLiveSwitchStatus replaces each target's stored status with its live
+// one (the status list shows), so the candidates and the live-session bonus
+// agree with list. A target missing from live keeps its stored status.
+func withLiveSwitchStatus(targets []switchTarget, live map[string]string) []switchTarget {
+	for i := range targets {
+		if st, ok := live[targets[i].ID]; ok && st != "" {
+			targets[i].Status = st
+		}
+	}
+	return targets
+}
+
 // matchSwitchTarget resolves a query by the rule every command shares
 // (matchSessionRef: exact id, exact title, unique id prefix, title ignoring
 // case and leading decoration), then, as an extra of switch only, by the

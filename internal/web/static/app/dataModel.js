@@ -517,14 +517,12 @@ export const sidebarRowsSignal = computed(() => {
   return rows
 })
 
-// Map a status onto one of the five display buckets. Deliberate divergence:
-// the TUI's switch lets `starting`/`queued` fall through uncounted, so its
-// fragments can under-sum its own headline. Folding them in (and defaulting
-// unknowns to idle) keeps the breakdown adding up.
+// Map a status onto one of the five display buckets, the rule every status
+// summary uses (TUI header, `agent-deck status`, `group list`): `starting`,
+// `queued` and unknown values count as idle, so the breakdown adds up.
 export function statusBucket(status) {
   switch (status) {
     case 'running':
-    case 'starting':
       return 'running'
     case 'waiting':
       return 'waiting'

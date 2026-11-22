@@ -1,19 +1,19 @@
- ●●○ Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                                                                                                                <version>
-  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+ ●●○ Agent Deck  ● 1 running • ◐ 2 waiting • ○ 6 idle • ■ 1 stopped • ✕ 1 error                                                                                                                <version>
+  All    ● 1   ◐ 2   ○ 6   ■ 1   ✕ 1   !@#& filter • 0 all • % open • ^ archived • t view • * time
 SESSIONS                                                               │ PREVIEW
 ────────────────────────────────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 1·▾ alpha (7) ● 1 ◐ 1                                                  │ claude-i18n  ◐ waiting
-   ├─ ■ opencode-idle opencode                                         │ 📁 /tmp/vc-<tmp>
-   ├─ ✕ claude-idle claude                                             │ ⏱ <age>
+   ├─ ○ opencode-idle opencode                                         │ 📁 /tmp/vc-<tmp>
+   ├─ ○ claude-idle claude                                             │ ⏱ <age>
    ├─ ◐ claude-waiting claude                                          │ ◉ no viewers
    └─ ■ claude-stopped claude                                          │  claude   beta
     ▾ backend (3) ● 1                                                  │ ───────────────────────────────────────────────────────── Claude ─────────────────────────────────────────────────────────
-     ├─ ✕ codex-idle codex                                             │ Status:  ● Connected
+     ├─ ○ codex-idle codex                                             │ Status:  ● Connected
      ├─ ● claude-running claude                                        │ Session: <uuid>
      └─ ✕ claude-error claude                                          │ Model:   tool default
 2·▾ beta (4) ◐ 1                                                       │ Fork:    f quick fork, F fork with options
-   ├─ ✕ gemini-idle gemini                                             │
-   ├─ ✕ pi-idle pi                                                     │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
+   ├─ ○ gemini-idle gemini                                             │
+   ├─ ○ pi-idle pi                                                     │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
   ▶├─ ◐ claude-i18n claude                                             │ Claude Code synthetic fixture
    └─ ○ shell-live shell                                               │ ❯
   ▾ remotes/lab (0) · unreachable: host down · poll <age>              │ fixture received: VC_I18N

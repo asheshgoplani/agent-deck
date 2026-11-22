@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -452,8 +453,16 @@ func TestRowsFollowResync(t *testing.T) {
 	lines := fixtureLines(t, "claude")
 	appendFile(t, path, bytes.Join(lines[:6], nil))
 	_, cursor := readRowsT(t, "claude", path, RowsOptions{})
+	// CheckFollowCursor, which a server calls before it takes a stream
+	// slot, gives the reason the follow's resync_required frame carries.
 	run := func(src RowsSource, after string) RowFrame {
 		var got RowFrame
+		defer func() {
+			var re *ResyncError
+			if err := CheckFollowCursor(src, after); !errors.As(err, &re) || re.Reason != got.Reason {
+				t.Errorf("CheckFollowCursor(%q) = %v, want resync %s", after, err, got.Reason)
+			}
+		}()
 		err := FollowRows(context.Background(), src, after, 10*time.Millisecond, nil, nil, func(f RowFrame) error {
 			got = f
 			if f.Frame == "resync_required" {
@@ -467,6 +476,9 @@ func TestRowsFollowResync(t *testing.T) {
 		return got
 	}
 	src := RowsSource{Harness: "claude", Path: path}
+	if err := CheckFollowCursor(src, cursor); err != nil {
+		t.Fatalf("CheckFollowCursor(valid) = %v", err)
+	}
 	if f := run(src, "not-a-cursor"); f.Reason != "invalid_cursor" {
 		t.Errorf("invalid cursor: %+v", f)
 	}
@@ -502,6 +514,32 @@ func TestRowsFollowSourceMovedByResolver(t *testing.T) {
 	err := FollowRows(context.Background(), src, cursor, 10*time.Millisecond, nil, nil, func(f RowFrame) error { got = f; return nil })
 	if err != nil || got.Frame != "resync_required" || got.Reason != "source_moved" {
 		t.Fatalf("resolver move: %v %+v", err, got)
+	}
+}
+
+// A resolver that says the session no longer resolves to one file ends the
+// follow with resync_required; any other resolver error is transient.
+func TestRowsFollowSourceUnresolved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pi.jsonl")
+	appendFile(t, path, fixtureLines(t, "claude")[0])
+	_, cursor := readRowsT(t, "claude", path, RowsOptions{})
+	src := RowsSource{Harness: "claude", Path: path, Resolve: func() (string, error) {
+		return "", fmt.Errorf("%w: two session documents", ErrSourceUnresolved)
+	}}
+	var got RowFrame
+	err := FollowRows(context.Background(), src, cursor, 10*time.Millisecond, nil, nil, func(f RowFrame) error { got = f; return nil })
+	if err != nil || got.Frame != "resync_required" || got.Reason != "source_unresolved" {
+		t.Fatalf("unresolved source: %v %+v", err, got)
+	}
+
+	src.Resolve = func() (string, error) { return "", errors.New("rollout not written yet") }
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	got = RowFrame{}
+	err = FollowRows(ctx, src, cursor, 10*time.Millisecond, nil, nil, func(f RowFrame) error { got = f; return nil })
+	if !errors.Is(err, context.DeadlineExceeded) || got.Frame == "resync_required" {
+		t.Fatalf("transient resolver error ended the follow: %v %+v", err, got)
 	}
 }
 

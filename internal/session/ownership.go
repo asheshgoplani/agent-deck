@@ -143,13 +143,21 @@ type OwnedProcessRecoveryRequiredError struct {
 	// Without them "could not be verified" is a verdict with no evidence, and
 	// the operator has nothing to act on.
 	Details []string
+
+	// paneCheckFailed means the tmux pane could not be checked, so the
+	// refusal asks for a retry instead of pointing at reconcile.
+	paneCheckFailed bool
 }
 
 // Error implements error.
 func (e *OwnedProcessRecoveryRequiredError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s refused: this session still owns processes from an earlier spawn (%s)",
-		e.Action, e.Reason)
+	if e.paneCheckFailed {
+		fmt.Fprintf(&b, "%s refused: %s", e.Action, e.Reason)
+	} else {
+		fmt.Fprintf(&b, "%s refused: this session still owns processes from an earlier spawn (%s)",
+			e.Action, e.Reason)
+	}
 	for _, m := range e.Survivors {
 		fmt.Fprintf(&b, "\n  owned: %s", m.String())
 	}
@@ -157,6 +165,11 @@ func (e *OwnedProcessRecoveryRequiredError) Error() string {
 		fmt.Fprintf(&b, "\n  unverifiable: %s", detail)
 	}
 	fmt.Fprintf(&b, "\nNothing was started and nothing was signalled.")
+	if e.paneCheckFailed {
+		fmt.Fprintf(&b, "\nTo continue, run the %s again.", e.Action)
+		fmt.Fprintf(&b, "\nIf the check keeps failing, inspect: agent-deck session ownership inspect %s", e.InstanceID)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "\nInspect: agent-deck session ownership inspect %s", e.InstanceID)
 	fmt.Fprintf(&b, "\nReap and clear: agent-deck session ownership reconcile %s", e.InstanceID)
 	return b.String()
@@ -180,6 +193,9 @@ type OwnershipStatus struct {
 	// PaneAttached reports whether the live pane's initial process is the
 	// receipt's leader, i.e. the receipt describes the running session.
 	PaneAttached bool
+	// PaneCheckErr means attachment could not be determined. Spawn admission
+	// fails closed because there could still be an escaped process tree.
+	PaneCheckErr error
 	// LoadErr carries a corrupt-receipt error, which is a fail-closed state
 	// rather than an absence of ownership.
 	LoadErr error
@@ -187,7 +203,7 @@ type OwnershipStatus struct {
 
 // Admissible reports whether a spawn may proceed.
 func (s OwnershipStatus) Admissible() bool {
-	if s.LoadErr != nil {
+	if s.LoadErr != nil || s.PaneCheckErr != nil {
 		return false
 	}
 	if _, unpersisted := ownershipUnpersisted.Load(s.InstanceID); unpersisted {
@@ -204,6 +220,9 @@ func (s OwnershipStatus) Admissible() bool {
 
 // Reason renders why a spawn is or is not admissible.
 func (s OwnershipStatus) Reason() string {
+	if s.PaneCheckErr != nil {
+		return "could not check the session's tmux pane: " + s.PaneCheckErr.Error()
+	}
 	if reason, unpersisted := ownershipUnpersisted.Load(s.InstanceID); unpersisted {
 		return "the last spawn's ownership could not be recorded: " + reason.(string)
 	}
@@ -252,7 +271,11 @@ func (i *Instance) ownershipStatusAt(store *procowner.Store) OwnershipStatus {
 		return status
 	}
 
-	attached := i.liveOwnedPaneSet(receipt)
+	attached, err := i.liveOwnedPaneSet(receipt)
+	if err != nil {
+		status.PaneCheckErr = err
+		return status
+	}
 	status.PaneAttached = len(attached) > 0
 	for _, m := range owned {
 		if attached[m.Key()] {
@@ -267,36 +290,40 @@ func (i *Instance) ownershipStatusAt(store *procowner.Store) OwnershipStatus {
 // pane: the pane's initial process when it is the receipt's leader, plus its
 // current descendants.
 //
-// It returns an empty set the moment anything does not line up — no pane, an
-// indeterminate probe, a pane whose leader is not the recorded one. Every one
-// of those means "the live pane does not account for the receipt", and an empty
-// set makes every owned identity a survivor, which is the fail-closed
-// direction.
-func (i *Instance) liveOwnedPaneSet(receipt *procowner.Receipt) map[string]bool {
+// It returns an empty set the moment anything does not line up — no pane, a
+// pane whose leader is not the recorded one. Every one of those means "the
+// live pane does not account for the receipt", and an empty set makes every
+// owned identity a survivor, which is the fail-closed direction.
+//
+// An indeterminate tmux probe is different: the pane may still account for the
+// receipt, so it returns an error, and the caller refuses the spawn without
+// calling the owned processes survivors.
+func (i *Instance) liveOwnedPaneSet(receipt *procowner.Receipt) (map[string]bool, error) {
 	if receipt == nil {
-		return nil
+		return nil, nil
 	}
-	if !i.receiptLeaderRunsALivePane(receipt) {
-		return nil
+	attached, err := i.receiptLeaderRunsALivePane(receipt)
+	if !attached {
+		return nil, err
 	}
 	if procowner.VerifyMember(ownershipProber, receipt.Leader).State != procowner.StateOwned {
-		return nil
+		return nil, nil
 	}
 	leaderInfo, err := ownershipProber.Inspect(receipt.Leader.PID)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	set := map[string]bool{receipt.Leader.Key(): true}
 	descendants, err := ownershipProber.Descendants(leaderInfo)
 	if err != nil {
 		// The leader itself is accounted for; its descendants are not, so they
 		// stay classified as survivors and the restart fails closed.
-		return set
+		return set, nil
 	}
 	for _, info := range descendants {
 		set[procowner.Member{PID: info.PID, StartID: info.StartID}.Key()] = true
 	}
-	return set
+	return set, nil
 }
 
 // receiptLeaderRunsALivePane reports whether the receipt's leader is the
@@ -315,17 +342,32 @@ func (i *Instance) liveOwnedPaneSet(receipt *procowner.Receipt) map[string]bool 
 // refuse the very restart that fixes it. The name written into the receipt at
 // spawn does not drift, so it answers "is this process still inside the tmux
 // session we launched it into?" correctly even when the instance has lost track.
-func (i *Instance) receiptLeaderRunsALivePane(receipt *procowner.Receipt) bool {
-	if i.tmuxSession != nil {
-		if panePID, err := ownershipPanePID(i.tmuxSession); err == nil && panePID == receipt.Leader.PID {
-			return true
+//
+// A matching pane settles the question. Without a match, a failed probe
+// leaves attachment indeterminate even if the other target answered.
+func (i *Instance) receiptLeaderRunsALivePane(receipt *procowner.Receipt) (bool, error) {
+	matchesLeader := func(pid int, err error) (bool, error) {
+		if errors.Is(err, tmux.ErrPaneTargetGone) {
+			return false, nil
 		}
+		return err == nil && pid == receipt.Leader.PID, err
+	}
+	var currentErr error
+	if i.tmuxSession != nil {
+		attached, err := matchesLeader(ownershipPanePID(i.tmuxSession))
+		if attached {
+			return true, nil
+		}
+		currentErr = err
 	}
 	if receipt.TmuxName == "" {
-		return false
+		return false, currentErr
 	}
-	panePID, err := tmux.PanePIDOfSession(receipt.TmuxSocket, receipt.TmuxName)
-	return err == nil && panePID == receipt.Leader.PID
+	attached, err := matchesLeader(tmux.PanePIDOfSession(receipt.TmuxSocket, receipt.TmuxName))
+	if attached || currentErr == nil {
+		return attached, err
+	}
+	return false, currentErr
 }
 
 // guardOwnedProcessesBeforeSpawn is the fail-closed admission gate. It runs
@@ -364,6 +406,7 @@ func (i *Instance) guardOwnedProcessesBeforeSpawnAt(store *procowner.Store, acti
 		Reason:     status.Reason(),
 		Survivors:  status.Survivors,
 	}
+	refusal.paneCheckFailed = status.PaneCheckErr != nil
 	if status.Receipt != nil {
 		refusal.Generation = status.Receipt.Generation
 	}
@@ -373,7 +416,7 @@ func (i *Instance) guardOwnedProcessesBeforeSpawnAt(store *procowner.Store, acti
 				fmt.Sprintf("%s — %s", member.Member.String(), member.Detail))
 		}
 	}
-	if status.LoadErr != nil {
+	if status.LoadErr != nil || status.PaneCheckErr != nil {
 		refusal.Verdict = string(procowner.VerdictUnknown)
 	}
 	sessionLog.Error("owned_process_recovery_required",

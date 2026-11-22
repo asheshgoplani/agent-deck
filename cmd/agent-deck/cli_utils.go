@@ -52,7 +52,15 @@ func defaultCLIAccountSlot(inst *session.Instance, parent *session.Instance) str
 	if err != nil {
 		return ""
 	}
-	return session.DefaultAccountForNewSession(cfg, inst.GroupPath, parent)
+	// When the implicit ~/.claude has no login, fall back to a logged-in
+	// account. With none, still create the session (headless scripts and
+	// fixtures register sessions on hosts with no login, and extra stderr would
+	// corrupt --json consumers); the TUI, an interactive flow, refuses.
+	account, err := session.ResolveNewSessionAccount(cfg, inst.Tool, inst.GroupPath, parent)
+	if err != nil {
+		return ""
+	}
+	return account
 }
 
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify

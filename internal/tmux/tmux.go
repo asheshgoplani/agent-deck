@@ -1463,12 +1463,16 @@ func ProbeSessionOnSocket(socketName, name string) (bool, error) {
 		return false, fmt.Errorf("tmux has-session probe for %q did not complete: %w", name, err)
 	}
 	stderr := strings.TrimSpace(string(exitErr.Stderr))
-	if strings.HasPrefix(stderr, "can't find session:") ||
-		strings.HasPrefix(stderr, "no server running on ") ||
-		(strings.Contains(stderr, "error connecting to") && strings.Contains(stderr, "No such file or directory")) {
+	if tmuxSessionMissing(stderr) {
 		return false, nil
 	}
 	return false, fmt.Errorf("tmux has-session probe for %q was inconclusive: %w", name, err)
+}
+
+func tmuxSessionMissing(stderr string) bool {
+	return strings.HasPrefix(stderr, "can't find session:") ||
+		strings.HasPrefix(stderr, "no server running on ") ||
+		(strings.Contains(stderr, "error connecting to") && strings.Contains(stderr, "No such file or directory"))
 }
 
 // Exists checks if the tmux session exists
@@ -1828,8 +1832,13 @@ func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 	return panePID, allPIDs
 }
 
+// ErrPaneTargetGone means tmux confirmed that the requested pane, window,
+// session or server was absent.
+var ErrPaneTargetGone = errors.New("tmux pane target is gone")
+
 // PanePID returns the pane's initial process id, or an error when the probe is
-// indeterminate.
+// indeterminate. An error wrapping ErrPaneTargetGone means tmux confirmed the
+// target is absent.
 //
 // #1873: the ownership receipt is claimed from this pid the instant a spawn
 // commits, so the caller needs the probe outcome, not a degraded 0. A 0 with no
@@ -1871,7 +1880,21 @@ func PanePIDOfSession(socketName, sessionName string) (int, error) {
 	if strings.TrimSpace(sessionName) == "" {
 		return 0, fmt.Errorf("no tmux session name")
 	}
-	out, err := runBoundedOutput(socketName, "list-panes", "-t", sessionName+":", "-F", "#{pane_pid}")
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxPollTimeout)
+	defer cancel()
+	out, err := commandOutput(tmuxExecContext(ctx, socketName, "list-panes", "-t", sessionName+":", "-F", "#{pane_pid}"))
+	err = annotateDeadline(ctx.Err(), err)
+	var exitErr *exec.ExitError
+	if !errors.Is(err, errTmuxTimeout) && errors.As(err, &exitErr) && exitErr.Exited() {
+		stderr := strings.TrimSpace(string(exitErr.Stderr))
+		if tmuxSessionMissing(stderr) || stderr == "no sessions" ||
+			strings.HasPrefix(stderr, "can't find window:") || strings.HasPrefix(stderr, "can't find pane:") {
+			return 0, fmt.Errorf("%w: tmux list-panes: %s: %w", ErrPaneTargetGone, stderr, err)
+		}
+		if stderr != "" {
+			return 0, fmt.Errorf("tmux list-panes: %s: %w", stderr, err)
+		}
+	}
 	return parsePanePID(out, err)
 }
 

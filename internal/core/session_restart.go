@@ -90,6 +90,8 @@ func (deps Deps) sessionRestart(ctx context.Context, in SessionRestartIn) (Sessi
 	out := SessionRestartOut{ID: inst.ID, Title: inst.Title}
 
 	// Issue #30 freshness guard: keep a healthy, just-started scope intact.
+	// It reads the status list shows, not the stored one.
+	session.RefreshLiveStatus([]*session.Instance{inst})
 	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), in.Force || len(in.Env) > 0); skip {
 		out.Skipped = true
 		out.Reason = reason

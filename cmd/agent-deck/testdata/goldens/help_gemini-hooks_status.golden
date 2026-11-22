@@ -5,4 +5,4 @@ Manage Gemini CLI hook integration.
 Commands:
   install      Install agent-deck Gemini hooks
   uninstall    Remove agent-deck Gemini hooks
-  status       Show Gemini hooks install status
+  status       Show Gemini hooks install status (--json for machine output)
