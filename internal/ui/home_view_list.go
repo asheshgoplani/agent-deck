@@ -869,6 +869,11 @@ func (h *Home) renderRemoteLatencyMarker(remoteName string, selected bool) strin
 	return style.Render(text)
 }
 
+// remoteTitleMinWidth is the narrowest a classic remote row cuts its title:
+// the fixed width every remote title was cut to before #3224, which the row
+// now exceeds only when the list has room for it.
+const remoteTitleMinWidth = 25
+
 // renderRemoteSessionItem renders a single remote session row
 func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, selected bool) {
 	h.renderRemoteSessionItemAtWidth(b, item, selected, embeddedCardMinWidth-1)
@@ -960,7 +965,6 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 
 	titleStr := rs.Title
-	titleStr = truncateDisplay(titleStr, 25, "...")
 
 	toolStr := ""
 	if rs.Tool != "" && !h.toolBadgeHidden(rs.Tool) {
@@ -1020,21 +1024,35 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	remoteViewers, remoteViewersKnown := rs.ViewerList()
 	remoteViewersBadge := renderViewersBadge(remoteViewers, remoteViewersKnown, selected)
 
+	// #3224: the title takes the room the list leaves after the row's fixed
+	// parts and badges, as on a local row, instead of a fixed 25 columns. It
+	// is never cut shorter than remoteTitleMinWidth, so a list too narrow for
+	// the whole row shows the title as it always did and the trailing badges
+	// are clipped, as before.
+	head := cellWidth(remoteRowGutter(selected) + indent + treeConnector + " " + statusIcon + " ")
+	badges := cellWidth(toolStr) + cellWidth(remoteViewersBadge) + cellWidth(pendingStr)
+	titleFloor := min(cellWidth(titleStr), remoteTitleMinWidth)
+
 	// 🎙 voice badge right after the title when this remote row holds the
 	// mic (voice_badge.go). It is fitted before the tool, viewers and
 	// pending badges, so on a narrow list it is the last to go: the words
 	// when the whole row still fits, else the glyph, which only the title
 	// outranks.
-	voiceBadgeText := ""
+	voiceBadgeText, voiceWidth := "", 0
 	if voiceSt := h.voiceForRemote(item.RemoteName, rs.ID); voiceSt != nil {
 		budget, wordsBudget := -1, -1
 		if listWidth > 0 {
-			head := cellWidth(remoteRowGutter(selected) + indent + treeConnector + " " + statusIcon + " " + titleStr)
-			budget = max(0, listWidth-head-1)
-			wordsBudget = max(0, budget-cellWidth(toolStr)-cellWidth(remoteViewersBadge)-cellWidth(pendingStr))
+			available := max(0, listWidth-head-1)
+			budget = max(0, available-titleFloor)
+			wordsBudget = max(0, available-cellWidth(titleStr)-badges)
 		}
-		voiceBadgeText, _ = fitVoiceBadge(voiceSt, selected, budget, wordsBudget, h.voiceClock())
+		voiceBadgeText, voiceWidth = fitVoiceBadge(voiceSt, selected, budget, wordsBudget, h.voiceClock())
 	}
+	titleBudget := remoteTitleMinWidth
+	if listWidth > 0 {
+		titleBudget = max(titleBudget, listWidth-head-voiceWidth-badges-1)
+	}
+	titleStr = cellTruncate(titleStr, titleBudget, "...")
 
 	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s%s\n",
 		remoteRowGutter(selected), // align with group/session hotkey gutter
