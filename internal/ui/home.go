@@ -499,6 +499,16 @@ type Home struct {
 	// store rather than groupTree's expanded flags.
 	remoteGroupsCollapsed map[string]bool
 
+	// Remote parent-child fold state (#3223): remote name -> parent session
+	// ID -> child list folded. Nested like remoteSessionOrder, so a session
+	// ID that two remotes share folds on one remote only.
+	remoteParentChildrenCollapsed map[string]map[string]bool
+	// remoteChildCounts is, per remote, how many children each parent row
+	// nests in the current view (parent ID -> count). rebuildFlatItems fills
+	// it from the same sessions it builds the rows from, so the fold keys and
+	// the ▾N/▸N badge never disagree with the rows on screen.
+	remoteChildCounts map[string]map[string]int
+
 	// A `session focus --remote` request whose session the remote list does
 	// not hold yet (#2704); retried after each remote refresh until its TTL.
 	pendingRemoteFocus *pendingRemoteFocus
@@ -1185,6 +1195,11 @@ type uiState struct {
 	// are session-scoped UI state that is not persisted at all; a parent fold is
 	// a view preference like the remote folds above, so it rides here.
 	ParentChildrenCollapsed []string `json:"parent_children_collapsed,omitempty"`
+
+	// Folded remote parent-child lists (#3223): remote name -> parent session
+	// IDs. Nested like RemoteSessionOrder, so a session ID that two remotes
+	// share folds on one remote only.
+	RemoteParentChildrenCollapsed map[string][]string `json:"remote_parent_children_collapsed,omitempty"`
 
 	// RemoteSessionOrder is the manual order of remote session rows (#1875):
 	// remote -> group path -> session IDs. It rides in ui_state because it is
@@ -3108,9 +3123,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Show undo hint (using setError as a transient message)
 		if deletedInstance != nil {
 			if undoKey := h.actionKey(hotkeyUndoDelete); undoKey != "" {
-				h.setError(fmt.Errorf("deleted '%s'. %s to undo", deletedInstance.Title, undoKey))
+				h.setNotice("deleted '%s'. %s to undo", deletedInstance.Title, undoKey)
 			} else {
-				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
+				h.setNotice("deleted '%s'", deletedInstance.Title)
 			}
 		}
 		return h, tea.Batch(hookCleanupCmd(cleanup, cleanupDone), evictSweep)
@@ -3132,9 +3147,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			restartHint = fmt.Sprintf(". %s to restart", restartKey)
 		}
 		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
-			h.setError(fmt.Errorf("closed '%s'%s", inst.Title, restartHint))
+			h.setNotice("closed '%s'%s", inst.Title, restartHint)
 		} else {
-			h.setError(fmt.Errorf("session closed%s", restartHint))
+			h.setNotice("session closed%s", restartHint)
 		}
 		return h, nil
 
@@ -3154,7 +3169,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("failed to persist archive: %w", err))
 				return h, nil
 			}
-			h.setError(fmt.Errorf("archived '%s' (^ to view)", inst.Title))
+			h.setNotice("archived '%s' (^ to view)", inst.Title)
 		}
 		return h, nil
 
@@ -3165,7 +3180,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("failed to persist unarchive: %w", err))
 				return h, nil
 			}
-			h.setError(fmt.Errorf("unarchived '%s'", inst.Title))
+			h.setNotice("unarchived '%s'", inst.Title)
 		}
 		return h, nil
 
@@ -3225,7 +3240,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.warning != "" {
 			h.setError(fmt.Errorf("restored '%s' (%s)", msg.instance.Title, msg.warning))
 		} else {
-			h.setError(fmt.Errorf("restored '%s'", msg.instance.Title))
+			h.setNotice("restored '%s'", msg.instance.Title)
 		}
 		// The row is back: the delete has nothing left to sweep, so its
 		// pending record goes (off the Update loop).
@@ -3440,7 +3455,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("%s", msg.warning))
 			} else if msg.unarchived {
 				if inst := h.getInstanceByID(msg.sessionID); inst != nil {
-					h.setError(fmt.Errorf("unarchived and restarted '%s'", inst.Title))
+					h.setNotice("unarchived and restarted '%s'", inst.Title)
 				}
 			}
 		}
@@ -3604,7 +3619,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.recordRemoteVersions(map[string]session.RemoteVersionState{
 			msg.remoteName: {Version: msg.to, Found: true, CheckedAt: time.Now()},
 		})
-		h.setError(fmt.Errorf("updated remote %s to v%s", msg.remoteName, msg.to))
+		h.setNotice("updated remote %s to v%s", msg.remoteName, msg.to)
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionDeletedMsg:
@@ -3620,7 +3635,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		h.dropRemoteSession(msg.remoteName, msg.sessionID)
-		h.setError(fmt.Errorf("deleted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete", msg.sessionID)))
+		h.setNotice("deleted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete", msg.sessionID))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionRemovedMsg:
@@ -3649,7 +3664,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to close '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("closed '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "close", msg.sessionID)))
+		h.setNotice("closed '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "close", msg.sessionID))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionArchivedMsg:
@@ -3674,7 +3689,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		})
 		h.noteRemoteSessionArchived(msg.remoteName, msg.sessionID, archived)
-		h.setError(fmt.Errorf("%sd '%s' on %s%s", verb, msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "archive", msg.sessionID)))
+		h.setNotice("%sd '%s' on %s%s", verb, msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "archive", msg.sessionID))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionRestartedMsg:
@@ -3690,7 +3705,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		h.patchRemoteSession(msg.remoteName, msg.sessionID, func(s *session.RemoteSessionInfo) { s.Status = string(session.StatusRunning) })
-		h.setError(fmt.Errorf("restarted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "restart", msg.sessionID)))
+		h.setNotice("restarted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "restart", msg.sessionID))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionForkedMsg:
@@ -3705,7 +3720,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to fork '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("forked '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "fork", msg.sessionID)))
+		h.setNotice("forked '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "fork", msg.sessionID))
 		return h, h.fetchRemoteSessions
 
 	case remoteEditAccountsFetchedMsg:
@@ -3833,7 +3848,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to rename '%s' on %s: %v", msg.oldTitle, msg.remoteName, msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("renamed to '%s' on %s%s", msg.newTitle, msg.remoteName, h.remoteActionTook(msg.remoteName, "rename", msg.sessionID)))
+		h.setNotice("renamed to '%s' on %s%s", msg.newTitle, msg.remoteName, h.remoteActionTook(msg.remoteName, "rename", msg.sessionID))
 		return h, nil
 
 	case remoteMoveResultMsg:
@@ -3860,7 +3875,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.remoteSessionsMu.Unlock()
 		h.rebuildFlatItems()
-		h.setError(fmt.Errorf("moved to '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "move", msg.sessionID)))
+		h.setNotice("moved to '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "move", msg.sessionID))
 		return h, nil
 
 	case remoteGroupResultMsg:
@@ -3895,7 +3910,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.remoteSessionsMu.Unlock()
 		// Show the new (empty) group's row now instead of after the next poll.
 		h.rebuildFlatItems()
-		h.setError(fmt.Errorf("created group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "create-group", remoteGroupBaseName(msg.groupPath))))
+		h.setNotice("created group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "create-group", remoteGroupBaseName(msg.groupPath)))
 		return h, nil
 
 	case remoteGroupDeleteResultMsg:
@@ -3920,7 +3935,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.remoteGroups[msg.remoteName] = kept
 		h.remoteSessionsMu.Unlock()
 		h.rebuildFlatItems()
-		h.setError(fmt.Errorf("deleted group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete-group", msg.groupPath)))
+		h.setNotice("deleted group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete-group", msg.groupPath))
 		return h, h.fetchRemoteSessions
 
 	case remoteGroupReorderResultMsg:
@@ -4580,7 +4595,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// script's output tail is shown instead of a bare "exit status 1".
 			h.setError(errors.New(formatSetupWarning(msg.err)))
 		} else {
-			h.setError(fmt.Errorf("worktree setup completed for '%s'", msg.sessionTitle))
+			h.setNotice("worktree setup completed for '%s'", msg.sessionTitle)
 		}
 		return h, nil
 
@@ -4651,14 +4666,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.merged {
 			successMsg += fmt.Sprintf(", merged into %s", msg.targetBranch)
 		}
-		h.setError(fmt.Errorf("%s", successMsg))
+		h.setNotice("%s", successMsg)
 		return h, hookCleanupCmd(cleanup, nil)
 
 	case copyResultMsg:
 		if msg.err != nil {
 			h.setError(msg.err)
 		} else {
-			h.setError(fmt.Errorf("Copied %d lines to clipboard (%s)", msg.lineCount, msg.sessionTitle))
+			h.setNotice("Copied %s to clipboard (%s)", lineCount(msg.lineCount), msg.sessionTitle)
 		}
 		return h, nil
 
@@ -4669,7 +4684,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.empty:
 			h.setError(fmt.Errorf("Nothing visible to copy (%s)", msg.sessionTitle))
 		default:
-			h.setError(fmt.Errorf("Copied visible terminal text to clipboard (%d lines, %s)", msg.lineCount, msg.sessionTitle))
+			h.setNotice("Copied visible terminal text to clipboard (%s, %s)", lineCount(msg.lineCount), msg.sessionTitle)
 		}
 		return h, nil
 
@@ -4681,7 +4696,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to send to %s: %v", msg.targetTitle, msg.err))
 		} else {
-			h.setError(fmt.Errorf("Sent %d lines from '%s' to '%s'", msg.lineCount, msg.sourceTitle, msg.targetTitle))
+			h.setNotice("Sent %s from '%s' to '%s'", lineCount(msg.lineCount), msg.sourceTitle, msg.targetTitle)
 		}
 		return h, nil
 
@@ -5846,6 +5861,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.windowsCollapsed[sid] = !h.windowsCollapsed[sid]
 				h.rebuildFlatItems()
 				h.moveCursorToSession(sid)
+			} else if item.Type == session.ItemTypeRemoteSession && h.remoteSessionChildCount(item) > 0 {
+				// Remote parent-child fold toggle (#3223), as for a local
+				// parent above: only the child list folds, not the group.
+				id := item.RemoteSession.ID
+				h.setRemoteParentFolded(item.RemoteName, id, !h.isRemoteParentFolded(item.RemoteName, id))
 			}
 		}
 		return h, nil
@@ -5992,6 +6012,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.IsMultiRepo() {
 				h.editPathsDialog.SetSize(h.width, h.height)
 				h.editPathsDialog.Show(item.Session, h.newDialog.allPathSuggestions)
+			} else if item.Type == session.ItemTypeSession && item.Session != nil {
+				h.setError(fmt.Errorf("edit paths: '%s' has a single path; this key is for multi-repo sessions", item.Session.Title))
+			} else {
+				h.explainKeyNeedsSession("edit paths")
 			}
 		}
 		return h, nil
@@ -6007,6 +6031,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.editSessionDialog.Show(item.Session)
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				return h, h.openRemoteEditSession(item)
+			} else {
+				h.explainKeyNeedsSession("edit session")
 			}
 		}
 		return h, nil
@@ -6024,6 +6050,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
 					h.setError(err)
 				}
+			} else {
+				h.explainKeyNeedsSession("MCP manager")
 			}
 		}
 		return h, nil
@@ -6041,6 +6069,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err := h.pluginDialog.Show(item.Session); err != nil {
 					h.setError(err)
 				}
+			} else if item.Type == session.ItemTypeSession && item.Session != nil {
+				h.setError(fmt.Errorf("plugin manager is not supported for tool %q (Claude sessions only)", item.Session.Tool))
+			} else {
+				h.explainKeyNeedsSession("plugin manager")
 			}
 		}
 		return h, nil
@@ -6063,6 +6095,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if item.Session.CanFork() {
 					return h, h.quickForkSession(item.Session)
 				}
+				h.setError(forkNotPossible(item.Session))
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				// Remote session: fork it on the remote itself through its own
 				// `session fork`. The remote decides title, group and whether
@@ -6079,6 +6112,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.remoteForking[forkID] = struct{}{}
 				h.forkingSessions[forkID] = time.Now()
 				return h, h.forkRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else {
+				h.explainKeyNeedsSession("fork")
 			}
 		}
 		return h, nil
@@ -6101,10 +6136,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if item.Session.CanFork() {
 					return h, h.forkSessionWithDialog(item.Session)
 				}
+				h.setError(forkNotPossible(item.Session))
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				// The fork dialog inspects local git state for its worktree
 				// and branch fields, which does not apply to a remote checkout.
 				h.setError(fmt.Errorf("fork dialog is not available for remote sessions; press f to fork on %s", item.RemoteName))
+			} else {
+				h.explainKeyNeedsSession("fork")
 			}
 		}
 		return h, nil
@@ -6118,6 +6156,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err := h.skillDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
 					h.setError(err)
 				}
+			} else if item.Type == session.ItemTypeSession && item.Session != nil {
+				h.setError(fmt.Errorf("skills manager is not supported for tool %q", item.Session.Tool))
+			} else {
+				h.explainKeyNeedsSession("skills manager")
 			}
 		}
 		return h, nil
@@ -6139,6 +6181,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// about); the confirmed move is routed over SSH in
 				// GroupDialogMove (see moveRemoteSessionToGroup).
 				h.groupDialog.ShowMove(h.remoteGroupPaths(item.RemoteName))
+			} else {
+				h.explainKeyNeedsSession("move to group")
 			}
 		}
 		return h, nil
@@ -6150,6 +6194,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		item := h.flatItems[h.cursor]
 		if item.Type != session.ItemTypeSession || item.Session == nil {
+			h.explainKeyNeedsSession("worktree setup")
 			return h, nil
 		}
 		inst := item.Session
@@ -6189,6 +6234,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return worktreeDirtyCheckMsg{sessionID: sid, isDirty: dirty, err: err}
 				}
 			}
+			h.explainKeyNeedsSession("finish worktree")
 		}
 		return h, nil
 
@@ -6384,6 +6430,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.isAttaching.Store(false)
 				return statusUpdateMsg{}
 			})
+		} else if selected != nil {
+			h.setError(fmt.Errorf("exec shell: '%s' is not sandboxed (no container to open a shell in)", selected.Title))
+		} else {
+			h.explainKeyNeedsSession("exec shell")
 		}
 		return h, nil
 
@@ -6465,6 +6515,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowCloseSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowCloseRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else {
+				h.explainKeyNeedsSession("close session")
 			}
 		}
 		return h, nil
@@ -6476,12 +6528,23 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowArchiveSession(item.Session.ID, item.Session.Title)
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && !item.RemoteSession.Archived {
 				h.confirmDialog.ShowArchiveRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else if item.Type == session.ItemTypeSession && item.Session != nil {
+				h.setError(fmt.Errorf("'%s' is already archived", item.Session.Title))
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				h.setError(fmt.Errorf("'%s' is already archived", item.RemoteSession.Title))
+			} else {
+				h.explainKeyNeedsSession("archive")
 			}
 		}
 		return h, nil
 
 	case "shift+u":
 		if h.statusFilter != FilterModeArchived {
+			viewKey := h.actionKey(hotkeyViewArchived)
+			if viewKey == "" {
+				viewKey = "the archived filter"
+			}
+			h.setError(fmt.Errorf("unarchive works in the archived view: open it with %s first", viewKey))
 			return h, nil
 		}
 		if h.cursor < len(h.flatItems) {
@@ -6490,6 +6553,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowUnarchiveSession(item.Session.ID, item.Session.Title)
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && item.RemoteSession.Archived {
 				h.confirmDialog.ShowUnarchiveRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else {
+				h.explainKeyNeedsSession("unarchive")
 			}
 		}
 		return h, nil
@@ -6516,6 +6581,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else {
 					h.setError(fmt.Errorf("session must be stopped or errored to remove; use 'd' to destructively delete a %s session on %s", status, item.RemoteName))
 				}
+			} else {
+				h.explainKeyNeedsSession("remove")
 			}
 		}
 		return h, nil
@@ -6588,6 +6655,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					_ = item.Session.UpdateStatus()
 					h.saveInstances()
 				}
+			} else {
+				h.explainKeyNeedsSession("mark unread")
 			}
 		}
 		return h, nil
@@ -6612,11 +6681,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// index so a prompt in a non-active window is reachable. (#1369)
 				if session.IsClaudeCompatible(item.WindowTool) {
 					h.quickApprove(h.getInstanceByID(item.WindowSessionID), item.WindowIndex)
+				} else {
+					h.setError(fmt.Errorf("quick approve sends '1' to a Claude prompt; this window runs %q", item.WindowTool))
 				}
 			case session.ItemTypeSession:
 				if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
 					h.quickApprove(item.Session, -1)
+				} else if item.Session != nil {
+					h.setError(fmt.Errorf("quick approve sends '1' to a Claude prompt; '%s' runs %q", item.Session.Title, item.Session.Tool))
 				}
+			default:
+				h.explainKeyNeedsSession("quick approve")
 			}
 		}
 		return h, nil
@@ -6631,6 +6706,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.openPromptInput(h.getInstanceByID(item.WindowSessionID))
 			case session.ItemTypeSession:
 				h.openPromptInput(item.Session)
+			default:
+				h.explainKeyNeedsSession("send message")
 			}
 			if h.promptInputDialog.IsVisible() {
 				h.promptInputDialog.queue = key == defaultHotkeyBindings[hotkeyQueueMessage]
@@ -6757,7 +6834,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						h.resumingSessions[inst.ID] = time.Now()
 						return h, h.restartSession(inst)
 					}
+				} else {
+					h.setError(fmt.Errorf("YOLO toggle is for Gemini, Codex and Hermes sessions; '%s' runs %q", inst.Title, inst.Tool))
 				}
+			} else {
+				h.explainKeyNeedsSession("YOLO toggle")
 			}
 		}
 		return h, nil
@@ -6780,6 +6861,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.resumingSessions[item.Session.ID] = time.Now()
 					return h, h.restartSession(item.Session)
 				}
+				h.setError(fmt.Errorf("restart: '%s' is still running; restart applies once it has stopped or failed", item.Session.Title))
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				restartID := remoteRestartAnimationID(item.RemoteName, item.RemoteSession.ID)
 				if _, restarting := h.remoteRestarting[restartID]; restarting {
@@ -6789,6 +6871,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.remoteRestarting[restartID] = struct{}{}
 				h.resumingSessions[restartID] = time.Now()
 				return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else {
+				h.explainKeyNeedsSession("restart")
 			}
 		}
 		return h, nil
@@ -6806,6 +6890,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.resumingSessions[item.Session.ID] = time.Now()
 					return h, h.restartSessionFresh(item.Session)
 				}
+				h.setError(fmt.Errorf("restart fresh: '%s' has no saved %s conversation to drop", item.Session.Title, item.Session.Tool))
+			} else {
+				h.explainKeyNeedsSession("restart fresh")
 			}
 		}
 		return h, nil
@@ -6817,6 +6904,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				return h, h.copySessionOutput(item.Session)
 			}
+			h.explainKeyNeedsSession("copy output")
 		}
 		return h, nil
 
@@ -6835,6 +6923,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// load (#2332). Say so instead of silently doing nothing.
 			if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.setError(fmt.Errorf("context inspector: not available for remote sessions yet"))
+			} else {
+				h.explainKeyNeedsSession("context inspector")
 			}
 		}
 		return h, nil
@@ -6849,6 +6939,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				return h, h.copySessionInfo(item.Session)
 			}
+			h.explainKeyNeedsSession("copy session info")
 		}
 		return h, nil
 
@@ -6860,6 +6951,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				return h, h.copyVisiblePane(item.Session)
 			}
+			h.explainKeyNeedsSession("copy visible text")
 		}
 		return h, nil
 
@@ -6873,6 +6965,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				return h, h.startCodeBlockCopy(item.Session)
 			}
+			h.explainKeyNeedsSession("copy code block")
 		}
 		return h, nil
 
@@ -6888,6 +6981,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				h.sessionPickerDialog.SetSize(h.width, h.height)
 				h.sessionPickerDialog.Show(item.Session, h.instances)
+			} else {
+				h.explainKeyNeedsSession("send output")
 			}
 		}
 		return h, nil
@@ -6904,6 +6999,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.beginNotesEditing(item.Session)
+			} else {
+				h.explainKeyNeedsSession("edit notes")
 			}
 		}
 		return h, nil
@@ -6913,6 +7010,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if inst := h.getSelectedSession(); inst != nil && inst.Tool == "gemini" {
 			cmd := h.geminiModelDialog.Show(inst.ID, inst.GeminiModel)
 			return h, cmd
+		} else if inst != nil {
+			h.setError(fmt.Errorf("model picker is for Gemini sessions; '%s' runs %q", inst.Title, inst.Tool))
+		} else {
+			h.explainKeyNeedsSession("model picker")
 		}
 		return h, nil
 

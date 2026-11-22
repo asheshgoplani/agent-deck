@@ -52,6 +52,14 @@ func ConductorNameFromTitle(title string) string {
 	return strings.TrimRightFunc(name, unicode.IsSpace)
 }
 
+// TitleWithoutDecoration returns title without the leading decoration a
+// tool may put in front of it (whitespace and emoji, such as the voice
+// daemon's "🎙 " while the microphone is on the session). It is for matching
+// a typed name against stored titles; the stored title is left as it is.
+func TitleWithoutDecoration(title string) string {
+	return strings.TrimLeftFunc(title, isConductorTitleDecoration)
+}
+
 // isConductorTitleDecoration reports whether r may precede "conductor-" in a
 // decorated conductor title: whitespace, emoji and other symbols (unicode So),
 // the emoji skin-tone modifiers, the emoji variation selectors and the

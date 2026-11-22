@@ -4504,9 +4504,10 @@ func TestMCPManagerUnsupportedToolShowsFeedback(t *testing.T) {
 	}
 }
 
-// TestMCPManagerRemoteSessionKeepsExistingNoOp verifies that the local-only
-// unsupported-tool feedback does not change the existing remote-row behavior.
-func TestMCPManagerRemoteSessionKeepsExistingNoOp(t *testing.T) {
+// TestMCPManagerRemoteSessionSaysNotAvailable: the MCP dialog is local-only,
+// so m on a remote row opens nothing. It used to do so silently; like every
+// other key that cannot apply to the row, it now says why in the footer.
+func TestMCPManagerRemoteSessionSaysNotAvailable(t *testing.T) {
 	remote := session.RemoteSessionInfo{
 		ID:         "remote-mcp",
 		Title:      "Remote MCP",
@@ -4527,7 +4528,7 @@ func TestMCPManagerRemoteSessionKeepsExistingNoOp(t *testing.T) {
 	if updated.mcpDialog.IsVisible() {
 		t.Fatal("remote session must not open the local MCP dialog")
 	}
-	if updated.err != nil {
-		t.Fatalf("remote session m hotkey changed existing no-op behavior: %v", updated.err)
+	if updated.err == nil || updated.err.Error() != "MCP manager: not available for remote sessions" {
+		t.Fatalf("remote session m hotkey: footer = %v, want the not-available reason", updated.err)
 	}
 }

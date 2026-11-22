@@ -271,8 +271,22 @@ func localSessionPaths(instances []*session.Instance) map[string]bool {
 		if inst == nil {
 			continue
 		}
-		if loc := locationOf(inst); loc.IsLocal() && loc.Path != "" {
-			paths[loc.Path] = true
+		if loc := locationOf(inst); loc.IsLocal() {
+			if loc.Path != "" {
+				paths[loc.Path] = true
+			}
+			// A local multi-repo session also uses its additional paths and
+			// every per-repo worktree, not only its first mapped path.
+			for _, p := range inst.AdditionalPaths {
+				if p != "" {
+					paths[p] = true
+				}
+			}
+			for _, mw := range inst.MultiRepoWorktrees {
+				if mw.WorktreePath != "" {
+					paths[mw.WorktreePath] = true
+				}
+			}
 		}
 		if inst.WorktreePath != "" {
 			paths[inst.WorktreePath] = true
@@ -286,26 +300,12 @@ func localSessionPaths(instances []*session.Instance) map[string]bool {
 // session row belongs to a different profile.
 func allProfileSessionPaths(currentProfile string, current []*session.Instance) (map[string]bool, error) {
 	paths := localSessionPaths(current)
-	profiles, err := session.ListProfiles()
+	others, err := session.OtherProfileInstances(currentProfile)
 	if err != nil {
-		return nil, fmt.Errorf("list profiles for worktree ownership: %w", err)
+		return nil, err
 	}
-	for _, profile := range profiles {
-		if profile == currentProfile {
-			continue
-		}
-		storage, err := session.NewStorageWithProfile(profile)
-		if err != nil {
-			return nil, fmt.Errorf("open profile %q for worktree ownership: %w", profile, err)
-		}
-		instances, _, err := storage.LoadWithGroups()
-		_ = storage.Close()
-		if err != nil {
-			return nil, fmt.Errorf("load profile %q for worktree ownership: %w", profile, err)
-		}
-		for path := range localSessionPaths(instances) {
-			paths[path] = true
-		}
+	for path := range localSessionPaths(others) {
+		paths[path] = true
 	}
 	return paths, nil
 }

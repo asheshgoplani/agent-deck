@@ -1024,13 +1024,28 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	remoteViewers, remoteViewersKnown := rs.ViewerList()
 	remoteViewersBadge := renderViewersBadge(remoteViewers, remoteViewersKnown, selected)
 
+	// Parent-child fold badge (#3223): chevron + child count on a remote
+	// parent row, last on the row as on a local parent row.
+	childFoldBadge := ""
+	if n := h.remoteSessionChildCount(item); n > 0 {
+		foldChar := "▾"
+		if h.isRemoteParentFolded(item.RemoteName, rs.ID) {
+			foldChar = "▸"
+		}
+		foldStyle := TreeConnectorStyle
+		if selected {
+			foldStyle = TreeConnectorSelStyle
+		}
+		childFoldBadge = foldStyle.Render(fmt.Sprintf(" %s%d", foldChar, n))
+	}
+
 	// #3224: the title takes the room the list leaves after the row's fixed
 	// parts and badges, as on a local row, instead of a fixed 25 columns. It
 	// is never cut shorter than remoteTitleMinWidth, so a list too narrow for
 	// the whole row shows the title as it always did and the trailing badges
 	// are clipped, as before.
 	head := cellWidth(remoteRowGutter(selected) + indent + treeConnector + " " + statusIcon + " ")
-	badges := cellWidth(toolStr) + cellWidth(remoteViewersBadge) + cellWidth(pendingStr)
+	badges := cellWidth(toolStr) + cellWidth(remoteViewersBadge) + cellWidth(pendingStr) + cellWidth(childFoldBadge)
 	titleFloor := min(cellWidth(titleStr), remoteTitleMinWidth)
 
 	// 🎙 voice badge right after the title when this remote row holds the
@@ -1054,7 +1069,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 	titleStr = cellTruncate(titleStr, titleBudget, "...")
 
-	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s%s%s\n",
 		remoteRowGutter(selected), // align with group/session hotkey gutter
 		indent,
 		DimStyle.Render(treeConnector),
@@ -1064,5 +1079,6 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		toolStr,
 		remoteViewersBadge,
 		pendingStr,
+		childFoldBadge,
 	))
 }

@@ -141,7 +141,7 @@ def _message(channel):
 
 
 class TestDiscordTypingBestEffort(unittest.TestCase):
-    async def _run_on_message(self, channel):
+    async def _run_on_message(self, channel, reply="reply from conductor"):
         """Drive the real on_message with the conductor-side calls stubbed:
         one conductor discovered and already running, send_to_conductor
         returning a successful reply. Returns the (title, msg) pairs handed
@@ -152,7 +152,7 @@ class TestDiscordTypingBestEffort(unittest.TestCase):
 
         def fake_send_to_conductor(session_title, msg, **kwargs):
             sent.append((session_title, msg))
-            return True, "reply from conductor", False
+            return True, reply, False
 
         async def running(name, profile):
             return True
@@ -203,6 +203,22 @@ class TestDiscordTypingBestEffort(unittest.TestCase):
         pending_after = asyncio.run(run())
         self.assertEqual(channel.sent, ["reply from conductor"])
         self.assertEqual(pending_after, [], "typing task must be cancelled once delivery completes")
+
+    def test_empty_reply_posts_a_notice(self):
+        """A conductor turn with no text must still answer the channel,
+        not leave the user with only the typing indicator."""
+
+        class _OkTyping:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        channel = _Channel()
+        channel.typing = lambda: _OkTyping()
+        asyncio.run(self._run_on_message(channel, reply=""))
+        self.assertEqual(channel.sent, [bridge.NO_OUTPUT_REPLY])
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ type MacappOpenRequest struct {
 func handleOpen(profile string, args []string) {
 	if err := runOpen(profile, args, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: open: %v\n", err)
-		os.Exit(1)
+		os.Exit(sessionRefExitCode(err))
 	}
 }
 
@@ -147,31 +147,59 @@ func currentTmuxSessionName() string {
 	return name
 }
 
+// sessionRefError is a session reference that did not resolve to one
+// session: ResolveSession's message with its code (ErrCodeNotFound or
+// ErrCodeAmbiguous), for commands that return errors instead of exiting.
+type sessionRefError struct {
+	msg  string
+	code string
+}
+
+func (e *sessionRefError) Error() string { return e.msg }
+
+// sessionRefExitCode is the exit code of a failed command: 2 when its error
+// is a session that was not found, as for every `session` verb, else 1.
+func sessionRefExitCode(err error) int {
+	var refErr *sessionRefError
+	if errors.As(err, &refErr) && refErr.code == ErrCodeNotFound {
+		return 2
+	}
+	return 1
+}
+
+// readOpenSession resolves identifier with ResolveSession, the resolver of
+// every `session` verb, so open, browser and ask take the same names and
+// answer with the same words.
 // Metadata only: no tmux reconnection, migration, or writes to the session DB.
 func readOpenSession(profile, identifier string) (*session.InstanceData, error) {
 	instances, err := loadOpenSessions(profile)
 	if err != nil {
 		return nil, err
 	}
-	// Exact IDs take precedence over titles, especially for the calling ID.
+	// ResolveSession reads only these fields; the shells are never started
+	// or saved.
+	shells := make([]*session.Instance, 0, len(instances))
+	byID := make(map[string]*session.InstanceData, len(instances))
 	for _, inst := range instances {
-		if inst.ID == identifier {
-			return inst, nil
+		if inst == nil {
+			continue
 		}
+		shells = append(shells, &session.Instance{
+			ID:            inst.ID,
+			Title:         inst.Title,
+			ProjectPath:   inst.ProjectPath,
+			IsConductor:   inst.IsConductor,
+			ConductorName: inst.ConductorName,
+			SSHHost:       inst.SSHHost,
+			SSHRemotePath: inst.SSHRemotePath,
+		})
+		byID[inst.ID] = inst
 	}
-	var match *session.InstanceData
-	for _, inst := range instances {
-		if inst.Title == identifier {
-			if match != nil {
-				return nil, fmt.Errorf("session title %q is ambiguous; use its id", identifier)
-			}
-			match = inst
-		}
-	}
+	match, errMsg, errCode := ResolveSession(identifier, shells)
 	if match == nil {
-		return nil, fmt.Errorf("session %q not found", identifier)
+		return nil, &sessionRefError{msg: errMsg, code: errCode}
 	}
-	return match, nil
+	return byID[match.ID], nil
 }
 
 // loadOpenSessions reads session metadata only, like readOpenSession.

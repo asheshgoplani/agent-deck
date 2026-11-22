@@ -168,7 +168,7 @@ func focusOtherSockets(instances []*session.Instance, exclude string) []string {
 // unit-testable without os.Exit; switcher is injected for the same reason.
 func routeFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64, attach bool, switcher liveSwitcher, detacher clientDetacher) error {
 	if id == "" {
-		return fmt.Errorf("session focus requires an <id>")
+		return fmt.Errorf("session focus requires an <id|title>")
 	}
 	inst := findFocusInstance(instances, id)
 	if inst == nil {
@@ -272,8 +272,9 @@ func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id
 	return routeFocus(db, instances, id, nowNano, attach, nil, nil)
 }
 
-// handleSessionFocus signals the running TUI (same profile) to select <id> on
-// its next poll. Fire-and-forget: no stdout on success. Unknown id exits 2.
+// handleSessionFocus signals the running TUI (same profile) to select the
+// session named by <id|title> (with --remote: the remote's own id) on its
+// next poll. Fire-and-forget: no stdout on success. An unknown name exits 2.
 // With --attach, the TUI opens/attaches the session instead of only selecting it.
 func handleSessionFocus(profile string, args []string) {
 	fs := flag.NewFlagSet("session focus", flag.ContinueOnError)
@@ -281,10 +282,10 @@ func handleSessionFocus(profile string, args []string) {
 	remote := fs.String("remote", "", "Focus a session of this configured remote (see 'agent-deck remote list'); <id> is the remote's own session id")
 	jsonOutput := fs.Bool("json", false, "Output the written request as JSON")
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck session focus [--remote <name>] <id> [--attach] [--json]")
+		fmt.Println("Usage: agent-deck session focus [--remote <name>] <id|title> [--attach] [--json]")
 		fmt.Println()
 		fmt.Println("Signal the running agent-deck TUI (same profile) to reveal and")
-		fmt.Println("select the session with the given instance id on its next refresh.")
+		fmt.Println("select the session with the given id or title on its next refresh.")
 		fmt.Println("With --attach, the TUI opens/attaches the session (as if you")
 		fmt.Println("pressed Enter on it) instead of only moving the cursor.")
 		fmt.Println("With --remote, <id> is a session on that remote: the TUI selects")
@@ -338,6 +339,23 @@ func handleSessionFocus(profile string, args []string) {
 		}
 		err = routeRemoteFocus(db, *remote, id, time.Now().UnixNano(), *attach, focusRemoteExists, tuiDetacher)
 	} else {
+		if id != "" {
+			// The same names as every other session verb (ResolveSession).
+			inst, errMsg, errCode := ResolveSession(id, instances)
+			if inst == nil {
+				if *jsonOutput {
+					out.Error(errMsg, errCode)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", errMsg)
+				}
+				if errCode == ErrCodeNotFound {
+					exitCLI(2)
+				}
+				exitCLI(1)
+				return
+			}
+			id = inst.ID
+		}
 		err = routeFocus(db, instances, id, time.Now().UnixNano(), *attach, switcher, detacher)
 	}
 	if err != nil {
