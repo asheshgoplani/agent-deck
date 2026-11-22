@@ -198,6 +198,8 @@ it('stops polling with a notice on 401 or 403', async () => {
     await tick()
     expect(screen.getByRole('status').textContent).toContain('Not authorized')
     await tick(60000)
+    fireEvent.scroll(screen.getByRole('region', { name: 'Chat history' }))
+    await tick(60000)
     expect(fetch).toHaveBeenCalledTimes(1)
   }
 })

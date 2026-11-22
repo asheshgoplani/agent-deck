@@ -71,9 +71,10 @@ export function SessionChat({ sessionId, remoteName, active }) {
     // Failed polls back off from 2 s to 30 s. A good read resets the delay.
     let delay = POLL_MS
     let timer = null
+    let stopped = false
 
     async function read() {
-      if (busy || controller.signal.aborted || document.visibilityState !== 'visible') return
+      if (stopped || busy || controller.signal.aborted || document.visibilityState !== 'visible') return
       busy = true
       const paging = older && !!cursor.before
       const tail = !paging && !cursor.through
@@ -85,6 +86,7 @@ export function SessionChat({ sessionId, remoteName, active }) {
           headers: authHeaders(), signal: controller.signal, cache: 'no-store',
         })
         if (res.status === 401 || res.status === 403) {
+          stopped = true
           if (!controller.signal.aborted) setNotice('Not authorized to read chat. Sign in again, then reopen Chat.')
           return
         }
@@ -131,7 +133,7 @@ export function SessionChat({ sessionId, remoteName, active }) {
 
     async function poll() {
       await read()
-      if (!controller.signal.aborted) timer = setTimeout(poll, delay)
+      if (!stopped && !controller.signal.aborted) timer = setTimeout(poll, delay)
     }
 
     function onScroll() {
