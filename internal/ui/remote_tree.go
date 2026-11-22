@@ -70,13 +70,21 @@ func buildRemoteFlatItemsWithEmptyGroups(remoteName string, sessions []session.R
 	if includeEmpty {
 		emptyPaths = groupPaths
 	}
-	return buildRemoteRows(remoteName, sessions, collapsed, order, groupPaths, emptyPaths)
+	return buildRemoteRows(remoteName, sessions, collapsed, order, groupPaths, emptyPaths, nil, nil)
 }
 
 // buildRemoteRows is buildRemoteFlatItemsWithEmptyGroups with the two uses of
 // the group list apart: groupPaths only ranks siblings, and each path in
 // emptyPaths that holds none of sessions gets a header-only row.
-func buildRemoteRows(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths, emptyPaths []string) []session.Item {
+//
+// parentFolds holds the IDs of this remote's parent rows whose child list the
+// user folded shut (#3223). A folded parent keeps its row; only the children
+// nested under it are withheld. A child shown top-level because its parent is
+// not in sessions (filtered, archived or in another group) is never hidden.
+// childCounts, when not nil, receives each emitted parent's ID -> the number
+// of children nested under it, folded or not, so the fold keys and badge
+// follow the same nesting the rows do.
+func buildRemoteRows(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths, emptyPaths []string, parentFolds map[string]bool, childCounts map[string]int) []session.Item {
 	items := make([]session.Item, 0, len(sessions)+2)
 
 	remoteRoot := "remotes/" + remoteName
@@ -183,11 +191,19 @@ func buildRemoteRows(remoteName string, sessions []session.RemoteSessionInfo, co
 			}
 			top = append(top, idx)
 		}
+		if childCounts != nil {
+			for parentID, kids := range children {
+				childCounts[parentID] = len(kids)
+			}
+		}
 
 		path := remoteRoot + "/" + gp
 		for t, idx := range top {
 			lastTop := t == len(top)-1
 			kids := children[sessions[idx].ID]
+			if parentFolds[sessions[idx].ID] {
+				kids = nil
+			}
 			items = append(items, session.Item{
 				Type:          session.ItemTypeRemoteSession,
 				RemoteSession: &sessions[idx],
@@ -225,14 +241,24 @@ func buildRemoteRows(remoteName string, sessions []session.RemoteSessionInfo, co
 // renders away from its parent, and a folded group shows once: on top when
 // anything under it is live. Every other mode, a folded host, or a remote
 // with nothing to split builds the rows exactly as before.
-func buildRemoteFlatItemsForViewMode(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths []string, includeEmpty bool, mode session.GroupViewMode, opts session.ViewModeOptions) []session.Item {
+//
+// parentFolds and childCounts are passed on to buildRemoteRows: a folded
+// parent's children stay hidden in whichever section the parent's block lands.
+func buildRemoteFlatItemsForViewMode(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths []string, includeEmpty bool, mode session.GroupViewMode, opts session.ViewModeOptions, parentFolds map[string]bool, childCounts map[string]int) []session.Item {
 	remoteRoot := "remotes/" + remoteName
+	all := func() []session.Item {
+		var emptyPaths []string
+		if includeEmpty {
+			emptyPaths = groupPaths
+		}
+		return buildRemoteRows(remoteName, sessions, collapsed, order, groupPaths, emptyPaths, parentFolds, childCounts)
+	}
 	if mode != session.GroupViewActiveTop || collapsed[remoteRoot] {
-		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+		return all()
 	}
 	top, bottom := splitRemoteSessionsActiveTop(remoteRoot, sessions, collapsed, opts)
 	if len(top) == 0 {
-		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+		return all()
 	}
 	// Only a group with no session anywhere under it is empty. A group whose
 	// sessions all went on top is not, and must not come back below the
@@ -242,10 +268,10 @@ func buildRemoteFlatItemsForViewMode(remoteName string, sessions []session.Remot
 		emptyPaths = genuinelyEmptyRemoteGroups(remoteRoot, sessions, collapsed, groupPaths)
 	}
 	if len(bottom) == 0 && len(emptyPaths) == 0 { // nothing sits below
-		return buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, order, groupPaths, includeEmpty)
+		return all()
 	}
-	bottomRows := buildRemoteRows(remoteName, bottom, collapsed, order, groupPaths, emptyPaths)
-	rows := buildRemoteRows(remoteName, top, collapsed, order, groupPaths, nil)
+	bottomRows := buildRemoteRows(remoteName, bottom, collapsed, order, groupPaths, emptyPaths, parentFolds, childCounts)
+	rows := buildRemoteRows(remoteName, top, collapsed, order, groupPaths, nil, parentFolds, childCounts)
 	rows = append(rows, session.Item{Type: session.ItemTypeDivider, DividerLabel: mode.DividerLabel(opts)})
 	return append(rows, bottomRows[1:]...)
 }

@@ -32,30 +32,31 @@ func (h *Home) remoteFlatItemIndex(remote, id string) int {
 	return -1
 }
 
-// lookupRemoteSession reports whether remote's last fetched list holds id and
-// whether that session is archived.
-func (h *Home) lookupRemoteSession(remote, id string) (group string, found, archived bool) {
+// lookupRemoteSession reports whether remote's last fetched list holds id,
+// its group and parent session, and whether that session is archived.
+func (h *Home) lookupRemoteSession(remote, id string) (group, parent string, found, archived bool) {
 	h.remoteSessionsMu.RLock()
 	defer h.remoteSessionsMu.RUnlock()
 	for _, rs := range h.remoteSessions[remote] {
 		if rs.ID == id {
-			return rs.Group, true, rs.Archived
+			return rs.Group, rs.ParentSessionID, true, rs.Archived
 		}
 	}
-	return "", false, false
+	return "", "", false, false
 }
 
 // SelectRemoteSession reveals and selects the session id of the remote named
 // remote, the remote counterpart of SelectSessionByID: it unfolds the remote
-// header and the group headers above the row, clears a status filter or
-// group scope that hides it, resets the time filter when only that still
-// hides it, and moves the cursor. Returns true if the row was selected.
+// header, the group headers above the row and its parent's child list (#3223),
+// clears a status filter or group scope that hides it, resets the time filter
+// when only that still hides it, and moves the cursor. Returns true if the row
+// was selected.
 // Archived and unknown sessions return false and leave the cursor unchanged.
 func (h *Home) SelectRemoteSession(remote, id string) bool {
 	if remote == "" || id == "" {
 		return false
 	}
-	group, found, archived := h.lookupRemoteSession(remote, id)
+	group, parent, found, archived := h.lookupRemoteSession(remote, id)
 	if !found || archived {
 		return false
 	}
@@ -82,6 +83,11 @@ func (h *Home) SelectRemoteSession(remote, id string) bool {
 			delete(h.remoteGroupsCollapsed, p)
 			unfolded = true
 		}
+	}
+	// And the parent's child-list fold (#3223), as a local reveal does.
+	if parent != "" && h.isRemoteParentFolded(remote, parent) {
+		delete(h.remoteParentChildrenCollapsed[remote], parent)
+		unfolded = true
 	}
 	prevStatus, prevTime := h.statusFilter, h.timeFilter
 	h.groupScopeMu.Lock()
@@ -149,7 +155,7 @@ func (h *Home) consumeRemoteFocus(fr session.FocusRequest) tea.Cmd {
 		attach:   fr.Attach,
 		deadline: time.Unix(0, fr.TS).Add(session.FocusRequestTTL),
 	}
-	if _, found, archived := h.lookupRemoteSession(fr.Remote, fr.ID); archived {
+	if _, _, found, archived := h.lookupRemoteSession(fr.Remote, fr.ID); archived {
 		return nil
 	} else if !found {
 		// The tick fetches for it (remoteFocusWantsFetch). A host held by
@@ -193,7 +199,7 @@ func (h *Home) retryPendingRemoteFocus(now time.Time) tea.Cmd {
 		h.pendingRemoteFocus = nil
 		return nil
 	}
-	_, found, archived := h.lookupRemoteSession(p.remote, p.id)
+	_, _, found, archived := h.lookupRemoteSession(p.remote, p.id)
 	if !found {
 		return nil
 	}

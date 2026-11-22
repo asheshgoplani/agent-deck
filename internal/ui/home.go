@@ -499,6 +499,16 @@ type Home struct {
 	// store rather than groupTree's expanded flags.
 	remoteGroupsCollapsed map[string]bool
 
+	// Remote parent-child fold state (#3223): remote name -> parent session
+	// ID -> child list folded. Nested like remoteSessionOrder, so a session
+	// ID that two remotes share folds on one remote only.
+	remoteParentChildrenCollapsed map[string]map[string]bool
+	// remoteChildCounts is, per remote, how many children each parent row
+	// nests in the current view (parent ID -> count). rebuildFlatItems fills
+	// it from the same sessions it builds the rows from, so the fold keys and
+	// the ▾N/▸N badge never disagree with the rows on screen.
+	remoteChildCounts map[string]map[string]int
+
 	// A `session focus --remote` request whose session the remote list does
 	// not hold yet (#2704); retried after each remote refresh until its TTL.
 	pendingRemoteFocus *pendingRemoteFocus
@@ -1185,6 +1195,11 @@ type uiState struct {
 	// are session-scoped UI state that is not persisted at all; a parent fold is
 	// a view preference like the remote folds above, so it rides here.
 	ParentChildrenCollapsed []string `json:"parent_children_collapsed,omitempty"`
+
+	// Folded remote parent-child lists (#3223): remote name -> parent session
+	// IDs. Nested like RemoteSessionOrder, so a session ID that two remotes
+	// share folds on one remote only.
+	RemoteParentChildrenCollapsed map[string][]string `json:"remote_parent_children_collapsed,omitempty"`
 
 	// RemoteSessionOrder is the manual order of remote session rows (#1875):
 	// remote -> group path -> session IDs. It rides in ui_state because it is
@@ -5846,6 +5861,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.windowsCollapsed[sid] = !h.windowsCollapsed[sid]
 				h.rebuildFlatItems()
 				h.moveCursorToSession(sid)
+			} else if item.Type == session.ItemTypeRemoteSession && h.remoteSessionChildCount(item) > 0 {
+				// Remote parent-child fold toggle (#3223), as for a local
+				// parent above: only the child list folds, not the group.
+				id := item.RemoteSession.ID
+				h.setRemoteParentFolded(item.RemoteName, id, !h.isRemoteParentFolded(item.RemoteName, id))
 			}
 		}
 		return h, nil
