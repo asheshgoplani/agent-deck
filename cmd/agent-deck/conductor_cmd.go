@@ -1249,7 +1249,7 @@ func handleConductorStatus(_ string, args []string) {
 						cs.DuplicateSessionIDs = ids
 					}
 					_ = inst.UpdateStatus()
-					cs.Running = inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle
+					cs.Running = conductorSessionRunning(inst)
 				}
 			}
 		}
@@ -1345,6 +1345,17 @@ func handleConductorStatus(_ string, args []string) {
 }
 
 // handleConductorList lists all conductors
+// conductorSessionRunning reports whether the conductor's session is really
+// up: a live status AND an existing tmux pane. A conductor that was only set
+// up is stored as idle with no pane, and must read as stopped, not running.
+func conductorSessionRunning(inst *session.Instance) bool {
+	switch inst.Status {
+	case session.StatusRunning, session.StatusWaiting, session.StatusIdle:
+		return inst.Exists()
+	}
+	return false
+}
+
 func handleConductorList(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -1411,7 +1422,7 @@ func handleConductorList(profile string, args []string) {
 				session.RefreshInstancesForCLIStatus(instances)
 				if inst := session.FindConductorInstance(instances, meta.Name); inst != nil {
 					_ = inst.UpdateStatus()
-					if inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle {
+					if conductorSessionRunning(inst) {
 						statusText = "running"
 					} else {
 						statusText = "stopped"
@@ -1596,7 +1607,32 @@ func pinBridgePackages(names []string, pyVersion string) []string {
 	return pinned
 }
 
-// installPythonDeps installs Python dependencies for the bridge.
+// bridgeImportProbes lists, per Python distribution, the imports the bridge
+// makes. Root modules alone are not enough: aiogram 2.x and discord.py 1.x
+// import fine but lack the APIs conductor_bridge.py needs, so a root-only
+// probe would skip the pinned install and leave the bridge disabled at
+// startup. Keep each entry in sync with conductor_bridge.py's guarded imports.
+var bridgeImportProbes = map[string]string{
+	"toml":       "import toml",
+	"aiogram":    "from aiogram import Bot, Dispatcher, types; from aiogram.filters import Command, CommandStart; from aiogram.client.session.aiohttp import AiohttpSession",
+	"slack-bolt": "from slack_bolt.async_app import AsyncApp; from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler; from slack_bolt.authorization import AuthorizeResult",
+	"slack-sdk":  "from slack_sdk.web.async_client import AsyncWebClient",
+	"aiohttp":    "import aiohttp",
+	"discord.py": "import discord; from discord import app_commands",
+}
+
+// bridgeImportProbe returns the import statement that proves pkg is usable by
+// the bridge. A distribution without an entry falls back to importing its
+// root module under the same name.
+func bridgeImportProbe(pkg string) string {
+	if probe, ok := bridgeImportProbes[pkg]; ok {
+		return probe
+	}
+	return "import " + pkg
+}
+
+// installPythonDeps checks for the bridge's Python dependencies and installs
+// them only if needed.
 // Returns true on success. On failure it prints a formatted, actionable error
 // (PEP 668 gets a special-cased remediation block listing three fix options;
 // other failures pass the raw pip stderr through) and returns false so the
@@ -1625,24 +1661,29 @@ func installPythonDeps() bool {
 	if len(packages) == 1 {
 		packages = append(packages, "aiogram", "slack-bolt", "slack-sdk", "aiohttp", "discord.py")
 	}
-	// Try with --user first; fall back to no --user (venvs, containers).
-	// We capture stderr on the second attempt so a failure can be classified
-	// and surfaced with a remediation message.
 	// Resolve the interpreter the generated daemon unit will actually run
-	// (session.FindPython3 prefers the conductor venv) instead of whatever
-	// "python3" means on the current PATH. Installing into a different
-	// interpreter than the daemon uses is how a "successful" setup still
-	// produced a bridge that could not import aiogram — and, in the PEP 668
-	// case, how the remediation the message printed could not take effect:
-	// the user built the venv, re-ran setup, and setup went straight back to
-	// the externally-managed PATH python and refused to install the daemon.
+	// (session.FindPython3 prefers the conductor venv).
 	python := session.FindPython3()
 	if python == "" {
 		python = "python3"
 	}
+
+	imports := make([]string, 0, len(packages))
+	for _, pkg := range packages {
+		imports = append(imports, bridgeImportProbe(pkg))
+	}
+	// Avoid importing from the caller's working directory, which Python -c
+	// adds to sys.path but the bridge daemon does not use.
+	probe := "import sys; sys.path[:] = [path for path in sys.path if path]; " + strings.Join(imports, "; ")
+	if err := exec.Command(python, "-c", probe).Run(); err == nil {
+		return true
+	}
+
 	_, pyVersion := probePythonInterpreter(python)
 	packages = pinBridgePackages(packages, pyVersion)
 
+	// Try with --user first; fall back to no --user (venvs, containers).
+	// Capture stderr on the second attempt for the remediation message.
 	args := append([]string{"-m", "pip", "install", "--quiet", "--user"}, packages...)
 	if err := exec.Command(python, args...).Run(); err == nil {
 		return true

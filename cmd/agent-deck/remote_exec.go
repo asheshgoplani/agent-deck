@@ -34,6 +34,14 @@ func remoteCommandArgs(args []string) ([]string, error) {
 				switch args[1] {
 				case "show", "output", "send", "send-status", "image-upload", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers", "annotate":
 					return append([]string(nil), args...), nil
+				case "send-keys":
+					// One key or one literal text per call: how the app's
+					// Stop button (Escape) and its workflow keys reach a
+					// session on a remote.
+					if err := validateRemoteSendKeysArgs(args[2:]); err != nil {
+						return nil, err
+					}
+					return append([]string(nil), args...), nil
 				case "queue":
 					if remoteQueueArgs(args) {
 						return append([]string(nil), args...), nil
@@ -110,6 +118,65 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		}
 	}
 	return nil, fmt.Errorf("unsupported remote command %q; run 'agent-deck remote' for supported commands", strings.Join(args, " "))
+}
+
+// remoteSendKeysOptions is the closed option set forwarded for `session
+// send-keys`. true marks an option that takes a value. --stream is left out:
+// it reads a key stream from the caller's stdin for the TUI's insert mode,
+// which opens its own connection.
+var remoteSendKeysOptions = map[string]bool{"text": true, "named-key": true, "enter": false, "primary": false, "json": false, "q": false}
+
+// validateRemoteSendKeysArgs checks the arguments of `session send-keys`
+// before they are forwarded: one session and the documented one-shot options.
+// "--" ends the options; what follows it counts as positional.
+// A help request passes through so the remote's own usage text answers.
+func validateRemoteSendKeysArgs(args []string) error {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") { //nolint:gosec // G602: guarded by len(args) == 1
+		return nil
+	}
+	sessions := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			// End of options, as the local command parses it: everything
+			// after it is positional, so "-- -worker" names a session.
+			sessions += len(args) - i - 1
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			sessions++
+			continue
+		}
+		name, value, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if name == "stream" {
+			return errors.New("unsupported remote command: session send-keys --stream is not forwarded; send one --text, --named-key or --enter per call")
+		}
+		takesValue, known := remoteSendKeysOptions[name]
+		if !known {
+			return fmt.Errorf("unsupported option %q for remote session send-keys", arg)
+		}
+		if !takesValue {
+			if inline {
+				return fmt.Errorf("option --%s takes no value", name)
+			}
+			continue
+		}
+		if !inline {
+			rest := args[i+1:]
+			if len(rest) == 0 {
+				return fmt.Errorf("option --%s needs a value", name)
+			}
+			value = rest[0]
+			i++
+		}
+		if value == "" {
+			return fmt.Errorf("option --%s needs a value", name)
+		}
+	}
+	if sessions != 1 {
+		return fmt.Errorf("remote session send-keys expects 1 session, got %d", sessions)
+	}
+	return nil
 }
 
 // remoteSwitchOptions is the closed option set forwarded for each switch verb.

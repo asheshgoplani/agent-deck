@@ -25,7 +25,11 @@ func creationFieldsFromFlags(fs *flag.FlagSet) []session.RemoteCreationField {
 		if boolean, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && boolean.IsBoolFlag() {
 			takesValue = false
 		}
-		fields = append(fields, session.RemoteCreationField{Name: f.Name, TakesValue: takesValue})
+		field := session.RemoteCreationField{Name: f.Name, TakesValue: takesValue}
+		if r, ok := f.Value.(interface{ IsRepeatable() bool }); ok && r.IsRepeatable() {
+			field.Repeatable = true
+		}
+		fields = append(fields, field)
 	})
 	return fields
 }
@@ -320,9 +324,12 @@ func validateStartupQueryCapacity(profile, group, parent, path string, noParent,
 	if err != nil {
 		return err
 	}
+	tree := session.NewGroupTreeWithGroups(instances, groups)
 	selectedGroup := group
 	if selectedGroup == "" {
-		selectedGroup = session.GroupPathForProject(path)
+		// The path add and launch store for a directory-derived group, so a
+		// directory "My Proj" is checked against the group "My-Proj".
+		selectedGroup = derivedGroupPath(tree, session.GroupPathForProject(path))
 	}
 	parentInst, _, _, parentErr := selectLaunchParent(parent, noParent, launchNestUnderParent(), instances)
 	if parentErr != nil {
@@ -338,7 +345,6 @@ func validateStartupQueryCapacity(profile, group, parent, path string, noParent,
 	if resolvedGroup != nil {
 		*resolvedGroup = selectedGroup
 	}
-	tree := session.NewGroupTreeWithGroups(instances, groups)
 	cfg, err := session.LoadUserConfig()
 	if err != nil {
 		return err

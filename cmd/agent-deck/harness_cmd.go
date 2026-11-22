@@ -256,6 +256,10 @@ func handleHarness(profile string, args []string) {
 		fmt.Println("install_command, login_command and docs_url from the core table (internal/harness),")
 		fmt.Println("overridable under [harnesses.<name>] in config.toml. Read-only.")
 	}
+	// Bare `harness --json` is the list form.
+	if len(args) > 0 && (args[0] == "--json" || args[0] == "-json") {
+		args = append([]string{"list"}, args...)
+	}
 	if len(args) == 0 || helpRequested(args[:1]) {
 		usage()
 		if len(args) == 0 {

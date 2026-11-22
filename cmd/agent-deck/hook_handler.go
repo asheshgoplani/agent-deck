@@ -1332,7 +1332,7 @@ func handleHooks(args []string) {
 	case "uninstall":
 		handleHooksUninstall()
 	case "status":
-		handleHooksStatus()
+		runHooksStatus(hooksStatusWantsJSON(args[1:]))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown hooks subcommand: %s\n", args[0])
 		printClaudeHooksUsage(os.Stderr)
@@ -1349,7 +1349,7 @@ func printClaudeHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "  help         Show this help")
 	fmt.Fprintln(w, "  install      Install or upgrade agent-deck Claude Code hooks")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Claude Code hooks")
-	fmt.Fprintln(w, "  status       Show current hook install status")
+	fmt.Fprintln(w, "  status       Show current hook install status (--json for machine output)")
 }
 
 func handleHooksInstall() {
@@ -1513,7 +1513,9 @@ func handleHooksUninstall() {
 	}
 }
 
-func handleHooksStatus() {
+func handleHooksStatus() { runHooksStatus(false) }
+
+func runHooksStatus(asJSON bool) {
 	// Clean up stale hook files while checking status
 	cleanStaleHookFiles()
 
@@ -1521,7 +1523,19 @@ func handleHooksStatus() {
 	// Review round 3 (finding 2): status is read-only. It never touches
 	// settings.json; the self-heal runs at daemon start and on an explicit
 	// `hooks install`, and only from a binary in a known install directory.
-	printClaudeHooksStatus(os.Stdout, session.ClaudeHooksStatus(configDir, Version))
+	report := session.ClaudeHooksStatus(configDir, Version)
+	if asJSON {
+		st := hooksStatusJSON{Kind: "claude", State: "not-installed", Config: filepath.Join(configDir, "settings.json"), Version: report.Version, Details: report.Problems()}
+		switch {
+		case report.Installed && len(st.Details) == 0:
+			st.State = "installed"
+		case report.Present:
+			st.State = "needs-reinstall"
+		}
+		printHooksStatusJSON(st)
+		return
+	}
+	printClaudeHooksStatus(os.Stdout, report)
 	if config, err := session.LoadUserConfig(); err == nil && config != nil {
 		feeds := session.UsageFeedStatuses(config)
 		now := time.Now()

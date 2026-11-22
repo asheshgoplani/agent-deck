@@ -192,7 +192,7 @@ func TestRowsPiDirectShellCustomContentAndUnknownRoles(t *testing.T) {
 	lines := `{"type":"session","version":3,"id":"pi-x","cwd":"/p"}
 {"type":"custom_message","id":"cm1","customType":"reviewer","content":[{"type":"text","text":"Review required"},{"type":"image","data":"AA==","mimeType":"image/png"}],"display":true}
 {"type":"message","id":"b1","message":{"role":"bashExecution","command":"ls notes","output":"a.md\nb.md","exitCode":0,"cancelled":false,"truncated":false,"timestamp":1}}
-{"type":"message","id":"b2","message":{"role":"bashExecution","command":"false","output":"","exitCode":1,"cancelled":false,"truncated":false,"timestamp":2}}
+{"type":"message","id":"b2","message":{"role":"bashExecution","command":"false","output":"","exitCode":1,"cancelled":false,"truncated":true,"timestamp":2}}
 {"type":"message","id":"c1","message":{"role":"custom","customType":"note","content":"from an extension","display":true,"timestamp":3}}
 {"type":"message","id":"x1","message":{"role":"brandNewRole","timestamp":4}}
 {"type":"branch_summary","id":"bs1","parentId":"b1","fromId":"b2","summary":"Tried approach A, went back"}
@@ -209,11 +209,11 @@ func TestRowsPiDirectShellCustomContentAndUnknownRoles(t *testing.T) {
 		t.Errorf("array custom_message: %+v", cm)
 	}
 	ok1, ok := rowByID(rows, "b1")
-	if !ok || ok1.Kind != "bash" || ok1.Detail != "ls notes" || ok1.Body != "a.md\nb.md" || ok1.Finished == nil || !*ok1.Finished || ok1.IsError == nil || *ok1.IsError || ok1.Meta["exit_code"] != 0 {
+	if !ok || ok1.Kind != "bash" || ok1.Detail != "ls notes" || ok1.Body != "a.md\nb.md" || ok1.Finished == nil || !*ok1.Finished || ok1.IsError == nil || *ok1.IsError || ok1.Meta["exit_code"] != 0 || ok1.Meta["truncated"] != nil {
 		t.Errorf("direct shell row: %+v", ok1)
 	}
 	failed, ok := rowByID(rows, "b2")
-	if !ok || failed.IsError == nil || !*failed.IsError || failed.Meta["exit_code"] != 1 {
+	if !ok || failed.IsError == nil || !*failed.IsError || failed.Meta["exit_code"] != 1 || failed.Meta["truncated"] != true {
 		t.Errorf("failed direct shell row: %+v", failed)
 	}
 	custom, ok := rowByID(rows, "c1")

@@ -5,5 +5,5 @@ Manage Hermes Agent shell hook integration.
 Commands:
   install      Install agent-deck Hermes hooks
   uninstall    Remove agent-deck Hermes hooks
-  status       Show Hermes hooks install status
+  status       Show Hermes hooks install status (--json for machine output)
   help         Show this help message

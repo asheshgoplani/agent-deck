@@ -8,5 +8,5 @@ Targets the server named by [tmux].socket_name, else the default one.
 Commands:
   install      Install or refresh the hook (every session start does this too)
   uninstall    Remove the hook, only if the slot holds agent-deck's
-  status       Show whether the slot is absent, agent-deck's, or foreign
+  status       Show whether the slot is absent, agent-deck's, or foreign (--json for machine output)
   help         Show this help message

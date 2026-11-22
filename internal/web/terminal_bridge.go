@@ -325,7 +325,7 @@ func tmuxCommandContext(ctx context.Context, socketName string, args ...string) 
 		finalArgs := append([]string{tmuxutf8.Flag, "-L", trimmed}, utf8Args[1:]...)
 		// The socket's own binary ([tmux.binaries]): a tmux client only
 		// talks to a server of its own version.
-		// #nosec G204 -- "tmux" or the user's configured [tmux.binaries] path; args are an argv slice, never a shell
+		// #nosec G204 G702 -- "tmux" or the user's configured [tmux.binaries] path; args are an argv slice, never a shell
 		cmd := exec.CommandContext(ctx, tmux.BinaryFor(trimmed), finalArgs...)
 		// Unset TMUX so tmux-in-tmux guards don't trip: we are explicitly
 		// directing this to a different server than the one we're in.
@@ -344,6 +344,7 @@ func tmuxCommandContext(ctx context.Context, socketName string, args ...string) 
 	if hasSocket {
 		bin = tmux.BinaryForSocketPath(socketPath)
 	}
+	// #nosec G702 -- "tmux" or the user's configured [tmux.binaries] path; args are an argv slice, never a shell
 	cmd := exec.CommandContext(ctx, bin, finalArgs...)
 	if hasSocket {
 		cmd.Env = environWithoutTMUX(os.Environ())

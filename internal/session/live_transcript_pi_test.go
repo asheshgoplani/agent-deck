@@ -2,10 +2,15 @@ package session
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 )
 
 func writePiSessionDoc(t *testing.T, home, instID, name, id, cwd string) string {
@@ -93,8 +98,35 @@ func TestLiveRowsSourcePiDocuments(t *testing.T) {
 		t.Fatalf("one document: src=%+v sess=%+v err=%v", src, sess, err)
 	}
 	writePiSessionDoc(t, home, inst.ID, "b.jsonl", "pi-other", project)
+	// A follow that started on one document learns it is no longer the only one.
+	if _, err := src.Resolve(); !errors.Is(err, query.ErrSourceUnresolved) {
+		t.Fatalf("follow resolve after a second document: err = %v", err)
+	}
 	_, _, err = LiveRowsSource(inst, nil)
 	if !errors.Is(err, ErrNoNativeTranscript) || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("two documents: err = %v", err)
+	}
+}
+
+// TestPiFollowError: only a resolve failure that means the document changed
+// ends a Pi follow. An I/O error on a path that still exists is retried.
+func TestPiFollowError(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		resync bool
+	}{
+		{"too many open files", fmt.Errorf("read Pi instance session directory: %w", &fs.PathError{Op: "open", Path: "/d", Err: syscall.EMFILE}), false},
+		{"read error", fmt.Errorf("read Pi session: %w", &fs.PathError{Op: "read", Path: "/d/a.jsonl", Err: syscall.EIO}), false},
+		{"persisted document removed", fmt.Errorf("inspect Pi session: %w", &fs.PathError{Op: "lstat", Path: "/d/a.jsonl", Err: fs.ErrNotExist}), true},
+		{"several documents", errors.New(`ambiguous Pi context artifacts for instance "pi" (2 matches)`), true},
+		{"no document", errors.New(`no exact Pi context artifact found for instance "pi"`), true},
+		{"identity mismatch", errors.New(`persisted Pi session identity mismatch: expected "a", file contains "b"`), true},
+	}
+	for _, tc := range cases {
+		got := piFollowError(tc.err)
+		if errors.Is(got, query.ErrSourceUnresolved) != tc.resync || !errors.Is(got, tc.err) {
+			t.Errorf("%s: piFollowError(%v) = %v, want resync %v", tc.name, tc.err, got, tc.resync)
+		}
 	}
 }

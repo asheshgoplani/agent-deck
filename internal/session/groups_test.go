@@ -2796,3 +2796,17 @@ func TestFlattenWithParentFolds(t *testing.T) {
 	}
 	t.Fatal("group-a header missing from folded output")
 }
+
+// A group stored under a path that is not canonical (older data: "My Proj")
+// is kept when a session is created in it; no canonical twin "My-Proj" is
+// made next to it.
+func TestEnsureGroupForNewSession_KeepsAnOlderNonCanonicalGroup(t *testing.T) {
+	old := NewInstanceWithGroup("old", "/tmp/p", "My Proj")
+	added := NewInstanceWithGroup("new", "/tmp/p", "My Proj")
+	tree := NewGroupTree([]*Instance{old, added})
+
+	leaf := tree.EnsureGroupForNewSession(added, "My Proj")
+	if leaf == nil || leaf.Path != "My Proj" || len(tree.Groups) != 1 {
+		t.Errorf("groups after the add: %v (leaf %v), want only \"My Proj\"", tree.GetGroupPaths(), leaf)
+	}
+}

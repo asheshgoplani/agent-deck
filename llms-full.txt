@@ -233,7 +233,7 @@ agent-deck mcp attach my-proj exa # Attach MCP to session
 | `/` / `G` | Search / Global search |
 | `r` | Restart session |
 | `d` | Delete |
-| `?` | Full help |
+| `?` | Help (`Tab` for all keys) |
 
 See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all shortcuts and [CLI Reference](skills/agent-deck/references/cli-reference.md) for all commands.
 
@@ -714,7 +714,7 @@ agent-deck list [--json] [--all] [--no-archived]
 agent-deck ls  # Alias
 ```
 
-`--no-archived` leaves archived sessions out before any status work (for pollers that only need live sessions). When the batched pane capture of a live `list --json` times out, the listing does not capture each pane on its own: those rows carry `status_source: "stale"` (status is the last observation or the default, substate may be absent), and `--stats` reports `captures_skipped`.
+`--no-archived` leaves archived sessions out before any status work (for pollers that only need live sessions). The single-profile table shows the live status in a `STATUS` column, `archived` for an archived session. When the batched pane capture of a live `list --json` times out, the listing does not capture each pane on its own: those rows carry `status_source: "stale"` (status is the last observation or the default, substate may be absent), and `--stats` reports `captures_skipped`.
 
 ### remove - Remove session
 
@@ -729,7 +729,7 @@ agent-deck rm  # Alias
 agent-deck status [-v|-q|--json]
 ```
 
-- Default: `2 waiting - 5 running - 3 idle`
+- Default: `2 waiting • 5 running • 3 idle`, then `• N stopped` and `• N error` when not zero. Every status summary (this line, `--json`, `group list`, the TUI header, the web chips) counts the same five buckets over non-archived sessions; `starting` and `queued` count as idle. The web group panel uses the same buckets but its total also counts the archived rows it lists.
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
 
@@ -909,7 +909,7 @@ agent-deck group create <name> [--parent <group>]
 agent-deck group delete <name> [--force]
 ```
 
-`--force`: Move sessions to parent and delete.
+`--force`: Move the sessions of the group and its subgroups to the parent group (to My Sessions for a root group) and delete.
 
 ### group move
 

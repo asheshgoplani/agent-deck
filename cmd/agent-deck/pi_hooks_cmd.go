@@ -54,6 +54,7 @@ func printPiHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "               the wake socket is on (or why not) and any stopped socket wakes")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Status options:")
+	fmt.Fprintln(w, "  --json                Print the shared {kind,state,config,version} JSON instead of text")
 	fmt.Fprintln(w, "  -p, --profile <name>  Profile to check the socket path for (default: current)")
 }
 
@@ -113,6 +114,24 @@ func piHooksProfile(args []string) string {
 func handlePiHooksStatus(args []string) {
 	dir := session.PiExtensionsDir()
 	state, version := session.InspectPiHooks(dir)
+	if hooksStatusWantsJSON(args) {
+		st := hooksStatusJSON{Kind: "pi", Config: session.PiHookExtensionPath(dir)}
+		switch state {
+		case session.PiHooksInstalled:
+			st.State = "installed"
+		case session.PiHooksOutdated:
+			st.State = "outdated"
+		case session.PiHooksForeign:
+			st.State = "foreign"
+		default:
+			st.State = "not-installed"
+		}
+		if version > 0 {
+			st.Version = fmt.Sprintf("%d", version)
+		}
+		printHooksStatusJSON(st)
+		return
+	}
 	switch state {
 	case session.PiHooksInstalled:
 		fmt.Printf("Status: INSTALLED (v%d)\n", version)
