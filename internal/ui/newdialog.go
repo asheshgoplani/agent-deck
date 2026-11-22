@@ -434,7 +434,7 @@ func displayCommandPreset(cmd string) string {
 // flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
 // before.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
+	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "antigravity"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -1310,6 +1310,11 @@ func (d *NewDialog) GetRemoteValues() (name, path, command string) {
 	name = strings.TrimSpace(d.nameInput.Value())
 	path = d.sanitizePath(d.pathInput.Value())
 	command = d.resolveCommand()
+	if command == "antigravity" && d.remoteCatalog != nil && d.remoteCatalog.Legacy {
+		// Older Agent Deck versions accept a raw command but don't know
+		// the Antigravity preset name.
+		command = "agy"
+	}
 	return name, path, command
 }
 

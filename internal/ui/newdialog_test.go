@@ -445,7 +445,7 @@ func TestDialogPresetCommands(t *testing.T) {
 
 	// Should have shell (empty), claude, gemini, opencode, opencode2, codex, pi, copilot, crush, muse, cursor, hermes, deepseek, omp.
 	// opencode2 is a launcher alias; persisted tool identity remains opencode.
-	expectedCommands := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
+	expectedCommands := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "antigravity"}
 
 	if len(d.presetCommands) != len(expectedCommands) {
 		t.Errorf("Expected %d preset commands, got %d", len(expectedCommands), len(d.presetCommands))

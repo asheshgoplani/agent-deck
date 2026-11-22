@@ -1685,6 +1685,8 @@ func (i *Instance) Start() (startErr error) {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
+	case i.Tool == "antigravity":
+		command = i.buildEnvSourceCommand() + i.antigravityCommand()
 	case i.Tool == "copilot":
 		command = buildCopilotCommand(i)
 		// Record start time for session ID detection (Unix millis)
@@ -2095,6 +2097,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
+	case i.Tool == "antigravity":
+		command, promptEmbeddedInCommand = i.buildAntigravityCommandWithPrompt(message)
+		command = i.buildEnvSourceCommand() + command
 	case i.Tool == "opencode":
 		if i.IsForkAwaitingStart {
 			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())

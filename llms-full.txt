@@ -153,6 +153,7 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
+| **Antigravity CLI** (`agy`) | Launch, terminal status detection, organization |
 | **OpenCode** | Status detection, organization |
 | **Codex** | Status detection, organization |
 | **Cursor** (terminal) | Status detection, organization |

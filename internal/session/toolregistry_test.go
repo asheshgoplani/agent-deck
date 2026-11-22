@@ -11,6 +11,7 @@ import (
 // canonicalBuiltins is the canonical built-in set, in the precedence order that
 // Registry.Match() (and the legacy detectTool() switch) walk.
 var canonicalBuiltins = []string{
+	"antigravity",
 	"claude", "opencode", "gemini", "codex", "pi", "omp",
 	"copilot", "crush", "muse", "cursor", "hermes", "deepseek", "aider", "shell",
 }
@@ -38,6 +39,9 @@ func TestRegistry_MatchAllBranches(t *testing.T) {
 		cmd  string
 		want string
 	}{
+		{"antigravity preset", "antigravity", "antigravity"},
+		{"antigravity binary path and flags", "/opt/agy --model gemini-flash", "antigravity"},
+		{"antigravity not an argument", "echo agy", "shell"},
 		// claude
 		{"claude bare", "claude", "claude"},
 		{"claude path+flags", "/usr/local/bin/claude-code --resume", "claude"},

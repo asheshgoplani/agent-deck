@@ -130,9 +130,13 @@ func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool, hiddenTools
 			case applied && !ignored:
 				// Honored as is, nothing to report.
 			case applied:
-				registryLog.Warn("custom tool for a built-in: only its detection patterns are used, other fields are ignored",
+				message := "custom tool for a built-in: only its detection patterns are used, other fields are ignored"
+				if name == "antigravity" {
+					message = "custom tool for a built-in: only its command and detection patterns are used, other fields are ignored"
+				}
+				registryLog.Warn(message,
 					"name", name,
-					"hint", "keep only the pattern fields here, and move the rest to a renamed custom tool with compatible_with = \""+name+"\"")
+					"hint", "move unsupported fields to a renamed custom tool with compatible_with = \""+name+"\"")
 			default:
 				registryLog.Warn("ignored custom tool: name shadows a built-in",
 					"name", name,
@@ -167,6 +171,12 @@ func builtinOverrideFields(name string, def ToolDef) (applied, ignored bool) {
 	rest.BusyPatterns, rest.PromptPatterns, rest.SpinnerChars = nil, nil, nil
 	rest.BusyPatternsExtra, rest.PromptPatternsExtra, rest.SpinnerCharsExtra = nil, nil, nil
 	applied = tmux.DefaultRawPatterns(name) != nil && !reflect.DeepEqual(def, rest)
+	if name == "antigravity" {
+		// Keep the command from the custom preset recommended before this tool
+		// was built in. GetToolCommand reads it as a fallback.
+		applied = applied || rest.Command != ""
+		rest.Command = ""
+	}
 	ignored = !reflect.DeepEqual(rest, ToolDef{})
 	return applied, ignored
 }
@@ -203,6 +213,8 @@ func (r *Registry) runInstalledProbe() {
 			ok = cursorCommandInstalled()
 		case "deepseek":
 			ok = DeepSeekInstalled(GetToolCommand("deepseek"))
+		case "antigravity":
+			ok = paneCommandInstalled(GetToolCommand(name))
 		default:
 			ok = probeInstalled(name)
 		}
@@ -561,7 +573,7 @@ func ConfiguredHiddenToolNames() []string {
 }
 
 // pickerPresetOrder matches buildPresetCommands in internal/ui/newdialog.go.
-var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp"}
+var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp", "antigravity"}
 
 // PickerToolNames returns tool names for the new-session picker after applying
 // hidden_tools and show_only_installed_tools. The empty command "" is mapped
@@ -601,6 +613,8 @@ func ToolInstalled(name string) bool {
 		return cursorCommandInstalled()
 	case "deepseek":
 		return DeepSeekInstalled(GetToolCommand("deepseek"))
+	case "antigravity":
+		return paneCommandInstalled(GetToolCommand(name))
 	}
 	r := currentRegistry()
 	if def, ok := r.custom[name]; ok {

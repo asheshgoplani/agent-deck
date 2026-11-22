@@ -175,8 +175,9 @@ func awaitContextVerifySendable(sess contextLiveSession, tool string, readyWait 
 	claudeLike := session.IsClaudeCompatible(tool)
 
 	if err := send.WaitForAgentReady(sess, tool, readyWait, send.PromptGates{
-		ClaudeComposer: claudeLike,
-		CodexPrompt:    session.IsCodexCompatible(tool),
+		ClaudeComposer:      claudeLike,
+		CodexPrompt:         session.IsCodexCompatible(tool),
+		AntigravityComposer: session.IsAntigravityCompatible(tool),
 	}); err != nil {
 		return "", fmt.Errorf("the session is still working, so there is nothing safe to type into: %w\n"+
 			"agent-deck will not drop a slash command into a mid-turn composer. Re-run when the session is idle", err)

@@ -397,8 +397,9 @@ func handleSessionSend(profile string, args []string) {
 	needsReady := !*noWait && !busyAcceptsInput
 	waitAgentReady := func(d time.Duration) error {
 		return send.WaitForAgentReady(tmuxSess, inst.Tool, d, send.PromptGates{
-			ClaudeComposer: session.IsClaudeCompatible(inst.Tool),
-			CodexPrompt:    session.IsCodexCompatible(inst.Tool),
+			ClaudeComposer:      session.IsClaudeCompatible(inst.Tool),
+			CodexPrompt:         session.IsCodexCompatible(inst.Tool),
+			AntigravityComposer: session.IsAntigravityCompatible(inst.Tool),
 		})
 	}
 	var acceptanceGuard *codexAcceptanceGuard

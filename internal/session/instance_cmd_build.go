@@ -5,12 +5,14 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path"
 	"strings"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -1308,6 +1310,62 @@ func redactEmbeddedSpawnPrompt(command, prompt string) string {
 		}
 	}
 	return command
+}
+
+func (i *Instance) antigravityCommand() string {
+	command := strings.TrimSpace(i.Command)
+	if command == "" {
+		return GetToolCommand("antigravity")
+	}
+	first := strings.Fields(command)[0]
+	if strings.EqualFold(first, "antigravity") {
+		return GetToolCommand("antigravity") + command[len(first):]
+	}
+	return i.Command
+}
+
+func (i *Instance) buildAntigravityCommandWithPrompt(prompt string) (string, bool) {
+	command := i.antigravityCommand()
+	if i.Wrapper != "" || strings.TrimSpace(prompt) == "" {
+		// A wrapper's argv shape is the user's, so the shared post-start
+		// delivery path types the prompt at the composer instead.
+		return command, false
+	}
+	// Embed when the command is one simple agy invocation, including
+	// option-bearing and custom-path ones (`agy --mode plan`, `/opt/bin/agy`):
+	// the prompt then never touches the composer, so `launch -m ... --no-wait`
+	// returns without waiting and cannot type into a sign-in or trust menu.
+	// Pipes, redirections, comments and other shell syntax keep ownership of
+	// the appended text, so they use the composer-gated path instead.
+	if !antigravityBareLauncher(command) {
+		return command, false
+	}
+	return command + " --prompt-interactive " + shellescape.Quote(prompt), true
+}
+
+// antigravityBareLauncher reports whether command is exactly one simple
+// command whose executable is agy, so appending an argument reaches agy
+// itself rather than a comment, a pipe, or another program.
+func antigravityBareLauncher(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	commands, ok := shellwords.Commands(trimmed)
+	if !ok || len(commands) != 1 || commands[0] != trimmed {
+		return false
+	}
+	words, ok := shellwords.Split(trimmed)
+	if !ok {
+		return false
+	}
+	// Commands does not split a standalone &, so `agy &` would leave the
+	// appended prompt as a second command. Reject any unquoted-looking & token
+	// rather than risk that shape.
+	for _, word := range words {
+		if strings.Contains(word, "&") {
+			return false
+		}
+	}
+	words = shellwords.CommandWords(words)
+	return len(words) > 0 && path.Base(words[0]) == "agy"
 }
 
 func (i *Instance) buildCodexCommandWithPrompt(baseCommand, prompt string) (string, bool) {
