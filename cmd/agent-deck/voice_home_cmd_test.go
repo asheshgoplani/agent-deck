@@ -25,9 +25,9 @@ func TestResolveVoiceHome(t *testing.T) {
 		{"GARDEN-PLANNER", "work", VoiceHome{ID: "a1000003-1700000003", Title: "garden-planner", Source: "config"}},
 		{"a1000003-1700000003", "work", VoiceHome{ID: "a1000003-1700000003", Title: "garden-planner", Source: "config"}},
 		{"a1000003", "work", VoiceHome{ID: "a1000003-1700000003", Title: "garden-planner", Source: "config"}},
-		{"twin", "work", VoiceHome{Source: "none", Error: "ambiguous"}},
-		{"old-home", "work", VoiceHome{Source: "none", Error: "not found"}},
-		{"nowhere", "work", VoiceHome{Source: "none", Error: "not found"}},
+		{"twin", "work", VoiceHome{ID: "a1000002-1700000002", Title: "conductor-work", Source: "default", Error: "ambiguous"}},
+		{"old-home", "work", VoiceHome{ID: "a1000002-1700000002", Title: "conductor-work", Source: "default", Error: "not found"}},
+		{"nowhere", "work", VoiceHome{ID: "a1000002-1700000002", Title: "conductor-work", Source: "default", Error: "not found"}},
 	}
 	for _, c := range cases {
 		if got := resolveVoiceHome(c.configured, c.profile, rows); got != c.want {

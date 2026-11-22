@@ -161,6 +161,12 @@ func (c Config) personNamed(words []string) string {
 	return ""
 }
 
+// Mine says whether s is his by the owner rules (archived or not).
+func (c Config) Mine(s Session) bool {
+	k, _ := c.ownerOf(s)
+	return k == ownerMine
+}
+
 // mine keeps his sessions (not archived).
 func (c Config) mine(all []Session) []Session {
 	var out []Session
