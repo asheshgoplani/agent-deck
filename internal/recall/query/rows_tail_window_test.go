@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRowsKindsOpenCallOutsideTailWindow: an open tool call older than the
@@ -45,5 +46,48 @@ func TestRowsKindsOpenCallOutsideTailWindow(t *testing.T) {
 	}
 	if len(next.Updates) != 0 || len(next.Turns) != 0 {
 		t.Fatalf("result leaked: turns=%v updates=%v", next.Turns, next.Updates)
+	}
+}
+
+// TestRowsKindsFilteredTailReadIsBounded: a filtered tail read must not
+// replay the whole file. A 64 MiB transcript with a kept row at the end must
+// read in time comparable to the unfiltered tail read.
+func TestRowsKindsFilteredTailReadIsBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("y", 1000)
+	var chunk strings.Builder
+	for i := 0; i < 1024; i++ {
+		fmt.Fprintf(&chunk, `{"type":"user","uuid":"p-%%d-%d","message":{"role":"user","content":[{"type":"text","text":"%s %d"}]}}`+"\n", i, pad, i)
+	}
+	for i := 0; i < 64; i++ {
+		if _, err := file.WriteString(fmt.Sprintf(chunk.String(), i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file.WriteString(`{"type":"assistant","uuid":"alast","message":{"id":"mlast","role":"assistant","content":[{"type":"text","text":"done"}]}}` + "\n")
+	file.Close()
+	src := RowsSource{Harness: "claude", Path: path}
+	timeIt := func(opts RowsOptions) time.Duration {
+		best := time.Duration(1 << 62)
+		for i := 0; i < 3; i++ {
+			t0 := time.Now()
+			if _, err := ReadRows(context.Background(), src, opts); err != nil {
+				t.Fatal(err)
+			}
+			if d := time.Since(t0); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	plain := timeIt(RowsOptions{Tail: 1})
+	filtered := timeIt(RowsOptions{Tail: 1, Kinds: []string{"assistant"}})
+	t.Logf("unfiltered %v, filtered %v", plain, filtered)
+	if filtered > 10*plain+250*time.Millisecond {
+		t.Fatalf("filtered tail read is unbounded: %v vs unfiltered %v", filtered, plain)
 	}
 }

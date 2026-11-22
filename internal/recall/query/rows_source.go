@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -499,7 +500,7 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 			return tl, err
 		}
 		rows := set.list()
-		drop := droppedOpen(nil, rows, opts)
+		drop := droppedOpen(nil, claudeLiveOnly(src.Harness, rows), opts)
 		boundaryFound := before == nil || before.B == ""
 		if before != nil && before.B != "" {
 			for i, row := range rows {
@@ -517,10 +518,17 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 			if len(rows) > n {
 				rows = rows[len(rows)-n:]
 			}
-			if start > 0 && opts.Filtered() {
-				// Open calls older than the window would otherwise be missed.
-				if drop, err = droppedBefore(ctx, src.Harness, f, end, opts); err != nil {
+			if src.Harness == "claude" && opts.Filtered() {
+				// Open calls can sit before the window; find them from the
+				// last assistant group instead of trusting the window.
+				live, err := liveDropped(ctx, f, end, opts)
+				if err != nil {
 					return tl, err
+				}
+				for _, id := range live {
+					if !slices.Contains(drop, id) {
+						drop = append(drop, id)
+					}
 				}
 			}
 			rows, err = materializeRowPage(ctx, src.Harness, f, start, end, rows)
@@ -547,12 +555,86 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 	}
 }
 
-// droppedBefore replays the whole file through end and returns the open rows
-// the filter drops, so calls outside the parsed window are still tracked.
-func droppedBefore(ctx context.Context, harness string, f io.ReaderAt, end int64, opts RowsOptions) ([]string, error) {
-	p := newRowParser(harness, rowParserState{})
+// claudeLiveOnly removes pending tool rows from a Claude window: whether a
+// call is still live is decided by liveDropped, not by the window.
+func claudeLiveOnly(harness string, rows []Row) []Row {
+	if harness != "claude" {
+		return rows
+	}
+	return slices.DeleteFunc(slices.Clone(rows), pending)
+}
+
+// maxLiveLookback bounds how far back liveGroupStart looks for the last
+// assistant message. Past it the group is assumed to start at the limit, so a
+// transcript with no assistant message in its last 4 MiB may still miss an
+// older open call (residual risk; a normal turn is far smaller).
+const maxLiveLookback = 4 << 20
+
+// liveGroupStart returns the start offset of the last Claude assistant
+// message group before end (consecutive assistant lines sharing a message
+// id). A tool call can only still get a result while it is in that group:
+// any later assistant message means the call was abandoned.
+func liveGroupStart(ctx context.Context, f io.ReaderAt, end int64) (int64, error) {
+	for window := int64(1 << 20); ; window *= 4 {
+		lo := tailStart(f, end, window)
+		type line struct {
+			off int64
+			id  string
+			ok  bool
+		}
+		var assistants []line
+		if _, err := scanLines(ctx, f, lo, end, func(raw []byte, lineEnd int64) error {
+			if !bytes.Contains(raw, []byte(`"assistant"`)) {
+				return nil
+			}
+			var rec struct {
+				Type    string `json:"type"`
+				Message struct {
+					ID string `json:"id"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(raw, &rec) == nil && rec.Type == "assistant" {
+				assistants = append(assistants, line{off: lineEnd - int64(len(raw)) - 1, id: rec.Message.ID, ok: rec.Message.ID != ""})
+			}
+			return nil
+		}); err != nil {
+			return 0, err
+		}
+		if n := len(assistants); n > 0 {
+			g := assistants[n-1]
+			start := g.off
+			for i := n - 2; i >= 0; i-- {
+				if !g.ok || !assistants[i].ok || assistants[i].id != g.id {
+					return max(start, lo), nil
+				}
+				start = assistants[i].off
+			}
+			if lo == 0 {
+				return max(start, 0), nil
+			}
+		} else if lo == 0 {
+			return 0, nil
+		}
+		if window >= maxLiveLookback {
+			return lo, nil
+		}
+	}
+}
+
+// liveDropped lists the open Claude tool calls in the last assistant group
+// that the filter drops, replaying only from that group's start.
+func liveDropped(ctx context.Context, f io.ReaderAt, end int64, opts RowsOptions) ([]string, error) {
+	g, err := liveGroupStart(ctx, f, end)
+	if err != nil {
+		return nil, err
+	}
+	p := newRowParser("claude", rowParserState{})
 	set := newRowSet()
-	_, err := scanLines(ctx, f, 0, end, func(line []byte, _ int64) error {
+	if _, err := scanLines(ctx, f, g, end, func(line []byte, _ int64) error {
+		// Only tool calls and their results matter here.
+		if !bytes.Contains(line, []byte("tool_use")) && !bytes.Contains(line, []byte("tool_result")) {
+			return nil
+		}
 		for _, frame := range p.line(line) {
 			if frame.Row != nil {
 				id := filterIdentity(*frame.Row, opts)
@@ -561,8 +643,7 @@ func droppedBefore(ctx context.Context, harness string, f io.ReaderAt, end int64
 			set.apply(frame)
 		}
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		return nil, err
 	}
 	return droppedOpen(nil, set.list(), opts), nil
