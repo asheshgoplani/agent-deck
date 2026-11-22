@@ -54,6 +54,125 @@ func TestKimiToolDataRoundTrip(t *testing.T) {
 	}
 }
 
+func kimiSessionIDValidationCases() []struct {
+	name  string
+	id    string
+	valid bool
+} {
+	return []struct {
+		name  string
+		id    string
+		valid bool
+	}{
+		{name: "one character", id: "a", valid: true},
+		{name: "maximum length", id: strings.Repeat("a", 128), valid: true},
+		{name: "letters digits underscore hyphen", id: "Az09_-", valid: true},
+		{name: "leading hyphens", id: "--help", valid: true},
+		{name: "surrounding whitespace", id: " session-1 ", valid: true},
+		{name: "empty", id: ""},
+		{name: "whitespace only", id: " \t\n "},
+		{name: "too long", id: strings.Repeat("a", 129)},
+		{name: "embedded space", id: "bad --help"},
+		{name: "newline", id: "session\n--help"},
+		{name: "control character", id: "session\x00id"},
+		{name: "slash", id: "session/id"},
+		{name: "non ASCII", id: "sessión"},
+	}
+}
+
+func TestKimiSessionIDToolDataValidation(t *testing.T) {
+	for _, tc := range kimiSessionIDValidationCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			want := ""
+			if tc.valid {
+				want = strings.TrimSpace(tc.id)
+			}
+			stored, err := json.Marshal(map[string]string{toolDataKimiSessionIDKey: tc.id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ReadKimiSessionIDFromToolData(stored); got != want {
+				t.Errorf("ReadKimiSessionIDFromToolData() = %q, want %q", got, want)
+			}
+
+			original := json.RawMessage(`{"kimi_session_id":"known-good","unrelated":true}`)
+			updated := WriteKimiSessionIDToToolData(original, tc.id)
+			wantBound := want
+			if !tc.valid {
+				wantBound = "known-good"
+				if string(updated) != string(original) {
+					t.Errorf("invalid write changed ToolData: got %s, want %s", updated, original)
+				}
+			}
+			if got := ReadKimiSessionIDFromToolData(updated); got != wantBound {
+				t.Errorf("binding after write = %q, want %q", got, wantBound)
+			}
+		})
+	}
+}
+
+func TestKimiInvalidHookSessionIDDoesNotRebind(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db := withTempGlobalStateDB(t)
+	inst := NewInstanceWithTool("kimi-invalid-hook", t.TempDir(), "kimi")
+	saveKimiRow(t, db, inst)
+	base := time.Now().Add(-time.Minute).Truncate(time.Second)
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "known-good", Event: "SessionStart",
+		ClientType: "kimi_code_cli", Cwd: inst.ProjectPath, UpdatedAt: base,
+	})
+
+	for n, tc := range kimiSessionIDValidationCases() {
+		if tc.valid {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			inst.UpdateHookStatus(&HookStatus{
+				Status: "running", SessionID: tc.id, Event: "SessionStart",
+				ClientType: "kimi_code_cli", Cwd: inst.ProjectPath, UpdatedAt: base.Add(time.Duration(n+1) * time.Second),
+			})
+			if inst.KimiSessionID != "known-good" {
+				t.Errorf("invalid SessionStart rebound identity to %q", inst.KimiSessionID)
+			}
+			if got, _ := persistedKimiBinding(t, db, inst.ID); got != "known-good" {
+				t.Errorf("invalid SessionStart changed persisted binding to %q", got)
+			}
+			if command := inst.buildKimiCommand("kimi"); !strings.Contains(command, "--session known-good") {
+				t.Errorf("resume command lost valid binding: %q", command)
+			}
+		})
+	}
+}
+
+func TestKimiMalformedStoredBindingDoesNotResume(t *testing.T) {
+	s := newTestStorage(t)
+	inst := NewInstanceWithTool("kimi-malformed-cold", t.TempDir(), "kimi")
+	if err := s.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(1790000000, 0)
+	if err := s.db.WriteKimiSessionBinding(inst.ID, "bad --help", at); err != nil {
+		t.Fatal(err)
+	}
+	lite, _, err := s.LoadLite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lite) != 1 || lite[0].KimiSessionID != "" {
+		t.Fatalf("LoadLite adopted malformed binding: %+v", lite)
+	}
+	loaded, _, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || loaded[0].KimiSessionID != "" {
+		t.Fatalf("LoadWithGroups adopted malformed binding: %+v", loaded)
+	}
+	if command := loaded[0].buildKimiCommand("kimi"); strings.Contains(command, "--session") {
+		t.Fatalf("malformed stored binding reached resume command: %q", command)
+	}
+}
+
 func TestKimiUpdateHookStatusBindingContract(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	db := withTempGlobalStateDB(t)

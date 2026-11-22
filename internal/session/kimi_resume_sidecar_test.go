@@ -159,3 +159,46 @@ func TestKimiOwnedSessionColdResumeRotationAndFreshClear(t *testing.T) {
 		t.Fatalf("fresh restart restored session %q", inst.KimiSessionID)
 	}
 }
+
+func TestKimiOwnedSessionIDValidation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	inst := NewInstanceWithTool("kimi-invalid-owned", t.TempDir(), "kimi")
+	if err := WriteKimiOwnedSessionID(inst.ID, "known-good", inst.ProjectPath, inst.hermesCwdRoots()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(GetHooksDir(), inst.ID+kimiOwnedSessionSuffix)
+	base := time.Now().Add(-time.Hour)
+
+	for n, tc := range kimiSessionIDValidationCases() {
+		if tc.valid {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			if err := WriteKimiOwnedSessionID(inst.ID, "known-good", inst.ProjectPath, inst.hermesCwdRoots()); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteKimiOwnedSessionID(inst.ID, tc.id, inst.ProjectPath, inst.hermesCwdRoots()); err == nil {
+				t.Errorf("WriteKimiOwnedSessionID(%q) succeeded, want validation error", tc.id)
+			}
+			if record, ok := readKimiOwnedSession(path); !ok || record.ID != "known-good" {
+				t.Errorf("invalid write replaced sidecar: record=%+v ok=%v", record, ok)
+			}
+
+			data, err := json.Marshal(kimiOwnedSession{
+				ID: tc.id, Cwd: inst.ProjectPath, At: base.Add(time.Duration(n+1) * time.Second).UnixNano(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			inst.KimiSessionID = "known-good"
+			inst.kimiBoundAt = base
+			inst.prepareKimiResume()
+			if inst.KimiSessionID != "known-good" {
+				t.Errorf("malformed sidecar replaced valid binding with %q", inst.KimiSessionID)
+			}
+		})
+	}
+}

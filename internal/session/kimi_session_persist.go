@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,13 @@ import (
 
 const toolDataKimiSessionIDKey = "kimi_session_id"
 const kimiOwnedSessionSuffix = ".kimi-session"
+
+var kimiSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+func normalizeKimiSessionID(sessionID string) (string, bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	return sessionID, kimiSessionIDPattern.MatchString(sessionID)
+}
 
 type kimiOwnedSession struct {
 	ID  string `json:"id"`
@@ -26,9 +34,9 @@ func WriteKimiOwnedSessionID(instanceID, sessionID, cwd string, cwdRoots []strin
 	if !hermesHookInstanceIDPattern.MatchString(instanceID) || strings.Contains(instanceID, "..") {
 		return fmt.Errorf("invalid instance id %q", instanceID)
 	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return fmt.Errorf("empty Kimi session id")
+	sessionID, ok := normalizeKimiSessionID(sessionID)
+	if !ok {
+		return fmt.Errorf("invalid Kimi session id %q", sessionID)
 	}
 	cwd = strings.TrimSpace(cwd)
 	if cwd != "" && len(cwdRoots) > 0 && !pathUnderAny(cwd, cwdRoots) {
@@ -50,8 +58,9 @@ func readKimiOwnedSession(path string) (kimiOwnedSession, bool) {
 	if json.Unmarshal(data, &record) != nil {
 		return kimiOwnedSession{}, false
 	}
-	record.ID = strings.TrimSpace(record.ID)
-	return record, record.ID != ""
+	id, ok := normalizeKimiSessionID(record.ID)
+	record.ID = id
+	return record, ok
 }
 
 func (i *Instance) kimiOwnedSession() (kimiOwnedSession, bool) {
@@ -101,8 +110,8 @@ func (i *Instance) clearKimiOwnedSessionID() {
 }
 
 func WriteKimiSessionIDToToolData(td json.RawMessage, sessionID string) json.RawMessage {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
+	sessionID, ok := normalizeKimiSessionID(sessionID)
+	if !ok {
 		return td
 	}
 	m := map[string]json.RawMessage{}
@@ -133,7 +142,11 @@ func ReadKimiSessionIDFromToolData(td json.RawMessage) string {
 	if err := json.Unmarshal(m[toolDataKimiSessionIDKey], &id); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(id)
+	id, ok := normalizeKimiSessionID(id)
+	if !ok {
+		return ""
+	}
+	return id
 }
 
 func ReadKimiDetectedAtFromToolData(td json.RawMessage) time.Time {
@@ -167,7 +180,8 @@ func (i *Instance) persistKimiSessionBinding(sessionID string, detectedAt time.T
 // bindKimiSessionFromHook binds only the managed process's SessionStart payload.
 // Caller holds i.mu.
 func (i *Instance) bindKimiSessionFromHook(sessionID, hookSource, hookEvent, clientType, cwd string, at time.Time) bool {
-	if sessionID == "" || hookSource != "hook_payload" || hookEvent != "SessionStart" || clientType != "kimi_code_cli" {
+	sessionID, ok := normalizeKimiSessionID(sessionID)
+	if !ok || hookSource != "hook_payload" || hookEvent != "SessionStart" || clientType != "kimi_code_cli" {
 		return true
 	}
 	if sessionID == i.KimiSessionID {
