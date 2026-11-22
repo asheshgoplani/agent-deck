@@ -464,6 +464,22 @@ def test_a_message_is_relayed_and_the_reply_posted_back():
     assert server.unauthorized == 0
 
 
+@pytest.mark.parametrize("empty", ["", "  \n"])
+def test_an_empty_conductor_reply_posts_a_notice_not_an_empty_post(empty):
+    async def scenario():
+        async with FakeMattermost() as server:
+            mm = _bridge(server)
+            with _Agentdeck(reply=(True, empty, False)):
+                task = await _running(mm, server)
+                await server.push(server.make("hello conductor"))
+                await _wait_for(lambda: server.posts)
+                await _stop(mm, task)
+            return server
+
+    server = asyncio.run(scenario())
+    assert [p["message"] for p in server.posts] == [bridge.NO_OUTPUT_REPLY]
+
+
 def test_the_bridge_ignores_its_own_reply_when_the_server_echoes_it():
     async def scenario():
         async with FakeMattermost() as server:
