@@ -831,7 +831,7 @@ func currentUserName() string {
 	return fmt.Sprintf("uid %d", os.Getuid())
 }
 
-func installSelfUpdateBinary(execPath string, binaryData []byte) error {
+func installSelfUpdateBinary(execPath string, binaryData []byte) (err error) {
 	// Serialize installers: a second caller waits for the first, then
 	// installs on top of it (or reports "update already in progress").
 	unlock, err := acquireInstallLock(execPath)
@@ -841,7 +841,11 @@ func installSelfUpdateBinary(execPath string, binaryData []byte) error {
 		}
 		return err
 	}
-	defer unlock()
+	defer func() {
+		if cerr := unlock(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close install lock: %w", cerr))
+		}
+	}()
 
 	// Stage the new binary under a name unique to this process, then rename
 	// it over the target. rename(2) replaces atomically, so the binary is

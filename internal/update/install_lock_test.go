@@ -102,7 +102,7 @@ func TestInstallSelfUpdateBinary_LockHeldReportsInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unlock()
+	defer func() { _ = unlock() }()
 	orig := installLockWait
 	installLockWait = 100 * time.Millisecond
 	t.Cleanup(func() { installLockWait = orig })
