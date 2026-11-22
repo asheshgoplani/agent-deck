@@ -54,6 +54,8 @@ func TestCommands(t *testing.T) {
 x`, []string{`echo 'a # b'`, "x"}, true},
 		{`a#b ; c`, []string{`a#b`, "c"}, true},
 		{"echo a\u00a0#b; exec claude", []string{"echo a\u00a0#b", "exec claude"}, true},
+		{`echo a\ #b; exec agy`, []string{`echo a\ #b`, "exec agy"}, true},
+		{"source ./env.sh # exec agy\n exec agy", []string{"source ./env.sh", "exec agy"}, true},
 		{`a;# note with an apostrophe
 b`, []string{"a", "b"}, true},
 		{`"unterminated && x`, nil, false},

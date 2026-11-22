@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Split separates a command line into words while honoring single quotes,
@@ -87,6 +88,16 @@ func Split(command string) ([]string, bool) {
 	return words, true
 }
 
+// CommandSpan is one simple command's text and its byte range in the original
+// line. Start is inclusive, End exclusive, and both exclude surrounding
+// unquoted blanks, so callers can rewrite that command in place without
+// matching text inside a comment or a later command.
+type CommandSpan struct {
+	Text  string
+	Start int
+	End   int
+}
+
 // Commands separates a command line into its simple commands at unquoted
 // control operators (&&, ||, ;, |, and newlines), keeping each command's text,
 // quotes included, so it can be passed to Split. An unquoted # that starts a
@@ -95,29 +106,56 @@ func Split(command string) ([]string, bool) {
 // Split it performs no expansion, and the boolean is false for an unterminated
 // quote or trailing escape.
 func Commands(command string) ([]string, bool) {
+	spans, ok := CommandSpans(command)
+	if !ok {
+		return nil, false
+	}
 	var commands []string
-	var current strings.Builder
+	for _, span := range spans {
+		commands = append(commands, span.Text)
+	}
+	return commands, true
+}
+
+// CommandSpans is Commands with each command's byte range, for callers that
+// rewrite the original line rather than the extracted text.
+func CommandSpans(command string) ([]CommandSpan, bool) {
+	var spans []CommandSpan
+	start, end := -1, -1
 	var quote rune
 	escaped := false
 	inComment := false
+	skipNext := false
 
 	flush := func() {
-		if text := strings.TrimSpace(current.String()); text != "" {
-			commands = append(commands, text)
+		if start >= 0 {
+			spans = append(spans, CommandSpan{Text: command[start:end], Start: start, End: end})
 		}
-		current.Reset()
+		start, end = -1, -1
 	}
 
-	runes := []rune(command)
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
+	// atWordStart tracks shell lexical state rather than the previous rune:
+	// an escaped or quoted space belongs to the word, so a # after it is data,
+	// not a comment.
+	atWordStart := true
+	for i, r := range command {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		size := utf8.RuneLen(r)
+		if size < 1 {
+			size = 1
+		}
 		if inComment {
 			if r == '\n' {
 				inComment = false
 				flush()
+				atWordStart = true
 			}
 			continue
 		}
+		data := true
 		switch {
 		case escaped:
 			escaped = false
@@ -133,32 +171,49 @@ func Commands(command string) ([]string, bool) {
 			}
 		case r == '\'' || r == '"':
 			quote = r
-		case r == '#' && startsShellWord(runes, i):
+		case r == '#' && atWordStart:
 			// An unquoted # that starts a word is a comment, so an apostrophe
 			// in it cannot open a quote that never closes.
 			inComment = true
 			continue
 		case r == ';' || r == '\n':
 			flush()
+			atWordStart = true
 			continue
 		case r == '|':
 			flush()
-			if i+1 < len(runes) && runes[i+1] == '|' {
-				i++
+			atWordStart = true
+			if i+1 < len(command) && command[i+1] == '|' {
+				skipNext = true
 			}
 			continue
-		case r == '&' && i+1 < len(runes) && runes[i+1] == '&':
+		case r == '&' && i+1 < len(command) && command[i+1] == '&':
 			flush()
-			i++
+			atWordStart = true
+			skipNext = true
+			continue
+		case r == ' ' || r == '\t':
+			atWordStart = true
+			data = false
+		case r == '&' || r == '(' || r == ')':
+			// Word separators to the shell, though the command keeps them.
+			atWordStart = true
+		default:
+			atWordStart = false
+		}
+		if !data {
 			continue
 		}
-		current.WriteRune(r)
+		if start < 0 {
+			start = i
+		}
+		end = i + size
 	}
 	if escaped || quote != 0 {
 		return nil, false
 	}
 	flush()
-	return commands, true
+	return spans, true
 }
 
 // CommandWords returns the words from the command-position word on. It skips
@@ -251,17 +306,4 @@ func isAssignment(word string) bool {
 		}
 	}
 	return true
-}
-
-// startsShellWord reports whether position i begins a word: at the start of
-// the input, after whitespace, or after a control operator. A # only starts a
-// comment there; in `a#b` it is part of the word.
-func startsShellWord(runes []rune, i int) bool {
-	if i == 0 {
-		return true
-	}
-	prev := runes[i-1]
-	// Only the shell's blank characters separate words; a non-breaking space
-	// is an ordinary character to the shell and must not start a comment.
-	return prev == ' ' || prev == '\t' || prev == '\n' || strings.ContainsRune(";&|()", prev)
 }

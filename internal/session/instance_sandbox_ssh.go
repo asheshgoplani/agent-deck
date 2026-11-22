@@ -211,11 +211,10 @@ func (i *Instance) wrapExitToShell(command string) string {
 	if command == "" || i.IsSandboxed() || !i.exitToShellEnabled() || !isBuiltinAgentTool(i.Tool) {
 		return command
 	}
-	commands, ok := shellwords.Commands(command)
+	spans, ok := shellwords.CommandSpans(command)
 	if ok {
-		offset := 0
-		for _, part := range commands {
-			offset += strings.Index(command[offset:], part)
+		for _, span := range spans {
+			part := span.Text
 			// A launcher is `exec` followed by shell whitespace (space or a
 			// tab, which the shell accepts) in command position. Anything
 			// after it is the exec'd command.
@@ -225,10 +224,9 @@ func (i *Instance) wrapExitToShell(command string) string {
 				for strip < len(part) && (part[strip] == ' ' || part[strip] == '\t') {
 					strip++
 				}
-				command = command[:offset] + command[offset+strip:]
+				command = command[:span.Start] + command[span.Start+strip:]
 				break
 			}
-			offset += len(part)
 		}
 	}
 	return command + `; exec "$SHELL" -i`

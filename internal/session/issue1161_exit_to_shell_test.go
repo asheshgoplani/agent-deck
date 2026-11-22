@@ -208,6 +208,30 @@ func TestExitToShell_EmptyCommandNoop(t *testing.T) {
 	}
 }
 
+func TestExitToShell_IgnoresExecInsideComments(t *testing.T) {
+	for _, tt := range []struct {
+		name, command, want string
+	}{
+		{
+			"commented launcher",
+			"source ./env.sh # exec agy\n exec agy",
+			"source ./env.sh # exec agy\n agy; exec \"$SHELL\" -i",
+		},
+		{
+			"escaped space before comment",
+			`echo a\ #b; exec claude`,
+			`echo a\ #b; claude; exec "$SHELL" -i`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := &Instance{Tool: "claude", ExitToShell: boolPtr(true)}
+			if got := inst.wrapExitToShell(tt.command); got != tt.want {
+				t.Errorf("wrapExitToShell() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExitToShell_PreservesExecInQuotedPrompt(t *testing.T) {
 	for tool, command := range map[string]string{
 		"antigravity": `agy --prompt-interactive 'Please exec ls; exec pwd'`,
