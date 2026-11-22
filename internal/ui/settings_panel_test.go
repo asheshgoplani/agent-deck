@@ -313,6 +313,25 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	}
 }
 
+func TestSettingsPanel_HermesYoloModeRoundTrips(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{Hermes: session.HermesSettings{YoloMode: true}})
+
+	if !panel.GetConfig().Hermes.YoloMode {
+		t.Fatal("configured Hermes YOLO mode was not preserved")
+	}
+
+	panel.visible = true
+	panel.cursor = int(SettingHermesYoloMode)
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Fatal("Hermes YOLO mode toggle did not report a change")
+	}
+	if panel.GetConfig().Hermes.YoloMode {
+		t.Fatal("Hermes YOLO mode toggle was not saved")
+	}
+}
+
 func TestSettingsPanel_KimiOptions(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.LoadConfig(&session.UserConfig{Kimi: session.KimiSettings{
