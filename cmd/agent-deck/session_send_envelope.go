@@ -21,36 +21,36 @@ type sendTagInputs struct {
 	draft      bool
 }
 
-// tagSendMessage prepends the "[agent-deck from:<sender-id>]" envelope line
-// to a send made from inside an agent-deck session, so the receiver's reply
-// turn is classified as a send (not a human prompt) and routed back to the
-// sender (comms redesign PR5). It returns the message to deliver and whether
-// it was tagged. The tag is applied before any transport or line-length
-// guard, so it counts toward every limit the delivery checks.
+// tagSendMessage prepends the sender envelope to ordinary agent-to-agent
+// messages. Claude-to-Claude sends retain automatic reply routing; Pi sends
+// carry source attribution so the receiver can explicitly send a result back.
+// The tag is applied before transport and length guards.
 //
-// When in doubt it does not tag: a human shell (no sender id), --no-tag or
-// tag_sends = false, a --draft the operator will review, a send to oneself,
-// a sender that is not a Claude-compatible session in the target's registry
-// (the reply is routed back only to a session whose prompt-time drain can
-// inject it; a wake line typed into a shell or another harness would run or
-// strand it, so the receiver's "the sender is notified" would be false),
-// a non-Claude target (only Claude transcripts are classified, and a
-// newline into a shell pane would run the tag as a command), a bare slash
-// command (a prefix would stop it executing), a conductor heartbeat (its
-// prefix is what the heartbeat skip and the classifier key on) and a
-// message that already carries an envelope.
+// Human shells, opt-outs, drafts, self-sends, commands, heartbeats and messages
+// already carrying an envelope are unchanged. Pi attribution is restricted to
+// Pi and Claude-compatible targets: never type an envelope into a shell.
 func tagSendMessage(message string, in sendTagInputs) (string, bool) {
 	sender := strings.TrimSpace(in.senderID)
 	switch {
 	case !in.enabled, in.draft, sender == "", sender == in.targetID,
-		!session.IsClaudeCompatible(in.senderTool),
-		!session.IsClaudeCompatible(in.targetTool),
+		!supportsSendAttribution(in.senderTool, in.targetTool),
 		isBareSlashCommand(message),
+		in.targetTool == "pi" && strings.HasPrefix(strings.TrimSpace(message), "!"),
 		session.IsConductorHeartbeatMessage(message),
 		session.HasSendEnvelope(message):
 		return message, false
 	}
 	return session.SendEnvelope(sender) + "\n" + message, true
+}
+
+// supportsSendAttribution keeps the existing Claude routing contract separate
+// from Pi's source-only attribution. It does not opt Pi into Claude transport,
+// transcript parsing, or automatic reply delivery.
+func supportsSendAttribution(senderTool, targetTool string) bool {
+	if senderTool == "pi" {
+		return targetTool == "pi" || session.IsClaudeCompatible(targetTool)
+	}
+	return session.IsClaudeCompatible(senderTool) && session.IsClaudeCompatible(targetTool)
 }
 
 // sendTagsEnabled resolves [send] tag_sends for one send; an unreadable
@@ -141,7 +141,7 @@ type launchKickoffTagInputs struct {
 // every other exclusion is tagSendMessage's.
 func tagLaunchKickoff(message string, in launchKickoffTagInputs) (string, bool) {
 	sender := strings.TrimSpace(in.senderID)
-	if strings.TrimSpace(message) == "" || in.parent == nil || sender == "" || sender != in.parent.ID || !in.childReportsTurns {
+	if strings.TrimSpace(message) == "" || in.parent == nil || sender == "" || sender != in.parent.ID || !in.childReportsTurns || !session.IsClaudeCompatible(in.parent.Tool) {
 		return message, false
 	}
 	return tagSendMessage(message, sendTagInputs{

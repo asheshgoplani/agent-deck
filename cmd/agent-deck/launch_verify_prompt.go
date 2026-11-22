@@ -66,6 +66,18 @@ func verifyPromptConsumedAfterLaunch(
 	verifyPromptConsumedAfterLaunchAttributed(target, "claude", message, false, maxWait, pollInterval, warn)
 }
 
+// launchPromptCheckApplies reports whether `launch --no-wait -m` runs the
+// prompt-consumed check for tool. The check reads the composer line that
+// send.CurrentComposerPrompt recognises: Claude's, and Codex's "›" cell, for
+// which it recovers a swallowed first Enter the same way. Those tools keep
+// it. A plain shell, Gemini, OpenCode, Pi or another custom CLI draws no such
+// line, so the check could only wait out both windows, type the message a
+// second time and warn about claude; their launch message is verified by the
+// arrival check of the initial send alone.
+func launchPromptCheckApplies(tool string) bool {
+	return session.UsesClaudeDeliveryVerify(tool) || session.IsCodexCompatible(tool)
+}
+
 // launchPromptSendOptions is the sendRetryOptions of the `launch -m …
 // --no-wait` initial send. Its pre-send provenance comes from one capture
 // taken before typing (send.ProbeComposerBeforeSend), the probe the waited

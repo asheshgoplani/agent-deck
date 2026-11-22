@@ -156,6 +156,33 @@ func (s *SessionDataService) LoadMenuSnapshot() (*MenuSnapshot, error) {
 	return BuildMenuSnapshot(profile, active, groupsData, s.now()), nil
 }
 
+// ResolveMenuSession reads the active session from storage without refreshing live status.
+func (s *SessionDataService) ResolveMenuSession(id string) (*MenuSession, string, error) {
+	if s == nil {
+		return nil, "", fmt.Errorf("session data service is nil")
+	}
+	if s.openStorage == nil {
+		return nil, "", fmt.Errorf("storage opener is not configured")
+	}
+
+	storage, profile, err := s.resolveAndOpenStorage()
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = storage.Close() }()
+
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		return nil, "", fmt.Errorf("load sessions for profile %q: %w", profile, err)
+	}
+	for _, inst := range instances {
+		if inst != nil && inst.ID == id && !inst.IsArchived() {
+			return toMenuSession(inst), profile, nil
+		}
+	}
+	return nil, profile, nil
+}
+
 // MenuDataRevision returns the storage revision that changes after a persisted mutation.
 func (s *SessionDataService) MenuDataRevision() (int64, error) {
 	if s == nil {

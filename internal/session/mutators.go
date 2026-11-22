@@ -54,6 +54,11 @@ const (
 	// clears the override (back to group/global resolution). See
 	// Instance.EffectiveContextLevel.
 	FieldContextLevel = "context-level"
+	// FieldInstructionsFile replaces the per-session list of instruction
+	// files (issue #3206): comma-separated absolute paths (~ and $VAR
+	// expanded); empty clears. Read at every spawn and appended to the
+	// identity block. See instructions_files.go.
+	FieldInstructionsFile = "instructions-file"
 	// FieldPromptSuggestions persists the per-session override for Claude
 	// Code prompt suggestions: children-off, on or off. Empty clears it (back
 	// to the profile/[launch] config). See prompt_suggestions.go.
@@ -101,6 +106,7 @@ var ValidMutableFields = []string{
 	FieldPin,
 	FieldModel,
 	FieldContextLevel,
+	FieldInstructionsFile,
 	FieldPromptSuggestions,
 	FieldWaitTimeout,
 	FieldFavorite,
@@ -126,7 +132,7 @@ const (
 func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
-		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel, FieldContextLevel, FieldPromptSuggestions,
+		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel, FieldContextLevel, FieldInstructionsFile, FieldPromptSuggestions,
 		// Resume flags are baked into the next spawn command.
 		FieldToolSessionID:
 		return FieldRestartRequired
@@ -537,6 +543,17 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			}
 			inst.ContextLevel = norm
 		}
+
+	case FieldInstructionsFile:
+		// #3206: the value replaces the whole list; empty clears it.
+		// Restart-required — the files are read into the identity block at
+		// the next spawn.
+		oldValue = strings.Join(inst.InstructionsFiles, ",")
+		files, perr := NormalizeInstructionsFiles([]string{value})
+		if perr != nil {
+			return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
+		}
+		inst.InstructionsFiles = files
 
 	case FieldPromptSuggestions:
 		// Restart-required: the setting is an env var in the spawn command.

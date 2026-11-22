@@ -120,6 +120,8 @@ func TestWebFailedRestoreSweepsDelete(t *testing.T) {
 	m.undoMu.Lock()
 	// An account that is not configured makes Restart fail before any tmux work.
 	m.undoStack[len(m.undoStack)-1].instance.Account = "not-configured"
+	// Undo restarts only a session that was active when deleted (TUI-7).
+	m.undoStack[len(m.undoStack)-1].prev = undoPrevState{captured: true, status: session.StatusIdle}
 	m.undoMu.Unlock()
 	_, err := m.UndoDelete()
 	require.Error(t, err)

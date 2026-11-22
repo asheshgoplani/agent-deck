@@ -38,8 +38,10 @@ func deadRowPair(name, socket, tool string) (*Instance, *Instance) {
 // deadRowPairStatus is deadRowPair with the row's stored status.
 func deadRowPairStatus(name, socket, tool string, status Status) (*Instance, *Instance) {
 	mk := func() *Instance {
+		// LastStartedAt: the persisted start stamp of a row that ran; without
+		// it the reloaded row reads as never started.
 		inst := &Instance{ID: name, Title: name, Tool: tool, Status: status,
-			CreatedAt: time.Now().Add(-time.Hour)}
+			CreatedAt: time.Now().Add(-time.Hour), LastStartedAt: time.Now().Add(-time.Hour)}
 		inst.tmuxSession = tmux.ReconnectSessionLazy(name, name, os.TempDir(), "", "running")
 		inst.tmuxSession.SocketName = socket
 		return inst

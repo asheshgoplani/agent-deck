@@ -30,7 +30,7 @@ func handleHermesHooks(args []string) {
 	case "uninstall":
 		handleHermesHooksUninstall()
 	case "status":
-		handleHermesHooksStatus()
+		runHermesHooksStatus(hooksStatusWantsJSON(args[1:]))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown hermes-hooks subcommand: %s\n", args[0])
 		printHermesHooksUsage(os.Stderr)
@@ -46,7 +46,7 @@ func printHermesHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  install      Install agent-deck Hermes hooks")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Hermes hooks")
-	fmt.Fprintln(w, "  status       Show Hermes hooks install status")
+	fmt.Fprintln(w, "  status       Show Hermes hooks install status (--json for machine output)")
 	fmt.Fprintln(w, "  help         Show this help message")
 }
 
@@ -79,10 +79,14 @@ func handleHermesHooksUninstall() {
 	}
 }
 
-func handleHermesHooksStatus() {
+func runHermesHooksStatus(asJSON bool) {
 	configDir := getHermesConfigDirForHooks()
 	installed := session.CheckHermesHooksInstalled(configDir)
 	configPath := filepath.Join(configDir, "config.yaml")
+	if asJSON {
+		printHooksStatusJSON(hooksStatusJSON{Kind: "hermes", State: simpleHooksState(installed), Config: configPath})
+		return
+	}
 
 	if installed {
 		fmt.Println("Status: INSTALLED")

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -34,6 +35,8 @@ const (
 	shellPane        = "user@box:~/work$ ls\nREADME.md  main.go\nuser@box:~/work$ \n"
 	claudeDialogPane = "⏺ Bash(rm -rf build)\n\n" +
 		"╭──────────────────────────────╮\n│ Do you want to proceed?      │\n│ ❯ 1. Yes                     │\n│   2. No                      │\n╰──────────────────────────────╯\n"
+	openCodeDraftPane = "  ┃  Existing draft\n  ┃\n  ┃  Build · Big Pickle OpenCode\n" +
+		"  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  ~/work    shift+tab agents  ctrl+p commands\n\n"
 )
 
 type pasteRecorder struct {
@@ -134,6 +137,110 @@ func TestRemoteImagePaste_CtrlVWithAnImageUploadsAndTypesTheHostPath(t *testing.
 	}
 }
 
+func TestRemoteImagePaste_OpenCodeDraft(t *testing.T) {
+	for _, tool := range []string{"opencode", "opencode2"} {
+		t.Run(tool, func(t *testing.T) {
+			rec := &pasteRecorder{}
+			// OpenCode requires a bracketed paste even if we didn't observe
+			// the remote terminal enabling bracketed mode.
+			input := sshAttachInput{writer: rec, paste: newTestPasteOn(rec, pngBytes, nil, tool, openCodeDraftPane, nil, false)}
+			const textPaste = "\x1b[200~text to keep\x1b[201~"
+			for _, chunk := range []string{textPaste, "\x16"} {
+				if detached, err := input.forward([]byte(chunk)); detached || err != nil {
+					t.Fatalf("forward: detached=%v err=%v", detached, err)
+				}
+			}
+			waitFor(t, func() bool { typed, _, _ := rec.snapshot(); return len(typed) > len(textPaste) })
+			typed, _, uploads := rec.snapshot()
+			rec.mu.Lock()
+			targets := rec.targets
+			rec.mu.Unlock()
+			want := textPaste + "\x1b[200~/home/u/.agent-deck/profiles/default/macapp-uploads/s1/A.png\x1b[201~"
+			if typed != want || uploads != 1 || targets != 2 {
+				t.Fatalf("want unchanged text and one bare path, no submit key: typed %q, %d uploads, %d target checks", typed, uploads, targets)
+			}
+		})
+	}
+}
+
+func TestRemoteImagePaste_GeminiKeepsMention(t *testing.T) {
+	rec := &pasteRecorder{}
+	input := sshAttachInput{writer: rec, paste: newTestPasteOn(rec, pngBytes, nil, "gemini", "  Type your message\n", nil, true)}
+	_, _ = input.forward([]byte{0x16})
+	waitFor(t, func() bool { typed, _, _ := rec.snapshot(); return typed != "" })
+	if typed, _, uploads := rec.snapshot(); typed != "\x1b[200~@/home/u/.agent-deck/profiles/default/macapp-uploads/s1/A.png \x1b[201~" || uploads != 1 {
+		t.Fatalf("Gemini should get its bracketed @path: typed %q, %d uploads", typed, uploads)
+	}
+}
+
+func TestRemoteImagePaste_RechecksComposerAfterUpload(t *testing.T) {
+	for _, pane := range []string{shellPane, "                   Commands               esc\n" + openCodeDraftPane} {
+		rec := &pasteRecorder{}
+		paste := newTestPasteOn(rec, pngBytes, nil, "opencode", openCodeDraftPane, nil, true)
+		var movedAway atomic.Bool
+		finishUpload := make(chan struct{})
+		paste.upload = func(ctx context.Context, _ []byte, _ string) (string, error) {
+			select {
+			case <-finishUpload:
+				return "/tmp/image.png", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+		paste.target = func(context.Context) (string, string, error) {
+			if movedAway.Load() {
+				return "opencode2", pane, nil
+			}
+			return "opencode", openCodeDraftPane, nil
+		}
+		input := sshAttachInput{writer: rec, paste: paste}
+		_, _ = input.forward([]byte{0x16})
+		movedAway.Store(true)
+		_, _ = input.forward([]byte{0x16}) // outside the composer, even with an upload pending
+		close(finishUpload)
+		waitFor(t, func() bool { _, notices, _ := rec.snapshot(); return len(notices) == 2 })
+		if typed, notices, _ := rec.snapshot(); typed != "\x16" || len(notices) != 2 || !strings.Contains(notices[1], "not pasted") {
+			t.Fatalf("after moving away only the second Ctrl+V should pass through: typed %q, notices %q", typed, notices)
+		}
+	}
+}
+
+// The recheck after an upload reports a failed pane read separately from a
+// composer that moved, and names the uploaded host path so it can be pasted
+// by hand.
+func TestRemoteImagePaste_RecheckFailureNamesTheUploadedPath(t *testing.T) {
+	rec := &pasteRecorder{}
+	paste := newTestPasteOn(rec, pngBytes, nil, "opencode", openCodeDraftPane, nil, true)
+	var broken atomic.Bool
+	finishUpload := make(chan struct{})
+	paste.upload = func(ctx context.Context, _ []byte, _ string) (string, error) {
+		select {
+		case <-finishUpload:
+			return "/home/u/macapp-uploads/s1/A.png", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	paste.target = func(context.Context) (string, string, error) {
+		if broken.Load() {
+			return "", "", errors.New("ssh: connection to deckbox lost")
+		}
+		return "opencode", openCodeDraftPane, nil
+	}
+	input := sshAttachInput{writer: rec, paste: paste}
+	_, _ = input.forward([]byte{0x16})
+	broken.Store(true)
+	close(finishUpload)
+	waitFor(t, func() bool { _, notices, _ := rec.snapshot(); return len(notices) == 2 })
+	typed, notices, _ := rec.snapshot()
+	got := notices[len(notices)-1]
+	if typed != "" || !strings.Contains(got, "not pasted") ||
+		!strings.Contains(got, "could not check the composer") ||
+		!strings.Contains(got, "/home/u/macapp-uploads/s1/A.png") {
+		t.Fatalf("want the path and the read error in the notice: typed %q, notices %q", typed, notices)
+	}
+}
+
 func TestRemoteImagePaste_NoImageLeavesCtrlVToTheHost(t *testing.T) {
 	rec := &pasteRecorder{}
 	input := sshAttachInput{writer: rec, paste: newTestPaste(rec, nil, nil, "claude", false)}
@@ -213,6 +320,8 @@ func TestRemoteImagePaste_EditorsShellsAndDialogsKeepCtrlV(t *testing.T) {
 		{"a shell session that shows a Claude-looking pane", "shell", claudeComposerPane, nil},
 		{"Codex (no @path)", "codex", claudeComposerPane, nil},
 		{"Claude's permission dialog", "claude", claudeDialogPane, nil},
+		{"shell in an OpenCode session", "opencode", shellPane, nil},
+		{"OpenCode command palette", "opencode2", "                       Commands                  esc\n" + openCodeDraftPane, nil},
 		{"the pane cannot be read", "claude", "", errors.New("ssh: timeout")},
 		{"an empty pane", "claude", "", nil},
 	}
@@ -241,6 +350,8 @@ func TestRemoteImagePaste_NoClipboardReadOutsideAnAgentComposer(t *testing.T) {
 		{"a shell session", "shell", shellPane, nil},
 		{"Codex (no @path)", "codex", claudeComposerPane, nil},
 		{"Claude's permission dialog", "claude", claudeDialogPane, nil},
+		{"shell in an OpenCode session", "opencode", shellPane, nil},
+		{"OpenCode command palette", "opencode2", "                       Commands                  esc\n" + openCodeDraftPane, nil},
 		{"the pane cannot be read", "claude", "", errors.New("ssh: timeout")},
 	}
 	for _, tc := range cases {
@@ -293,7 +404,7 @@ func TestRemoteImagePaste_OffMeansNoRoute(t *testing.T) {
 }
 
 func TestRemoteImagePaste_PathFormFollowsTheHarness(t *testing.T) {
-	cases := map[string]string{"claude": "@/a.png ", "gemini": "@/a.png ", "codex": "/a.png ", "": "/a.png "}
+	cases := map[string]string{"claude": "@/a.png ", "gemini": "@/a.png ", "opencode": "/a.png", "opencode2": "/a.png", "codex": "/a.png ", "": "/a.png "}
 	for tool, want := range cases {
 		if got := pastedPaths([]string{"/a.png"}, tool); got != want {
 			t.Errorf("%q: %q, want %q", tool, got, want)
@@ -477,10 +588,13 @@ func TestRemoteImagePaste_TheProbeIsOneReadAndABoundedCheck(t *testing.T) {
 	reads := 0
 	p.readImage = func() clipboardRead { reads++; return clipboardRead{data: pngBytes, ext: "png"} }
 	var left time.Duration
+	var firstProbe sync.Once
 	p.target = func(ctx context.Context) (string, string, error) {
-		if deadline, ok := ctx.Deadline(); ok {
-			left = time.Until(deadline)
-		}
+		firstProbe.Do(func() {
+			if deadline, ok := ctx.Deadline(); ok {
+				left = time.Until(deadline)
+			}
+		})
 		return "claude", claudeComposerPane, nil
 	}
 	input := sshAttachInput{writer: rec, paste: p}

@@ -43,6 +43,8 @@ Options:
     	Group path (defaults to parent folder)
   -hint value
     	Durable hint key=value for recall (repeatable; e.g. --hint purpose="fix flaky auth test")
+  -instructions-file value
+    	Instruction file appended to this session's identity block at every start, restart, resume and fork (repeatable, or comma-separated; absolute path, ~ and $VAR expanded; #3206)
   -json
     	Output as JSON
   -location string

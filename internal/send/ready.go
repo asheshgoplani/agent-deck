@@ -37,6 +37,19 @@ const DefaultAgentReadyTimeout = 10 * time.Minute
 // is really up stays up, and the surrounding timeout is unchanged.
 const startupPromptConfirmations = 3
 
+// shellReadyConfirmations is how many consecutive waiting/idle polls make a
+// plain shell ready when it was never seen active. An agent TUI that reads
+// idle may still be starting up (its status goes active a moment later), which
+// is what the 16-poll floor below waits out: about 3.5 s on every send to an
+// already idle session. A shell has no such startup phase (its "starting"
+// window is handled by the prompt probe), so the floor buys it nothing.
+//
+// Two polls only keep a single unreadable or non-idle reading from counting.
+// They are not a busy check: a shell that is running a quiet command reads
+// waiting as well, with this floor as with the 16-poll one. What is typed
+// then waits in the terminal until the shell reads it.
+const shellReadyConfirmations = 2
+
 // AgentReadyChecker abstracts the tmux surface readiness polling needs.
 // *tmux.Session satisfies this interface.
 type AgentReadyChecker interface {
@@ -121,6 +134,9 @@ func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Durat
 		}
 
 		alreadyReady := readyCount >= 10 && attempt >= 15
+		if IsShellLikeTool(tool) {
+			alreadyReady = readyCount >= shellReadyConfirmations
+		}
 		if (sawActive && (status == "waiting" || status == "idle")) || alreadyReady {
 			if gates.ClaudeComposer {
 				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil && !HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {

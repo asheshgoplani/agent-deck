@@ -3,6 +3,7 @@
 // Preact components import these and read .value reactively.
 import { signal } from '@preact/signals'
 import { apiFetch } from './api.js'
+import { activeTabSignal } from './uiState.js'
 
 // Session data from SSE snapshot
 export const sessionsSignal = signal([])
@@ -30,6 +31,15 @@ export function selectSession(id) {
 export function selectGroup(path) {
   selectedIdSignal.value = null
   selectedGroupSignal.value = path
+}
+
+// openTab is what a tab button or a palette tab command does. A selected
+// group's stats panel covers every tab pane (AppShell.js Panes), so a tab
+// click while a group is selected used to highlight the tab and show nothing.
+// Opening a tab leaves the group; a selected session stays selected.
+export function openTab(id) {
+  selectedGroupSignal.value = null
+  activeTabSignal.value = id
 }
 
 // SSE connection state: 'connecting' | 'connected' | 'disconnected'
@@ -197,6 +207,12 @@ export const fileLinkHostSignal = signal('')
 // has seen real data, it is past the skeleton phase forever. Per 06-05 STATE.md
 // handoff: new signals are APPENDED AT THE TAIL to preserve clean merges.
 export const sessionsLoadedSignal = signal(false)
+
+// Set when the server answers 401 to the boot menu load: the server was
+// started with --token/--token-file and this page has no token ('missing') or
+// a wrong one ('rejected'). App.js then shows a sign-in screen instead of a
+// shell that looks like an empty deck. null = no auth problem seen.
+export const authRequiredSignal = signal(null)
 
 // PR-B: profiles list from GET /api/profiles, hydrated once on AppShell mount.
 // Shape: { current: string, profiles: string[] }. The Topbar reads this to

@@ -15,7 +15,7 @@
     │  NAVIGATION                                                          │
     │    j / Down       Move down                                          │
     │    k / Up         Move up                                            │
-    │    Ctrl+u/d       Half page up/down                                  │
+    │    Ctrl+p/n       Move up / down                                     │
     │  ▼ more below                                                        │
     │                                                                      │
     │  j/k scroll • Tab 5 keys • any other key to close                    │

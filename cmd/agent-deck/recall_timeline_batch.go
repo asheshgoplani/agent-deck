@@ -22,7 +22,7 @@ const recallTimelineBatchMax = 50
 const recallTimelineBatchWorkers = 4
 
 // recallTimelineBatchFlags are the only flags --sessions may be combined with.
-var recallTimelineBatchFlags = map[string]bool{"json": true, "tail": true, "sessions": true}
+var recallTimelineBatchFlags = map[string]bool{"json": true, "tail": true, "sessions": true, "kinds": true, "skip-empty-body": true}
 
 // timelineBatchEntry is one id's answer: the exact object the single-id
 // call prints, or its error and CLI code.
@@ -69,7 +69,7 @@ func validateTimelineBatchFlags(fs *flag.FlagSet) error {
 	})
 	if len(bad) > 0 {
 		sort.Strings(bad)
-		return fmt.Errorf("recall timeline: %s cannot be combined with --sessions; only --tail is allowed", strings.Join(bad, ", "))
+		return fmt.Errorf("recall timeline: %s cannot be combined with --sessions; only --tail, --kinds and --skip-empty-body are allowed", strings.Join(bad, ", "))
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("recall timeline: pass ids either as <session> or in --sessions, not both")
@@ -82,7 +82,7 @@ func validateTimelineBatchFlags(fs *flag.FlagSet) error {
 // id never fails the batch; the exit code is 0 once the request is valid.
 // The deck's sessions and the recall index are opened once per call, and
 // transcripts are tailed by a small pool.
-func handleRecallTimelineBatch(profile string, fs *flag.FlagSet, list string, jsonOutput bool, tail int) {
+func handleRecallTimelineBatch(profile string, fs *flag.FlagSet, list string, jsonOutput bool, tail int, filter query.RowsOptions) {
 	out := NewCLIOutput(true, false)
 	if !jsonOutput {
 		fs.Usage()
@@ -97,7 +97,7 @@ func handleRecallTimelineBatch(profile string, fs *flag.FlagSet, list string, js
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
-	opts := query.RowsOptions{Tail: tail}
+	opts := query.RowsOptions{Tail: tail, Kinds: filter.Kinds, SkipEmptyBody: filter.SkipEmptyBody}
 	if err := query.ValidateRowsOptions(opts); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(2)
