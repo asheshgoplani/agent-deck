@@ -16,8 +16,9 @@ import (
 
 // Deck is everything the desk needs from agent-deck.
 type Deck interface {
-	// Sessions lists every session of this machine (all profiles) and of
-	// every configured remote. An unreachable host is an error entry.
+	// Sessions lists every session of this machine's current profile (voice
+	// never targets another profile) and of every configured remote. An
+	// unreachable host is an error entry.
 	Sessions(ctx context.Context) ([]Session, []HostError)
 	// NeedsMe lists the waiting sessions, longest-waiting first.
 	NeedsMe(ctx context.Context) ([]Session, []HostError)
@@ -237,6 +238,11 @@ func (d *Desk) do(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 	p := Parse(req.Sentence)
+	if p.Intent == IntentNone && switchCaller(req.From) {
+		// "switch to X", "go to X", "X pe jao" from the phone, glasses or
+		// typed text: the find path (a yes before the switch)
+		p = parseWith(req.Sentence, switchGrammar)
+	}
 	if p.Intent == IntentNone {
 		return notMine(p.Lang), nil // decided before any session listing
 	}
@@ -431,6 +437,10 @@ func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Re
 		return r, nil
 	}
 	s.Title, s.Status, s.Substate, s.Tool = fresh.Title, fresh.Status, fresh.Substate, fresh.Tool
+	if fresh.Profile != "" {
+		s.Profile = fresh.Profile
+	}
+	s.Group, s.Conductor = fresh.Group, fresh.Conductor
 	t = s.Ref()
 	r.Target = &t
 	switch p.Action {
@@ -522,6 +532,14 @@ func sendLine(err error, name string) (say, refusedWhy string) {
 }
 
 func (d *Desk) switchTo(ctx context.Context, req Request, r *Result, s Session) {
+	if !switchable(s, req.Profile) {
+		// the last check before the Mac app is asked or then is set
+		t := s.Ref()
+		r.Target = &t
+		r.Then = nil
+		refuse(r, RefusedNotFound, notSwitchableLine(s, req.Profile))
+		return
+	}
 	if !req.DryRun {
 		_ = d.Deck.Show(ctx, s) // best effort: the caller still moves the mic
 	}
@@ -593,7 +611,8 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 	q := newNameQuery(p.Name, hostsOf(all))
 	var res resolution
 	if p.Intent == IntentFind {
-		res = findAll(q, all, d.Config)
+		// find ends in a switch: only his own profile, never a conductor
+		res = findAll(q, switchableOnly(all, req.Profile), d.Config)
 	} else {
 		res = resolve(q, all, d.Config)
 	}

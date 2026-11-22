@@ -292,7 +292,30 @@ var nameNoise = foldSet("the", "my", "a", "an", "session", "sessions", "seshan",
 
 // Parse finds the desk intent of a sentence. It touches nothing outside
 // this package (no session list, no disk): "not mine" is decided here.
-func Parse(sentence string) Parsed {
+func Parse(sentence string) Parsed { return parseWith(sentence, grammar) }
+
+// switchGrammar: the switch words the Mac voice daemon handles itself
+// (testdata/daemon_phrases.json). From any other caller they are find
+// forms, soft: an unknown name is talk ("go to sleep", "switch to the main
+// branch"), and a found session still needs his yes.
+var switchGrammar = func() []pattern {
+	var ps []pattern
+	for _, spec := range []string{"switch|move to [the|my] {name}", "go to [the|my] {name}"} {
+		ps = append(ps, compile(IntentFind, LangEN, true, spec))
+	}
+	for _, spec := range []string{"{name} pe|par jao|chalo", "{name} pe|par switch karo"} {
+		ps = append(ps, compile(IntentFind, LangHI, true, spec))
+	}
+	return ps
+}()
+
+// switchCaller: callers whose switch words are the desk's. The Mac voice
+// daemon (--from mac) switches by itself.
+func switchCaller(from string) bool {
+	return from == "phone" || from == "glasses" || from == "text"
+}
+
+func parseWith(sentence string, grammar []pattern) Parsed {
 	sentence = strings.ToValidUTF8(sentence, " ")
 	all := splitWords(sentence)
 	cut := func(ws []word) string { return strings.TrimSpace(sentence[ws[0].start:ws[len(ws)-1].end]) }

@@ -53,11 +53,11 @@ name are dropped; Roman and Devanagari spellings are folded before comparing (`i
 
 | Intent | English | Roman Hindi | Does |
 |---|---|---|---|
-| `needs_me` | "who is waiting for me", "who needs me", "what needs me" | "kaun mera intezaar kar raha hai", "kisko meri zaroorat hai" | waiting sessions, all profiles and remotes (the `needs-me` list) |
+| `needs_me` | "who is waiting for me", "who needs me", "what needs me" | "kaun mera intezaar kar raha hai", "kisko meri zaroorat hai" | waiting sessions of this profile and the remotes |
 | `status` | "status of X", "how is X doing", "what is X doing" | "X ka status kya hai", "X kya kar raha hai" | "X is working, 4 minutes in. Last: …" |
 | `read` | "read X", "read the last reply of X", "what did X say" | "X ka jawab padho", "X ne kya bola" | the short part of X's last reply (`<speak>` part, else 2 sentences / 240 characters, no markdown or code) |
 | `tell` | "tell X to …", "ask X to …", "tell X that …", "ask X whether …" | "X ko bolo ki …", "X ko bolo …", "X se kaho ki …" | sends the message, after a yes (below) |
-| `find` | "find the X session", "find X" | "X wali session dhoondo", "X dhoondo" | one hit: "Found X. Switch to it?"; several: "Two: a, b. First or second?" |
+| `find` | "find the X session", "find X"; not from the Mac (`--from mac`, the daemon switches itself): "switch to X", "move to X", "go to X" | "X wali session dhoondo", "X dhoondo"; not from the Mac: "X pe jao", "X par chalo", "X pe switch karo" | one hit: "Found X. Switch to it?"; several: "Two: a, b. First or second?". Only sessions of this profile (and the remotes), never a conductor |
 | `overview` | "how is everything", "how are things" | "sab kaisa chal raha hai", "sab theek hai" | "Six working, three waiting for you, one failed: audit." |
 | `list` | "list my sessions", "what sessions do I have" | "meri sessions batao", "meri sessions sunao" | three names, then "and N more on screen" |
 
@@ -101,8 +101,15 @@ yours called …"; it is never typed into the session as plain text.
    ("audit 0956" is not `audit-0955`). A name that only looks like a title (edit distance) is never silently the
    target: the desk asks "Did you mean voice test?". Several equal hits: "Did you mean A or B?". Archived sessions
    are never targets.
-2. **Say it back**: "Sent to X." after a send; the read-back before it.
-3. **A yes before `tell`** unless the target is the session the mic is on, and always when the message holds a risky
+2. **Never another profile, never a conductor.** The desk lists only the profile it runs in (`-p`), plus the
+   configured remotes, so a session of another local profile is never named, found, switched to or picked. A
+   conductor (the deck's conductor flag, carried as `conductor_name` in `list --json`, so a renamed conductor
+   still counts; for an older host, a `conductor-<name>` title or the `conductor` group) is never found, switched
+   to or picked, his or anyone's. Every switch checks both again right before it acts (also after a yes, on the
+   session as it is then): "<title> is a conductor; voice does not switch to conductors. Nothing done." /
+   "<title> is in another profile; nothing done.".
+3. **Say it back**: "Sent to X." after a send; the read-back before it.
+4. **A yes before `tell`** unless the target is the session the mic is on, and always when the message holds a risky
    word (delete, remove, push, merge, release, install, restart, pay, mail; Roman/Devanagari forms such as "hata do",
    "mita do", "mail bhej do"). Prompt: "Send to X: <message>. Yes?". A yes more than 10 s after the question
    (`--answer-delay-ms` > 10000, or a token older than 10 s when the flag is absent) sends nothing: "Too late,
@@ -116,17 +123,17 @@ yours called …"; it is never typed into the session as plain text.
    shows no input prompt says "<title> is not at its prompt, so nothing was sent"; only when the outcome is not
    known (time ran out after typing began, or the send could not confirm it) the line is "I am not sure it was
    sent; check <title>." Never a failure or a success that did not happen.
-4. **Unreadable settings refuse.** A `config.toml` that cannot be parsed never falls back to the open default: the
+5. **Unreadable settings refuse.** A `config.toml` that cannot be parsed never falls back to the open default: the
    desk answers `refused:"unsafe"`, "I cannot read the voice settings.", and acts on nothing.
-5. **The message is cleaned**: every control character (newline, tab, escape, Ctrl-C …) becomes a space before
+6. **The message is cleaned**: every control character (newline, tab, escape, Ctrl-C …) becomes a space before
    it is read back, stored or sent, so a typed message cannot become keystrokes or a second command line.
-6. **No secrets spoken or shown**: replies and messages are checked for keys, tokens and passwords (a pattern list,
+7. **No secrets spoken or shown**: replies and messages are checked for keys, tokens and passwords (a pattern list,
    a key word followed by a value that is not an ordinary word, and a high-entropy check that leaves identifiers,
    commit hashes and digests alone). On any hit nothing of the text is in `show`. A reply with one: "There is a secret in this reply, read it on screen.", and nothing of
    it in `show`. A message with one is not sent by voice.
-7. **Short**: one sentence (two for a status); lists speak three names.
-8. **The mic marker is not a name**: the voice daemon's "🎙 " title prefix is stripped from everything the desk says, shows, returns as `target` or matches.
-9. **No logs**: the desk writes no heard or spoken text to any log. Pending questions live in
+8. **Short**: one sentence (two for a status); lists speak three names.
+9. **The mic marker is not a name**: the voice daemon's "🎙 " title prefix is stripped from everything the desk says, shows, returns as `target` or matches.
+10. **No logs**: the desk writes no heard or spoken text to any log. Pending questions live in
    `<profile dir>/voice/pending/<token>.json` (0600, directory 0700) until answered; every `voice do` call (also
    one that is not the desk's) removes questions older than 60 s. Note: `session send` itself records every sent
    message in its trigger ledger (`state.db`, `trigger_fires`), for voice sends as for typed ones.

@@ -23,6 +23,9 @@ type Session struct {
 	ParentID       string    `json:"parent_id,omitempty"`
 	Archived       bool      `json:"archived,omitempty"`
 	WaitingSeconds int64     `json:"waiting_seconds,omitempty"`
+	// Conductor: the deck says this session is a conductor (list --json
+	// conductor_name, from its conductor flag, so a renamed one keeps it).
+	Conductor bool `json:"conductor,omitempty"`
 }
 
 // Ref is the short form of a session in results and pending actions.

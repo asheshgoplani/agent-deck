@@ -220,7 +220,7 @@ func voiceDeskConfig(v session.VoiceSettings) voicedesk.Config {
 }
 
 // cliVoiceDeck is the desk's Deck on top of agent-deck itself: the needs-me
-// sources for listing (every local profile + every remote), and this same
+// sources for listing (the current profile + every remote), and this same
 // binary's `session output`, `session send` and `remote <name> ...` for
 // acting, so every send goes through the path a typed command takes.
 type cliVoiceDeck struct {
@@ -229,7 +229,9 @@ type cliVoiceDeck struct {
 	from    string
 }
 
-func (d *cliVoiceDeck) sources() []needsme.Source { return needsme.DefaultSources(d.self, d.profile) }
+// sources: the current profile only (plus the remotes). Voice never lists
+// or targets a session of another local profile.
+func (d *cliVoiceDeck) sources() []needsme.Source { return needsme.ProfileSources(d.self, d.profile) }
 
 func (d *cliVoiceDeck) Sessions(ctx context.Context) ([]voicedesk.Session, []voicedesk.HostError) {
 	srcs := d.sources()
@@ -257,7 +259,7 @@ func (d *cliVoiceDeck) Sessions(ctx context.Context) ([]voicedesk.Session, []voi
 		}
 		for _, r := range g.rows {
 			s := voicedesk.Session{ID: r.ID, Title: r.Title, Group: r.Group, Profile: r.Profile, Host: g.src.Host,
-				Status: r.Status, Substate: r.Substate, Archived: r.Archived, Tool: r.Tool}
+				Status: r.Status, Substate: r.Substate, Archived: r.Archived, Tool: r.Tool, Conductor: r.ConductorName != ""}
 			if r.Profile == "" {
 				s.Profile = g.src.Profile
 			}
@@ -275,7 +277,8 @@ func (d *cliVoiceDeck) NeedsMe(ctx context.Context) ([]voicedesk.Session, []voic
 	out := make([]voicedesk.Session, 0, len(res.Sessions))
 	for _, s := range res.Sessions {
 		out = append(out, voicedesk.Session{ID: s.ID, Title: s.Title, Group: s.Group, Profile: s.Profile, Host: s.Host,
-			Status: s.Status, Substate: s.Substate, Reason: s.Reason, WaitingSeconds: s.WaitingSeconds})
+			Status: s.Status, Substate: s.Substate, Reason: s.Reason, WaitingSeconds: s.WaitingSeconds,
+			Conductor: s.ConductorName != ""})
 	}
 	errs := make([]voicedesk.HostError, 0, len(res.Errors))
 	for _, e := range res.Errors {
@@ -391,7 +394,7 @@ func (d *cliVoiceDeck) Lookup(ctx context.Context, s voicedesk.Session) (voicede
 				continue
 			}
 			x := voicedesk.Session{ID: r.ID, Title: r.Title, Group: r.Group, Profile: r.Profile, Host: s.Host,
-				Status: r.Status, Substate: r.Substate, Archived: r.Archived, Tool: r.Tool}
+				Status: r.Status, Substate: r.Substate, Archived: r.Archived, Tool: r.Tool, Conductor: r.ConductorName != ""}
 			if x.Profile == "" {
 				x.Profile = src.Profile
 			}
