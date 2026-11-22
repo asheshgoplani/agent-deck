@@ -827,6 +827,21 @@ func handleRemoteSessions(args []string) {
 		exitCLI(1)
 	}
 
+	// A named remote that is not configured is an error, also when no remote
+	// is configured at all: an empty list would read as "no sessions there".
+	if remoteName != "" {
+		if _, exists := config.Remotes[remoteName]; !exists {
+			if envelope {
+				writeRemoteSessionsJSON(remoteSessionsOutput{
+					Errors: []remoteSessionError{{Name: remoteName, Error: "remote not found"}},
+				})
+			} else {
+				fmt.Printf("Error: remote '%s' not found\n", remoteName)
+			}
+			exitCLI(1)
+		}
+	}
+
 	if len(config.Remotes) == 0 {
 		switch {
 		case envelope:
@@ -844,19 +859,6 @@ func handleRemoteSessions(args []string) {
 	// (master died on a remote update / network drop) doesn't hang this command
 	// forever on the ControlMaster=auto reuse.
 	session.CleanStaleSSHSockets()
-
-	if remoteName != "" {
-		if _, exists := config.Remotes[remoteName]; !exists {
-			if envelope {
-				writeRemoteSessionsJSON(remoteSessionsOutput{
-					Errors: []remoteSessionError{{Name: remoteName, Error: "remote not found"}},
-				})
-			} else {
-				fmt.Printf("Error: remote '%s' not found\n", remoteName)
-			}
-			exitCLI(1)
-		}
-	}
 
 	ctx := context.Background()
 
@@ -1054,7 +1056,9 @@ func handleRemoteUpdate(args []string) {
 		exitCLI(1)
 	}
 
-	if len(config.Remotes) == 0 {
+	// Only the sweep over every remote is an empty answer with nothing
+	// configured; a named remote that does not exist is refused below.
+	if len(config.Remotes) == 0 && fs.Arg(0) == "" {
 		if *jsonOutput {
 			fmt.Println("[]")
 		} else {
