@@ -632,6 +632,17 @@ type remoteSessionDeletedMsg struct {
 	err        error
 }
 
+// remoteSessionRemovedMsg reports the outcome of the registry-only remove of a
+// remote session (TUI 'X' on a remote row). It is deliberately distinct from
+// remoteSessionDeletedMsg: nothing was killed, so the wording must not claim a
+// delete.
+type remoteSessionRemovedMsg struct {
+	remoteName string
+	sessionID  string
+	title      string
+	err        error
+}
+
 type remoteSessionClosedMsg struct {
 	remoteName string
 	sessionID  string
@@ -768,6 +779,25 @@ func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd 
 		defer cancel()
 		err = runner.DeleteSession(ctx, sessionID)
 		return remoteSessionDeletedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: err}
+	}
+}
+
+// removeRemoteSession drops a remote session from the remote's registry only.
+// It runs the remote's own `session remove`, which applies the stopped/error
+// gate there too, so a row that went live between the keypress and this call
+// is refused by the remote instead of being silently killed.
+func (h *Home) removeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "remove", sessionID)
+	h.setRemotePending(sessionID, "removing…")
+	return func() tea.Msg {
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			return remoteSessionRemovedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		err = runner.RemoveSession(ctx, sessionID)
+		return remoteSessionRemovedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: err}
 	}
 }
 
