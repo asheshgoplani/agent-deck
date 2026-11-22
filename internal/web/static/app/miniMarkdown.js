@@ -85,7 +85,8 @@ function parseFence(lines, index, marker, indent = 0, fenceIndent = 0) {
     if (line && !raw.startsWith(prefix)) break
     index++
     const closer = fenceMarker(line)
-    if (closer && closer.delimiter[0] === delimiter[0] && closer.delimiter.length >= delimiter.length && !closer.info) break
+    // A closing fence sits at most three spaces past the container's column.
+    if (closer && raw.search(/[^ ]/) - indent <= 3 && closer.delimiter[0] === delimiter[0] && closer.delimiter.length >= delimiter.length && !closer.info) break
     const rest = raw.slice(indent)
     code.push(rest.slice(Math.min(fenceIndent, rest.search(/[^ ]|$/))))
   }
@@ -151,7 +152,10 @@ function parseList(lines, start, first, depth) {
     if (!raw.trim()) {
       let next = index + 1
       while (next < lines.length && !lines[next].trim()) next++
-      if (next === lines.length || lines[next].search(/[^ ]/) < item.contentIndent) break
+      // A blank line between same-level siblings keeps them in one list.
+      const sibling = next < lines.length && listItem(lines[next])
+      const keep = sibling && sibling.indent === indent && (sibling.number !== null) === ordered
+      if (next === lines.length || (!keep && lines[next].search(/[^ ]/) < item.contentIndent)) break
       index = next
       raw = lines[index]
     }
@@ -173,7 +177,8 @@ function parseList(lines, start, first, depth) {
       text = raw.trimStart()
     }
     const marker = fenceMarker(text)
-    if (!match && raw.search(/[^ ]/) < (marker ? item.contentIndent : indent + 1)) break
+    // Lazy indentation only continues pending paragraph text, not a finished block.
+    if (!match && raw.search(/[^ ]/) < (marker || !item.text ? item.contentIndent : indent + 1)) break
     index++
     if (marker) {
       const [block, next] = parseFence(lines, index, marker, item.contentIndent, match ? 0 : raw.search(/[^ ]/) - item.contentIndent)

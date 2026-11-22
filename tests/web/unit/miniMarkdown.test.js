@@ -343,4 +343,22 @@ describe('miniMarkdown nesting limits', () => {
     const top = mount('  ```\n  x\n z\n    w\n  ```')
     expect(top.querySelector('pre code').textContent).toBe('x\nz\n  w')
   })
+
+  it('closes a list fence only at three spaces or fewer past the item column', () => {
+    const c = mount('- Run:\n  ```\n  before\n      ```\n  after\n  ```')
+    expect(c.querySelector('li pre code').textContent).toBe('before\n    ```\nafter')
+  })
+
+  it('keeps blank-separated sibling items in one list', () => {
+    const c = mount('1. Run:\n   ```\n   cmd\n   ```\n\n1. Ship\n\n- other')
+    expect(c.querySelectorAll('ol')).toHaveLength(1)
+    expect(c.querySelectorAll('ol > li')).toHaveLength(2)
+    expect(c.querySelectorAll('ul')).toHaveLength(1)
+  })
+
+  it('ends the item after a fence when the next line is not indented to its content', () => {
+    const c = mount('1. ```\n   cmd\n   ```\n Outside')
+    expect(c.querySelector('li').textContent).not.toContain('Outside')
+    expect(c.querySelector('p').textContent).toBe('Outside')
+  })
 })
