@@ -39,8 +39,9 @@ func handleMsg(profile string, args []string) {
 		return
 	}
 	if err := runMsg(os.Stdout, args, profile); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		exitCLI(1)
+		// Resolution errors already carry their own "Error:" prefix.
+		fmt.Fprintln(os.Stderr, "Error:", strings.TrimPrefix(err.Error(), "Error: "))
+		exitCLI(inboxExitCode(err))
 	}
 }
 
