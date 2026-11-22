@@ -168,10 +168,12 @@ func todoItems(ts []Todo) []ShowItem {
 // Whole: every spoken word is a word of the item and every word of the item
 // was said (the same word, or a plural "test"/"tests"; a Devanagari word by
 // its vowels). One whole item is ticked off at once (todo undo exists).
-// Part: every spoken word is in the item, but not the whole item, or only
-// by a prefix or by sound. An explicit form ("tick off build", "build wala
-// ho gaya") asks "Tick off fix the build?" or "Did you mean A or B?" and
-// ticks only on the answer. A bare form ("the build is done", "build ho
+// Part: every spoken word is a word of the item, but not the whole item.
+// An explicit form ("tick off build", "build wala ho gaya", "the build one
+// is done") asks "Tick off fix the build?" or "Did you mean A or B?" and
+// ticks only on the answer. Near: a word only by a prefix or by sound
+// ("rent"/"rental", "plan"/"plane"): an explicit form changes nothing and
+// says so, as `todo done` answers close_match. A bare form ("the build is done", "build ho
 // gaya") is what he says to a coding session all day: a part is talk, and
 // so is a whole item made only of coding words ("build"). None: not mine.
 func (d *Desk) todoDone(ctx context.Context, req Request, r Result, p Parsed, td TodoDeck) (Result, error) {
@@ -188,15 +190,22 @@ func (d *Desk) todoDone(ctx context.Context, req Request, r Result, p Parsed, td
 	if len(q.words) == 0 {
 		return notMine(p.Lang), nil
 	}
-	bare := p.Soft
-	if bare && genericOnlyQ(q) {
-		return notMine(p.Lang), nil // "the build is done", "test ho gaya"
-	}
 	items, err := td.TodoList(ctx)
 	if err != nil {
 		return notMine(p.Lang), nil
 	}
+	bare := p.Soft
+	// "the bank one is done": "one" points at a list item, so this is an
+	// explicit form for "bank" (it asks), unless an item has the word "one".
+	if n := len(q.words); n > 1 && (q.words[n-1] == "one" || q.words[n-1] == "1") && !todoHasWord(items, q.words[n-1]) {
+		q.words, q.roman, q.deva = q.words[:n-1], q.roman[:n-1], q.deva[:n-1]
+		bare = false
+	}
+	if bare && genericOnlyQ(q) {
+		return notMine(p.Lang), nil // "the build is done", "test ho gaya"
+	}
 	var whole, part []Todo
+	near := false
 	for _, it := range items {
 		if it.Done {
 			continue
@@ -205,8 +214,10 @@ func (d *Desk) todoDone(ctx context.Context, req Request, r Result, p Parsed, td
 			whole = append(whole, it)
 			continue
 		}
-		if ok, level, _ := coverage(q, Session{Title: it.Text}); ok && level >= wordPhonetic {
+		if todoPart(q, it.Text) {
 			part = append(part, it)
+		} else if ok, level, _ := coverage(q, Session{Title: it.Text}); ok && level >= wordPhonetic {
+			near = true
 		}
 	}
 	if len(whole) == 1 {
@@ -220,6 +231,12 @@ func (d *Desk) todoDone(ctx context.Context, req Request, r Result, p Parsed, td
 		hits = part
 	}
 	if len(hits) == 0 {
+		if !bare && near {
+			// a close match only ("tick off pay rent" for "pay rental
+			// insurance"): nothing changes, as `todo done` answers close_match
+			refuse(&r, RefusedNotFound, "No to-do is called "+strings.Join(q.roman, " ")+"; say its whole name.")
+			return r, nil
+		}
 		return notMine(p.Lang), nil
 	}
 	choices := hits
@@ -282,6 +299,40 @@ func todoWhole(q nameQuery, text string) bool {
 		}
 	}
 	return true
+}
+
+// todoPart: every spoken word is the same word as one of the item's words
+// (todoSameWord: no prefix, no sound-alike).
+func todoPart(q nameQuery, text string) bool {
+	iw := splitWords(text)
+	for i, w := range q.words {
+		found := false
+		for _, x := range iw {
+			if todoSameWord(w, x.folded, q.deva[i] || x.deva) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return len(q.words) > 0
+}
+
+// todoHasWord: an open item holds the word w.
+func todoHasWord(items []Todo, w string) bool {
+	for _, it := range items {
+		if it.Done {
+			continue
+		}
+		for _, x := range splitWords(it.Text) {
+			if x.folded == w {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // todoSameWord: equal, a plural ending (s, es), or for a word heard in

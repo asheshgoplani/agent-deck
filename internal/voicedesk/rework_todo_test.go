@@ -81,11 +81,12 @@ func TestReworkTodoDoneWholeItemTicks(t *testing.T) {
 			}
 		})
 	}
-	// a prefix is not the whole word: "pay rent" / "pay rental" asks
+	// a prefix is not the whole word: "pay rent" / "pay rental" changes
+	// nothing and asks for the whole name (as `todo done` answers close_match)
 	h, tf := todoHarness(t)
 	tf.items = []Todo{{ID: "1", Text: "pay rental insurance"}}
-	if r := h.say("tick off pay rent insurance"); len(tf.done) != 0 || r.Confirm == nil {
-		t.Fatalf("prefix ticked: %v say=%q", tf.done, r.Say)
+	if r := h.say("tick off pay rent insurance"); len(tf.done) != 0 || r.Confirm != nil || r.Say != "No to-do is called pay rent insurance; say its whole name." {
+		t.Fatalf("prefix: ticked=%v confirm=%v say=%q", tf.done, r.Confirm != nil, r.Say)
 	}
 }
 

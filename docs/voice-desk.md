@@ -106,7 +106,7 @@ yours called …"; it is never typed into the session as plain text.
 | `refuse` | "delete X", "remove the X session", "delete all workers", "stop X and delete it" | "X hata do", "X ko mita do", "sab workers hata do", "X band karo aur hata do" | nothing: "I never delete a session by voice; do it on screen." |
 | `todo_add` | "add a to-do: X", "put X on my list", "remind me to X" | "to-do mein daalo: X", "X list mein daal do" | `todo add`; "add this to my list" and "add a todo comment" are talk |
 | `todo_list` | "what is on my list", "read my to-dos" | "meri list sunao", "mere to-do batao" | `todo list`; "what is left to do" is talk |
-| `todo_done` | "tick off X", "mark X done", "X is done" | "X wala ho gaya", "X ho gaya" | the whole item ticks at once; part of it after "tick off" / "wala" asks "Tick off fix the build?"; a bare "the build is done" / "build ho gaya" is talk |
+| `todo_done` | "tick off X", "mark X done", "X is done", "the X one is done" | "X wala ho gaya", "X ho gaya" | the whole item ticks at once; part of it after "tick off" / "wala" / "the X one" asks "Tick off fix the build?" (several: "Did you mean A or B?"); a close word ("plan" for "plane", "rent" for "rental") changes nothing: "No to-do is called plan; say its whole name."; a bare "the build is done" / "build ho gaya" is talk |
 
 Every launch, stop, restart and archive is read back and needs a yes within 10 s; the yes re-checks each session.
 A launch starts only in the group's own default folder (`group update G --default-path ...`) and says it with the
