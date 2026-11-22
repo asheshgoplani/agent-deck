@@ -2973,7 +2973,7 @@
       "checks": {
         "must": [
           "\\bunique\\b|exactly one",
-          "error (that )?list|errors? and lists|listing (both|them)|lists? (them|both|each|the (matching )?groups)|ambiguous",
+          "error (that )?list|errors? and lists|listing (both|them)|lists? (them|both|each|the (matching )?groups)|(?<!\")ambiguous",
           "unknown name|as typed|doesn.t exist|not exist|matches no group|no group (is )?(called|named)"
         ],
         "must_not": []
@@ -2996,7 +2996,7 @@
       "checks": {
         "must": [
           "\\bunique\\b|exactly one|only (one )?group|single",
-          "error (that )?list|listing (both|them)|lists? (them|both|each|the (matching )?groups)|ambiguous",
+          "error (that )?list|listing (both|them)|lists? (them|both|each|the (matching )?groups)|(?<!\")ambiguous",
           "parent.s (\\(\\S+\\) )?group|unknown name|(created|name) (exactly )?as typed"
         ],
         "must_not": []
