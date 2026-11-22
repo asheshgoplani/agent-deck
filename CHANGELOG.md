@@ -7,8 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.40] - 2026-11-22
+
+### Highlights
+
+- Antigravity CLI is a built-in tool, and an owner to-do list arrives in the CLI (`agent-deck todo`), the web API and the TUI (alt+o) (see New features).
+- The recall timeline filters rows by kind, follows new frames live in the web UI and serves a remote session's timeline (see New features).
+- Status, remove, groups, remote sessions, the TUI and the web UI got a long list of fixes so every surface tells the same, true story (see Fixes).
+- Behaviour change: `agent-deck remove` on a running session now needs `--force` (see Changed).
+
+### New features
+
+- Antigravity CLI is a built-in tool.
+- Per-session instruction files are added to the session's identity block (`--instructions-file`).
+- An owner to-do list: CLI `agent-deck todo`, web API, TUI panel (alt+o).
+- `agent-deck open` reaches the phone.
+- Recall timeline: filter rows by kind; follow frames stream over SSE in the web UI; a remote session's timeline is served at `/api/remotes/{name}/sessions/{id}/timeline`; Pi sessions are read directly; Pi messages carry source session ids.
+- Web: tables, nested lists and fenced code render in Markdown; xterm loads on demand (lighter first page).
+
+### Changed
+
+- `agent-deck remove` and `session remove` share one running-session guard: `--force` is now needed to remove a running session, and a worktree another session still uses is not removed.
+
 ### Fixes
 
+- Status: never-started sessions read idle everywhere; remove, restart and switch use live status; every status summary counts the same buckets.
+- Groups: one delete rule on every surface; CLI-started sessions keep their group slot; cross-group child rows are drawn correctly; profile and group delete check first and say what they will do.
+- CLI: one naming rule on every command; inbox, conductor status, hooks status and send errors tell the truth; unknown remote names are an error.
+- Remote: Stop/Esc reach remote sessions; X removes a stopped remote session; remote titles use the list width; remote parents fold their children.
+- TUI: documented keys match behaviour; keys that do not apply say why; success messages are no longer shown as warnings; undo after delete restores the session's state; rename refuses a duplicate title at the same path.
+- Web: acts only on the selected session; the Create session dialog no longer closes on click; filter chips fit at laptop and tablet widths; says when a token is needed; terminal targets are resolved from storage; system stats probes are bounded and shared.
+- Sessions: never open the Claude first-run screen on an unauthenticated default config dir; send does not wait the readiness floor on an idle shell; launch `--no-wait` skips the composer check for tools without one.
+- OpenCode 2: fresh sessions are forkable; clipboard images attach over SSH.
+- Conductor: the bridge skips pip when its dependencies import; never posts an empty reply; answers top-level Slack DMs top-level.
+- Other: clipboard forces a UTF-8 locale for pbcopy; feedback dry run shows the gh-only route; ownership pane probe failures are told apart.
+- Dependencies: Go minor and patch group bump.
 - A standing-order or heartbeat wake that Claude Code hands over as a paste (inside a `<pasted_content>` wrapper) still counts as an unattended turn: its permission prompts are denied with a `NEED:`, and an order wake still cannot change orders. Inbox and heartbeat wakes in a paste are also tiered as wakes, not as human prompts.
 - Worktree session creation no longer walks the whole checkout when `.worktreeinclude` names a path: the walk starts at that path and skips `.git`, nested worktrees and symlinks. On a checkout with 7.9M ignored entries, creation drops from 82 seconds to 13 seconds. Every pattern with a slash in the middle is now anchored at the repository root, as gitignore does it, so a nested match such as `pkg/.claude/rules/personal/` is no longer copied (#3167).
 
