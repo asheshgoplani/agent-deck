@@ -109,7 +109,16 @@ export function TerminalPanel() {
     loadXterm().then(({ Terminal, FitAddon, WebglAddon }) => {
       if (cancelled) return
       teardown = start(Terminal, FitAddon, WebglAddon)
-    }).catch(() => {})
+    }, () => {
+      // The chunk fetch failed (offline, server restart, new deploy). loadXterm
+      // already dropped its cached rejection, so Retry really re-fetches.
+      if (cancelled) return
+      setFatalError({
+        loadFailed: true,
+        message: 'The terminal code could not be downloaded.',
+        hint: 'Check your connection, then retry.',
+      })
+    })
     return () => {
       cancelled = true
       if (teardown) teardown()
@@ -509,11 +518,13 @@ export function TerminalPanel() {
           <div style="display: flex; align-items: flex-start; gap: 12px;">
             <span style="color: var(--tn-red); font-size: 18px; line-height: 1;">⚠</span>
             <div style="flex: 1; min-width: 0;">
-              <div style="font-weight: 600; color: var(--text-hi);">Terminal disconnected</div>
+              <div style="font-weight: 600; color: var(--text-hi);">${fatalError.loadFailed ? 'Terminal failed to load' : 'Terminal disconnected'}</div>
               <div style="font-size: 12.5px; color: var(--text); margin-top: 4px;">${fatalError.message}</div>
               ${fatalError.hint && html`<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">${fatalError.hint}</div>`}
               <div style="display: flex; gap: 8px; margin-top: 10px;">
-                <button type="button" class="btn primary" onClick=${handleFatalRestart}>Restart session</button>
+                ${fatalError.loadFailed
+                  ? html`<button type="button" class="btn primary" onClick=${() => setReconnectKey((k) => k + 1)}>Retry</button>`
+                  : html`<button type="button" class="btn primary" onClick=${handleFatalRestart}>Restart session</button>`}
                 <button type="button" class="btn ghost" onClick=${() => setFatalError(null)}>Dismiss</button>
               </div>
             </div>
