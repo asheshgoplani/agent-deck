@@ -1356,6 +1356,14 @@ func antigravityBareLauncher(command string) bool {
 	if !ok {
 		return false
 	}
+	// Commands does not split a standalone &, so `agy &` would leave the
+	// appended prompt as a second command. Reject any unquoted-looking & token
+	// rather than risk that shape.
+	for _, word := range words {
+		if strings.Contains(word, "&") {
+			return false
+		}
+	}
 	words = shellwords.CommandWords(words)
 	return len(words) > 0 && path.Base(words[0]) == "agy"
 }

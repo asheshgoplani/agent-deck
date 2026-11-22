@@ -140,6 +140,7 @@ func TestAntigravityCommand(t *testing.T) {
 		{"my-agy-wrapper", "", "my-agy-wrapper", false},
 		{"agy # my note", "", "agy # my note", false},
 		{"agy 2>&1 | tee ~/agy.log", "", "agy 2>&1 | tee ~/agy.log", false},
+		{"agy &", "", "agy &", false},
 		{"sh -c 'agy'", "", "sh -c 'agy'", false},
 		{"FOO=1 agy", "", "FOO=1 agy --prompt-interactive " + shellescape.Quote(prompt), true},
 	} {

@@ -49,7 +49,9 @@ func TestLaunchAntigravityNoWaitEmbedsPrompt(t *testing.T) {
 		// of the pane; otherwise the stub agy/PATH can be lost.
 		"TMUX_TMPDIR=" + t.TempDir(),
 	}
-	t.Cleanup(func() { _, _, _ = runAgentDeck(t, home, "session", "stop", "agy-no-wait") })
+	t.Cleanup(func() {
+		_, _, _ = runAgentDeckEnv(t, home, "", env, "session", "stop", "agy-no-wait")
+	})
 
 	started := time.Now()
 	stdout, stderr, code := runAgentDeckEnv(t, home, "", env,
