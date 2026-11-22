@@ -517,6 +517,12 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 			if len(rows) > n {
 				rows = rows[len(rows)-n:]
 			}
+			if start > 0 && opts.Filtered() {
+				// Open calls older than the window would otherwise be missed.
+				if drop, err = droppedBefore(ctx, src.Harness, f, end, opts); err != nil {
+					return tl, err
+				}
+			}
 			rows, err = materializeRowPage(ctx, src.Harness, f, start, end, rows)
 			if err != nil {
 				return tl, err
@@ -539,6 +545,27 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 			return tl, nil
 		}
 	}
+}
+
+// droppedBefore replays the whole file through end and returns the open rows
+// the filter drops, so calls outside the parsed window are still tracked.
+func droppedBefore(ctx context.Context, harness string, f io.ReaderAt, end int64, opts RowsOptions) ([]string, error) {
+	p := newRowParser(harness, rowParserState{})
+	set := newRowSet()
+	_, err := scanLines(ctx, f, 0, end, func(line []byte, _ int64) error {
+		for _, frame := range p.line(line) {
+			if frame.Row != nil {
+				id := filterIdentity(*frame.Row, opts)
+				frame.Row = &id
+			}
+			set.apply(frame)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return droppedOpen(nil, set.list(), opts), nil
 }
 
 // materializeRowPage retains bodies only for the selected page while replaying
