@@ -154,6 +154,13 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Opened pages: GET /api/sessions/{id}/open-pages[/{pageId}], the HTTP
+	// form of `agent-deck open --list/--show` (docs/macapp-open.md).
+	if action == "open-pages" || strings.HasPrefix(action, "open-pages/") {
+		s.handleSessionOpenPages(w, r, sessionID, strings.TrimPrefix(strings.TrimPrefix(action, "open-pages"), "/"))
+		return
+	}
+
 	// Timeline sub-route: GET /api/sessions/{id}/timeline, the HTTP form
 	// of `agent-deck recall timeline <id> --json`.
 	if action == "timeline" {

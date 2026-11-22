@@ -65,3 +65,8 @@ func IsMacappRemoteReplyKind(kind string) bool {
 // NewID returns a random hex id (the same generator as frame event ids),
 // for request correlation such as macapp.open request_id.
 func NewID() string { return genEventID() }
+
+// KindPageOpened is committed by `agent-deck open` when a page joins the
+// session's page list (the phone's Pages panel): {page_id, kind, title, name,
+// path, url, opened_at}. See docs/macapp-open.md.
+const KindPageOpened = "page.opened"

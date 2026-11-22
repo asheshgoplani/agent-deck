@@ -25,7 +25,7 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
 		return
 	}
-	f, err := filelinks.Open(s.cfg.FileLinkRoots, r.URL.Query().Get("path"))
+	f, err := filelinks.OpenReadable(s.cfg.FileLinkRoots, r.URL.Query().Get("path"))
 	if err != nil {
 		status, code := fileLinkErrorStatus(err)
 		writeAPIError(w, status, code, err.Error())
@@ -60,7 +60,7 @@ func fileLinkErrorStatus(err error) (int, string) {
 		return http.StatusBadRequest, ErrCodeBadRequest
 	case errors.Is(err, filelinks.ErrTooLarge):
 		return http.StatusRequestEntityTooLarge, ErrCodeFileLinkRefused
-	case errors.Is(err, filelinks.ErrOutside), errors.Is(err, filelinks.ErrNotRegular):
+	case errors.Is(err, filelinks.ErrOutside), errors.Is(err, filelinks.ErrNotRegular), errors.Is(err, filelinks.ErrPrivate):
 		return http.StatusForbidden, ErrCodeFileLinkRefused
 	}
 	return http.StatusInternalServerError, ErrCodeInternalError

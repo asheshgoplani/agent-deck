@@ -29,6 +29,7 @@ trailing spaces).
 | `internal/session/transition_daemon.go` (only with `[macapp] transcript_events = true`) | a live session's native transcript grew | `session.transcript` |
 | `agent-deck open` | Browser request | `macapp.open` |
 | `agent-deck events publish --kind macapp.open.ack` | Built-in Browser acknowledgment | `macapp.open.ack` |
+| `agent-deck open` (file under the session's roots, or a URL) | a page joined the session's page list for the phone: `{page_id, kind, title, name, path, url, opened_at}` (docs/macapp-open.md "On the phone") | `page.opened` |
 | `agent-deck switch` (docs/switch.md) | show a session in the app: `{request_id, requested_at, host}` | `macapp.switch` |
 | `agent-deck events publish --kind macapp.switch.ack` | the app's switch reply: `{request_id, focused, error?}` (no plugin opt-in) | `macapp.switch.ack` |
 | `agent-deck events publish --kind macapp.browser.response\|macapp.app.focus` | the Mac app's browser reply and focus claim (no plugin opt-in) | same kind |
