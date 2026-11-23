@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,7 +102,7 @@ half() { # the dialog as a slow repaint leaves it: title and first row only
   clear
   printf '%s\n Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one\n you trust? (Like your own code, a well-known open source project)\n\n ❯ No, exit\n' "────────────────────────────────────────" "$shown"
 }
-readkey() { IFS= read -rsn1 k; if [ "$k" = $'\e' ]; then IFS= read -rsn2 rest; k="ESC$rest"; fi; echo "key:[$k]" >> "$log"; }
+readkey() { IFS= read -rsn1 k || return 1; if [ "$k" = $'\e' ]; then IFS= read -rsn2 rest; k="ESC$rest"; fi; echo "key:[$k]" >> "$log"; }
 if [ "$mode" = trust ] || [ "$mode" = trust-slow ]; then
   cur=0
   if [ "$mode" = trust-slow ]; then half; sleep 1; fi
@@ -152,8 +154,60 @@ func startSettleFakePane(t *testing.T, name, mode, shownPath string) *settleFake
 	if err := p.sess.Start(p.command); err != nil {
 		t.Fatalf("start fake claude: %v", err)
 	}
-	t.Cleanup(func() { _ = p.sess.Kill() })
+	t.Cleanup(func() {
+		_ = p.sess.Kill()
+		waitNoProcessUnder(t, dir)
+	})
 	return p
+}
+
+// waitNoProcessUnder blocks until no process has dir in its command line.
+// Kill returns before the pane's processes are reaped, and one still writing
+// into a t.TempDir() makes its cleanup fail with "directory not empty".
+func waitNoProcessUnder(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		found := false
+		cmdlines, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+		for _, f := range cmdlines {
+			if data, err := os.ReadFile(f); err == nil && strings.Contains(string(data), dir) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("processes still running from %s after the pane was killed", dir)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The fake claude must stop when its input closes. Its key-reader used to
+// return the status of its trailing echo, not of read, so a hung-up pty made
+// it spin forever appending "key:[]" to keys.log inside the test's TempDir,
+// racing the TempDir cleanup ("directory not empty").
+func TestSettleFakeClaudeScript_ExitsWhenInputCloses(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-claude")
+	if err := os.WriteFile(script, []byte(settleFakeClaudeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "keys.log")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", script, "ready", dir, log, filepath.Join(dir, "launches"))
+	cmd.Stdin = strings.NewReader("")
+	cmd.Stdout = io.Discard
+	_ = cmd.Run()
+	if ctx.Err() != nil {
+		logged, _ := os.ReadFile(log)
+		t.Fatalf("fake claude still running 5s after its input closed (keys.log %d bytes)", len(logged))
+	}
 }
 
 func (p *settleFakePane) keys() string {
