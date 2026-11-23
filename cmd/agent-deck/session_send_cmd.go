@@ -162,6 +162,7 @@ func handleSessionSend(profile string, args []string) {
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
+	budget := newSendWaitBudget(*timeout, *wait || *stream, time.Now)
 	remaining := fs.Args()
 
 	out := NewCLIOutput(*jsonOutput, *quiet)
@@ -443,7 +444,7 @@ func handleSessionSend(profile string, args []string) {
 					return err
 				}
 			}
-			readyBudget := *timeout
+			readyBudget := budget.readyTimeout()
 			if readyBudget <= 0 {
 				readyBudget = send.DefaultAgentReadyTimeout
 			}
@@ -470,7 +471,7 @@ func handleSessionSend(profile string, args []string) {
 
 	if needsReady {
 		if !readyWaited {
-			if err := waitAgentReady(*timeout); err != nil {
+			if err := waitAgentReady(budget.readyTimeout()); err != nil {
 				failReady(err)
 			}
 		}
@@ -827,7 +828,7 @@ func handleSessionSend(profile string, args []string) {
 	// One --timeout budget for everything after delivery: establishing turn
 	// identity, observing completion, and reading the reply. Each phase gets
 	// what is left, never a fresh copy (PR #2043 round 2).
-	waitDeadline := time.Now().Add(*timeout)
+	waitDeadline := budget.completionDeadline()
 
 	if skippedOutcome != "" {
 		// Refuse attribution before waiting for any transcript path or turn.
