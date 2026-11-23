@@ -112,6 +112,13 @@ func runRemoteReadIO(ctx context.Context, runner remoteReadRunner, name string, 
 		return 0, nil
 	}
 	if err != nil {
+		// The remote ran and failed: its JSON error (or the unsupported
+		// answer) is already on stdout and its text on stderr, so pass its
+		// exit code through instead of the local "exit status N" wrapper.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+			return exitErr.ExitCode(), nil
+		}
 		return 1, err
 	}
 	return 0, nil
