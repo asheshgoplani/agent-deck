@@ -63,6 +63,19 @@ jobs:
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
       (github.event.action == 'completed' || github.event.workflow_run.conclusion == 'action_required')
+    # One job per head branch at a time. On merge days every Go tests /
+    # golangci-lint / CodeQL run emits requested + completed events, which
+    # queued dozens of runners (42 cancelled by hand on 22 Nov). A newer event
+    # supersedes an older one for the same branch: each run re-lists every
+    # gating run on the PR's live head and ignores events for a stale sha, so
+    # the newest run always reaches the same decision the cancelled ones
+    # would have. A held (action_required) run therefore still labels and
+    # notifies, because the surviving run sees it in that listing. The repo
+    # is part of the key so same-named branches from different forks never
+    # cancel each other.
+    concurrency:
+      group: ci-stalled-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

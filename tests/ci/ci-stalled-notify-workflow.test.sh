@@ -90,6 +90,27 @@ for job in selftest stalled; do
   fi
 done
 
+# (5) Merge-day surge control: the stalled job must serialize per head branch
+# and cancel superseded runs, so a burst of workflow_run events queues at most
+# one running and one pending job per branch instead of one runner per event.
+# Safe because every run re-reads all gating runs for the PR's live head and
+# ignores events for a stale sha, so the newest event carries the full state.
+CONC=$(awk '
+  /^    concurrency:/ {f=1; print; next}
+  f && /^      / {print; next}
+  f {exit}
+' <<<"$STALLED")
+if grep -Fq 'github.event.workflow_run.head_branch' <<<"$CONC"; then
+  pass "stalled job concurrency group is keyed per head_branch"
+else
+  fail "stalled job must set concurrency.group keyed on github.event.workflow_run.head_branch"
+fi
+if grep -Eq 'cancel-in-progress:[[:space:]]*true' <<<"$CONC"; then
+  pass "stalled job cancels superseded runs"
+else
+  fail "stalled job concurrency must set cancel-in-progress: true"
+fi
+
 if [[ "$ERRORS" -ne 0 ]]; then
   exit 1
 fi
