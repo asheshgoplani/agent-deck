@@ -73,7 +73,7 @@ test('one gate completing keeps the label while another gate on the same head st
     gatingWorkflows: GATES,
   })
   assert.equal(r.action, 'none')
-  assert.match(r.reason, /Go tests/)
+  assert.match(r.reason, /already labeled/)
 })
 
 test('label is removed once every gate on the current head has left action_required', () => {
@@ -121,4 +121,25 @@ test('completion on an unlabeled PR with nothing waiting is a no-op', () => {
 test('missing shas never mutate labels', () => {
   assert.equal(reconcile({ runHeadSha: '', runConclusion: 'action_required', prHeadSha: A, labeled: false, currentHeadRuns: [], gatingWorkflows: GATES }).action, 'none')
   assert.equal(reconcile({ runHeadSha: A, runConclusion: 'success', prHeadSha: undefined, labeled: true, currentHeadRuns: [], gatingWorkflows: GATES }).action, 'none')
+})
+
+test('unlabeled PR with a held gate is labeled even when the triggering run is a success (F2)', () => {
+  const r = reconcile({
+    runHeadSha: A, runConclusion: 'success', prHeadSha: A, labeled: false,
+    currentHeadRuns: [
+      { name: GATES[0], head_sha: A, conclusion: 'success' },
+      { name: GATES[1], head_sha: A, conclusion: 'action_required' },
+    ],
+    gatingWorkflows: GATES,
+  })
+  assert.equal(r.action, 'add')
+})
+
+test('held gate on an already labeled PR stays a no-op when triggered by a success', () => {
+  const r = reconcile({
+    runHeadSha: A, runConclusion: 'success', prHeadSha: A, labeled: true,
+    currentHeadRuns: [{ name: GATES[1], head_sha: A, conclusion: 'action_required' }],
+    gatingWorkflows: GATES,
+  })
+  assert.equal(r.action, 'none')
 })

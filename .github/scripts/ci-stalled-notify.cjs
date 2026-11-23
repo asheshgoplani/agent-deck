@@ -38,17 +38,16 @@ function reconcile({ runHeadSha, runConclusion, prHeadSha, labeled, currentHeadR
     return { action: 'none', reason: `stale event: run head ${short(runHeadSha)} != PR head ${short(prHeadSha)}` }
   }
 
-  if (runConclusion === STALLED) {
-    if (labeled) return { action: 'none', reason: 'already labeled' }
-    return { action: 'add', reason: 'a gating run on the current head is action_required' }
-  }
-
+  // State-based: the decision depends on the live head's gating runs, not on
+  // which event happened to trigger this job. The workflow queues events per
+  // head sha and a pending job can be replaced by a newer one, so the job that
+  // survives must reach the same decision the replaced one would have.
   const gates = new Set(gatingWorkflows || [])
   const stillWaiting = (currentHeadRuns || []).filter(r =>
     r && r.head_sha === prHeadSha && gates.has(r.name) && r.conclusion === STALLED)
-  if (stillWaiting.length > 0) {
-    const names = [...new Set(stillWaiting.map(r => r.name))].join(', ')
-    return { action: 'none', reason: `other gating run(s) still action_required on this head: ${names}` }
+  if (runConclusion === STALLED || stillWaiting.length > 0) {
+    if (labeled) return { action: 'none', reason: 'already labeled' }
+    return { action: 'add', reason: 'a gating run on the current head is action_required' }
   }
   if (labeled) return { action: 'remove', reason: 'no gating run on the current head is action_required' }
   return { action: 'none', reason: 'not labeled and nothing waiting' }

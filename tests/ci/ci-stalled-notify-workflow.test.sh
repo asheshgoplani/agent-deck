@@ -90,25 +90,26 @@ for job in selftest stalled; do
   fi
 done
 
-# (5) Merge-day surge control: the stalled job must serialize per head branch
-# and cancel superseded runs, so a burst of workflow_run events queues at most
-# one running and one pending job per branch instead of one runner per event.
-# Safe because every run re-reads all gating runs for the PR's live head and
-# ignores events for a stale sha, so the newest event carries the full state.
+# (5) Merge-day surge control: the stalled job must serialize per head sha
+# without cancelling in-progress jobs, so a burst of workflow_run events queues
+# at most one running and one pending job per commit. Keying on the sha keeps
+# an old commit's events from displacing the alert for the new commit, and
+# cancel-in-progress stays false so label and ntfy are never split.
 CONC=$(awk '
   /^    concurrency:/ {f=1; print; next}
   f && /^      / {print; next}
   f {exit}
 ' <<<"$STALLED")
-if grep -Fq 'github.event.workflow_run.head_branch' <<<"$CONC"; then
-  pass "stalled job concurrency group is keyed per head_branch"
+WANT='group: ci-stalled-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_sha }}'
+if grep -Fqx "      $WANT" <<<"$CONC"; then
+  pass "stalled job concurrency group is repo + head_sha"
 else
-  fail "stalled job must set concurrency.group keyed on github.event.workflow_run.head_branch"
+  fail "stalled job concurrency.group must be exactly: $WANT"
 fi
-if grep -Eq 'cancel-in-progress:[[:space:]]*true' <<<"$CONC"; then
-  pass "stalled job cancels superseded runs"
+if grep -Eq 'cancel-in-progress:[[:space:]]*false' <<<"$CONC"; then
+  pass "stalled job never cancels in-progress runs"
 else
-  fail "stalled job concurrency must set cancel-in-progress: true"
+  fail "stalled job concurrency must set cancel-in-progress: false"
 fi
 
 if [[ "$ERRORS" -ne 0 ]]; then

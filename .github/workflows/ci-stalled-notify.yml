@@ -63,19 +63,21 @@ jobs:
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
       (github.event.action == 'completed' || github.event.workflow_run.conclusion == 'action_required')
-    # One job per head branch at a time. On merge days every Go tests /
-    # golangci-lint / CodeQL run emits requested + completed events, which
-    # queued dozens of runners (42 cancelled by hand on 22 Nov). A newer event
-    # supersedes an older one for the same branch: each run re-lists every
-    # gating run on the PR's live head and ignores events for a stale sha, so
-    # the newest run always reaches the same decision the cancelled ones
-    # would have. A held (action_required) run therefore still labels and
-    # notifies, because the surviving run sees it in that listing. The repo
-    # is part of the key so same-named branches from different forks never
-    # cancel each other.
+    # Serialize per head commit, never cancel a running job. On merge days
+    # every Go tests / golangci-lint / CodeQL run emits requested + completed
+    # events, which queued dozens of runners (42 cancelled by hand on 22 Nov).
+    # Per group GitHub keeps at most one running and one pending job; a newer
+    # arrival replaces the pending one. That is safe because (a) the group is
+    # keyed on head_sha, so an event for an old commit can never displace the
+    # job that alerts for the new commit, (b) reconcile() is state-based: it
+    # labels whenever any gating run on the PR's live head is action_required,
+    # whatever event triggered the job, so the surviving pending job reaches
+    # the decision the replaced one would have, and (c) cancel-in-progress is
+    # false, so a job is never killed between addLabels and the ntfy step. The
+    # repo is part of the key so forks sharing a sha never share a queue.
     concurrency:
-      group: ci-stalled-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
-      cancel-in-progress: true
+      group: ci-stalled-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
