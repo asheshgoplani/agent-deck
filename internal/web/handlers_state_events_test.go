@@ -22,14 +22,14 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/voicestream"
 )
 
-type sseEvent struct {
+type stateSSEEvent struct {
 	id, event string
 	data      json.RawMessage
 	at        time.Time
 }
 
 // sseClient follows GET /events/state and forwards every event.
-func sseClient(t *testing.T, ctx context.Context, url, lastID string, out chan<- sseEvent) {
+func sseClient(t *testing.T, ctx context.Context, url, lastID string, out chan<- stateSSEEvent) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -49,7 +49,7 @@ func sseClient(t *testing.T, ctx context.Context, url, lastID string, out chan<-
 		defer resp.Body.Close()
 		sc := bufio.NewScanner(resp.Body)
 		sc.Buffer(make([]byte, 64<<10), 1<<20)
-		var ev sseEvent
+		var ev stateSSEEvent
 		for sc.Scan() {
 			line := sc.Text()
 			switch {
@@ -68,7 +68,7 @@ func sseClient(t *testing.T, ctx context.Context, url, lastID string, out chan<-
 						return
 					}
 				}
-				ev = sseEvent{}
+				ev = stateSSEEvent{}
 			}
 		}
 	}()
@@ -158,14 +158,14 @@ func TestStateEvents_RelayToSSE_ScriptedRun(t *testing.T) {
 	srv.startVoiceProducer()
 	t.Cleanup(srv.stopVoiceProducer)
 
-	evs := make(chan sseEvent, 1024)
+	evs := make(chan stateSSEEvent, 1024)
 	connCtx, closeConn := context.WithCancel(ctx)
 	defer closeConn()
 	sseClient(t, connCtx, ts.URL+"/events/state", "", evs)
 
-	var seen []sseEvent // every voice/status event the client got, in order
+	var seen []stateSSEEvent // every voice/status event the client got, in order
 	lastID := ""
-	await := func(what string, match func(sseEvent) bool) sseEvent {
+	await := func(what string, match func(stateSSEEvent) bool) stateSSEEvent {
 		t.Helper()
 		start := time.Now()
 		deadline := time.After(time.Second)
@@ -187,8 +187,8 @@ func TestStateEvents_RelayToSSE_ScriptedRun(t *testing.T) {
 			}
 		}
 	}
-	isVoice := func(target, phase string) func(sseEvent) bool {
-		return func(ev sseEvent) bool {
+	isVoice := func(target, phase string) func(stateSSEEvent) bool {
+		return func(ev stateSSEEvent) bool {
 			if ev.event != voicestream.KindState {
 				return false
 			}
@@ -262,14 +262,14 @@ func TestStateEvents_RelayToSSE_ScriptedRun(t *testing.T) {
 		if i%2 == 1 && statuses < 5 {
 			id := targets[target]["sessionId"].(string)
 			publishStatus(id, "waiting")
-			await("status of "+target, func(ev sseEvent) bool {
+			await("status of "+target, func(ev stateSSEEvent) bool {
 				return ev.event == "session.status" && strings.Contains(string(ev.data), id)
 			})
 		}
 	}
 	for statuses < 6 {
 		publishStatus("aaaa1111-1794950000", "running")
-		await("status", func(ev sseEvent) bool {
+		await("status", func(ev stateSSEEvent) bool {
 			return ev.event == "session.status" && strings.Contains(string(ev.data), `"to":"running"`)
 		})
 	}
@@ -277,7 +277,7 @@ func TestStateEvents_RelayToSSE_ScriptedRun(t *testing.T) {
 	// daemon kill -> "off" (reason expired) everywhere within 1 s
 	_ = daemon.Process.Kill()
 	<-daemonDone
-	await("off after the daemon was killed", func(ev sseEvent) bool {
+	await("off after the daemon was killed", func(ev stateSSEEvent) bool {
 		var f voiceFrame
 		return ev.event == voicestream.KindState && json.Unmarshal(ev.data, &f) == nil && !f.Data.On && f.Data.Phase == "off" && f.Data.Reason == voicestream.ReasonExpired
 	})
@@ -399,7 +399,7 @@ func TestStateEvents_CursorAheadResets(t *testing.T) {
 	defer srv.stopVoiceProducer()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	evs := make(chan sseEvent, 16)
+	evs := make(chan stateSSEEvent, 16)
 	sseClient(t, ctx, ts.URL+"/events/state", "999999999", evs)
 	var names []string
 	for len(names) < 2 {
@@ -499,7 +499,7 @@ func TestStateEvents_LastEventIDBeatsAStaleAfter(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	evs := make(chan sseEvent, 16)
+	evs := make(chan stateSSEEvent, 16)
 	// The URL still says after=1; the client has seen everything up to last-1.
 	sseClient(t, ctx, ts.URL+"/events/state?after=1", fmt.Sprint(last-1), evs)
 	for {
