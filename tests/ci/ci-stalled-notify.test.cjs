@@ -43,23 +43,40 @@ test('stalled run on an already labeled PR does nothing', () => {
   assert.match(r.reason, /already labeled/)
 })
 
-test('delayed completion for an old head never clears a stall on the new head', () => {
+test('stale completion for an old head never clears a stall on the new head', () => {
   // Head A finished late; the PR has moved to head B, which is stalled.
   const r = reconcile({
     runHeadSha: A, runConclusion: 'success', prHeadSha: B, labeled: true,
     currentHeadRuns: [run('Go tests', B, 'action_required')], gatingWorkflows: GATES,
   })
   assert.equal(r.action, 'none')
-  assert.match(r.reason, /stale event/)
+  assert.match(r.reason, /already labeled/)
 })
 
-test('a stale action_required event for an old head does not add the label either', () => {
+test('stale event reconciles the live head: held gate on the new head is labeled', () => {
+  // A's success event replaced B's pending job; B is held and unlabeled.
+  const r = reconcile({
+    runHeadSha: A, runConclusion: 'success', prHeadSha: B, labeled: false,
+    currentHeadRuns: [run('Go tests', B, 'action_required')], gatingWorkflows: GATES,
+  })
+  assert.equal(r.action, 'add')
+})
+
+test('stale event reconciles the live head: cleared new head loses the label', () => {
+  const r = reconcile({
+    runHeadSha: A, runConclusion: 'success', prHeadSha: B, labeled: true,
+    currentHeadRuns: [run('Go tests', B, 'success')], gatingWorkflows: GATES,
+  })
+  assert.equal(r.action, 'remove')
+})
+
+test('a stale action_required conclusion is not trusted; the live head decides', () => {
   const r = reconcile({
     runHeadSha: A, runConclusion: 'action_required', prHeadSha: B, labeled: false,
     currentHeadRuns: [run('Go tests', B, 'success')], gatingWorkflows: GATES,
   })
   assert.equal(r.action, 'none')
-  assert.match(r.reason, /stale event/)
+  assert.match(r.reason, /nothing waiting/)
 })
 
 test('one gate completing keeps the label while another gate on the same head still waits', () => {

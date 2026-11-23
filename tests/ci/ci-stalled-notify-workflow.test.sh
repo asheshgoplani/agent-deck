@@ -100,9 +100,9 @@ CONC=$(awk '
   f && /^      / {print; next}
   f {exit}
 ' <<<"$STALLED")
-WANT='group: ci-stalled-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_sha }}'
+WANT='group: ci-stalled-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}'
 if grep -Fqx "      $WANT" <<<"$CONC"; then
-  pass "stalled job concurrency group is repo + head_sha"
+  pass "stalled job concurrency group is repo + head_branch"
 else
   fail "stalled job concurrency.group must be exactly: $WANT"
 fi

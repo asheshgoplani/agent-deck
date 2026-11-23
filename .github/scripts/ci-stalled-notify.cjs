@@ -5,9 +5,9 @@
 //
 // Two reconciliation rules the review asked for:
 //   1. A workflow_run event carries the head sha it ran for. If the PR has
-//      moved on to a newer head, the event is stale and must not touch the
-//      label, otherwise a delayed completion for head A clears a stall that
-//      is real on head B.
+//      moved on to a newer head, the event is stale: its own conclusion is
+//      ignored and the decision comes from the live head's runs, so a delayed
+//      completion for head A can neither clear nor invent a stall on head B.
 //   2. Completion of one gating workflow must not clear the label while
 //      another gating workflow on the same head is still action_required.
 //      The caller passes every run for the current head; the label is
@@ -34,18 +34,18 @@ function reconcile({ runHeadSha, runConclusion, prHeadSha, labeled, currentHeadR
   if (!runHeadSha || !prHeadSha) {
     return { action: 'none', reason: 'missing head sha' }
   }
-  if (runHeadSha !== prHeadSha) {
-    return { action: 'none', reason: `stale event: run head ${short(runHeadSha)} != PR head ${short(prHeadSha)}` }
-  }
 
   // State-based: the decision depends on the live head's gating runs, not on
   // which event happened to trigger this job. The workflow queues events per
-  // head sha and a pending job can be replaced by a newer one, so the job that
-  // survives must reach the same decision the replaced one would have.
+  // PR and a pending job can be replaced by a newer one, possibly an event for
+  // an older head, so the job that survives must reach the decision for the
+  // PR's live head. The trigger's own conclusion is trusted only when it ran
+  // for that live head; a stale event is decided from the live listing alone.
+  const fresh = runHeadSha === prHeadSha
   const gates = new Set(gatingWorkflows || [])
   const stillWaiting = (currentHeadRuns || []).filter(r =>
     r && r.head_sha === prHeadSha && gates.has(r.name) && r.conclusion === STALLED)
-  if (runConclusion === STALLED || stillWaiting.length > 0) {
+  if ((fresh && runConclusion === STALLED) || stillWaiting.length > 0) {
     if (labeled) return { action: 'none', reason: 'already labeled' }
     return { action: 'add', reason: 'a gating run on the current head is action_required' }
   }
