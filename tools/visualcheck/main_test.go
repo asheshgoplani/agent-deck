@@ -164,6 +164,7 @@ func runVisualCheckTest(t *testing.T) {
 	}
 	testutil.RequireTmux(t)
 	testutil.SkipShort(t, "builds and drives the real agent-deck binary")
+	pinVisualCheckEnv(t)
 	bin := os.Getenv("VISUALCHECK_BINARY")
 	_, thisFile, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
