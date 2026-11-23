@@ -505,12 +505,6 @@ func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q name
 		Targets: refs, Left: len(hits) - len(asked)}, prompt)
 }
 
-// isConductor: agent-deck titles a conductor "conductor-<name>".
-func isConductor(s Session) bool {
-	t := strings.ToLower(cleanTitle(s.Title))
-	return t == "conductor" || strings.HasPrefix(t, "conductor-")
-}
-
 // namesConductor: the words say "conductor(s)" or the whole title.
 func namesConductor(q nameQuery, s Session) bool {
 	for _, w := range q.words {
