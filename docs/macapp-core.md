@@ -105,7 +105,10 @@ agent-deck session queue cancel 01K5… --json
 {"id":"01K5…","outcome":"cancelled","state":"cancelled", …}
 ```
 
-`session show <id> --json` carries the same `queue` array. Entries are the
+`session show <id> --json` carries the same `queue` array, capped at the newest
+100 entries (still oldest first), with `queue_count` (the total) and
+`queue_truncated`. Pass `--queue-full` for every entry; `session queue list`
+is never capped. Entries are the
 durable queued sends of the session, oldest first, including finished ones
 until they are pruned; `text_preview` is the message with whitespace
 collapsed, at most 120 characters.

@@ -42,11 +42,18 @@ func sessionShowStatusFields(inst *session.Instance) map[string]interface{} {
 }
 
 // handleSessionShow shows session details
+// showQueueCap bounds the "queue" array of `session show --json`. A conductor
+// can accumulate thousands of finished sends (one had 14,929, 4.2 MB). The
+// newest entries are kept, still oldest first; queue_count has the total and
+// --queue-full or `session queue list` returns everything.
+const showQueueCap = 100
+
 func handleSessionShow(profile string, args []string) {
 	fs := flag.NewFlagSet("session show", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	queueFull := fs.Bool("queue-full", false, fmt.Sprintf("With --json, list every queued send instead of the newest %d (see 'session queue list')", showQueueCap))
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session show [id|title] [options]")
@@ -169,7 +176,13 @@ func handleSessionShow(profile string, args []string) {
 			out.Error(fmt.Sprintf("cannot list queued sends: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
+		total := len(queue)
+		if !*queueFull && total > showQueueCap {
+			queue = queue[total-showQueueCap:]
+		}
 		jsonData["queue"] = queue
+		jsonData["queue_count"] = total
+		jsonData["queue_truncated"] = len(queue) < total
 	}
 	for k, v := range statusFields {
 		jsonData[k] = v

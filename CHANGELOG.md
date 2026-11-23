@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `session show --json` no longer inlines a whole large send queue (one conductor's was 14,929 entries, 4.2 MB). `queue` holds the newest 100, `queue_count` the total and `queue_truncated` whether it was cut; `--queue-full` returns everything, as `session queue list` always does.
+
 ## [1.16.40] - 2026-11-22
 
 ### Highlights
