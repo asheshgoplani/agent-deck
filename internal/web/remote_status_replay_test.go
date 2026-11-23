@@ -82,7 +82,7 @@ func TestStateEvents_HelloRemotesSessionDeletedWhileDisconnected(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // the replayed frame has been read
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	evs := make(chan sseEvent, 16)
+	evs := make(chan stateSSEEvent, 16)
 	sseClient(t, ctx, ts.URL+"/events/state", "", evs)
 	select {
 	case ev := <-evs:

@@ -247,7 +247,7 @@ func TestStateEvents_HelloCarriesRemoteLinks(t *testing.T) {
 	time.Sleep(500 * time.Millisecond) // the resync is published before this client connects
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	evs := make(chan sseEvent, 16)
+	evs := make(chan stateSSEEvent, 16)
 	sseClient(t, ctx, ts.URL+"/events/state", "", evs)
 	select {
 	case ev := <-evs:
@@ -280,7 +280,7 @@ func TestStateEvents_HelloRemotesFollowsForwardedStatus(t *testing.T) {
 	time.Sleep(800 * time.Millisecond) // the resync (running) and the forwarded change (waiting) are both published
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	evs := make(chan sseEvent, 16)
+	evs := make(chan stateSSEEvent, 16)
 	sseClient(t, ctx, ts.URL+"/events/state", "", evs)
 	select {
 	case ev := <-evs:
