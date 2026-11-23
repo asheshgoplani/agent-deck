@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -126,6 +127,42 @@ func TestRemoteCreationExplicitFalseAndLineBreakTransport(t *testing.T) {
 	}
 	if !remoteChannelArgsSafe([]string{"launch", "--startup-query", "one two"}) {
 		t.Fatal("single line query should use channel")
+	}
+}
+
+func TestRemoteCreationKimiPermissionMode(t *testing.T) {
+	args, err := remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: KimiPermissionNeverAsk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(args, " "), "--auto") {
+		t.Fatalf("never-ask lost --auto: %v", args)
+	}
+
+	args, err = remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: KimiPermissionAskWhenNeeded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(args, " "), "--yolo") {
+		t.Fatalf("ask-when-needed lost --yolo: %v", args)
+	}
+
+	args, err = remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: KimiPermissionAlwaysAsk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(args, "--yolo=false") || slices.Contains(args, "--auto") {
+		t.Fatalf("always-ask must override a permissive remote default with --yolo=false: %v", args)
+	}
+
+	args, err = remoteAddArgs(RemoteAddOptions{Tool: "kimi", KimiPermissionMode: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--auto", "--yolo"} {
+		if strings.Contains(strings.Join(args, " "), flag) {
+			t.Fatalf("empty mode should not add %s: %v", flag, args)
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ func TestShouldDebounceTmuxFlipForTool(t *testing.T) {
 		"codex":    true,
 		"gemini":   true,
 		"hermes":   true,
+		"kimi":     true,
 		"cursor":   true,
 		"pi":       false,
 		"shell":    false,

@@ -13,7 +13,7 @@ import (
 var canonicalBuiltins = []string{
 	"antigravity",
 	"claude", "opencode", "gemini", "codex", "pi", "omp",
-	"copilot", "crush", "muse", "cursor", "hermes", "deepseek", "aider", "shell",
+	"copilot", "crush", "muse", "cursor", "hermes", "deepseek", "aider", "shell", "kimi",
 }
 
 func TestRegistry_AllReturnsCanonicalBuiltins(t *testing.T) {

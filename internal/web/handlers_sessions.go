@@ -79,6 +79,12 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 			return
 		}
+		if req.Tool == "kimi" && req.KimiPermissionMode != "" {
+			if err := session.ValidateKimiPermissionMode(req.KimiPermissionMode); err != nil {
+				writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+				return
+			}
+		}
 		if req.CreateDir {
 			preview, err := inspectSessionDirectory(req.ProjectPath)
 			if err != nil {
@@ -105,7 +111,7 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 			// Keep the original input for the mutator's expansion. Re-expanding
 			// the resolved path would interpret literal dollars in env values.
 		}
-		sessionID, err := s.mutator.CreateSession(req.Title, req.Tool, req.ProjectPath, req.GroupPath, req.ModelID, req.ReasoningEffort)
+		sessionID, err := s.mutator.CreateSession(req.Title, req.Tool, req.ProjectPath, req.GroupPath, req.ModelID, req.ReasoningEffort, req.KimiPermissionMode)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
 			return

@@ -75,7 +75,7 @@ type UserConfig struct {
 	Health HealthSettings `toml:"health,omitempty"`
 
 	// DefaultTool is the pre-selected AI tool when creating new sessions
-	// Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
+	// Valid values: "claude", "gemini", "opencode", "codex", "pi", "kimi", or any custom tool name
 	// If empty or invalid, defaults to "shell" (no pre-selection)
 	DefaultTool string `toml:"default_tool,omitempty"`
 
@@ -217,6 +217,9 @@ type UserConfig struct {
 
 	// Hermes defines Hermes Agent CLI integration settings
 	Hermes HermesSettings `toml:"hermes,omitempty"`
+
+	// Kimi defines Kimi Code CLI integration settings
+	Kimi KimiSettings `toml:"kimi,omitempty"`
 
 	// DeepSeek defines DeepSeek Harness (`dsh`) integration settings
 	DeepSeek DeepSeekSettings `toml:"deepseek,omitempty"`
@@ -2949,8 +2952,9 @@ type OpenCodeSettings struct {
 // `launch -capabilities` and reasoning-effort validation.
 type ModelsSettings struct {
 	// Probe asks installed CLIs that can list their own models (today:
-	// `codex debug models` and `opencode models`) for their model and effort
-	// lists, cached per CLI binary, merged in front of the built-in catalog.
+	// `codex debug models`, `opencode models` and `kimi provider list --json`)
+	// for their model and effort lists, cached per CLI binary, merged in front
+	// of the built-in catalog.
 	// Set false to use only the built-in catalog.
 	// Default: true
 	Probe *bool `toml:"probe,omitempty"`
@@ -2961,6 +2965,7 @@ type ModelsSettings struct {
 	Codex    ModelListSettings `toml:"codex,omitempty"`
 	Gemini   ModelListSettings `toml:"gemini,omitempty"`
 	OpenCode ModelListSettings `toml:"opencode,omitempty"`
+	Kimi     ModelListSettings `toml:"kimi,omitempty"`
 }
 
 // ModelListSettings pins or extends one tool's model suggestions.
@@ -2973,7 +2978,7 @@ type ModelListSettings struct {
 }
 
 // ForTool returns the override table for a tool kind ("claude", "codex",
-// "gemini", "opencode"); other kinds have none.
+// "gemini", "opencode", "kimi"); other kinds have none.
 func (m ModelsSettings) ForTool(kind string) ModelListSettings {
 	switch kind {
 	case "claude":
@@ -2984,6 +2989,8 @@ func (m ModelsSettings) ForTool(kind string) ModelListSettings {
 		return m.Gemini
 	case "opencode":
 		return m.OpenCode
+	case "kimi":
+		return m.Kimi
 	}
 	return ModelListSettings{}
 }
@@ -3316,6 +3323,28 @@ type HermesSettings struct {
 	// WorkspaceDir is the base directory for Hermes shared workspace sessions.
 	// Default: "" (uses os.TempDir()/hermes-workspaces)
 	WorkspaceDir string `toml:"workspace_dir,omitempty"`
+}
+
+// KimiSettings defines Kimi Code CLI configuration.
+type KimiSettings struct {
+	// Command is the Kimi CLI command or invocation to use. Default: "kimi".
+	Command string `toml:"command,omitempty"`
+	// ConfigDir is exported as KIMI_CODE_HOME. Empty preserves the ambient environment.
+	ConfigDir string `toml:"config_dir,omitempty"`
+	// EnvFile is sourced before launching Kimi. Optional.
+	EnvFile string `toml:"env_file,omitempty"`
+	// DefaultModel is passed with --model for fresh sessions only. Optional.
+	DefaultModel string `toml:"default_model,omitempty"`
+	// PermissionMode is the default Kimi permission mode: "always-ask"
+	// (default, no flag), "ask-when-needed" (--yolo), or "never-ask" (--auto).
+	PermissionMode string `toml:"permission_mode,omitempty"`
+	// HooksEnabled controls automatic consent prompting for hook installation.
+	// Installed hooks continue to update status when this is false. Default: true.
+	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`
+}
+
+func (c *KimiSettings) GetHooksEnabled() bool {
+	return c.HooksEnabled == nil || *c.HooksEnabled
 }
 
 // CrushSettings defines charmbracelet/crush CLI configuration (Issue #940).
@@ -5203,6 +5232,10 @@ func GetToolCommand(toolName string) string {
 		if config.Hermes.Command != "" {
 			return config.Hermes.Command
 		}
+	case "kimi":
+		if config.Kimi.Command != "" {
+			return config.Kimi.Command
+		}
 	case "omp":
 		if config.OMP.Command != "" {
 			return config.OMP.Command
@@ -5254,6 +5287,8 @@ func GetToolIcon(toolName string) string {
 		return "📝"
 	case "hermes":
 		return "☤"
+	case "kimi":
+		return "🌙"
 	case "deepseek":
 		return "🐋"
 	case "pi":
@@ -5910,7 +5945,7 @@ func CreateExampleConfig() error {
 
 # Default AI tool for new sessions
 # When creating a new session (pressing 'n'), this tool will be pre-selected
-# Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
+# Valid values: "claude", "gemini", "opencode", "codex", "pi", "kimi", or any custom tool name
 # Leave commented out or empty to default to shell (no pre-selection)
 # default_tool = "claude"
 

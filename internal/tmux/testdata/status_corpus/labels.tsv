@@ -116,3 +116,14 @@ codex-idle-quoted-status-continuation	codex	waiting	SOURCE-DERIVED quoted prose 
 codex-idle-quoted-prose-last-line	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
 codex-idle-historical-status-then-rule	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
 codex-idle-ctrlc-prose	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
+kimi-local-2.4.1-idle	kimi	waiting	REAL Kimi Code 2.4.1 idle composer; captured in disposable container with mock provider; concrete path redacted
+kimi-local-2.4.1-busy-retry	kimi	active	REAL Kimi Code 2.4.1 retrying provider connection; live composer remains visible; session ID and path redacted
+kimi-local-2.4.1-busy-retry-cycle-13	kimi	active	REAL Kimi Code 2.4.1 retrying provider connection; successive retry-spinner frame 13 (🌓), captured 250ms after frame 12; local refused-loopback mock provider in disposable container; session ID and path redacted
+kimi-local-2.4.1-busy-generation	kimi	active	REAL Kimi Code 2.4.1 ordinary generation; moon-phase spinner and live tip above the composer; local deterministic mock provider in disposable container; session ID and path redacted
+kimi-local-2.4.1-busy-generation-cycle-12	kimi	active	REAL Kimi Code 2.4.1 ordinary generation; successive spinner-cycle frame 12 (🌓), captured 250ms after frame 11; local deterministic mock provider in disposable container; session ID and path redacted
+kimi-local-2.4.1-busy-generation-cycle-13	kimi	active	REAL Kimi Code 2.4.1 ordinary generation; successive spinner-cycle frame 13 (🌕), captured 250ms after frame 12; local deterministic mock provider in disposable container; session ID and path redacted
+kimi-local-2.4.1-busy-generation-cycle-14	kimi	active	REAL Kimi Code 2.4.1 ordinary generation; successive spinner-cycle frame 14 (🌗), captured 250ms after frame 13; local deterministic mock provider in disposable container; session ID and path redacted
+kimi-local-2.4.1-interrupted	kimi	waiting	REAL Kimi Code 2.4.1 after user interruption; idle composer; session ID and path redacted
+kimi-local-2.4.1-provider-failure	kimi	error	REAL Kimi Code 2.4.1 terminal provider.connection_error banner above idle composer; session ID and path redacted
+kimi-local-2.4.1-folder-trust	kimi	waiting	REAL Kimi Code 2.4.1 folder-trust screen; not a tool-permission capture
+kimi-local-2.4.1-tool-permission	kimi	waiting	REAL Kimi Code 2.4.1 Bash tool-approval panel; local deterministic mock provider in disposable container; session ID and path redacted

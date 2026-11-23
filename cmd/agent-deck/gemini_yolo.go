@@ -35,6 +35,9 @@ func applyCLIYoloOverride(inst *session.Instance, enabled bool, explicit ...bool
 		yolo := enabled
 		opts.YoloMode = &yolo
 		return inst.SetHermesOptions(opts)
+	case "kimi":
+		// Kimi's --yolo is handled by applyCLIKimiPermissionFlags (ask-when-needed).
+		return nil
 	default:
 		return fmt.Errorf("--yolo only works with Gemini, Codex or Hermes sessions")
 	}

@@ -1,0 +1,9 @@
+Usage: agent-deck kimi-hooks <command>
+
+Manage Kimi Code hook integration.
+
+Commands:
+  install      Install agent-deck Kimi hooks
+  uninstall    Remove agent-deck Kimi hooks
+  status       Show Kimi hooks install status
+  help         Show this help message

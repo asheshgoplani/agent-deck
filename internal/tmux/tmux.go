@@ -301,6 +301,8 @@ func toolForExecutable(base string) string {
 		return "gemini"
 	case "agy", "antigravity":
 		return "antigravity"
+	case "kimi":
+		return "kimi"
 	case "opencode", "opencode2", "open-code":
 		return "opencode"
 	case "codex":

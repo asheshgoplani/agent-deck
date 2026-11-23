@@ -521,6 +521,8 @@ func (d *PromptDetector) HasErrorBanner(content string) bool {
 	case "codex":
 		kind, _ := scanCodexErrorBanner(content)
 		return kind != ""
+	case "kimi":
+		return kimiErrorBannerRe.MatchString(content)
 	default:
 		return false
 	}

@@ -174,6 +174,7 @@ func TestSettingsPanel_LoadConfig_DefaultTool(t *testing.T) {
 		{"muse", "muse", "muse"},
 		{"cursor", "cursor", "cursor"},
 		{"hermes", "hermes", "hermes"},
+		{"kimi", "kimi", "kimi"},
 		{"empty", "", ""}, // None
 		{"unknown", "unknown-tool", ""},
 	}
@@ -201,13 +202,14 @@ func TestSettingsPanel_LoadConfig_CustomTools(t *testing.T) {
 			"openclaw": {},
 			"zeta":     {},
 			"claude":   {},
+			"kimi":     {},
 		},
 	}
 
 	panel.LoadConfig(config)
 
-	wantNames := []string{"Claude", "Gemini", "OpenCode", "OpenCode 2", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "DeepSeek", "Oh My Pi", "Antigravity", "Openclaw", "Zeta", "None"}
-	wantValues := []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "antigravity", "openclaw", "zeta", ""}
+	wantNames := []string{"Claude", "Gemini", "OpenCode", "OpenCode 2", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "DeepSeek", "Oh My Pi", "Antigravity", "Kimi", "Openclaw", "Zeta", "None"}
+	wantValues := []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "antigravity", "kimi", "openclaw", "zeta", ""}
 
 	if !reflect.DeepEqual(panel.toolNames, wantNames) {
 		t.Fatalf("toolNames = %#v, want %#v", panel.toolNames, wantNames)
@@ -308,6 +310,96 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	}
 	if config.GlobalSearch.RecentDays != 45 {
 		t.Errorf("RecentDays: got %d, want 45", config.GlobalSearch.RecentDays)
+	}
+}
+
+func TestSettingsPanel_HermesYoloModeRoundTrips(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{Hermes: session.HermesSettings{YoloMode: true}})
+
+	if !panel.GetConfig().Hermes.YoloMode {
+		t.Fatal("configured Hermes YOLO mode was not preserved")
+	}
+
+	panel.visible = true
+	panel.cursor = int(SettingHermesYoloMode)
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Fatal("Hermes YOLO mode toggle did not report a change")
+	}
+	if panel.GetConfig().Hermes.YoloMode {
+		t.Fatal("Hermes YOLO mode toggle was not saved")
+	}
+}
+
+func TestSettingsPanel_KimiOptions(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{Kimi: session.KimiSettings{
+		DefaultModel:   "configured-model",
+		PermissionMode: "always-ask",
+	}})
+	panel.visible = true
+	panel.SetSize(100, 60)
+
+	view := panel.View()
+	for _, want := range []string{"KIMI", "Permission mode", "Never Ask"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Settings view missing %q: %q", want, view)
+		}
+	}
+	// default_model is TOML-only, like the other providers: the panel no
+	// longer surfaces it.
+	if strings.Contains(view, "Default model") {
+		t.Fatalf("Settings view must not expose Kimi default model (TOML-only): %q", view)
+	}
+
+	panel.cursor = int(SettingKimiPermissionMode)
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+
+	config := panel.GetConfig()
+	if config.Kimi.PermissionMode != session.KimiPermissionAskWhenNeeded {
+		t.Fatal("Kimi.PermissionMode != ask-when-needed, want true")
+	}
+}
+
+func TestSettingsPanel_KimiPermissionCyclesThree(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{Kimi: session.KimiSettings{PermissionMode: session.KimiPermissionAlwaysAsk}})
+	panel.visible = true
+	panel.cursor = int(SettingKimiPermissionMode)
+
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := panel.GetConfig().Kimi.PermissionMode; got != session.KimiPermissionAskWhenNeeded {
+		t.Fatalf("after right = %q, want ask-when-needed", got)
+	}
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := panel.GetConfig().Kimi.PermissionMode; got != session.KimiPermissionNeverAsk {
+		t.Fatalf("after right = %q, want never-ask", got)
+	}
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := panel.GetConfig().Kimi.PermissionMode; got != session.KimiPermissionAlwaysAsk {
+		t.Fatalf("after right = %q, want always-ask", got)
+	}
+}
+
+func TestSettingsPanel_KimiOptionsPreserveUnexposedConfig(t *testing.T) {
+	hooksEnabled := false
+	original := &session.UserConfig{Kimi: session.KimiSettings{
+		Command:        "/opt/kimi --custom",
+		ConfigDir:      "/tmp/kimi-home",
+		EnvFile:        "/tmp/kimi.env",
+		DefaultModel:   "configured-model",
+		PermissionMode: "ask-when-needed",
+		HooksEnabled:   &hooksEnabled,
+	}}
+	panel := NewSettingsPanel()
+	panel.originalConfig = original
+	panel.LoadConfig(original)
+
+	config := panel.GetConfig()
+	if config.Kimi.Command != original.Kimi.Command || config.Kimi.ConfigDir != original.Kimi.ConfigDir ||
+		config.Kimi.EnvFile != original.Kimi.EnvFile || config.Kimi.HooksEnabled == nil || *config.Kimi.HooksEnabled {
+		t.Fatalf("unexposed Kimi settings were not preserved: %+v", config.Kimi)
 	}
 }
 
@@ -1132,9 +1224,8 @@ func TestSettingsPanel_ViewShowsUnboundMCPHotkeyHint(t *testing.T) {
 	setSettingsPanelHotkeyConfigForTest(t, "[hotkeys]\nmcp_manager = \"\"\n")
 
 	panel := NewSettingsPanel()
-	// Tall enough for the whole panel: its wrapped rows no longer overflow
-	// an 80-row screen, they scroll inside it.
-	panel.SetSize(100, 100)
+	// Tall enough for the whole panel, including the Kimi section.
+	panel.SetSize(100, 110)
 	panel.Show()
 	panel.cursor = int(SettingMaintenanceEnabled)
 

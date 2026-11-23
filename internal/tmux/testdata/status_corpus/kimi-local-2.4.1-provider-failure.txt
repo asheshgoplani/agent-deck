@@ -1,0 +1,29 @@
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                    │
+ │  ▐█▛█▛█▌  Welcome to Kimi Code!                                                                                    │
+ │  ▐█████▌  Send /help for help information.                                                                         │
+ │                                                                                                                    │
+ │  Directory: /tmp/redacted/work                                                                                     │
+ │  Session:   session_<redacted>                                                                                     │
+ │  Model:     mock                                                                                                   │
+ │  Version:   2.4.1                                                                                                  │
+ │                                                                                                                    │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ✦ Kimi K3.1 Pro is ready - use the model in a fresh session for the best results
+   Standard: Plus/Moderato and above; Highspeed: Pro/Allegretto and above
+
+   No session yet — one will be created on your first message.
+   tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and
+ restart tmux.
+
+ ❯ hello
+   Error: [provider.connection_error] Connection error.
+   If this persists, run `/export-debug-zip` and share the file with us for diagnosis. Please don't share it publicly.
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ >                                                                                                                  │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ mock  ~/work       ctrl-o to hide or reveal tool output switching between a clean chat view and full execution details
+                                                                                                  context: 1% (64/128k)

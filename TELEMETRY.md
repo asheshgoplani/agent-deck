@@ -240,7 +240,7 @@ Lower edge inclusive, upper edge exclusive.
 | `rating` | `1-2`, `3`, `4-5` |
 | `install_age` | `d0`, `d1`, `d2-7`, `d8-30`, `d31-90`, `d91+` |
 
-Tool bitmask order: `claude` = 0, `codex` = 1, `gemini` = 2, `opencode` = 3, `pi` = 4, `copilot` = 5, `crush` = 6, `cursor` = 7, `hermes` = 8, `deepseek` = 9, `aider` = 10, `shell` = 11; `other` = 31.
+Tool bitmask order: `claude` = 0, `codex` = 1, `gemini` = 2, `opencode` = 3, `pi` = 4, `copilot` = 5, `crush` = 6, `cursor` = 7, `hermes` = 8, `deepseek` = 9, `aider` = 10, `shell` = 11, `kimi` = 12; `other` = 31.
 
 Config section bitmask order (`config_sections`): `claude` = 0, `codex` = 1, `gemini` = 2, `opencode` = 3, `cursor` = 4, `copilot` = 5, `crush` = 6, `hermes` = 7, `deepseek` = 8, `tools` = 9, `mcps` = 10, `plugins` = 11, `profiles` = 12, `groups` = 13, `conductors` = 14, `conductor` = 15, `worktree` = 16, `tmux` = 17, `docker` = 18, `remotes` = 19, `notifications` = 20, `updates` = 21, `theme` = 22, `web` = 23, `telemetry` = 24, `feedback` = 25, `experiments` = 26, `harnesses` = 27, `shell` = 28, `hotkeys` = 29, `recall` = 30; any other section = 31.
 
@@ -270,7 +270,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
+| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `kimi`, `other` (built-in tool, else other) |
 | `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_fork`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
 | `worktree` | bool |
 | `mcps` | bucket `n` |
@@ -284,7 +284,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
+| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `kimi`, `other` (built-in tool, else other) |
 | `end_kind` | enum: `stop`, `delete`, `tool_exit`, `crash`, `restart` |
 | `lifetime` | bucket `dur` |
 | `restarts` | bucket `n` |
@@ -326,7 +326,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
+| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `kimi`, `other` (built-in tool, else other) |
 | `via` | enum: `tui`, `cli_send`, `conductor`, `inbox`, `telegram`, `web` |
 | `count` | bucket `n` |
 | `len_mode` | bucket `len` |
@@ -336,7 +336,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
+| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `kimi`, `other` (built-in tool, else other) |
 | `via` | enum: `tui`, `cli`, `web`, `remote` |
 | `count` | bucket `n` |
 | `total_dur` | bucket `dur` |
@@ -347,7 +347,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 |---|---|
 | `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry`, `tui` (tui means a recovered TUI panic or a terminal the TUI could not set up) |
 | `kind` | enum: `tmux_missing`, `tmux_too_old`, `tool_not_found`, `tool_auth`, `worktree_dirty`, `mcp_spawn_failed`, `ssh_auth`, `ssh_unreachable`, `config_parse`, `db_locked`, `timeout`, `permission`, `disk_full`, `panic`, `other` |
-| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
+| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `kimi`, `other` (built-in tool, else other) |
 | `before_first_success` | bool |
 | `onboarding_step` | enum: `none`, `first_run`, `consented`, `first_session_created`, `first_session_running`, `first_attach`, `first_send` |
 
@@ -398,7 +398,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | Property | Type |
 |---|---|
 | `step` | enum: `first_run`, `consented`, `first_session_created`, `first_session_running`, `first_attach`, `first_send`, `second_session`, `second_tool`, `first_fork`, `first_worktree`, `first_mcp_attach`, `first_group`, `first_conductor`, `first_remote`, `first_fleet`, `activated` |
-| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
+| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `kimi`, `other` (built-in tool, else other) |
 | `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_fork`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
 | `since` | bucket `since` |
 | `before_consent` | bool |
@@ -408,7 +408,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | Property | Type |
 |---|---|
 | `sessions_total` | bucket `n` |
-| `last_tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` |
+| `last_tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `kimi`, `other` |
 | `reason` | enum: `not_needed`, `too_complex`, `bugs`, `switching_tool`, `skip` |
 
 **`fleet.launch`** (tier 2, planned, not emitted yet)
@@ -458,7 +458,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
+| `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `kimi`, `other` (built-in tool, else other) |
 | `trigger` | enum: `rate_limit`, `auth`, `manual` |
 | `accounts` | bucket `n` |
 

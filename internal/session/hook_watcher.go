@@ -205,7 +205,7 @@ func (o PiOrphanRun) expired(now time.Time) bool {
 // HookStatus holds the decoded status from a hook status file.
 type HookStatus struct {
 	Status                   string    // running, idle, waiting, dead
-	SessionID                string    // Claude session ID
+	SessionID                string    // Native session ID reported by the hook
 	Event                    string    // Hook event name
 	UpdatedAt                time.Time // When this status was received
 	CodexStartedGeneration   string
@@ -260,6 +260,8 @@ type HookStatus struct {
 	// only, so 0 again after ClearHookStatus removes it: a judge reads the
 	// count with readHookTurnSeq, which also reads <id>.turnseq.
 	TurnSeq uint64
+	// ClientType identifies the native hook source (Kimi uses "kimi_code_cli").
+	ClientType string
 }
 
 // hookGenerationForInstance resolves generation authority by instance, not by
@@ -329,8 +331,10 @@ type StatusFileWatcher struct {
 	mu       sync.RWMutex
 	statuses map[string]*HookStatus // instance_id -> latest hook status
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx     context.Context
+	cancel  context.CancelFunc
+	started chan struct{} // closed when Start() begins running
+	done    chan struct{} // closed when Start() returns
 
 	// onChange is called when a hook status changes (for TUI refresh)
 	onChange func()
@@ -366,12 +370,20 @@ func NewStatusFileWatcher(onChange func()) (*StatusFileWatcher, error) {
 		statuses:   make(map[string]*HookStatus),
 		ctx:        ctx,
 		cancel:     cancel,
+		started:    make(chan struct{}),
+		done:       make(chan struct{}),
 		onChange:   onChange,
 	}, nil
 }
 
 // Start begins watching the hooks directory. Must be called in a goroutine.
 func (w *StatusFileWatcher) Start() {
+	if w.started != nil {
+		close(w.started)
+	}
+	if w.done != nil {
+		defer close(w.done)
+	}
 	if err := w.watcher.Add(w.hooksDir); err != nil {
 		hookLog.Warn("hook_watcher_add_failed", slog.String("dir", w.hooksDir), slog.String("error", err.Error()))
 		return
@@ -602,6 +614,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			TranscriptPath           string        `json:"transcript_path"`
 			Cwd                      string        `json:"cwd"`
 			Platform                 string        `json:"platform"`
+			ClientType               string        `json:"client_type"`
 			CodexStartedGeneration   string        `json:"codex_started_generation"`
 			CodexCompletedGeneration string        `json:"codex_completed_generation"`
 			CodexStartedSessionID    string        `json:"codex_started_session_id"`
@@ -634,6 +647,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			TranscriptPath:           raw.TranscriptPath,
 			Cwd:                      raw.Cwd,
 			Platform:                 raw.Platform,
+			ClientType:               raw.ClientType,
 			CodexStartedGeneration:   raw.CodexStartedGeneration,
 			CodexCompletedGeneration: raw.CodexCompletedGeneration,
 			CodexStartedSessionID:    raw.CodexStartedSessionID,
@@ -666,6 +680,16 @@ func errString(err error) string {
 func (w *StatusFileWatcher) Stop() {
 	w.cancel()
 	_ = w.watcher.Close()
+	if w.started != nil {
+		select {
+		case <-w.started:
+			if w.done != nil {
+				<-w.done
+			}
+		default:
+			// Start() was never launched, so there is nothing to join.
+		}
+	}
 }
 
 // GetHookStatus returns the hook status for an instance, or nil if not available.
@@ -791,6 +815,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		TranscriptPath           string        `json:"transcript_path"`
 		Cwd                      string        `json:"cwd"`
 		Platform                 string        `json:"platform"`
+		ClientType               string        `json:"client_type"`
 		CodexStartedGeneration   string        `json:"codex_started_generation"`
 		CodexCompletedGeneration string        `json:"codex_completed_generation"`
 		CodexStartedSessionID    string        `json:"codex_started_session_id"`
@@ -830,6 +855,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		TranscriptPath:           status.TranscriptPath,
 		Cwd:                      status.Cwd,
 		Platform:                 status.Platform,
+		ClientType:               status.ClientType,
 		CodexStartedGeneration:   status.CodexStartedGeneration,
 		CodexCompletedGeneration: status.CodexCompletedGeneration,
 		CodexStartedSessionID:    status.CodexStartedSessionID,

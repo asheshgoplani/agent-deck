@@ -177,6 +177,8 @@ func hooksFacts(name string) *bool {
 		return boolPtr(session.CheckGeminiHooksInstalled(session.GetGeminiConfigDir()))
 	case "hermes":
 		return boolPtr(session.CheckHermesHooksInstalled(session.GetHermesConfigDir()))
+	case "kimi":
+		return boolPtr(session.CheckKimiHooksInstalled(session.GetKimiConfigDir()))
 	case "pi":
 		return boolPtr(session.CheckPiHooksInstalled(session.PiExtensionsDir()))
 	}

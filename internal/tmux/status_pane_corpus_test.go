@@ -31,7 +31,7 @@ type statusPaneCorpusEntry struct {
 // (DefaultRawPatterns). Each one's detector is run over every corpus frame.
 var statusCorpusDetectorTools = []string{
 	"claude", "codewhale", "codex", "copilot", "cursor", "deepseek", "gemini",
-	"muse", "omp", "opencode", "openclaw", "pi", "shell",
+	"muse", "omp", "opencode", "openclaw", "pi", "shell", "kimi",
 }
 
 // statusCorpusForeignRunning lists the detectors that do read some other
@@ -39,7 +39,8 @@ var statusCorpusDetectorTools = []string{
 // not accepted behaviour: a pane's history can hold any text, so a detector
 // that fires on quoted prose is the #2351 bug for that tool. Each listed
 // frame must still fire (the test fails when it stops), so the list only
-// shrinks; a new frame that fires fails the test.
+// shrinks except when a new real frame exposes a pre-existing gap; those
+// exceptions need their own issue. An unlisted frame that fires fails the test.
 type statusCorpusKnownGap struct {
 	why    string
 	frames []string
@@ -76,7 +77,7 @@ var statusCorpusForeignRunning = map[string]statusCorpusKnownGap{
 		},
 	},
 	"copilot": {
-		why: "plain busy words (Running, Reading, Searching, thinking, esc to interrupt) anywhere in the last 25 lines; no Copilot capture yet",
+		why: "plain busy words (Running, Reading, Searching, thinking, esc to interrupt) anywhere in the last 25 lines; no Copilot capture yet; Kimi approval frame tracks #3009",
 		frames: []string{
 			"codex/issue2351-quoted-example-bare-prompt.txt",
 			"codex/issue2351-quoted-prose-composer.txt",
@@ -95,6 +96,7 @@ var statusCorpusForeignRunning = map[string]statusCorpusKnownGap{
 			"status_corpus/claude-remote-proj-dbox-conductor-proj-d-worker-c_afd81d46",
 			"status_corpus/codex-idle-ctrlc-prose",
 			"status_corpus/codex-idle-quoted-status-continuation",
+			"status_corpus/kimi-local-2.4.1-tool-permission",
 			"status_corpus/pi-remote-agentbox-no-cache-field",
 			"status_corpus/synth-codex-agent-quotes-status-line",
 			"status_corpus/synth-codex-user-pasted-working",

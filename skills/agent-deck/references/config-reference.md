@@ -11,6 +11,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[group_defaults] Section](#group_defaults-section)
 - [[gemini] Section](#gemini-section)
 - [[antigravity] Section](#antigravity-section)
+- [[kimi] Section](#kimi-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
 - [[models] Section](#models-section)
@@ -298,6 +299,31 @@ An existing `[tools.antigravity].command` is used if `[antigravity].command` is
 unset. Set terminal detection overrides under `[tools.antigravity]`. Gemini CLI
 remains a separate tool with its own settings.
 
+## [kimi] Section
+
+Kimi Code CLI integration settings for the official `kimi` executable (`@moonshot-ai/kimi-code`), not the legacy `kimi-cli`.
+
+```toml
+[kimi]
+command = "kimi"
+config_dir = "~/.kimi-code"
+env_file = "~/.config/agent-deck/kimi.env"
+default_model = "kimi-code/kimi-for-coding"
+permission_mode = "always-ask" # always-ask | ask-when-needed (--yolo) | never-ask (--auto)
+hooks_enabled = true
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `"kimi"` | Binary or invocation to launch. A configured custom command still receives derived `--session`, `--model`, `--yolo`, or `--auto` flags as applicable. Standard agent-deck instance/profile/tool environment is still supplied for hooks. |
+| `config_dir` | string | `""` | Explicit Kimi data root, exported as `KIMI_CODE_HOME`. Empty preserves the ambient `KIMI_CODE_HOME` or Kimi's own `~/.kimi-code` default. The root contains configuration, native sessions, and credentials; do not share it unintentionally. |
+| `env_file` | string | `""` | Environment file sourced for Kimi sessions only, after global `[shell].env_files`. It may contain credentials or routing variables; restrict its permissions and never commit secrets. See [Path Resolution](#path-resolution). |
+| `default_model` | string | `""` | Model alias passed as `--model` for fresh sessions only. Empty uses Kimi's configured default. Existing conversations resume without this flag. |
+| `permission_mode` | string | `"always-ask"` | Kimi permission mode for new sessions: `"always-ask"` (default, no flag), `"ask-when-needed"` (`--yolo`, routine work runs, risky actions still ask), or `"never-ask"` (`--auto`, everything runs automatically). Enable `never-ask` only in trusted working directories. |
+| `hooks_enabled` | bool | `true` | Allows the one-time Kimi hook-consent prompt. Even when true, agent-deck does not change Kimi's `config.toml` before consent. False disables the automatic prompt; explicit `agent-deck kimi-hooks install` remains available. Uninstall durably suppresses future prompts until an explicit install opts in again. |
+
+Hook installation targets `config.toml` under the explicitly configured `config_dir`, else ambient `KIMI_CODE_HOME`, else `~/.kimi-code`. It preserves existing providers, models, credentials, permissions, and unrelated hooks. Use `agent-deck kimi-hooks install`, `status`, and `uninstall` to manage the entries explicitly. Restart/resume uses only the native session ID reported by the managed instance's own hooks; no newest-transcript fallback is used.
+
 ## [opencode] Section
 
 OpenCode CLI integration settings.
@@ -351,8 +377,8 @@ list = ["acme/nova-2", "local/qwen"]   # replaces the suggestions entirely
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, about 1s timeout) and OpenCode (`opencode models`, about 3s timeout, run from your home directory; it lists the models of providers you have credentials for). Neither sends a prompt. Claude Code and Gemini have no local listing and use the built-in catalog. The probe runs with the `VAR=value` prefix of the configured `command`. Results are cached per CLI binary and prefix for up to a day in `<cache dir>/model-probe/`; a provider you add to OpenCode shows up after that day, or at once if you delete `model-probe/opencode.json`. The TUI and web server never wait on a probe: they show the last list (or the built-in one) while it runs. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
-| `<tool>.list` | string array | `[]` | Pins the model suggestions for `claude`, `codex`, `gemini` or `opencode`: only these IDs are offered, without the probed or built-in models. Codex may still be asked for its reasoning efforts. A custom tool wrapping Claude or Codex uses that tool's table. |
+| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, about 1s timeout), OpenCode (`opencode models`, about 3s timeout, run from your home directory; it lists the models of providers you have credentials for), and Kimi (`kimi provider list --json`, about 1s timeout, run from your home directory; it lists configured model aliases). None sends a prompt. Claude Code and Gemini have no local listing and use the built-in catalog. The probe runs with the `VAR=value` prefix of the configured `command`; Kimi also receives `[kimi].config_dir` as `KIMI_CODE_HOME` unless the command prefix sets it. Results are cached per CLI binary and prefix for up to a day in `<cache dir>/model-probe/`; a provider you add shows up after that day, or at once if you delete `model-probe/<tool>.json`. The TUI and web server never wait on a probe: they show the last list (or the built-in one) while it runs. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
+| `<tool>.list` | string array | `[]` | Pins the model suggestions for `claude`, `codex`, `gemini`, `opencode` or `kimi`: only these IDs are offered, without the probed or built-in models. Codex may still be asked for its reasoning efforts. A custom tool wrapping Claude or Codex uses that tool's table. |
 | `<tool>.extra` | string array | `[]` | Extra IDs shown first, ahead of the probed and built-in models. Applies with `probe = false` too. |
 
 The lists are suggestions, not an allowlist: a `[claude] default_model` the catalog does not know is still prefilled in the new-session dialog (with a warning in the log), and `--model` passes any ID through.

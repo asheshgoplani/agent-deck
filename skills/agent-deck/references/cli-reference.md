@@ -47,7 +47,7 @@ agent-deck add [path] [options]
 |------|-------------|
 | `-t, --title` | Session title |
 | `-g, --group` | Group path |
-| `-c, --cmd` | Tool/command (claude, codex, gemini, opencode, pi, shell, copilot, crush, muse, cursor, hermes, deepseek, or a custom command string) — `shell` is a plain terminal with no AI tool attached |
+| `-c, --cmd` | Tool/command (claude, codex, gemini, opencode, pi, shell, copilot, crush, muse, cursor, hermes, deepseek, kimi, or a custom command string) — `shell` is a plain terminal with no AI tool attached |
 | `--wrapper` | Wrapper command; use `{command}` placeholder |
 | `--parent` | Parent session (creates child) |
 | `--no-parent` | Disable automatic parent linking |
@@ -58,6 +58,10 @@ agent-deck add [path] [options]
 | `--hint key=value` | Durable recall hint (repeatable; single-valued per key, see `session annotate`) |
 | `--tag <tag>` | Recall tag (repeatable) |
 | `--ticket <id>` / `--why <text>` | Shorthands for `--hint ticket=` / `--hint why=` |
+| `--yolo` | Gemini, Codex, Hermes: full auto-approve; Kimi: middle Ask When Needed tier (routine work runs, risky actions still ask) |
+| `--auto` | Kimi only: Never Ask tier (full auto-approve) |
+
+On Kimi, explicitly passing `--yolo=false` or `--auto=false` selects the Always Ask tier. On other tools, `--auto` is an error.
 
 ```bash
 agent-deck add -t "My Project" -c claude .
@@ -98,7 +102,7 @@ Notes:
 - `--account <name>` selects a named slot from `[profiles.<name>.claude].config_dir` for this session, matching `add --account`. Without `--account` (or `AGENTDECK_ACCOUNT`), `add` and `launch` put a Claude session on `[claude].default_account` when it is set, unless the target group or parent conductor has its own `config_dir` or `CLAUDE_CONFIG_DIR` is set in the environment (a child created from an agent-deck Claude session keeps that session's account); the same default the TUI's New Session dialog preselects.
 - `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh|max|ultra` plus any level the installed Codex advertises; other tools refuse the flag. When the installed Codex describes the chosen `--model`, only that model's levels are accepted. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
 - `--model` accepts any ID: the model lists are suggestions, not an allowlist, and an ID the list lacks is passed to the tool as is.
-- `launch -capabilities --json` (and `add -capabilities --json`) prints what this host can create: per tool `models`, `default_model`, `reasoning_efforts` and, when the installed CLI was probed, `model_efforts` (model ID to accepted efforts). For Codex the lists come from `codex debug models` (models with `visibility: list`, by priority) and for OpenCode from `opencode models` (about 3s timeout), each merged in front of the built-in catalog; Claude Code, Gemini and the rest use the built-in catalog. `[models.<tool>] extra` IDs come first, and a `[models.<tool>] list` replaces the whole list. The probe never sends a prompt, times out after about 1s (Codex) or 3s (OpenCode), runs with the `VAR=value` prefix of the configured command, and its result is cached per CLI binary (path, mtime, size) in the cache dir (`model-probe/<tool>.json`) for up to a day. A missing CLI, a timeout, a non-zero exit or unrecognized output falls back to the built-in catalog; a failed probe is remembered (also on disk) for about a minute and then retried. Remote hosts report their own lists through their own `-capabilities`. Turn the probe off with `[models] probe = false`.
+- `launch -capabilities --json` (and `add -capabilities --json`) prints what this host can create: per tool `models`, `default_model`, `reasoning_efforts` and, when the installed CLI was probed, `model_efforts` (model ID to accepted efforts). For Codex the lists come from `codex debug models` (models with `visibility: list`, by priority), for OpenCode from `opencode models` (about 3s timeout), and for Kimi from `kimi provider list --json` (configured model aliases), each merged in front of the built-in catalog; Claude Code, Gemini and the rest use the built-in catalog. `[models.<tool>] extra` IDs come first, and a `[models.<tool>] list` replaces the whole list. The probe never sends a prompt, times out after about 1s (Codex and Kimi) or 3s (OpenCode), runs with the `VAR=value` prefix of the configured command (plus `[kimi].config_dir` as `KIMI_CODE_HOME` unless the prefix sets it), and its result is cached per CLI binary (path, mtime, size) in the cache dir (`model-probe/<tool>.json`) for up to a day. A missing CLI, a timeout, a non-zero exit or unrecognized output falls back to the built-in catalog; a failed probe is remembered (also on disk) for about a minute and then retried. Remote hosts report their own lists through their own `-capabilities`. Turn the probe off with `[models] probe = false`.
 - `--account` requires an explicit name. If the next token is another launch flag, launch stops with an error before resolving a fallback account or creating a session; use `--account=<name>` when a name intentionally begins with a dash.
 - `--hint/--tag/--ticket/--why` (also on `add`): durable recall hints written to state.db at creation (`docs/recall.md`). `launch` additionally derives `purpose` from the first line of `-m` and both commands derive `parent` for a child; an explicit `--hint purpose=` wins. Echoed in `--json` as `hints` and `tags`.
 - `--trust-folder` (also on `add`): add the session's folder to `[security] trusted_folders`, so agent-deck pre-trusts it for Claude, Codex and Cursor and sources a relative `env_file` from it. Needed on a new install (v1.16.34+, where `auto_trust_folders` is off) for a headless launch in a folder the tool has never been allowed to open; without it Claude shows its "trust the files in this folder?" prompt first and the launch prints a note on stderr and, with `--json`, adds `"warnings": [{"code": "FOLDER_NOT_TRUSTED", "folder": "<dir>", "hint": "..."}]` to the result (a queued start logs `queued_start_folder_not_trusted` with the same code). The flag edits config.toml in place, so comments and layout are kept. Installs from before v1.16.34 keep pre-trusting every folder (config-reference.md, `[security]`).
@@ -1494,6 +1498,16 @@ agent-deck pi-hooks uninstall
 ```
 
 pi turn-level status uses an agent-deck extension installed into pi's global extension directory (`~/.pi/agent/extensions/agent-deck.ts`, or under `PI_CODING_AGENT_DIR` when set). It forwards `session_start`, `turn_start`, `turn_end` and `session_shutdown`; restart running pi sessions after installing. `status` reports `INSTALLED`, `OUTDATED` (reinstall to upgrade), `FOREIGN` (a file agent-deck did not write is in the way) or `NOT INSTALLED`. Without it, pi status falls back to pane detection.
+
+## Kimi Hook Commands
+
+```bash
+agent-deck kimi-hooks install
+agent-deck kimi-hooks status
+agent-deck kimi-hooks uninstall
+```
+
+Kimi Code lifecycle status uses native entries in `config.toml` under the explicit `[kimi].config_dir`, else `KIMI_CODE_HOME`, else `~/.kimi-code`. Installation preserves existing settings and unrelated hooks and is idempotent. The TUI asks once before modifying this file; declining performs no write and is remembered. Uninstall removes only the exact agent-deck-owned commands and durably suppresses the automatic prompt; explicit install is a new opt-in and the repair/upgrade path. Without hooks, Kimi still launches and uses pane-based status.
 
 ## DeepSeek Commands
 

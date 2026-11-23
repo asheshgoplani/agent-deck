@@ -104,7 +104,7 @@ func (m *WebMutator) beginHeadlessTx() (unlock func(), err error) {
 func suppressHookPromptForWeb() (restore func()) { return git.SuppressScriptConsentPrompter() }
 
 // CreateSession creates and starts a new session, persisting it to storage.
-func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 	defer suppressHookPromptForWeb()()
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
@@ -136,6 +136,21 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID,
 	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
 		if err := inst.ApplyLaunchReasoningEffort(reasoningEffort); err != nil {
 			return "", err
+		}
+	}
+	if tool == "kimi" {
+		if kimiPermissionMode = strings.TrimSpace(kimiPermissionMode); kimiPermissionMode != "" {
+			if err := session.ValidateKimiPermissionMode(kimiPermissionMode); err != nil {
+				return "", err
+			}
+			opts := inst.GetKimiOptions()
+			if opts == nil {
+				opts = &session.KimiOptions{}
+			}
+			opts.PermissionMode = kimiPermissionMode
+			if err := inst.SetKimiOptions(opts); err != nil {
+				return "", err
+			}
 		}
 	}
 

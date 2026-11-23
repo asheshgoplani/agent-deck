@@ -568,6 +568,10 @@ func createSessionTool(command string) (string, string) {
 		command = session.GetToolCommand("cursor")
 	case "hermes":
 		tool = "hermes"
+	case "kimi":
+		tool = "kimi"
+	case "deepseek":
+		tool = "deepseek"
 	default:
 		if toolDef := session.GetToolDef(command); toolDef != nil {
 			tool = command

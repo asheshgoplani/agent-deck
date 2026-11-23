@@ -17,6 +17,12 @@ import {
   CUSTOM_MODEL, effortOptionsForTool, modelOptionsForTool, seedModelSelection,
 } from './modelCatalog.js'
 
+const KIMI_PERMISSION_MODES = [
+  { value: 'always-ask', label: 'Always Ask' },
+  { value: 'ask-when-needed', label: 'Ask When Needed' },
+  { value: 'never-ask', label: 'Never Ask' },
+]
+
 export function CreateSessionDialog() {
   const open = createSessionDialogSignal.value
   const ctx = open || { groupPath: '', groupName: '', defaultPath: '', tool: '', modelId: '' }
@@ -26,6 +32,7 @@ export function CreateSessionDialog() {
   const [modelId, setModelId] = useState('')
   const [customModel, setCustomModel] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState('')
+  const [kimiPermissionMode, setKimiPermissionMode] = useState('')
   const [path, setPath] = useState('')
   const [directoryCreation, setDirectoryCreation] = useState(null)
   const [error, setError] = useState(null)
@@ -55,6 +62,7 @@ export function CreateSessionDialog() {
     setModelId(seeded.modelId)
     setCustomModel(seeded.customModel)
     setReasoningEffort('')
+    setKimiPermissionMode('')
     setTitle('')
     setError(null)
     setSeededFor(ctx.groupPath)
@@ -79,6 +87,7 @@ export function CreateSessionDialog() {
       const modelId = selectedModelId()
       if (modelId) payload.modelId = modelId
       if (effectiveEffort) payload.reasoningEffort = effectiveEffort
+      if (tool === 'kimi' && kimiPermissionMode) payload.kimiPermissionMode = kimiPermissionMode
       await apiFetch('POST', '/api/sessions', payload)
       createSessionDialogSignal.value = null
     } catch (err) {
@@ -94,6 +103,7 @@ export function CreateSessionDialog() {
     setModelId('')
     setCustomModel('')
     setReasoningEffort('')
+    setKimiPermissionMode('')
   }
 
   function selectedModelId() {
@@ -177,6 +187,18 @@ export function CreateSessionDialog() {
                 <option value="">Tool default</option>
                 ${reasoningEfforts.map(effort => html`
                   <option key=${effort.value} value=${effort.value}>${effort.label} — ${effort.value}</option>
+                `)}
+              </select>
+            </div>
+          `}
+          ${tool === 'kimi' && html`
+            <div class="field">
+              <label for="create-session-kimi-permission">KIMI PERMISSIONS</label>
+              <select id="create-session-kimi-permission" aria-label="Kimi permission mode"
+                      value=${kimiPermissionMode} onInput=${e => setKimiPermissionMode(e.target.value)}>
+                <option value="">Configured default</option>
+                ${KIMI_PERMISSION_MODES.map(mode => html`
+                  <option key=${mode.value} value=${mode.value}>${mode.label}</option>
                 `)}
               </select>
             </div>

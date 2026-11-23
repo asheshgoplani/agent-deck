@@ -50,7 +50,7 @@ func staticJSCatalog(t *testing.T, table string) map[string][]string {
 // off in test binaries, so session.* return the static catalog here.
 func TestIssue2388_WebStaticCatalogMatchesTUI(t *testing.T) {
 	models := staticJSCatalog(t, "MODEL_ID_CATALOG")
-	for _, tool := range []string{"claude", "codex", "gemini", "opencode"} {
+	for _, tool := range []string{"claude", "codex", "gemini", "opencode", "kimi"} {
 		if got, want := models[tool], session.KnownModelIDsForTool(tool); !slices.Equal(got, want) {
 			t.Errorf("%s models: web %v, TUI %v", tool, got, want)
 		}
@@ -82,7 +82,7 @@ func fetchSettingsModelCatalog(t *testing.T) map[string]ToolModelCatalog {
 // /api/settings serves the same lists the TUI dialog reads, per picker tool.
 func TestIssue2388_SettingsModelCatalogMatchesTUI(t *testing.T) {
 	catalog := fetchSettingsModelCatalog(t)
-	for _, tool := range []string{"claude", "codex", "gemini", "opencode"} {
+	for _, tool := range []string{"claude", "codex", "gemini", "opencode", "kimi"} {
 		entry, ok := catalog[tool]
 		if !ok {
 			t.Fatalf("modelCatalog missing %s: %v", tool, catalog)

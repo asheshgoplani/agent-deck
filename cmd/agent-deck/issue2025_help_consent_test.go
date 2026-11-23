@@ -189,6 +189,7 @@ func TestEveryRegisteredCommandFamilyBareHelpIsReadOnly(t *testing.T) {
 		{"group", "Usage: agent-deck group"},
 		{"hermes-hooks", "Usage: agent-deck hermes-hooks"},
 		{"hooks", "Usage: agent-deck hooks"},
+		{"kimi-hooks", "Usage: agent-deck kimi-hooks"},
 		{"mcp", "Usage: agent-deck mcp"},
 		{"oc", "Usage: agent-deck openclaw"},
 		{"openclaw", "Usage: agent-deck openclaw"},

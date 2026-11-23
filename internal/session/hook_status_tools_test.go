@@ -14,6 +14,7 @@ func TestHookStatusTool_MatchesInstallerSet(t *testing.T) {
 		"codex",  // cmd/agent-deck/codex_hooks_cmd.go
 		"gemini", // cmd/agent-deck/gemini_hooks_cmd.go
 		"hermes", // cmd/agent-deck/hermes_hooks_cmd.go
+		"kimi",   // cmd/agent-deck/kimi_hooks_cmd.go
 		"cursor", // cmd/agent-deck/cursor_hooks_cmd.go
 		"pi",     // cmd/agent-deck/pi_hooks_cmd.go
 	}

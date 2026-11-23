@@ -534,6 +534,8 @@ type Home struct {
 	pendingHooksPrompt       bool // True if user should be prompted to install Claude hooks
 	claudeHooksBoxShown      bool // The fallback Claude hooks box was shown this run (showClaudeHooksBox)
 	pendingHermesHooksPrompt bool // True if user should be prompted to install Hermes hooks
+	pendingKimiHooksPrompt   bool // True if user should be prompted to install Kimi hooks
+	kimiHooksBoxShown        bool // The Kimi hooks box was shown this run; Esc postpones it until the next run
 
 	// hints is the one-key onboarding hint bar (onboarding_hints.go, ASK-211).
 	hints onboardingHints
@@ -2564,7 +2566,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (h.instances is filled further down, so msg says it.)
 			hasSessions := msg.err == nil && len(msg.instances) > 0
 			if !(firstLoad && hasSessions && claudeHooksRelevant(msg.instances) && h.showClaudeHooksBox(false)) {
-				h.showPendingHooksPrompt()
+				if !h.kimiHooksBoxShown && !h.hasModalVisible() {
+					h.showPendingHooksPrompt()
+				}
 			}
 		}
 
@@ -6788,7 +6792,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "y":
-		// Toggle YOLO mode for Gemini or Codex sessions (requires restart)
+		// Toggle YOLO mode for supported sessions (requires restart)
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -6847,12 +6851,34 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					opts.YoloMode = &newYolo
 					_ = inst.SetHermesOptions(opts)
 					toggled = true
+
+				case "kimi":
+					mode := session.KimiPermissionAlwaysAsk
+					opts := inst.GetKimiOptions()
+					if opts != nil && opts.PermissionMode != "" {
+						mode = opts.PermissionMode
+					} else if userConfig, _ := session.LoadUserConfig(); userConfig != nil {
+						mode = session.NormalizeKimiPermissionMode(userConfig.Kimi.PermissionMode)
+					}
+					if opts == nil {
+						opts = &session.KimiOptions{}
+					}
+					switch mode {
+					case session.KimiPermissionAlwaysAsk:
+						opts.PermissionMode = session.KimiPermissionAskWhenNeeded
+					default:
+						// ask-when-needed or never-ask: "y" turns yolo off.
+						opts.PermissionMode = session.KimiPermissionAlwaysAsk
+					}
+					_ = inst.SetKimiOptions(opts)
+					toggled = true
 				}
 
 				if toggled {
 					h.saveInstances()
-					if inst.GetStatusThreadSafe() == session.StatusRunning ||
-						inst.GetStatusThreadSafe() == session.StatusWaiting {
+					status := inst.GetStatusThreadSafe()
+					if status == session.StatusRunning || status == session.StatusWaiting ||
+						(inst.Tool == "kimi" && status == session.StatusIdle) {
 						h.resumingSessions[inst.ID] = time.Now()
 						return h, h.restartSession(inst)
 					}

@@ -102,6 +102,44 @@ func TestNewDialog_ModelInputForCodex(t *testing.T) {
 	}
 }
 
+func TestNewDialog_KimiOptions(t *testing.T) {
+	home := setXDGTestHome(t)
+	writeXDGTestConfig(t, home, "[kimi]\ndefault_model = \"configured-model\"\npermission_mode = \"ask-when-needed\"\n")
+
+	d := NewNewDialog()
+	d.SetDefaultTool("kimi")
+	d.SetSize(100, 50)
+	d.Show()
+
+	if got := d.GetLaunchModelID(); got != "configured-model" {
+		t.Fatalf("GetLaunchModelID() = %q, want configured-model", got)
+	}
+	if d.GetKimiOptions().PermissionMode != session.KimiPermissionAskWhenNeeded {
+		t.Fatal("PermissionMode != ask-when-needed, want default from config")
+	}
+	view := d.View()
+	for _, want := range []string{"Model ID", "Kimi Options", "Never Ask"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Kimi new-session dialog missing %q: %q", want, view)
+		}
+	}
+
+	d.focusIndex = d.indexOf(focusOptions)
+	d.updateFocus()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if d.GetKimiOptions().PermissionMode != session.KimiPermissionNeverAsk {
+		t.Fatalf("after Space = %q, want never-ask", d.GetKimiOptions().PermissionMode)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if d.GetKimiOptions().PermissionMode != session.KimiPermissionAlwaysAsk {
+		t.Fatalf("after second Space = %q, want always-ask", d.GetKimiOptions().PermissionMode)
+	}
+	d.modelInput.SetValue("session-model")
+	if got := d.GetLaunchModelID(); got != "session-model" {
+		t.Fatalf("GetLaunchModelID() = %q, want session-model", got)
+	}
+}
+
 func TestKnownModelIDsForTool_CodexStartsWithGPT6Tiers(t *testing.T) {
 	want := []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 	got := knownModelIDsForTool("codex")
@@ -443,9 +481,9 @@ func TestDisplayCommandPreset(t *testing.T) {
 func TestDialogPresetCommands(t *testing.T) {
 	d := NewNewDialog()
 
-	// Should have shell (empty), claude, gemini, opencode, opencode2, codex, pi, copilot, crush, muse, cursor, hermes, deepseek, omp.
+	// Should have shell (empty), claude, gemini, opencode, opencode2, codex, pi, copilot, crush, muse, cursor, hermes, deepseek, omp, antigravity, kimi.
 	// opencode2 is a launcher alias; persisted tool identity remains opencode.
-	expectedCommands := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "antigravity"}
+	expectedCommands := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "antigravity", "kimi"}
 
 	if len(d.presetCommands) != len(expectedCommands) {
 		t.Errorf("Expected %d preset commands, got %d", len(expectedCommands), len(d.presetCommands))

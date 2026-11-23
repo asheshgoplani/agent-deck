@@ -35,6 +35,7 @@ type hookPayload struct {
 	HookEventName  string          `json:"hook_event_name"`
 	SessionID      string          `json:"session_id"`
 	ConversationID string          `json:"conversation_id"`
+	ClientType     string          `json:"client_type"`
 	Source         string          `json:"source"`
 	Matcher        json.RawMessage `json:"matcher,omitempty"`
 	// Cwd is the session's working directory (PROJECT_DIR) as reported by
@@ -124,6 +125,9 @@ func rawString(raw json.RawMessage) string {
 // aborted or failed run) it is a status edge. Every other harness is
 // status-only in P1.
 func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
+	if isKimiHookPayload(p) {
+		return "", "", "", ""
+	}
 	turnID := rawString(p.TurnID)
 	switch normalizeHookEventKey(p.HookEventName) {
 	case "userpromptsubmit":
@@ -345,7 +349,11 @@ type hookStatusFile struct {
 	// binds the entry's Hermes session. omitempty keeps other agents' files
 	// unchanged.
 	Platform string `json:"platform,omitempty"`
+	// ClientType identifies Kimi's native hook payload so later status readers
+	// can bind only events from the official CLI.
+	ClientType string `json:"client_type,omitempty"`
 
+	kimiOwnedSessionID string
 	// hermesOwnedSessionID is never written to the status file: it is the
 	// Hermes session id this event records as the entry's own (#2582), saved
 	// to the entry's sidecar once the event passes the generation check.
@@ -374,6 +382,24 @@ func normalizeHookEventKey(event string) string {
 
 func isStopHookEvent(event string) bool {
 	return normalizeHookEventKey(event) == "stop"
+}
+
+func isKimiHookPayload(p hookPayload) bool {
+	return strings.TrimSpace(p.ClientType) == "kimi_code_cli"
+}
+
+func mapHookEventToStatus(p hookPayload) string {
+	if isKimiHookPayload(p) {
+		switch normalizeHookEventKey(p.HookEventName) {
+		case "turnstarted":
+			return "running"
+		case "interrupt", "stopfailure":
+			return "waiting"
+		case "posttooluse", "posttoolusefailure":
+			return "running"
+		}
+	}
+	return mapEventToStatus(p.HookEventName)
 }
 
 // mapEventToStatus maps a hook event to an agent-deck status string.
@@ -485,7 +511,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	}
 	// Issue #2683: a Claude background/supervisor worker carries the env of
 	// whichever pane first started it; never credit its hooks to that pane.
-	if hookFromClaudeBackgroundWorker() {
+	if !isKimiHookPayload(payload) && hookFromClaudeBackgroundWorker() {
 		bgSessionID := strings.TrimSpace(payload.SessionID)
 		if bgSessionID == "" {
 			bgSessionID = strings.TrimSpace(payload.ConversationID)
@@ -550,7 +576,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	}
 
 	// Map event to status
-	status := mapEventToStatus(payload.HookEventName)
+	status := mapHookEventToStatus(payload)
 
 	// Special handling for Notification events: only map to "waiting" if
 	// the matcher indicates a permission prompt or elicitation dialog
@@ -587,7 +613,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	}
 
 	scan := doneScanResult{}
-	if isStopHookEvent(payload.HookEventName) {
+	if !isKimiHookPayload(payload) && isStopHookEvent(payload.HookEventName) {
 		scan = detectDoneSentinel(data)
 	}
 	var pi piRunInfo
@@ -600,7 +626,10 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	if claudeTurnEdge(payload) == "prompt" {
 		promptFrom = session.PromptSender(rawString(payload.Prompt))
 	}
-	writeHookStatusFull(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt, pi, promptFrom)
+	writeHookStatusFull(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), payload.ClientType, scan, receivedAt, pi, promptFrom)
+	if isKimiHookPayload(payload) {
+		return
+	}
 	if payload.HookEventName == "PreToolUse" {
 		// This high-frequency edge only publishes activity. Lifecycle hooks
 		// still own metadata reconciliation, costs, and Recall indexing.
@@ -804,7 +833,7 @@ func writeHookStatusReceivedAt(instanceID, status, sessionID, event, cwd string,
 // writeHookStatusReceivedAtPlatform also records the payload's platform
 // (Hermes extra.platform), used to keep delegate events from binding.
 func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time) {
-	writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform, scan, receivedAt, piRunInfo{}, "")
+	writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform, "", scan, receivedAt, piRunInfo{}, "")
 }
 
 // piRunInfo is what a pi extension's turn_start and turn_end say about their
@@ -823,7 +852,7 @@ func rawBool(raw json.RawMessage) bool {
 
 // promptFrom is the sender of a tagged Claude prompt (UserPromptSubmit
 // only; "" otherwise).
-func writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time, pi piRunInfo, promptFrom string) {
+func writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform, clientType string, scan doneScanResult, receivedAt time.Time, pi piRunInfo, promptFrom string) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -841,21 +870,25 @@ func writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform str
 	sessionID = strings.TrimSpace(sessionID)
 
 	statusFile := hookStatusFile{
-		Status:    status,
-		SessionID: sessionID,
-		Event:     event,
-		Timestamp: time.Now().Unix(),
-		Cwd:       strings.TrimSpace(cwd),
-		Platform:  platform,
-		Settles:   pi.Settles,
-		PiRunID:   pi.RunID,
-		piSource:  pi.Source,
+		Status:     status,
+		SessionID:  sessionID,
+		Event:      event,
+		Timestamp:  time.Now().Unix(),
+		Cwd:        strings.TrimSpace(cwd),
+		Platform:   platform,
+		ClientType: strings.TrimSpace(clientType),
+		Settles:    pi.Settles,
+		PiRunID:    pi.RunID,
+		piSource:   pi.Source,
 
 		PromptFromID: strings.TrimSpace(promptFrom),
 	}
 	if os.Getenv("AGENTDECK_TOOL") == "hermes" && session.HermesHookRecordsOwnSession(event, platform, sessionID) {
 		statusFile.hermesOwnedSessionID = sessionID
 		statusFile.hermesPlatformKnown = strings.TrimSpace(platform) != ""
+	}
+	if os.Getenv("AGENTDECK_TOOL") == "kimi" && isKimiHookPayload(hookPayload{ClientType: clientType}) && normalizeHookEventKey(event) == "sessionstart" {
+		statusFile.kimiOwnedSessionID = sessionID
 	}
 	if scan.signal != nil {
 		statusFile.DoneStatus = scan.signal.Status
@@ -1055,14 +1088,27 @@ func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mut
 			return false
 		}
 		hermesCwdRoots = control.CwdRoots
+		eventKey := normalizeHookEventKey(statusFile.Event)
+		kimiEvent := statusFile.ClientType == "kimi_code_cli"
+		if mutateAnchor && statusFile.kimiOwnedSessionID != "" {
+			if err := session.WriteKimiOwnedSessionID(instanceID, statusFile.kimiOwnedSessionID, statusFile.Cwd, hermesCwdRoots); err != nil {
+				hookHandlerLog.Warn("kimi_owned_session_write_failed",
+					slog.String("instance", instanceID),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
 		// StartWithMessage stays running until the agent-level completion edge.
-		if normalizeHookEventKey(statusFile.Event) == "onsessionstart" && control.InitialMessagePending {
+		if eventKey == "onsessionstart" && control.InitialMessagePending {
 			return false
+		}
+		if kimiEvent && eventKey == "sessionstart" && control.InitialMessagePending {
+			statusFile.Status = "running"
 		}
 		control.NextSequence++
 		statusFile.HookGeneration, statusFile.Sequence = generation, control.NextSequence
-		completionEvent := normalizeHookEventKey(statusFile.Event)
-		if completionEvent == "postllmcall" || completionEvent == "onsessionend" {
+		if eventKey == "postllmcall" || eventKey == "onsessionend" ||
+			(kimiEvent && (eventKey == "stop" || eventKey == "interrupt" || eventKey == "stopfailure" || eventKey == "sessionend")) {
 			control.InitialMessagePending = false
 		}
 		statusFile.InitialMessagePending = control.InitialMessagePending

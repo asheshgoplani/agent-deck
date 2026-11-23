@@ -57,7 +57,7 @@ func (fs *Findings) warnf(field, format string, args ...any) {
 // profession; the post picks the tool. Catching this at validation is what
 // keeps "switch harness with one field" honest.
 var harnessTokens = []string{
-	"claude", "codex", "deepseek", "hermes", "gemini", "copilot", "tmux",
+	"claude", "codex", "deepseek", "hermes", "gemini", "copilot", "kimi", "tmux",
 }
 
 // Credential detection is best-effort in BOTH directions and is documented as

@@ -4,6 +4,14 @@
   "title": "session.start input",
   "type": "object",
   "properties": {
+    "auto": {
+      "description": "Enable Never Ask mode for Kimi sessions",
+      "type": "boolean"
+    },
+    "auto_set": {
+      "description": "Whether the user explicitly set --auto, including false; implied by auto:true",
+      "type": "boolean"
+    },
     "message": {
       "description": "Initial message to send once the agent is ready",
       "type": "string"
@@ -21,7 +29,11 @@
       "type": "string"
     },
     "yolo": {
-      "description": "Enable YOLO mode for Gemini, Codex or Hermes sessions",
+      "description": "Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)",
+      "type": "boolean"
+    },
+    "yolo_set": {
+      "description": "Whether the user explicitly set --yolo, including false; implied by yolo:true",
       "type": "boolean"
     }
   },

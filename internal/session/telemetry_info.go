@@ -20,7 +20,7 @@ import (
 var toolBinaries = map[string]string{
 	"claude": "claude", "codex": "codex", "gemini": "gemini", "opencode": "opencode",
 	"pi": "pi", "copilot": "copilot", "crush": "crush", "cursor": "cursor-agent",
-	"hermes": "hermes", "deepseek": "deepseek", "aider": "aider",
+	"hermes": "hermes", "deepseek": "deepseek", "aider": "aider", "kimi": "kimi",
 }
 
 // TelemetrySummary is what telemetry needs from the loaded sessions: counts

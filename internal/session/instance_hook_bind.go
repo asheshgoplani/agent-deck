@@ -237,6 +237,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	switch {
 	case i.Tool == "hermes":
 		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.Platform, status.Cwd, status.UpdatedAt)
+	case i.Tool == "kimi":
+		if !i.bindKimiSessionFromHook(sessionID, hookSource, status.Event, status.ClientType, status.Cwd, status.UpdatedAt) {
+			restoreHook()
+		}
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
 			// Review finding on #1830: same rationale as the sibling equality
@@ -549,7 +553,7 @@ func (i *Instance) ClearHookStatus() {
 	// this evidence has no other way to survive. Outside i.mu: the SQLite
 	// write can stall on SQLITE_BUSY (see persistLastActivity).
 	i.persistLastActivity(true)
-	if i.Tool == "hermes" {
+	if i.Tool == "hermes" || i.Tool == "kimi" {
 		i.clearHermesHookStatuses()
 		return
 	}

@@ -15,6 +15,7 @@ import "strings"
 var hookStatusToolNames = map[string]bool{
 	"gemini": true,
 	"hermes": true,
+	"kimi":   true,
 	"cursor": true,
 	// pi (pi-coding-agent) emits through the agent-deck extension that
 	// `agent-deck pi-hooks install` writes into pi's extensions dir (#2222).

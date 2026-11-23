@@ -62,6 +62,10 @@ var table = []Entry{
 		InstallCommand: "brew install --cask antigravity-cli",
 		LoginCommand:   "agy",
 		DocsURL:        "https://antigravity.google/docs/cli/overview/"},
+	{Name: "kimi", DisplayName: "Kimi Code", Binary: "kimi", VersionArgs: []string{"--version"},
+		InstallCommand: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
+		LoginCommand:   "kimi login",
+		DocsURL:        "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html"},
 }
 
 // All returns the table with overrides applied, in table order.
