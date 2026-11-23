@@ -64,10 +64,12 @@ func TestServer_TracksInFlightRequests(t *testing.T) {
 	<-streamDone
 
 	for path, want := range map[string]bool{
-		"/events/command-center": true,
-		"/api/costs/stream":      true,
-		"/ws/session/abc":        false,
-		"/api/sessions":          false,
+		"/events/command-center":            true,
+		"/api/costs/stream":                 true,
+		"/api/sessions/abc/timeline/stream": true,
+		"/api/sessions/abc/timeline":        false,
+		"/ws/session/abc":                   false,
+		"/api/sessions":                     false,
 	} {
 		if got := isStreamPath(path); got != want {
 			t.Errorf("isStreamPath(%q) = %v, want %v", path, got, want)

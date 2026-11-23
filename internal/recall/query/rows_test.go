@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -452,8 +453,16 @@ func TestRowsFollowResync(t *testing.T) {
 	lines := fixtureLines(t, "claude")
 	appendFile(t, path, bytes.Join(lines[:6], nil))
 	_, cursor := readRowsT(t, "claude", path, RowsOptions{})
+	// CheckFollowCursor, which a server calls before it takes a stream
+	// slot, gives the reason the follow's resync_required frame carries.
 	run := func(src RowsSource, after string) RowFrame {
 		var got RowFrame
+		defer func() {
+			var re *ResyncError
+			if err := CheckFollowCursor(src, after); !errors.As(err, &re) || re.Reason != got.Reason {
+				t.Errorf("CheckFollowCursor(%q) = %v, want resync %s", after, err, got.Reason)
+			}
+		}()
 		err := FollowRows(context.Background(), src, after, 10*time.Millisecond, nil, nil, func(f RowFrame) error {
 			got = f
 			if f.Frame == "resync_required" {
@@ -467,6 +476,9 @@ func TestRowsFollowResync(t *testing.T) {
 		return got
 	}
 	src := RowsSource{Harness: "claude", Path: path}
+	if err := CheckFollowCursor(src, cursor); err != nil {
+		t.Fatalf("CheckFollowCursor(valid) = %v", err)
+	}
 	if f := run(src, "not-a-cursor"); f.Reason != "invalid_cursor" {
 		t.Errorf("invalid cursor: %+v", f)
 	}
@@ -502,6 +514,32 @@ func TestRowsFollowSourceMovedByResolver(t *testing.T) {
 	err := FollowRows(context.Background(), src, cursor, 10*time.Millisecond, nil, nil, func(f RowFrame) error { got = f; return nil })
 	if err != nil || got.Frame != "resync_required" || got.Reason != "source_moved" {
 		t.Fatalf("resolver move: %v %+v", err, got)
+	}
+}
+
+// A resolver that says the session no longer resolves to one file ends the
+// follow with resync_required; any other resolver error is transient.
+func TestRowsFollowSourceUnresolved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pi.jsonl")
+	appendFile(t, path, fixtureLines(t, "claude")[0])
+	_, cursor := readRowsT(t, "claude", path, RowsOptions{})
+	src := RowsSource{Harness: "claude", Path: path, Resolve: func() (string, error) {
+		return "", fmt.Errorf("%w: two session documents", ErrSourceUnresolved)
+	}}
+	var got RowFrame
+	err := FollowRows(context.Background(), src, cursor, 10*time.Millisecond, nil, nil, func(f RowFrame) error { got = f; return nil })
+	if err != nil || got.Frame != "resync_required" || got.Reason != "source_unresolved" {
+		t.Fatalf("unresolved source: %v %+v", err, got)
+	}
+
+	src.Resolve = func() (string, error) { return "", errors.New("rollout not written yet") }
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	got = RowFrame{}
+	err = FollowRows(ctx, src, cursor, 10*time.Millisecond, nil, nil, func(f RowFrame) error { got = f; return nil })
+	if !errors.Is(err, context.DeadlineExceeded) || got.Frame == "resync_required" {
+		t.Fatalf("transient resolver error ended the follow: %v %+v", err, got)
 	}
 }
 
@@ -788,5 +826,62 @@ func TestRowsBeforeSnapshotAppendAndMissingBoundary(t *testing.T) {
 	var resync *ResyncError
 	if !errors.As(err, &resync) || resync.Reason != "row_boundary_missing" {
 		t.Fatalf("missing row boundary: %v", err)
+	}
+}
+
+// Cursors and agent ids reach ReadRows from the web timeline route, so a
+// path with ".." in either is refused before anything is opened.
+func TestReadRowsRefusesDotDotPaths(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "a.jsonl")
+	if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cursor := encodeRowsCursor(rowsCursor{P: filepath.Join(dir, "sub") + "/../a.jsonl", O: 0})
+	var re *ResyncError
+	if _, err := ReadRows(context.Background(), RowsSource{Harness: "claude"}, RowsOptions{Since: cursor}); !errors.As(err, &re) || re.Reason != "invalid_cursor" {
+		t.Fatalf("cursor with ..: err = %v, want resync invalid_cursor", err)
+	}
+	if _, err := ReadRows(context.Background(), RowsSource{Harness: "claude", Path: target}, RowsOptions{AgentID: "../../a"}); err == nil || !strings.Contains(err.Error(), "invalid agent id") {
+		t.Fatalf("agent with ..: err = %v, want invalid agent id", err)
+	}
+}
+
+// A trusted source path may hold ".." inside a name (a home folder like
+// a..b). Its own cursors keep paging and following.
+func TestReadRowsPagesSourceWithDotDotInAName(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "my..home")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "conversation.jsonl")
+	var b strings.Builder
+	for i := 0; i < 4; i++ {
+		b.WriteString(`{"type":"user","uuid":"u` + string(rune('0'+i)) + `","message":{"role":"user","content":[{"type":"text","text":"q"}]}}` + "\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := RowsSource{Harness: "claude", Path: path}
+	tail, err := ReadRows(context.Background(), src, RowsOptions{Tail: 2})
+	if err != nil || len(tail.Turns) != 2 {
+		t.Fatalf("tail: %d rows, err %v", len(tail.Turns), err)
+	}
+	if _, err := ReadRows(context.Background(), src, RowsOptions{Since: tail.ThroughCursor}); err != nil {
+		t.Fatalf("since own cursor: %v", err)
+	}
+	older, err := ReadRows(context.Background(), src, RowsOptions{Before: tail.BeforeCursor, Limit: 2})
+	if err != nil || len(older.Turns) != 2 {
+		t.Fatalf("before own cursor: %d rows, err %v", len(older.Turns), err)
+	}
+	c, err := decodeRowsCursor(tail.ThroughCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := cursorPath(src, c); err != nil || got != path {
+		t.Fatalf("follow path = %q, %v; want %q", got, err, path)
 	}
 }

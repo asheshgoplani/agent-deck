@@ -204,7 +204,7 @@ func handleSessionCleanup(profile string, args []string) {
 	yesShort := fs.Bool("y", false, "Actually delete (short for --yes)")
 	dryRun := fs.Bool("dry-run", false, "Preview only; never delete even with --yes")
 	includeArchived := fs.Bool("include-archived", false, "Also consider archived sessions (excluded by default)")
-	force := fs.Bool("force", false, "Also include pinned sessions (pinned are retained by default)")
+	force := fs.Bool("force", false, "Also include pinned sessions (pinned are retained by default); with --prune-worktree, also remove a worktree when other profiles that cannot be read might use it (reported as profiles_unchecked in --json)")
 	pruneWorktree := fs.Bool("prune-worktree", false, "Also delete each session's git worktree directory (DESTRUCTIVE: discards uncommitted work)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -310,7 +310,7 @@ func handleSessionCleanup(profile string, args []string) {
 		return
 	}
 
-	removed := bulkRemoveSessions(out, storage, instances, groups, candidates, *pruneWorktree)
+	removed := bulkRemoveSessions(out, storage, instances, groups, candidates, *pruneWorktree, newWorktreeRemovalGuard(profile), *force)
 
 	msg := fmt.Sprintf("Removed %d dead session(s).", len(removed))
 	if pinnedSkipped > 0 {

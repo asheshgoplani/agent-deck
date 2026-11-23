@@ -40,7 +40,6 @@ const (
 	switchFuzzyGap       = 0.15
 	switchActiveBonus    = 0.02
 	switchMaxCandidates  = 5
-	switchMinIDPrefix    = 4
 )
 
 type switchMatchResult struct {
@@ -61,47 +60,63 @@ func switchTargets(instances []*session.InstanceData) []switchTarget {
 	return out
 }
 
-// matchSwitchTarget resolves a query in this order: exact id, unique id
-// prefix, exact title (case-insensitive), then the voice daemon's strict
-// fuzzy score over the title, with the group path as extra words. It never
-// guesses: two equally good sessions are ambiguous.
+// withLiveSwitchStatus replaces each target's stored status with its live
+// one (the status list shows), so the candidates and the live-session bonus
+// agree with list. A target missing from live keeps its stored status.
+func withLiveSwitchStatus(targets []switchTarget, live map[string]string) []switchTarget {
+	for i := range targets {
+		if st, ok := live[targets[i].ID]; ok && st != "" {
+			targets[i].Status = st
+		}
+	}
+	return targets
+}
+
+// matchSwitchTarget resolves a query by the rule every command shares
+// (matchSessionRef: exact id, exact title, unique id prefix, title ignoring
+// case and leading decoration), then, as an extra of switch only, by the
+// voice daemon's strict fuzzy score over the title, with the group path as
+// extra words. It never guesses: two equally good sessions are ambiguous.
+// The order is the one of the session verbs, so a name goes to the same
+// session on both. One extra tie: a switch query is often a spoken name,
+// which has no letter case and no marker, so a title that matched in its
+// stored spelling while another title differs from it only in case or in
+// leading decoration ("api-server" and "API-Server", "gamma" and "🎙 gamma")
+// is ambiguous here, where a typed `session show api-server` takes the
+// stored spelling.
 func matchSwitchTarget(query string, targets []switchTarget) switchMatchResult {
 	q := strings.TrimSpace(query)
 	if q == "" {
 		return switchMatchResult{Kind: switchMatchNone}
 	}
-	for _, t := range targets {
-		if t.ID == q {
-			return switchMatchResult{Kind: switchMatchOne, Target: t}
-		}
-	}
-	var byPrefix []switchTarget
-	if utf8.RuneCountInString(q) >= switchMinIDPrefix && !strings.ContainsAny(q, " \t") {
+	index, tied, tiedOn := matchSessionRef(q, len(targets),
+		func(i int) string { return targets[i].ID },
+		func(i int) string { return strings.TrimSpace(targets[i].Title) })
+	if index >= 0 && targets[index].ID != q && strings.TrimSpace(targets[index].Title) == q {
+		var sameName []switchTarget
 		for _, t := range targets {
-			if strings.HasPrefix(t.ID, q) {
-				byPrefix = append(byPrefix, t)
+			if sameSessionTitle(t.Title, q) {
+				sameName = append(sameName, t)
 			}
 		}
-		if len(byPrefix) == 1 {
-			return switchMatchResult{Kind: switchMatchOne, Target: byPrefix[0]}
+		if len(sameName) > 1 {
+			return ambiguousSwitch(sameName, 1)
 		}
 	}
-	var byTitle []switchTarget
-	for _, t := range targets {
-		if strings.EqualFold(strings.TrimSpace(t.Title), q) {
-			byTitle = append(byTitle, t)
-		}
+	if index >= 0 {
+		return switchMatchResult{Kind: switchMatchOne, Target: targets[index]}
 	}
-	switch {
-	case len(byTitle) == 1:
-		return switchMatchResult{Kind: switchMatchOne, Target: byTitle[0]}
-	case len(byTitle) > 1:
-		return ambiguousSwitch(byTitle, 1)
+	tiedTargets := make([]switchTarget, 0, len(tied))
+	for _, i := range tied {
+		tiedTargets = append(tiedTargets, targets[i])
 	}
-	if r := fuzzySwitchMatch(q, targets); r.Kind != switchMatchNone || len(byPrefix) < 2 {
+	if tiedOn == sessionRefTiedTitle {
+		return ambiguousSwitch(tiedTargets, 1)
+	}
+	if r := fuzzySwitchMatch(q, targets); r.Kind != switchMatchNone || tiedOn != sessionRefTiedID {
 		return r
 	}
-	return ambiguousSwitch(byPrefix, 1)
+	return ambiguousSwitch(tiedTargets, 1)
 }
 
 func ambiguousSwitch(targets []switchTarget, score float64) switchMatchResult {
@@ -176,11 +191,13 @@ var (
 	switchStopWords = map[string]bool{"the": true, "session": true, "a": true, "to": true, "my": true, "one": true, "please": true}
 )
 
-// switchTokens is the voice daemon's tokens(): lowercase Latin, Devanagari
-// and digit words, punctuation as spaces, stop words dropped.
+// switchTokens is the voice daemon's tokens(): case-folded Latin,
+// Devanagari and digit words, punctuation as spaces, stop words dropped.
+// Words are folded with foldSessionRef, so two words are equal exactly when
+// strings.EqualFold says so (the exact-title pass compares the same way).
 func switchTokens(text string) []string {
 	var out []string
-	for _, w := range strings.Fields(switchNonWord.ReplaceAllString(strings.ToLower(text), " ")) {
+	for _, w := range strings.Fields(switchNonWord.ReplaceAllString(foldSessionRef(text), " ")) {
 		if !switchStopWords[w] {
 			out = append(out, w)
 		}

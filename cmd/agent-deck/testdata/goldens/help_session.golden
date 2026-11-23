@@ -5,7 +5,7 @@ Manage individual sessions.
 Commands:
   start <id>              Start a session's tmux process
   stop <id>               Stop/kill session process
-  remove <id>             Remove session from registry (stopped/error only; --force to bypass)
+  remove <id>             Remove session from registry (live process needs --force)
   cleanup [--days N]      Purge dead sessions idle N+ days (dry-run unless --yes)
   archive <id|title>      Stop session and hide it from active lists (retained in storage)
   unarchive <id|title>    Restore an archived session (does not restart it)

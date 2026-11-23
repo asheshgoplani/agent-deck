@@ -251,8 +251,17 @@ func CreateProfile(profile string) error {
 	return nil
 }
 
-// DeleteProfile deletes a profile and all its data
-func DeleteProfile(profile string) error {
+// CheckProfileDeletable returns an error when profile cannot be deleted: it
+// does not exist, or it is the default profile and the only one left. The CLI
+// calls it before asking for confirmation; DeleteProfile calls it again.
+func CheckProfileDeletable(profile string) error {
+	exists, err := ProfileExists(profile)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("profile '%s' does not exist", profile)
+	}
 	// Prevent deleting the default profile if it's the only one
 	if profile == DefaultProfile {
 		profiles, err := ListProfiles()
@@ -263,19 +272,19 @@ func DeleteProfile(profile string) error {
 			return fmt.Errorf("cannot delete the only remaining profile")
 		}
 	}
+	return nil
+}
+
+// DeleteProfile deletes a profile and all its data. It does not stop the
+// profile's sessions: callers refuse while any of them runs.
+func DeleteProfile(profile string) error {
+	if err := CheckProfileDeletable(profile); err != nil {
+		return err
+	}
 
 	profileDir, err := GetProfileDir(profile)
 	if err != nil {
 		return err
-	}
-
-	// Check if profile exists
-	exists, err := ProfileExists(profile)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("profile '%s' does not exist", profile)
 	}
 
 	// Remove the profile directory

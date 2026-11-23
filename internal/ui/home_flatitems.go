@@ -274,6 +274,55 @@ func (h *Home) skipDivider(dir int) {
 	}
 }
 
+// remoteSessionChildCount is sessionChildCount for a remote parent row
+// (#3223): the children nested under it in the current view, as
+// rebuildFlatItems counted them. A child row never folds (the tree nests one
+// level), and flat sidebar mode has no folds, so both count 0.
+func (h *Home) remoteSessionChildCount(item session.Item) int {
+	if item.Type != session.ItemTypeRemoteSession || item.RemoteSession == nil || item.IsSubSession {
+		return 0
+	}
+	if h.embeddedLayout && h.sidebarMode == sidebarFlat {
+		return 0
+	}
+	return h.remoteChildCounts[item.RemoteName][item.RemoteSession.ID]
+}
+
+// isRemoteParentFolded reports whether the remote parent id on remoteName has
+// its child list folded shut (#3223).
+func (h *Home) isRemoteParentFolded(remoteName, id string) bool {
+	return h.remoteParentChildrenCollapsed[remoteName][id]
+}
+
+// setRemoteParentFolded folds a remote parent's child list open or shut
+// (#3223), rebuilds the tree and keeps the cursor on the parent row. Returns
+// false when the state was already what was asked for.
+func (h *Home) setRemoteParentFolded(remoteName, id string, folded bool) bool {
+	if h.isRemoteParentFolded(remoteName, id) == folded {
+		return false
+	}
+	if folded {
+		if h.remoteParentChildrenCollapsed == nil {
+			h.remoteParentChildrenCollapsed = make(map[string]map[string]bool)
+		}
+		if h.remoteParentChildrenCollapsed[remoteName] == nil {
+			h.remoteParentChildrenCollapsed[remoteName] = make(map[string]bool)
+		}
+		h.remoteParentChildrenCollapsed[remoteName][id] = true
+	} else {
+		delete(h.remoteParentChildrenCollapsed[remoteName], id)
+		if len(h.remoteParentChildrenCollapsed[remoteName]) == 0 {
+			delete(h.remoteParentChildrenCollapsed, remoteName)
+		}
+	}
+	h.rebuildFlatItems()
+	if idx := h.remoteFlatItemIndex(remoteName, id); idx >= 0 {
+		h.cursor = idx
+	}
+	_ = h.saveUIStateErr() // view preference; a dropped save self-heals next toggle
+	return true
+}
+
 // moveCursorToGroup moves the cursor to the flat item matching the given group path.
 func (h *Home) moveCursorToGroup(path string) {
 	for i, fi := range h.flatItems {
@@ -726,11 +775,14 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	// Header counts are taken once here from the same in-view slices the
 	// renderer used to rescan per header per frame (finding 11).
 	h.remoteHeaderCounts = make(map[string]remoteHeaderCount)
+	h.remoteChildCounts = make(map[string]map[string]int)
 	if len(remotes) > 0 {
+		flat := h.embeddedLayout && h.sidebarMode == sidebarFlat
 		collapsed := h.remoteGroupsCollapsed
-		if h.embeddedLayout && h.sidebarMode == sidebarFlat {
+		if flat {
 			// Flat presentation has no headers to reopen hidden descendants.
 			// Keep the saved folds for the next switch to grouped presentation.
+			// Parent folds (#3223) are skipped the same way below.
 			collapsed = nil
 		}
 		for _, remoteName := range remoteNames {
@@ -759,8 +811,19 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			// active view, empty remote groups get a header row too, like an
 			// empty local group; any filter or the archived view hides them.
 			showEmptyGroups := !viewArchived && h.timeFilter == session.TimeFilterAll && h.statusFilter == ""
+			// #3223: a folded parent hides the children it nests here, and
+			// the builder counts each parent's children from these same
+			// filtered rows, so a parent the filters left out folds nothing
+			// and gets no badge.
+			var parentFolds map[string]bool
+			var childCounts map[string]int
+			if !flat {
+				parentFolds = h.remoteParentChildrenCollapsed[remoteName]
+				childCounts = make(map[string]int)
+				h.remoteChildCounts[remoteName] = childCounts
+			}
 			// #2947: "Active on top" splits each remote's own section too.
-			rows := buildRemoteFlatItemsForViewMode(remoteName, sessions, collapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups, h.groupViewMode, h.viewModeOpts)
+			rows := buildRemoteFlatItemsForViewMode(remoteName, sessions, collapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups, h.groupViewMode, h.viewModeOpts, parentFolds, childCounts)
 			for _, row := range rows {
 				// An empty group's header has no session to count; give it
 				// a zero entry so the renderer never falls back to a scan.

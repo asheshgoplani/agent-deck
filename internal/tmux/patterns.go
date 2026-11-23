@@ -57,6 +57,18 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			BusyPatterns:   []string{"esc to cancel"},
 			PromptPatterns: []string{"gemini>", "Type your message"},
 		}
+	case "antigravity":
+		return &RawPatterns{
+			BusyPatterns: []string{"re:" + antigravityBusyFooter},
+			PromptPatterns: []string{
+				"re:" + antigravityReadyFooter,
+				// The session is waiting for a person, not ready for a
+				// message. HasPrompt deliberately recognizes only the composer.
+				`re:(?m)^[ \t]*Select login method:[ \t]*\n[ \t>]*1\. Google OAuth\b`,
+				`re:(?m)^[ \t]*(?:Trust this folder\?|Do you trust the contents of this project\?)[ \t]*$`,
+				`re:(?im)^[ \t]*(?:(?:choose|select) (?:your |a )?(?:colou?r scheme|rendering mode)|rendering mode)[:?]?[ \t]*$`,
+			},
+		}
 	case "kimi":
 		return &RawPatterns{
 			BusyPatterns: []string{

@@ -86,7 +86,7 @@ Read the analyzer.md file first. Then read INPUT_PATH. Then write OUTPUT_PATH pe
         fi
 
         agent-deck session stop "analyze-$conductor-$sid" --quiet >/dev/null 2>&1 || true
-        agent-deck rm "analyze-$conductor-$sid" >/dev/null 2>&1 || true
+        agent-deck rm --force "analyze-$conductor-$sid" >/dev/null 2>&1 || true
 
         if [[ $idx -lt $total ]]; then
             sleep "$PACE"
@@ -118,7 +118,7 @@ Read every file in REPORTS_DIR and produce the merged FINDINGS.md at OUTPUT_PATH
             log "  [$conductor] FAIL synthesizer"
         fi
         agent-deck session stop "synthesize-$conductor" --quiet >/dev/null 2>&1 || true
-        agent-deck rm "synthesize-$conductor" >/dev/null 2>&1 || true
+        agent-deck rm --force "synthesize-$conductor" >/dev/null 2>&1 || true
     else
         log "  [$conductor] no reports, skipping synthesizer"
     fi

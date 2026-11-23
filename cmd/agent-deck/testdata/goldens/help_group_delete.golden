@@ -4,7 +4,7 @@ Delete a group.
 
 Options:
   -force
-    	Move sessions to parent and delete
+    	Move sessions (also those of its subgroups) to the parent group (to My Sessions for a root group) and delete the group and its subgroups
   -json
     	Output as JSON
   -q	Minimal output (short)
@@ -13,4 +13,5 @@ Options:
 
 Examples:
   agent-deck group delete experiments
-  agent-deck group delete work --force   # Move sessions to parent
+  agent-deck group delete work/api --force   # Move its sessions to the parent group (work)
+  agent-deck group delete work --force       # Root group: move its sessions to My Sessions

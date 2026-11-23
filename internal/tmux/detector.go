@@ -64,6 +64,12 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 	case "gemini":
 		return d.hasGeminiPrompt(content)
 
+	case "antigravity":
+		content = StripANSI(content)
+		return antigravityPrompt.MatchString(content) &&
+			!antigravityBusy.MatchString(content) &&
+			!antigravityMenuAfterFooter(content)
+
 	case "codex":
 		// Codex/OpenAI CLI patterns.
 		// Busy indicators take priority over prompt markers, but only when the
@@ -97,6 +103,59 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)
 	}
+}
+
+// Antigravity places its status footer below the ruled composer. Require the
+// footer at the end of the pane: inline mode can leave old frames in view.
+// A bare '>' also appears in transcripts and onboarding menus.
+const (
+	antigravityComposerFrame = `(?m)^[ \t]*─{5,}[ \t]*\n[ \t]*>[^\n]*(?:\n[ \t]*(?:[^─ \t\n][^\n]*)?)*\n[ \t]*─{5,}[ \t]*\n[^\n]*`
+	// Allow a toast or extra status rows, but not enough lines for a newer
+	// composer to have replaced the matched one.
+	antigravityFooterEnd   = `[^\n]*(?:\n[^\n]*){0,3}(?:\n[ \t]*)*\z`
+	antigravityReadyFooter = antigravityComposerFrame + `\? for shortcuts\b` + antigravityFooterEnd
+	antigravityBusyFooter  = antigravityComposerFrame + `(?i:\besc to (?:cancel|interrupt)\b)` + antigravityFooterEnd
+)
+
+var (
+	antigravityPrompt = regexp.MustCompile(antigravityReadyFooter)
+	antigravityBusy   = regexp.MustCompile(antigravityBusyFooter)
+	// antigravityMenuRow matches a sign-in, workspace-trust or first-run row.
+	antigravityMenuRow = regexp.MustCompile(`(?i)(?:Trust this folder\?|Do you trust the contents of this project\?|Select login method:|\d+\. Google OAuth\b|(?:Choose|Select) (?:your |a )?(?:colou?r scheme|rendering mode)|Rendering mode\b)`)
+)
+
+// antigravityMenuAfterFooter rejects a matched ready footer when a menu row
+// follows it. Inline redraw can leave an old composer and its footer visible
+// above a sign-in, workspace-trust or first-run menu, and those rows fit in
+// the footer tail; typing into them (Enter selects the highlighted row) can
+// grant workspace trust.
+func antigravityMenuAfterFooter(content string) bool {
+	// The last footer is the live one; an earlier mention may be a quoted
+	// transcript line above a stale composer.
+	idx := strings.LastIndex(content, "? for shortcuts")
+	if idx < 0 {
+		return false
+	}
+	rest := content[idx:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[nl+1:]
+	} else {
+		return false
+	}
+	seen := 0
+	for _, line := range strings.Split(rest, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if antigravityMenuRow.MatchString(line) {
+			return true
+		}
+		if seen++; seen >= 3 {
+			// The ready footer allows a toast or status rows, not a menu.
+			return false
+		}
+	}
+	return false
 }
 
 func (d *PromptDetector) hasOMPPrompt(content string) bool {
@@ -1089,9 +1148,9 @@ func claudeFooterBelow(lines []string) bool {
 }
 
 // AgentComposerVisible reports whether the pane shows the input composer of
-// an agent that reads a pasted @path (Claude Code, Gemini): the remote attach
-// turns Ctrl+V with a clipboard image into an upload only then, never in an
-// editor, a shell or a dialog that happens to run in the pane. For Claude the
+// an agent that reads pasted image paths (Claude Code, Gemini, OpenCode).
+// Remote attach turns Ctrl+V with a clipboard image into an upload only then,
+// not in an editor, shell, or dialog that happens to run in the pane. For Claude the
 // composer is its prompt line (❯, or > on older builds; empty or with a draft)
 // between two horizontal rules, the lower one in the pane's last 8 lines;
 // a busy turn keeps the composer, so a paste then queues as typed text does.
@@ -1123,6 +1182,76 @@ func AgentComposerVisible(tool, content string) bool {
 		return false
 	case "gemini":
 		return NewPromptDetector("gemini").HasPrompt(content)
+	case "opencode", "opencode2":
+		return hasOpenCodeComposer(content)
 	}
 	return false
 }
+
+// OpenCode keeps this frame and a footer below it even when the placeholder
+// has been replaced by a draft. Require the intact frame near the bottom: a
+// dialog can leave fragments of the composer visible behind it.
+func hasOpenCodeComposer(content string) bool {
+	// A dialog leaves the composer visible behind its semi-transparent
+	// backdrop, and the transcript beside it keeps its text, so match the
+	// close label anywhere on the row rather than at the line start.
+	if openCodeModalHeader.MatchString(content) {
+		return false
+	}
+	lines := recentTailLines(content, 8)
+	// The home screen may show a version (including prereleases) below the frame.
+	if n := len(lines); n > 0 && openCodeVersionLine.MatchString(strings.TrimSpace(lines[n-1])) {
+		lines = lines[:n-1]
+	}
+	// The hints under the frame are optional: OpenCode hides them below 44
+	// columns and when the usage readout leaves no room, and either the
+	// readout or nothing at all can be the last line instead.
+	if n := len(lines); n > 1 && !openCodeFrameBorder(lines[n-1]) {
+		if !openCodeComposerFooterLine(lines[n-1]) {
+			return false
+		}
+		lines = lines[:n-1]
+	}
+	n := len(lines)
+	if n < 2 || !openCodeFrameBorder(lines[n-1]) {
+		return false
+	}
+	// A real composer draws at least three consecutive spine rows above the
+	// guide (blank, draft, blank, "Build · …"). A dialog can leave the guide
+	// and footer visible while covering all but one or two rows above it, so
+	// counting the spine keeps that pane closed to a paste.
+	spines := 0
+	for i := n - 2; i >= 0 && strings.HasPrefix(strings.TrimSpace(lines[i]), "┃"); i-- {
+		spines++
+	}
+	return spines >= 3
+}
+
+// openCodeFrameBorder matches the composer's bottom rule: a left spine and
+// then only the upper-half block, with nothing after it.
+func openCodeFrameBorder(line string) bool {
+	rule := strings.TrimSpace(line)
+	return strings.HasPrefix(rule, "╹▀▀▀▀▀") &&
+		strings.Trim(strings.TrimPrefix(rule, "╹"), "▀") == ""
+}
+
+// openCodeComposerFooterLine reports whether a line below the frame is
+// compatible with the composer's footer. The command-palette shortcut is
+// user-configurable and the hint may be absent, so only what proves the pane
+// is somewhere else is rejected: shell mode, an interrupted turn, or a shell
+// prompt where the agent used to be.
+func openCodeComposerFooterLine(line string) bool {
+	return !openCodeFooterElsewhere.MatchString(line)
+}
+
+var (
+	openCodeVersionLine = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`)
+	// A dialog title or footer row: the close label sits a few columns right
+	// of some text, followed by padding or the end of the line. Shell mode
+	// reads "esc exit shell mode", which the optional label does not match.
+	openCodeModalHeader = regexp.MustCompile(`(?m)\S {4,}esc(?:/enter| close)?(?: {2,}| *$)`)
+	// Footers that mean the pane is not sitting at an idle composer. Shell
+	// prompts count even when the frame above them survived: a footerless
+	// pane can end on `❯`, `➜` or `bash-5.2$` after OpenCode exits.
+	openCodeFooterElsewhere = regexp.MustCompile(`(?i)\besc (?:again to interrupt|interrupt|exit shell mode|shell)\b|^\s*[$%#❯➜>](?:\s|$)|^\s*[\w.-]+@[\w.-]+:|[$#❯➜>]\s*$`)
+)

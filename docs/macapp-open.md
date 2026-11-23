@@ -65,6 +65,109 @@ There is no separate connected-app registry: absence of the correlated ack
 triggers the launch fallback. A connected app that handles the request in time
 never receives a duplicate URL-scheme delivery.
 
+## On the phone
+
+The same `agent-deck open` also puts the page on the session's page list, which
+the phone app shows in the session's Pages panel (through the phone gateway, which
+runs `open --list` / `open --show` on the host). Nothing changes for the Mac app.
+
+- A file joins the list only when all of these hold (the same check runs again
+  at every read, so a file swapped later is refused then):
+  - it is under the session's project path or a `[web] file_link_roots`
+    entry, with the rules of `agent-deck file read`: absolute, symlinks
+    resolved, opened through `os.Root`, regular files only. A project path
+    that is `/`, contains the home directory, or is at or inside `~/.ssh` or
+    the deck's config or data directory is not a root;
+  - no path component below the root is private: nothing starting with `.`
+    (`.env*`, `.git/`, `.ssh/`, `.aws/`, `.npmrc`, `.netrc`, `.claude/` …) and
+    no secret-like name (containing `secret`, `credential`, `password`,
+    `passwd`, `token`, `private_key`, `apikey`; ending in `.pem`, `.key`,
+    `.p12`, `.pfx`, `.kdbx`, `.keystore`, `.jks`, `.ppk`, `.gpg`, `.asc`,
+    `.ovpn`, `.tfstate`, `.tfvars`; starting with `id_rsa`, `id_dsa`,
+    `id_ecdsa`, `id_ed25519`). This is checked on the symlink-resolved path, so
+    a link to a private file is private;
+  - first of all, its type is on the phone's allowlist: `.html`, `.htm`, `.md`,
+    `.markdown` or `.txt` (nothing else: no logs, CSV, JSON, YAML, config files,
+    images or files without an extension); the private-name rule above is a
+    second layer on top of it;
+  - it is at most 4 MiB.
+  Any other file still opens in the Mac app and stays off the phone; `--json`
+  says why in `phone`: `outside_roots`, `private`, `unsupported` or `too_large`.
+- URLs always join the list (`kind: "url"`); the phone opens them in its browser.
+- The list lives in `<data dir>/pages/<profile>/<session id>.json`: metadata only,
+  newest 50, one entry per file or URL (opening it again moves it to the top).
+  Each addition also commits `page.opened` on the profile bus (`page_id`, `kind`,
+  `title`, `name`, `url`, `opened_at`, `host`; no host path). A relative link to a
+  file that is on the list is rewritten to `/@page/<page-id>`, which the phone opens
+  as that page.
+- Content is read from disk at every request, so a saved follow-up edit shows on
+  refresh. HTML is served as written, with its relative images, stylesheets
+  and fonts (img src/srcset, poster, icon links, stylesheet links, CSS `url()`
+  and `@import`) inlined as `data:` URIs. Each asset passes the same root and
+  private-name rules, must be an image, a stylesheet or a font by extension
+  and by content (a secret renamed `logo.png` is not inlined; a `.css` file is
+  inlined only when the whole file parses as CSS rules that declare at least one
+  property, so a `.env`, key, JSON, YAML or note renamed `.css` is not), and is
+  skipped otherwise; a CSS reference that is skipped becomes `about:invalid`. Scripts,
+  frames, objects and media files are never inlined, a `javascript:` source of
+  an iframe, frame, object or embed becomes `about:blank`, and a relative link to
+  a private name becomes `#`. A `<link>` survives only as an inlined stylesheet
+  or icon; every other `<link>` (preconnect, dns-prefetch, prefetch, preload,
+  modulepreload, prerender, next, manifest, a remote stylesheet …) is dropped,
+  because the engine would connect for it with no script and no CSP check, and
+  `x-dns-prefetch-control` is off.
+- Every document starts with a `<meta http-equiv="Content-Security-Policy">`
+  (a later policy can only add restrictions): `default-src 'none';
+  script-src <the SHA-256 hash of each inline script the document holds, or
+  'none'>; style-src 'unsafe-inline' data:; img-src data:;
+  font-src data:; media-src data:; connect-src 'none'; frame-src 'none';
+  child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none';
+  base-uri 'none'` (the web route sends the same policy as a header, plus
+  `sandbox allow-scripts`). A page may run its own inline `<script>` blocks and
+  styles (charts, small apps); inline event handlers (`onclick=`), `javascript:`
+  URLs and scripts added later do not run. It may show its inlined images and fonts. It cannot fetch, post,
+  open a socket, load anything remote (scripts, styles, images, fonts,
+  frames), submit forms or set a `<base>`. A link the user taps still leaves
+  for the browser, and a page script could navigate to a URL the same way; the
+  page holds only what its author put in it, never a private file.
+  HTML pages without a viewport get one. Markdown is rendered
+  to one phone-sized HTML document (light and dark, wide tables and code scroll);
+  raw HTML in Markdown is shown as text and only `http(s)`, `mailto` and relative
+  links are kept. Text is shown in `<pre>`.
+- What these rules cannot see: a secret written INTO an allowed type under an
+  ordinary name (`creds.txt`, a password in `notes.md`) is shown when the
+  session opens that file, like anything else the session writes on a page.
+  The rules stop files that are secret by type or by name, not secret content.
+- Limits: page file 4 MiB, one asset 8 MiB, whole document 12 MiB.
+
+```sh
+agent-deck open notes.md --json
+# {"status":"queued","where":"phone","session":"<id>","title":"<title>","path":"/abs/notes.md","url":"",
+#  "page_id":"<16 hex>","page_title":"Notes","name":"notes.md","kind":"markdown","phone":"shown","elapsed_ms":41}
+agent-deck open --last --session <id> --json      # re-open the newest page whose file exists; exit 2 + {"code":"no_page"} when none
+agent-deck open --list --session <id> --json      # {"session","title","pages":[{id,session_id,kind,title,name,url,opened_at}]} (no host paths)
+agent-deck open --show <page-id> --session <id> --json
+# {"id","kind","title","name","url","html","bytes","inlined","skipped","modified_at"}
+```
+
+`title` is the session's title; `page_title` is the page's own (`<title>`, the
+first `# ` heading of Markdown, else the file name). Opening a file again keeps
+its `page_id` (it moves to the top with the new time), so a phone showing it
+can refresh. `status` is `opened` when the Mac app acknowledged, else `queued`. `where` is
+`both` (acknowledged and on the phone list), `phone` (on the list, the Mac app
+not yet), or `mac` (a file outside the roots: `phone` is `outside_roots`).
+Refusals under `--json` are `{"error","code"}` with code `not_found`,
+`outside_roots`, `too_large`, `no_page` or `session_not_found`. Text output
+without `--json` is unchanged.
+
+The web server serves the same with the token auth of the other session routes:
+`GET /api/sessions/{id}/open-pages` (the list) and
+`GET /api/sessions/{id}/open-pages/{page-id}` (the HTML document, under a CSP
+`sandbox allow-scripts` without `allow-same-origin` or `allow-popups` plus the
+policy above, so a page's scripts get an opaque origin, cannot read the deck's
+cookies or call its API, and cannot open windows;
+`?format=json` returns the `--show --json` object).
+
 ## Remote page folders
 
 ```sh

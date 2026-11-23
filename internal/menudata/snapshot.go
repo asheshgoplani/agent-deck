@@ -168,6 +168,41 @@ type MenuDataLoader interface {
 	LoadMenuSnapshot() (*MenuSnapshot, error)
 }
 
+// MenuSessionResolver optionally resolves a session outside the menu refresh path.
+type MenuSessionResolver interface {
+	ResolveMenuSession(id string) (*MenuSession, string, error)
+}
+
+// ResolveMenuSession looks up an active session and returns its effective profile.
+// Loaders without a session resolver are read through their menu snapshot.
+func ResolveMenuSession(loader MenuDataLoader, id string) (*MenuSession, string, error) {
+	if resolver, ok := loader.(MenuSessionResolver); ok {
+		return resolver.ResolveMenuSession(id)
+	}
+	return resolveMenuSessionFromSnapshot(loader, id)
+}
+
+func resolveMenuSessionFromSnapshot(loader MenuDataLoader, id string) (*MenuSession, string, error) {
+	snapshot, err := loader.LoadMenuSnapshot()
+	if err != nil || snapshot == nil {
+		return nil, "", err
+	}
+	return snapshot.SessionByID(id), snapshot.Profile, nil
+}
+
+// SessionByID returns the session item with id, or nil if the snapshot lacks it.
+func (s *MenuSnapshot) SessionByID(id string) *MenuSession {
+	if s == nil {
+		return nil
+	}
+	for _, item := range s.Items {
+		if item.Type == MenuItemTypeSession && item.Session != nil && item.Session.ID == id {
+			return item.Session
+		}
+	}
+	return nil
+}
+
 // ToMenuSession converts one instance into its web DTO.
 func ToMenuSession(inst *session.Instance) *MenuSession {
 	tmuxName := ""

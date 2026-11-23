@@ -68,6 +68,10 @@ func (h *Home) collapseOrNavUp() {
 				h.moveCursorToRemoteGroup(item.RemoteName, parent)
 			}
 		}
+	} else if item.Type == session.ItemTypeRemoteSession && h.remoteSessionChildCount(item) > 0 && !h.isRemoteParentFolded(item.RemoteName, item.RemoteSession.ID) {
+		// Fold a remote parent's child list shut (#3223), like a local parent
+		// above. An already-folded parent collapses its group below.
+		h.setRemoteParentFolded(item.RemoteName, item.RemoteSession.ID, true)
 	} else if item.Type == session.ItemTypeRemoteSession {
 		// Item.Path is the owning group header's path.
 		h.setRemoteGroupCollapsed(item.RemoteName, item.Path, true)
@@ -456,6 +460,7 @@ func (h *Home) hasModalVisible() bool {
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.agentsPanel.IsVisible() || // hotkeyAgentsPanel overlay
 		(h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible()) || // hotkeyDeadLetters overlay
+		h.todosPanel.IsVisible() || // hotkeyTodos overlay
 		h.triggersPanel.IsVisible() || // hotkeyTriggers overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||

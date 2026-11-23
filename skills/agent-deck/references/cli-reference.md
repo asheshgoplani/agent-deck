@@ -108,6 +108,7 @@ Notes:
 - `--trust-folder` (also on `add`): add the session's folder to `[security] trusted_folders`, so agent-deck pre-trusts it for Claude, Codex and Cursor and sources a relative `env_file` from it. Needed on a new install (v1.16.34+, where `auto_trust_folders` is off) for a headless launch in a folder the tool has never been allowed to open; without it Claude shows its "trust the files in this folder?" prompt first and the launch prints a note on stderr and, with `--json`, adds `"warnings": [{"code": "FOLDER_NOT_TRUSTED", "folder": "<dir>", "hint": "..."}]` to the result (a queued start logs `queued_start_folder_not_trusted` with the same code). The flag edits config.toml in place, so comments and layout are kept. Installs from before v1.16.34 keep pre-trusting every folder (config-reference.md, `[security]`).
 - Kickoff envelope (#3131): when `launch` runs inside a session and links that session as the parent, a Claude child's initial message starts with the same `[agent-deck from:<parent id>]` line `session send` uses. The child's first turn is then a reply to its parent: an urgent result (completion sentinel, question, error) wakes an idle Claude parent even when it is not a conductor, and a plain answer stays info (unless the parent's `[inbox] wake_on` includes `info`). `--no-tag` or `[send] tag_sends = false` turns it off. Never tagged: a launch from a human shell, a `--parent` that is not the calling session (including a nested launch linked to the caller's own parent), a non-Claude parent or child, a bare slash command, and a child whose turns are not reported (`--no-transition-notify`, or `[notifications]` transition events off), because such a child answers an enveloped message with an explicit `session send`. A typed wake into a Claude session that is not a conductor (inbox and `remote drain` wakes) is sent with `--require-input-prompt`, so it is skipped while that session shows a menu or a permission dialog, and, like every wake, it never types over text left in the input box; the record then arrives on the session's next turn. `--json` carries `"tagged": true|false` when there is a message.
 - `--no-identity` (also on `add`): skip the harness identity injection for this session only. By default every spawn tells the model it runs inside agent-deck, its session metadata and how to use the CLI (`[launch] inject_identity` in config-reference.md, `documentation/HARNESS_IDENTITY.md`). Persisted, so restarts honour it.
+- `--instructions-file <path>` (also on `add`; repeatable, or comma-separated): standing instructions for this session (a role, team rules). Each file is read at every start, restart, resume and fork and appended as a "Session instructions" section to the identity block, so every harness gets it the way it gets that block; editing the file takes effect on the next start or restart. Absolute paths only (`~` and `$VAR` expanded); only regular UTF-8 text files, control characters other than newline and tab dropped, 32 KB per file; `--no-identity` and context level `none` suppress it. Change the list later with `session set <id> instructions-file`; `session show --json` and `session primer` report each file's state. `-capabilities --json` marks the flag `"repeatable": true`. Details: `documentation/HARNESS_IDENTITY.md`.
 
 ### accounts - List named account slots
 
@@ -126,7 +127,7 @@ agent-deck list [--json] [--all] [--no-archived]
 agent-deck ls  # Alias
 ```
 
-`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
+`--no-archived` leaves archived sessions out before any status work, so a poller that only needs live sessions (a dashboard polling `list --json --no-archived`) pays neither their status pass nor their encoding. Without it every session is listed, archived ones with `"archived": true`; the single-profile table shows the same live status in a `STATUS` column, `archived` for an archived session. Every row carries `archived_at`; it is the zero time `0001-01-01T00:00:00Z` when the session is not archived.
 
 A live `list --json` captures every live pane with one tmux call per socket. When that call times out (a host too loaded to answer it), the listing does not fall back to one `capture-pane` per session: those rows carry `"status_source": "stale"`: status is the last one observed in this process (the default for a fresh process), `substate` is the last one seen or absent, and `--stats` reports how many panes were skipped as `captures_skipped` (absent when none).
 
@@ -137,7 +138,7 @@ Both JSON forms always include `account`: the exact stored per-session slot, inc
 ### remove - Remove session
 
 ```bash
-agent-deck remove <id|title>
+agent-deck remove <id|title> [--force]   # a session whose process is alive needs --force (exit 1 without), like session remove
 agent-deck rm  # Alias
 ```
 
@@ -147,7 +148,7 @@ agent-deck rm  # Alias
 agent-deck status [-v|-q|--json]
 ```
 
-- Default: `2 waiting - 5 running - 3 idle`
+- Default: `2 waiting • 5 running • 3 idle`, then `• N stopped` and `• N error` when not zero. Every status summary (this line, `--json`, `group list`, the TUI header, the web chips) counts the same five buckets over non-archived sessions; `starting` and `queued` count as idle. The web group panel uses the same buckets but its total also counts the archived rows it lists.
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
 - Archived sessions are not counted or listed: archiving stops the pane on purpose, so their stopped/error status is not news. `list --json` still includes them, each with `"archived": true`.
@@ -464,6 +465,8 @@ agent-deck session primer my-project --json
 #  "identity_file":"/.../identity.md","text":"..."}
 ```
 
+When the session has instruction files (`--instructions-file`), the text includes their section and the output lists each file with its state: `ok` (in the block), `unreadable` (missing, not a regular file, not UTF-8 text) or `not_delivered` (over the per-file cap or the inline budget, so a pointer line stands in for it, or context level `none`), with a `reason`; `--json` has them as `instructions_files: [{"path","state","reason"}]` (also in `session show --json`).
+
 `--json` adds `skip_reason` when the level is `none`; SSH/sandboxed sessions inject like local ones (the block travels inline in the launch command `delivery` says so and `identity_file` is empty). Against an older remote (`agent-deck remote <r> session primer`) that predates this command, the controller prints a one-line "remote does not support 'session primer'" message instead of forwarding raw stderr.
 
 ### session set
@@ -472,7 +475,7 @@ agent-deck session primer my-project --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, tool-session-id, account, idle-timeout, context-level, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
+**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, tool-session-id, account, idle-timeout, context-level, instructions-file, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -481,6 +484,13 @@ Setting `account` auto-migrates the Claude conversation into the target account'
 ```bash
 agent-deck session set my-project context-level primer
 agent-deck session set my-project context-level ""       # clear: inherit group/global
+```
+
+`instructions-file` replaces the session's list of instruction files (#3206) with a comma-separated list of absolute paths (`~` and `$VAR` expanded; an unset variable is refused); an empty value clears it. Applied on the next start/restart, like `--instructions-file` on `add`/`launch`.
+
+```bash
+agent-deck session set Review instructions-file "$HOME/team/roles/review.md,$HOME/team/rules.md"
+agent-deck session set Review instructions-file ""       # clear
 ```
 
 `prompt-suggestions` sets the per-session override for Claude Code prompt suggestions: `children-off`, `on` or `off` (also `true`/`false`), applied on the next start/restart. `children-off` turns them off when the session has a parent and leaves a root session alone; an empty value clears the override so the session follows `[profiles.<profile>.claude].prompt_suggestions`, then `[launch].prompt_suggestions` (default `children-off`; see `config-reference.md`).
@@ -506,6 +516,8 @@ agent-deck session send-keys <id|title> --text "TEXT" | --enter | --named-key KE
 
 Low-level keystroke forwarding (exactly one of `--text`, `--enter`, `--named-key`; `--stream` is the TUI insert-mode transport). On a Claude session, `--enter`, `--named-key` Enter, Tab or Right, and a `--text` that is only a CR, a TAB or the cursor-right sequence are checked against the composer first. Key names match the way tmux reads them: in any case (`enter`, `TAB`, `right`), with `^X`, `C-X` and `c-x` as the same control key (`C-m`/`^M` is Enter, `C-i`/`^I` is Tab), plus `KPEnter` and the hex codes `0xd`/`0x9`; a key with another modifier (`S-Enter`, `M-Right`) is not checked. When the composer shows a prompt suggestion (or Claude's dim `Try "..."` placeholder, which uses the same renderer), Escape is pressed once (not while a turn is running, where Escape would interrupt it) and, because Claude does not clear a suggestion on Escape, the key is withheld with exit 1, `code: DELIVERY_FAILED`, `delivery: "composer_blocked"`, `reason: "prompt_suggestion"`. Type the text first (`--text`, then `--enter`) to submit. `--stream` and the TUI insert mode are a human at the keyboard and are not guarded. `--enter` is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft.
 
+`remote <name> session send-keys …` forwards the one-shot forms to the remote (this is how the Mac app's Stop button and Esc interrupt a session there: `--named-key Escape`). `--stream` and unknown options are refused before the remote is contacted, exit 2; a remote whose core lacks an option answers with its own error.
+
 ### session send
 
 ```bash
@@ -515,7 +527,11 @@ agent-deck session send <id|title> --message-file <file|-> [--wait|--stream|--no
 
 Use `--message-file` for long or multiline messages, or `--message-file -` for stdin. Do not combine it with an inline message.
 
-Send envelope: a send made from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one line `[agent-deck from:<your session id>]`. The receiver's reply turn is then classified as a `send` (not a human prompt); when you are not the receiver's parent, the reply is also committed to YOUR inbox (also when the receiver has no parent: a peer, or your top-level conductor) as an urgent record with `target_kind:"reply"` (rendered `- [urgent] reply from=<child id> <title>: <status>` by the prompt-time drain and `inbox drain`/`peek`), and an idle sender is woken for it whatever its title. The reply does not wait on the receiver's parent: it lands even while the parent's inbox is full (a stopped parent), and a retried turn never duplicates it or wakes you twice. The receiver's parent keeps its own copy; when the parent itself asked, that copy is its reply, and an idle Claude parent is woken for it whatever its title (an urgent reply: a question back, a completion sentinel or an error; a plain answer is info). A `launch` kickoff from inside the parent carries the same envelope, so a child's first turn counts as that reply. A turn too long for the transcript tail window is attributed from the sender the hook recorded when the prompt was submitted. `--no-tag` or `[send] tag_sends = false` turns tagging off; a human shell (no env), a sender that is not a Claude-compatible session in the target's profile (shell, Codex, Gemini: it has no prompt-time drain for the reply), `--draft`, a bare slash command, a conductor heartbeat, a send to yourself, a non-Claude target and an already-enveloped message are never tagged. Every `--json` receipt (sync, queued, draft, skipped) carries `"tagged": true|false`; the envelope counts toward `line_too_long` and every other delivery guard. A receiver with `no_transition_notify` never reports its turns, so its identity block tells it to answer with an explicit `session send` instead.
+Send envelope: a Claude-to-Claude send (`AGENTDECK_INSTANCE_ID` set) starts with `[agent-deck from:<your session id>]`. The receiver's reply is classified as a `send`; when you are not its parent, the reply also reaches your inbox as an urgent `reply` record and wakes an idle Claude sender, including when the receiver has no parent. This does not wait on the receiver's parent's backlog; the parent retains its own copy, and retries do not duplicate the reply. When the parent itself asked, its existing copy is the reply. The existing Claude `launch` kickoff and long-turn attribution behavior remain unchanged.
+
+Pi-to-Pi and Pi-to-Claude sends include the same envelope as source attribution. A receiver that does not know the sender runs `agent-deck session show <sender-id> --json` and reads `tool`; when it is `pi`, results come back explicitly with `agent-deck session send <sender-id> "answer"`, never as an assumed automatic inbox reply. This does not opt Pi into Claude-compatible transport or transcript handling, and does not change Pi launch kickoff behavior.
+
+`--no-tag` or `[send] tag_sends = false` disables attribution. Human shells, unsupported sender/target pairs, drafts, bare slash commands, Pi `!`/`!!` commands, heartbeats, self-sends and already-enveloped messages stay unchanged. Every JSON receipt reports `tagged`; the prefix counts toward all delivery and length guards. A receiver whose turns are not reported must answer explicitly with `session send`.
 
 `--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
 
@@ -843,6 +859,17 @@ agent-deck switch docs --no-attach --wait 5s
 
 Resolves exact id, unique id prefix, exact title (any case), then a fuzzy title and group match; numbers must match exactly and archived sessions are left out. On the Mac it opens `agentdeck://focus?session=<id>`; elsewhere it publishes `macapp.switch` and waits `--wait` (default 2s) for `macapp.switch.ack`. With no app it attaches in the terminal, or with `--json`/`--no-attach` reports `queued`. Exit 2 = no match, exit 3 = ambiguous (up to five `candidates`). Not `session switch`, which changes a session's harness or account. Details: `docs/switch.md`.
 
+### todo - The owner's to-do list
+
+```bash
+agent-deck todo add "call the bank" [--source voice|cli|phone|mac|tui] [--session <id>] [--json]
+agent-deck todo list [--all] [--json]   # {todos:[item], open, done}
+agent-deck todo done bank --json        # by id or words: {status:"done", todo, open}
+agent-deck todo undo 3 ; agent-deck todo remove 3
+```
+
+One list per host (`<data dir>/todos.json`), shared by every profile; it lives on the host the clients read, and two hosts have two unsynced lists. An item is `{id, text, created_at, done_at|null, source, session_id?}`; ids are short numbers that are never reused. `done` with words ticks off the one open item whose text has every word (the same word, or a 4+ letter prefix at most 2 letters short; Devanagari words keep their vowel signs); look-alikes never match, an exact whole-text match wins, a repeat answers `already_done`, a query of only filler words names nothing, and a number (`12`, `#12`) is only ever an id. Two or more matches change nothing: exit 3 with `{status:"ambiguous", candidates}`. Exit 2 = no match (`not_found`), 1 = error. `--source` on `done`/`undo`/`remove` is the event's `by`. Every change publishes `todo.changed` `{action, id, open, by}` (no text) on every profile's events bus. Web: `GET/POST /api/todos`, `POST /api/todos/{id}/done|undo|remove`. TUI: `alt+o`. Details: `docs/todos.md`.
+
 ### open - Show a page in the macOS app Browser panel
 
 ```bash
@@ -850,9 +877,13 @@ agent-deck open report.html                       # from inside a session
 agent-deck open ./site/ --session "My Project"    # a directory opens its index.html
 agent-deck open https://example.com/dashboard
 agent-deck open report.html --browser-profile work --wait 10s  # Browser panel profile; ack wait (default 3s, max 2m)
+agent-deck open notes.md --json                   # {status, where, session, title, path, url, page_id, page_title, name, kind, phone, elapsed_ms}
+agent-deck open --last --session "My Project" --json   # re-open the newest page (exit 2: none)
+agent-deck open --list --session "My Project" --json   # pages of the session, newest first
+agent-deck open --show <page-id> --session "My Project" [--json]  # one self-contained HTML document
 ```
 
-Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`, then the agent-deck session owning the calling tmux session) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within `--wait` (default 3 s), else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. Details: `docs/macapp-open.md`.
+Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`, then the agent-deck session owning the calling tmux session) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within `--wait` (default 3 s), else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. A file under the session's project path or a `[web] file_link_roots` entry, and every URL, also joins the session's page list for the phone app (Pages panel; `where` is `phone` or `both` in `--json`); a file elsewhere stays Mac-only (`"where":"mac","phone":"outside_roots"`). Markdown is rendered for the phone. Details: `docs/macapp-open.md`, how to use it: [open-page.md](open-page.md).
 
 ### ask - Ask the owner for a secret, a choice or a short text
 
@@ -1135,7 +1166,7 @@ agent-deck group update <name> [--default-path <dir> | --clear-default-path] [--
 agent-deck group delete <name> [--force]
 ```
 
-`--force`: Move sessions to parent and delete.
+`--force`: Move the sessions of the group and its subgroups to the parent group (to My Sessions for a root group) and delete.
 
 ### group move
 
@@ -1154,7 +1185,7 @@ Use `""` or `root` to move to default group. `session move` moves a session to a
 ```bash
 agent-deck profile list
 agent-deck profile create <name>
-agent-deck profile delete <name>
+agent-deck profile delete <name> [--yes]   # refuses while any of its sessions runs; --json needs --yes
 agent-deck profile default [name]
 ```
 
@@ -1312,7 +1343,7 @@ In the TUI, remote sessions use the same status indicators and nested group tree
 ### remote conversation and status reads
 
 ```bash
-agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
+agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N] [--kinds a,b] [--skip-empty-body]
 agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
 agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--profile <name>]
 agent-deck remote <name> events publish --kind macapp.open.ack|macapp.switch.ack|macapp.browser.response|macapp.app.focus|macapp.ask.seen --session <id> --data-file - < reply.json
@@ -1371,7 +1402,7 @@ Renames a session on a remote instance.
 agent-deck remote <name> <command> [arguments]
 ```
 
-`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`, and the read-only `limits [--json]` (the remote's own accounts and 5h/7d windows; a remote whose agent-deck predates `limits` answers `unsupported remote command "limits" on remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}` under `--json`). Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
+`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session send-keys` (one `--named-key`, `--text` or `--enter` per call; `--stream` is not forwarded), `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`, and the read-only `limits [--json]` (the remote's own accounts and 5h/7d windows; a remote whose agent-deck predates `limits` answers `unsupported remote command "limits" on remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}` under `--json`). Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
 
 `session switch`/`switch-preview` forwarded this way runs the remote's own switch engine with the same guards as a local switch (ownership revalidation, managed-source refusal, journaled account/harness moves) — the CLI only forwards a closed set of subcommands, so no local path or credential can reach it. `switch-preview --json` previews losses/warnings before committing; the confirmed switch reports `verified`, `pending`, or `failed` with `recovery_required` when applicable. This requires the remote to already be a target you can reach and administer — it does not let a controller switch accounts *for* a remote it doesn't own.
 
@@ -1426,8 +1457,8 @@ agent-deck health --json --since 1h
 ### inbox - Durable completion/transition records
 
 ```bash
-agent-deck inbox <session-id>                          # summary for a session's inbox
-agent-deck inbox drain [--json] <session-id>            # consume pending completion events
+agent-deck inbox <session-id|title|self>               # legacy form: reads AND clears; resolves the target like drain, unknown target exits 2
+agent-deck inbox drain [--json] [--strict] [<id>|self]  # consume pending completion events
 agent-deck inbox export [--json] [--profile <name>]     # read-only: this profile's records on this host, nothing consumed
 agent-deck inbox export --json --after '<cursor>' [--with-writer]  # read-only: only records newer than the cursor
 agent-deck inbox cursor [--json] [<remote>]             # the remote-talkback cursors this machine keeps
@@ -1504,8 +1535,9 @@ See [docs/tools/deepseek.md](../../../docs/tools/deepseek.md) for the full guide
 ## Session Resolution
 
 Commands accept:
-- **Title:** `"My Project"` (exact match)
-- **ID prefix:** `abc123` (6+ chars)
+- **ID:** the full session id
+- **Title:** `"My Project"` (the exact title; if none matches, case and a leading emoji marker such as the microphone are ignored)
+- **ID prefix:** `abc1` (4+ chars, when only one session has it)
 - **Path:** `/path/to/project`
 - **Current:** Omit ID in tmux (uses env var)
 

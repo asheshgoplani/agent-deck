@@ -70,6 +70,9 @@ type builtinTool struct {
 //   - "shell" is the catch-all fallback, never matched by a pattern.
 func builtinTools() []builtinTool {
 	return []builtinTool{
+		// Match before the legacy substring checks: `agy --model gemini-flash`
+		// is Antigravity, not Gemini.
+		{Name: "antigravity", Icon: "🪐", Color: "accent", detectTokens: []string{"agy", "antigravity"}, executableOnly: true},
 		{Name: "claude", Icon: "🤖", Color: "orange", detectSubstrings: []string{"claude"}},
 		{Name: "opencode", Icon: "🌐", detectSubstrings: []string{"opencode", "open-code"}},
 		{Name: "gemini", Icon: "✨", Color: "purple", detectSubstrings: []string{"gemini"}},

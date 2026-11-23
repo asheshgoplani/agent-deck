@@ -6,6 +6,7 @@ The controller forwards these read commands to the configured owner host:
 agent-deck remote HOST recall timeline ID --json --tail 100
 agent-deck remote HOST recall timeline --json --tail 40 --sessions ID1,ID2,ID3
 agent-deck remote HOST recall timeline ID --json --since CURSOR
+agent-deck remote HOST recall timeline ID --json --kinds user,assistant --since NEXT_CURSOR
 agent-deck remote HOST recall timeline ID --json --before BEFORE_CURSOR --limit 100
 agent-deck remote HOST recall follow ID --after CURSOR --jsonl --status
 agent-deck remote HOST events follow --jsonl --since 123
@@ -20,7 +21,9 @@ history. Follow emits the local row/update/remove/status/delivery/resync_require
 frames. Events emits the local canonical event frames with numeric `cursor`,
 `event_id`, `ts`, `kind`, `session_id`, and producer-specific `data`. Resume from
 the last processed cursor; a cursor outside retained history requires a fresh
-snapshot. See [Recall timeline](recall-timeline.md) for row and paging contracts.
+snapshot. `--kinds` and `--skip-empty-body` are forwarded and filter on the owner
+host, so dropped rows never cross the link; a filtered snapshot carries
+`next_cursor` for the next `--since`. See [Recall timeline](recall-timeline.md) for row and paging contracts.
 
 Every new remote read performs capability and flag validation inside the same
 SSH channel as the actual read. Help output stays on the owner host. An older

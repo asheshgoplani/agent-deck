@@ -1,0 +1,41 @@
+{
+  "schema": "agent-deck.recall.rows/v2",
+  "session": {
+    "harness": "claude",
+    "path": "claude-session.jsonl"
+  },
+  "source": "native",
+  "turns": [
+    {
+      "id": "a1",
+      "kind": "system",
+      "ts": "2026-09-23T08:00:02.000Z",
+      "title": "SessionStart · hook_additional_context",
+      "raw_type": "attachment/hook_additional_context"
+    },
+    {
+      "id": "u1",
+      "kind": "user",
+      "ts": "2026-09-23T08:00:03.000Z",
+      "body": "Write hello.py, नमस्ते 🚀",
+      "raw_type": "user"
+    },
+    {
+      "id": "as1",
+      "kind": "thinking",
+      "ts": "2026-09-23T08:00:04.000Z",
+      "title": "Thinking",
+      "body": "plan it",
+      "raw_type": "assistant"
+    },
+    {
+      "id": "as2",
+      "kind": "assistant",
+      "ts": "2026-09-23T08:00:05.000Z",
+      "body": "I'll **start** now.",
+      "raw_type": "assistant"
+    }
+  ],
+  "through_cursor": "eyJ2IjoyLCJwIjoiY2xhdWRlLXNlc3Npb24uanNvbmwiLCJvIjoxNTAxLCJhIjoiYTA5YTYyMTc4NzI1YmU4YyIsInMiOnt9fQ",
+  "before_cursor": "eyJ2IjoyLCJwIjoiY2xhdWRlLXNlc3Npb24uanNvbmwiLCJvIjoxNTAxLCJhIjoiYTA5YTYyMTc4NzI1YmU4YyIsInMiOnt9LCJiIjoiYTEifQ"
+}

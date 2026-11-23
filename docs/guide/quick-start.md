@@ -10,7 +10,7 @@ agent-deck add . -c claude        # Add current dir with Claude
 agent-deck session fork my-proj   # Fork a supported session
 agent-deck session send my-proj --message-file task.md # Send a multiline prompt
 agent-deck session ref my-proj reviewer # Type a reference to my-proj into reviewer (not sent)
-agent-deck session remove my-proj # Remove stopped/errored session from registry (transcripts preserved)
+agent-deck session remove my-proj # Remove a session with no live process from registry (--force for a running one; transcripts preserved)
 agent-deck mcp attach my-proj exa # Attach MCP to session
 agent-deck skill attach my-proj docs --source pool --restart # Attach skill + restart
 agent-deck web                    # Start web UI on http://127.0.0.1:8420
@@ -58,7 +58,7 @@ The main-menu composer currently supports local sessions only, not remote-sessio
 | `Shift+drag` | Select text natively (`Option+drag` in iTerm2) — see below |
 | `Alt+W` | Show me around: what you can do, your agents and sign-in |
 | `Alt+N` | What's new: this version's highlights and your reports it fixed ("Is it fixed for you?"); opens by itself after an update |
-| `?` | Full help |
+| `?` | Help (`Tab` for all keys) |
 
 > **Why can't I drag-select text?** The TUI holds the terminal in mouse
 > reporting mode so clicks, wheel scrolling and the divider drag work, which

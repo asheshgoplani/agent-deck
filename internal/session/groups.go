@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -69,6 +70,17 @@ type Item struct {
 	CreatingTitle       string // Display title for creating placeholder
 	CreatingTool        string // Tool for creating placeholder
 	DividerLabel        string // Label shown on an ItemTypeDivider row (e.g. "idle / done")
+}
+
+// DrawsNested reports whether a session row is drawn nested under a parent
+// session row, one level deeper than its group's top-level rows. IsSubSession
+// alone does not say that: a sub-session whose parent is in another group, is
+// gone, or is in the other archive partition keeps the flag (its parent link
+// still routes events) but Flatten emits it at top-level depth (#2995).
+// Renderers that draw the child layout (gutter, selection arrow) must ask
+// this, not IsSubSession (#3169). The web sidebar uses the same depth rule.
+func (it Item) DrawsNested() bool {
+	return it.IsSubSession && it.Level > GetGroupLevel(it.Path)+1
 }
 
 // IsCreatingPlaceholder reports whether this row is a still-creating session
@@ -1421,6 +1433,94 @@ func (t *GroupTree) CreateGroupPath(path string) *Group {
 	return leaf
 }
 
+// typedLevelNames maps each level of path to the display name the user typed
+// for it, when typed is path as typed (same levels, each canonical to the
+// level's last segment, case aside for levels that matched an existing group).
+func typedLevelNames(path, typed string) map[string]string {
+	var typedLevels []string
+	for _, segment := range strings.Split(typed, "/") {
+		if strings.TrimSpace(segment) != "" {
+			typedLevels = append(typedLevels, segment)
+		}
+	}
+	levels := strings.Split(path, "/")
+	if len(levels) != len(typedLevels) {
+		return nil
+	}
+	names := make(map[string]string, len(levels))
+	for i, level := range levels {
+		if !strings.EqualFold(CanonicalGroupPath(typedLevels[i]), level) {
+			return nil
+		}
+		names[strings.Join(levels[:i+1], "/")] = sanitizeGroupName(typedLevels[i])
+	}
+	return names
+}
+
+// CreateGroupPathTyped is CreateGroupPath for a path resolved from what the
+// user typed: a level it creates gets the typed display name, as `group
+// create` gives it ("New Team" at path "New-Team"). Existing levels are kept.
+func (t *GroupTree) CreateGroupPathTyped(path, typed string) *Group {
+	names := typedLevelNames(path, typed)
+	var existed []string
+	for level := path; level != ""; level = getParentPath(level) {
+		if _, ok := t.Groups[level]; ok {
+			existed = append(existed, level)
+		}
+	}
+	leaf := t.CreateGroupPath(path)
+	for level := path; level != ""; level = getParentPath(level) {
+		group, ok := t.Groups[level]
+		if !ok || names[level] == "" || slices.Contains(existed, level) {
+			continue
+		}
+		group.Name = names[level]
+	}
+	return leaf
+}
+
+// EnsureGroupForNewSession makes sure the group of inst, a session being
+// created, exists at every level and returns it. A level that is in the tree
+// only because inst points at it (no stored row, no other session in it or
+// below it) is a new group: when typed is the group path as the user typed it
+// (or as it was taken from the project directory), the level gets the typed
+// name, as `group create` gives it ("My Team" at path "My-Team"). Groups that
+// existed before keep their name.
+func (t *GroupTree) EnsureGroupForNewSession(inst *Instance, typed string) *Group {
+	if inst == nil || inst.GroupPath == "" {
+		return nil
+	}
+	// The tree was built with inst, so its group is normally there already;
+	// a group stored under a path that is not canonical (older data) is
+	// kept as it is, never doubled by a canonical twin.
+	leaf, ok := t.Groups[inst.GroupPath]
+	if !ok {
+		leaf = t.CreateGroupPath(inst.GroupPath)
+	}
+	for path, name := range typedLevelNames(inst.GroupPath, typed) {
+		if group, ok := t.Groups[path]; ok && group.derived && path != DefaultGroupPath && t.holdsOnly(path, inst) {
+			group.Name = name
+		}
+	}
+	return leaf
+}
+
+// holdsOnly reports whether no session other than inst is in the group at
+// path or in a group below it.
+func (t *GroupTree) holdsOnly(path string, inst *Instance) bool {
+	for groupPath, group := range t.Groups {
+		if groupPath != path && !strings.HasPrefix(groupPath, path+"/") {
+			continue
+		}
+		for _, s := range group.Sessions {
+			if s != inst {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // RenameTargetPath returns the group path that RenameGroup(oldPath, newName)
 // would move the group to, applying the same sanitization and parent-path
 // preservation. Exposed so callers can detect a collision with an existing,
@@ -1590,7 +1690,30 @@ func (t *GroupTree) MoveGroupTo(sourcePath, destParentPath string) error {
 	return nil
 }
 
-// DeleteGroup deletes a group, all its subgroups, and moves all sessions to default
+// DeleteGroupDestination returns the path of the group that receives the
+// sessions of the group at path (and of its subgroups) when it is deleted: the
+// parent group, or the default group for a root group or a parent that is not
+// in the tree. It is the one rule for the CLI, the TUI and the web.
+func (t *GroupTree) DeleteGroupDestination(path string) string {
+	if parent := getParentPath(path); parent != "" {
+		if _, ok := t.Groups[parent]; ok {
+			return parent
+		}
+	}
+	return DefaultGroupPath
+}
+
+// DeleteGroupDestinationName is the display name of DeleteGroupDestination.
+func (t *GroupTree) DeleteGroupDestinationName(path string) string {
+	dest := t.DeleteGroupDestination(path)
+	if group, ok := t.Groups[dest]; ok && group.Name != "" {
+		return group.Name
+	}
+	return DefaultGroupName
+}
+
+// DeleteGroup deletes a group and all its subgroups, and moves their sessions
+// to DeleteGroupDestination(path): the parent group, else the default group.
 func (t *GroupTree) DeleteGroup(path string) []*Instance {
 	group, exists := t.Groups[path]
 	if !exists || path == DefaultGroupPath {
@@ -1627,22 +1750,24 @@ func (t *GroupTree) DeleteGroup(path string) []*Instance {
 	// Otherwise deleting an empty non-default group would spuriously materialize
 	// a "My Sessions" group the user never asked for.
 	if len(allMovedSessions) > 0 {
+		destPath := t.DeleteGroupDestination(path)
 		for _, sess := range allMovedSessions {
-			sess.GroupPath = DefaultGroupPath
+			sess.GroupPath = destPath
 		}
 
-		defaultGroup, exists := t.Groups[DefaultGroupPath]
+		destGroup, exists := t.Groups[destPath]
 		if !exists {
-			defaultGroup = &Group{
+			// Only the default group can be missing here.
+			destGroup = &Group{
 				derived:  true,
 				Name:     DefaultGroupName,
 				Path:     DefaultGroupPath,
 				Expanded: true,
 				Sessions: []*Instance{},
 			}
-			t.Groups[DefaultGroupPath] = defaultGroup
+			t.Groups[DefaultGroupPath] = destGroup
 		}
-		defaultGroup.Sessions = append(defaultGroup.Sessions, allMovedSessions...)
+		destGroup.Sessions = append(destGroup.Sessions, allMovedSessions...)
 	}
 
 	// Remove the main group

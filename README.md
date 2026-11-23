@@ -17,7 +17,7 @@
 
 </div>
 
-Agent Deck runs all your AI coding agents (Claude Code, Codex, Gemini CLI, OpenCode and more) in one terminal and shows which ones are working, waiting, or done.
+Agent Deck runs all your AI coding agents (Claude Code, Codex, Gemini CLI, Antigravity CLI, OpenCode and more) in one terminal and shows which ones are working, waiting, or done.
 
 https://github.com/user-attachments/assets/e4f55917-435c-45ba-92cc-89737d0d1401
 
@@ -55,7 +55,7 @@ The keys you need first:
 | `/` | Search |
 | `Alt+W` | Show me around: what you can do, your agents and sign-in |
 | `Alt+N` | What's new: this version's highlights and your reports it fixed |
-| `?` | Full help |
+| `?` | Help (`Tab` for all keys) |
 
 More commands and every key: [Quick start and keys](docs/guide/quick-start.md).
 

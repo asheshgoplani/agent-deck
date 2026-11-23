@@ -33,13 +33,15 @@ type (
 )
 
 // MemoryMenuData finds these optional interfaces on its fallback by type
-// assertion. Assert them here so renaming RefreshesLiveState or
-// MenuDataRevision fails to compile instead of silently turning off the
-// live-state and revision refresh paths.
+// assertion. Assert them here so renaming RefreshesLiveState,
+// MenuDataRevision or ResolveMenuSession fails to compile instead of silently
+// turning off the live-state and revision refresh paths or the session lookup.
 var (
 	_ menudata.MenuDataLoader          = (*SessionDataService)(nil)
 	_ menudata.MenuDataRevisionLoader  = (*SessionDataService)(nil)
 	_ menudata.LiveStateMenuDataLoader = (*SessionDataService)(nil)
+	_ menudata.MenuSessionResolver     = (*SessionDataService)(nil)
+	_ menudata.MenuSessionResolver     = (*MemoryMenuData)(nil)
 )
 
 // Same error values (not copies), so errors.Is matches either name.
@@ -49,6 +51,7 @@ var (
 	ErrSessionNotFound = menudata.ErrSessionNotFound
 	ErrGroupNotFound   = menudata.ErrGroupNotFound
 	ErrNotAWorktree    = menudata.ErrNotAWorktree
+	ErrWorktreeShared  = menudata.ErrWorktreeShared
 )
 
 // NewMemoryMenuData creates an in-memory menu data store.

@@ -206,6 +206,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		watcherPanel:              NewWatcherPanel(),
 		agentsPanel:               NewAgentsPanel(),
 		deadLetterPanel:           NewDeadLetterPanel(),
+		todosPanel:                NewTodosPanel(actualProfile),
 		triggersFeed:              stateDBTriggersFeed{},
 		voiceReader:               voicestate.NewReader(voicestate.DefaultDir()),
 		toolVisibilityPanel:       NewToolVisibilityPanel(),

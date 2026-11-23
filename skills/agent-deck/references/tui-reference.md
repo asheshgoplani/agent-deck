@@ -46,11 +46,11 @@ the setup wizard. It shows once; `Esc` skips it and it does not come back.
 |-----|--------|
 | `j` / `↓` | Move down |
 | `k` / `↑` | Move up |
+| `Ctrl+p` / `Ctrl+n` | Move up / down |
 | `Ctrl+u` / `Ctrl+d` | Half page up / down |
 | `PgUp` / `PgDn` | Half page up / down |
 | `Ctrl+f` / `Ctrl+b` | Full page up / down |
-| `Home` / `End` | Jump to first / last item |
-| `gg` | Jump to top |
+| `Home` / `End` | Jump to first / last item (there is no `gg`: `g` creates a group) |
 | `G` | Recall search (see [Search & Filter](#search--filter)) |
 | `h` / `←` | Collapse group, fold a parent session's child list, or go to parent |
 | `l` / `→` / `Tab` | Toggle expand/collapse group, or a parent session's child list |
@@ -76,11 +76,14 @@ the setup wizard. It shows once; `Esc` skips it and it does not come back.
 |-----|--------|
 | `Enter` | Attach to session OR toggle group |
 | `n` / `N` | New session / quick create (**rebindable**) |
+| `z` | Quick open: pick a recent directory (recents, group defaults, zoxide) and start a session there |
 | `r` | Rename session or group (**rebindable**) |
 | `R` | Restart session, reloads MCPs (**rebindable**) |
 | `T` | Restart with a new session ID (**rebindable**) |
 | `d` | Delete session or group (**rebindable**) |
 | `D` | Close session process (**rebindable**) |
+| `X` | Remove a stopped or errored session from the list, after a confirm; nothing is killed, no files or worktrees are deleted |
+| `Ctrl+X` | Remove all errored sessions from the list, after a confirm |
 | `Ctrl+Z` | Undo delete (**rebindable**) |
 | `A` | Archive session — stops tmux, hides from default list; conversations/metadata untouched (**rebindable**) |
 | `Shift+U` | Unarchive session; does NOT auto-start tmux (**rebindable**) |
@@ -100,6 +103,7 @@ the setup wizard. It shows once; `Esc` skips it and it does not come back.
 | `C` | Inspect full context — everything the agent is being sent, ranked by cost (`context_inspector`, **rebindable**) |
 | `I` | Insert mode: keystrokes go straight to the selected session's pane until `Esc`; `Enter` submits. Insert mode is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft |
 | `y` | Toggle YOLO mode (**rebindable**) |
+| `Ctrl+G` | Choose the Gemini model (Gemini sessions) |
 | `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level at the parent's first child) |
 | `-` / `J` / `Shift+↓` | Move item down (auto-promotes a sub-session to top-level at the parent's last child) |
 | `Shift+→` / `Shift+←` | Indent / outdent within current group (single-level nesting) |
@@ -118,7 +122,7 @@ the setup wizard. It shows once; `Esc` skips it and it does not come back.
 
 For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. A remote host header shows `v1.15.0 ↑` after its count when the remote runs an older agent-deck than this controller (the version is asked once per hour per remote on the session poll); `u` on that header opens "Update remote <name> from v<old> to v<new>?" and runs the same verified deploy as `agent-deck remote update <name>`. A remote session whose parent (for example its conductor) is in the same remote group is shown one level under it, as local sub-sessions are; with the parent absent it is shown flat. Remote-session reorder keys move only within the current remote group (a child only among its parent's children); the order is saved on the viewing machine, while remote group headers remain name-sorted.
 
-Local parent rows with sub-sessions (for example a conductor and the sessions it spawned) carry a `▾N`/`▸N` child-fold badge after the row title. `Tab`/`l`/`→` toggles just that child list; `h`/`←` folds it shut, and on an already-folded parent continues to the window fold or the group collapse. Unfolding a parent also reopens its window rows, and a search jump or focus request to a hidden child unfolds its parent. Folded parents keep their own row, mirroring a collapsed group header, and the fold state persists per machine alongside the other view preferences.
+Local parent rows with sub-sessions (for example a conductor and the sessions it spawned) carry a `▾N`/`▸N` child-fold badge after the row title. `Tab`/`l`/`→` toggles just that child list; `h`/`←` folds it shut, and on an already-folded parent continues to the window fold or the group collapse. Unfolding a parent also reopens its window rows, and a search jump or focus request to a hidden child unfolds its parent. Folded parents keep their own row, mirroring a collapsed group header, and the fold state persists per machine alongside the other view preferences. A remote parent row with children nested under it folds the same way, with the same badge in the classic list; on an already-folded remote parent `h`/`←` collapses its remote group. Remote folds are kept per remote, so the same session ID on two remotes folds independently, and a `session focus --remote` request to a hidden child unfolds its parent.
 
 ### Copy & Text Selection
 
@@ -179,7 +183,7 @@ its own mouse capture regardless.
 | `t` | Cycle group view: active-on-top / populated-on-top (**rebindable**). Active-on-top puts running/waiting/starting sessions above an `idle / done` divider; set `[ui] active_includes_idle = true` to keep idle sessions with a live pane on top as well (divider becomes `stopped / done`) |
 | `*` | Cycle time filter: today / 3 days / 7 days / 30 days / all (**rebindable**) |
 
-Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
+Inside the search prompt, the words `waiting`, `running`, `idle`, `error` and `stopped` filter by status; a leading slash (`/waiting`) is accepted too.
 
 ### Global
 
@@ -203,6 +207,7 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Alt+W` | Show me around: "What you can do" (sessions, switching, send, conductor, remotes, each with its key), then `Tab` for your agents and sign-in (`show_around`, **rebindable**) |
 | `Alt+N` | What's new: this version's highlights and any of your reports it fixed, each with "Is it fixed for you?" (`y`/`n`, optional comment, then the exact public comment and the GitHub account that posts it; posted only after you press `y`, never while gh is not logged in). Also opens by itself on the first start after an update (`whats_new`, **rebindable**) |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |
+| `Esc` `Esc` | Quit (twice within half a second) |
 
 ### Worktree Shortcuts
 

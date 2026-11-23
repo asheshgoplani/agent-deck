@@ -246,3 +246,36 @@ func TestHookHandler_NestedPiSessionStartKeepsTheTurnUnattended(t *testing.T) {
 		t.Fatalf("after a Claude SessionStart the prompt must not be denied: %q", out)
 	}
 }
+
+// An order wake is multi-line, so Claude Code may hand the hook the prompt
+// inside a <pasted_content> wrapper (issue #3131). The turn is still an
+// order turn: orders cannot be changed and a permission prompt is denied.
+func TestOrders_PastedOrderWakeIsStillAnOrderTurn(t *testing.T) {
+	home := t.TempDir()
+	runConductorSetupCLI(t, home, "ops")
+	env := []string{"AGENTDECK_INSTANCE_ID=0a1b2c3d-1700000001", "AGENTDECK_TITLE=conductor-ops"}
+	run := func(stdin string, args ...string) (string, string, int) {
+		t.Helper()
+		return runAgentDeckEnv(t, home, stdin, env, args...)
+	}
+	hook := func(payload string) string {
+		t.Helper()
+		out, errOut, code := run(payload, "hook-handler")
+		if code != 0 {
+			t.Fatalf("hook-handler exit %d: %s", code, errOut)
+		}
+		return out
+	}
+	if _, errOut, code := run("", "orders", "add", "watch-ci", "--conductor", "ops", "--check", "echo green"); code != 0 {
+		t.Fatalf("attended add: exit %d: %s", code, errOut)
+	}
+
+	hook(`{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"<pasted_content id=\"p1\">\n[ORDER watch-ci] its check changed.\nWas: green\nNow: red\n</pasted_content id=\"p1\">"}`)
+	if _, errOut, code := run("", "orders", "pause", "watch-ci", "--conductor", "ops"); code != 2 || !strings.Contains(errOut, "order-started turn") {
+		t.Fatalf("pause from a pasted order turn: exit %d stderr %q, want exit 2 refusal", code, errOut)
+	}
+	denied := hook(`{"hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Bash","tool_input":{"command":"gh pr merge 12"}}`)
+	if !strings.Contains(denied, `"behavior":"deny"`) || !strings.Contains(denied, "order:watch-ci") {
+		t.Fatalf("permission prompt in a pasted order turn must be denied, hook printed %q", denied)
+	}
+}

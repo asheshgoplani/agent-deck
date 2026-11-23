@@ -130,9 +130,56 @@ func (i *Instance) shellForegroundRunning() bool {
 //     session has a non-zero lastStartTime and must surface as error
 //     (lifecycle_regression_test.go phase5).
 //  3. The status is still the pristine post-add state (idle or starting).
+//
+// A session reloaded from storage (every CLI call, the web server, the TUI
+// after a restart) qualifies through storedNeverStarted instead of (1).
 func (i *Instance) neverStarted() bool {
-	return i.addedThisProcess && i.lastStartTime.IsZero() &&
-		(i.Status == StatusIdle || i.Status == StatusStarting)
+	if !i.lastStartTime.IsZero() {
+		return false
+	}
+	if i.addedThisProcess {
+		return i.Status == StatusIdle || i.Status == StatusStarting
+	}
+	return i.storedNeverStarted()
+}
+
+// storedNeverStarted reports whether a session reloaded from storage carries
+// no durable trace of ever having run (caller holds i.mu). Without it, a
+// session added by one process and read by another (`add` then `list`, the
+// web menu, the phone) turned from idle into error/unknown-exit once the
+// grace period passed, and that error was then written back to storage.
+//
+// Every one of these must be empty: the persisted start stamp
+// (LastStartedAt, written by every Start/Restart since #1704), an attach
+// (LastAccessedAt), durable agent activity, a hook record and every
+// tool conversation id. A session that ran under a binary older than the
+// start stamp still carries one of the others, so it keeps its error.
+// The stored status must still be the pristine post-add one (idle or
+// starting): a stored error with no start stamp is a start that failed
+// before tmux existed (spawn failure, failed queued start), which must
+// stay error.
+func (i *Instance) storedNeverStarted() bool {
+	if i.Status != StatusIdle && i.Status != StatusStarting {
+		return false
+	}
+	if !i.LastStartedAt.IsZero() || !i.LastAccessedAt.IsZero() {
+		return false
+	}
+	if !i.lastActivityAt.IsZero() && i.lastActivityAt.After(i.CreatedAt) {
+		return false
+	}
+	if i.hookStatus != "" || !i.hookLastUpdate.IsZero() {
+		return false
+	}
+	for _, id := range []string{
+		i.ClaudeSessionID, i.GeminiSessionID, i.OpenCodeSessionID, i.CodexSessionID,
+		i.PiSessionID, i.CopilotSessionID, i.GenericSessionID,
+	} {
+		if id != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateStatus updates the session status by checking tmux.

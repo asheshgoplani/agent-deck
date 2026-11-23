@@ -501,7 +501,7 @@ func handleCodexHooks(args []string) {
 	case "uninstall":
 		handleCodexHooksUninstall()
 	case "status":
-		handleCodexHooksStatus()
+		runCodexHooksStatus(hooksStatusWantsJSON(args[1:]))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown codex-hooks subcommand: %s\n", args[0])
 		printCodexHooksUsage(os.Stderr)
@@ -517,11 +517,17 @@ func printCodexHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  install      Install or upgrade agent-deck Codex notify hook")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Codex notify hook")
-	fmt.Fprintln(w, "  status       Show current hook install status")
+	fmt.Fprintln(w, "  status       Show current hook install status (--json for machine output)")
 }
 
 func handleCodexHooksInstall() {
 	configPath := getCodexConfigPath()
+	lock, err := session.AcquireConfigFileLockTimeout(configPath, time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error locking codex config: %v\n", err)
+		exitCLI(1)
+	}
+	defer lock.Release()
 	content, err := readFileOrEmpty(configPath)
 	if err != nil {
 		// Never treat an unreadable config as empty: the write below would replace it.
@@ -589,6 +595,18 @@ func handleCodexHooksInstall() {
 
 func handleCodexHooksUninstall() {
 	configPath := getCodexConfigPath()
+	// Nothing to remove without a config file. Check before locking so a no-op
+	// uninstall does not create config.toml.lock or the codex dir.
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		fmt.Println("No agent-deck Codex hook found to remove.")
+		return
+	}
+	lock, err := session.AcquireConfigFileLockTimeout(configPath, time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error locking codex config: %v\n", err)
+		exitCLI(1)
+	}
+	defer lock.Release()
 	content, err := readFileOrEmpty(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading codex config: %v\n", err)
@@ -624,8 +642,16 @@ func handleCodexHooksUninstall() {
 	fmt.Println("No agent-deck Codex hook found to remove.")
 }
 
-func handleCodexHooksStatus() {
+func runCodexHooksStatus(asJSON bool) {
 	configPath := getCodexConfigPath()
+	if asJSON {
+		state := codexHooksStateForConfig(configPath)
+		if state == codexHooksNotInstalled {
+			state = "not-installed"
+		}
+		printHooksStatusJSON(hooksStatusJSON{Kind: "codex", State: state, Config: configPath})
+		return
+	}
 	switch codexHooksStateForConfig(configPath) {
 	case codexHooksInstalled:
 		fmt.Println("Status: INSTALLED")

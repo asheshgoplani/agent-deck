@@ -25,7 +25,11 @@ func creationFieldsFromFlags(fs *flag.FlagSet) []session.RemoteCreationField {
 		if boolean, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && boolean.IsBoolFlag() {
 			takesValue = false
 		}
-		fields = append(fields, session.RemoteCreationField{Name: f.Name, TakesValue: takesValue})
+		field := session.RemoteCreationField{Name: f.Name, TakesValue: takesValue}
+		if r, ok := f.Value.(interface{ IsRepeatable() bool }); ok && r.IsRepeatable() {
+			field.Repeatable = true
+		}
+		fields = append(fields, field)
 	})
 	return fields
 }
@@ -73,7 +77,7 @@ func buildCreationCatalog(profile string) (*session.RemoteCreationCatalog, error
 	claudeDefaults := session.NewClaudeOptions(cfg)
 	catalog.Defaults = map[string]bool{"skip_permissions": claudeDefaults.SkipPermissions, "auto_mode": claudeDefaults.AutoMode, "chrome": claudeDefaults.UseChrome, "teammate_mode": claudeDefaults.UseTeammateMode, "codex_yolo": cfg.Codex.YoloMode, "gemini_yolo": cfg.Gemini.YoloMode, "hermes_yolo": cfg.Hermes.YoloMode}
 	catalog.KimiPermissionMode = cfg.Kimi.PermissionMode
-	names := append([]string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "kimi"}, session.GetCustomToolNames()...)
+	names := append([]string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "antigravity", "kimi"}, session.GetCustomToolNames()...)
 	for _, name := range session.FilterVisibleToolNames(names) {
 		kind := session.CanonicalToolName(name)
 		if session.IsClaudeCompatible(name) {
@@ -324,9 +328,12 @@ func validateStartupQueryCapacity(profile, group, parent, path string, noParent,
 	if err != nil {
 		return err
 	}
+	tree := session.NewGroupTreeWithGroups(instances, groups)
 	selectedGroup := group
 	if selectedGroup == "" {
-		selectedGroup = session.GroupPathForProject(path)
+		// The path add and launch store for a directory-derived group, so a
+		// directory "My Proj" is checked against the group "My-Proj".
+		selectedGroup = derivedGroupPath(tree, session.GroupPathForProject(path))
 	}
 	parentInst, _, _, parentErr := selectLaunchParent(parent, noParent, launchNestUnderParent(), instances)
 	if parentErr != nil {
@@ -342,7 +349,6 @@ func validateStartupQueryCapacity(profile, group, parent, path string, noParent,
 	if resolvedGroup != nil {
 		*resolvedGroup = selectedGroup
 	}
-	tree := session.NewGroupTreeWithGroups(instances, groups)
 	cfg, err := session.LoadUserConfig()
 	if err != nil {
 		return err

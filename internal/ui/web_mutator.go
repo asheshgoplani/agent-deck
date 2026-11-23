@@ -47,6 +47,7 @@ type WebMutator struct {
 type webDeletedEntry struct {
 	instance  *session.Instance
 	deletedAt time.Time
+	prev      undoPrevState // state before the delete, restored by an undo
 }
 
 // NewWebMutator returns a WebMutator backed by the given Home. The undo
@@ -187,7 +188,7 @@ func (m *WebMutator) StartSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	// Starting an archived session unarchives it durably first, as the CLI
 	// and the TUI do; a failed start restores the exact archive timestamp.
@@ -206,7 +207,7 @@ func (m *WebMutator) StopSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	loaded := session.BeforeStopKill(m.h.storage, id)
 	if err := inst.Kill(); err != nil {
@@ -230,7 +231,7 @@ func (m *WebMutator) RestartSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	_, err = session.UnarchiveAround(inst, "restart", m.persistArchived, func() error {
 		return inst.RestartFrom(telemetry.SurfaceWeb)
@@ -263,9 +264,12 @@ func (m *WebMutator) DeleteSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 
+	// Captured before the kill, which writes StatusStopped: an undo brings
+	// the session back in this state.
+	prev := captureUndoState(inst)
 	// Kill the tmux session (ignore errors — may already be stopped)
 	_ = inst.Kill()
 
@@ -294,7 +298,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	// session's pending inbox events.
 	session.PublishSessionClosed(storage.Profile(), id, session.SessionClosedRemoved)
 	inst.RecordTelemetryEndFrom(telemetry.EndDelete, telemetry.SurfaceWeb)
-	m.pushUndo(inst)
+	m.pushUndo(inst, prev)
 	return nil
 }
 
@@ -314,7 +318,7 @@ func (m *WebMutator) CloseSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	if err := inst.Kill(); err != nil {
 		return err
@@ -335,7 +339,12 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
+	}
+	// Like `agent-deck session archive`: archiving twice is an error, not a
+	// second success.
+	if inst.IsArchived() {
+		return fmt.Errorf("session is already archived: %s", id)
 	}
 	if err := inst.Kill(); err != nil {
 		return fmt.Errorf("failed to stop session: %w", err)
@@ -357,7 +366,7 @@ func (m *WebMutator) UnarchiveSession(id string) error {
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 	m.h.instancesMu.Lock()
 	if !inst.IsArchived() {
@@ -420,9 +429,6 @@ func (m *WebMutator) UndoDelete() (string, error) {
 	return id, nil
 }
 
-// restartForUndo restarts a session an undo brings back (a seam for tests).
-var restartForUndo = func(inst *session.Instance) error { return inst.Restart() }
-
 // restoreDeleted restarts a popped undo entry and re-persists it.
 func (m *WebMutator) restoreDeleted(entry webDeletedEntry) (string, error) {
 
@@ -431,7 +437,7 @@ func (m *WebMutator) restoreDeleted(entry webDeletedEntry) (string, error) {
 	// tool (e.g. a tool the user has since uninstalled). Bubble the
 	// error up so the handler returns 500; the entry has already been
 	// popped, mirroring the TUI's ctrl+z semantics.
-	if err := restartForUndo(entry.instance); err != nil {
+	if _, err := restoreForUndo(entry.instance, entry.prev); err != nil {
 		return "", fmt.Errorf("restart session: %w", err)
 	}
 
@@ -473,7 +479,7 @@ func (m *WebMutator) restoreDeleted(entry webDeletedEntry) (string, error) {
 // capped at 10 entries (FIFO eviction) to bound memory. Entries past the undo
 // window, or evicted by the cap, can no longer be undone: their deletes are
 // final and the deferred inbox and notify-state sweep (#910) runs for them.
-func (m *WebMutator) pushUndo(inst *session.Instance) {
+func (m *WebMutator) pushUndo(inst *session.Instance, prev undoPrevState) {
 	// The row is deleted: an undo must re-insert it, not update it.
 	inst.ForgetStorageSnapshot()
 	m.undoMu.Lock()
@@ -493,6 +499,7 @@ func (m *WebMutator) pushUndo(inst *session.Instance) {
 	m.undoStack = append(kept, webDeletedEntry{
 		instance:  inst,
 		deletedAt: time.Now(),
+		prev:      prev,
 	})
 	if len(m.undoStack) > 10 {
 		final = append(final, m.undoStack[:len(m.undoStack)-10]...)
@@ -594,7 +601,7 @@ func (m *WebMutator) ForkSession(id string) (string, error) {
 	parent := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if parent == nil {
-		return "", fmt.Errorf("session not found: %s", id)
+		return "", fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 
 	forked, _, err := parent.CreateForkedInstanceForTool(parent.Title+" (fork)", parent.GroupPath, nil)
@@ -645,7 +652,7 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
 	if inst == nil {
-		return nil, false, fmt.Errorf("session not found: %s", id)
+		return nil, false, fmt.Errorf("%w: %s", menudata.ErrSessionNotFound, id)
 	}
 
 	changed := make([]string, 0, len(updates))
@@ -653,6 +660,14 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 	var postCommits []func()
 
 	m.h.instancesMu.Lock()
+	// The CLI's rename guard, before any field is written: a title another
+	// session holds at the same location is refused (*session.TitleConflictError).
+	if title, ok := updates[session.FieldTitle]; ok {
+		if err := session.CheckTitleConflict(m.h.instances, inst, title); err != nil {
+			m.h.instancesMu.Unlock()
+			return nil, false, err
+		}
+	}
 	for field, value := range updates {
 		oldValue, postCommit, err := session.SetField(inst, field, value, nil)
 		if err != nil {
@@ -919,6 +934,29 @@ func (m *WebMutator) FinishWorktree(id string, opts menudata.WorktreeFinishOptio
 	worktreePath := inst.WorktreePath
 	worktreeBranch := inst.WorktreeBranch
 
+	// Same guard as `agent-deck worktree finish` (F9): another session on
+	// this worktree, in this or any other local profile, would be left at a
+	// path that no longer exists.
+	if !opts.Force {
+		m.h.instancesMu.RLock()
+		sharers := session.SessionsSharingWorktree(inst, m.h.instances)
+		m.h.instancesMu.RUnlock()
+		others, oErr := session.WorktreeUsersInOtherProfiles(inst, m.h.profile)
+		if oErr != nil {
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("%w: could not check other profiles for users: %v (set force=true to remove the worktree and branch anyway)",
+				menudata.ErrWorktreeShared, oErr)
+		}
+		sharers = append(sharers, others...)
+		if len(sharers) > 0 {
+			names := make([]string, 0, len(sharers))
+			for _, o := range sharers {
+				names = append(names, "'"+o.Title+"'")
+			}
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("%w: %s (set force=true to remove the worktree and branch anyway)",
+				menudata.ErrWorktreeShared, strings.Join(names, ", "))
+		}
+	}
+
 	backend, err := vcsbackend.Detect(repoRoot)
 	if err != nil {
 		return menudata.WorktreeFinishResult{}, fmt.Errorf("initialize VCS: %w", err)
@@ -1024,8 +1062,11 @@ func (m *WebMutator) FinishWorktree(id string, opts menudata.WorktreeFinishOptio
 	}, nil
 }
 
-// DeleteGroup deletes a group (and its subgroups), moving sessions to the default
-// group. Returns an error if groupPath is the default group.
+// DeleteGroup deletes a group (and its subgroups), moving their sessions to
+// the parent group, or to the default group for a root group
+// (session.GroupTree.DeleteGroupDestination, the CLI's and the TUI's rule).
+// Returns an error if groupPath is the default group and
+// menudata.ErrGroupNotFound when no group has that path.
 func (m *WebMutator) DeleteGroup(groupPath string) error {
 	if groupPath == session.DefaultGroupPath {
 		return fmt.Errorf("cannot delete default group")
@@ -1036,6 +1077,12 @@ func (m *WebMutator) DeleteGroup(groupPath string) error {
 	}
 	defer unlock()
 
+	if m.h.groupTree == nil {
+		return menudata.ErrGroupNotFound
+	}
+	if _, ok := m.h.groupTree.Groups[groupPath]; !ok {
+		return menudata.ErrGroupNotFound
+	}
 	m.h.groupTree.DeleteGroup(groupPath)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)

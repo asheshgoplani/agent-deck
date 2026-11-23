@@ -76,6 +76,10 @@ func issue2806WorktreeSession(t *testing.T, home, title string, status session.S
 	for _, inst := range instances {
 		if inst.ID == id {
 			inst.Status = status
+			// A row that ran: the persisted start stamp keeps an errored row
+			// error after a reload (never-started rows read idle).
+			inst.LastStartedAt = time.Now().Add(-time.Hour)
+			inst.CreatedAt = inst.LastStartedAt.Add(-time.Minute)
 			inst.WorktreePath = wt
 			inst.WorktreeRepoRoot = repo
 			inst.WorktreeBranch = "br-" + title
@@ -125,7 +129,7 @@ func TestIssue2806_RemoveSavesStoppedBeforeWorktreeRemoval(t *testing.T) {
 			return []string{"session", "remove", "--all-errored", "--prune-worktree", "--json"}
 		}},
 		{"remove", session.StatusWaiting, func(id string) []string {
-			return []string{"remove", id, "--json"}
+			return []string{"remove", id, "--force", "--json"}
 		}},
 	}
 	for _, tc := range cases {

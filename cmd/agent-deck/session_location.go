@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
-	"github.com/asheshgoplani/agent-deck/internal/termtext"
 )
 
 // This file is the CLI half of "a session's identity is WHERE IT RUNS".
@@ -209,54 +208,27 @@ func (d addTitleDecision) RenameWarning() string {
 // sessions sharing a title at one location are then both unaddressable by title,
 // because ResolveSession reports them as ErrCodeAmbiguous.
 //
-// The check lives at the CLI callers rather than in session.SetField because
-// SetField takes a single *Instance with no access to the instance list, and the
-// TUI edit dialog has no collision check of its own to inherit from.
+// The predicate lives in internal/session (session.TitleConflictAt) so the TUI
+// dialogs and the web PATCH refuse the same renames the CLI does.
 func titleConflictAt(instances []*session.Instance, inst *session.Instance, newTitle string) *session.Instance {
-	if inst == nil {
-		return nil
-	}
-	loc := locationOf(inst)
-	for _, other := range instances {
-		if other == nil || other.ID == inst.ID {
-			continue
-		}
-		if other.Title == newTitle && locationOf(other) == loc {
-			return other
-		}
-	}
-	return nil
+	return session.TitleConflictAt(instances, inst, newTitle)
 }
 
-// titleConflictError renders the refusal for titleConflictAt, using the same
-// ALREADY_EXISTS code `add` and `launch` use and naming the existing session's
-// ID so the user can act on it.
-func titleConflictError(inst *session.Instance, newTitle string, conflict *session.Instance) (string, string) {
-	return fmt.Sprintf("session with title %q already exists at %s (id: %s)",
-		newTitle, locationOf(inst).String(), conflict.ID), ErrCodeAlreadyExists
-}
-
-// checkTitleConflict is the one decision every rename path makes: it returns the
-// (message, code) pair to report when newTitle is already held by ANOTHER
-// session at inst's location, and ("", "") when the rename is free.
+// checkTitleConflict is the one decision every CLI rename path makes: it
+// returns the (message, code) pair to report when newTitle is already held by
+// ANOTHER session at inst's location, and ("", "") when the rename is free.
 //
 // `add`, `rename` and `session set <id> title` all refuse the same condition, so
 // they must report it with the same code — `rename` used to answer
 // INVALID_OPERATION where the other two answer ALREADY_EXISTS, forcing a --json
 // consumer to special-case one of the three (review finding F8). Renaming a
-// session to the title it already holds stays a no-op.
+// session to the title it already holds stays a no-op. The decision and the
+// message are session.CheckTitleConflict's, shared with the TUI and the web.
 func checkTitleConflict(instances []*session.Instance, inst *session.Instance, newTitle string) (string, string) {
-	// The title is stored cleaned (SetTitleThreadSafe), so compare that form:
-	// "foo\x1b" must collide with an existing "foo".
-	newTitle = termtext.Clean(newTitle)
-	if inst == nil || newTitle == inst.Title {
-		return "", ""
+	if err := session.CheckTitleConflict(instances, inst, newTitle); err != nil {
+		return err.Error(), ErrCodeAlreadyExists
 	}
-	conflict := titleConflictAt(instances, inst, newTitle)
-	if conflict == nil {
-		return "", ""
-	}
-	return titleConflictError(inst, newTitle, conflict)
+	return "", ""
 }
 
 // instanceAtLocationIdentifier reports whether inst runs at the location the
@@ -299,8 +271,22 @@ func localSessionPaths(instances []*session.Instance) map[string]bool {
 		if inst == nil {
 			continue
 		}
-		if loc := locationOf(inst); loc.IsLocal() && loc.Path != "" {
-			paths[loc.Path] = true
+		if loc := locationOf(inst); loc.IsLocal() {
+			if loc.Path != "" {
+				paths[loc.Path] = true
+			}
+			// A local multi-repo session also uses its additional paths and
+			// every per-repo worktree, not only its first mapped path.
+			for _, p := range inst.AdditionalPaths {
+				if p != "" {
+					paths[p] = true
+				}
+			}
+			for _, mw := range inst.MultiRepoWorktrees {
+				if mw.WorktreePath != "" {
+					paths[mw.WorktreePath] = true
+				}
+			}
 		}
 		if inst.WorktreePath != "" {
 			paths[inst.WorktreePath] = true
@@ -314,26 +300,12 @@ func localSessionPaths(instances []*session.Instance) map[string]bool {
 // session row belongs to a different profile.
 func allProfileSessionPaths(currentProfile string, current []*session.Instance) (map[string]bool, error) {
 	paths := localSessionPaths(current)
-	profiles, err := session.ListProfiles()
+	others, err := session.OtherProfileInstances(currentProfile)
 	if err != nil {
-		return nil, fmt.Errorf("list profiles for worktree ownership: %w", err)
+		return nil, err
 	}
-	for _, profile := range profiles {
-		if profile == currentProfile {
-			continue
-		}
-		storage, err := session.NewStorageWithProfile(profile)
-		if err != nil {
-			return nil, fmt.Errorf("open profile %q for worktree ownership: %w", profile, err)
-		}
-		instances, _, err := storage.LoadWithGroups()
-		_ = storage.Close()
-		if err != nil {
-			return nil, fmt.Errorf("load profile %q for worktree ownership: %w", profile, err)
-		}
-		for path := range localSessionPaths(instances) {
-			paths[path] = true
-		}
+	for path := range localSessionPaths(others) {
+		paths[path] = true
 	}
 	return paths, nil
 }

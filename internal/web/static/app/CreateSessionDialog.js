@@ -10,6 +10,7 @@ import {
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
 import { PathInput } from './PathInput.js'
+import { backdropDismiss } from './uiState.js'
 import { DirectoryCreationOption } from './DirectoryCreationOption.js'
 import { displayLabelForTool, resolveCreateSessionPickerTools } from './pickerTools.js'
 import {
@@ -111,7 +112,6 @@ export function CreateSessionDialog() {
   }
 
   const close = () => (createSessionDialogSignal.value = null)
-  const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelOptionsForTool(tool, modelCatalogSignal.value)
   const reasoningEfforts = effortOptionsForTool(tool, selectedModelId(), modelCatalogSignal.value)
   // The options change with the model (select or custom id) and with the
@@ -121,7 +121,7 @@ export function CreateSessionDialog() {
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
   return html`
-    <div class="overlay path-dialog-overlay" onClick=${handleBackdropClick}>
+    <div class="overlay path-dialog-overlay" ...${backdropDismiss(close)}>
       <form class="dialog path-dialog" onClick=${e => e.stopPropagation()} onSubmit=${handleSubmit}>
         <div class="dh">
           <span class="kicker">NEW</span>

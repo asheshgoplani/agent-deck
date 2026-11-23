@@ -10,6 +10,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides)
 - [[group_defaults] Section](#group_defaults-section)
 - [[gemini] Section](#gemini-section)
+- [[antigravity] Section](#antigravity-section)
 - [[kimi] Section](#kimi-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
@@ -283,6 +284,20 @@ command = "gemini"                   # Binary/invocation override
 | `default_model` | string | `""` | Model to use (e.g., `"gemini-2.5-flash"`). Empty uses Gemini's default. |
 | `env_file` | string | `""` | A .env file sourced for Gemini sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"gemini"` | Override the binary/invocation. Supports flags. |
+
+## [antigravity] Section
+
+The built-in `antigravity` preset launches Google's `agy` CLI. Override the
+invocation for the preset with:
+
+```toml
+[antigravity]
+command = "agy --mode plan" # Default: "agy"
+```
+
+An existing `[tools.antigravity].command` is used if `[antigravity].command` is
+unset. Set terminal detection overrides under `[tools.antigravity]`. Gemini CLI
+remains a separate tool with its own settings.
 
 ## [kimi] Section
 
@@ -1052,11 +1067,11 @@ file_link_roots = ["~/projects", "~/Downloads"]  # file:// links under these ope
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `mutations_enabled` | bool | `true` | When `false`, mutating endpoints (POST/PATCH/DELETE) return HTTP 403 and the web UI hides its write affordances. `--read-only` forces this off regardless of the config value. |
+| `mutations_enabled` | bool | `true` | When `false`, mutating endpoints (POST/PATCH/DELETE) return HTTP 403 and the web UI hides its write affordances. `--read-only` forces this off regardless of the config value. Assistant tokens on this server (`/mcp`, `/api/assistant/v1/`) can then read but not send, approve or launch. It is a web setting only: `agent-deck connect serve` (stdio MCP) does not read it, and there the token's scopes decide. |
 | `allowed_hosts` | []string | `[]` | Extra exact HTTP Host names for reverse proxies or Tailscale Serve. Optional `:port` limits an entry to that port. Case-insensitive; no URLs, wildcards, or suffix matching. Repeat `--allowed-host` for temporary additions. Unknown Hosts receive HTTP 421, including WebSocket upgrades. |
 | `trusted_domains` | []string | `[]` | Hosts whose links open straight from the web terminal, skipping the "this link could potentially be dangerous" confirm. Everything not listed still confirms. Matching is on **host** only: case-insensitive, port- and path-independent. An entry may be a bare host (`gitlab.corp.example`), a pasted URL (reduced to its host), or `*.base.example` to match **subdomains** of `base.example` (not the bare base itself). Only `http`/`https` links are ever auto-opened. Unusable entries (`*`, `*.example`, blanks) are dropped. |
 | `confirm_link_open` | bool | `true` | Confirm before opening a web-terminal link whose host is **not** in `trusted_domains`. Set `false` to accept the risk and open every link directly — prefer `trusted_domains`, which keeps the safety net for arbitrary links. |
-| `file_link_roots` | []string | `[]` (off) | Directories whose files a web-terminal `file://` link may open (a browser on the deck's http origin can't load `file://` itself). A link under a root opens in a new tab through `GET /api/files?path=<abs>` on the deck's own origin, with the usual token auth, so it also works from a phone. `~` and `$VARS` expand. Relative entries, entries naming an unset or empty `$VAR`, `/`, and any directory that contains your home directory, `~/.ssh` or agent-deck's config or data directory (such as `/home`, `/Users` or `$HOME/..`) are refused with a warning at `agent-deck web` start (and listed under `refused` by `agent-deck file roots --json`), so a root can never widen to the whole disk. Symlinks and `..` are resolved before the root check and the file is opened through the resolved root, so nothing outside a root can be read. Regular files only (no directory listings), up to 32 MiB. PNG, JPEG, GIF, WebP, AVIF, BMP and ICO are shown as images; other text (including HTML and SVG) is shown as plain text, and binary files download. A `file://<host>/path` link (what `ls --hyperlink` emits) opens only when the host is the deck machine's own hostname; a `file:///path` link with no host is taken as the deck machine's, even when the pane runs an ssh session to another machine. With no roots, or for a link outside them or on another host, a click copies the path instead. A hard link inside a root to a file elsewhere is served like any file in the root, so only list folders whose contents you control. Pick project or report folders, not your whole home directory. `agent-deck file read <path> [--json]` and `agent-deck file roots [--json]` apply the same rules from the CLI, and `agent-deck remote <name> file read ...` reads under that remote's own roots. |
+| `file_link_roots` | []string | `[]` (off) | Directories whose files a web-terminal `file://` link may open (a browser on the deck's http origin can't load `file://` itself). A link under a root opens in a new tab through `GET /api/files?path=<abs>` on the deck's own origin, with the usual token auth, so it also works from a phone. `~` and `$VARS` expand. Relative entries, entries naming an unset or empty `$VAR`, `/`, and any directory that contains your home directory, `~/.ssh` or agent-deck's config or data directory (such as `/home`, `/Users` or `$HOME/..`) are refused with a warning at `agent-deck web` start (and listed under `refused` by `agent-deck file roots --json`), so a root can never widen to the whole disk. Symlinks and `..` are resolved before the root check and the file is opened through the resolved root, so nothing outside a root can be read. Regular files only (no directory listings), up to 32 MiB. PNG, JPEG, GIF, WebP, AVIF, BMP and ICO are shown as images; other text (including HTML and SVG) is shown as plain text, and binary files download. A `file://<host>/path` link (what `ls --hyperlink` emits) opens only when the host is the deck machine's own hostname; a `file:///path` link with no host is taken as the deck machine's, even when the pane runs an ssh session to another machine. With no roots, or for a link outside them or on another host, a click copies the path instead. A hard link inside a root to a file elsewhere is served like any file in the root, so only list folders whose contents you control. Pick project or report folders, not your whole home directory. `agent-deck file read <path> [--json]` and `agent-deck file roots [--json]` apply the same rules from the CLI (and `file read` also refuses dotfiles and secret-like names below the root, such as `.env`, `.git/`, `id_rsa`, `*.pem`, with code `private`, the rule the phone's pages use), and `agent-deck remote <name> file read ...` reads under that remote's own roots. |
 
 All link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
 
@@ -1108,7 +1123,7 @@ index_rate_limit = 20       # Files/second for indexing
 
 ## [recall] Section
 
-Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...` and the TUI `G` key), one machine-global `recall.db` in the data dir beside `profiles/` covering Claude (every profile), Codex, pi, Gemini, OpenCode and Hermes.
+Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...` and the TUI `G` key), one machine-global `recall.db` in the data dir beside `profiles/` covering Claude (every profile), Codex, pi, Gemini, OpenCode and Hermes. It also gates the web timeline routes `GET /api/sessions/{id}/timeline` and `.../timeline/stream`, which read transcripts without the index.
 
 ```toml
 [recall]
@@ -1225,7 +1240,7 @@ tag_sends = true   # prefix agent-originated sends with [agent-deck from:<id>]
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `tag_sends` | bool | `true` | A `session send` from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one `[agent-deck from:<sender-id>]` line, so the receiver's reply is classified as a send and, when the sender is not the receiver's parent, committed to the sender's inbox as an urgent `reply` record that wakes it (also when the receiver has no parent). `false` turns tagging off for every send (`--no-tag` does it per send). The same tag goes on a `launch` initial message when the calling session is the child's linked parent and the child's turns are reported to it (#3131; `launch --no-tag` per launch), so the child's first turn answers the parent. Human shells, senders that are not Claude-compatible sessions, `--draft`, bare slash commands, heartbeats, sends to oneself and non-Claude targets are never tagged. |
+| `tag_sends` | bool | `true` | Claude-to-Claude `session send` messages (`AGENTDECK_INSTANCE_ID` set) start with `[agent-deck from:<sender-id>]`, so the receiver's reply is classified as a send and, when the sender is not its parent, committed to the sender's inbox as an urgent `reply` record that wakes it (also when the receiver has no parent). Pi-to-Pi and Pi-to-Claude messages include the same source ID; the receiver reads the sender's `tool` from `session show <sender-id> --json` and replies explicitly with `session send <sender-id> "answer"`, because attribution does not guarantee automatic Pi reply delivery. `false` disables tagging globally; `--no-tag` disables it per send. Claude `launch` initial messages retain the existing kickoff tag when the caller is the child's linked parent and its turns are reported (#3131). Human shells, unsupported sender/target pairs, drafts, bare slash commands, Pi `!`/`!!` commands, heartbeats, self-sends and already-enveloped messages remain unchanged. |
 
 ## [costs.budgets] and [costs.run_budget]
 

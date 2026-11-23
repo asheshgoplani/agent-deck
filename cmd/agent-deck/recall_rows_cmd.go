@@ -41,32 +41,9 @@ func registerRowsFlags(fs interface {
 }) rowsFlags {
 	return rowsFlags{
 		v1:         fs.Bool("v1", false, "Slice-6 output (turns with role/kind/text, turn frames) instead of rows"),
-		transcript: fs.String("transcript", "", "Read this Claude Code JSONL or Codex rollout instead of a session's"),
-		harness:    fs.String("harness", "", "With --transcript: claude or codex"),
+		transcript: fs.String("transcript", "", "Read this Claude Code JSONL, Codex rollout or Pi session instead of a session's"),
+		harness:    fs.String("harness", "", "With --transcript: claude, codex or pi"),
 	}
-}
-
-// rowsHarness maps a session tool to the native format the rows reader parses.
-func rowsHarness(tool string) string {
-	switch {
-	case session.IsClaudeCompatible(tool):
-		return "claude"
-	case session.IsCodexCompatible(tool):
-		return "codex"
-	}
-	return tool
-}
-
-// liveTranscriptPath resolves an instance's current native transcript.
-func liveTranscriptPath(inst *session.Instance, peers []*session.Instance) (string, error) {
-	switch rowsHarness(inst.Tool) {
-	case "claude", "codex":
-		if p := session.LiveTranscriptPath(inst, peers); p != "" {
-			return p, nil
-		}
-		return "", fmt.Errorf("session %s has no native transcript on this machine yet", inst.Title)
-	}
-	return "", fmt.Errorf("%w: %s", query.ErrRowsUnsupported, inst.Tool)
 }
 
 var nativeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{7,}$`)
@@ -95,15 +72,11 @@ func nativeTranscriptByID(id string) (harness, path string) {
 }
 
 func instanceTarget(inst *session.Instance, peers []*session.Instance, storage *session.Storage) (*rowsTarget, error) {
-	path, err := liveTranscriptPath(inst, peers)
+	src, sess, err := session.LiveRowsSource(inst, peers)
 	if err != nil {
 		return nil, err
 	}
-	h := rowsHarness(inst.Tool)
-	t := &rowsTarget{inst: inst, storage: storage, direct: true}
-	t.src = query.RowsSource{Harness: h, Path: path, Resolve: func() (string, error) { return liveTranscriptPath(inst, peers) }}
-	t.session = query.RowsSession{ID: inst.ID, Harness: h, NativeID: firstNonEmpty(inst.ClaudeSessionID, inst.CodexSessionID), Path: path, Title: inst.Title, Cwd: inst.EffectiveWorkingDir()}
-	return t, nil
+	return &rowsTarget{inst: inst, storage: storage, direct: true, src: src, session: sess}, nil
 }
 
 // resolveRowsTarget resolves <session> without the index first: deck
@@ -115,7 +88,7 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 	if *f.transcript != "" {
 		h := *f.harness
 		if !query.SupportsDirectRows(h) {
-			return nil, fmt.Errorf("--transcript needs --harness claude or codex")
+			return nil, fmt.Errorf("--transcript needs --harness claude, codex or pi")
 		}
 		return &rowsTarget{direct: true, src: query.RowsSource{Harness: h, Path: *f.transcript}, session: query.RowsSession{Harness: h, Path: *f.transcript}}, nil
 	}
@@ -173,7 +146,7 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 	for _, match := range []func(*session.Instance) bool{
 		func(i *session.Instance) bool { return i.ID == ref },
 		func(i *session.Instance) bool {
-			return ref != "" && (i.ClaudeSessionID == ref || i.CodexSessionID == ref)
+			return ref != "" && (i.ClaudeSessionID == ref || i.CodexSessionID == ref || i.PiSessionID == ref)
 		},
 	} {
 		for _, i := range instances {
@@ -189,19 +162,29 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 	if inst == nil && !strings.HasPrefix(ref, "#") {
 		inst, _, _ = ResolveSession(ref, instances)
 	}
+	// piErr is why a Pi session has no single live document (several files
+	// and no saved identity, or a remote). The index may still know its
+	// conversation; if not, piErr is the answer.
+	var piErr error
 	if inst != nil {
 		t, err := instanceTarget(inst, instances, storage)
-		if err == nil || !errors.Is(err, query.ErrRowsUnsupported) {
+		switch {
+		case err == nil:
+			return t, nil
+		case session.RowsHarness(inst.Tool) == "pi" && errors.Is(err, session.ErrNoNativeTranscript):
+			piErr = err
+		case !errors.Is(err, query.ErrRowsUnsupported):
 			return t, err
 		}
-		// Another harness: the index knows its native source.
+		// Another harness, or a Pi session without one exact document: the
+		// index knows its native source.
 		ref = inst.ID
 	}
 	if h, path := nativeTranscriptByID(ref); path != "" {
 		return &rowsTarget{direct: true, storage: storage, src: query.RowsSource{Harness: h, Path: path}, session: query.RowsSession{Harness: h, NativeID: ref, Path: path}}, nil
 	}
 	if lk.env == nil && lk.envErr == nil {
-		if !lk.inBatch {
+		if !lk.inBatch && piErr == nil {
 			lk.env = openRecallEnv(lk.profile, NewCLIOutput(true, false))
 		} else if env, err := openRecallEnvErr(lk.profile, NewCLIOutput(true, false)); err != nil {
 			lk.envErr = fmt.Errorf("%w: %v", errRecallIndexUnavailable, err)
@@ -210,10 +193,16 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 		}
 	}
 	if lk.envErr != nil {
+		if piErr != nil {
+			return nil, piErr
+		}
 		return nil, lk.envErr
 	}
 	h, path, sess, err := query.New(lk.env.st, lk.env.stateDB).NativeSource(context.Background(), ref)
 	if err != nil {
+		if piErr != nil && errors.Is(err, query.ErrNotFound) {
+			return nil, piErr
+		}
 		if errors.Is(err, query.ErrNotFound) {
 			return nil, fmt.Errorf("no session, conversation or indexed transcript matches %q", ref)
 		}
@@ -302,9 +291,7 @@ func readRowsTimeline(t *rowsTarget, opts query.RowsOptions) (query.RowsTimeline
 		err = fmt.Errorf("recall timeline: --before is unsupported for harness %s", t.src.Harness)
 	} else {
 		result.Turns, err = query.TimelineTurnsForSource(context.Background(), t.src.Harness, t.src.Path, t.native)
-		if err == nil && opts.Tail > 0 && len(result.Turns) > opts.Tail {
-			result.Turns = result.Turns[len(result.Turns)-opts.Tail:]
-		}
+		result.Turns = boundIndexRows(result.Turns, opts)
 	}
 	if err != nil {
 		code := ErrCodeInvalidOperation
@@ -329,6 +316,26 @@ func readRowsTimeline(t *rowsTarget, opts query.RowsOptions) (query.RowsTimeline
 		result.Status = fn()
 	}
 	return result, "", nil
+}
+
+// boundIndexRows applies --tail and the filter to index-backed rows, which
+// have no cursor. The filter runs first, so --tail and --limit count kept
+// rows as on the native path; --tail takes precedence over --limit.
+// --limit (the first N rows) applies only with
+// a filter: the unfiltered index answer has always ignored it, and stays
+// byte-identical.
+func boundIndexRows(rows []query.Row, opts query.RowsOptions) []query.Row {
+	rows = query.FilterRows(rows, opts)
+	switch {
+	case opts.Tail > 0:
+		// --tail wins over --limit, as on the native path.
+		if len(rows) > opts.Tail {
+			rows = rows[len(rows)-opts.Tail:]
+		}
+	case opts.Filtered() && opts.Limit > 0 && len(rows) > opts.Limit:
+		rows = rows[:opts.Limit]
+	}
+	return rows
 }
 
 func handleRecallFollowRows(profile, ref, after string, f rowsFlags, withStatus bool) {

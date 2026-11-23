@@ -130,6 +130,33 @@ func TestFeedbackReport_DryRunPrintsExactIssue(t *testing.T) {
 	}
 }
 
+func TestFeedbackReport_AgentDryRunRoute(t *testing.T) {
+	for _, kind := range []issuereport.Kind{issuereport.KindBug, issuereport.KindIdea} {
+		for _, tc := range []struct {
+			name      string
+			ghPresent bool
+			auth      string
+			want      string
+		}{
+			{"missing", false, "", "gh auth login"},
+			{"signed-out", true, "fail", "gh auth login"},
+			{"ready", true, "ok", "Would file with: gh"},
+		} {
+			t.Run(string(kind)+"/"+tc.name, func(t *testing.T) {
+				env := setupReportTest(t, tc.ghPresent, tc.auth, "ok")
+				out, code := runReport(t, kind, "", "--from-agent", "--dry-run", "--title", "Example", "--what", "Checking the reporting route")
+				if code != 0 || !strings.Contains(out, tc.want) || strings.Contains(out, "browser fallback") ||
+					strings.Contains(out, "Would file with: your browser") || strings.Contains(out, "/issues/new?") {
+					t.Errorf("agent dry run: exit %d, want only the gh route (%q)\n%s", code, tc.want, out)
+				}
+				if len(env.fileOpts) != 0 || strings.Contains(env.calls(), "issue create") {
+					t.Fatal("dry run tried to file")
+				}
+			})
+		}
+	}
+}
+
 func TestFeedbackReport_JSONDryRunShape(t *testing.T) {
 	env := setupReportTest(t, false, "", "")
 	out, code := runReport(t, issuereport.KindBug, "", append([]string{"--json", "--dry-run"}, bugArgs...)...)

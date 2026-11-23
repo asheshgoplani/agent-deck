@@ -5,9 +5,6 @@ import { useEffect, useRef, useCallback, useState } from 'preact/hooks'
 import { effect } from '@preact/signals'
 import { selectedIdSignal, sessionsSignal, authTokenSignal, wsStateSignal, readOnlySignal } from './state.js'
 import { apiFetch } from './api.js'
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
 import { terminalKeymap } from './terminalKeys.js'
 import { createPasteHandler } from './terminalPaste.js'
@@ -16,6 +13,22 @@ import { registerOsc52Handler } from './terminalClipboard.js'
 import { createTerminalLinkHandler, installModifierClickLinks } from './terminalLinks.js'
 import { observeSession, shouldReattach, sessionStartedSignal, noteSessionStarted } from './terminalReconnect.js'
 
+// xterm and its addons are ~145 KB gzipped and only needed once a session is
+// selected, so they load on demand instead of in the first-paint payload (the
+// page is under the total-byte-weight budget in .lighthouserc.json). All three
+// resolve together, before the Terminal is built, so the WebGL renderer is
+// attached on first paint exactly as when they were static imports.
+let xtermModules = null
+function loadXterm() {
+  if (!xtermModules) {
+    xtermModules = Promise.all([
+      import('@xterm/xterm'), import('@xterm/addon-fit'), import('@xterm/addon-webgl'),
+    ]).then(([x, f, w]) => ({ Terminal: x.Terminal, FitAddon: f.FitAddon, WebglAddon: w.WebglAddon }))
+    xtermModules.catch(() => { xtermModules = null })
+  }
+  return xtermModules
+}
+
 // Mobile detection: pointer:coarse for touch devices
 function isMobileDevice() {
   return typeof window.matchMedia === 'function' &&
@@ -23,11 +36,13 @@ function isMobileDevice() {
 }
 
 // Build WebSocket URL for a session (same pattern as app.js wsURLForSession)
-function wsURLForSession(sessionId, token) {
+function wsURLForSession(sessionId, token, ignoreSize) {
   const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const url = new URL(
     wsProto + '://' + window.location.host + '/ws/session/' + encodeURIComponent(sessionId)
   )
+  // A phone attaches with ignore-size so it never shrinks the shared window.
+  if (ignoreSize) url.searchParams.set('ignore-size', '1')
   if (token) url.searchParams.set('token', token)
   return url.toString()
 }
@@ -89,6 +104,27 @@ export function TerminalPanel() {
     // #782: a fresh session connection clears any prior fatal banner.
     setFatalError(null)
 
+    let cancelled = false
+    let teardown = null
+    loadXterm().then(({ Terminal, FitAddon, WebglAddon }) => {
+      if (cancelled) return
+      teardown = start(Terminal, FitAddon, WebglAddon)
+    }, () => {
+      // The chunk fetch failed (offline, server restart, new deploy). loadXterm
+      // already dropped its cached rejection, so Retry really re-fetches.
+      if (cancelled) return
+      setFatalError({
+        loadFailed: true,
+        message: 'The terminal code could not be downloaded.',
+        hint: 'Check your connection, then retry.',
+      })
+    })
+    return () => {
+      cancelled = true
+      if (teardown) teardown()
+    }
+
+    function start(Terminal, FitAddon, WebglAddon) {
     const container = containerRef.current
     const token = authTokenSignal.value
     const mobile = isMobileDevice()
@@ -170,12 +206,10 @@ export function TerminalPanel() {
     const controller = new AbortController()
 
     // PERF-D: hint the browser to preload the WebGL addon in parallel with
-    // the WebSocket open. The static import at the top of this file still
-    // does the actual load — the <link rel="preload"> tag only nudges the
-    // browser to fetch the bytes early rather than deferring until the
-    // module graph walks to addon-webgl. Pitfall 5: we do NOT switch to a
-    // dynamic import() here because that causes a renderer switch FOUC +
-    // tmux byte race during the gap. Desktop only (mobile skips WebGL).
+    // the WebSocket open. loadXterm() (top of this file) does the actual
+    // load, before the Terminal exists, so there is no renderer switch FOUC
+    // or tmux byte race; this tag only nudges an early fetch. Desktop only
+    // (mobile skips WebGL).
     // The preload <link> is bound to controller.signal so it is removed
     // when the terminal unmounts, preventing stale tags from accumulating
     // across session reconnects.
@@ -319,7 +353,7 @@ export function TerminalPanel() {
       ctx.wsReconnectEnabled = true
       wsStateSignal.value = 'connecting'
 
-      const ws = new WebSocket(wsURLForSession(sessionId, token))
+      const ws = new WebSocket(wsURLForSession(sessionId, token, mobile))
       ws.binaryType = 'arraybuffer'
       ctx.ws = ws
 
@@ -409,6 +443,7 @@ export function TerminalPanel() {
       clearTimeout(resizeTimer)
       cleanup()
     }
+    }
   }, [sessionId, reconnectKey, cleanup])
 
   // #2432: a terminal halted by TMUX_SESSION_NOT_FOUND reattaches by itself
@@ -483,11 +518,13 @@ export function TerminalPanel() {
           <div style="display: flex; align-items: flex-start; gap: 12px;">
             <span style="color: var(--tn-red); font-size: 18px; line-height: 1;">⚠</span>
             <div style="flex: 1; min-width: 0;">
-              <div style="font-weight: 600; color: var(--text-hi);">Terminal disconnected</div>
+              <div style="font-weight: 600; color: var(--text-hi);">${fatalError.loadFailed ? 'Terminal failed to load' : 'Terminal disconnected'}</div>
               <div style="font-size: 12.5px; color: var(--text); margin-top: 4px;">${fatalError.message}</div>
               ${fatalError.hint && html`<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">${fatalError.hint}</div>`}
               <div style="display: flex; gap: 8px; margin-top: 10px;">
-                <button type="button" class="btn primary" onClick=${handleFatalRestart}>Restart session</button>
+                ${fatalError.loadFailed
+                  ? html`<button type="button" class="btn primary" onClick=${() => setReconnectKey((k) => k + 1)}>Retry</button>`
+                  : html`<button type="button" class="btn primary" onClick=${handleFatalRestart}>Restart session</button>`}
                 <button type="button" class="btn ghost" onClick=${() => setFatalError(null)}>Dismiss</button>
               </div>
             </div>

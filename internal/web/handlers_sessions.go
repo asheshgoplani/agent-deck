@@ -160,6 +160,26 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Opened pages: GET /api/sessions/{id}/open-pages[/{pageId}], the HTTP
+	// form of `agent-deck open --list/--show` (docs/macapp-open.md).
+	if action == "open-pages" || strings.HasPrefix(action, "open-pages/") {
+		s.handleSessionOpenPages(w, r, sessionID, strings.TrimPrefix(strings.TrimPrefix(action, "open-pages"), "/"))
+		return
+	}
+
+	// Timeline sub-route: GET /api/sessions/{id}/timeline, the HTTP form
+	// of `agent-deck recall timeline <id> --json`.
+	if action == "timeline" {
+		s.handleSessionTimeline(w, r, sessionID)
+		return
+	}
+	// GET /api/sessions/{id}/timeline/stream: the SSE form of
+	// `agent-deck recall follow <id> --after <cursor|end> --jsonl`.
+	if action == "timeline/stream" {
+		s.handleSessionTimelineStream(w, r, sessionID)
+		return
+	}
+
 	// Worktree sub-route: POST /api/sessions/{id}/worktree/finish
 	// (issue #1126 — closes the "Finish worktree" MISSING row in
 	// tests/web/PARITY_MATRIX.md, mirrors TUI W/shift+w + CLI
@@ -188,7 +208,7 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.mutator.DeleteSession(sessionID); err != nil {
-			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+			writeSessionMutatorError(w, err)
 			return
 		}
 		s.notifyMenuChanged()
@@ -211,7 +231,7 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		switch action {
 		case "stop":
 			if err := s.mutator.StopSession(sessionID); err != nil {
-				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+				writeSessionMutatorError(w, err)
 				return
 			}
 			s.notifyMenuChanged()
@@ -221,21 +241,21 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 			// the TUI Shift+D handler (closes the "Close session" MISSING
 			// row in tests/web/PARITY_MATRIX.md).
 			if err := s.mutator.CloseSession(sessionID); err != nil {
-				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+				writeSessionMutatorError(w, err)
 				return
 			}
 			s.notifyMenuChanged()
 			writeJSON(w, http.StatusOK, SessionActionResponse{SessionID: sessionID})
 		case "start":
 			if err := s.mutator.StartSession(sessionID); err != nil {
-				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+				writeSessionMutatorError(w, err)
 				return
 			}
 			s.notifyMenuChanged()
 			writeJSON(w, http.StatusOK, SessionActionResponse{SessionID: sessionID})
 		case "restart":
 			if err := s.mutator.RestartSession(sessionID); err != nil {
-				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+				writeSessionMutatorError(w, err)
 				return
 			}
 			s.notifyMenuChanged()
@@ -243,13 +263,19 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		case "fork":
 			newID, err := s.mutator.ForkSession(sessionID)
 			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+				writeSessionMutatorError(w, err)
 				return
 			}
 			s.notifyMenuChanged()
 			writeJSON(w, http.StatusOK, SessionActionResponse{SessionID: newID})
 		case "archive":
 			if err := s.mutator.ArchiveSession(sessionID); err != nil {
+				// Archiving an archived session is the caller's mistake, as
+				// on the CLI ("is already archived") and as unarchive below.
+				if strings.Contains(err.Error(), "already archived") {
+					writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+					return
+				}
 				if strings.Contains(err.Error(), "not found") {
 					writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
 					return
@@ -368,7 +394,12 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, sess
 		// session.MutationError signals client-side bad input; "not found"
 		// signals an unknown id. Everything else is a 500.
 		var mutErr *session.MutationError
+		var titleErr *session.TitleConflictError
 		switch {
+		case errors.As(err, &titleErr):
+			// The title is taken at this session's location: the refusal
+			// `agent-deck rename` gives, with its ALREADY_EXISTS code.
+			writeAPIError(w, http.StatusConflict, ErrCodeAlreadyExists, err.Error())
 		case errors.As(err, &mutErr):
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		case strings.HasPrefix(err.Error(), "session not found"):
@@ -413,6 +444,24 @@ func (s *Server) handleSessionMove(w http.ResponseWriter, r *http.Request, sessi
 		GroupPath:       movedTo,
 		RestartRequired: restartRequired,
 	})
+}
+
+// isSessionNotFound reports whether a mutator error means the session id in
+// the route resolves to no session.
+func isSessionNotFound(err error) bool {
+	return errors.Is(err, ErrSessionNotFound) || strings.HasPrefix(err.Error(), "session not found")
+}
+
+// writeSessionMutatorError is the one answer for a failed session action: an
+// unknown session id is 404 NOT_FOUND on every route (stop, close, start,
+// restart, fork and delete used to answer 500 where archive, unarchive, move
+// and PATCH answered 404); anything else is a 500.
+func writeSessionMutatorError(w http.ResponseWriter, err error) {
+	if isSessionNotFound(err) {
+		writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
 }
 
 // updatesFromRequest maps the typed request struct to the field/value pairs

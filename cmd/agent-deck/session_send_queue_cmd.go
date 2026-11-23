@@ -911,12 +911,24 @@ func reconcileTyping(dir string, rec *sendqueue.Record, set func(func(*sendqueue
 // message is not typed into this one's turn. Without evidence it settles
 // typed/submitted with a reason: never landed, and never typed again.
 func watchLanded(profile string, rec *sendqueue.Record, set func(func(*sendqueue.Record)) error) {
-	harness := rowsHarness(rec.Tool)
+	harness := session.RowsHarness(rec.Tool)
 	if !query.SupportsDirectRows(harness) {
 		_ = set(func(r *sendqueue.Record) {
 			r.Settled = true
 			if r.Reason == "" {
 				r.Reason = "no transcript to confirm landing for " + r.Tool
+			}
+		})
+		return
+	}
+	// A Pi session whose exact session document cannot be resolved (several
+	// files and no saved identity, or a remote) will not grow one while the
+	// worker waits: settle now so later sends are not held for the window.
+	if harness == "pi" && rec.TranscriptPath == "" && liveTranscriptForID(profile, rec.SessionID) == "" {
+		_ = set(func(r *sendqueue.Record) {
+			r.Settled = true
+			if r.Reason == "" {
+				r.Reason = "no Pi session document to confirm landing"
 			}
 		})
 		return

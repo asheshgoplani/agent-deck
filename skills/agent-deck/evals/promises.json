@@ -150,8 +150,8 @@
    "area": "core",
    "file": "references/session-communication.md",
    "heading": "The channel map",
-   "anchor": "From inside a session the message starts with `[agent-deck from:<your id>]`",
-   "summary": "Sends from inside a session are tagged; replies return to your inbox as urgent; --no-tag opts out.",
+   "anchor": "Pi-to-Pi and Pi-to-Claude messages carry the same source ID",
+   "summary": "Claude sends route urgent replies to the sender's inbox; Pi sends carry a source ID for explicit replies; --no-tag opts out.",
    "kind": "behaviour"
   },
   {
@@ -2614,8 +2614,8 @@
    "area": "core",
    "file": "references/cli-reference.md",
    "heading": "Session Resolution",
-   "anchor": "**ID prefix:** `abc123` (6+ chars)",
-   "summary": "Session resolution (title, 6+ char id prefix, path, current) and generic exit codes 0/1/2.",
+   "anchor": "**ID prefix:** `abc1` (4+ chars, when only one session has it)",
+   "summary": "Session resolution (id, title in any case or behind a leading emoji marker, 4+ char id prefix, path, current) and generic exit codes 0/1/2.",
    "kind": "reference"
   },
   {

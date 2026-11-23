@@ -436,7 +436,7 @@ func displayCommandPreset(cmd string) string {
 // flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
 // before.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "kimi"}
+	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp", "antigravity", "kimi"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -1339,6 +1339,11 @@ func (d *NewDialog) GetRemoteValues() (name, path, command string) {
 	name = strings.TrimSpace(d.nameInput.Value())
 	path = d.sanitizePath(d.pathInput.Value())
 	command = d.resolveCommand()
+	if command == "antigravity" && d.remoteCatalog != nil && d.remoteCatalog.Legacy {
+		// Older Agent Deck versions accept a raw command but don't know
+		// the Antigravity preset name.
+		command = "agy"
+	}
 	return name, path, command
 }
 
@@ -1959,6 +1964,22 @@ func (d *NewDialog) validate() (string, focusTarget) {
 		}
 		if err := git.ValidateBranchName(branch); err != nil {
 			return err.Error(), focusBranch
+		}
+	}
+
+	// Default account on a host whose ~/.claude has no login would open
+	// Claude's first-run screen; refuse here, where the user can still act.
+	// A sandboxed session logs in through its own credential store, so skip it.
+	if !d.createsOffMachine() && !d.sandboxEnabled && d.isClaudeSelected() && d.GetClaudeAccount() == "" && session.AmbientClaudeConfigDir() == "" {
+		if cfg, err := session.LoadUserConfig(); err == nil {
+			group := d.parentGroupPath
+			if group == "" {
+				_, projectPath, _ := d.GetValues()
+				group = session.GroupPathForProject(projectPath)
+			}
+			if _, accErr := session.ResolveNewSessionAccount(cfg, d.presetCommands[d.commandCursor], group, d.selectedConductor()); accErr != nil {
+				return accErr.Error(), focusName
+			}
 		}
 	}
 

@@ -28,6 +28,37 @@ func (m *mockReadyChecker) CapturePaneFresh() (string, error) {
 	return m.pane, nil
 }
 
+func TestWaitForAgentReady_AntigravityDoesNotSendIntoLogin(t *testing.T) {
+	mock := &mockReadyChecker{
+		statuses: []string{"active", "waiting"},
+		pane:     "Select login method:\n> 1. Google OAuth\n  2. Use a Google Cloud project",
+	}
+	if err := WaitForAgentReady(mock, "antigravity", 600*time.Millisecond, PromptGates{}); err == nil {
+		t.Fatal("login screen must not count as a ready composer")
+	}
+}
+
+func TestWaitForAgentReady_AntigravityCompatible(t *testing.T) {
+	for _, tt := range []struct {
+		name, pane string
+		wantReady  bool
+	}{
+		{"trust menu", "Trust this folder?\n> Yes\n  No", false},
+		{"composer", "────────────────\n>\n────────────────\n? for shortcuts\n", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockReadyChecker{statuses: []string{"active", "waiting"}, pane: tt.pane}
+			err := WaitForAgentReady(mock, "my-agy", 600*time.Millisecond, PromptGates{AntigravityComposer: true})
+			if tt.wantReady && err != nil {
+				t.Fatalf("composer should be ready: %v", err)
+			}
+			if !tt.wantReady && (err == nil || !strings.Contains(err.Error(), "workspace trust")) {
+				t.Fatalf("expected workspace trust readiness hint, got %v", err)
+			}
+		})
+	}
+}
+
 // Cursor can be interactive while GetStatus still returns "starting" during
 // the tmux startup window (no activity-timestamp change → no prompt re-check).
 func TestWaitForAgentReady_StartingWithCursorPrompt(t *testing.T) {
@@ -224,5 +255,60 @@ func TestWaitForAgentReady_StartupPromptCountResetsOnLeavingStartup(t *testing.T
 	if err := WaitForAgentReady(mock, "claude", 1500*time.Millisecond,
 		PromptGates{ClaudeComposer: true}); err == nil {
 		t.Fatal("a run broken by a non-starting status must not satisfy the confirmation count")
+	}
+}
+
+// A plain shell that already reads idle is ready after two polls; it is not
+// held for the 16-poll floor an agent TUI needs (about 3.5 s on every
+// `session send` to an idle shell).
+func TestWaitForAgentReady_IdleShellIsReadyAfterTwoPolls(t *testing.T) {
+	for _, tool := range []string{"shell", "bash", "zsh"} {
+		t.Run(tool, func(t *testing.T) {
+			mock := &mockReadyChecker{statuses: []string{"idle"}}
+			start := time.Now()
+			if err := WaitForAgentReady(mock, tool, 10*time.Second, PromptGates{}); err != nil {
+				t.Fatalf("idle shell not ready: %v", err)
+			}
+			if polls := mock.statusIx.Load(); polls != shellReadyConfirmations {
+				t.Errorf("status polls = %d, want %d", polls, shellReadyConfirmations)
+			}
+			if took := time.Since(start); took > 2*time.Second {
+				t.Errorf("ready wait for an idle shell took %v, want under 2s", took)
+			}
+		})
+	}
+}
+
+// One idle reading between active ones does not make a shell ready.
+func TestWaitForAgentReady_ShellNeedsConsecutiveIdlePolls(t *testing.T) {
+	mock := &mockReadyChecker{statuses: []string{"idle", "error", "idle", "error", "idle", "error"}}
+	if err := WaitForAgentReady(mock, "shell", 1200*time.Millisecond, PromptGates{}); err == nil {
+		t.Fatal("a shell that never read idle twice in a row was reported ready")
+	}
+}
+
+// Agent TUIs keep the full floor: an idle-looking Claude, Codex or other
+// agent is polled 16 times before it counts as already ready.
+func TestWaitForAgentReady_IdleAgentKeepsTheFullFloor(t *testing.T) {
+	for _, tc := range []struct {
+		tool  string
+		gates PromptGates
+		pane  string
+	}{
+		{tool: "claude", gates: PromptGates{ClaudeComposer: true}, pane: "────────\n❯ \n────────\n"},
+		{tool: "codex", gates: PromptGates{CodexPrompt: true}, pane: "codex>\n"},
+		{tool: "gemini"},
+		{tool: "my-custom-agent"},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			t.Parallel()
+			mock := &mockReadyChecker{statuses: []string{"idle"}, pane: tc.pane}
+			if err := WaitForAgentReady(mock, tc.tool, 10*time.Second, tc.gates); err != nil {
+				t.Fatalf("idle %s not ready: %v", tc.tool, err)
+			}
+			if polls := mock.statusIx.Load(); polls != 16 {
+				t.Errorf("status polls = %d, want 16", polls)
+			}
+		})
 	}
 }

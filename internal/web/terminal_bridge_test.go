@@ -13,7 +13,9 @@ import (
 // for ALL attached clients (Ghostty, iTerm) — the dots-in-window bug.
 // With ignore-size removed and resize-window dropped, the web client
 // participates in tmux's `window-size=latest` arbitration (internal/tmux
-// sharedview.go): the window follows the client that is using it.
+// sharedview.go): the window follows the client that is using it. Phone
+// terminals (`?ignore-size=1`) are the exception, see
+// TestBridgeAttachCommand_PhoneIgnoreSizeNeedsTmux32.
 func TestTmuxAttachCommand_NoIgnoreSize(t *testing.T) {
 	t.Setenv("TMUX", "")
 
@@ -260,5 +262,34 @@ func TestTmuxAttachCommand_WhitespaceSocketNameFallsBackToEnv(t *testing.T) {
 	wantArgs := []string{"tmux", "-u", "-S", "/tmp/tmux-test.sock", "attach-session", "-t", "sess-3"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("whitespace-only socket name must fall through to legacy TMUX env\n got:  %v\n want: %v", cmd.Args, wantArgs)
+	}
+}
+
+// A phone terminal adds `-f ignore-size` only when the socket's tmux has
+// attach-session -f (3.2+). An older or unknown tmux rejects the flag, so the
+// phone attaches as before; desktop terminals never get it.
+func TestBridgeAttachCommand_PhoneIgnoreSizeNeedsTmux32(t *testing.T) {
+	t.Setenv("TMUX", "")
+	plain := []string{"tmux", "-u", "attach-session", "-t", "sess-1"}
+	flagged := append(append([]string{}, plain...), "-f", "ignore-size")
+	for _, tc := range []struct {
+		name       string
+		supported  bool
+		ignoreSize bool
+		want       []string
+	}{
+		{"phone on tmux 3.2+", true, true, flagged},
+		{"phone on older or unknown tmux", false, true, plain},
+		{"desktop on tmux 3.2+", true, false, plain},
+		{"desktop on older tmux", false, false, plain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			orig := socketSupportsAttachIgnoreSize
+			t.Cleanup(func() { socketSupportsAttachIgnoreSize = orig })
+			socketSupportsAttachIgnoreSize = func(string) bool { return tc.supported }
+			if got := bridgeAttachCommand("sess-1", "", tc.ignoreSize).Args; !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("args = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

@@ -3087,9 +3087,24 @@ func (e *RemoteSessionQueuedError) Error() string {
 	return fmt.Sprintf("remote session %q was queued and is not ready to attach", e.Title)
 }
 
-// DeleteSession removes a session on the remote host.
+// DeleteSession removes a session on the remote host. Callers have already
+// confirmed the delete, so it passes --force: `remove` refuses a running
+// session without it. A remote whose agent-deck predates the flag (where
+// `remove` never refused) gets the plain form.
 func (r *SSHRunner) DeleteSession(ctx context.Context, sessionID string) error {
-	_, err := r.Run(ctx, "remove", sessionID)
+	_, err := r.Run(ctx, "remove", sessionID, "--force")
+	if err != nil && isUnknownFlagError(err) {
+		_, err = r.Run(ctx, "remove", sessionID)
+	}
+	return err
+}
+
+// RemoveSession drops a session from the remote's registry only, through the
+// remote's own `session remove`. That command applies the same stopped/error
+// gate locally, so a live session is refused by the remote rather than
+// silently killed: the caller sees the refusal and can steer the user to 'd'.
+func (r *SSHRunner) RemoveSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "remove", sessionID)
 	return err
 }
 

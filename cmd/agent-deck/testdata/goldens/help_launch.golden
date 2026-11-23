@@ -51,6 +51,8 @@ Options:
     	Place the child in the parent session's group instead of the cwd-derived group (auto-applied for git worktree children; use this to force it for non-worktree paths)
   -inherit-telegram-env
     	Keep TELEGRAM_* env vars in the child (#1133); off by default to prevent duplicate plugin pollers
+  -instructions-file value
+    	Instruction file appended to this session's identity block at every start, restart, resume and fork (repeatable, or comma-separated; absolute path, ~ and $VAR expanded; #3206)
   -json
     	Output as JSON
   -location string
@@ -82,7 +84,7 @@ Options:
   -no-transition-notify
     	Suppress transition event notifications to parent session
   -no-wait
-    	Don't wait for agent to be ready before sending message
+    	Don't wait for agent to be ready before sending message (Antigravity embeds it when the launcher is agy; a wrapper or custom tool waits for the composer)
   -p string
     	Parent session (short)
   -parent string

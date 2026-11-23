@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -19,7 +20,9 @@ import (
 // RowsSource is a native transcript read directly, never through the Recall
 // index: the session's Claude Code JSONL or Codex rollout. Resolve, when
 // set, re-resolves the live path (Codex re-creates its rollout after the
-// trust prompt); follow emits resync_required when the answer changes.
+// trust prompt); follow emits resync_required when the answer changes, or
+// when Resolve fails with ErrSourceUnresolved. Other Resolve errors are
+// treated as transient and the follow keeps reading.
 type RowsSource struct {
 	Harness string
 	Path    string
@@ -48,7 +51,13 @@ type RowsTimeline struct {
 	Removed       []string    `json:"removed,omitempty"`
 	ThroughCursor string      `json:"through_cursor,omitempty"`
 	BeforeCursor  string      `json:"before_cursor,omitempty"`
-	Status        *LiveStatus `json:"status,omitempty"`
+	// NextCursor is set only when a filter (Kinds, SkipEmptyBody) is on:
+	// the --since cursor that resumes after every row this read covered,
+	// filtered or not. It equals ThroughCursor; a client that derived its
+	// cursor from the last row it received would go backwards whenever
+	// that row was filtered out.
+	NextCursor string      `json:"next_cursor,omitempty"`
+	Status     *LiveStatus `json:"status,omitempty"`
 }
 
 // RowsOptions bounds a timeline read.
@@ -59,12 +68,19 @@ type RowsTimeline struct {
 //   - Tail returns only the last N rows, reading backwards in growing byte
 //     windows so a 100 MB transcript answers from its end.
 //   - AgentID returns one Claude Code sub-agent sidechain.
+//   - Kinds keeps only rows of these kinds (RowKinds); SkipEmptyBody drops
+//     rows whose body is only whitespace, except a tool call still waiting
+//     for its result. Both filter before serialization;
+//     Limit and Tail count rows that pass, and cursors still cover the
+//     rows filtered out (see RowsTimeline.NextCursor).
 type RowsOptions struct {
-	Since   string
-	Before  string
-	Limit   int
-	Tail    int
-	AgentID string
+	Since         string
+	Before        string
+	Limit         int
+	Tail          int
+	AgentID       string
+	Kinds         []string
+	SkipEmptyBody bool
 }
 
 // ValidateRowsOptions rejects combinations that cannot describe one page.
@@ -75,16 +91,23 @@ func ValidateRowsOptions(opts RowsOptions) error {
 	if opts.Before != "" && (opts.Limit <= 0 || opts.Since != "" || opts.Tail != 0 || opts.AgentID != "") {
 		return errors.New("recall rows: --before requires a positive --limit and cannot combine with --since, --tail or --agent")
 	}
-	return nil
+	return validateRowKinds(opts.Kinds)
 }
 
 // ErrRowsUnsupported is returned for a harness whose native format the rows
 // reader does not stream directly.
 var ErrRowsUnsupported = errors.New("recall rows: harness is not read directly")
 
+// ErrSourceUnresolved, from RowsSource.Resolve, means the session no longer
+// resolves to one native file (a Pi session that gained a second session
+// document without a saved identity). Follow answers resync_required.
+var ErrSourceUnresolved = errors.New("recall rows: source no longer resolves to one file")
+
 // SupportsDirectRows reports whether ReadRows/FollowRows read the harness's
 // native file without the index.
-func SupportsDirectRows(harness string) bool { return harness == "claude" || harness == "codex" }
+func SupportsDirectRows(harness string) bool {
+	return harness == "claude" || harness == "codex" || harness == "pi"
+}
 
 type rowsCursor struct {
 	V int            `json:"v"`
@@ -93,6 +116,12 @@ type rowsCursor struct {
 	A string         `json:"a"`
 	S rowParserState `json:"s"`
 	B string         `json:"b,omitempty"` // exclusive row boundary for older-history paging
+	// D lists open rows (a tool call waiting for its result, a queued
+	// message) that a --kinds / --skip-empty-body read dropped. Their later
+	// update patches name no kind, so a resumed filtered read drops patches
+	// for these ids instead of sending them to a client that never held
+	// the row. Only filtered reads set it; an unfiltered cursor is unchanged.
+	D []string `json:"d,omitempty"`
 }
 
 func encodeRowsCursor(c rowsCursor) string {
@@ -127,10 +156,30 @@ type ResyncError struct{ Reason string }
 
 func (e *ResyncError) Error() string { return "recall rows: resync required: " + e.Reason }
 
-// openAtCursor opens the cursor's file and checks that the bytes before the
-// cursor are the ones it was issued for.
-func openAtCursor(c rowsCursor) (*os.File, os.FileInfo, error) {
-	f, err := os.Open(c.P)
+// cursorPath is the file a cursor resumes. A cursor can come from a client
+// (the web timeline route passes it through), so its path is untrusted:
+// when the source has a path, the cursor must name it and the source's own
+// path is opened; only a source without one (a follow by cursor alone)
+// opens the cursor's path, and then a path with ".." is refused, the
+// traversal check CodeQL go/path-injection recognises. A trusted source
+// path may hold ".." inside a name (a home folder like a..b).
+func cursorPath(src RowsSource, c rowsCursor) (string, error) {
+	if src.Path == "" {
+		if strings.Contains(c.P, "..") {
+			return "", &ResyncError{"invalid_cursor"}
+		}
+		return c.P, nil
+	}
+	if c.P != src.Path {
+		return "", &ResyncError{"source_moved"}
+	}
+	return src.Path, nil
+}
+
+// openAtCursor opens path, the cursor's file from cursorPath, and checks
+// that the bytes before the cursor are the ones it was issued for.
+func openAtCursor(path string, c rowsCursor) (*os.File, os.FileInfo, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, &ResyncError{"source_missing"}
 	}
@@ -328,7 +377,7 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 			return tl, fmt.Errorf("recall rows: --agent is supported for Claude Code sidechains only")
 		}
 		rows, err := claudeSidechainRows(ctx, src.Path, opts.AgentID)
-		tl.Turns = rows
+		tl.Turns = FilterRows(rows, opts)
 		return tl, err
 	}
 	var f *os.File
@@ -340,20 +389,23 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		cursor = opts.Before
 	}
 	var before *rowsCursor
+	var dropped []string
 	if cursor != "" {
 		c, err := decodeRowsCursor(cursor)
 		if err != nil {
 			return tl, &ResyncError{"invalid_cursor"}
 		}
-		if src.Path != "" && c.P != src.Path {
-			return tl, &ResyncError{"source_moved"}
+		path, err := cursorPath(src, c)
+		if err != nil {
+			return tl, err
 		}
-		file, info, err := openAtCursor(c)
+		file, info, err := openAtCursor(path, c)
 		if err != nil {
 			return tl, err
 		}
 		f, size, start, st = file, info.Size(), c.O, c.S
 		set.keepForeign = true
+		dropped = c.D
 		if opts.Before != "" {
 			before = &c
 			size, start = c.O, 0
@@ -373,17 +425,29 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 	defer f.Close()
 	path := f.Name()
 	if before != nil {
-		return readOlderRows(ctx, src, f, size, opts.Limit, before)
+		return readOlderRows(ctx, src, f, size, opts.Limit, before, opts)
 	}
 	if opts.Tail > 0 && opts.Since == "" {
-		return readOlderRows(ctx, src, f, size, opts.Tail, nil)
+		return readOlderRows(ctx, src, f, size, opts.Tail, nil, opts)
 	}
 	p := newRowParser(src.Harness, st)
+	// With a filter, --limit counts rows that pass it, tracked per frame.
+	kept := newKeptCounter(opts)
 	end, err := scanLines(ctx, f, start, size, func(line []byte, _ int64) error {
 		for _, fr := range p.line(line) {
 			set.apply(fr)
+			kept.touch(set, fr)
 		}
-		if opts.Limit > 0 && set.len() >= opts.Limit {
+		if opts.Limit <= 0 {
+			return nil
+		}
+		if !opts.Filtered() {
+			if set.len() >= opts.Limit {
+				return errStopScan
+			}
+			return nil
+		}
+		if kept.n >= opts.Limit {
 			return errStopScan
 		}
 		return nil
@@ -391,26 +455,30 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 	if err != nil {
 		return tl, err
 	}
-	tl.Turns = set.list()
-	tl.Updates, tl.Removed = set.updates, set.removed
+	tl.Turns = FilterRows(set.list(), opts)
+	tl.Updates, tl.Removed = filterUpdates(set.updates, opts, dropped), set.removed
 	if src.Harness == "claude" {
-		tl.Turns = withClaudeSidechains(ctx, src.Path, tl.Turns)
-		tl.Updates = withClaudeSidechains(ctx, src.Path, tl.Updates)
+		tl.Turns = filterChildren(withClaudeSidechains(ctx, src.Path, tl.Turns), opts)
+		tl.Updates = filterChildren(withClaudeSidechains(ctx, src.Path, tl.Updates), opts)
 	}
 	anchor, err := anchorAt(f, end)
 	if err != nil {
 		return tl, err
 	}
-	tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, S: p.st})
+	tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, S: p.st, D: stillDropped(dropped, set, opts)})
 	if opts.Since == "" && len(tl.Turns) > 0 {
 		tl.BeforeCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, B: tl.Turns[0].ID})
+	}
+	if opts.Filtered() {
+		tl.NextCursor = tl.ThroughCursor
 	}
 	return tl, nil
 }
 
 // readOlderRows parses growing windows through the snapshot end until n
 // rows before the boundary are found, preserving later updates to older rows.
-func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, n int, before *rowsCursor) (RowsTimeline, error) {
+// With a filter in opts only rows that pass it count toward n.
+func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, n int, before *rowsCursor, opts RowsOptions) (RowsTimeline, error) {
 	var tl RowsTimeline
 	for window := int64(256 << 10); ; window *= 4 {
 		start := tailStart(f, size, window)
@@ -421,7 +489,8 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 		end, err := scanLines(ctx, f, start, size, func(line []byte, _ int64) error {
 			for _, frame := range p.line(line) {
 				if frame.Row != nil {
-					frame.Row = &Row{ID: frame.Row.ID, TS: frame.Row.TS, Queued: frame.Row.Queued}
+					id := filterIdentity(*frame.Row, opts)
+					frame.Row = &id
 				}
 				set.apply(frame)
 			}
@@ -431,6 +500,7 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 			return tl, err
 		}
 		rows := set.list()
+		drop := droppedOpen(nil, claudeLiveOnly(src.Harness, rows), opts)
 		boundaryFound := before == nil || before.B == ""
 		if before != nil && before.B != "" {
 			for i, row := range rows {
@@ -443,29 +513,140 @@ func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, 
 		if start == 0 && !boundaryFound {
 			return tl, &ResyncError{"row_boundary_missing"}
 		}
+		rows = FilterRows(rows, opts)
 		if boundaryFound && (len(rows) >= n || start == 0) {
 			if len(rows) > n {
 				rows = rows[len(rows)-n:]
+			}
+			if src.Harness == "claude" && opts.Filtered() {
+				// Open calls can sit before the window; find them from the
+				// last assistant group instead of trusting the window.
+				live, err := liveDropped(ctx, f, end, opts)
+				if err != nil {
+					return tl, err
+				}
+				for _, id := range live {
+					if !slices.Contains(drop, id) {
+						drop = append(drop, id)
+					}
+				}
 			}
 			rows, err = materializeRowPage(ctx, src.Harness, f, start, end, rows)
 			if err != nil {
 				return tl, err
 			}
 			if src.Harness == "claude" {
-				rows = withClaudeSidechains(ctx, src.Path, rows)
+				rows = filterChildren(withClaudeSidechains(ctx, src.Path, rows), opts)
 			}
 			anchor, err := anchorAt(f, end)
 			if err != nil {
 				return tl, err
 			}
 			tl.Turns = rows
-			tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, S: p.st})
+			tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, S: p.st, D: drop})
 			if len(rows) > 0 {
 				tl.BeforeCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, B: rows[0].ID})
+			}
+			if opts.Filtered() {
+				tl.NextCursor = tl.ThroughCursor
 			}
 			return tl, nil
 		}
 	}
+}
+
+// claudeLiveOnly removes pending tool rows from a Claude window: whether a
+// call is still live is decided by liveDropped, not by the window.
+func claudeLiveOnly(harness string, rows []Row) []Row {
+	if harness != "claude" {
+		return rows
+	}
+	return slices.DeleteFunc(slices.Clone(rows), pending)
+}
+
+// maxLiveLookback bounds how far back liveGroupStart looks for the last
+// assistant message. Past it the group is assumed to start at the limit, so a
+// transcript with no assistant message in its last 4 MiB may still miss an
+// older open call (residual risk; a normal turn is far smaller).
+const maxLiveLookback = 4 << 20
+
+// liveGroupStart returns the start offset of the last Claude assistant
+// message group before end (consecutive assistant lines sharing a message
+// id). A tool call can only still get a result while it is in that group:
+// any later assistant message means the call was abandoned.
+func liveGroupStart(ctx context.Context, f io.ReaderAt, end int64) (int64, error) {
+	for window := int64(1 << 20); ; window *= 4 {
+		lo := tailStart(f, end, window)
+		type line struct {
+			off int64
+			id  string
+			ok  bool
+		}
+		var assistants []line
+		if _, err := scanLines(ctx, f, lo, end, func(raw []byte, lineEnd int64) error {
+			if !bytes.Contains(raw, []byte(`"assistant"`)) {
+				return nil
+			}
+			var rec struct {
+				Type    string `json:"type"`
+				Message struct {
+					ID string `json:"id"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(raw, &rec) == nil && rec.Type == "assistant" {
+				assistants = append(assistants, line{off: lineEnd - int64(len(raw)) - 1, id: rec.Message.ID, ok: rec.Message.ID != ""})
+			}
+			return nil
+		}); err != nil {
+			return 0, err
+		}
+		if n := len(assistants); n > 0 {
+			g := assistants[n-1]
+			start := g.off
+			for i := n - 2; i >= 0; i-- {
+				if !g.ok || !assistants[i].ok || assistants[i].id != g.id {
+					return max(start, lo), nil
+				}
+				start = assistants[i].off
+			}
+			if lo == 0 {
+				return max(start, 0), nil
+			}
+		} else if lo == 0 {
+			return 0, nil
+		}
+		if window >= maxLiveLookback {
+			return lo, nil
+		}
+	}
+}
+
+// liveDropped lists the open Claude tool calls in the last assistant group
+// that the filter drops, replaying only from that group's start.
+func liveDropped(ctx context.Context, f io.ReaderAt, end int64, opts RowsOptions) ([]string, error) {
+	g, err := liveGroupStart(ctx, f, end)
+	if err != nil {
+		return nil, err
+	}
+	p := newRowParser("claude", rowParserState{})
+	set := newRowSet()
+	if _, err := scanLines(ctx, f, g, end, func(line []byte, _ int64) error {
+		// Only tool calls and their results matter here.
+		if !bytes.Contains(line, []byte("tool_use")) && !bytes.Contains(line, []byte("tool_result")) {
+			return nil
+		}
+		for _, frame := range p.line(line) {
+			if frame.Row != nil {
+				id := filterIdentity(*frame.Row, opts)
+				frame.Row = &id
+			}
+			set.apply(frame)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return droppedOpen(nil, set.list(), opts), nil
 }
 
 // materializeRowPage retains bodies only for the selected page while replaying
@@ -511,6 +692,12 @@ func ClaudeSidechainPath(transcript, agentID string) string {
 // claudeSidechainRows reads one sub-agent transcript. Child ids are
 // prefixed with the agent id so they never collide with the parent's.
 func claudeSidechainRows(ctx context.Context, transcript, agentID string) ([]Row, error) {
+	// agentID can come from a client (the web timeline route's agent
+	// parameter). ClaudeSidechainPath keeps only its base name; refusing
+	// ".." is the traversal check CodeQL go/path-injection recognises.
+	if strings.Contains(agentID, "..") {
+		return nil, fmt.Errorf("recall rows: invalid agent id %q", agentID)
+	}
 	f, err := os.Open(ClaudeSidechainPath(transcript, agentID))
 	if err != nil {
 		return nil, err
@@ -557,6 +744,38 @@ func withClaudeSidechains(ctx context.Context, transcript string, rows []Row) []
 	return rows
 }
 
+// CheckFollowCursor runs the checks FollowRows makes on after before it
+// sends a frame: nil when a follow can resume src there, a *ResyncError
+// with the reason its resync_required frame would carry, or another error
+// when the file cannot be read. A server calls it before it commits a
+// stream slot, so a request it can only answer with resync_required does
+// not take one.
+func CheckFollowCursor(src RowsSource, after string) error {
+	_, _, f, _, err := openFollow(src, after)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// openFollow decodes after and opens the file it resumes, checked as
+// openAtCursor checks it. A cursor that cannot be used is a *ResyncError.
+func openFollow(src RowsSource, after string) (rowsCursor, string, *os.File, os.FileInfo, error) {
+	c, err := decodeRowsCursor(after)
+	if err != nil {
+		return c, "", nil, nil, &ResyncError{"invalid_cursor"}
+	}
+	path, err := cursorPath(src, c)
+	if err != nil {
+		return c, "", nil, nil, err
+	}
+	f, info, err := openAtCursor(path, c)
+	if err != nil {
+		return c, "", nil, nil, err
+	}
+	return c, path, f, info, nil
+}
+
 // FollowRows streams frames after cursor `after`, polling the file every
 // poll interval (200 ms when zero). status, when set, is sampled once a
 // second: a status frame goes out every second while the session runs and
@@ -569,14 +788,7 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 		poll = 200 * time.Millisecond
 	}
 	resync := func(reason string) error { return emit(RowFrame{Frame: "resync_required", Reason: reason}) }
-	c, err := decodeRowsCursor(after)
-	if err != nil {
-		return resync("invalid_cursor")
-	}
-	if src.Path != "" && c.P != src.Path {
-		return resync("source_moved")
-	}
-	f, opened, err := openAtCursor(c)
+	c, path, f, opened, err := openFollow(src, after)
 	if err != nil {
 		var re *ResyncError
 		if errors.As(err, &re) {
@@ -592,7 +804,9 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 	var lastStatus []byte
 	var lastStatusAt, lastResolveAt time.Time
 	for {
-		if info, err := os.Stat(c.P); err != nil || !os.SameFile(info, opened) {
+		// path is c.P as cursorPath checked it. Use it, not c.P: the cursor
+		// can come from a web client (GET /timeline/stream).
+		if info, err := os.Stat(path); err != nil || !os.SameFile(info, opened) {
 			return resync("source_replaced")
 		}
 		size := int64(0)
@@ -615,7 +829,7 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 				for i := range frames {
 					fr := frames[i]
 					if fr.Frame == "update" && src.Harness == "claude" {
-						attachSidechain(ctx, c.P, fr.Row)
+						attachSidechain(ctx, path, fr.Row)
 					}
 					if i == len(frames)-1 {
 						fr.Cursor = encodeRowsCursor(rowsCursor{P: c.P, O: end, A: anchor, S: cloneState(p.st)})
@@ -652,7 +866,11 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 		}
 		if src.Resolve != nil && now.Sub(lastResolveAt) >= 2*time.Second {
 			lastResolveAt = now
-			if live, err := src.Resolve(); err == nil && live != "" && live != c.P {
+			live, err := src.Resolve()
+			if errors.Is(err, ErrSourceUnresolved) {
+				return resync("source_unresolved")
+			}
+			if err == nil && live != "" && live != c.P {
 				return resync("source_moved")
 			}
 		}

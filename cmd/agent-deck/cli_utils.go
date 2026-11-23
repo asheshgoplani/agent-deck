@@ -52,7 +52,15 @@ func defaultCLIAccountSlot(inst *session.Instance, parent *session.Instance) str
 	if err != nil {
 		return ""
 	}
-	return session.DefaultAccountForNewSession(cfg, inst.GroupPath, parent)
+	// When the implicit ~/.claude has no login, fall back to a logged-in
+	// account. With none, still create the session (headless scripts and
+	// fixtures register sessions on hosts with no login, and extra stderr would
+	// corrupt --json consumers); the TUI, an interactive flow, refuses.
+	account, err := session.ResolveNewSessionAccount(cfg, inst.Tool, inst.GroupPath, parent)
+	if err != nil {
+		return ""
+	}
+	return account
 }
 
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
@@ -777,7 +785,8 @@ const (
 	ErrCodeBudgetExceeded = "BUDGET_EXCEEDED"
 )
 
-// ResolveSession finds a session by flexible matching (title, ID prefix, or path)
+// ResolveSession finds the session an <id|title> argument names: by id, title
+// or id prefix (matchSessionRef), then by conductor name and by path.
 // Returns the matched session or nil with an error message
 func ResolveSession(identifier string, instances []*session.Instance) (*session.Instance, string, string) {
 	if identifier == "" {
@@ -815,9 +824,11 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 		}
 	}
 
-	// Try exact title match.
+	// The id and the title go through the one rule every command shares
+	// (matchSessionRef): exact id, exact title, unique id prefix, then the
+	// title ignoring case and leading decoration.
 	//
-	// Every match is collected rather than returning the first: duplicate
+	// A tie is reported rather than settled by taking the first: duplicate
 	// detection is location-aware, so one title at two DIFFERENT locations is a
 	// state the CLI creates by design (two `add --ssh` runs from one controller
 	// directory without -t keep the same directory-derived title). Returning the
@@ -826,37 +837,37 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	// documented workflow types, so it gets the same ambiguity report the
 	// location branch gives — naming each location, which is how the user
 	// addresses the one they meant.
-	var titleMatches []*session.Instance
-	for _, inst := range instances {
-		if inst.Title == identifier {
-			titleMatches = append(titleMatches, inst)
+	index, tied, tiedOn := matchSessionRef(identifier, len(instances),
+		func(i int) string { return instances[i].ID },
+		func(i int) string { return instances[i].Title })
+	// "conductor-<name>" names the conductor by identity (see below) unless a
+	// session has exactly that id or title: a title that matches only after
+	// folding ("Conductor-ops", a decorated worker) does not take the name
+	// away from the conductor.
+	exact := func(i int) bool { return instances[i].ID == identifier || instances[i].Title == identifier }
+	if (index >= 0 && !exact(index)) || (tiedOn == sessionRefTiedTitle && !exact(tied[0])) {
+		if inst := conductorNamedByTitle(identifier, instances); inst != nil {
+			return inst, "", ""
 		}
 	}
-	if len(titleMatches) == 1 {
-		return titleMatches[0], "", ""
+	if index >= 0 {
+		return instances[index], "", ""
 	}
-	if len(titleMatches) > 1 {
+	for _, i := range tied {
+		matches = append(matches, instances[i])
+	}
+	switch tiedOn {
+	case sessionRefTiedTitle:
 		return nil, fmt.Sprintf("title '%s' is held by multiple sessions:\n  - %s\nUse the session ID, or rename one of them.",
-			identifier, strings.Join(describeLocations(titleMatches), "\n  - ")), ErrCodeAmbiguous
-	}
-
-	// Try ID prefix match (minimum 6 chars for prefix to avoid too many matches)
-	if len(identifier) >= 6 {
-		for _, inst := range instances {
-			if strings.HasPrefix(inst.ID, identifier) {
-				matches = append(matches, inst)
-			}
-		}
-	}
-
-	if len(matches) == 1 {
-		return matches[0], "", ""
-	}
-
-	if len(matches) > 1 {
+			identifier, strings.Join(describeLocations(matches), "\n  - ")), ErrCodeAmbiguous
+	case sessionRefTiedID:
 		var names []string
 		for _, m := range matches {
-			names = append(names, fmt.Sprintf("%s (%s)", m.Title, m.ID[:12]))
+			id := m.ID
+			if len(id) > 12 {
+				id = id[:12]
+			}
+			names = append(names, fmt.Sprintf("%s (%s)", m.Title, id))
 		}
 		return nil, fmt.Sprintf("'%s' matches multiple sessions:\n  - %s\nUse full ID or more specific title.",
 			identifier, strings.Join(names, "\n  - ")), ErrCodeAmbiguous
@@ -868,10 +879,8 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	// user scripts — address a conductor by its canonical title, which stops
 	// matching once the title is decorated (the voice daemon's "🎙 ") or the
 	// conductor is renamed.
-	if name, ok := strings.CutPrefix(identifier, session.ConductorSessionTitlePrefix); ok && name != "" {
-		if inst := session.FindConductorInstance(instances, name); inst != nil {
-			return inst, "", ""
-		}
+	if inst := conductorNamedByTitle(identifier, instances); inst != nil {
+		return inst, "", ""
 	}
 
 	// Try location match - collect all sessions that RUN at this location.
@@ -910,6 +919,16 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	}
 
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
+}
+
+// conductorNamedByTitle returns the conductor that "conductor-<name>" names
+// by identity (stored name, else a decorated title), or nil.
+func conductorNamedByTitle(identifier string, instances []*session.Instance) *session.Instance {
+	name, ok := strings.CutPrefix(identifier, session.ConductorSessionTitlePrefix)
+	if !ok || name == "" {
+		return nil
+	}
+	return session.FindConductorInstance(instances, name)
 }
 
 // GetCurrentSessionID returns the last part of the calling agent-deck tmux

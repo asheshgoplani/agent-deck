@@ -15,6 +15,7 @@ import (
 func TestIssue3131_LaunchKickoffTag(t *testing.T) {
 	parent := &session.Instance{ID: "coord-1", Tool: "claude"}
 	shellParent := &session.Instance{ID: "coord-1", Tool: "shell"}
+	piParent := &session.Instance{ID: "coord-1", Tool: "pi"}
 	const msg = "review the diff in ./pr.patch"
 	for _, tc := range []struct {
 		name    string
@@ -29,6 +30,8 @@ func TestIssue3131_LaunchKickoffTag(t *testing.T) {
 		{"--parent names another session", msg, launchKickoffTagInputs{senderID: "someone-else", parent: parent, childTool: "claude", enabled: true, childReportsTurns: true}, false},
 		{"parent is not claude-compatible", msg, launchKickoffTagInputs{senderID: "coord-1", parent: shellParent, childTool: "claude", enabled: true, childReportsTurns: true}, false},
 		{"child is not claude-compatible", msg, launchKickoffTagInputs{senderID: "coord-1", parent: parent, childTool: "codex", enabled: true, childReportsTurns: true}, false},
+		{"pi attribution does not change launch to Claude", msg, launchKickoffTagInputs{senderID: "coord-1", parent: piParent, childTool: "claude", enabled: true, childReportsTurns: true}, false},
+		{"pi attribution does not change launch to pi", msg, launchKickoffTagInputs{senderID: "coord-1", parent: piParent, childTool: "pi", enabled: true, childReportsTurns: true}, false},
 		// Review M1: a child whose turns are never reported (--no-transition-notify,
 		// or [notifications] transition events off) is told by its identity block
 		// to answer an enveloped message with `session send`, which would type

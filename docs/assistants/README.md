@@ -56,6 +56,9 @@ you before the others.
 Transports: MCP over stdio (`agent-deck connect serve --token-file F`), MCP over HTTP (`POST /mcp` on `agent-deck web`), and a
 plain JSON API (`/api/assistant/v1/...`, routes in [SETUP-PROMPT.md](SETUP-PROMPT.md#slack--telegram-bots-and-other-http-clients)).
 HTTP routes take only assistant tokens, as `Authorization: Bearer adk_...`; assistant tokens work nowhere else.
+`[web].mutations_enabled = false` (or `agent-deck web --read-only`) makes the HTTP routes read-only for every token. It does
+not apply to `agent-deck connect serve`: over stdio the token's scopes are the limit, so give a stdio assistant only the
+scopes you want it to use.
 
 ## Revoke, list, audit
 

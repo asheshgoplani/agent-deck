@@ -172,7 +172,7 @@ func TestCompletionRemovalRequiresPaneAbsence(t *testing.T) {
   'session show --json child')
     if [ -f "$HOME/removed" ]; then printf '%s\n' '{"success":false,"code":"NOT_FOUND"}'; exit 2; fi
     printf '%s\n' '{"id":"child","tmux_session":"completion-pane"}';;
-  'remove --json child') touch "$HOME/removed"; mv "$HOME/hooks/child.json" "$HOME/removed-hook"; `+removePane+` ;;
+  'remove --json --force child') touch "$HOME/removed"; mv "$HOME/hooks/child.json" "$HOME/removed-hook"; `+removePane+` ;;
   'list --json') printf '[]\n';;
   *) exit 99;;
 esac

@@ -201,6 +201,7 @@ func (i *Instance) CreateForkedOMPInstanceWithOptions(
 	}
 
 	forked := NewInstance(newTitle, projectPath)
+	forked.InstructionsFiles = append([]string(nil), i.InstructionsFiles...) // #3206: a fork keeps its source's instruction files
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {

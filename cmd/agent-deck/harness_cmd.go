@@ -194,7 +194,7 @@ func harnessUsage(profile string) (map[string]time.Time, map[string]int) {
 		return last, count
 	}
 	for _, inst := range instances {
-		name := rowsHarness(inst.Tool)
+		name := session.RowsHarness(inst.Tool)
 		count[name]++
 		t := inst.LastAccessedAt
 		if t.IsZero() {
@@ -252,11 +252,15 @@ func handleHarness(profile string, args []string) {
 		fmt.Println("Usage: agent-deck harness list [--json]")
 		fmt.Println("       agent-deck harness status <name> [--json]")
 		fmt.Println()
-		fmt.Println("Every harness agent-deck runs (claude, codex, gemini, opencode, pi, hermes, kimi) with:")
+		fmt.Printf("Registered harnesses (%s) with:\n", strings.Join(harness.Names(), ", "))
 		fmt.Println("installed, path, version, logged_in, accounts, hooks_installed, last_used, sessions,")
 		fmt.Println("state (ready | not_logged_in | not_installed | limit_reached) and the official")
 		fmt.Println("install_command, login_command and docs_url from the core table (internal/harness),")
 		fmt.Println("overridable under [harnesses.<name>] in config.toml. Read-only.")
+	}
+	// Bare `harness --json` is the list form.
+	if len(args) > 0 && (args[0] == "--json" || args[0] == "-json") {
+		args = append([]string{"list"}, args...)
 	}
 	if len(args) == 0 || helpRequested(args[:1]) {
 		usage()

@@ -58,6 +58,7 @@ func TestIssue1948R2_StaleRemoteBinaryHint(t *testing.T) {
 func TestIssue1948R2_InboxLineSpellings(t *testing.T) {
 	drainTestHome(t)
 	parent := "conductor-line-format"
+	registerInboxDrainTarget(t, parent)
 
 	if err := session.WriteInboxEvent(parent, session.TransitionNotificationEvent{
 		ChildSessionID: "child-transition", ChildTitle: "migrate", Profile: "default",
@@ -98,6 +99,7 @@ func TestIssue1948R2_InboxLineSpellings(t *testing.T) {
 func TestIssue1948R2_InboxLineNamesSourceRemote(t *testing.T) {
 	drainTestHome(t)
 	parent := "conductor-line-remote"
+	registerInboxDrainTarget(t, parent)
 
 	if err := session.WriteInboxEvent(parent, session.TransitionNotificationEvent{
 		ChildSessionID: "boxb:child-remote", ChildTitle: "migrate", Profile: "default",

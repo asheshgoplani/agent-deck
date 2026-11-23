@@ -48,11 +48,12 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.16.38" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.16.40" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
 	tableColTitle     = 20
+	tableColStatus    = 8
 	tableColGroup     = 15
 	tableColPath      = 40
 	tableColIDDisplay = 12
@@ -162,7 +163,9 @@ func writeVersionOutput(w io.Writer, currentVersion string) {
 // A core that predates this list prints the plain version line instead of
 // JSON for `version --json`; clients treat that as "no features".
 //   - recall_timeline_batch: `recall timeline --json [--tail N] --sessions a,b,...`
-var coreFeatures = []string{"recall_timeline_batch"}
+//   - recall_timeline_kinds: `recall timeline --kinds a,b` and
+//     `--skip-empty-body`, filtered on this host, with next_cursor
+var coreFeatures = []string{"recall_timeline_batch", "recall_timeline_kinds"}
 
 // writeVersionJSON prints {"version": "...", "features": [...]}.
 func writeVersionJSON(w io.Writer, currentVersion string) {
@@ -680,6 +683,9 @@ func main() {
 			return
 		case "switch":
 			handleSwitch(profile, args[1:])
+			return
+		case "todo":
+			handleTodo(profile, args[1:])
 			return
 		case "ask":
 			handleAsk(profile, args[1:])
@@ -1670,7 +1676,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
+	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "todo": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "kimi-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -1861,14 +1867,15 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"c": true, "cmd": true,
 		"m": true, "message": true, "message-file": true,
 		"p": true, "parent": true,
-		"mcp":           true,
-		"channel":       true,
-		"plugin":        true,
-		"extra-arg":     true,
-		"wrapper":       true,
-		"model":         true,
-		"effort":        true,
-		"startup-query": true, "additional-path": true,
+		"mcp":               true,
+		"channel":           true,
+		"plugin":            true,
+		"extra-arg":         true,
+		"instructions-file": true,
+		"wrapper":           true,
+		"model":             true,
+		"effort":            true,
+		"startup-query":     true, "additional-path": true,
 		"w":              true,
 		"worktree":       true,
 		"location":       true,
@@ -1971,6 +1978,8 @@ func resolveAutoParentInstanceChecked(instances []*session.Instance) (*session.I
 
 // resolveGroupPathForAdd resolves a user-provided group selector to a stored group path.
 // It accepts exact paths, normalized paths, and case-insensitive group display names.
+// A selector matching no group names a new one and resolves to the path `group
+// create` would store for it (session.CanonicalGroupPath).
 // A display name shared by several groups is an error listing the candidate
 // paths; the selector is still returned so callers that ignore it keep it as is.
 func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) (string, error) {
@@ -1997,6 +2006,15 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 	}
 	switch len(matches) {
 	case 0:
+		// A new group: the path `group create` would store for this name, so
+		// the session and the group created for it share one path.
+		canonical, err := newGroupPath(groupTree, groupSelector)
+		if err != nil {
+			return groupSelector, err
+		}
+		if canonical != "" {
+			return canonical, nil
+		}
 		return groupSelector, nil
 	case 1:
 		return matches[0], nil
@@ -2004,6 +2022,61 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 		sort.Strings(matches)
 		return groupSelector, fmt.Errorf("group %q is ambiguous: %s; use the full path", groupSelector, strings.Join(matches, ", "))
 	}
+}
+
+// newGroupPath returns the path a group named by a selector that matches no
+// group gets: session.CanonicalGroupPath, level by level, where a level that
+// matches an existing group's path in another case is that group ("big
+// org/New" lands under an existing "Big-Org"). A level that matches several
+// existing groups in another case is an error listing them, as for a whole
+// selector, instead of a further group next to them.
+func newGroupPath(groupTree *session.GroupTree, selector string) (string, error) {
+	path := ""
+	for _, level := range strings.Split(session.CanonicalGroupPath(selector), "/") {
+		if level == "" {
+			continue
+		}
+		candidate := strings.TrimPrefix(path+"/"+level, "/")
+		if _, ok := groupTree.Groups[candidate]; !ok {
+			var folded []string
+			for existing := range groupTree.Groups {
+				if strings.EqualFold(existing, candidate) {
+					folded = append(folded, existing)
+				}
+			}
+			switch len(folded) {
+			case 0:
+			case 1:
+				candidate = folded[0]
+			default:
+				sort.Strings(folded)
+				return "", fmt.Errorf("group %q is ambiguous: %s; use the full path", selector, strings.Join(folded, ", "))
+			}
+		}
+		path = candidate
+	}
+	return path, nil
+}
+
+// derivedGroupPath returns the group path a new session gets when no group is
+// named and derived is the name taken from its project directory
+// (session.GroupPathForProject). A group stored under exactly that name is kept:
+// older sessions may be in it. Otherwise it is the path `group create` would
+// store, so a directory "My Proj" makes the one group "My-Proj", not that plus
+// a second group at the raw name.
+func derivedGroupPath(groupTree *session.GroupTree, derived string) string {
+	if derived == "" || derived == session.DefaultGroupPath || derived == session.DefaultGroupName {
+		return derived
+	}
+	if groupTree != nil {
+		if _, ok := groupTree.Groups[derived]; ok {
+			return derived
+		}
+	}
+	if canonical := session.CanonicalGroupPath(derived); canonical != "" {
+		return canonical
+	}
+	return derived
 }
 
 // shouldLockTitle is the #1615-class chokepoint deciding whether a new CLI
@@ -2099,6 +2172,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		extraArgFlags = append(extraArgFlags, s)
 		return nil
 	})
+	instructionsFileFlags := registerInstructionsFileFlag(fs)
 
 	// --create-dir is what the TUI's remote new-session dialog forwards after
 	// the user confirms creating a missing directory on the server; the local
@@ -2229,6 +2303,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	validatedAdditionalPaths, pathValidationErr := validateCreationPaths(additionalPaths)
 	if pathValidationErr != nil {
 		NewCLIOutput(*jsonOutput, false).Error(pathValidationErr.Error(), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	instructionsFiles, instructionsErr := normalizeInstructionsFileFlag(*instructionsFileFlags)
+	if instructionsErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error("--instructions-file: "+instructionsErr.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 
@@ -2368,6 +2447,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	}
 
 	// Resolve group selector to a canonical path when possible.
+	typedGroup := sessionGroup
 	if sessionGroup != "" {
 		sessionGroup, err = resolveGroupPathForAdd(groupTree, sessionGroup)
 		if err != nil {
@@ -2669,6 +2749,9 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		newInstance = session.NewInstanceWithGroup(sessionTitle, path, sessionGroup)
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
+		// The group taken from the project directory follows the -g path rule.
+		typedGroup = newInstance.GroupPath
+		newInstance.GroupPath = derivedGroupPath(groupTree, typedGroup)
 	}
 
 	// Quick mode generated a machine-named adjective-noun handle; mark it so the
@@ -2712,6 +2795,9 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	if *noIdentity {
 		newInstance.IdentityInjectionDisabled = true
 	}
+	// #3206: per-session instruction files, read into the identity block at
+	// every spawn.
+	newInstance.InstructionsFiles = instructionsFiles
 
 	// Set command if provided
 	if sessionCommandInput != "" {
@@ -2868,9 +2954,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	mainCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = mainCfg.GroupDefaults.MaxConcurrent
 	// Ensure the session's group exists
-	if newInstance.GroupPath != "" {
-		groupTree.CreateGroupPath(newInstance.GroupPath)
-	}
+	groupTree.EnsureGroupForNewSession(newInstance, typedGroup)
 
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		fmt.Printf("Error: failed to save session: %v\n", err)
@@ -3203,10 +3287,11 @@ func handleList(profile string, args []string) {
 		return
 	}
 
-	// Table output
+	// Table output. STATUS is the live status list --json reports.
+	refreshLiveStatus(instances)
 	fmt.Printf("Profile: %s\n\n", storage.Profile())
-	fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
-	fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
+	fmt.Printf("%-*s %-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColStatus, "STATUS", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
+	fmt.Println(strings.Repeat("-", tableColTitle+tableColStatus+tableColGroup+tableColPath+tableColIDDisplay+6))
 	for _, inst := range instances {
 		title := truncate(inst.Title, tableColTitle)
 		group := truncate(inst.GroupPath, tableColGroup)
@@ -3216,7 +3301,7 @@ func handleList(profile string, args []string) {
 		if len(idDisplay) > tableColIDDisplay {
 			idDisplay = idDisplay[:tableColIDDisplay]
 		}
-		fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
+		fmt.Printf("%-*s %-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColStatus, listTableStatus(inst.Status, inst.IsArchived()), tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
 	}
 	fmt.Printf("\nTotal: %d sessions\n", len(instances))
 
@@ -3556,15 +3641,23 @@ func handleRemove(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	force := fs.Bool("force", false, "Kill and remove a session whose process is still alive (destructive)")
 
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck remove <id|title>")
+		fmt.Println("Usage: agent-deck remove <id|title> [--force]")
 		fmt.Println()
-		fmt.Println("Remove a session by ID or title.")
+		fmt.Println("Remove a session by ID or title: kills its process, removes its")
+		fmt.Println("worktree (unless another session still uses it) and deletes it from")
+		fmt.Println("the registry. A session whose process is still alive (and that is not")
+		fmt.Println("stopped or errored) is refused (exit 1) unless --force is given, the")
+		fmt.Println("same guard as 'session remove'.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck remove abc12345")
-		fmt.Println("  agent-deck remove \"My Project\"")
+		fmt.Println("  agent-deck remove \"My Project\" --force   # also when it is running")
 		fmt.Println("  agent-deck -p work remove abc12345   # Remove from 'work' profile")
 	}
 
@@ -3583,6 +3676,7 @@ func handleRemove(profile string, args []string) {
 		}
 		exitCLI(1)
 	}
+	rejectExtraRemoveArgs(out, fs)
 
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
@@ -3599,6 +3693,9 @@ func handleRemove(profile string, args []string) {
 		}
 		exitCLI(1)
 	}
+	// The guard reads the status list shows, not the stored one.
+	refreshLiveStatus([]*session.Instance{inst})
+	refuseRunningRemoval(out, inst, *force)
 
 	removedID := inst.ID
 	removedTitle := inst.Title
@@ -3637,8 +3734,15 @@ func handleRemove(profile string, args []string) {
 	// this removal was never allowed to touch.
 	_ = inst.RetireServiceUnit(serviceUnitOwnership)
 
-	// Clean up worktree directory if this is a worktree session
+	// Clean up worktree directory if this is a worktree session, unless
+	// another session in this or another local profile still uses it (#1449,
+	// as the TUI delete does). remove has no --force, so an unreadable other
+	// profile keeps the worktree too.
+	worktreeKept := false
 	if inst.IsWorktree() {
+		worktreeKept, _ = keepSharedWorktree(inst, instances, newWorktreeRemovalGuard(profile), false, *jsonOutput)
+	}
+	if inst.IsWorktree() && !worktreeKept {
 		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
 			if err := backend.RemoveWorktree(inst.WorktreePath, false); err != nil {
 				if !*jsonOutput {
@@ -3683,11 +3787,12 @@ func handleRemove(profile string, args []string) {
 	out.Success(
 		fmt.Sprintf("Removed session: %s (from profile '%s')", removedTitle, storage.Profile()),
 		map[string]interface{}{
-			"success": true,
-			"id":      removedID,
-			"title":   removedTitle,
-			"removed": true,
-			"profile": storage.Profile(),
+			"success":       true,
+			"id":            removedID,
+			"title":         removedTitle,
+			"removed":       true,
+			"profile":       storage.Profile(),
+			"worktree_kept": worktreeKept, // another session still uses it
 		},
 	)
 }
@@ -3824,7 +3929,7 @@ func countByStatus(instances []*session.Instance) statusCounts {
 	var counts statusCounts
 	for _, inst := range instances {
 		_ = inst.UpdateStatus() // Refresh status from tmux
-		switch inst.Status {
+		switch summaryBucket(inst.Status) {
 		case session.StatusRunning:
 			counts.running++
 		case session.StatusWaiting:
@@ -4006,7 +4111,7 @@ func handleStatus(profile string, args []string) {
 		printStatusGroup := func(label, symbol string, status session.Status) {
 			var matching []*session.Instance
 			for _, inst := range instances {
-				if inst.Status == status {
+				if summaryBucket(inst.Status) == status {
 					matching = append(matching, inst)
 				}
 			}
@@ -4047,8 +4152,7 @@ func handleStatus(profile string, args []string) {
 		fmt.Printf("Total: %d sessions in profile '%s'\n", counts.total, storage.Profile())
 	} else {
 		// Compact output
-		fmt.Printf("%d waiting • %d running • %d idle\n",
-			counts.waiting, counts.running, counts.idle)
+		fmt.Println(compactStatusLine(counts.waiting, counts.running, counts.idle, counts.stopped, counts.err))
 	}
 
 	// Show update notice if available (skip for JSON/quiet output)
@@ -4113,7 +4217,7 @@ func handleProfile(args []string) {
 			}
 			exitCLI(1)
 		}
-		handleProfileDelete(out, jsonMode, filteredArgs[1])
+		handleProfileDelete(out, jsonMode, filteredArgs[1:])
 	case "default":
 		if len(filteredArgs) >= 2 && isHelpArg(filteredArgs[1]) {
 			printProfileDefaultHelp()
@@ -4160,7 +4264,11 @@ func printProfileCreateHelp() {
 }
 
 func printProfileDeleteHelp() {
-	fmt.Println("Usage: agent-deck profile delete <name>")
+	fmt.Println("Usage: agent-deck profile delete <name> [--yes] [--json]")
+	fmt.Println()
+	fmt.Println("Delete a profile and all its sessions. Refuses while any of its sessions")
+	fmt.Println("is running (stop them first). Asks for confirmation unless --yes is given;")
+	fmt.Println("with --json and no --yes it returns an error instead of asking.")
 }
 
 func printProfileDefaultHelp() {
@@ -4272,12 +4380,59 @@ func handleProfileCreate(out *CLIOutput, name string) {
 	})
 }
 
-func handleProfileDelete(out *CLIOutput, jsonMode bool, name string) {
-	// Skip confirmation in JSON mode (for automation)
-	if !jsonMode {
+func handleProfileDelete(out *CLIOutput, jsonMode bool, args []string) {
+	var name string
+	yes := false
+	for _, a := range args {
+		switch a {
+		case "--yes", "-y", "--force", "-f":
+			yes = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				out.Error(fmt.Sprintf("unknown flag %q for profile delete", a), ErrCodeInvalidOperation)
+				exitCLI(1)
+			}
+			if name != "" {
+				out.Error(fmt.Sprintf("profile delete takes one profile name, got %q and %q", name, a), ErrCodeInvalidOperation)
+				exitCLI(1)
+			}
+			name = a
+		}
+	}
+	if name == "" {
+		out.Error("profile name is required", ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+
+	// Existence and the last-profile guard come before any question.
+	if err := session.CheckProfileDeletable(name); err != nil {
+		out.Error(fmt.Sprintf("%v", err), ErrCodeNotFound)
+		exitCLI(1)
+	}
+
+	total, running, err := profileSessionCounts(name)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to read sessions of profile '%s': %v", name, err), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	// Deleting the directory would leave running agents untracked. Refuse
+	// rather than kill them: stopping is a separate, visible decision.
+	if len(running) > 0 {
+		out.Error(fmt.Sprintf(
+			"profile '%s' has %d running session(s): %s; stop them first (agent-deck -p %s session stop <id>), then delete the profile",
+			name, len(running), strings.Join(running, ", "), name,
+		), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+
+	if !yes {
+		if jsonMode {
+			out.Error(fmt.Sprintf("deleting profile '%s' needs confirmation: pass --yes to delete it and its %s", name, pluralSessions(total)), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
 		fmt.Printf(
-			"Are you sure you want to delete profile '%s'? This will remove all sessions in this profile. [y/N] ",
-			name,
+			"Delete profile '%s' and its %s? This cannot be undone. [y/N] ",
+			name, pluralSessions(total),
 		)
 		var response string
 		_, _ = fmt.Scanln(&response)
@@ -4291,11 +4446,29 @@ func handleProfileDelete(out *CLIOutput, jsonMode bool, name string) {
 		out.Error(fmt.Sprintf("%v", err), ErrCodeNotFound)
 		exitCLI(1)
 	}
-	out.Success(fmt.Sprintf("Deleted profile: %s", name), map[string]interface{}{
-		"success": true,
-		"name":    name,
-		"deleted": true,
+	out.Success(fmt.Sprintf("Deleted profile: %s (%s)", name, pluralSessions(total)), map[string]interface{}{
+		"success":  true,
+		"name":     name,
+		"deleted":  true,
+		"sessions": total,
 	})
+}
+
+// profileSessionCounts returns how many sessions profile holds and the titles
+// of those whose tmux session is alive.
+func profileSessionCounts(profile string) (int, []string, error) {
+	storage, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer storage.Close()
+	var running []string
+	for _, inst := range instances {
+		if inst.Exists() {
+			running = append(running, inst.Title)
+		}
+	}
+	return len(instances), running, nil
 }
 
 func handleProfileSetDefault(out *CLIOutput, name string) {
@@ -4784,7 +4957,7 @@ func printHelp() {
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
 	fmt.Println("  accounts         List configured named account slots")
-	fmt.Println("  harness          Installed harnesses, login and hook state, install/login commands [--json]")
+	fmt.Println("  harness          Installed harnesses, login and hook state: harness list|status <name> [--json]")
 	fmt.Println("  limits           Claude 5h/7d and Codex weekly usage per account [--json] ([macapp] plugins)")
 	fmt.Println("  doctor           Check accounts and runtime health")
 	fmt.Println("  health           Runtime health snapshots and budgets [--json] [--since 1h]")
@@ -4796,6 +4969,7 @@ func printHelp() {
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
 	fmt.Println("  switch <query>   Show a session in the Mac app (or attach here) by id, title or part of one [--json]")
+	fmt.Println("  todo <op>        The owner's to-do list: add, list, done, undo, remove [--json] (docs/todos.md)")
 	fmt.Println("  open <file|url>  Show a page in the Mac app Browser panel [--session <id|title>]")
 	fmt.Println("  ask <kind>       Ask the owner for a secret, choice or text in a dialog (docs/ask.md)")
 	fmt.Println("  browser <op>     Drive the session's Mac app Browser: open, tabs, close, click, type, read, shot")
@@ -4829,6 +5003,12 @@ func printHelp() {
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
+	fmt.Println("  inbox            Read completion records: inbox [drain|peek|stats|export] [<id>|self] [--json]")
+	fmt.Println("  msg              Read the comms ledger: msg read|peek|ack|export|stats [--json]")
+	fmt.Println("  events           Follow, publish and count events: events follow|stats|publish [--jsonl]")
+	fmt.Println("  feedback         File a bug or idea, rate this version, see your reports: feedback bug|idea|mine|fixed")
+	fmt.Println("  costs            Spend per session and day: costs summary [--json]")
+	fmt.Println("  hooks            Manage Claude Code hook integration: hooks install|uninstall|status [--json]")
 	fmt.Println("  whats-new        What changed since the version you last saw, your fixed reports first")
 	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
@@ -4839,6 +5019,7 @@ func printHelp() {
 	fmt.Println("  completion       Print a shell completion script (bash, zsh, fish)")
 	fmt.Println()
 	fmt.Println("Session Commands:")
+	fmt.Println("  session send <id> <msg>   Send a message to a session (--wait, --no-wait, --json, --queue)")
 	fmt.Println("  session start <id>        Start a session's tmux process")
 	fmt.Println("  session stop <id>         Stop session process")
 	fmt.Println("  session restart <id>      Restart session (reload MCPs)")
@@ -4931,7 +5112,7 @@ func printHelp() {
 	fmt.Println("Profile Commands:")
 	fmt.Println("  profile list              List all profiles")
 	fmt.Println("  profile create <name>     Create a new profile")
-	fmt.Println("  profile delete <name>     Delete a profile")
+	fmt.Println("  profile delete <name>     Delete a profile (--yes skips the prompt)")
 	fmt.Println("  profile default [name]    Show or set default profile")
 	fmt.Println()
 	fmt.Println("Examples:")

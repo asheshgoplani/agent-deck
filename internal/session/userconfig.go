@@ -191,6 +191,9 @@ type UserConfig struct {
 	// Gemini defines Gemini CLI integration settings
 	Gemini GeminiSettings `toml:"gemini,omitempty"`
 
+	// Antigravity defines Google Antigravity CLI integration settings.
+	Antigravity AntigravitySettings `toml:"antigravity,omitempty"`
+
 	// OpenCode defines OpenCode CLI integration settings
 	OpenCode OpenCodeSettings `toml:"opencode,omitempty"`
 
@@ -1232,7 +1235,7 @@ type OpenClawSettings struct {
 type RemoteAttachSettings struct {
 	// PasteImages lets Ctrl+V with an image on this machine's clipboard upload
 	// it to the attached remote session and type its host path, when that
-	// session's agent (Claude, Gemini) shows its input composer. Default on;
+	// session's agent (Claude, Gemini, OpenCode) shows its input composer. Default on;
 	// false leaves Ctrl+V to the remote untouched.
 	PasteImages *bool `toml:"paste_images,omitempty"`
 }
@@ -2420,9 +2423,9 @@ func (c *UserConfig) GetSendTransport() string {
 
 // SendSettings is the [send] section.
 type SendSettings struct {
-	// TagSends prefixes a send made from inside an agent-deck session with
-	// one "[agent-deck from:<sender-id>]" line so the receiver's reply is
-	// routed back to the sender (comms redesign PR5). Default true (nil).
+	// TagSends prefixes Claude-to-Claude, Pi-to-Pi and Pi-to-Claude sends
+	// with one "[agent-deck from:<sender-id>]" line. Claude reply routing
+	// is automatic; Pi attribution requires an explicit reply. Default true (nil).
 	TagSends *bool `toml:"tag_sends,omitempty"`
 }
 
@@ -2888,6 +2891,12 @@ func (c *ClaudeSettings) GetAutoResumeSummary() bool {
 		return true
 	}
 	return *c.AutoResumeSummary
+}
+
+// AntigravitySettings defines Antigravity CLI configuration.
+type AntigravitySettings struct {
+	// Command is an executable, path, or shell command. Defaults to "agy".
+	Command string `toml:"command,omitempty"`
 }
 
 // GeminiSettings defines Gemini CLI configuration
@@ -5026,6 +5035,16 @@ func IsCodexCompatible(toolName string) bool {
 	return false
 }
 
+// IsAntigravityCompatible reports whether sends must wait for the Antigravity
+// composer rather than accepting any waiting state (which includes menus).
+func IsAntigravityCompatible(toolName string) bool {
+	if toolName == "antigravity" {
+		return true
+	}
+	def := GetToolDef(toolName)
+	return def != nil && strings.EqualFold(strings.TrimSpace(def.CompatibleWith), "antigravity")
+}
+
 // IsDevinCompatible returns true if the tool is "devin" or a custom tool
 // whose underlying command is "devin". Use this for capability gates where
 // custom tools wrapping Devin should inherit Devin's composer behavior
@@ -5175,6 +5194,9 @@ func GetToolCommand(toolName string) string {
 		if toolName == "deepseek" {
 			return deepSeekBinary
 		}
+		if toolName == "antigravity" {
+			return "agy"
+		}
 		return toolName
 	}
 	switch toolName {
@@ -5186,6 +5208,14 @@ func GetToolCommand(toolName string) string {
 		if config.Gemini.Command != "" {
 			return config.Gemini.Command
 		}
+	case "antigravity":
+		if config.Antigravity.Command != "" {
+			return config.Antigravity.Command
+		}
+		if command := config.Tools["antigravity"].Command; command != "" {
+			return command
+		}
+		return "agy"
 	case "opencode":
 		if config.OpenCode.Command != "" {
 			return config.OpenCode.Command
@@ -5241,6 +5271,8 @@ func GetToolIcon(toolName string) string {
 		return "🤖"
 	case "gemini":
 		return "✨"
+	case "antigravity":
+		return "🪐"
 	case "opencode":
 		return "🌐"
 	case "codex":
@@ -5277,6 +5309,7 @@ func GetToolIcon(toolName string) string {
 func MergeToolPatterns(toolName string) *tmux.RawPatterns {
 	defaults := tmux.DefaultRawPatterns(toolName)
 	toolDef := GetToolDef(toolName)
+	// Keep in sync with builtinOverrideFields in toolregistry.go, which decides the shadow warning for these entries.
 	if toolDef == nil && defaults != nil {
 		if config, err := LoadUserConfig(); err == nil && config != nil {
 			if configured, ok := config.Tools[toolName]; ok {
@@ -5990,6 +6023,11 @@ func CreateExampleConfig() error {
 # [gemini]
 # Enable --yolo (auto-approve all actions) by default (default: false)
 # yolo_mode = true
+
+# Antigravity CLI integration
+# [antigravity]
+# Override the Antigravity executable or invocation (default: "agy")
+# command = "agy"
 
 # OpenCode CLI integration
 # [opencode]
