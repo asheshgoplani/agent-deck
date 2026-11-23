@@ -1207,3 +1207,32 @@ def test_load_config_refuses_a_remote_plain_http_server_unless_allowed(tmp_path)
     assert _load_config(tmp_path, table)["mattermost"]["configured"] is False
     allowed = _load_config(tmp_path, table + "allow_insecure_http = true\n")["mattermost"]
     assert allowed["configured"] is True and allowed["allow_insecure_http"] is True
+
+
+def test_a_send_killed_at_the_outer_deadline_is_reported_unconfirmed_issue3252():
+    """#3252: the CLI was killed before printing a result. The user is told
+    delivery is unconfirmed (not "Failed to send"), the message is not resent
+    and no reply watcher is attached to a turn nobody can identify."""
+    calls = []
+
+    def run_cli(*args, **kwargs):
+        calls.append(args)
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="timeout")
+
+    async def scenario():
+        async with FakeMattermost() as server:
+            mm = _bridge(server)
+            with _Agentdeck(run_cli=run_cli), \
+                    mock.patch("bridge._register_pending_reply") as register:
+                task = await _running(mm, server)
+                await server.push(server.make("long job"))
+                await _wait_for(lambda: server.posts)
+                await _stop(mm, task)
+            return server, register
+
+    server, register = asyncio.run(scenario())
+    message = server.posts[0]["message"]
+    assert "Failed to send" not in message
+    assert "unconfirmed" in message.lower()
+    register.assert_not_called()
+    assert len([c for c in calls if c[:2] == ("session", "send")]) == 1
