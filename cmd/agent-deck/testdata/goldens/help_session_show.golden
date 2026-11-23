@@ -8,5 +8,7 @@ Options:
   -json
     	Output as JSON
   -q	Minimal output (short)
+  -queue-full
+    	With --json, list every queued send instead of the newest 100 (see 'session queue list')
   -quiet
     	Minimal output
