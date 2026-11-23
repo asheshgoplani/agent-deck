@@ -376,11 +376,14 @@ func TestPiHooksStatus_SurfacesWhenAPermanentRefusalStoppedSocketWakes(t *testin
 		r, _ := enrolPiParent(t, "shipped the build")
 		setupPiHooksTest(t)
 		// What the send leg leaves after a permanent refusal: the records' wake
-		// tries consumed, and a failed socket wake record naming the reason.
+		// tries consumed, and a failed socket wake record that carried them,
+		// naming the reason.
+		var ids []string
 		if _, err := r.Do(piParentID, func(p comms.Pass) ([]events.Cursor, error) {
 			var cs []events.Cursor
 			for _, e := range p.Pending {
 				cs = append(cs, e.Cursor)
+				ids = append(ids, e.Record.ID)
 			}
 			p.File.NoteWakeFailed(cs)
 			p.File.NoteWakeFailed(cs)
@@ -394,7 +397,7 @@ func TestPiHooksStatus_SurfacesWhenAPermanentRefusalStoppedSocketWakes(t *testin
 		}
 		defer l.Close()
 		if _, _, err := l.Commit(comms.Record{Kind: comms.KindWake, From: "agent-deck", To: []string{piParentID}, Via: "socket",
-			State: comms.StateFailed, Err: "bad_request", Trigger: "ledger", Text: "wake", TRecord: time.Now().UnixMilli()}); err != nil {
+			State: comms.StateFailed, Err: "bad_request", Trigger: "ledger", Text: "wake", Refs: ids, TRecord: time.Now().UnixMilli()}); err != nil {
 			t.Fatal(err)
 		}
 		out := captureStdout(t, func() { handlePiHooks([]string{"status"}) })
