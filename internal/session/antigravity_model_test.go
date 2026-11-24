@@ -105,3 +105,66 @@ func TestAntigravityLaunchModelSurvivesResumeAndFork(t *testing.T) {
 		t.Fatalf("fork command = %q, want model and parent conversation", cmd)
 	}
 }
+
+func TestAntigravitySupportsLaunchModel(t *testing.T) {
+	for _, tool := range []string{"antigravity"} {
+		if !SupportsLaunchModel(tool) {
+			t.Fatalf("SupportsLaunchModel(%q) = false", tool)
+		}
+	}
+}
+
+func TestAntigravitySetFieldModel(t *testing.T) {
+	inst := &Instance{Tool: "antigravity", Command: "agy --mode plan"}
+	if _, _, err := SetField(inst, FieldModel, "gemini-4-hydrogen", nil); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	if inst.LaunchModelID() != "gemini-4-hydrogen" || inst.Command != "agy --mode plan --model gemini-4-hydrogen" {
+		t.Fatalf("after set: Command = %q, LaunchModelID = %q", inst.Command, inst.LaunchModelID())
+	}
+	old, _, err := SetField(inst, FieldModel, "", nil)
+	if err != nil {
+		t.Fatalf("clear model: %v", err)
+	}
+	if old != "gemini-4-hydrogen" || inst.LaunchModelID() != "" || inst.Command != "agy --mode plan" {
+		t.Fatalf("after clear: old = %q, Command = %q, LaunchModelID = %q", old, inst.Command, inst.LaunchModelID())
+	}
+}
+
+func TestAntigravitySetFieldModelRefusesShellCharacters(t *testing.T) {
+	for _, model := range []string{"$(id)", "m\nx", "--dangerously-skip-permissions", "`id`"} {
+		inst := &Instance{Tool: "antigravity", Command: "agy"}
+		if _, _, err := SetField(inst, FieldModel, model, nil); err == nil {
+			t.Fatalf("SetField accepted %q: Command = %q", model, inst.Command)
+		}
+		if inst.Command != "agy" || inst.LaunchModelID() != "" {
+			t.Fatalf("refused %q still changed Command to %q", model, inst.Command)
+		}
+	}
+}
+
+// A model set through session set must survive resume and fork.
+func TestAntigravitySetFieldModelSurvivesResumeAndFork(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	restore := resetUserConfigCache(t, &UserConfig{})
+	defer restore()
+
+	inst := NewInstanceWithGroupAndTool("agy-parent", filepath.Join(home, "repo"), "projects/agy", "antigravity")
+	inst.Command = "agy"
+	if _, _, err := SetField(inst, FieldModel, "gemini-4-hydrogen", nil); err != nil {
+		t.Fatal(err)
+	}
+	inst.AntigravitySessionID = "conv-a"
+	inst.AntigravityDetectedAt = time.Now()
+	if got, want := inst.buildAntigravityResumeCommand(), "agy --model gemini-4-hydrogen --conversation conv-a"; got != want {
+		t.Fatalf("resume command = %q, want %q", got, want)
+	}
+	forked, _, err := inst.CreateForkedInstanceForTool("agy-child", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forked.LaunchModelID() != "gemini-4-hydrogen" {
+		t.Fatalf("forked LaunchModelID = %q", forked.LaunchModelID())
+	}
+}
