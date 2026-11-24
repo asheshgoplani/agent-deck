@@ -884,17 +884,25 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	if rs == nil {
 		return
 	}
+	unavailable := h.remotePollUnavailable(item.RemoteName)
+	var age time.Duration
+	var stale bool
+	if !unavailable {
+		age, stale = h.remoteRowStale(item.RemoteName)
+	}
+	titleStyle := SessionTitleDefault
+	if !rs.Archived && !unavailable && !stale {
+		titleStyle = rowTitleStyle(session.Status(rs.Status))
+	}
+
 	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
 		statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
-		// Same freshness rule as the classic row below: a failed/cached poll
-		// shows "?" and "last known"; a snapshot older than remoteRowStaleAge
-		// keeps its glyph but dims it and says how old it is. A green ● here
-		// was the one place a stale remote row still claimed a live session.
+		// Match the classic row's freshness markers for failed and aging polls.
 		staleNote := ""
-		if h.remotePollUnavailable(item.RemoteName) {
+		if unavailable {
 			statusIcon, statusStyle = "?", DimStyle
 			staleNote = " · last known"
-		} else if age, stale := h.remoteRowStale(item.RemoteName); stale {
+		} else if stale {
 			statusStyle = DimStyle
 			staleNote = " · status " + formatRemoteAge(age) + " old"
 		}
@@ -918,7 +926,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		if toolPrefix != "" {
 			first += GetToolStyle(strings.ToLower(rs.Tool)).Bold(true).Render(sidebarToolIcon(rs.Tool)) + " "
 		}
-		first = fitCellWidth(first+rs.Title, max(1, listWidth))
+		first = fitCellWidth(first+titleStyle.Render(rs.Title), max(1, listWidth))
 		secondText := strings.TrimSpace(rs.Status)
 		if rs.Archived {
 			secondText = "archived"
@@ -954,11 +962,9 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 
 	statusIcon, sStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
-	unavailable := h.remotePollUnavailable(item.RemoteName)
 	if unavailable {
 		statusIcon, sStyle = "?", DimStyle
 	}
-	titleStyle := lipgloss.NewStyle().Foreground(ColorText)
 	if selected {
 		sStyle = SessionStatusSelStyle
 		titleStyle = SessionStatusSelStyle
@@ -1000,7 +1006,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	pendingStr := ""
 	if unavailable {
 		pendingStr = " " + DimStyle.Render("· last known")
-	} else if age, stale := h.remoteRowStale(item.RemoteName); stale {
+	} else if stale {
 		// #2331: a poll that answers slowly (the remote's own status pass
 		// ran long under load) is not "unavailable" — it succeeded — but
 		// its snapshot can be tens of seconds old by the time this row

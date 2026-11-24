@@ -254,13 +254,7 @@ func (h *Home) renderEmbeddedSessionItem(
 		toolIcon = sidebarToolIcon(tool)
 	}
 
-	titleStyle := SessionTitleDefault
-	switch state.status {
-	case session.StatusRunning, session.StatusWaiting:
-		titleStyle = SessionTitleActive
-	case session.StatusError:
-		titleStyle = SessionTitleError
-	}
+	titleStyle := rowTitleStyle(state.status)
 	if inst.Color != "" {
 		titleStyle = titleStyle.Foreground(lipgloss.Color(inst.Color))
 	}

@@ -8499,18 +8499,7 @@ func (h *Home) renderSessionItem(
 
 	status := statusStyle.Render(statusIcon)
 
-	// Title styling - add bold/underline for accessibility (colorblind users)
-	var titleStyle lipgloss.Style
-	switch instStatus {
-	case session.StatusRunning, session.StatusWaiting:
-		// Bold for active states (distinguishable without color)
-		titleStyle = SessionTitleActive
-	case session.StatusError:
-		// Underline for error (distinguishable without color)
-		titleStyle = SessionTitleError
-	default:
-		titleStyle = SessionTitleDefault
-	}
+	titleStyle := rowTitleStyle(instStatus)
 
 	// Issue #391: per-session color tint. When the user has set
 	// Instance.Color (validated CLI-side in isValidSessionColor), override

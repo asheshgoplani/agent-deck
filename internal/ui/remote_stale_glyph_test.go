@@ -58,6 +58,68 @@ func TestRemoteStaleRow_ClassicDimsGlyphWhenStaleByAge(t *testing.T) {
 // always draws the classic row.
 const embeddedCardWidth = embeddedCardMinWidth + 32
 
+func TestRemoteStatusTitleEmphasis(t *testing.T) {
+	for _, layout := range []struct {
+		name     string
+		embedded bool
+	}{
+		{name: "classic"},
+		{name: "embedded", embedded: true},
+	} {
+		t.Run(layout.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, status, poll, sgr   string
+				stale, archived, selected bool
+			}{
+				{name: "running", status: "running", poll: "ok", sgr: "\x1b[1m"},
+				{name: "waiting", status: "waiting", poll: "ok", sgr: "\x1b[1m"},
+				{name: "error", status: "error", poll: "ok", sgr: "\x1b[4m"},
+				{name: "idle", status: "idle", poll: "ok"},
+				{name: "outdated", status: "running", poll: "ok", stale: true},
+				{name: "unavailable", status: "running", poll: "timeout"},
+				{name: "archived", status: "running", poll: "ok", archived: true},
+				{name: "selected", status: "running", poll: "ok", selected: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					age := time.Second
+					if tc.stale {
+						age = time.Minute
+					}
+					h, rs := newStaleRemoteHome(t, layout.embedded, tc.poll, age)
+					rs.Status, rs.Archived = tc.status, tc.archived
+
+					var output strings.Builder
+					h.renderRemoteSessionItemAtWidth(&output, remoteItem(&rs), tc.selected, embeddedCardWidth)
+					row := strings.SplitN(output.String(), "\n", 2)[0]
+					plain := stripAnsi(row)
+					titleStart := strings.Index(plain, rs.Title)
+					if titleStart < 0 {
+						t.Fatalf("title %q missing from row %q", rs.Title, plain)
+					}
+
+					terminal := newEmbeddedTerminalEmulator(embeddedTerminalSize{Cols: embeddedCardWidth + 1, Rows: 3}, nil)
+					defer terminal.Close()
+					if _, err := terminal.WriteString(row + "\r\n\x1b[0m" + tc.sgr + "x"); err != nil {
+						t.Fatal(err)
+					}
+					want := terminal.CellAt(0, 1).Style
+					column := cellWidth(plain[:titleStart])
+					for i, char := range rs.Title {
+						cell := terminal.CellAt(column+i, 0)
+						if cell == nil || cell.Content != string(char) {
+							t.Fatalf("unexpected title cell at column %d: %+v", column+i, cell)
+						}
+						if cell.Style.Attrs != want.Attrs || cell.Style.Underline != want.Underline {
+							t.Fatalf("title %q emphasis = (%d, %d), want (%d, %d)",
+								rs.Title, cell.Style.Attrs, cell.Style.Underline, want.Attrs, want.Underline)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestRemoteStaleRow_EmbeddedCardFollowsPollHealth(t *testing.T) {
 	h, rs := newStaleRemoteHome(t, true, "timeout", 5*time.Second)
 	var b strings.Builder

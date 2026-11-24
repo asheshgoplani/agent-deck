@@ -6,6 +6,8 @@
 
 Manage agent-deck instances running on remote SSH servers from your local terminal. Remote sessions report coarse live status and use the same nested group layout as local sessions; remote groups can be collapsed, and `K`/`J` reorder sessions within a remote group. Session identity includes its location, so the same title can safely exist locally and on different remote host/path pairs.
 
+Fresh, unselected remote sessions use bold titles for running and waiting sessions and underlined titles for errors, matching local rows.
+
 ```bash
 # Register a remote
 agent-deck remote add dev user@dev-box

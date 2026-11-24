@@ -1340,6 +1340,8 @@ To also get the failures in the JSON output, add `--with-errors` (or the equival
 
 In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. A remote session whose `parent_session_id` (included in `--json` when set) names another session in the same remote group, such as a conductor's child, is shown one level under that parent; when the parent is not listed there it is shown flat. Each `--json` row also carries `favorite: true` when the session is a favourite on the remote (the key is absent otherwise, and from remotes too old to report it), so a remote favourite needs no separate `remote <name> list --json` call. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group, moving a conductor's child only among its siblings. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
 
+Fresh, unselected remote sessions use bold titles for running and waiting sessions and underlined titles for errors, matching local rows.
+
 ### remote conversation and status reads
 
 ```bash
