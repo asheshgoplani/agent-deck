@@ -1653,6 +1653,47 @@ const (
 	maxStatusInterval  = 10 * time.Second
 )
 
+// tickIdleTimeouts runs the idle-timeout watcher (#1143) at most once a
+// minute. The background sweep runs every 2s; capture-pane on every session
+// every 2s would add unnecessary tmux load. 60s is the same cadence the spec
+// suggests and matches how the lifecycle log surfaces dormant workers.
+// instances is called only when a tick is due.
+func (h *Home) tickIdleTimeouts(instances func() []*session.Instance) {
+	if h.idleTimeoutWatcher == nil {
+		return
+	}
+	const idleTickEvery = 60 * time.Second
+	nowNano := time.Now().UnixNano()
+	lastNano := h.idleTimeoutLastTick.Load()
+	if lastNano != 0 && time.Duration(nowNano-lastNano) < idleTickEvery {
+		return
+	}
+	if h.idleTimeoutLastTick.CompareAndSwap(lastNano, nowNano) {
+		h.idleTimeoutWatcher.Tick(instances())
+	}
+}
+
+// headlessIdleTimeoutInstances is what a headless web server enforces idle
+// timeouts on: every session in storage, whose status rows notify-daemon
+// keeps current while no TUI runs (#3268). With a live TUI it returns none:
+// the TUI's own watcher enforces them.
+func (h *Home) headlessIdleTimeoutInstances() []*session.Instance {
+	if h.storage == nil {
+		return nil
+	}
+	if db := statedb.GetGlobal(); db != nil {
+		if n, err := db.AliveInstanceCount(); err != nil || n > 0 {
+			return nil
+		}
+	}
+	instances, _, err := h.storage.LoadWithGroups()
+	if err != nil {
+		uiLog.Warn("headless_idle_timeout_load_failed", slog.String("error", err.Error()))
+		return nil
+	}
+	return instances
+}
+
 // backgroundStatusUpdate runs independently of the TUI
 // Updates session statuses and syncs notification bar directly to tmux
 // This is called by the internal ticker even when TUI is paused (tea.Exec)
@@ -1739,6 +1780,12 @@ func (h *Home) backgroundStatusUpdate() {
 		perfLog.Warn("slow_refresh", slog.Duration("duration", refreshDur))
 	}
 
+	// The headless sweep polls no status, but it still enforces idle
+	// timeouts, on the sessions in storage rather than a hydrated snapshot.
+	if h.headless {
+		h.tickIdleTimeouts(h.headlessIdleTimeoutInstances)
+	}
+
 	if len(instances) == 0 {
 		return
 	}
@@ -1751,25 +1798,14 @@ func (h *Home) backgroundStatusUpdate() {
 	// skip-counting, idle lastSeen cleanup) keep using `instances`.
 	activeInstances := session.FilterInstancesByArchive(instances, false)
 
-	// Issue #1143: rate-limit the idle-timeout watcher to one tick per minute.
-	// The background sweep runs every 2s; capture-pane on every session every
-	// 2s would add unnecessary tmux load. 60s is the same cadence the spec
-	// suggests and matches how the lifecycle log surfaces dormant workers.
-	if h.idleTimeoutWatcher != nil {
-		const idleTickEvery = 60 * time.Second
-		nowNano := time.Now().UnixNano()
-		lastNano := h.idleTimeoutLastTick.Load()
-		if lastNano == 0 || time.Duration(nowNano-lastNano) >= idleTickEvery {
-			if h.idleTimeoutLastTick.CompareAndSwap(lastNano, nowNano) {
-				// Full set, not ownedOnly: Tick's lastSeen cleanup has a
-				// documented invariant that it must see every instance to
-				// prune dead entries correctly. Sessions with
-				// IdleTimeoutSecs>0 are rare, so the cross-instance dedupe
-				// win here was negligible against that correctness leak.
-				h.idleTimeoutWatcher.Tick(instances)
-			}
-		}
-	}
+	h.tickIdleTimeouts(func() []*session.Instance {
+		// Full set, not ownedOnly: Tick's lastSeen cleanup has a
+		// documented invariant that it must see every instance to
+		// prune dead entries correctly. Sessions with
+		// IdleTimeoutSecs>0 are rare, so the cross-instance dedupe
+		// win here was negligible against that correctness leak.
+		return instances
+	})
 
 	// PERFORMANCE: Gradually configure unconfigured sessions in background
 	// Configure one session per tick to avoid blocking the status update

@@ -177,11 +177,7 @@ func TestNewHome_HeadlessDoesNotRegisterHeartbeat(t *testing.T) {
 		{name: "headless web", headless: true, wantAlive: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			t.Setenv("HOME", root)
-			for _, k := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
-				t.Setenv(k, filepath.Join(root, k))
-			}
+			isolateHomeAndXDG(t)
 			t.Setenv("AGENTDECK_PROFILE", "")
 			prev := statedb.GetGlobal()
 			statedb.SetGlobal(nil)
@@ -205,5 +201,70 @@ func TestNewHome_HeadlessDoesNotRegisterHeartbeat(t *testing.T) {
 				t.Fatalf("AliveInstanceCount = %d, %v; want %d", n, err, tc.wantAlive)
 			}
 		})
+	}
+}
+
+// Issue #3268, review: the headless sweep polls no status, but it still
+// enforces idle timeouts (#1143). It reads the sessions from storage on each
+// due tick rather than the snapshot a web mutation hydrated, so a session
+// added after the last mutation is covered too. While a TUI is alive, the
+// TUI's own watcher enforces them and the headless one stays out.
+func TestBackgroundStatusUpdate_HeadlessEnforcesIdleTimeoutsFromStorage(t *testing.T) {
+	for _, tc := range []struct {
+		name, profile string
+		tuiAlive      bool
+		wantStopped   int
+	}{
+		{name: "no tui", profile: "_test_3268_idle_notui", tuiAlive: false, wantStopped: 1},
+		{name: "live tui", profile: "_test_3268_idle_tui", tuiAlive: true, wantStopped: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHomeAndXDG(t)
+			db := newClaimsTestDB(t)
+			fakeTmuxOnPath(t)
+			tmux.SetServerAliveForTest(t, true)
+			if tc.tuiAlive {
+				if err := db.RegisterInstance(false); err != nil {
+					t.Fatalf("RegisterInstance: %v", err)
+				}
+			}
+
+			h, storage := newHeadlessHomeForTest(t, tc.profile)
+			armed := &session.Instance{
+				ID: "idle-3268", Title: "idle-3268", ProjectPath: t.TempDir(), GroupPath: session.DefaultGroupPath,
+				Command: "bash", Tool: "bash", Status: session.StatusWaiting, IdleTimeoutSecs: 60, CreatedAt: time.Now(),
+			}
+			if err := storage.SaveWithGroups([]*session.Instance{armed}, session.NewGroupTree([]*session.Instance{armed})); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			now := time.Now()
+			var stopped []string
+			h.idleTimeoutWatcher = session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{
+				Now:      func() time.Time { return now },
+				Capture:  func(*session.Instance) (string, error) { return "same pane", nil },
+				Stop:     func(inst *session.Instance) error { stopped = append(stopped, inst.ID); return nil },
+				LogEvent: func(session.SessionLifecycleEvent) error { return nil },
+			})
+
+			h.backgroundStatusUpdate() // first due tick: records the pane
+			now = now.Add(61 * time.Second)
+			h.idleTimeoutLastTick.Store(0) // next tick is due
+			h.backgroundStatusUpdate()
+
+			if len(stopped) != tc.wantStopped {
+				t.Fatalf("headless sweep stopped %v, want %d stop(s) after 61s without pane change (idle_timeout_secs=60)", stopped, tc.wantStopped)
+			}
+		})
+	}
+}
+
+// isolateHomeAndXDG points HOME and every XDG root at a fresh temp dir, so
+// storage opened by the test is its own.
+func isolateHomeAndXDG(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
+		t.Setenv(k, filepath.Join(root, k))
 	}
 }
