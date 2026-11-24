@@ -67,9 +67,13 @@ func CaptureTaskCheckpoint(ctx context.Context, dir, note string) (TaskCheckpoin
 		return TaskCheckpoint{}, fmt.Errorf("resolve checkpoint base: %w", err)
 	}
 	base := strings.TrimSpace(string(head))
-	patch, err := checkpointGit(ctx, root, nil, "diff", "--patch", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--no-relative", "--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", base, "--")
+	diff, err := checkpointGit(ctx, root, nil, "diff", "--patch-with-raw", "-z", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--no-relative", "--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", base, "--")
 	if err != nil {
 		return TaskCheckpoint{}, fmt.Errorf("capture tracked changes: %w", err)
+	}
+	patch, err := checkpointPatchFromDiff(diff)
+	if err != nil {
+		return TaskCheckpoint{}, err
 	}
 	current, err := checkpointGit(ctx, root, nil, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil || !bytes.Equal(head, current) {
@@ -78,6 +82,32 @@ func CaptureTaskCheckpoint(ctx context.Context, dir, note string) (TaskCheckpoin
 	c := TaskCheckpoint{Version: checkpointVersion, Base: base, Patch: patch, Note: note}
 	_, err = c.Paths(ctx)
 	return c, err
+}
+
+// With --patch-with-raw -z and renames disabled, each raw record is a
+// NUL-terminated header and path. An empty header separates the patch.
+func checkpointPatchFromDiff(diff []byte) ([]byte, error) {
+	if len(diff) == 0 {
+		return diff, nil
+	}
+	raw, patch, ok := bytes.Cut(diff, []byte{0, 0})
+	if !ok {
+		return nil, errors.New("checkpoint could not read Git diff records")
+	}
+	entries := bytes.Split(raw, []byte{0})
+	if len(entries)%2 != 0 {
+		return nil, errors.New("checkpoint could not read Git diff records")
+	}
+	for i := 0; i < len(entries); i += 2 {
+		fields := bytes.Fields(entries[i])
+		if len(fields) != 5 {
+			return nil, errors.New("checkpoint could not read Git diff records")
+		}
+		if string(fields[0]) == ":160000" || string(fields[1]) == "160000" {
+			return nil, fmt.Errorf("checkpoint does not support submodules: %q", entries[i+1])
+		}
+	}
+	return patch, nil
 }
 
 // WriteTaskCheckpoint creates a private file and refuses to overwrite one.
@@ -361,10 +391,16 @@ func RestoreTaskCheckpoint(ctx context.Context, dir, target string, c TaskCheckp
 }
 
 func checkCheckpointTarget(ctx context.Context, root, target string) error {
+	// With detached Git metadata, Git may list the metadata directory in
+	// place of the checkout. Always check the actual source root as well.
+	if target == root {
+		return errors.New("restore target must be outside existing worktrees")
+	}
 	list, err := checkpointGit(ctx, root, nil, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return fmt.Errorf("check existing worktrees: %w", err)
 	}
+	worktrees := []string{root}
 	for record := range strings.SplitSeq(string(list), "\x00") {
 		worktree, ok := strings.CutPrefix(record, "worktree ")
 		if !ok {
@@ -373,6 +409,9 @@ func checkCheckpointTarget(ctx context.Context, root, target string) error {
 		if filepath.Clean(worktree) == target {
 			return errors.New("restore path is already registered as a worktree")
 		}
+		worktrees = append(worktrees, worktree)
+	}
+	for _, worktree := range worktrees {
 		worktreeInfo, err := os.Stat(worktree)
 		if errors.Is(err, os.ErrNotExist) {
 			continue

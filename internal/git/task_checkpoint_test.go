@@ -193,3 +193,49 @@ func TestTaskCheckpointRestoreRefusesFilterOnBase(t *testing.T) {
 	require.NoDirExists(t, target)
 	require.Equal(t, before, checkpointTestGit(t, repo, "worktree", "list", "--porcelain"))
 }
+
+func TestTaskCheckpointRefusesChangedSubmodule(t *testing.T) {
+	ctx := context.Background()
+	repo := checkpointTestRepo(t)
+	submoduleRepo := checkpointTestRepo(t)
+	checkpointTestGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "--", submoduleRepo, "nested module")
+	checkpointTestGit(t, repo, "commit", "-qm", "add submodule")
+	submodule := filepath.Join(repo, "nested module")
+
+	checkpointTestWrite(t, repo, "tracked file", "ordinary edit\n")
+	_, err := CaptureTaskCheckpoint(ctx, repo, "")
+	require.NoError(t, err, "a clean submodule does not prevent saving other changes")
+
+	checkpointTestWrite(t, submodule, "tracked file", "uncommitted edit\n")
+	_, err = CaptureTaskCheckpoint(ctx, repo, "")
+	require.ErrorContains(t, err, "submodules")
+
+	checkpointTestGit(t, submodule, "add", "tracked file")
+	checkpointTestGit(t, submodule, "-c", "user.name=Checkpoint Test", "-c", "user.email=checkpoint@example.invalid", "commit", "-qm", "advance submodule")
+	checkpointTestGit(t, repo, "add", "nested module")
+	_, err = CaptureTaskCheckpoint(ctx, repo, "")
+	require.ErrorContains(t, err, "submodules")
+}
+
+func TestTaskCheckpointRefusesRestoreInsideSeparateCheckout(t *testing.T) {
+	ctx := context.Background()
+	repo := checkpointTestRepo(t)
+	gitDir := filepath.Join(t.TempDir(), "metadata")
+	checkpointTestGit(t, repo, "init", "-q", "--separate-git-dir", gitDir)
+	checkpointTestWrite(t, repo, "tracked file", "changed\n")
+	c, err := CaptureTaskCheckpoint(ctx, repo, "")
+	require.NoError(t, err)
+	before := checkpointTestGit(t, repo, "status", "--porcelain")
+	registrations := checkpointTestGit(t, repo, "worktree", "list", "--porcelain")
+
+	for _, target := range []string{filepath.Join(repo, "inside"), repo} {
+		require.ErrorContains(t, RestoreTaskCheckpoint(ctx, repo, target, c), "outside existing worktrees")
+	}
+	require.NoDirExists(t, filepath.Join(repo, "inside"))
+	require.Equal(t, before, checkpointTestGit(t, repo, "status", "--porcelain"))
+	require.Equal(t, registrations, checkpointTestGit(t, repo, "worktree", "list", "--porcelain"))
+
+	target := filepath.Join(t.TempDir(), "outside")
+	require.NoError(t, RestoreTaskCheckpoint(ctx, repo, target, c))
+	require.FileExists(t, filepath.Join(target, "tracked file"))
+}
