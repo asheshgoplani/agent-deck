@@ -356,10 +356,10 @@ In the TUI, quick fork (`f`) is comprehensive by default: it creates a new git w
 ### session attach
 
 ```bash
-agent-deck session attach <id|title>
+agent-deck session attach [--shell tmux|window] <id|title>
 ```
 
-Interactive PTY mode. Press `Ctrl+Q` to detach.
+Interactive PTY mode. Press `Ctrl+Q` to detach. `--shell tmux` opens a split pane, and `--shell window` opens a new tmux window, in the session's worktree (or project directory) before attaching.
 
 ### session show
 
@@ -1383,10 +1383,10 @@ Narrowing a drain to one conductor's children (`--parent <conductor-id>@<host>`)
 ### remote attach
 
 ```bash
-agent-deck remote attach <remote-name> <session-title-or-id>
+agent-deck remote attach [--shell tmux|window] <remote-name> <session-title-or-id>
 ```
 
-Attaches interactively to a session running on a remote instance. Accepts either a full session title or an ID prefix.
+Attaches interactively to a session running on a remote instance. Accepts either a full session title or an ID prefix. `--shell` opens a shell on the remote before attaching and requires the remote to support `session attach --shell`.
 
 ### remote rename
 

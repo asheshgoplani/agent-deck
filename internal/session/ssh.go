@@ -591,8 +591,21 @@ func (r *SSHRunner) consumeLastStderr() []byte {
 // PTY in sync when the local terminal is resized, and sends SIGWINCH to
 // self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
+	return r.AttachWithShell(sessionID, "")
+}
+
+// AttachWithShell optionally opens a tmux split or window on the remote before attaching.
+func (r *SSHRunner) AttachWithShell(sessionID, shellMode string) error {
+	args := []string{"session", "attach"}
+	switch shellMode {
+	case ShellSplitTmux, ShellSplitWindow:
+		args = append(args, "--shell="+shellMode)
+	case "":
+	default:
+		return fmt.Errorf("invalid shell mode %q: expected tmux or window", shellMode)
+	}
 	done := optiming.StartResult("remote.attach")
-	cmd, transport, err := r.attachCommand("session", "attach", sessionID)
+	cmd, transport, err := r.attachCommand(append(args, sessionID)...)
 	if err != nil {
 		done(true)
 		return err

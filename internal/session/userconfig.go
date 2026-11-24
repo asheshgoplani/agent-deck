@@ -617,7 +617,8 @@ type UISettings struct {
 	//   "window" — always open a tmux window (tab) inside the session
 	//   ""       — auto: use iTerm2 split when LC_TERMINAL=iTerm2 or
 	//              TERM_PROGRAM=iTerm.app, otherwise tmux
-	// Default: "" (auto). Issue #1470.
+	// Default: "" (auto). For remote sessions, the controller chooses the
+	// mode and the shell opens on the remote. Issue #1470.
 	ShellSplit string `toml:"shell_split,omitempty"`
 	// RemoteLatencyRefreshSecs sets how often the TUI re-measures the
 	// round-trip latency to each configured remote (issue #1103). Valid

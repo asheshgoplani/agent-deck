@@ -1455,42 +1455,56 @@ func (h *Home) openShellHere(inst *session.Instance) tea.Cmd {
 	if tmuxSess == nil {
 		return nil
 	}
-	workdir := inst.WorktreePath
-	if workdir == "" {
-		workdir = inst.ProjectPath
-	}
-	req := terminal.AttachRequest{
-		Name:       tmuxSess.Name,
-		SocketName: tmuxSess.SocketName,
-	}
 	mode := resolveShellSplitMode()
-	if mode == session.ShellSplitWindow {
-		// Shell as a tmux window (tab) instead of a split pane; attach so
-		// the new window is visible immediately.
-		if err := tmuxSess.NewShellWindow(workdir); err != nil {
-			h.setError(fmt.Errorf("open shell here: %w", err))
-			return nil
-		}
-		return h.attachSession(inst)
-	}
-	if mode == session.ShellSplitITerm {
+	inITerm := mode == session.ShellSplitITerm
+	if inITerm {
 		// Launch iTerm2 split before mutating tmux so a failed osascript
 		// call does not leave an orphaned pane. Issue #1470.
+		req := terminal.AttachRequest{
+			Name:       tmuxSess.Name,
+			SocketName: tmuxSess.SocketName,
+		}
 		if err := h.openInSplitPane(req); err != nil {
 			h.setError(fmt.Errorf("open shell here: iterm split: %w", err))
 			return nil
 		}
-		if err := tmuxSess.SplitShellPane(workdir); err != nil {
-			h.setError(fmt.Errorf("open shell here: %w", err))
-		}
-		return nil
+		mode = session.ShellSplitTmux
 	}
-	// Default (tmux): split first, then attach so the split is visible.
-	if err := tmuxSess.SplitShellPane(workdir); err != nil {
+	if err := inst.OpenShellHere(mode); err != nil {
 		h.setError(fmt.Errorf("open shell here: %w", err))
 		return nil
 	}
+	if inITerm {
+		return nil
+	}
 	return h.attachSession(inst)
+}
+
+func (h *Home) openRemoteShellHere(remoteName, sessionID string) tea.Cmd {
+	mode := resolveShellSplitMode()
+	if mode != session.ShellSplitITerm {
+		return h.attachRemoteSessionWithShell(remoteName, sessionID, mode)
+	}
+	req, ok := buildRemoteAttachRequest(remoteName, sessionID, "")
+	if !ok {
+		h.setError(fmt.Errorf("open shell here: cannot resolve remote %q", remoteName))
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		h.setError(fmt.Errorf("open shell here: locate local agent-deck: %w", err))
+		return nil
+	}
+	// The new terminal creates the remote pane only after iTerm2 has
+	// successfully launched the split, using the normal remote attach flow.
+	req.Remote.LocalCLI = exe
+	req.Remote.LocalProfile = h.profile
+	req.Remote.RemoteName = remoteName
+	req.Remote.LocalShellMode = session.ShellSplitTmux
+	if err := h.openInSplitPane(req); err != nil {
+		h.setError(fmt.Errorf("open shell here: iterm split: %w", err))
+	}
+	return nil
 }
 
 // buildRemoteAttachRequest constructs a terminal.AttachRequest that
@@ -5718,17 +5732,19 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case h.actionKey(hotkeyOpenShellHere):
-		// Open a shell sub-session in the focused session's worktree (or
-		// project path) as an iTerm2 split pane or new tmux window,
-		// depending on [ui].shell_split and auto-detection. Issue #1470.
+		// Open a shell in the focused session's worktree (or project path)
+		// using the controller's configured split mode.
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil {
+			switch {
+			case item.Type == session.ItemTypeSession && item.Session != nil:
 				return h, h.openShellHere(item.Session)
+			case item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil:
+				return h, h.openRemoteShellHere(item.RemoteName, item.RemoteSession.ID)
 			}
 		}
 		// Non-session item: delegate to collapse/parent navigation so the
-		// default "h" binding does not swallow left-nav on group/window rows.
+		// hotkey, if rebound to "h", does not swallow left-nav on group/window rows.
 		h.collapseOrNavUp()
 		return h, nil
 
@@ -8266,6 +8282,10 @@ func (a attachWindowCmd) SetStderr(w io.Writer) {}
 
 // attachRemoteSession attaches to a remote session via SSH, suspending the TUI.
 func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
+	return h.attachRemoteSessionWithShell(remoteName, sessionID, "")
+}
+
+func (h *Home) attachRemoteSessionWithShell(remoteName, sessionID, shellMode string) tea.Cmd {
 	defer holdInputForExec()() // keys typed meanwhile belong to the remote pane
 	runner, err := remoteRunnerFor(remoteName)
 	if err != nil {
@@ -8278,6 +8298,7 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 	return execHoldingInput(remoteAttachCmd{
 		runner:    runner,
 		sessionID: sessionID,
+		shellMode: shellMode,
 		// Clear the flag inside Run() (#1753) — see attachCmd.onExit. The
 		// callback clear below is only the belt for the never-ran path.
 		onExit: func() { h.isAttaching.Store(false) },
@@ -8296,6 +8317,7 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 type remoteAttachCmd struct {
 	runner    *session.SSHRunner
 	sessionID string
+	shellMode string
 	// onExit: same contract as attachCmd.onExit (#1753).
 	onExit func()
 }
@@ -8304,7 +8326,7 @@ func (r remoteAttachCmd) Run() error {
 	if r.onExit != nil {
 		defer r.onExit()
 	}
-	return r.runner.Attach(r.sessionID)
+	return r.runner.AttachWithShell(r.sessionID, r.shellMode)
 }
 
 func (r remoteAttachCmd) SetStdin(reader io.Reader)  {}

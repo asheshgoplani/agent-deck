@@ -221,7 +221,8 @@ func printRemoteSubcommandUsage(command string) {
 	case "drain":
 		printRemoteDrainUsage(os.Stdout)
 	case "attach":
-		fmt.Println("Usage: agent-deck remote attach <remote-name> <session-title-or-id>")
+		fmt.Println("Usage: agent-deck remote attach [--shell tmux|window] <remote-name> <session-title-or-id>")
+		fmt.Println("\nUse --shell to open a tmux split or window in the remote session's worktree (or project directory) before attaching.")
 		fmt.Println("\nCtrl+V with an image on this machine's clipboard sends it to the session's Claude, Gemini, or OpenCode composer; off with [remote] paste_images = false.")
 	case "rename":
 		fmt.Println("Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>")
@@ -940,13 +941,19 @@ func writeRemoteSessionsText(w io.Writer, sessions []session.RemoteSessionInfo) 
 }
 
 func handleRemoteAttach(args []string) {
-	if len(args) < 2 {
-		fmt.Println("Usage: agent-deck remote attach <remote-name> <session-title-or-id>")
+	fs := flag.NewFlagSet("remote attach", flag.ContinueOnError)
+	shellMode := fs.String("shell", "", "open a shell on the remote before attaching: tmux or window")
+	fs.Usage = func() { printRemoteSubcommandUsage("attach") }
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
+	}
+	if fs.NArg() != 2 {
+		fs.Usage()
 		exitCLI(1)
 	}
 
-	remoteName := args[0]
-	sessionRef := args[1]
+	remoteName := fs.Arg(0)
+	sessionRef := fs.Arg(1)
 
 	rc, exists, err := resolveRemoteConfig(remoteName)
 	if err != nil {
@@ -964,7 +971,7 @@ func handleRemoteAttach(args []string) {
 	ctx := context.Background()
 	match := resolveRemoteSessionRef(ctx, runner, remoteName, sessionRef)
 
-	if err := runner.Attach(match.ID); err != nil {
+	if err := runner.AttachWithShell(match.ID, *shellMode); err != nil {
 		fmt.Printf("Error: failed to attach: %v\n", err)
 		exitCLI(1)
 	}

@@ -19,12 +19,13 @@ import (
 // handleSessionAttach attaches to a session interactively
 func handleSessionAttach(profile string, args []string) {
 	fs := flag.NewFlagSet("session attach", flag.ContinueOnError)
+	shellMode := fs.String("shell", "", "open a shell before attaching: tmux or window")
 
 	detachByte := ui.ResolvedDetachByte(session.GetHotkeyOverrides())
 	detachLabel := ui.DetachByteLabel(detachByte)
 
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck session attach <id|title>")
+		fmt.Println("Usage: agent-deck session attach [--shell tmux|window] <id|title>")
 		fmt.Println()
 		fmt.Println("Attach to a session interactively.")
 		fmt.Printf("Press %s to detach.\n", detachLabel)
@@ -65,6 +66,13 @@ func handleSessionAttach(profile string, args []string) {
 	if tmuxSession == nil {
 		fmt.Fprintf(os.Stderr, "Error: no tmux session for '%s'\n", inst.Title)
 		exitCLI(1)
+	}
+
+	if *shellMode != "" {
+		if err := inst.OpenShellHere(*shellMode); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: open shell here: %v\n", err)
+			exitCLI(1)
+		}
 	}
 
 	// Create context for attach

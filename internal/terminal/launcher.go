@@ -116,6 +116,9 @@ type RemoteAttach struct {
 
 	// RemoteName is the remote's name in this machine's config.
 	RemoteName string
+
+	// LocalShellMode optionally asks LocalCLI to open a remote tmux split or window.
+	LocalShellMode string
 }
 
 // UsesMosh reports whether the attach runs over mosh rather than ssh.
@@ -246,7 +249,11 @@ func buildRemoteAttachCommand(remoteName string, r *RemoteAttach) string {
 		if p := strings.TrimSpace(r.LocalProfile); p != "" && p != "default" {
 			parts = append(parts, "-p", shellQuote(p))
 		}
-		parts = append(parts, "remote", "attach", shellQuote(remote), shellQuote(remoteName))
+		parts = append(parts, "remote", "attach")
+		if r.LocalShellMode != "" {
+			parts = append(parts, "--shell="+shellQuote(r.LocalShellMode))
+		}
+		parts = append(parts, shellQuote(remote), shellQuote(remoteName))
 		return strings.Join(parts, " ")
 	}
 	agentDeckPath := strings.TrimSpace(r.AgentDeckPath)

@@ -2214,7 +2214,8 @@ func (h *Home) renderHelpBarFull() string {
 					primaryHints = append(primaryHints, h.helpKey(execShellKey, "Exec"))
 				}
 			}
-			if openShellHereKey != "" && item.Session != nil && item.Type == session.ItemTypeSession {
+			if openShellHereKey != "" && (item.Type == session.ItemTypeSession && item.Session != nil ||
+				item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil) {
 				primaryHints = append(primaryHints, h.helpKey(openShellHereKey, "Shell"))
 			}
 			if item.Type == session.ItemTypeSession && item.Session != nil {
