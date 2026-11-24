@@ -1667,7 +1667,9 @@ func (h *Home) backgroundStatusUpdate() {
 	// tmux server down, no sessions): it is how other instances see this one
 	// as alive, and a primary whose heartbeat goes stale for 30s loses the
 	// allow_multiple=false gate to a second TUI. One UPDATE per tick.
-	if db := statedb.GetGlobal(); db != nil {
+	// A headless web server loads no sessions and polls no status, so it
+	// never heartbeats: the notifier would read it as a live TUI (#3268).
+	if db := statedb.GetGlobal(); db != nil && !h.headless {
 		_ = db.Heartbeat()
 	}
 

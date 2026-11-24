@@ -1033,12 +1033,17 @@ func main() {
 	stopHealth := startRuntimeHealth(profile, healthRole)
 	defer stopHealth()
 
-	// Create storage early to register instance via SQLite
+	// Create storage early to register instance via SQLite. A headless web
+	// server polls no session status, so it does not register: the
+	// notifier reads any fresh heartbeat as a live TUI, stops probing tmux
+	// and misses every child turn end while only the web server runs (#3268).
 	earlyStorage, err := session.NewStorageWithProfile(profile)
 	if err == nil {
 		if db := earlyStorage.GetDB(); db != nil {
 			statedb.SetGlobal(db)
-			_ = db.RegisterInstance(false)
+			if !webHeadless {
+				_ = db.RegisterInstance(false)
+			}
 		}
 	}
 
