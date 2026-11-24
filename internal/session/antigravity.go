@@ -966,37 +966,119 @@ func (i *Instance) clearAntigravityPending() {
 }
 
 // antigravitySessionIDBoundElsewhere reports whether another agent-deck
-// session in this profile already stores candidate. A conversation discovered
+// session, in this profile or another local profile, already stores candidate. A conversation discovered
 // only through shared workspace metadata must never be stolen from the session
 // that bound it first.
 func (i *Instance) antigravitySessionIDBoundElsewhere(candidate string) bool {
 	if candidate == "" {
 		return false
 	}
-	bound := false
-	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
-		rows, err := db.LoadInstances()
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			if row.ID == i.ID {
-				continue
-			}
-			if strings.TrimSpace(ReadAntigravitySessionIDFromToolData(row.ToolData)) == candidate {
-				bound = true
-				return nil
-			}
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, errNoStateDB) {
+	match := func(row *statedb.InstanceRow) bool {
+		return row.ID != i.ID &&
+			strings.TrimSpace(ReadAntigravitySessionIDFromToolData(row.ToolData)) == candidate
+	}
+	bound, err := i.antigravityAnyProfileRow(match)
+	if err != nil {
 		sessionLog.Warn("antigravity_binding_lookup_failed",
 			slog.String("instance_id", logging.SanitizeValue(i.ID)),
 			slog.String("error", err.Error()))
 		return true // fail closed: stay unbound rather than steal
 	}
 	return bound
+}
+
+// antigravityAnyProfileRow reports whether match accepts a session row in this
+// profile's state DB or in any other local profile's. The Antigravity cache
+// under ~/.gemini is shared by every profile of the user, so a conversation
+// owned by, or possibly created by, a session in another profile must count
+// too. Other profiles are opened read-only. Any error means some sessions are
+// unknown, and callers must fail closed.
+func (i *Instance) antigravityAnyProfileRow(match func(*statedb.InstanceRow) bool) (bool, error) {
+	found := false
+	ownPath := ""
+	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
+		ownPath = db.Path()
+		rows, err := db.LoadInstances()
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if match(row) {
+				found = true
+				return nil
+			}
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errNoStateDB) {
+		return true, err
+	}
+	if found {
+		return true, nil
+	}
+	return antigravityOtherProfilesRow(ownPath, match)
+}
+
+// antigravityOtherProfilesRow scans every local profile's state DB except the
+// one at ownPath, read-only.
+func antigravityOtherProfilesRow(ownPath string, match func(*statedb.InstanceRow) bool) (bool, error) {
+	profiles, err := ListProfiles()
+	if err != nil {
+		return true, fmt.Errorf("list profiles: %w", err)
+	}
+	own := sameFileKey(ownPath)
+	for _, profile := range profiles {
+		dbPath, err := GetDBPathForProfile(profile)
+		if err != nil {
+			return true, fmt.Errorf("profile %q: %w", profile, err)
+		}
+		if own != "" && sameFileKey(dbPath) == own {
+			continue
+		}
+		found, err := antigravityProfileDBRow(dbPath, match)
+		if err != nil {
+			return true, fmt.Errorf("profile %q: %w", profile, err)
+		}
+		if found {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func antigravityProfileDBRow(dbPath string, match func(*statedb.InstanceRow) bool) (bool, error) {
+	db, err := statedb.OpenReadOnlyLive(dbPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// A legacy profile with only sessions.json has no rows yet.
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.LoadInstances()
+	if err != nil {
+		return true, err
+	}
+	for _, row := range rows {
+		if match(row) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// sameFileKey returns a comparable key for a DB path, resolving symlinks when
+// it can, so the own profile is not scanned twice.
+func sameFileKey(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 // antigravityWorkspaceDirs lists the directories whose conversations this pane
@@ -1013,7 +1095,8 @@ func (i *Instance) antigravityWorkspaceDirs() []string {
 }
 
 // antigravityUnboundSiblingSharesWorkspace reports whether another unbound
-// Antigravity session in this profile works in the same directory. Shared
+// Antigravity session, in this profile or another local profile, works in the
+// same directory. Shared
 // workspace metadata cannot say which unbound pane created a conversation, so
 // a new ID there is ambiguous and neither pane may adopt it.
 func (i *Instance) antigravityUnboundSiblingSharesWorkspace() bool {
@@ -1021,40 +1104,33 @@ func (i *Instance) antigravityUnboundSiblingSharesWorkspace() bool {
 	if len(wantDirs) == 0 {
 		return false
 	}
-	ambiguous := false
-	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
-		rows, err := db.LoadInstances()
-		if err != nil {
-			return err
+	match := func(row *statedb.InstanceRow) bool {
+		if row.ID == i.ID || row.Tool != "antigravity" || !row.ArchivedAt.IsZero() {
+			return false
 		}
-		for _, row := range rows {
-			if row.ID == i.ID || row.Tool != "antigravity" || !row.ArchivedAt.IsZero() {
-				continue
-			}
-			// A stopped, errored or queued row cannot have created a new
-			// conversation, so it must not make a live sibling ambiguous.
-			switch Status(row.Status) {
-			case StatusStopped, StatusError, StatusQueued:
-				continue
-			}
-			if strings.TrimSpace(ReadAntigravitySessionIDFromToolData(row.ToolData)) != "" {
-				continue
-			}
-			path := row.WorktreePath
-			if strings.TrimSpace(path) == "" {
-				path = row.ProjectPath
-			}
-			norm := normalizePath(path)
-			for _, want := range wantDirs {
-				if norm != "" && norm == want {
-					ambiguous = true
-					return nil
-				}
+		// A stopped, errored or queued row cannot have created a new
+		// conversation, so it must not make a live sibling ambiguous.
+		switch Status(row.Status) {
+		case StatusStopped, StatusError, StatusQueued:
+			return false
+		}
+		if strings.TrimSpace(ReadAntigravitySessionIDFromToolData(row.ToolData)) != "" {
+			return false
+		}
+		path := row.WorktreePath
+		if strings.TrimSpace(path) == "" {
+			path = row.ProjectPath
+		}
+		norm := normalizePath(path)
+		for _, want := range wantDirs {
+			if norm != "" && norm == want {
+				return true
 			}
 		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, errNoStateDB) {
+		return false
+	}
+	ambiguous, err := i.antigravityAnyProfileRow(match)
+	if err != nil {
 		sessionLog.Warn("antigravity_sibling_lookup_failed",
 			slog.String("instance_id", logging.SanitizeValue(i.ID)),
 			slog.String("error", err.Error()))
