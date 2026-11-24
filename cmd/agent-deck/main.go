@@ -48,7 +48,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.16.39" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.16.40" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -684,6 +684,9 @@ func main() {
 		case "switch":
 			handleSwitch(profile, args[1:])
 			return
+		case "todo":
+			handleTodo(profile, args[1:])
+			return
 		case "ask":
 			handleAsk(profile, args[1:])
 			return
@@ -756,6 +759,9 @@ func main() {
 			return
 		case "hermes-hooks":
 			handleHermesHooks(args[1:])
+			return
+		case "kimi-hooks":
+			handleKimiHooks(args[1:])
 			return
 		case "cursor-hooks":
 			handleCursorHooks(args[1:])
@@ -1670,10 +1676,10 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
+	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "todo": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
-	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
+	"hermes-hooks": true, "kimi-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "msg": true, "feedback": true, "whats-new": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true, "completion": true,
@@ -2185,10 +2191,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
-	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
+	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode, kimi)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
+	yoloMode := fs.Bool("yolo", false, "Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
+	autoMode := fs.Bool("auto", false, "Kimi only: Never Ask (full auto-approve)")
 	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
 	// Socket isolation (v1.7.50+, issue #687). Overrides the installation-
@@ -2343,7 +2350,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		exitCLI(1)
 	}
 
-	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, *autoMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
 		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
@@ -2913,6 +2920,10 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	}
 
 	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode, cliFlagWasSet(fs, "yolo", "gemini-yolo")); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		exitCLI(1)
+	}
+	if err := applyCLIKimiPermissionFlags(newInstance, *yoloMode || *geminiYoloMode, *autoMode, cliFlagWasSet(fs, "yolo", "gemini-yolo"), cliFlagWasSet(fs, "auto")); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		exitCLI(1)
 	}
@@ -3637,15 +3648,23 @@ func handleRemove(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	force := fs.Bool("force", false, "Kill and remove a session whose process is still alive (destructive)")
 
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck remove <id|title>")
+		fmt.Println("Usage: agent-deck remove <id|title> [--force]")
 		fmt.Println()
-		fmt.Println("Remove a session by ID or title.")
+		fmt.Println("Remove a session by ID or title: kills its process, removes its")
+		fmt.Println("worktree (unless another session still uses it) and deletes it from")
+		fmt.Println("the registry. A session whose process is still alive (and that is not")
+		fmt.Println("stopped or errored) is refused (exit 1) unless --force is given, the")
+		fmt.Println("same guard as 'session remove'.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck remove abc12345")
-		fmt.Println("  agent-deck remove \"My Project\"")
+		fmt.Println("  agent-deck remove \"My Project\" --force   # also when it is running")
 		fmt.Println("  agent-deck -p work remove abc12345   # Remove from 'work' profile")
 	}
 
@@ -3664,6 +3683,7 @@ func handleRemove(profile string, args []string) {
 		}
 		exitCLI(1)
 	}
+	rejectExtraRemoveArgs(out, fs)
 
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
@@ -3680,6 +3700,9 @@ func handleRemove(profile string, args []string) {
 		}
 		exitCLI(1)
 	}
+	// The guard reads the status list shows, not the stored one.
+	refreshLiveStatus([]*session.Instance{inst})
+	refuseRunningRemoval(out, inst, *force)
 
 	removedID := inst.ID
 	removedTitle := inst.Title
@@ -3718,8 +3741,15 @@ func handleRemove(profile string, args []string) {
 	// this removal was never allowed to touch.
 	_ = inst.RetireServiceUnit(serviceUnitOwnership)
 
-	// Clean up worktree directory if this is a worktree session
+	// Clean up worktree directory if this is a worktree session, unless
+	// another session in this or another local profile still uses it (#1449,
+	// as the TUI delete does). remove has no --force, so an unreadable other
+	// profile keeps the worktree too.
+	worktreeKept := false
 	if inst.IsWorktree() {
+		worktreeKept, _ = keepSharedWorktree(inst, instances, newWorktreeRemovalGuard(profile), false, *jsonOutput)
+	}
+	if inst.IsWorktree() && !worktreeKept {
 		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
 			if err := backend.RemoveWorktree(inst.WorktreePath, false); err != nil {
 				if !*jsonOutput {
@@ -3764,11 +3794,12 @@ func handleRemove(profile string, args []string) {
 	out.Success(
 		fmt.Sprintf("Removed session: %s (from profile '%s')", removedTitle, storage.Profile()),
 		map[string]interface{}{
-			"success": true,
-			"id":      removedID,
-			"title":   removedTitle,
-			"removed": true,
-			"profile": storage.Profile(),
+			"success":       true,
+			"id":            removedID,
+			"title":         removedTitle,
+			"removed":       true,
+			"profile":       storage.Profile(),
+			"worktree_kept": worktreeKept, // another session still uses it
 		},
 	)
 }
@@ -4193,7 +4224,7 @@ func handleProfile(args []string) {
 			}
 			exitCLI(1)
 		}
-		handleProfileDelete(out, jsonMode, filteredArgs[1])
+		handleProfileDelete(out, jsonMode, filteredArgs[1:])
 	case "default":
 		if len(filteredArgs) >= 2 && isHelpArg(filteredArgs[1]) {
 			printProfileDefaultHelp()
@@ -4240,7 +4271,11 @@ func printProfileCreateHelp() {
 }
 
 func printProfileDeleteHelp() {
-	fmt.Println("Usage: agent-deck profile delete <name>")
+	fmt.Println("Usage: agent-deck profile delete <name> [--yes] [--json]")
+	fmt.Println()
+	fmt.Println("Delete a profile and all its sessions. Refuses while any of its sessions")
+	fmt.Println("is running (stop them first). Asks for confirmation unless --yes is given;")
+	fmt.Println("with --json and no --yes it returns an error instead of asking.")
 }
 
 func printProfileDefaultHelp() {
@@ -4352,12 +4387,59 @@ func handleProfileCreate(out *CLIOutput, name string) {
 	})
 }
 
-func handleProfileDelete(out *CLIOutput, jsonMode bool, name string) {
-	// Skip confirmation in JSON mode (for automation)
-	if !jsonMode {
+func handleProfileDelete(out *CLIOutput, jsonMode bool, args []string) {
+	var name string
+	yes := false
+	for _, a := range args {
+		switch a {
+		case "--yes", "-y", "--force", "-f":
+			yes = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				out.Error(fmt.Sprintf("unknown flag %q for profile delete", a), ErrCodeInvalidOperation)
+				exitCLI(1)
+			}
+			if name != "" {
+				out.Error(fmt.Sprintf("profile delete takes one profile name, got %q and %q", name, a), ErrCodeInvalidOperation)
+				exitCLI(1)
+			}
+			name = a
+		}
+	}
+	if name == "" {
+		out.Error("profile name is required", ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+
+	// Existence and the last-profile guard come before any question.
+	if err := session.CheckProfileDeletable(name); err != nil {
+		out.Error(fmt.Sprintf("%v", err), ErrCodeNotFound)
+		exitCLI(1)
+	}
+
+	total, running, err := profileSessionCounts(name)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to read sessions of profile '%s': %v", name, err), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	// Deleting the directory would leave running agents untracked. Refuse
+	// rather than kill them: stopping is a separate, visible decision.
+	if len(running) > 0 {
+		out.Error(fmt.Sprintf(
+			"profile '%s' has %d running session(s): %s; stop them first (agent-deck -p %s session stop <id>), then delete the profile",
+			name, len(running), strings.Join(running, ", "), name,
+		), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+
+	if !yes {
+		if jsonMode {
+			out.Error(fmt.Sprintf("deleting profile '%s' needs confirmation: pass --yes to delete it and its %s", name, pluralSessions(total)), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
 		fmt.Printf(
-			"Are you sure you want to delete profile '%s'? This will remove all sessions in this profile. [y/N] ",
-			name,
+			"Delete profile '%s' and its %s? This cannot be undone. [y/N] ",
+			name, pluralSessions(total),
 		)
 		var response string
 		_, _ = fmt.Scanln(&response)
@@ -4371,11 +4453,29 @@ func handleProfileDelete(out *CLIOutput, jsonMode bool, name string) {
 		out.Error(fmt.Sprintf("%v", err), ErrCodeNotFound)
 		exitCLI(1)
 	}
-	out.Success(fmt.Sprintf("Deleted profile: %s", name), map[string]interface{}{
-		"success": true,
-		"name":    name,
-		"deleted": true,
+	out.Success(fmt.Sprintf("Deleted profile: %s (%s)", name, pluralSessions(total)), map[string]interface{}{
+		"success":  true,
+		"name":     name,
+		"deleted":  true,
+		"sessions": total,
 	})
+}
+
+// profileSessionCounts returns how many sessions profile holds and the titles
+// of those whose tmux session is alive.
+func profileSessionCounts(profile string) (int, []string, error) {
+	storage, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer storage.Close()
+	var running []string
+	for _, inst := range instances {
+		if inst.Exists() {
+			running = append(running, inst.Title)
+		}
+	}
+	return len(instances), running, nil
 }
 
 func handleProfileSetDefault(out *CLIOutput, name string) {
@@ -4876,6 +4976,7 @@ func printHelp() {
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
 	fmt.Println("  switch <query>   Show a session in the Mac app (or attach here) by id, title or part of one [--json]")
+	fmt.Println("  todo <op>        The owner's to-do list: add, list, done, undo, remove [--json] (docs/todos.md)")
 	fmt.Println("  open <file|url>  Show a page in the Mac app Browser panel [--session <id|title>]")
 	fmt.Println("  ask <kind>       Ask the owner for a secret, choice or text in a dialog (docs/ask.md)")
 	fmt.Println("  browser <op>     Drive the session's Mac app Browser: open, tabs, close, click, type, read, shot")
@@ -4892,6 +4993,7 @@ func printHelp() {
 	fmt.Println("  tmux-hooks       Manage the window policy hook on the tmux server")
 	fmt.Println("  pi-hooks         Manage pi (pi-coding-agent) hook integration")
 	fmt.Println("  deepseek         Inspect the DeepSeek Harness (dsh) integration")
+	fmt.Println("  kimi-hooks       Manage Kimi Code hook integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
 	fmt.Println("  usage            Show remaining provider subscription quota")
@@ -4973,6 +5075,9 @@ func printHelp() {
 	fmt.Println("  deepseek status           Show resolved dsh binary, DSH_HOME, profile")
 	fmt.Println("  deepseek profiles         List profiles under $DSH_HOME/profiles")
 	fmt.Println("  deepseek sessions [path]  List dsh sessions recorded for a workspace")
+	fmt.Println("  kimi-hooks install        Install Kimi Code hooks")
+	fmt.Println("  kimi-hooks uninstall      Remove Kimi Code hooks")
+	fmt.Println("  kimi-hooks status         Show Kimi Code hooks install status")
 	fmt.Println()
 	fmt.Println("Group Commands:")
 	fmt.Println("  group list                List all groups")
@@ -5014,7 +5119,7 @@ func printHelp() {
 	fmt.Println("Profile Commands:")
 	fmt.Println("  profile list              List all profiles")
 	fmt.Println("  profile create <name>     Create a new profile")
-	fmt.Println("  profile delete <name>     Delete a profile")
+	fmt.Println("  profile delete <name>     Delete a profile (--yes skips the prompt)")
 	fmt.Println("  profile default [name]    Show or set default profile")
 	fmt.Println()
 	fmt.Println("Examples:")

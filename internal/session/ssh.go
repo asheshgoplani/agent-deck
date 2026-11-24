@@ -2760,6 +2760,10 @@ type RemoteAddOptions struct {
 	ExtraArgs []string
 	// Yolo enables YOLO mode for Gemini or Codex (--yolo).
 	Yolo bool
+	// KimiPermissionMode forwards a Kimi session's permission mode as
+	// --yolo=false (always-ask), --yolo (ask-when-needed), or --auto
+	// (never-ask). Empty = remote default.
+	KimiPermissionMode string
 	// WorktreeBranch creates the session in a git worktree for this branch on
 	// the server (-w); the branch is created there when it does not exist.
 	WorktreeBranch string
@@ -2855,6 +2859,14 @@ func remoteAddArgs(o RemoteAddOptions) ([]string, error) {
 		args = append(args, fmt.Sprintf("--yolo=%t", *o.YoloOverride))
 	} else if o.Yolo {
 		args = append(args, "--yolo")
+	}
+	switch o.KimiPermissionMode {
+	case KimiPermissionAlwaysAsk:
+		args = append(args, "--yolo=false")
+	case KimiPermissionAskWhenNeeded:
+		args = append(args, "--yolo")
+	case KimiPermissionNeverAsk:
+		args = append(args, "--auto")
 	}
 	if flags := o.ClaudeOptions; flags != nil {
 		args = append(args, fmt.Sprintf("--skip-permissions=%t", flags.SkipPermissions), fmt.Sprintf("--auto-mode=%t", flags.AutoMode), fmt.Sprintf("--chrome=%t", flags.UseChrome), fmt.Sprintf("--teammate-mode=%t", flags.UseTeammateMode))
@@ -3075,13 +3087,15 @@ func (e *RemoteSessionQueuedError) Error() string {
 	return fmt.Sprintf("remote session %q was queued and is not ready to attach", e.Title)
 }
 
-// DeleteSession removes a session on the remote host.
-//
-// It runs the remote's `remove`, which kills the tmux session and deletes the
-// registry row unconditionally. For the status-gated registry-only path the
-// TUI's 'X' uses, see RemoveSession.
+// DeleteSession removes a session on the remote host. Callers have already
+// confirmed the delete, so it passes --force: `remove` refuses a running
+// session without it. A remote whose agent-deck predates the flag (where
+// `remove` never refused) gets the plain form.
 func (r *SSHRunner) DeleteSession(ctx context.Context, sessionID string) error {
-	_, err := r.Run(ctx, "remove", sessionID)
+	_, err := r.Run(ctx, "remove", sessionID, "--force")
+	if err != nil && isUnknownFlagError(err) {
+		_, err = r.Run(ctx, "remove", sessionID)
+	}
 	return err
 }
 

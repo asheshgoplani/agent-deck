@@ -151,9 +151,11 @@ the cursor to pass to `--since` next.
 
 `agent-deck web` serves the same timeline over HTTP at
 `GET /api/sessions/{id}/timeline` (parameters `tail`, `limit`, `since`,
-`before`, `agent`, `kinds`, `skip-empty-body`) and streams follow frames as
-SSE at `GET /api/sessions/{id}/timeline/stream?after=<cursor|end>`; see
-`docs/recall-timeline.md`.
+`before`, `agent`, `kinds`, `skip-empty-body`), streams follow frames as
+SSE at `GET /api/sessions/{id}/timeline/stream?after=<cursor|end>`, and
+serves a remote session's timeline at
+`GET /api/remotes/{name}/sessions/{id}/timeline` (run on the remote over
+SSH); see `docs/recall-timeline.md`.
 
 ### Continue one: `recall open`
 

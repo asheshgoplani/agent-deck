@@ -177,6 +177,8 @@ func hooksFacts(name string) *bool {
 		return boolPtr(session.CheckGeminiHooksInstalled(session.GetGeminiConfigDir()))
 	case "hermes":
 		return boolPtr(session.CheckHermesHooksInstalled(session.GetHermesConfigDir()))
+	case "kimi":
+		return boolPtr(session.CheckKimiHooksInstalled(session.GetKimiConfigDir()))
 	case "pi":
 		return boolPtr(session.CheckPiHooksInstalled(session.PiExtensionsDir()))
 	}
@@ -250,7 +252,7 @@ func handleHarness(profile string, args []string) {
 		fmt.Println("Usage: agent-deck harness list [--json]")
 		fmt.Println("       agent-deck harness status <name> [--json]")
 		fmt.Println()
-		fmt.Println("Every harness agent-deck runs (claude, codex, gemini, opencode, pi, hermes) with:")
+		fmt.Printf("Registered harnesses (%s) with:\n", strings.Join(harness.Names(), ", "))
 		fmt.Println("installed, path, version, logged_in, accounts, hooks_installed, last_used, sessions,")
 		fmt.Println("state (ready | not_logged_in | not_installed | limit_reached) and the official")
 		fmt.Println("install_command, login_command and docs_url from the core table (internal/harness),")

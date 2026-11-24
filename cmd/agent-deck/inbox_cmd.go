@@ -457,9 +457,9 @@ func resolveInboxDrainSessionInProfile(identifier, explicitProfile string) (stri
 
 // resolveInboxDrainSessionInProfiles performs the destructive resolver's
 // global exact-ID pass while retaining title matches from the effective
-// profile. ResolveSession normally gives an exact title precedence over IDs;
-// that is convenient for non-destructive commands, but unsafe here when a
-// title is literally another session's full ID.
+// profile. ResolveSession sees one profile and gives a full ID precedence
+// over a title there; that is unsafe here when a title in this profile is
+// literally the full ID of a session in another one.
 func resolveInboxDrainSessionInProfiles(identifier, effectiveProfile string, explicitlyQualified bool, profiles []string) (string, error) {
 	type candidate struct {
 		profile string

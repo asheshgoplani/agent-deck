@@ -58,6 +58,14 @@ var table = []Entry{
 		InstallCommand: "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash",
 		LoginCommand:   "hermes setup",
 		DocsURL:        "https://github.com/NousResearch/hermes-agent"},
+	{Name: "antigravity", DisplayName: "Antigravity CLI", Binary: "agy", VersionArgs: []string{"--version"},
+		InstallCommand: "brew install --cask antigravity-cli",
+		LoginCommand:   "agy",
+		DocsURL:        "https://antigravity.google/docs/cli/overview/"},
+	{Name: "kimi", DisplayName: "Kimi Code", Binary: "kimi", VersionArgs: []string{"--version"},
+		InstallCommand: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
+		LoginCommand:   "kimi login",
+		DocsURL:        "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html"},
 }
 
 // All returns the table with overrides applied, in table order.

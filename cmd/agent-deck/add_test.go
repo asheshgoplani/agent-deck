@@ -33,6 +33,13 @@ func TestApplyCLIYoloOverride(t *testing.T) {
 		}
 	})
 
+	t.Run("kimi is a no-op (handled by kimi helper)", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
+		if err := applyCLIYoloOverride(inst, true); err != nil {
+			t.Fatalf("applyCLIYoloOverride() error = %v, want nil (kimi no-op)", err)
+		}
+	})
+
 	t.Run("disabled is a no-op", func(t *testing.T) {
 		inst := session.NewInstanceWithTool("gemini-test", "/tmp/test", "gemini")
 		if err := applyCLIYoloOverride(inst, false); err != nil {
@@ -47,6 +54,90 @@ func TestApplyCLIYoloOverride(t *testing.T) {
 		inst := session.NewInstanceWithTool("claude-test", "/tmp/test", "claude")
 		if err := applyCLIYoloOverride(inst, true); err == nil {
 			t.Fatal("applyCLIYoloOverride() error = nil, want non-nil")
+		}
+	})
+}
+
+func TestApplyCLIKimiPermissionFlags(t *testing.T) {
+	t.Run("non-kimi is a no-op", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("claude-test", "/tmp/test", "claude")
+		if err := applyCLIKimiPermissionFlags(inst, true, false, true, false); err != nil {
+			t.Fatalf("applyCLIKimiPermissionFlags() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("auto on non-kimi errors", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("claude-test", "/tmp/test", "claude")
+		err := applyCLIKimiPermissionFlags(inst, false, true, false, true)
+		if err == nil || err.Error() != "--auto only works with Kimi sessions" {
+			t.Fatalf("applyCLIKimiPermissionFlags() error = %v, want Kimi-only --auto error", err)
+		}
+	})
+
+	t.Run("yolo sets ask-when-needed", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
+		if err := applyCLIKimiPermissionFlags(inst, true, false, true, false); err != nil {
+			t.Fatalf("applyCLIKimiPermissionFlags() error = %v", err)
+		}
+		opts := inst.GetKimiOptions()
+		if opts == nil || opts.PermissionMode != session.KimiPermissionAskWhenNeeded {
+			t.Fatalf("Kimi options = %+v, want ask-when-needed", opts)
+		}
+	})
+
+	t.Run("auto sets never-ask", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
+		if err := applyCLIKimiPermissionFlags(inst, false, true, false, true); err != nil {
+			t.Fatalf("applyCLIKimiPermissionFlags() error = %v", err)
+		}
+		opts := inst.GetKimiOptions()
+		if opts == nil || opts.PermissionMode != session.KimiPermissionNeverAsk {
+			t.Fatalf("Kimi options = %+v, want never-ask", opts)
+		}
+	})
+
+	t.Run("explicit false sets always-ask", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			initialMode string
+			yoloSet     bool
+			autoSet     bool
+		}{
+			{name: "yolo", initialMode: session.KimiPermissionNeverAsk, yoloSet: true},
+			{name: "auto", initialMode: session.KimiPermissionAskWhenNeeded, autoSet: true},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
+				if err := inst.SetKimiOptions(&session.KimiOptions{PermissionMode: tt.initialMode}); err != nil {
+					t.Fatal(err)
+				}
+				if err := applyCLIKimiPermissionFlags(inst, false, false, tt.yoloSet, tt.autoSet); err != nil {
+					t.Fatalf("applyCLIKimiPermissionFlags() error = %v", err)
+				}
+				opts := inst.GetKimiOptions()
+				if opts == nil || opts.PermissionMode != session.KimiPermissionAlwaysAsk {
+					t.Fatalf("Kimi options = %+v, want always-ask", opts)
+				}
+			})
+		}
+	})
+
+	t.Run("neither leaves empty", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
+		if err := applyCLIKimiPermissionFlags(inst, false, false, false, false); err != nil {
+			t.Fatalf("applyCLIKimiPermissionFlags() error = %v", err)
+		}
+		if opts := inst.GetKimiOptions(); opts != nil && opts.PermissionMode != "" {
+			t.Fatalf("Kimi options = %+v, want empty PermissionMode (inherit)", opts)
+		}
+	})
+
+	t.Run("both enabled errors", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("kimi-test", "/tmp/test", "kimi")
+		err := applyCLIKimiPermissionFlags(inst, true, true, true, true)
+		if err == nil || !strings.Contains(err.Error(), "--auto") || !strings.Contains(err.Error(), "--yolo") {
+			t.Fatalf("applyCLIKimiPermissionFlags() error = %v, want error naming both flags", err)
 		}
 	})
 }

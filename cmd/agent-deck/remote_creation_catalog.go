@@ -76,7 +76,8 @@ func buildCreationCatalog(profile string) (*session.RemoteCreationCatalog, error
 	catalog := &session.RemoteCreationCatalog{Version: 1, Commands: map[string][]session.RemoteCreationField{"add": creationCommandFields("add"), "launch": creationCommandFields("launch")}, DefaultTool: session.GetDefaultTool(), Tools: []session.RemoteCreationTool{}, Accounts: []string{}, MCPs: []string{}, Conductors: []session.RemoteCreationConductor{}}
 	claudeDefaults := session.NewClaudeOptions(cfg)
 	catalog.Defaults = map[string]bool{"skip_permissions": claudeDefaults.SkipPermissions, "auto_mode": claudeDefaults.AutoMode, "chrome": claudeDefaults.UseChrome, "teammate_mode": claudeDefaults.UseTeammateMode, "codex_yolo": cfg.Codex.YoloMode, "gemini_yolo": cfg.Gemini.YoloMode, "hermes_yolo": cfg.Hermes.YoloMode}
-	names := append([]string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek"}, session.GetCustomToolNames()...)
+	catalog.KimiPermissionMode = cfg.Kimi.PermissionMode
+	names := append([]string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "antigravity", "kimi"}, session.GetCustomToolNames()...)
 	for _, name := range session.FilterVisibleToolNames(names) {
 		kind := session.CanonicalToolName(name)
 		if session.IsClaudeCompatible(name) {
@@ -273,7 +274,7 @@ func applyCreationExtras(inst *session.Instance, query string, additional []stri
 
 // validateCreationOptions performs only reads and in-memory option application.
 // Run it before mkdir, group reconciliation, worktree setup or registry writes.
-func validateCreationOptions(tool, account, model, effort string, yolo bool, flags *claudeOptionFlags, mcps, plugins, channels, extraArgs []string) error {
+func validateCreationOptions(tool, account, model, effort string, yolo, auto bool, flags *claudeOptionFlags, mcps, plugins, channels, extraArgs []string) error {
 	if tool == "" {
 		tool = session.GetDefaultTool()
 	}
@@ -288,6 +289,9 @@ func validateCreationOptions(tool, account, model, effort string, yolo bool, fla
 		return err
 	}
 	if err := applyCLIYoloOverride(inst, yolo, cliFlagWasSet(flags.fs, "yolo", "gemini-yolo")); err != nil {
+		return err
+	}
+	if err := applyCLIKimiPermissionFlags(inst, yolo, auto, cliFlagWasSet(flags.fs, "yolo", "gemini-yolo"), cliFlagWasSet(flags.fs, "auto")); err != nil {
 		return err
 	}
 	if err := applyCLIClaudeOptionFlags(inst, flags); err != nil {

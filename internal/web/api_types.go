@@ -22,18 +22,22 @@ const (
 	// ErrCodeResyncRequired: a since/before cursor that no longer describes
 	// the session's transcript; the client reloads without it.
 	ErrCodeResyncRequired = "RESYNC_REQUIRED"
+	// ErrCodeRemoteOffline: a remote route while the fleet scan sees that
+	// remote offline.
+	ErrCodeRemoteOffline = "REMOTE_OFFLINE"
 )
 
 // CreateSessionRequest is the body for POST /api/sessions.
 type CreateSessionRequest struct {
-	Title           string   `json:"title"`
-	Tool            string   `json:"tool"`
-	ProjectPath     string   `json:"projectPath"`
-	CreateDir       bool     `json:"createDir,omitempty"`
-	CreateDirPaths  []string `json:"createDirPaths,omitempty"`
-	GroupPath       string   `json:"groupPath,omitempty"`
-	ModelID         string   `json:"modelId,omitempty"`
-	ReasoningEffort string   `json:"reasoningEffort,omitempty"`
+	Title              string   `json:"title"`
+	Tool               string   `json:"tool"`
+	ProjectPath        string   `json:"projectPath"`
+	CreateDir          bool     `json:"createDir,omitempty"`
+	CreateDirPaths     []string `json:"createDirPaths,omitempty"`
+	GroupPath          string   `json:"groupPath,omitempty"`
+	ModelID            string   `json:"modelId,omitempty"`
+	ReasoningEffort    string   `json:"reasoningEffort,omitempty"`
+	KimiPermissionMode string   `json:"kimiPermissionMode,omitempty"`
 }
 
 // CreateGroupRequest is the body for POST /api/groups.

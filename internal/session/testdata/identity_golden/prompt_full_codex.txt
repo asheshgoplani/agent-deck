@@ -16,6 +16,7 @@ You are running inside agent-deck, a terminal session manager for AI coding agen
 - `agent-deck session current --json` — this session's full, current metadata from the database (source of truth; the snapshot above may be renamed or re-parented later)
 - `agent-deck session send <id-or-title> "message"` — message another session (`--message-file FILE` for long text)
 - Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.
+- A Pi sender gets no automatic reply: check the sender with `agent-deck session show <id> --json` (its `tool`), and when it is `pi` answer explicitly with `agent-deck session send <id> "answer"`.
 - A message or record that needs nothing from you (a pure acknowledgement such as "ok" or "thanks", or a status ping that changes nothing) is a no-op notice: do not reply to it, end the turn.
 - `agent-deck session output <id-or-title>` — read another session's last response
 - `agent-deck launch <path> -t "Title" -c claude --message "prompt"` — spawn a child session linked to you as its parent (`-no-parent` for a peer)

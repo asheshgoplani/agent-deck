@@ -422,7 +422,7 @@ func (h *Home) applyRestartHandoff() tea.Cmd {
 		return nil
 	}
 	uiLog.Info("tui_restarted", slog.String("from", hand.OldVersion), slog.String("into", Version))
-	h.setError(fmt.Errorf("restarted into v%s (was v%s)", Version, hand.OldVersion))
+	h.setNotice("restarted into v%s (was v%s)", Version, hand.OldVersion)
 	version, old := Version, hand.OldVersion
 	return func() tea.Msg { return pathShadowMsg{copies: pathShadowScan(version), oldVersion: old} }
 }

@@ -64,6 +64,12 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 	case "gemini":
 		return d.hasGeminiPrompt(content)
 
+	case "antigravity":
+		content = StripANSI(content)
+		return antigravityPrompt.MatchString(content) &&
+			!antigravityBusy.MatchString(content) &&
+			!antigravityMenuAfterFooter(content)
+
 	case "codex":
 		// Codex/OpenAI CLI patterns.
 		// Busy indicators take priority over prompt markers, but only when the
@@ -97,6 +103,59 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)
 	}
+}
+
+// Antigravity places its status footer below the ruled composer. Require the
+// footer at the end of the pane: inline mode can leave old frames in view.
+// A bare '>' also appears in transcripts and onboarding menus.
+const (
+	antigravityComposerFrame = `(?m)^[ \t]*─{5,}[ \t]*\n[ \t]*>[^\n]*(?:\n[ \t]*(?:[^─ \t\n][^\n]*)?)*\n[ \t]*─{5,}[ \t]*\n[^\n]*`
+	// Allow a toast or extra status rows, but not enough lines for a newer
+	// composer to have replaced the matched one.
+	antigravityFooterEnd   = `[^\n]*(?:\n[^\n]*){0,3}(?:\n[ \t]*)*\z`
+	antigravityReadyFooter = antigravityComposerFrame + `\? for shortcuts\b` + antigravityFooterEnd
+	antigravityBusyFooter  = antigravityComposerFrame + `(?i:\besc to (?:cancel|interrupt)\b)` + antigravityFooterEnd
+)
+
+var (
+	antigravityPrompt = regexp.MustCompile(antigravityReadyFooter)
+	antigravityBusy   = regexp.MustCompile(antigravityBusyFooter)
+	// antigravityMenuRow matches a sign-in, workspace-trust or first-run row.
+	antigravityMenuRow = regexp.MustCompile(`(?i)(?:Trust this folder\?|Do you trust the contents of this project\?|Select login method:|\d+\. Google OAuth\b|(?:Choose|Select) (?:your |a )?(?:colou?r scheme|rendering mode)|Rendering mode\b)`)
+)
+
+// antigravityMenuAfterFooter rejects a matched ready footer when a menu row
+// follows it. Inline redraw can leave an old composer and its footer visible
+// above a sign-in, workspace-trust or first-run menu, and those rows fit in
+// the footer tail; typing into them (Enter selects the highlighted row) can
+// grant workspace trust.
+func antigravityMenuAfterFooter(content string) bool {
+	// The last footer is the live one; an earlier mention may be a quoted
+	// transcript line above a stale composer.
+	idx := strings.LastIndex(content, "? for shortcuts")
+	if idx < 0 {
+		return false
+	}
+	rest := content[idx:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[nl+1:]
+	} else {
+		return false
+	}
+	seen := 0
+	for _, line := range strings.Split(rest, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if antigravityMenuRow.MatchString(line) {
+			return true
+		}
+		if seen++; seen >= 3 {
+			// The ready footer allows a toast or status rows, not a menu.
+			return false
+		}
+	}
+	return false
 }
 
 func (d *PromptDetector) hasOMPPrompt(content string) bool {
@@ -462,6 +521,8 @@ func (d *PromptDetector) HasErrorBanner(content string) bool {
 	case "codex":
 		kind, _ := scanCodexErrorBanner(content)
 		return kind != ""
+	case "kimi":
+		return kimiErrorBannerRe.MatchString(content)
 	default:
 		return false
 	}

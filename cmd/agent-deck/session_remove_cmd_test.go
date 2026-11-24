@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // addTestSession adds a session under the isolated HOME and returns its id.
@@ -102,15 +103,20 @@ func TestSessionRemove_StoppedSessionSucceeds(t *testing.T) {
 	}
 }
 
-// TestSessionRemove_RunningWithoutForce_Rejected enforces the safety gate.
+// TestSessionRemove_RunningWithoutForce_Rejected enforces the safety gate on
+// a session whose process is alive. (A row that only stores 'running' with no
+// process is removable: see TestRemove_StaleActiveRowNeedsNoForce.)
 func TestSessionRemove_RunningWithoutForce_Rejected(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
+	testutil.RequireTmux(t) // starts a real session pane
 	home := t.TempDir()
-	workPath := filepath.Join(home, "proj")
-	id := addTestSession(t, home, workPath, "remove-running")
-	forceSetStatus(t, home, id, session.StatusRunning)
+	id := addOpenTestSession(t, home, "remove-running")
+	if stdout, stderr, code := runAgentDeck(t, home, "session", "start", id); code != 0 {
+		t.Fatalf("session start: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	t.Cleanup(func() { _, _, _ = runAgentDeck(t, home, "session", "stop", id) })
 
 	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", id, "--json")
 	if code == 0 {
@@ -119,6 +125,36 @@ func TestSessionRemove_RunningWithoutForce_Rejected(t *testing.T) {
 	listJSON := readSessionsJSON(t, home)
 	if !strings.Contains(listJSON, id) {
 		t.Errorf("running session was removed without --force; list:\n%s", listJSON)
+	}
+}
+
+// TestSessionRemove_StaleStoppedStatusLivePane_RefusedWithoutForce: the stored
+// status says stopped but the pane is alive (another process started it). The
+// guard must read the live status, as `list` does, and refuse without --force.
+func TestSessionRemove_StaleStoppedStatusLivePane_RefusedWithoutForce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	testutil.RequireTmux(t) // starts a real session pane
+	home := t.TempDir()
+	id := addOpenTestSession(t, home, "remove-stale-stopped")
+	if stdout, stderr, code := runAgentDeck(t, home, "session", "start", id); code != 0 {
+		t.Fatalf("session start: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	t.Cleanup(func() { _, _, _ = runAgentDeck(t, home, "session", "stop", id) })
+	forceSetStatus(t, home, id, session.StatusStopped)
+
+	for _, args := range [][]string{
+		{"session", "remove", id, "--json"},
+		{"remove", id, "--json"},
+	} {
+		stdout, stderr, code := runAgentDeck(t, home, args...)
+		if code == 0 {
+			t.Fatalf("%v: stale stopped row with a live pane was removed without --force; stdout=%s stderr=%s", args, stdout, stderr)
+		}
+	}
+	if listJSON := readSessionsJSON(t, home); !strings.Contains(listJSON, id) {
+		t.Errorf("live session was removed despite refusal; list:\n%s", listJSON)
 	}
 }
 

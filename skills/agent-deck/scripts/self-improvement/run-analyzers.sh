@@ -90,7 +90,7 @@ Do not propose follow-up work. Do not touch any files except OUTPUT_PATH."
     fi
 
     # Cleanup: remove the worker session to keep registry tidy
-    agent-deck session remove "analyze-$sid" >/dev/null 2>&1 || true
+    agent-deck session remove --force "analyze-$sid" >/dev/null 2>&1 || true
 
     if [[ $idx -lt $total ]]; then
         log "Sleeping ${PACE_SECONDS}s before next..."

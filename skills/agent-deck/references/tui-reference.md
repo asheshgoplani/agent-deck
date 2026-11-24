@@ -122,7 +122,7 @@ the setup wizard. It shows once; `Esc` skips it and it does not come back.
 
 For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. A remote host header shows `v1.15.0 ↑` after its count when the remote runs an older agent-deck than this controller (the version is asked once per hour per remote on the session poll); `u` on that header opens "Update remote <name> from v<old> to v<new>?" and runs the same verified deploy as `agent-deck remote update <name>`. A remote session whose parent (for example its conductor) is in the same remote group is shown one level under it, as local sub-sessions are; with the parent absent it is shown flat. Remote-session reorder keys move only within the current remote group (a child only among its parent's children); the order is saved on the viewing machine, while remote group headers remain name-sorted.
 
-Local parent rows with sub-sessions (for example a conductor and the sessions it spawned) carry a `▾N`/`▸N` child-fold badge after the row title. `Tab`/`l`/`→` toggles just that child list; `h`/`←` folds it shut, and on an already-folded parent continues to the window fold or the group collapse. Unfolding a parent also reopens its window rows, and a search jump or focus request to a hidden child unfolds its parent. Folded parents keep their own row, mirroring a collapsed group header, and the fold state persists per machine alongside the other view preferences.
+Local parent rows with sub-sessions (for example a conductor and the sessions it spawned) carry a `▾N`/`▸N` child-fold badge after the row title. `Tab`/`l`/`→` toggles just that child list; `h`/`←` folds it shut, and on an already-folded parent continues to the window fold or the group collapse. Unfolding a parent also reopens its window rows, and a search jump or focus request to a hidden child unfolds its parent. Folded parents keep their own row, mirroring a collapsed group header, and the fold state persists per machine alongside the other view preferences. A remote parent row with children nested under it folds the same way, with the same badge in the classic list; on an already-folded remote parent `h`/`←` collapses its remote group. Remote folds are kept per remote, so the same session ID on two remotes folds independently, and a `session focus --remote` request to a hidden child unfolds its parent.
 
 ### Copy & Text Selection
 
@@ -251,12 +251,13 @@ completion content are never rendered.
 
 **Fields (order: Name → Tool → Model → Reasoning effort → Path):**
 - Session name (optional: left empty, it is the folder name, made unique and cut to 50 characters; the empty field previews that exact name). With a worktree on, an empty name's branch is taken from that name
-- Command (claude/gemini/opencode/codex/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
-- Model ID (claude/codex/gemini/opencode): empty means the tool default; `↓` or `Space` opens the list of known IDs, or type any ID (CLI: `--model`)
+- Command (claude/gemini/opencode/codex/kimi/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
+- Model ID (claude/codex/gemini/opencode/kimi): empty means the tool default; `↓` or `Space` opens the list of known IDs, or type any ID (CLI: `--model`)
 - Reasoning effort (claude/codex): `←`/`→` or `Space` cycles the levels (CLI: `--effort`)
 - Project path (required, supports `~/`)
 - Parent group (auto-selected)
 - Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, start query, and the account row (CLI: `--account`; hidden when no named accounts are configured; starts on `[claude].default_account`, labelled `(default)`, when one is set)
+- Kimi options (when Kimi is selected): a three-way Permission mode choice - Always Ask (no flag), Ask When Needed (`--yolo`: routine work runs, risky actions still ask), or Never Ask (`--auto`: everything runs automatically) - defaulting from `[kimi].permission_mode`; the choice is per-session and does not rewrite the global default. The model field defaults from `[kimi].default_model`. Managed models show friendly names such as `K3.1 Pro`, `K3`, and `K2.8`; launching still passes the corresponding `kimi-code/...` alias to Kimi
 - `[ Create session ]` button (last row)
 
 **Controls:** `Enter` creates from any row with what is filled in | `Tab`/`Shift+Tab` and `↓`/`↑` move between rows (inside the Claude options row by row) | `↓`/`Space` open the model list, `Space`/`→` browse paths; while a list is open `Enter` picks | `Ctrl+S` creates too | `Esc` back out of a list, then cancel
@@ -396,6 +397,7 @@ Before the restart is armed (by the key or on its own) the TUI checks the file i
 | Codex | 💻 | Cyan |
 | Cursor | 📝 | Blue |
 | Shell | 🐚 | Default |
+| Kimi Code | 🌙 | Purple |
 
 ## Color Scheme (Tokyo Night)
 

@@ -569,6 +569,9 @@ func (h *Home) renderFrame() string {
 	if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 		return h.deadLetterPanel.View()
 	}
+	if h.todosPanel.IsVisible() {
+		return h.todosPanel.View()
+	}
 	if h.agentsPanel.IsVisible() {
 		return h.agentsPanel.View()
 	}
@@ -1034,6 +1037,10 @@ func (h *Home) renderFrame() string {
 		dismissHint := lipgloss.NewStyle().Foreground(ColorText).Render(
 			fmt.Sprintf(" (auto-dismiss in %ds)", int(remaining.Seconds())+1))
 		errMsg := ErrorStyle.Render("⚠ "+h.err.Error()) + dismissHint
+		if isFooterNotice(h.err) {
+			// Something worked: a check mark, not the warning sign.
+			errMsg = SuccessStyle.Render("✓ "+h.err.Error()) + dismissHint
+		}
 		b.WriteString("\n")
 		b.WriteString(errMsg)
 	}

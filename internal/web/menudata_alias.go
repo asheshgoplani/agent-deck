@@ -51,6 +51,7 @@ var (
 	ErrSessionNotFound = menudata.ErrSessionNotFound
 	ErrGroupNotFound   = menudata.ErrGroupNotFound
 	ErrNotAWorktree    = menudata.ErrNotAWorktree
+	ErrWorktreeShared  = menudata.ErrWorktreeShared
 )
 
 // NewMemoryMenuData creates an in-memory menu data store.

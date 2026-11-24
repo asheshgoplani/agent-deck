@@ -10,6 +10,8 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides)
 - [[group_defaults] Section](#group_defaults-section)
 - [[gemini] Section](#gemini-section)
+- [[antigravity] Section](#antigravity-section)
+- [[kimi] Section](#kimi-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
 - [[models] Section](#models-section)
@@ -283,6 +285,45 @@ command = "gemini"                   # Binary/invocation override
 | `env_file` | string | `""` | A .env file sourced for Gemini sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"gemini"` | Override the binary/invocation. Supports flags. |
 
+## [antigravity] Section
+
+The built-in `antigravity` preset launches Google's `agy` CLI. Override the
+invocation for the preset with:
+
+```toml
+[antigravity]
+command = "agy --mode plan" # Default: "agy"
+```
+
+An existing `[tools.antigravity].command` is used if `[antigravity].command` is
+unset. Set terminal detection overrides under `[tools.antigravity]`. Gemini CLI
+remains a separate tool with its own settings.
+
+## [kimi] Section
+
+Kimi Code CLI integration settings for the official `kimi` executable (`@moonshot-ai/kimi-code`), not the legacy `kimi-cli`.
+
+```toml
+[kimi]
+command = "kimi"
+config_dir = "~/.kimi-code"
+env_file = "~/.config/agent-deck/kimi.env"
+default_model = "kimi-code/kimi-for-coding"
+permission_mode = "always-ask" # always-ask | ask-when-needed (--yolo) | never-ask (--auto)
+hooks_enabled = true
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `"kimi"` | Binary or invocation to launch. A configured custom command still receives derived `--session`, `--model`, `--yolo`, or `--auto` flags as applicable. Standard agent-deck instance/profile/tool environment is still supplied for hooks. |
+| `config_dir` | string | `""` | Explicit Kimi data root, exported as `KIMI_CODE_HOME`. Empty preserves the ambient `KIMI_CODE_HOME` or Kimi's own `~/.kimi-code` default. The root contains configuration, native sessions, and credentials; do not share it unintentionally. |
+| `env_file` | string | `""` | Environment file sourced for Kimi sessions only, after global `[shell].env_files`. It may contain credentials or routing variables; restrict its permissions and never commit secrets. See [Path Resolution](#path-resolution). |
+| `default_model` | string | `""` | Model alias passed as `--model` for fresh sessions only. Empty uses Kimi's configured default. Existing conversations resume without this flag. |
+| `permission_mode` | string | `"always-ask"` | Kimi permission mode for new sessions: `"always-ask"` (default, no flag), `"ask-when-needed"` (`--yolo`, routine work runs, risky actions still ask), or `"never-ask"` (`--auto`, everything runs automatically). Enable `never-ask` only in trusted working directories. |
+| `hooks_enabled` | bool | `true` | Allows the one-time Kimi hook-consent prompt. Even when true, agent-deck does not change Kimi's `config.toml` before consent. False disables the automatic prompt; explicit `agent-deck kimi-hooks install` remains available. Uninstall durably suppresses future prompts until an explicit install opts in again. |
+
+Hook installation targets `config.toml` under the explicitly configured `config_dir`, else ambient `KIMI_CODE_HOME`, else `~/.kimi-code`. It preserves existing providers, models, credentials, permissions, and unrelated hooks. Use `agent-deck kimi-hooks install`, `status`, and `uninstall` to manage the entries explicitly. Restart/resume uses only the native session ID reported by the managed instance's own hooks; no newest-transcript fallback is used.
+
 ## [opencode] Section
 
 OpenCode CLI integration settings.
@@ -336,8 +377,8 @@ list = ["acme/nova-2", "local/qwen"]   # replaces the suggestions entirely
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, about 1s timeout) and OpenCode (`opencode models`, about 3s timeout, run from your home directory; it lists the models of providers you have credentials for). Neither sends a prompt. Claude Code and Gemini have no local listing and use the built-in catalog. The probe runs with the `VAR=value` prefix of the configured `command`. Results are cached per CLI binary and prefix for up to a day in `<cache dir>/model-probe/`; a provider you add to OpenCode shows up after that day, or at once if you delete `model-probe/opencode.json`. The TUI and web server never wait on a probe: they show the last list (or the built-in one) while it runs. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
-| `<tool>.list` | string array | `[]` | Pins the model suggestions for `claude`, `codex`, `gemini` or `opencode`: only these IDs are offered, without the probed or built-in models. Codex may still be asked for its reasoning efforts. A custom tool wrapping Claude or Codex uses that tool's table. |
+| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, about 1s timeout), OpenCode (`opencode models`, about 3s timeout, run from your home directory; it lists the models of providers you have credentials for), and Kimi (`kimi provider list --json`, about 1s timeout, run from your home directory; it lists configured model aliases). None sends a prompt. Claude Code and Gemini have no local listing and use the built-in catalog. The probe runs with the `VAR=value` prefix of the configured `command`; Kimi also receives `[kimi].config_dir` as `KIMI_CODE_HOME` unless the command prefix sets it. Results are cached per CLI binary and prefix for up to a day in `<cache dir>/model-probe/`; a provider you add shows up after that day, or at once if you delete `model-probe/<tool>.json`. The TUI and web server never wait on a probe: they show the last list (or the built-in one) while it runs. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
+| `<tool>.list` | string array | `[]` | Pins the model suggestions for `claude`, `codex`, `gemini`, `opencode` or `kimi`: only these IDs are offered, without the probed or built-in models. Codex may still be asked for its reasoning efforts. A custom tool wrapping Claude or Codex uses that tool's table. |
 | `<tool>.extra` | string array | `[]` | Extra IDs shown first, ahead of the probed and built-in models. Applies with `probe = false` too. |
 
 The lists are suggestions, not an allowlist: a `[claude] default_model` the catalog does not know is still prefilled in the new-session dialog (with a warning in the log), and `--model` passes any ID through.
@@ -1030,7 +1071,7 @@ file_link_roots = ["~/projects", "~/Downloads"]  # file:// links under these ope
 | `allowed_hosts` | []string | `[]` | Extra exact HTTP Host names for reverse proxies or Tailscale Serve. Optional `:port` limits an entry to that port. Case-insensitive; no URLs, wildcards, or suffix matching. Repeat `--allowed-host` for temporary additions. Unknown Hosts receive HTTP 421, including WebSocket upgrades. |
 | `trusted_domains` | []string | `[]` | Hosts whose links open straight from the web terminal, skipping the "this link could potentially be dangerous" confirm. Everything not listed still confirms. Matching is on **host** only: case-insensitive, port- and path-independent. An entry may be a bare host (`gitlab.corp.example`), a pasted URL (reduced to its host), or `*.base.example` to match **subdomains** of `base.example` (not the bare base itself). Only `http`/`https` links are ever auto-opened. Unusable entries (`*`, `*.example`, blanks) are dropped. |
 | `confirm_link_open` | bool | `true` | Confirm before opening a web-terminal link whose host is **not** in `trusted_domains`. Set `false` to accept the risk and open every link directly — prefer `trusted_domains`, which keeps the safety net for arbitrary links. |
-| `file_link_roots` | []string | `[]` (off) | Directories whose files a web-terminal `file://` link may open (a browser on the deck's http origin can't load `file://` itself). A link under a root opens in a new tab through `GET /api/files?path=<abs>` on the deck's own origin, with the usual token auth, so it also works from a phone. `~` and `$VARS` expand. Relative entries, entries naming an unset or empty `$VAR`, `/`, and any directory that contains your home directory, `~/.ssh` or agent-deck's config or data directory (such as `/home`, `/Users` or `$HOME/..`) are refused with a warning at `agent-deck web` start (and listed under `refused` by `agent-deck file roots --json`), so a root can never widen to the whole disk. Symlinks and `..` are resolved before the root check and the file is opened through the resolved root, so nothing outside a root can be read. Regular files only (no directory listings), up to 32 MiB. PNG, JPEG, GIF, WebP, AVIF, BMP and ICO are shown as images; other text (including HTML and SVG) is shown as plain text, and binary files download. A `file://<host>/path` link (what `ls --hyperlink` emits) opens only when the host is the deck machine's own hostname; a `file:///path` link with no host is taken as the deck machine's, even when the pane runs an ssh session to another machine. With no roots, or for a link outside them or on another host, a click copies the path instead. A hard link inside a root to a file elsewhere is served like any file in the root, so only list folders whose contents you control. Pick project or report folders, not your whole home directory. `agent-deck file read <path> [--json]` and `agent-deck file roots [--json]` apply the same rules from the CLI, and `agent-deck remote <name> file read ...` reads under that remote's own roots. |
+| `file_link_roots` | []string | `[]` (off) | Directories whose files a web-terminal `file://` link may open (a browser on the deck's http origin can't load `file://` itself). A link under a root opens in a new tab through `GET /api/files?path=<abs>` on the deck's own origin, with the usual token auth, so it also works from a phone. `~` and `$VARS` expand. Relative entries, entries naming an unset or empty `$VAR`, `/`, and any directory that contains your home directory, `~/.ssh` or agent-deck's config or data directory (such as `/home`, `/Users` or `$HOME/..`) are refused with a warning at `agent-deck web` start (and listed under `refused` by `agent-deck file roots --json`), so a root can never widen to the whole disk. Symlinks and `..` are resolved before the root check and the file is opened through the resolved root, so nothing outside a root can be read. Regular files only (no directory listings), up to 32 MiB. PNG, JPEG, GIF, WebP, AVIF, BMP and ICO are shown as images; other text (including HTML and SVG) is shown as plain text, and binary files download. A `file://<host>/path` link (what `ls --hyperlink` emits) opens only when the host is the deck machine's own hostname; a `file:///path` link with no host is taken as the deck machine's, even when the pane runs an ssh session to another machine. With no roots, or for a link outside them or on another host, a click copies the path instead. A hard link inside a root to a file elsewhere is served like any file in the root, so only list folders whose contents you control. Pick project or report folders, not your whole home directory. `agent-deck file read <path> [--json]` and `agent-deck file roots [--json]` apply the same rules from the CLI (and `file read` also refuses dotfiles and secret-like names below the root, such as `.env`, `.git/`, `id_rsa`, `*.pem`, with code `private`, the rule the phone's pages use), and `agent-deck remote <name> file read ...` reads under that remote's own roots. |
 
 All link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
 

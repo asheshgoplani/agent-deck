@@ -21,7 +21,7 @@
     │    ▶ Name:  > legacy-session                                                                                 │    
     │                                                                                                              │    
     │      Agent:   shell     claude     gemini     opencode     opencode2     codex     pi     copilot            │    
-    │               crush     muse     cursor agent     hermes     deepseek     omp                                │    
+    │               crush     muse     cursor agent     hermes     deepseek     omp     antigravity     kimi       │    
     │                                                                                                              │    
     │        Custom:                                                                                               │    
     │        > gemini                                                                                              │    

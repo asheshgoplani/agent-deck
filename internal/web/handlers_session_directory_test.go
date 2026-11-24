@@ -127,7 +127,7 @@ func TestSessionsCreateDirectory(t *testing.T) {
 			srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: !tc.disabled, Token: "test-token"})
 			srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 			called := false
-			srv.mutator = &fakeMutator{createSessionFn: func(_, _, projectPath, _, _, _ string) (string, error) {
+			srv.mutator = &fakeMutator{createSessionFn: func(_, _, projectPath, _, _, _, _ string) (string, error) {
 				called = true
 				// Resolve as the real WebMutator does; legacy requests retain their input.
 				projectPath = os.ExpandEnv(projectPath)
@@ -184,7 +184,7 @@ func TestSessionsCreateDirectoryRejectsAdditionalParents(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "parent", "child")
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
-	srv.mutator = &fakeMutator{createSessionFn: func(_, _, _, _, _, _ string) (string, error) {
+	srv.mutator = &fakeMutator{createSessionFn: func(_, _, _, _, _, _, _ string) (string, error) {
 		t.Fatal("started session with stale directory consent")
 		return "", nil
 	}}

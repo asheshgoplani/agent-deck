@@ -545,6 +545,8 @@ func createSessionTool(command string) (string, string) {
 		tool = "claude"
 	case "gemini":
 		tool = "gemini"
+	case "antigravity":
+		tool = "antigravity"
 	case "aider":
 		tool = "aider"
 	case "codex":
@@ -566,10 +568,16 @@ func createSessionTool(command string) (string, string) {
 		command = session.GetToolCommand("cursor")
 	case "hermes":
 		tool = "hermes"
+	case "kimi":
+		tool = "kimi"
+	case "deepseek":
+		tool = "deepseek"
 	default:
 		if toolDef := session.GetToolDef(command); toolDef != nil {
 			tool = command
 			command = toolDef.Command
+		} else if session.MatchTool(command) == "antigravity" {
+			tool = "antigravity"
 		}
 	}
 	return tool, command

@@ -153,9 +153,11 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
+| **Antigravity CLI** (`agy`) | Launch, terminal status detection, organization |
 | **OpenCode** | Status detection, organization |
 | **Codex** | Status detection, organization |
 | **Cursor** (terminal) | Status detection, organization |
+| **Kimi Code** (`kimi`) | Status detection (hook-driven with pane fallback), organization, launch, native session-ID persistence, restart/resume, model catalog |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 ## Installation
@@ -474,9 +476,9 @@ wait
 After getting the response, remove the consultation session:
 
 ```bash
-agent-deck remove "Consult Codex"
+agent-deck remove --force "Consult Codex"   # --force: the session is still idle with a live process
 # Or remove multiple at once:
-agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
+agent-deck remove --force "Codex Review" && agent-deck remove --force "Gemini Arch"
 ```
 
 ## TUI Keyboard Shortcuts
@@ -696,7 +698,7 @@ agent-deck add [path] [options]
 |------|-------------|
 | `-t, --title` | Session title |
 | `-g, --group` | Group path |
-| `-c, --cmd` | Command (claude, gemini, opencode, codex, custom) |
+| `-c, --cmd` | Command (claude, gemini, opencode, codex, kimi, custom) |
 | `--parent` | Parent session (creates child) |
 | `--mcp` | Attach MCP (repeatable) |
 
@@ -718,7 +720,7 @@ agent-deck ls  # Alias
 ### remove - Remove session
 
 ```bash
-agent-deck remove <id|title>
+agent-deck remove <id|title> [--force]   # a session whose process is alive needs --force (exit 1 without), like session remove
 agent-deck rm  # Alias
 ```
 
@@ -923,15 +925,16 @@ Use `""` or `root` to move to default group.
 ```bash
 agent-deck profile list
 agent-deck profile create <name>
-agent-deck profile delete <name>
+agent-deck profile delete <name> [--yes]   # refuses while any of its sessions runs; --json needs --yes
 agent-deck profile default [name]
 ```
 
 ## Session Resolution
 
 Commands accept:
-- **Title:** `"My Project"` (exact match)
-- **ID prefix:** `abc123` (6+ chars)
+- **ID:** the full session id
+- **Title:** `"My Project"` (the exact title; if none matches, case and a leading emoji marker such as the microphone are ignored)
+- **ID prefix:** `abc1` (4+ chars, when only one session has it)
 - **Path:** `/path/to/project`
 - **Current:** Omit ID in tmux (uses env var)
 
@@ -1591,7 +1594,7 @@ Complete reference for agent-deck Terminal UI features.
 **Fields:**
 - Session name (required)
 - Project path (required, supports `~/`)
-- Command (claude/gemini/opencode/codex/custom)
+- Command (claude/gemini/opencode/codex/kimi/custom)
 - Parent group (auto-selected)
 
 **Controls:** `Tab` move fields | `Enter` create | `Esc` cancel

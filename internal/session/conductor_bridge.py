@@ -185,6 +185,11 @@ IMAGE_MARKER_RE = re.compile(r"\[IMAGE:(?P<path>[^\]]+)\]")
 # How long to wait for conductor to respond (seconds)
 RESPONSE_TIMEOUT = 300
 
+# Posted in place of a conductor reply with no text (for example a turn that
+# ended without visible output). Chat APIs reject an empty message, and the
+# user would otherwise be left looking at the "⏳" placeholder.
+NO_OUTPUT_REPLY = "[No output from conductor.]"
+
 # issue #1981 / #1999: the interactive-state guard skips a heartbeat while a
 # picker or unsent draft is on screen. Its evidence is a single tmux pane
 # capture, which can LIE — a stale glyph buffer (#1999) keeps showing composer
@@ -1440,7 +1445,7 @@ async def _drain_queue() -> None:
                 )
                 if ok:
                     if reply_callback is not None:
-                        text = response.strip() or "[No output from conductor.]"
+                        text = response.strip() or NO_OUTPUT_REPLY
                         loop.create_task(_fire_callback(reply_callback, text))
                     continue
 
@@ -1534,7 +1539,7 @@ async def _watch_pending_reply(
                 None, functools.partial(get_session_output, session, profile=profile),
             )
             await _fire_callback(
-                reply_callback, output.strip() or "[No output from conductor.]",
+                reply_callback, output.strip() or NO_OUTPUT_REPLY,
             )
             return
         output, generation = await loop.run_in_executor(
@@ -1542,7 +1547,7 @@ async def _watch_pending_reply(
         )
         if generation == receipt["turn_generation"]:
             text = output.strip()
-            await _fire_callback(reply_callback, text or "[No output from conductor.]")
+            await _fire_callback(reply_callback, text or NO_OUTPUT_REPLY)
             log.info(
                 "Pending reply %s for %s delivered after matching Codex completion",
                 receipt["receipt_id"], session,
@@ -2044,6 +2049,38 @@ def remember_thread_conductor(
     affinity.move_to_end(ts)
     while len(affinity) > _THREAD_AFFINITY_CAP:
         affinity.popitem(last=False)
+
+
+def slack_reply_thread_ts(event: dict) -> str | None:
+    """Thread the bridge replies in for one inbound Slack event.
+
+    In a channel every reply goes in a thread under the user's message, to
+    keep the channel clean. A direct message (channel_type "im") has no
+    channel to keep clean, so a top-level DM is answered top-level and only
+    a reply inside a DM thread stays in that thread.
+    """
+    if event.get("channel_type") == "im":
+        return event.get("thread_ts")
+    return event.get("thread_ts") or event.get("ts")
+
+
+def slack_affinity_key(event: dict) -> str | None:
+    """Key under which routing remembers the conductor for one inbound event.
+
+    Inside a thread (and for any channel message, which the bridge answers
+    in a thread) it is the thread's ts, as before. A top-level 1:1 DM is
+    answered top-level, so there is no thread to remember: the key is the
+    DM channel itself, namespaced so it can never collide with a ts. An
+    unprefixed top-level DM then goes to the conductor the previous one
+    went to. Only inbound messages set it; the bridge's own posts (alerts,
+    digests) tag their own ts and leave the DM key alone.
+    """
+    thread_ts = slack_reply_thread_ts(event)
+    if thread_ts:
+        return thread_ts
+    if event.get("channel_type") == "im" and event.get("channel"):
+        return f"im:{event['channel']}"
+    return None
 
 
 def resolve_slack_routing(
@@ -3026,8 +3063,9 @@ def create_telegram_bot(config: dict):
         log.info("Conductor [%s] response: %s", target_profile, response[:100])
 
         # Convert to HTML first, then split to respect post-conversion length
+        reply_text = response if response.strip() else NO_OUTPUT_REPLY
         html_response = md_to_tg_html(
-            f"{profile_tag}{response}" if profile_tag else response
+            f"{profile_tag}{reply_text}" if profile_tag else reply_text
         )
         for chunk in split_message(html_response):
             await message.answer(chunk, parse_mode="HTML")
@@ -3282,8 +3320,15 @@ def create_slack_app(config: dict):
     async def _handle_slack_text(
         text: str, say, thread_ts: str = None,
         user_id: str = None, event_channel: str = None,
+        affinity_key: str = None,
     ):
-        """Shared handler for Slack messages and mentions."""
+        """Shared handler for Slack messages and mentions.
+
+        affinity_key (see slack_affinity_key) is where routing looks up and
+        records the conductor; it defaults to thread_ts.
+        """
+        if affinity_key is None:
+            affinity_key = thread_ts
         # One discovery snapshot for both lists (CodeRabbit, #2548): two
         # separate calls can race, leaving conductor_names empty while
         # conductors is not — the no-default prompt would then IndexError on
@@ -3292,7 +3337,7 @@ def create_slack_app(config: dict):
         conductor_names = [c["name"] for c in conductors]
 
         target, cleaned_msg, reason = resolve_slack_routing(
-            text, thread_ts, conductor_names, conductors, default_conductor,
+            text, affinity_key, conductor_names, conductors, default_conductor,
         )
         if target is None:
             if reason == "none":
@@ -3322,8 +3367,7 @@ def create_slack_app(config: dict):
             log.info("Slack unprefixed message not routed (reason: %s)", reason)
             return
         log.info("Slack routing -> [%s] (%s)", target["name"], reason)
-        if thread_ts:
-            remember_thread_conductor(thread_ts, target["name"])
+        remember_thread_conductor(affinity_key, target["name"])
 
         if not cleaned_msg:
             cleaned_msg = text
@@ -3465,6 +3509,8 @@ def create_slack_app(config: dict):
 
         log.info("Conductor [%s] response: %s", target["name"], response[:100])
 
+        if not response.strip():
+            response = NO_OUTPUT_REPLY
         for chunk in split_message(response, max_len=SLACK_MAX_LENGTH):
             prefixed = f"{name_tag}{chunk}" if name_tag else chunk
             await _safe_say(say, text=prefixed, thread_ts=thread_ts)
@@ -3486,7 +3532,7 @@ def create_slack_app(config: dict):
 
         # Authorization check
         user_id = event.get("user", "")
-        thread_ts = event.get("thread_ts") or event.get("ts")
+        thread_ts = slack_reply_thread_ts(event)
         reason = slack_refusal(
             user_id, event.get("channel"), (body or {}).get("team_id"), False, event.get("team"),
         )
@@ -3502,6 +3548,7 @@ def create_slack_app(config: dict):
             text, say,
             thread_ts=thread_ts,
             user_id=user_id, event_channel=event.get("channel"),
+            affinity_key=slack_affinity_key(event),
         )
 
     @app.event("app_mention")
@@ -3518,7 +3565,7 @@ def create_slack_app(config: dict):
 
         # Authorization check
         user_id = event.get("user", "")
-        thread_ts = event.get("thread_ts") or event.get("ts")
+        thread_ts = slack_reply_thread_ts(event)
         reason = slack_refusal(
             user_id, event.get("channel"), (body or {}).get("team_id"), True, event.get("team"),
         )
@@ -3536,6 +3583,7 @@ def create_slack_app(config: dict):
             text, say,
             thread_ts=thread_ts,
             user_id=user_id, event_channel=event.get("channel"),
+            affinity_key=slack_affinity_key(event),
         )
 
     @app.command("/ad-status")
@@ -4094,6 +4142,8 @@ def create_discord_bot(config: dict):
         name_tag = (
             f"[{target['name']}] " if len(conductors) > 1 else ""
         )
+        if not response.strip():
+            response = NO_OUTPUT_REPLY
         await send_discord_output(message.channel, response, name_tag=name_tag)
 
     log.info(
@@ -4728,6 +4778,8 @@ class MattermostBridge:
 
         if ok:
             log.info("Conductor [%s] response: %s", target["name"], response[:100])
+            if not response.strip():
+                response = NO_OUTPUT_REPLY
             await reply(f"{name_tag}{response}")
             return
         if not still_running:

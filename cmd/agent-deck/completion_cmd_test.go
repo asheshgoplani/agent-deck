@@ -51,7 +51,7 @@ func TestCompletionTree_Consistent(t *testing.T) {
 // Top-level completions include user-facing commands and exclude internal ones.
 func TestCompletionTopLevelNames_IncludesCoreCommands(t *testing.T) {
 	names := completionTopLevelNames()
-	for _, want := range []string{"add", "session", "mcp", "group", "completion", "profile", "remote"} {
+	for _, want := range []string{"add", "session", "mcp", "group", "completion", "profile", "remote", "kimi-hooks"} {
 		found := false
 		for _, n := range names {
 			if n == want {

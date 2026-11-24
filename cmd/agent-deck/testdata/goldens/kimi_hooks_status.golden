@@ -1,0 +1,3 @@
+Config: <SANDBOX_HOME>/.kimi-code/config.toml
+Status: NOT INSTALLED
+Run 'agent-deck kimi-hooks install' to install.

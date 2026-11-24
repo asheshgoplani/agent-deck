@@ -28,6 +28,37 @@ func (m *mockReadyChecker) CapturePaneFresh() (string, error) {
 	return m.pane, nil
 }
 
+func TestWaitForAgentReady_AntigravityDoesNotSendIntoLogin(t *testing.T) {
+	mock := &mockReadyChecker{
+		statuses: []string{"active", "waiting"},
+		pane:     "Select login method:\n> 1. Google OAuth\n  2. Use a Google Cloud project",
+	}
+	if err := WaitForAgentReady(mock, "antigravity", 600*time.Millisecond, PromptGates{}); err == nil {
+		t.Fatal("login screen must not count as a ready composer")
+	}
+}
+
+func TestWaitForAgentReady_AntigravityCompatible(t *testing.T) {
+	for _, tt := range []struct {
+		name, pane string
+		wantReady  bool
+	}{
+		{"trust menu", "Trust this folder?\n> Yes\n  No", false},
+		{"composer", "────────────────\n>\n────────────────\n? for shortcuts\n", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockReadyChecker{statuses: []string{"active", "waiting"}, pane: tt.pane}
+			err := WaitForAgentReady(mock, "my-agy", 600*time.Millisecond, PromptGates{AntigravityComposer: true})
+			if tt.wantReady && err != nil {
+				t.Fatalf("composer should be ready: %v", err)
+			}
+			if !tt.wantReady && (err == nil || !strings.Contains(err.Error(), "workspace trust")) {
+				t.Fatalf("expected workspace trust readiness hint, got %v", err)
+			}
+		})
+	}
+}
+
 // Cursor can be interactive while GetStatus still returns "starting" during
 // the tmux startup window (no activity-timestamp change → no prompt re-check).
 func TestWaitForAgentReady_StartingWithCursorPrompt(t *testing.T) {

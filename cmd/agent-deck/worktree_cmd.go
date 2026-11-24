@@ -666,7 +666,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	into := fs.String("into", "", "Target branch to merge into (default: auto-detect)")
 	noMerge := fs.Bool("no-merge", false, "Skip merge (e.g. for PR workflows)")
 	keepBranch := fs.Bool("keep-branch", false, "Don't delete local branch after finish")
-	force := fs.Bool("force", false, "Skip safety checks and force branch deletion")
+	force := fs.Bool("force", false, "Skip safety checks (uncommitted changes, other sessions on the same worktree, other profiles that cannot be read; reported as profiles_unchecked in --json) and force branch deletion")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -725,6 +725,34 @@ func handleWorktreeFinish(profile string, args []string) {
 	repoRoot := inst.WorktreeRepoRoot
 	worktreePath := inst.WorktreePath
 	worktreeBranch := inst.WorktreeBranch
+
+	// Finishing removes the worktree and deletes the branch. Another session
+	// on the same worktree would be left at a path that no longer exists, so
+	// refuse and name it unless --force (#1449; the TUI keeps it instead).
+	// Sessions in other local profiles count too.
+	sharers, err := newWorktreeRemovalGuard(profile).sharers(inst, instances)
+	if err != nil && !*force {
+		out.Error(fmt.Sprintf("failed to check other profiles for users of the worktree: %v (use --force to override)", err), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	if len(sharers) > 0 && !*force {
+		out.Error(fmt.Sprintf(
+			"worktree %s is still used by %s; finish or remove those sessions first, or pass --force to remove the worktree and branch anyway",
+			FormatPath(worktreePath), sessionNameList(sharers),
+		), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
+	sharedWith := make([]string, 0, len(sharers))
+	for _, o := range sharers {
+		sharedWith = append(sharedWith, o.Title)
+	}
+	if len(sharers) > 0 && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: --force: removing worktree %s still used by %s\n", FormatPath(worktreePath), sessionNameList(sharers))
+	}
+	profilesUnchecked := session.UncheckedProfiles(err)
+	if len(profilesUnchecked) > 0 && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: --force: removing worktree %s without checking other profiles: %v\n", FormatPath(worktreePath), err)
+	}
 
 	finishBackend, err := detectAndCreateBackend(repoRoot)
 	if err != nil {
@@ -874,7 +902,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	warnRemovedSessionCleanup(session.CleanupRemovedSession(storage.Profile(), inst.ID), inst.ID, *jsonOutput)
 
 	if *jsonOutput {
-		out.Print("", map[string]interface{}{
+		result := map[string]interface{}{
 			"success":        true,
 			"session":        inst.Title,
 			"session_id":     inst.ID,
@@ -882,7 +910,13 @@ func handleWorktreeFinish(profile string, args []string) {
 			"merged_into":    targetBranch,
 			"merged":         !*noMerge,
 			"branch_deleted": !*keepBranch,
-		})
+			"shared_with":    sharedWith, // sessions left without their worktree by --force
+		}
+		if len(profilesUnchecked) > 0 {
+			// --force removed the worktree without reading these profiles.
+			result["profiles_unchecked"] = profilesUnchecked
+		}
+		out.Print("", result)
 	} else {
 		fmt.Printf("\n%s Finished: session '%s' removed, worktree cleaned up", successSymbol, inst.Title)
 		if !*noMerge {

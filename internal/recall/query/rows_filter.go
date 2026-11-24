@@ -68,9 +68,11 @@ func (o RowsOptions) keepsUpdate(patch Row, dropped []string) bool {
 	return len(o.Kinds) == 0 || patch.Kind == "" || slices.Contains(o.Kinds, patch.Kind)
 }
 
-// maxDroppedOpen bounds the dropped open ids a cursor carries. Past it the
-// oldest are forgotten, and their late results may cross the wire again
-// (a client ignores them), which keeps the cursor small.
+// maxDroppedOpen bounds the dropped open ids a cursor carries. For a Claude
+// tail read only calls in the last assistant message group can still get a
+// result (see liveDropped), i.e. the parallel calls of one message, far under
+// this bound; abandoned calls are never listed. Past it the oldest are
+// forgotten, and their late results may cross the wire again.
 const maxDroppedOpen = 64
 
 // open reports whether a row may still change through update patches: a

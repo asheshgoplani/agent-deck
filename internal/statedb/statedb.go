@@ -1705,6 +1705,11 @@ func (s *StateDB) WriteHermesSessionBinding(id, sessionID string, detectedAt tim
 	return s.writeHarnessSessionBinding(id, sessionID, "hermes", detectedAt)
 }
 
+// WriteKimiSessionBinding records the native id from this instance's SessionStart hook.
+func (s *StateDB) WriteKimiSessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return s.writeHarnessSessionBinding(id, sessionID, "kimi", detectedAt)
+}
+
 // WriteGenericSessionBinding persists a custom-tool conversation id
 // (tools configured via [tools.*] with resume_flag) into tool_data.
 // Mirrors WriteClaudeSessionBinding's json_set / withBusyRetry shape so a

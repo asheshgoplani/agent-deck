@@ -21,6 +21,8 @@ type Deps struct {
 	Resolve Resolver
 	// ApplyYolo applies a --yolo override to an instance before it starts.
 	ApplyYolo func(inst *session.Instance, enabled bool) error
+	// ApplyKimiPermissions applies explicit --yolo/--auto choices before start.
+	ApplyKimiPermissions func(inst *session.Instance, yolo, auto, yoloSet, autoSet bool) error
 }
 
 // SpawnVerifyWait bounds how long start/restart wait for a missing tmux

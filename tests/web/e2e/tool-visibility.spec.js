@@ -6,6 +6,8 @@
 
 import { test, expect } from '@playwright/test'
 
+const pickerLabels = { antigravity: 'Antigravity', codex: 'ChatGPT' }
+
 async function resetFixture(request) {
   const res = await request.post('/__fixture/reset')
   expect(res.status()).toBe(204)
@@ -49,11 +51,10 @@ test.describe('tool visibility — new-session picker UI', () => {
 
     expect(normalized).toContain('shell')
     for (const tool of settings.pickerTools) {
-      const display = tool === 'codex' ? 'ChatGPT' : tool
-      expect(normalized).toContain(display)
+      expect(normalized).toContain(pickerLabels[tool] ?? tool)
     }
     for (const hidden of settings.hiddenTools) {
-      expect(normalized).not.toContain(hidden)
+      expect(normalized).not.toContain(pickerLabels[hidden] ?? hidden)
     }
   })
 })

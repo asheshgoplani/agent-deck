@@ -1646,6 +1646,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		TranscriptPath           string        `json:"transcript_path"`
 		Cwd                      string        `json:"cwd"`
 		Platform                 string        `json:"platform"`
+		ClientType               string        `json:"client_type"`
 		CodexStartedGeneration   string        `json:"codex_started_generation"`
 		CodexCompletedGeneration string        `json:"codex_completed_generation"`
 		CodexStartedSessionID    string        `json:"codex_started_session_id"`
@@ -1686,6 +1687,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		TranscriptPath:           raw.TranscriptPath,
 		Cwd:                      raw.Cwd,
 		Platform:                 raw.Platform,
+		ClientType:               raw.ClientType,
 		CodexStartedGeneration:   raw.CodexStartedGeneration,
 		CodexCompletedGeneration: raw.CodexCompletedGeneration,
 		CodexStartedSessionID:    raw.CodexStartedSessionID,
@@ -1861,6 +1863,11 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 		}
 	case "hermes":
 		if event == "post_llm_call" || event == "postllmcall" || event == "onsessionend" || event == "on_session_end" {
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
+		}
+	case "kimi":
+		// SessionStart is intentionally excluded (initial prompt isn't task completion).
+		if event == "stop" || event == "interrupt" || event == "permissionrequest" || event == "stopfailure" {
 			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
 		}
 	case "pi":

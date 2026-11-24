@@ -29,6 +29,11 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: [resolve(import.meta.dirname, 'helpers', 'setup.js')],
     include: ['tests/web/unit/**/*.test.js'],
+    server: {
+      deps: {
+        inline: ['@testing-library/preact'],
+      },
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
@@ -40,6 +45,7 @@ export default defineConfig({
     },
   },
   resolve: {
+    dedupe: ['preact', 'preact/hooks', '@preact/signals'],
     // Bare specifiers used by component sources need to resolve to the
     // tests/web/node_modules tree because the components live outside
     // tests/web/ and Vite's bare-specifier resolver walks UP from the
@@ -57,6 +63,7 @@ export default defineConfig({
     // subpath entry must precede its bare parent. This stayed latent until the
     // first test imported a module that pulls in preact/hooks.
     alias: {
+      'preact/test-utils': aliasFor('preact/test-utils'),
       'preact/hooks': aliasFor('preact/hooks'),
       'preact/jsx-runtime': aliasFor('preact/jsx-runtime'),
       'preact': aliasFor('preact'),

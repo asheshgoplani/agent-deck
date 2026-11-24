@@ -89,7 +89,7 @@ esac
 }
 
 func TestRemoteLegacyDialog_Options(t *testing.T) {
-	for _, command := range []string{"", "claude", "gemini", "codex", "hermes", "custom --flag"} {
+	for _, command := range []string{"", "claude", "gemini", "codex", "hermes", "antigravity", "custom --flag"} {
 		t.Run(command, func(t *testing.T) {
 			h, _ := newRemoteHome(t, remoteGroupItem("old-host"), "")
 			h = pressN(t, h)
@@ -104,6 +104,9 @@ func TestRemoteLegacyDialog_Options(t *testing.T) {
 			d.modelInput.SetValue("stale-controller-model")
 			got, why := d.GetRemoteCreateOptions()
 			want := session.RemoteAddOptions{Tool: command, Title: "legacy", Path: "~/first", Group: d.GetSelectedGroup(), WorktreeBranch: "feature", Sandbox: true}
+			if command == "antigravity" {
+				want.Tool = "agy"
+			}
 			if why != "" || !reflect.DeepEqual(got, want) {
 				t.Fatalf("got %#v (%s), want %#v", got, why, want)
 			}

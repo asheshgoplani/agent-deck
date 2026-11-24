@@ -104,7 +104,7 @@ func (m *WebMutator) beginHeadlessTx() (unlock func(), err error) {
 func suppressHookPromptForWeb() (restore func()) { return git.SuppressScriptConsentPrompter() }
 
 // CreateSession creates and starts a new session, persisting it to storage.
-func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort, kimiPermissionMode string) (string, error) {
 	defer suppressHookPromptForWeb()()
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
@@ -136,6 +136,21 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID,
 	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
 		if err := inst.ApplyLaunchReasoningEffort(reasoningEffort); err != nil {
 			return "", err
+		}
+	}
+	if tool == "kimi" {
+		if kimiPermissionMode = strings.TrimSpace(kimiPermissionMode); kimiPermissionMode != "" {
+			if err := session.ValidateKimiPermissionMode(kimiPermissionMode); err != nil {
+				return "", err
+			}
+			opts := inst.GetKimiOptions()
+			if opts == nil {
+				opts = &session.KimiOptions{}
+			}
+			opts.PermissionMode = kimiPermissionMode
+			if err := inst.SetKimiOptions(opts); err != nil {
+				return "", err
+			}
 		}
 	}
 
@@ -918,6 +933,29 @@ func (m *WebMutator) FinishWorktree(id string, opts menudata.WorktreeFinishOptio
 	repoRoot := inst.WorktreeRepoRoot
 	worktreePath := inst.WorktreePath
 	worktreeBranch := inst.WorktreeBranch
+
+	// Same guard as `agent-deck worktree finish` (F9): another session on
+	// this worktree, in this or any other local profile, would be left at a
+	// path that no longer exists.
+	if !opts.Force {
+		m.h.instancesMu.RLock()
+		sharers := session.SessionsSharingWorktree(inst, m.h.instances)
+		m.h.instancesMu.RUnlock()
+		others, oErr := session.WorktreeUsersInOtherProfiles(inst, m.h.profile)
+		if oErr != nil {
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("%w: could not check other profiles for users: %v (set force=true to remove the worktree and branch anyway)",
+				menudata.ErrWorktreeShared, oErr)
+		}
+		sharers = append(sharers, others...)
+		if len(sharers) > 0 {
+			names := make([]string, 0, len(sharers))
+			for _, o := range sharers {
+				names = append(names, "'"+o.Title+"'")
+			}
+			return menudata.WorktreeFinishResult{}, fmt.Errorf("%w: %s (set force=true to remove the worktree and branch anyway)",
+				menudata.ErrWorktreeShared, strings.Join(names, ", "))
+		}
+	}
 
 	backend, err := vcsbackend.Detect(repoRoot)
 	if err != nil {

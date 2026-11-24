@@ -47,7 +47,7 @@ agent-deck add [path] [options]
 |------|-------------|
 | `-t, --title` | Session title |
 | `-g, --group` | Group path |
-| `-c, --cmd` | Tool/command (claude, codex, gemini, opencode, pi, shell, copilot, crush, muse, cursor, hermes, deepseek, or a custom command string) — `shell` is a plain terminal with no AI tool attached |
+| `-c, --cmd` | Tool/command (claude, codex, gemini, opencode, pi, shell, copilot, crush, muse, cursor, hermes, deepseek, kimi, or a custom command string) — `shell` is a plain terminal with no AI tool attached |
 | `--wrapper` | Wrapper command; use `{command}` placeholder |
 | `--parent` | Parent session (creates child) |
 | `--no-parent` | Disable automatic parent linking |
@@ -59,6 +59,10 @@ agent-deck add [path] [options]
 | `--hint key=value` | Durable recall hint (repeatable; single-valued per key, see `session annotate`) |
 | `--tag <tag>` | Recall tag (repeatable) |
 | `--ticket <id>` / `--why <text>` | Shorthands for `--hint ticket=` / `--hint why=` |
+| `--yolo` | Gemini, Codex, Hermes: full auto-approve; Kimi: middle Ask When Needed tier (routine work runs, risky actions still ask) |
+| `--auto` | Kimi only: Never Ask tier (full auto-approve) |
+
+On Kimi, explicitly passing `--yolo=false` or `--auto=false` selects the Always Ask tier. On other tools, `--auto` is an error.
 
 ```bash
 agent-deck add -t "My Project" -c claude .
@@ -99,7 +103,7 @@ Notes:
 - `--account <name>` selects a named slot from `[profiles.<name>.claude].config_dir` for this session, matching `add --account`. Without `--account` (or `AGENTDECK_ACCOUNT`), `add` and `launch` put a Claude session on `[claude].default_account` when it is set, unless the target group or parent conductor has its own `config_dir` or `CLAUDE_CONFIG_DIR` is set in the environment (a child created from an agent-deck Claude session keeps that session's account); the same default the TUI's New Session dialog preselects.
 - `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh|max|ultra` plus any level the installed Codex advertises; other tools refuse the flag. When the installed Codex describes the chosen `--model`, only that model's levels are accepted. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
 - `--model` accepts any ID: the model lists are suggestions, not an allowlist, and an ID the list lacks is passed to the tool as is.
-- `launch -capabilities --json` (and `add -capabilities --json`) prints what this host can create: per tool `models`, `default_model`, `reasoning_efforts` and, when the installed CLI was probed, `model_efforts` (model ID to accepted efforts). For Codex the lists come from `codex debug models` (models with `visibility: list`, by priority) and for OpenCode from `opencode models` (about 3s timeout), each merged in front of the built-in catalog; Claude Code, Gemini and the rest use the built-in catalog. `[models.<tool>] extra` IDs come first, and a `[models.<tool>] list` replaces the whole list. The probe never sends a prompt, times out after about 1s (Codex) or 3s (OpenCode), runs with the `VAR=value` prefix of the configured command, and its result is cached per CLI binary (path, mtime, size) in the cache dir (`model-probe/<tool>.json`) for up to a day. A missing CLI, a timeout, a non-zero exit or unrecognized output falls back to the built-in catalog; a failed probe is remembered (also on disk) for about a minute and then retried. Remote hosts report their own lists through their own `-capabilities`. Turn the probe off with `[models] probe = false`.
+- `launch -capabilities --json` (and `add -capabilities --json`) prints what this host can create: per tool `models`, `default_model`, `reasoning_efforts` and, when the installed CLI was probed, `model_efforts` (model ID to accepted efforts). For Codex the lists come from `codex debug models` (models with `visibility: list`, by priority), for OpenCode from `opencode models` (about 3s timeout), and for Kimi from `kimi provider list --json` (configured model aliases), each merged in front of the built-in catalog; Claude Code, Gemini and the rest use the built-in catalog. `[models.<tool>] extra` IDs come first, and a `[models.<tool>] list` replaces the whole list. The probe never sends a prompt, times out after about 1s (Codex and Kimi) or 3s (OpenCode), runs with the `VAR=value` prefix of the configured command (plus `[kimi].config_dir` as `KIMI_CODE_HOME` unless the prefix sets it), and its result is cached per CLI binary (path, mtime, size) in the cache dir (`model-probe/<tool>.json`) for up to a day. A missing CLI, a timeout, a non-zero exit or unrecognized output falls back to the built-in catalog; a failed probe is remembered (also on disk) for about a minute and then retried. Remote hosts report their own lists through their own `-capabilities`. Turn the probe off with `[models] probe = false`.
 - `--install-codex-hooks` installs a missing notify hook in the local session’s Codex home before launch.
 - `--account` requires an explicit name. If the next token is another launch flag, launch stops with an error before resolving a fallback account or creating a session; use `--account=<name>` when a name intentionally begins with a dash.
 - `--hint/--tag/--ticket/--why` (also on `add`): durable recall hints written to state.db at creation (`docs/recall.md`). `launch` additionally derives `purpose` from the first line of `-m` and both commands derive `parent` for a child; an explicit `--hint purpose=` wins. Echoed in `--json` as `hints` and `tags`.
@@ -136,7 +140,7 @@ Both JSON forms always include `account`: the exact stored per-session slot, inc
 ### remove - Remove session
 
 ```bash
-agent-deck remove <id|title>
+agent-deck remove <id|title> [--force]   # a session whose process is alive needs --force (exit 1 without), like session remove
 agent-deck rm  # Alias
 ```
 
@@ -857,6 +861,17 @@ agent-deck switch docs --no-attach --wait 5s
 
 Resolves exact id, unique id prefix, exact title (any case), then a fuzzy title and group match; numbers must match exactly and archived sessions are left out. On the Mac it opens `agentdeck://focus?session=<id>`; elsewhere it publishes `macapp.switch` and waits `--wait` (default 2s) for `macapp.switch.ack`. With no app it attaches in the terminal, or with `--json`/`--no-attach` reports `queued`. Exit 2 = no match, exit 3 = ambiguous (up to five `candidates`). Not `session switch`, which changes a session's harness or account. Details: `docs/switch.md`.
 
+### todo - The owner's to-do list
+
+```bash
+agent-deck todo add "call the bank" [--source voice|cli|phone|mac|tui] [--session <id>] [--json]
+agent-deck todo list [--all] [--json]   # {todos:[item], open, done}
+agent-deck todo done bank --json        # by id or words: {status:"done", todo, open}
+agent-deck todo undo 3 ; agent-deck todo remove 3
+```
+
+One list per host (`<data dir>/todos.json`), shared by every profile; it lives on the host the clients read, and two hosts have two unsynced lists. An item is `{id, text, created_at, done_at|null, source, session_id?}`; ids are short numbers that are never reused. `done` with words ticks off the one open item whose text has every word (the same word, or a 4+ letter prefix at most 2 letters short; Devanagari words keep their vowel signs); look-alikes never match, an exact whole-text match wins, a repeat answers `already_done`, a query of only filler words names nothing, and a number (`12`, `#12`) is only ever an id. Two or more matches change nothing: exit 3 with `{status:"ambiguous", candidates}`. Exit 2 = no match (`not_found`), 1 = error. `--source` on `done`/`undo`/`remove` is the event's `by`. Every change publishes `todo.changed` `{action, id, open, by}` (no text) on every profile's events bus. Web: `GET/POST /api/todos`, `POST /api/todos/{id}/done|undo|remove`. TUI: `alt+o`. Details: `docs/todos.md`.
+
 ### open - Show a page in the macOS app Browser panel
 
 ```bash
@@ -864,9 +879,13 @@ agent-deck open report.html                       # from inside a session
 agent-deck open ./site/ --session "My Project"    # a directory opens its index.html
 agent-deck open https://example.com/dashboard
 agent-deck open report.html --browser-profile work --wait 10s  # Browser panel profile; ack wait (default 3s, max 2m)
+agent-deck open notes.md --json                   # {status, where, session, title, path, url, page_id, page_title, name, kind, phone, elapsed_ms}
+agent-deck open --last --session "My Project" --json   # re-open the newest page (exit 2: none)
+agent-deck open --list --session "My Project" --json   # pages of the session, newest first
+agent-deck open --show <page-id> --session "My Project" [--json]  # one self-contained HTML document
 ```
 
-Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`, then the agent-deck session owning the calling tmux session) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within `--wait` (default 3 s), else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. Details: `docs/macapp-open.md`.
+Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`, then the agent-deck session owning the calling tmux session) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within `--wait` (default 3 s), else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. A file under the session's project path or a `[web] file_link_roots` entry, and every URL, also joins the session's page list for the phone app (Pages panel; `where` is `phone` or `both` in `--json`); a file elsewhere stays Mac-only (`"where":"mac","phone":"outside_roots"`). Markdown is rendered for the phone. Details: `docs/macapp-open.md`, how to use it: [open-page.md](open-page.md).
 
 ### ask - Ask the owner for a secret, a choice or a short text
 
@@ -1168,7 +1187,7 @@ Use `""` or `root` to move to default group. `session move` moves a session to a
 ```bash
 agent-deck profile list
 agent-deck profile create <name>
-agent-deck profile delete <name>
+agent-deck profile delete <name> [--yes]   # refuses while any of its sessions runs; --json needs --yes
 agent-deck profile default [name]
 ```
 
@@ -1471,7 +1490,7 @@ Installation errors warn on stderr without failing creation. For other creation
 paths and existing sessions, install it manually; if `CODEX_HOME` is set, use the
 same environment for installation and Codex sessions. Installation is explicit and persists independently of session creation, even if
 a later launch step fails. Ordinary creation does not reinstall a removed hook.
-Custom commands with ambiguous Codex homes require manual installation.
+Custom commands whose Codex home cannot be determined require manual installation.
 
 ## tmux Hook Commands
 
@@ -1491,6 +1510,16 @@ agent-deck pi-hooks uninstall
 ```
 
 pi turn-level status uses an agent-deck extension installed into pi's global extension directory (`~/.pi/agent/extensions/agent-deck.ts`, or under `PI_CODING_AGENT_DIR` when set). It forwards `session_start`, `turn_start`, `turn_end` and `session_shutdown`; restart running pi sessions after installing. `status` reports `INSTALLED`, `OUTDATED` (reinstall to upgrade), `FOREIGN` (a file agent-deck did not write is in the way) or `NOT INSTALLED`. Without it, pi status falls back to pane detection.
+
+## Kimi Hook Commands
+
+```bash
+agent-deck kimi-hooks install
+agent-deck kimi-hooks status
+agent-deck kimi-hooks uninstall
+```
+
+Kimi Code lifecycle status uses native entries in `config.toml` under the explicit `[kimi].config_dir`, else `KIMI_CODE_HOME`, else `~/.kimi-code`. Installation preserves existing settings and unrelated hooks and is idempotent. The TUI asks once before modifying this file; declining performs no write and is remembered. Uninstall removes only the exact agent-deck-owned commands and durably suppresses the automatic prompt; explicit install is a new opt-in and the repair/upgrade path. Without hooks, Kimi still launches and uses pane-based status.
 
 ## DeepSeek Commands
 
@@ -1518,8 +1547,9 @@ See [docs/tools/deepseek.md](../../../docs/tools/deepseek.md) for the full guide
 ## Session Resolution
 
 Commands accept:
-- **Title:** `"My Project"` (exact match)
-- **ID prefix:** `abc123` (6+ chars)
+- **ID:** the full session id
+- **Title:** `"My Project"` (the exact title; if none matches, case and a leading emoji marker such as the microphone are ignored)
+- **ID prefix:** `abc1` (4+ chars, when only one session has it)
 - **Path:** `/path/to/project`
 - **Current:** Omit ID in tmux (uses env var)
 

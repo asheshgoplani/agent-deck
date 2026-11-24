@@ -235,6 +235,8 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			yolo := h.newDialog.GetHermesYoloMode()
 			hermesOpts := &session.HermesOptions{YoloMode: &yolo}
 			toolOptionsJSON, _ = session.MarshalToolOptions(hermesOpts)
+		} else if command == "kimi" {
+			toolOptionsJSON, _ = session.MarshalToolOptions(h.newDialog.GetKimiOptions())
 		} else if command == "omp" {
 			toolOptionsJSON, _ = session.MarshalToolOptions(h.newDialog.GetOMPOptions())
 		}
@@ -496,32 +498,51 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case ConfirmInstallHooks, ConfirmInstallHermesHooks:
+	case ConfirmInstallHooks, ConfirmInstallHermesHooks, ConfirmInstallKimiHooks:
 		switch msg.String() {
 		case "y", "Y":
-			if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
+			switch h.confirmDialog.GetConfirmType() {
+			case ConfirmInstallHermesHooks:
 				return h, h.confirmInstallHermesHooks()
-			}
-			return h, h.confirmInstallHooks()
-		case "enter":
-			if h.confirmDialog.GetFocusedButton() == 0 {
-				if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
-					return h, h.confirmInstallHermesHooks()
-				}
+			case ConfirmInstallKimiHooks:
+				return h, h.confirmInstallKimiHooks()
+			default:
 				return h, h.confirmInstallHooks()
 			}
-			if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
+		case "enter":
+			accept := h.confirmDialog.GetFocusedButton() == 0
+			switch h.confirmDialog.GetConfirmType() {
+			case ConfirmInstallHermesHooks:
+				if accept {
+					return h, h.confirmInstallHermesHooks()
+				}
 				return h, h.declineInstallHermesHooks()
+			case ConfirmInstallKimiHooks:
+				if accept {
+					return h, h.confirmInstallKimiHooks()
+				}
+				return h, h.declineInstallKimiHooks()
+			default:
+				if accept {
+					return h, h.confirmInstallHooks()
+				}
+				return h, h.declineInstallHooks()
 			}
-			return h, h.declineInstallHooks()
 		case "n", "N", "esc":
-			if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
+			switch h.confirmDialog.GetConfirmType() {
+			case ConfirmInstallHermesHooks:
 				return h, h.declineInstallHermesHooks()
+			case ConfirmInstallKimiHooks:
+				if msg.String() == "esc" {
+					return h, h.laterInstallKimiHooks()
+				}
+				return h, h.declineInstallKimiHooks()
+			default:
+				if msg.String() == "esc" {
+					return h, h.laterInstallHooks()
+				}
+				return h, h.declineInstallHooks()
 			}
-			if msg.String() == "esc" {
-				return h, h.laterInstallHooks()
-			}
-			return h, h.declineInstallHooks()
 		}
 		return h, nil
 
@@ -964,6 +985,9 @@ func (h *Home) laterInstallHooks() tea.Cmd {
 func (h *Home) showPendingHooksPrompt() {
 	if h.pendingHermesHooksPrompt {
 		h.confirmDialog.ShowInstallHermesHooks(filepath.Join(session.GetHermesConfigDir(), "config.yaml"), session.HermesHookEventsForInstall())
+	} else if h.pendingKimiHooksPrompt {
+		h.kimiHooksBoxShown = true
+		h.confirmDialog.ShowInstallKimiHooks(filepath.Join(session.GetKimiConfigDir(), "config.toml"), session.KimiHookEventsForInstall())
 	} else {
 		return
 	}
@@ -1000,6 +1024,47 @@ func (h *Home) declineInstallHermesHooks() tea.Cmd {
 		_ = db.SetMeta("hermes_hooks_prompted", "declined")
 	}
 	h.showPendingHooksPrompt()
+	return nil
+}
+
+func (h *Home) confirmInstallKimiHooks() tea.Cmd {
+	h.confirmDialog.Hide()
+	configDir := session.GetKimiConfigDir()
+	if _, err := session.InjectKimiHooks(configDir); err != nil {
+		uiLog.Warn("kimi_hooks_install_failed", slog.String("error", err.Error()))
+		h.setError(fmt.Errorf("failed to install Kimi hooks: %w", err))
+		h.showPendingHooksPrompt()
+		h.confirmDialog.SetHookInstallError(h.err.Error())
+		return nil
+	}
+	h.pendingKimiHooksPrompt = false
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.SetMeta("kimi_hooks_prompted", "accepted")
+	}
+	if h.hookWatcher == nil {
+		if hookWatcher, err := session.NewStatusFileWatcher(nil); err != nil {
+			uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
+		} else {
+			h.hookWatcher = hookWatcher
+			go hookWatcher.Start()
+		}
+	}
+	h.showPendingHooksPrompt()
+	return nil
+}
+
+func (h *Home) declineInstallKimiHooks() tea.Cmd {
+	h.confirmDialog.Hide()
+	h.pendingKimiHooksPrompt = false
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.SetMeta("kimi_hooks_prompted", "declined")
+	}
+	h.showPendingHooksPrompt()
+	return nil
+}
+
+func (h *Home) laterInstallKimiHooks() tea.Cmd {
+	h.confirmDialog.Hide()
 	return nil
 }
 

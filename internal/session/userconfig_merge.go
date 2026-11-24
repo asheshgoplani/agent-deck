@@ -52,9 +52,14 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 		merged.SyncTitle = panel.SyncTitle
 	}
 
-	// ── Gemini / Codex (panel manages YoloMode only) ───────────────────
+	// ── Gemini / Codex / Hermes (panel manages YoloMode only) ──────────
 	merged.Gemini.YoloMode = panel.Gemini.YoloMode
 	merged.Codex.YoloMode = panel.Codex.YoloMode
+	merged.Hermes.YoloMode = panel.Hermes.YoloMode
+
+	// ── Kimi (panel manages PermissionMode only; default_model is
+	// TOML-only, like the other providers) ──────────────────────────────
+	merged.Kimi.PermissionMode = panel.Kimi.PermissionMode
 
 	// ── Updates (panel manages CheckEnabled, AutoUpdate, AutoInstall,
 	// AutoRestart) ─────────────────────────────────────────────────────

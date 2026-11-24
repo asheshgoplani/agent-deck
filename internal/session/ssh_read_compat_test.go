@@ -7,6 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -55,4 +58,48 @@ func TestRunReadIOLegacyGate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A finite read carries the remote deadline, so the remote ends a stuck read
+// even when the local ssh is gone and nothing local can signal it.
+func TestRunReadIORemoteDeadline(t *testing.T) {
+	for _, tool := range []string{"timeout", "setsid"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " not installed")
+		}
+	}
+	dir := t.TempDir()
+	// Like sshd, the shim runs the remote command in its own session, out of
+	// reach of the local process group kill.
+	shim := "#!/bin/sh\nfor arg do command=$arg; done\nsetsid sh -c \"$command\" </dev/null &\nwait $!\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	pidFile := filepath.Join(dir, "read.pid")
+	core := filepath.Join(dir, "core")
+	script := "#!/bin/sh\nfor arg do [ \"$arg\" = --help ] && exit 0; done\necho $$ > " + shellQuote(pidFile) + "\nexec sleep 60\n"
+	if err := os.WriteFile(core, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := &SSHRunner{Host: "fixture", AgentDeckPath: core}
+	var out, diagnostic bytes.Buffer
+	_ = runner.RunReadIO(ctx, nil, &out, &diagnostic, []byte("unsupported"), false, "recall", "timeline", "id", "--json")
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("remote read never started: %v (stderr %q)", err, diagnostic.String())
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+	}
+	t.Fatal("the remote read outlived its deadline")
 }

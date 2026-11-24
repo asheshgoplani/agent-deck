@@ -37,7 +37,7 @@ func TestConfigGetSetSchema(t *testing.T) {
 	}
 	// Every TUI Settings row that edits config.toml has a key.
 	for _, want := range []string{"theme", "default_tool", "claude.dangerous_mode", "claude.config_dir", "gemini.yolo_mode", "codex.yolo_mode",
-		"hermes.yolo_mode", "updates.check_enabled", "updates.auto_update", "updates.auto_install", "updates.auto_restart",
+		"hermes.yolo_mode", "kimi.permission_mode", "updates.check_enabled", "updates.auto_update", "updates.auto_install", "updates.auto_restart",
 		"logs.max_size_mb", "logs.max_lines", "logs.remove_orphans", "global_search.enabled", "global_search.tier",
 		"global_search.recent_days", "preview.show_output", "preview.show_analytics", "preview.show_notes",
 		"preview.notes_output_split", "sync_title", "maintenance.enabled", "system_stats.enabled",
@@ -124,7 +124,7 @@ func TestHarnessListAndStatus(t *testing.T) {
 			t.Errorf("%s lacks install/login/docs", h.Name)
 		}
 	}
-	for _, name := range []string{"claude", "codex", "gemini", "opencode", "pi", "hermes"} {
+	for _, name := range []string{"claude", "codex", "gemini", "opencode", "pi", "hermes", "antigravity"} {
 		if _, ok := byName[name]; !ok {
 			t.Fatalf("harness list lacks %s", name)
 		}

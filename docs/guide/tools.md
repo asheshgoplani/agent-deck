@@ -10,6 +10,7 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
+| **Antigravity CLI** (`agy`) | Launch, terminal status detection, organization |
 | **OpenCode** | Status detection, MCP, organization, fork |
 | **OpenCode 2** (`opencode2`) | Status detection, MCP, model/agent selection, launch, resume, fork |
 | **Codex** | Status detection, MCP, organization, conductor, fork |
@@ -21,7 +22,20 @@ Agent Deck works with any terminal-based AI tool:
 | **pi** (`pi-coding-agent`) | Status detection (hook-driven), organization, launch, resume, fork |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
+| **Kimi Code** (`kimi`) | Status detection (hook-driven with pane fallback), organization, launch, native session-ID persistence, restart/resume, model catalog |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
+
+Install [Antigravity CLI](https://antigravity.google/docs/getting-started/), then
+choose `antigravity` in the session picker or run `agent-deck launch -c antigravity .`.
+Complete Google's sign-in and workspace trust prompts in the session. To reopen a
+conversation, use Antigravity's `/resume` picker or launch explicitly with
+`agent-deck launch -c 'agy --conversation <id>' .`. Agent Deck does not
+automatically bind Antigravity conversation IDs or manage its hooks or MCP servers.
+
+If you previously used `[tools.antigravity]` as a custom tool, the built-in
+preset keeps its `command` and detection patterns. To keep custom fields such
+as `env`, `env_file`, or `wrapper`, rename that tool (for example,
+`[tools.my-agy]`) and set `compatible_with = "antigravity"`.
 
 Select `opencode2` in the new/edit session picker, web picker, or default-tool settings,
 or create a session with `agent-deck add -c opencode2`. The `opencode2` launcher must
@@ -57,6 +71,18 @@ agent-deck pi-hooks status
 ```
 
 Restart running pi sessions after installing. Without the extension a pi session's status is read from the pane, which is slower and occasionally wrong; with it, agent-deck uses pi's own turn events and falls back to the pane only when no recent event is available. `PI_CODING_AGENT_DIR` is honored if you set it.
+
+Kimi Code status uses its native lifecycle hooks. Agent Deck asks once before changing Kimi's `config.toml`; declining is remembered and leaves the file untouched. You can also opt in, inspect, or remove the integration explicitly:
+
+```bash
+agent-deck kimi-hooks install
+agent-deck kimi-hooks status
+agent-deck kimi-hooks uninstall
+```
+
+Hooks are installed in `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`), preserving existing settings and unrelated hooks. Without them, launch, interactive prompts, and pane-based status still work. Kimi's own session ID is saved from the managed session's hooks and used for exact `kimi --session <id>` restart/resume; agent-deck does not guess from the newest transcript. Model catalog probing is supported: agent-deck asks `kimi provider list --json` for the configured model aliases. Native fork, Recall ingestion, and account switching are not currently supported for Kimi.
+
+For `add` and `launch`, `--yolo` means full auto-approve on Gemini, Codex, and Hermes, but on Kimi it selects the middle Ask When Needed tier: routine work runs while risky actions still ask. Kimi's `--auto` selects Never Ask (full auto-approve), and `--auto` is rejected for other tools. On Kimi, explicitly passing `--yolo=false` or `--auto=false` selects Always Ask.
 
 DeepSeek Harness is the `dsh` binary from [`@deepseek-ai/dsh`](https://github.com/deepseek-ai/deepseek-harness)
 (`npm install -g @deepseek-ai/dsh`). It boots *profiles*: `web` (a browser UI served

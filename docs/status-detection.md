@@ -28,6 +28,9 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 | hermes | Hooks around every LLM/tool call (2 min); gateway health probe every 30 s | Braille spinner anywhere | shell prompt | gateway unreachable |
 | copilot | none | `Thinking`, `Running`, Braille | `copilot>`, `›`, `>` | none |
 | shell / custom | none | opt-in `[status] shell_running_indicator` | `$ `, `# `, `% `, `❯ `, `(y/N)` | none |
+| kimi | Native lifecycle hooks (2 min): SessionStart → waiting; TurnStarted / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure → running; Stop / Interrupt / PermissionRequest / StopFailure → waiting; SessionEnd → dead. PreToolUse uses the synchronous status-only marker. | Current-turn `🌘 Retrying (n/m)` footer, checked before prompt evidence | `│ >` composer and `Trust this folder?` approval screen | Current-turn `Error: [provider.…]` footer |
+
+Kimi hook samples win for two minutes; missing or stale samples fall back to the same visible-frame classifier used by other harnesses. Post-tool success and failure stay running because only Stop, Interrupt, PermissionRequest, or StopFailure ends the active turn. The normal acknowledgment rule changes waiting to idle after the operator has seen the completed session. Hook installation is consent-based (`kimi-hooks install`); no configuration mutation is required for pane fallback. The pane cues come from sanitized Kimi 2.4.1 frames; classification considers only the current turn so old retry and error text cannot keep a completed prompt busy or red.
 
 ## Precedence inside one frame (GetStatus)
 

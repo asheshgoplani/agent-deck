@@ -364,6 +364,10 @@ type Instance struct {
 	hermesBoundAt      time.Time
 	hermesLastRejected string
 
+	// KimiSessionID is bound only by this instance's own SessionStart hook.
+	KimiSessionID string `json:"-"`
+	kimiBoundAt   time.Time
+
 	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
 	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
 	// on-disk workspace index under $DSH_HOME at restart time. Not persisted
@@ -1685,6 +1689,8 @@ func (i *Instance) Start() (startErr error) {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
+	case i.Tool == "antigravity":
+		command = i.buildEnvSourceCommand() + i.antigravityCommand()
 	case i.Tool == "copilot":
 		command = buildCopilotCommand(i)
 		// Record start time for session ID detection (Unix millis)
@@ -1760,6 +1766,12 @@ func (i *Instance) Start() (startErr error) {
 		}
 		i.preferHermesOwnedSessionForStart()
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "kimi":
+		if _, err := i.seedHermesHookGeneration("waiting", false); err != nil {
+			return err
+		}
+		i.prepareKimiResume()
+		command = i.buildKimiCommand(i.Command)
 	case i.Tool == "deepseek":
 		// The headless profile answers one task and exits, so a plain Start()
 		// must replay a recorded task or refuse — `dsh --profile headless` with
@@ -2095,6 +2107,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
+	case i.Tool == "antigravity":
+		command, promptEmbeddedInCommand = i.buildAntigravityCommandWithPrompt(message)
+		command = i.buildEnvSourceCommand() + command
 	case i.Tool == "opencode":
 		if i.IsForkAwaitingStart {
 			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
@@ -2161,6 +2176,12 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		}
 		i.preferHermesOwnedSessionForStart()
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "kimi":
+		if _, err := i.seedHermesHookGeneration("running", true); err != nil {
+			return err
+		}
+		i.prepareKimiResume()
+		command = i.buildKimiCommand(i.Command)
 	case i.Tool == "deepseek":
 		// Only the headless profile takes a task positionally; an installed
 		// interactive profile gets the prompt typed into its pane by the
@@ -3242,6 +3263,32 @@ func (i *Instance) GetHermesOptions() *HermesOptions {
 
 // SetHermesOptions stores Hermes-specific options into ToolOptionsJSON.
 func (i *Instance) SetHermesOptions(opts *HermesOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
+// GetKimiOptions returns Kimi-specific options from ToolOptionsJSON, or nil if not set.
+func (i *Instance) GetKimiOptions() *KimiOptions {
+	if len(i.ToolOptionsJSON) == 0 {
+		return nil
+	}
+	opts, err := UnmarshalKimiOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+// SetKimiOptions stores Kimi-specific options into ToolOptionsJSON.
+func (i *Instance) SetKimiOptions(opts *KimiOptions) error {
 	if opts == nil {
 		i.ToolOptionsJSON = nil
 		return nil

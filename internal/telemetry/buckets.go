@@ -89,7 +89,7 @@ func validBucket(b Bucket, v string) bool {
 // toolBits is the fixed tool bitmask order; new tools append, "other" is bit 31.
 var toolBits = []string{
 	"claude", "codex", "gemini", "opencode", "pi", "copilot", "crush", "cursor",
-	"hermes", "deepseek", "aider", "shell",
+	"hermes", "deepseek", "aider", "shell", "kimi",
 }
 
 const otherToolBit = 31

@@ -5,6 +5,8 @@ Start a session's tmux process.
 Options:
   -attach
     	Attach to the session after starting (requires an interactive terminal)
+  -auto
+    	Enable Never Ask mode when starting Kimi sessions
   -ignore-budget
     	Send even when an enforced [costs.budgets] limit is spent (for messages a person starts)
   -json
@@ -21,7 +23,7 @@ Options:
   -quiet
     	Minimal output
   -yolo
-    	Enable YOLO mode when starting Gemini or Codex sessions
+    	Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)
 
 Examples:
   agent-deck session start my-project

@@ -36,6 +36,8 @@ type ResolvedPatterns struct {
 	SpinnerActivePattern    *regexp.Regexp
 }
 
+var kimiErrorBannerRe = regexp.MustCompile(`(?m)^\s*Error: \[[^\]\r\n]+\]`)
+
 // DefaultRawPatterns returns the built-in detection patterns for a known tool.
 // Returns nil for unknown tools (they have no defaults).
 func DefaultRawPatterns(toolName string) *RawPatterns {
@@ -54,6 +56,31 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 		return &RawPatterns{
 			BusyPatterns:   []string{"esc to cancel"},
 			PromptPatterns: []string{"gemini>", "Type your message"},
+		}
+	case "antigravity":
+		return &RawPatterns{
+			BusyPatterns: []string{"re:" + antigravityBusyFooter},
+			PromptPatterns: []string{
+				"re:" + antigravityReadyFooter,
+				// The session is waiting for a person, not ready for a
+				// message. HasPrompt deliberately recognizes only the composer.
+				`re:(?m)^[ \t]*Select login method:[ \t]*\n[ \t>]*1\. Google OAuth\b`,
+				`re:(?m)^[ \t]*(?:Trust this folder\?|Do you trust the contents of this project\?)[ \t]*$`,
+				`re:(?im)^[ \t]*(?:(?:choose|select) (?:your |a )?(?:colou?r scheme|rendering mode)|rendering mode)[:?]?[ \t]*$`,
+			},
+		}
+	case "kimi":
+		return &RawPatterns{
+			BusyPatterns: []string{
+				`re:(?m)^\s*[🌑🌒🌓🌔🌕🌖🌗🌘] Retrying \(\d+/\d+\)`,
+				`re:(?m)^\s*[🌑🌒🌓🌔🌕🌖🌗🌘] · Tip:`,
+			},
+			PromptPatterns: []string{
+				`re:(?m)^\s*│ >`,
+				`re:(?m)^\s*Trust this folder\?\s*$`,
+				`re:(?m)^\s*▶ Run this command\?\s*$`,
+			},
+			SpinnerChars: []string{"🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"},
 		}
 	case "opencode":
 		return &RawPatterns{

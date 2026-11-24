@@ -25,7 +25,7 @@ different subcommand.
                         v                           v
           per-profile state.db (SQLite)       tmux server(s)  <-- the session substrate
           hooks/, inboxes/, bus/, comms/      agentdeck_* sessions running claude,
-                        ^                     codex, gemini, opencode, pi, shell...
+                        ^                     codex, gemini, opencode, pi, shell, kimi...
                         |                           |
           +-------------+--------------+            | harness hooks run
           | notify-daemon              |            v `agent-deck hook-handler`
@@ -78,7 +78,7 @@ setup` installs it as a systemd user unit or launchd agent
 processes the harness itself starts on its hook events. They write
 `hooks/<instance-id>.json`, which the TUI and the daemon read as the
 freshest status signal (docs/status-detection.md). Installed by `hooks`,
-`codex-hooks`, `gemini-hooks`, `pi-hooks`, `hermes-hooks`, `cursor-hooks`.
+`codex-hooks`, `gemini-hooks`, `pi-hooks`, `hermes-hooks`, `cursor-hooks`, `kimi-hooks`.
 
 **Core daemon** (`agent-deck daemon serve`). Optional. Serves the command
 registry and the event bus on a 0600 unix socket; the CLI only uses it when

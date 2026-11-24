@@ -60,8 +60,9 @@ type AgentReadyChecker interface {
 // PromptGates enables tool-specific prompt visibility checks once GetStatus
 // reports waiting/idle (or during the startup-window prompt probe below).
 type PromptGates struct {
-	ClaudeComposer bool // IsClaudeCompatible tools: require ❯ composer line
-	CodexPrompt    bool // IsCodexCompatible tools: require codex>/› prompt
+	ClaudeComposer      bool // IsClaudeCompatible tools: require ❯ composer line
+	CodexPrompt         bool // IsCodexCompatible tools: require codex>/› prompt
+	AntigravityComposer bool // IsAntigravityCompatible tools: require the composer, not a menu
 }
 
 // WaitForAgentReady waits until the agent accepts keyboard input.
@@ -138,6 +139,11 @@ func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Durat
 			alreadyReady = readyCount >= shellReadyConfirmations
 		}
 		if (sawActive && (status == "waiting" || status == "idle")) || alreadyReady {
+			// Antigravity's login and workspace-trust menus may be idle but
+			// must never receive a startup prompt or its submitting Enter.
+			if (gates.AntigravityComposer || tool == "antigravity") && !paneShowsReadyPrompt(target, tool, gates) {
+				continue
+			}
 			if gates.ClaudeComposer {
 				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil && !HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {
 					continue
@@ -166,6 +172,9 @@ func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Durat
 		}
 	}
 
+	if gates.AntigravityComposer || tool == "antigravity" {
+		return fmt.Errorf("Antigravity composer not ready after %s; check the session for sign-in, workspace trust, or setup prompts", timeout)
+	}
 	return fmt.Errorf("agent not ready after %s", timeout)
 }
 
@@ -177,6 +186,9 @@ func paneShowsReadyPrompt(target AgentReadyChecker, tool string, gates PromptGat
 	content := tmux.StripANSI(raw)
 	if gates.CodexPrompt || strings.EqualFold(tool, "codex") {
 		return tmux.NewPromptDetector("codex").HasPrompt(content)
+	}
+	if gates.AntigravityComposer || tool == "antigravity" {
+		return tmux.NewPromptDetector("antigravity").HasPrompt(content)
 	}
 	if paneLooksBusy(content) {
 		return false

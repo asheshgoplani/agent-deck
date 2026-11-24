@@ -56,7 +56,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send (short)")
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
-	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready before sending message")
+	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready before sending message (Antigravity embeds it when the launcher is agy; a wrapper or custom tool waits for the composer)")
 	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	assertDone := fs.Bool("assert-done", false, "Append a completion-sentinel instruction to the message (default on for -c claude)")
 	noAssertDone := fs.Bool("no-assert-done", false, "Disable the completion-sentinel instruction")
@@ -141,14 +141,15 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
-	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
+	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode, kimi)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
 	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
-	// Parity with `add` and the New Session dialog: sandbox, YOLO and the
-	// Claude Options rows.
+	// Parity with `add` and the New Session dialog: sandbox, permission
+	// controls and the Claude Options rows.
 	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
+	yoloMode := fs.Bool("yolo", false, "Full auto-approve for Gemini, Codex or Hermes; Kimi: Ask When Needed (middle tier)")
+	autoMode := fs.Bool("auto", false, "Kimi only: Never Ask (full auto-approve)")
 	claudeFlags := registerClaudeOptionFlags(fs)
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as
@@ -302,7 +303,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	}
 	createNewBranch := *newBranch || *newBranchLong
 
-	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode, *autoMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
 		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
@@ -739,6 +740,10 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
+	if err := applyCLIKimiPermissionFlags(newInstance, *yoloMode, *autoMode, cliFlagWasSet(fs, "yolo"), cliFlagWasSet(fs, "auto")); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
 	if err := applyCLIClaudeOptionFlags(newInstance, claudeFlags); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
@@ -940,9 +945,13 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// outright. Embed it instead. There is nothing to wait for in that case
 	// either: the process is already answering by the time it exists, so
 	// --no-wait loses nothing.
-	promptRidesArgv := initialMessage != "" && newInstance.PromptRidesCommandLine()
+	// Antigravity must not use the unchecked post-start paste below: Enter
+	// could select a sign-in or trust option. StartWithMessage embeds a
+	// prompt for bare agy and otherwise waits for the actual composer.
+	startWithMessage := initialMessage != "" &&
+		(!*noWait || newInstance.PromptRidesCommandLine() || session.IsAntigravityCompatible(newInstance.Tool))
 
-	if initialMessage != "" && (!*noWait || promptRidesArgv) {
+	if startWithMessage {
 		if err := creationRollback.run("start session", func() error { return newInstance.StartWithMessage(initialMessage) }); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
@@ -983,7 +992,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// sendWithRetryTarget pass, run verifyPromptConsumedAfterLaunch to catch
 	// the welcome-screen race where claude eats the first Enter. 10s budget
 	// per window + single retry + stderr warning on persistent no-op.
-	if initialMessage != "" && *noWait && !promptRidesArgv {
+	if initialMessage != "" && !startWithMessage {
 		tmuxSess := newInstance.GetTmuxSession()
 		if tmuxSess != nil {
 			// One pre-send probe (#1777) shared with the recovery pass

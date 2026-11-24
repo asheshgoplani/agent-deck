@@ -15,11 +15,16 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
+	"github.com/asheshgoplani/agent-deck/internal/filelinks"
 	"github.com/asheshgoplani/agent-deck/internal/macapp"
+	"github.com/asheshgoplani/agent-deck/internal/openpages"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-const openUsage = "Usage: agent-deck open <file|url> [--session <id|title>] [--browser-profile <name>] [--wait <duration>]"
+const openUsage = "Usage: agent-deck open <file|url> [--session <id|title>] [--json] [--browser-profile <name>] [--wait <duration>]\n" +
+	"       agent-deck open --last --session <id|title> [--json]\n" +
+	"       agent-deck open --list --session <id|title> --json\n" +
+	"       agent-deck open --show <page-id> --session <id|title> [--json]"
 const openAckTimeout = 3 * time.Second
 const openQueuedMessage = "Queued for AgentDeck: it opens when the app is connected"
 
@@ -48,17 +53,29 @@ type MacappOpenRequest struct {
 
 func handleOpen(profile string, args []string) {
 	if err := runOpen(profile, args, os.Stdout, os.Stderr); err != nil {
+		var written errOpenJSONWritten
+		if errors.As(err, &written) {
+			if written.print {
+				fmt.Fprintf(os.Stderr, "Error: open: %v\n", err)
+			}
+			os.Exit(written.exit)
+		}
 		fmt.Fprintf(os.Stderr, "Error: open: %v\n", err)
-		os.Exit(1)
+		os.Exit(sessionRefExitCode(err))
 	}
 }
 
 func runOpen(profile string, args []string, out, errOut io.Writer) error {
+	started := time.Now()
 	fs := flag.NewFlagSet("open", flag.ContinueOnError)
 	fs.SetOutput(helpOutput(args, out, errOut))
 	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID, then the calling tmux session)")
 	browserProfile := fs.String("browser-profile", "", "Browser panel profile in the app (optional; letters, digits, '.', '_', '-', at most 64, no leading '.')")
 	wait := fs.Duration("wait", openAckTimeout, "how long to wait for the app to acknowledge before reporting Queued (at most 2m0s)")
+	jsonOut := fs.Bool("json", false, "print one JSON object: {status, where, session, title, path, url, page_id, page_title, name, kind, phone, elapsed_ms}")
+	last := fs.Bool("last", false, "open the newest page this session opened again (exit 2 when it has none)")
+	list := fs.Bool("list", false, "list the pages this session opened, newest first (with --json)")
+	show := fs.String("show", "", "print one opened page as a self-contained HTML document (--json: with metadata)")
 	fs.Usage = func() { fmt.Fprintln(fs.Output(), openUsage); fs.PrintDefaults() }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -66,7 +83,16 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 		}
 		return err
 	}
-	if fs.NArg() != 1 {
+	modes := 0
+	for _, on := range []bool{*last, *list, *show != ""} {
+		if on {
+			modes++
+		}
+	}
+	if modes > 1 {
+		return errors.New("use only one of --last, --list and --show")
+	}
+	if modes == 1 && fs.NArg() != 0 || modes == 0 && fs.NArg() != 1 {
 		return errors.New(openUsage)
 	}
 	if *wait < 0 {
@@ -78,27 +104,277 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	if *browserProfile != "" && !validBrowserProfileName(*browserProfile) {
 		return fmt.Errorf("--browser-profile %q: use letters, digits, '.', '_' and '-' (at most %d, no leading '.')", truncateForError(*browserProfile), browserProfileMaxLen)
 	}
+	fail := func(err error, code string) error {
+		if *jsonOut {
+			_ = json.NewEncoder(out).Encode(map[string]string{"error": err.Error(), "code": code})
+			return errOpenJSONWritten{err: err, exit: openExitFor(code)}
+		}
+		if code == "no_page" {
+			return errOpenJSONWritten{err: err, exit: 2, print: true}
+		}
+		return err
+	}
 	profile, err := session.ResolveProfileForStorage(profile)
 	if err != nil {
-		return err
+		return fail(err, "error")
 	}
 	inst, err := resolveCallingSession(profile, *identifier, os.Getenv("AGENTDECK_INSTANCE_ID"), currentTmuxSessionName)
 	if err != nil {
-		return err
+		return fail(err, "session_not_found")
 	}
-	req, err := newOpenRequest(inst.ID, fs.Arg(0))
+	switch {
+	case *list:
+		return writeOpenPageList(out, profile, inst, *jsonOut, fail)
+	case *show != "":
+		return writeOpenPageShow(out, profile, inst, *show, *jsonOut, fail)
+	}
+	target := ""
+	if *last {
+		page, err := openpages.LastExisting(profile, inst.ID)
+		if err != nil {
+			if errors.Is(err, openpages.ErrNotFound) {
+				return fail(errors.New("no page opened for this session"), "no_page")
+			}
+			return fail(err, "error")
+		}
+		target = page.Path
+		if page.Kind == openpages.KindURL {
+			target = page.URL
+		}
+	} else {
+		target = fs.Arg(0)
+	}
+	req, err := newOpenRequest(inst.ID, target)
 	if err != nil {
-		return err
+		return fail(err, openTargetErrorCode(err))
 	}
 	req.BrowserProfile = *browserProfile
 	bus := events.OpenProfile(profile)
 	defer bus.Close()
 	acknowledged, err := publishOpenRequest(bus, req, *wait, func(req MacappOpenRequest) { launchLocalMacapp(profile, req) })
 	if err != nil {
+		return fail(err, "error")
+	}
+	page, phone := recordOpenedPage(profile, bus, inst, req, errOut)
+	if !*jsonOut {
+		// The text answer is unchanged for scripts; where the page went
+		// (phone, outside the roots) is in --json.
+		_, err = fmt.Fprintln(out, openResultMessage(inst.Title, acknowledged))
 		return err
 	}
-	_, err = fmt.Fprintln(out, openResultMessage(inst.Title, acknowledged))
-	return err
+	return json.NewEncoder(out).Encode(openResultJSON(inst, req, page, phone, acknowledged, time.Since(started)))
+}
+
+// Values of the "phone" field of `open --json`.
+const (
+	openPhoneShown   = "shown"
+	openPhoneURL     = "url"
+	openPhoneOutside = "outside_roots"
+	openPhonePrivate = "private"
+	openPhoneKind    = "unsupported"
+	openPhoneLarge   = "too_large"
+	openPhoneError   = "error"
+)
+
+// phonePolicyCode names why a file stays off the phone.
+func phonePolicyCode(err error) string {
+	switch {
+	case errors.Is(err, openpages.ErrPrivate):
+		return openPhonePrivate
+	case errors.Is(err, openpages.ErrUnsupported):
+		return openPhoneKind
+	case errors.Is(err, openpages.ErrTooLarge), errors.Is(err, filelinks.ErrTooLarge):
+		return openPhoneLarge
+	}
+	return openPhoneOutside
+}
+
+// errOpenJSONWritten carries an exit code for a refusal already printed.
+type errOpenJSONWritten struct {
+	err   error
+	exit  int
+	print bool
+}
+
+func (e errOpenJSONWritten) Error() string { return e.err.Error() }
+
+func openExitFor(code string) int {
+	if code == "no_page" {
+		return 2
+	}
+	return 1
+}
+
+func openTargetErrorCode(err error) string {
+	if errors.Is(err, os.ErrNotExist) {
+		return "not_found"
+	}
+	return "invalid_target"
+}
+
+// openResult is the `open --json` object (the voice desk codes against it).
+type openResult struct {
+	Status    string `json:"status"`
+	Where     string `json:"where"`
+	Session   string `json:"session"`
+	Title     string `json:"title"`
+	Path      string `json:"path"`
+	URL       string `json:"url"`
+	PageID    string `json:"page_id"`
+	PageTitle string `json:"page_title"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Phone     string `json:"phone"`
+	ElapsedMS int64  `json:"elapsed_ms"`
+}
+
+func openResultJSON(inst *session.InstanceData, req MacappOpenRequest, page openpages.Page, phone string, acknowledged bool, elapsed time.Duration) openResult {
+	r := openResult{Status: "queued", Session: inst.ID, Title: inst.Title, Path: req.Path, URL: req.URL, PageID: page.ID, PageTitle: page.Title, Name: page.Name, Kind: page.Kind, Phone: phone, ElapsedMS: elapsed.Milliseconds()}
+	if acknowledged {
+		r.Status = "opened"
+	}
+	onPhone := phone == openPhoneShown || phone == openPhoneURL
+	switch {
+	case onPhone && acknowledged:
+		r.Where = "both"
+	case onPhone:
+		r.Where = "phone"
+	default:
+		r.Where = "mac"
+	}
+	if r.Name == "" && req.Path != "" {
+		// Mac-only (outside the roots): still name the page for the caller.
+		r.Name = filepath.Base(req.Path)
+		r.PageTitle = r.Name
+	}
+	if r.Kind == "" {
+		if req.URL != "" {
+			r.Kind = openpages.KindURL
+		} else {
+			r.Kind = openpages.KindOf(req.Path)
+		}
+	}
+	return r
+}
+
+// openPageRoots are the roots a session's pages are read under on the
+// phone path: [web] file_link_roots plus the session's own project path.
+func openPageRoots(inst *session.InstanceData) []string {
+	return filelinks.WithProjectRoot(session.GetWebFileLinkRoots(), inst.ProjectPath)
+}
+
+// recordOpenedPage puts the request on the session's page list for the
+// phone when the file is under the session's roots (URLs always), and
+// commits page.opened. The Mac path never depends on it: a failure here is
+// reported, not fatal.
+func recordOpenedPage(profile string, bus *events.Bus, inst *session.InstanceData, req MacappOpenRequest, errOut io.Writer) (openpages.Page, string) {
+	p := openpages.Page{SessionID: inst.ID, Path: req.Path, URL: req.URL, EventID: req.EventID}
+	phone := openPhoneURL
+	if req.URL != "" {
+		p.Kind = openpages.KindURL
+	} else {
+		// The whole phone policy (roots, private names, kind, size), the
+		// same check --show and the web route run again at every read.
+		real, kind, err := openpages.CheckPage(openPageRoots(inst), req.Path)
+		if err != nil {
+			return openpages.Page{}, phonePolicyCode(err)
+		}
+		p.Path, p.Kind = real, kind
+		phone = openPhoneShown
+		p.Title = openpages.TitleOf(openPageRoots(inst), p.Path, p.Kind)
+	}
+	page, err := openpages.Record(profile, p)
+	if err != nil {
+		fmt.Fprintf(errOut, "Warning: open: the page list for the phone was not updated: %v\n", err)
+		return openpages.Page{}, openPhoneError
+	}
+	bus.Publish(events.KindPageOpened, inst.ID, map[string]any{
+		"page_id": page.ID, "kind": page.Kind, "title": page.Title, "name": page.Name,
+		"url": page.URL, "opened_at": page.OpenedAt.Format(time.RFC3339Nano), "host": req.Host,
+	})
+	bus.Flush(openCommitTimeout)
+	return page, phone
+}
+
+// openPageListJSON is `open --list --json`.
+type openPageListJSON struct {
+	Session string           `json:"session"`
+	Title   string           `json:"title"`
+	Pages   []openpages.Page `json:"pages"`
+}
+
+func writeOpenPageList(out io.Writer, profile string, inst *session.InstanceData, jsonOut bool, fail func(error, string) error) error {
+	pages, err := openpages.List(profile, inst.ID)
+	if err != nil {
+		return fail(err, "error")
+	}
+	for i := range pages {
+		pages[i] = pages[i].ForPhone() // no host paths to the phone
+	}
+	if !jsonOut {
+		for _, p := range pages {
+			if _, err := fmt.Fprintf(out, "%s  %-8s  %s  (%s)\n", p.ID, p.Kind, p.Title, p.Name); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return json.NewEncoder(out).Encode(openPageListJSON{Session: inst.ID, Title: inst.Title, Pages: pages})
+}
+
+// openPageShowJSON is `open --show <id> --json`.
+type openPageShowJSON struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Title      string `json:"title"`
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	HTML       string `json:"html"`
+	Bytes      int    `json:"bytes"`
+	Inlined    int    `json:"inlined"`
+	Skipped    int    `json:"skipped"`
+	ModifiedAt string `json:"modified_at"`
+}
+
+func writeOpenPageShow(out io.Writer, profile string, inst *session.InstanceData, pageID string, jsonOut bool, fail func(error, string) error) error {
+	page, err := openpages.Get(profile, inst.ID, pageID)
+	if err != nil {
+		return fail(err, "not_found")
+	}
+	all, _ := openpages.List(profile, inst.ID)
+	r, err := openpages.RenderLinked(openPageRoots(inst), page, openpages.Links(all))
+	if err != nil {
+		return fail(err, pageRenderErrorCode(err))
+	}
+	if !jsonOut {
+		if page.Kind == openpages.KindURL {
+			_, err = fmt.Fprintln(out, page.URL)
+			return err
+		}
+		_, err = out.Write(r.HTML)
+		return err
+	}
+	resp := openPageShowJSON{ID: page.ID, Kind: page.Kind, Title: r.Title, Name: page.Name, URL: page.URL, HTML: string(r.HTML), Bytes: len(r.HTML), Inlined: r.Inlined, Skipped: r.Skipped}
+	if !r.ModifiedAt.IsZero() {
+		resp.ModifiedAt = r.ModifiedAt.Format(time.RFC3339)
+	}
+	return json.NewEncoder(out).Encode(resp)
+}
+
+func pageRenderErrorCode(err error) string {
+	switch {
+	case errors.Is(err, openpages.ErrTooLarge), errors.Is(err, filelinks.ErrTooLarge):
+		return "too_large"
+	case errors.Is(err, openpages.ErrPrivate), errors.Is(err, openpages.ErrUnsupported):
+		// The gateway and the phone already explain outside_roots as
+		// "not shareable with the phone"; the message says which rule.
+		return "outside_roots"
+	case errors.Is(err, filelinks.ErrOutside), errors.Is(err, filelinks.ErrNotRegular), errors.Is(err, filelinks.ErrDisabled), errors.Is(err, filelinks.ErrNotAbsolute):
+		return "outside_roots"
+	case errors.Is(err, filelinks.ErrNotFound):
+		return "not_found"
+	}
+	return "error"
 }
 
 func openSessionIdentifier(explicit, current string) (string, error) {
@@ -147,31 +423,59 @@ func currentTmuxSessionName() string {
 	return name
 }
 
+// sessionRefError is a session reference that did not resolve to one
+// session: ResolveSession's message with its code (ErrCodeNotFound or
+// ErrCodeAmbiguous), for commands that return errors instead of exiting.
+type sessionRefError struct {
+	msg  string
+	code string
+}
+
+func (e *sessionRefError) Error() string { return e.msg }
+
+// sessionRefExitCode is the exit code of a failed command: 2 when its error
+// is a session that was not found, as for every `session` verb, else 1.
+func sessionRefExitCode(err error) int {
+	var refErr *sessionRefError
+	if errors.As(err, &refErr) && refErr.code == ErrCodeNotFound {
+		return 2
+	}
+	return 1
+}
+
+// readOpenSession resolves identifier with ResolveSession, the resolver of
+// every `session` verb, so open, browser and ask take the same names and
+// answer with the same words.
 // Metadata only: no tmux reconnection, migration, or writes to the session DB.
 func readOpenSession(profile, identifier string) (*session.InstanceData, error) {
 	instances, err := loadOpenSessions(profile)
 	if err != nil {
 		return nil, err
 	}
-	// Exact IDs take precedence over titles, especially for the calling ID.
+	// ResolveSession reads only these fields; the shells are never started
+	// or saved.
+	shells := make([]*session.Instance, 0, len(instances))
+	byID := make(map[string]*session.InstanceData, len(instances))
 	for _, inst := range instances {
-		if inst.ID == identifier {
-			return inst, nil
+		if inst == nil {
+			continue
 		}
+		shells = append(shells, &session.Instance{
+			ID:            inst.ID,
+			Title:         inst.Title,
+			ProjectPath:   inst.ProjectPath,
+			IsConductor:   inst.IsConductor,
+			ConductorName: inst.ConductorName,
+			SSHHost:       inst.SSHHost,
+			SSHRemotePath: inst.SSHRemotePath,
+		})
+		byID[inst.ID] = inst
 	}
-	var match *session.InstanceData
-	for _, inst := range instances {
-		if inst.Title == identifier {
-			if match != nil {
-				return nil, fmt.Errorf("session title %q is ambiguous; use its id", identifier)
-			}
-			match = inst
-		}
-	}
+	match, errMsg, errCode := ResolveSession(identifier, shells)
 	if match == nil {
-		return nil, fmt.Errorf("session %q not found", identifier)
+		return nil, &sessionRefError{msg: errMsg, code: errCode}
 	}
-	return match, nil
+	return byID[match.ID], nil
 }
 
 // loadOpenSessions reads session metadata only, like readOpenSession.

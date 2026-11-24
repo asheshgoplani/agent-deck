@@ -180,3 +180,28 @@ func TestFilesRoute_ReadOnlyMethods(t *testing.T) {
 		}
 	}
 }
+
+// Phone finish, review rework 1 (m4): /api/files refuses the same private
+// names as `agent-deck file read` (filelinks.OpenReadable).
+func TestFilesRoute_RefusesPrivateNames(t *testing.T) {
+	_, root := fileLinkFixture(t)
+	for _, rel := range []string{".env", ".git/config", "id_rsa", "server.pem"} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("SECRET-VALUE-42"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := fileLinkServer([]string{root}, "")
+	for _, rel := range []string{".env", ".git/config", "id_rsa", "server.pem"} {
+		rr := getFile(srv, http.MethodGet, filepath.Join(root, rel), nil)
+		if rr.Code != http.StatusForbidden || strings.Contains(rr.Body.String(), "SECRET-VALUE-42") {
+			t.Errorf("%s: status %d body %q, want 403 without the content", rel, rr.Code, rr.Body.String())
+		}
+	}
+	if rr := getFile(srv, http.MethodGet, filepath.Join(root, "notes.txt"), nil); rr.Code != http.StatusOK {
+		t.Errorf("notes.txt: %d", rr.Code)
+	}
+}
