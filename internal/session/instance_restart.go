@@ -1370,6 +1370,8 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 	case i.Tool == "gemini":
 		i.GeminiModel = model
 		return nil
+	case i.Tool == "antigravity":
+		return i.applyAntigravityModel(model)
 	case i.Tool == "opencode":
 		opts := i.GetOpenCodeOptions()
 		if opts == nil {
@@ -1426,6 +1428,8 @@ func (i *Instance) ClearLaunchModel() error {
 	case i.Tool == "gemini":
 		i.GeminiModel = ""
 		return nil
+	case i.Tool == "antigravity":
+		return i.clearAntigravityModel()
 	case i.Tool == "opencode":
 		opts := i.GetOpenCodeOptions()
 		if opts == nil {
