@@ -105,3 +105,27 @@ func TestBackgroundStatusUpdate_HeartbeatsDuringNavigationHotWindow(t *testing.T
 
 	assertPrimaryHeld(t, db)
 }
+
+// Issue #3268: a headless web server polls no session status, so its sweep
+// must not heartbeat. A fresh row would make notify-daemon read it as a live
+// TUI, stop probing tmux and miss every child turn end.
+func TestBackgroundStatusUpdate_HeadlessDoesNotHeartbeat(t *testing.T) {
+	db := newClaimsTestDB(t)
+	fakeTmuxOnPath(t)
+	tmux.SetServerAliveForTest(t, true)
+	if err := db.RegisterInstance(false); err != nil {
+		t.Fatalf("RegisterInstance: %v", err)
+	}
+	if _, err := db.DB().Exec("UPDATE instance_heartbeats SET heartbeat = ? WHERE pid = ?",
+		time.Now().Add(-60*time.Second).Unix(), os.Getpid()); err != nil {
+		t.Fatalf("rewind heartbeat: %v", err)
+	}
+
+	h := newHomeForSnapshotTest()
+	h.SetHeadless(true)
+	h.backgroundStatusUpdate()
+
+	if n, err := db.AliveInstanceCount(); err != nil || n != 0 {
+		t.Fatalf("after a headless sweep AliveInstanceCount = %d, %v; want 0", n, err)
+	}
+}
