@@ -1215,7 +1215,7 @@ func main() {
 
 	// Start TUI with the specified profile
 	ui.SetProcessStart(processStart)
-	homeModel := ui.NewHomeWithProfileAndMode(profile)
+	homeModel := ui.NewHomeWithProfileAndMode(profile, webHeadless)
 	setTelemetrySignalClose(homeModel.CloseTelemetry)
 	setWatcherEngineSignalStop(homeModel.StopWatcherEngine)
 	setUndoableDeletesSignalFinalize(func() { homeModel.FinalizeUndoableDeletes(3 * time.Second) })
@@ -1344,12 +1344,10 @@ func main() {
 
 		// #1397: in headless mode no bubbletea loop ever populates the Home's
 		// in-memory registry, so the WebMutator must hydrate it from storage on
-		// each mutation. Flag the model so WebMutator.ensureHydrated activates;
-		// otherwise delete/restart/close/group-mutate on pre-existing sessions
-		// fail ("session not found" / empty-sweep guard).
-		if webHeadless {
-			homeModel.SetHeadless(true)
-		}
+		// each mutation. NewHomeWithProfileAndMode flagged the model headless
+		// so WebMutator.ensureHydrated activates; otherwise
+		// delete/restart/close/group-mutate on pre-existing sessions fail
+		// ("session not found" / empty-sweep guard).
 
 		webMutator := ui.NewWebMutator(homeModel)
 		setUndoableDeletesSignalFinalize(func() {

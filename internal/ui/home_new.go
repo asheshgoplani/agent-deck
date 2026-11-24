@@ -41,7 +41,7 @@ func NewHome() *Home {
 
 // NewHomeWithProfile creates a new home model with the specified profile.
 func NewHomeWithProfile(profile string) *Home {
-	return NewHomeWithProfileAndMode(profile)
+	return NewHomeWithProfileAndMode(profile, false)
 }
 
 // TestMain disables eager workers for unit tests. Production keeps the default
@@ -128,7 +128,9 @@ func claudeHooksStartupDecision(present, installed bool, prompted string) claude
 
 // NewHomeWithProfileAndMode creates a new Home with the specified profile.
 // All instances manage the notification bar equally via shared SQLite state.
-func NewHomeWithProfileAndMode(profile string) *Home {
+// headless is `web --no-tui`: set before any worker starts, and it keeps the
+// process out of the instance heartbeats (#3268).
+func NewHomeWithProfileAndMode(profile string, headless bool) *Home {
 	// Read (and unset) what a predecessor left for us before anything else
 	// in this process can spawn a child (restart.go).
 	restartHandoff := consumeRestartEnv()
@@ -149,10 +151,13 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Ensure StateDB global is set for cross-package status writes.
 	// Registration and election happen in main.go before NewHome is called.
 	// This fallback handles CLI paths (e.g., NewHomeWithProfile) that skip main.go setup.
+	// A headless web server registers on neither path (#3268).
 	if storage != nil && statedb.GetGlobal() == nil {
 		if db := storage.GetDB(); db != nil {
 			statedb.SetGlobal(db)
-			_ = db.RegisterInstance(false)
+			if !headless {
+				_ = db.RegisterInstance(false)
+			}
 		}
 	}
 
@@ -168,6 +173,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	}
 
 	h := &Home{
+		headless:                  headless,
 		restartHandoff:            restartHandoff,
 		profile:                   actualProfile,
 		storage:                   storage,
