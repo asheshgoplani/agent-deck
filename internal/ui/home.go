@@ -1674,15 +1674,18 @@ func (h *Home) tickIdleTimeouts(instances func() []*session.Instance) {
 }
 
 // headlessIdleTimeoutInstances is what a headless web server enforces idle
-// timeouts on: every session in storage, whose status rows notify-daemon
-// keeps current while no TUI runs (#3268). With a live TUI it returns none:
-// the TUI's own watcher enforces them.
+// timeouts on: every session in storage (#3268). Each armed one is probed
+// first, in memory only, because no one may be writing its status row (no
+// TUI, and notify-daemon is optional). With a live TUI it returns none and
+// forgets its pane baselines: the TUI's own watcher enforces the timeouts,
+// and a baseline from before that handoff must not count afterwards.
 func (h *Home) headlessIdleTimeoutInstances() []*session.Instance {
 	if h.storage == nil {
 		return nil
 	}
 	if db := statedb.GetGlobal(); db != nil {
 		if n, err := db.AliveInstanceCount(); err != nil || n > 0 {
+			h.idleTimeoutWatcher.Reset()
 			return nil
 		}
 	}
@@ -1691,7 +1694,34 @@ func (h *Home) headlessIdleTimeoutInstances() []*session.Instance {
 		uiLog.Warn("headless_idle_timeout_load_failed", slog.String("error", err.Error()))
 		return nil
 	}
+	for _, inst := range instances {
+		if inst.IdleTimeoutSecs > 0 {
+			headlessIdleStatusProbe(inst)
+		}
+	}
 	return instances
+}
+
+// headlessIdleStatusProbe refreshes an armed session's in-memory status for
+// the headless idle tick. A variable so tests decide the probe.
+var headlessIdleStatusProbe = func(inst *session.Instance) { _ = inst.UpdateStatus() }
+
+// idleTimeoutStop is the idle-timeout watcher's stop. A TUI persists the
+// stopped status of its own instance on its next sweep. A headless web
+// server stops an instance loaded only for the tick, so it writes stopped
+// right after the kill, as the web stop does (defect 317); otherwise
+// notify-daemon samples the dead pane as error and tells the parent the
+// child crashed.
+func (h *Home) idleTimeoutStop(inst *session.Instance) error {
+	if !h.headless {
+		return inst.Kill()
+	}
+	pre := session.BeforeStopKill(h.storage, inst.ID)
+	if err := inst.Kill(); err != nil {
+		return err
+	}
+	session.WriteStoppedAfterKill(h.storage, inst, pre)
+	return nil
 }
 
 // backgroundStatusUpdate runs independently of the TUI

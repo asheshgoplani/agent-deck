@@ -229,6 +229,7 @@ func TestBackgroundStatusUpdate_HeadlessEnforcesIdleTimeoutsFromStorage(t *testi
 				}
 			}
 
+			stubIdleStatusProbe(t, func(*session.Instance) {})
 			h, storage := newHeadlessHomeForTest(t, tc.profile)
 			armed := &session.Instance{
 				ID: "idle-3268", Title: "idle-3268", ProjectPath: t.TempDir(), GroupPath: session.DefaultGroupPath,
@@ -267,4 +268,144 @@ func isolateHomeAndXDG(t *testing.T) {
 	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
 		t.Setenv(k, filepath.Join(root, k))
 	}
+}
+
+// seedArmedSession saves one bash session with a 60 s idle timeout.
+func seedArmedSession(t *testing.T, storage *session.Storage, status session.Status) *session.Instance {
+	t.Helper()
+	armed := &session.Instance{
+		ID: "idle-3268", Title: "idle-3268", ProjectPath: t.TempDir(), GroupPath: session.DefaultGroupPath,
+		Command: "bash", Tool: "bash", Status: status, IdleTimeoutSecs: 60, CreatedAt: time.Now(),
+	}
+	if err := storage.SaveWithGroups([]*session.Instance{armed}, session.NewGroupTree([]*session.Instance{armed})); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return armed
+}
+
+// idleClock drives a headless Home's idle-timeout watcher with a fake clock
+// and an unchanging pane, recording what it stops.
+type idleClock struct {
+	now     time.Time
+	stopped []string
+}
+
+func newIdleClock(t *testing.T, h *Home) *idleClock {
+	t.Helper()
+	stubIdleStatusProbe(t, func(*session.Instance) {})
+	c := &idleClock{now: time.Now()}
+	h.idleTimeoutWatcher = session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{
+		Now:      func() time.Time { return c.now },
+		Capture:  func(*session.Instance) (string, error) { return "same pane", nil },
+		Stop:     func(inst *session.Instance) error { c.stopped = append(c.stopped, inst.ID); return nil },
+		LogEvent: func(session.SessionLifecycleEvent) error { return nil },
+	})
+	return c
+}
+
+// sweepAt runs one due sweep at offset from the start.
+func (c *idleClock) sweepAt(h *Home, start time.Time, offset time.Duration) {
+	c.now = start.Add(offset)
+	h.idleTimeoutLastTick.Store(0)
+	h.backgroundStatusUpdate()
+}
+
+// Issue #3268, review: a TUI that owned the timeouts for a while hands back
+// a fresh idle clock. The headless watcher forgets its baselines while the
+// TUI is alive, so a pane that changed and came back to the same frame
+// meanwhile is not stopped on the first headless tick after the TUI exits.
+func TestBackgroundStatusUpdate_HeadlessIdleClockRestartsAfterTUIHandoff(t *testing.T) {
+	isolateHomeAndXDG(t)
+	db := newClaimsTestDB(t)
+	fakeTmuxOnPath(t)
+	tmux.SetServerAliveForTest(t, true)
+	h, storage := newHeadlessHomeForTest(t, "_test_3268_handoff")
+	seedArmedSession(t, storage, session.StatusWaiting)
+	c := newIdleClock(t, h)
+	start := c.now
+
+	c.sweepAt(h, start, 0) // headless records the pane
+	if err := db.RegisterInstance(false); err != nil {
+		t.Fatalf("RegisterInstance: %v", err)
+	}
+	c.sweepAt(h, start, 30*time.Second) // a TUI owns the timeouts
+	if err := db.UnregisterInstance(); err != nil {
+		t.Fatalf("UnregisterInstance: %v", err)
+	}
+	c.sweepAt(h, start, 61*time.Second) // TUI gone: the clock starts here
+	if len(c.stopped) != 0 {
+		t.Fatalf("first headless tick after the TUI exited stopped %v on a pre-TUI baseline, want none", c.stopped)
+	}
+	c.sweepAt(h, start, 122*time.Second)
+	if len(c.stopped) != 1 {
+		t.Fatalf("61s after the handoff the headless watcher stopped %v, want the armed session", c.stopped)
+	}
+}
+
+// Issue #3268, review: with headless web alone (no TUI, no notify-daemon)
+// no one writes a hookless session's status row, so it can stay at the
+// starting it was saved with. The headless tick probes armed sessions
+// itself, so such a session still becomes eligible and is stopped.
+func TestBackgroundStatusUpdate_HeadlessIdleTimeoutProbesSavedStatus(t *testing.T) {
+	isolateHomeAndXDG(t)
+	newClaimsTestDB(t)
+	fakeTmuxOnPath(t)
+	tmux.SetServerAliveForTest(t, true)
+	h, storage := newHeadlessHomeForTest(t, "_test_3268_starting")
+	seedArmedSession(t, storage, session.StatusStarting)
+	c := newIdleClock(t, h)
+	probed := 0
+	stubIdleStatusProbe(t, func(inst *session.Instance) { // the live pane reads waiting
+		probed++
+		inst.SetStatusThreadSafe(session.StatusWaiting)
+	})
+	start := c.now
+
+	c.sweepAt(h, start, 0)
+	c.sweepAt(h, start, 61*time.Second)
+	if probed != 2 || len(c.stopped) != 1 {
+		t.Fatalf("a session saved as starting: probed %d times, stopped %v after 61s idle; want 2 probes and the armed session stopped", probed, c.stopped)
+	}
+}
+
+// Issue #3268, review: a headless idle stop writes stopped to the row right
+// after the kill (defect 317), since nothing else persists the instance it
+// loaded for the tick. A TUI stop leaves the row to its next sweep.
+func TestHome_IdleTimeoutStopPersistsStoppedWhenHeadless(t *testing.T) {
+	for _, tc := range []struct {
+		name, profile string
+		headless      bool
+		wantRow       string
+	}{
+		{name: "headless web", profile: "_test_3268_stop_headless", headless: true, wantRow: string(session.StatusStopped)},
+		{name: "tui", profile: "_test_3268_stop_tui", headless: false, wantRow: string(session.StatusWaiting)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHomeAndXDG(t)
+			fakeTmuxOnPath(t)
+			h, storage := newHeadlessHomeForTest(t, tc.profile)
+			h.headless = tc.headless
+			seedArmedSession(t, storage, session.StatusWaiting)
+			loaded, _, err := storage.LoadWithGroups()
+			if err != nil || len(loaded) != 1 {
+				t.Fatalf("load: %v (%d)", err, len(loaded))
+			}
+
+			if err := h.idleTimeoutStop(loaded[0]); err != nil {
+				t.Fatalf("idleTimeoutStop: %v", err)
+			}
+			if got := session.SavedRowStatus(storage, loaded[0].ID); got != tc.wantRow {
+				t.Fatalf("row after the idle stop = %q, want %q", got, tc.wantRow)
+			}
+		})
+	}
+}
+
+// stubIdleStatusProbe replaces the headless idle tick's status probe: a fake
+// tmux cannot answer it.
+func stubIdleStatusProbe(t *testing.T, probe func(*session.Instance)) {
+	t.Helper()
+	prev := headlessIdleStatusProbe
+	headlessIdleStatusProbe = probe
+	t.Cleanup(func() { headlessIdleStatusProbe = prev })
 }

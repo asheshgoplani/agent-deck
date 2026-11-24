@@ -143,6 +143,16 @@ func NewIdleTimeoutWatcher(cfg IdleTimeoutWatcherConfig) *IdleTimeoutWatcher {
 	}
 }
 
+// Reset forgets every pane baseline, so the next Tick starts each session's
+// idle clock afresh. A watcher that stops ticking while another process
+// enforces the timeouts calls it, so a baseline from before that handoff
+// cannot stop a session the moment it resumes.
+func (w *IdleTimeoutWatcher) Reset() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	clear(w.lastSeen)
+}
+
 // Tick scans the given instances. Sessions with IdleTimeoutSecs <= 0 are
 // skipped (and their tracking state is cleared so toggling off via SetField
 // works on the next tick). Non-running sessions are skipped too.

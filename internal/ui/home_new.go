@@ -255,7 +255,6 @@ func NewHomeWithProfileAndMode(profile string, headless bool) *Home {
 		worktreeDirtyCacheTs:      make(map[string]time.Time),
 		statusTrigger:             make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
 		statusWorkerDone:          statusWorkerDone,
-		idleTimeoutWatcher:        session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{}),
 		waitTimer:                 session.NewWaitTimer(session.WaitTimerConfig{}),
 		lastPersistedStatus:       make(map[string]string),
 		lastPersistedAutoNameDesc: make(map[string]string),
@@ -273,6 +272,8 @@ func NewHomeWithProfileAndMode(profile string, headless bool) *Home {
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
 	h.newDialog.titleTaken = h.newSessionTitleTaken
+	// Stop through h: a headless stop also writes stopped (#3268).
+	h.idleTimeoutWatcher = session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{Stop: h.idleTimeoutStop})
 
 	h.reloadHotkeysFromConfig()
 
