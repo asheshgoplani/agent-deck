@@ -33,9 +33,13 @@ func TestIssue3268_HeadlessWebDoesNotBlindTheNotifier(t *testing.T) {
 	}
 
 	e.startNotifyDaemon()
-	// Let the daemon run a few passes (1 s apart while a child runs) with the
-	// child busy. Not a wait on the status row: that row is what froze.
-	time.Sleep(5 * time.Second)
+	// The daemon writes the status it probes, so a running row means it has
+	// seen the child running and the next turn end is an edge for it. With
+	// the bug the row stays at its last value and this wait times out; the
+	// heartbeat check above already names the cause.
+	issue2530WaitFor(t, 20*time.Second, "the daemon to record the child running", func() bool {
+		return e.childStatus(child.id) == "running"
+	})
 
 	e.setPhaseNoHooks(child, "idle")
 	deadline := time.Now().Add(20 * time.Second)
