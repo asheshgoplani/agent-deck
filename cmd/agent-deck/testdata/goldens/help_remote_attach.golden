@@ -1,3 +1,5 @@
-Usage: agent-deck remote attach <remote-name> <session-title-or-id>
+Usage: agent-deck remote attach [--shell tmux|window] <remote-name> <session-title-or-id>
+
+Use --shell to open a tmux split or window in the remote session's worktree (or project directory) before attaching.
 
 Ctrl+V with an image on this machine's clipboard sends it to the session's Claude, Gemini, or OpenCode composer; off with [remote] paste_images = false.

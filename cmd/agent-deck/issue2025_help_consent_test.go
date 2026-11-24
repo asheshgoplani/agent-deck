@@ -315,7 +315,7 @@ func TestRemoteSubcommandHelpRoutesToSelectedCommand(t *testing.T) {
 		{"list", "Usage: agent-deck remote list [options]"},
 		{"ls", "Usage: agent-deck remote list [options]"},
 		{"sessions", "Usage: agent-deck remote sessions [name] [options]"},
-		{"attach", "Usage: agent-deck remote attach <remote-name> <session-title-or-id>"},
+		{"attach", "Usage: agent-deck remote attach [--shell tmux|window] <remote-name> <session-title-or-id>"},
 		{"rename", "Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>"},
 		{"update", "Usage: agent-deck remote update [name | --all]"},
 	}
