@@ -1,8 +1,11 @@
 package session
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,5 +150,42 @@ func TestAntigravityCrossProfileUnreadableProfileFailsClosed(t *testing.T) {
 	}
 	if !a.antigravityUnboundSiblingSharesWorkspace() {
 		t.Fatal("unreadable profile DB must fail closed for the sibling check")
+	}
+}
+
+// The fail-closed warning must be logged once per session per cause, not on
+// every scan.
+func TestAntigravityFailClosedWarningLoggedOncePerCause(t *testing.T) {
+	workDir := setupAntigravityCrossProfileHome(t, "conv-x")
+	storageA := newAntigravityProfileStorage(t, "profile-a")
+	statedb.SetGlobal(storageA.GetDB())
+	a := saveAntigravityProfileSession(t, storageA, "agy-profile-a", workDir, "")
+
+	badPath, err := GetDBPathForProfile("profile-bad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(badPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badPath, []byte("not a sqlite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	orig := sessionLog
+	sessionLog = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { sessionLog = orig })
+
+	for n := 0; n < 5; n++ {
+		if !a.antigravitySessionIDBoundElsewhere("conv-x") || !a.antigravityUnboundSiblingSharesWorkspace() {
+			t.Fatal("unreadable profile DB must keep failing closed")
+		}
+	}
+	if got := strings.Count(buf.String(), "antigravity_binding_lookup_failed"); got != 1 {
+		t.Fatalf("binding lookup warning logged %d times, want 1\n%s", got, buf.String())
+	}
+	if got := strings.Count(buf.String(), "antigravity_sibling_lookup_failed"); got != 1 {
+		t.Fatalf("sibling lookup warning logged %d times, want 1\n%s", got, buf.String())
 	}
 }

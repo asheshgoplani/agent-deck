@@ -979,9 +979,11 @@ func (i *Instance) antigravitySessionIDBoundElsewhere(candidate string) bool {
 	}
 	bound, err := i.antigravityAnyProfileRow(match)
 	if err != nil {
-		sessionLog.Warn("antigravity_binding_lookup_failed",
-			slog.String("instance_id", logging.SanitizeValue(i.ID)),
-			slog.String("error", err.Error()))
+		if i.noteAntigravityFailClosed("binding_lookup") {
+			sessionLog.Warn("antigravity_binding_lookup_failed",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)),
+				slog.String("error", err.Error()))
+		}
 		return true // fail closed: stay unbound rather than steal
 	}
 	return bound
@@ -1131,12 +1133,30 @@ func (i *Instance) antigravityUnboundSiblingSharesWorkspace() bool {
 	}
 	ambiguous, err := i.antigravityAnyProfileRow(match)
 	if err != nil {
-		sessionLog.Warn("antigravity_sibling_lookup_failed",
-			slog.String("instance_id", logging.SanitizeValue(i.ID)),
-			slog.String("error", err.Error()))
+		if i.noteAntigravityFailClosed("sibling_lookup") {
+			sessionLog.Warn("antigravity_sibling_lookup_failed",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)),
+				slog.String("error", err.Error()))
+		}
 		return true // fail closed: ambiguity is safer than stealing
 	}
 	return ambiguous
+}
+
+// noteAntigravityFailClosed reports whether a fail-closed lookup failure of the
+// given cause should be logged. The scan retries every couple of seconds while
+// the cause persists, so each cause is logged once per session.
+func (i *Instance) noteAntigravityFailClosed(cause string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.antigravityFailClosedLogged[cause] {
+		return false
+	}
+	if i.antigravityFailClosedLogged == nil {
+		i.antigravityFailClosedLogged = map[string]bool{}
+	}
+	i.antigravityFailClosedLogged[cause] = true
+	return true
 }
 
 // noteAntigravityOwnedCandidate reports whether this owned-elsewhere sighting
