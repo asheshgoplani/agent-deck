@@ -635,18 +635,26 @@ func (i *Instance) updateOpenCodeSession(force bool) {
 		return
 	}
 	i.lastOpenCodeScanAt = now
+	lookedUpFrom := i.OpenCodeSessionID
 	i.mu.Unlock()
 
 	candidate := i.queryOpenCodeSession()
-	i.applyOpenCodeSessionCandidate(candidate)
+	i.applyOpenCodeSessionCandidate(lookedUpFrom, candidate)
 }
 
-func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
+// applyOpenCodeSessionCandidate drops a candidate found for lookedUpFrom once
+// the binding moved on, so a rebind during the lookup wins.
+func (i *Instance) applyOpenCodeSessionCandidate(lookedUpFrom, candidate string) bool {
 	if candidate == "" {
 		return false
 	}
 
 	i.mu.Lock()
+	if i.OpenCodeSessionID != lookedUpFrom {
+		i.mu.Unlock()
+		logStaleOpenCodeLookup(lookedUpFrom, candidate)
+		return false
+	}
 	if candidate == i.OpenCodeSessionID {
 		if i.OpenCodeDetectedAt.IsZero() {
 			i.OpenCodeDetectedAt = time.Now()

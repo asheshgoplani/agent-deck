@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"al.essio.dev/pkg/shellescape"
 )
 
 // setFakeOpenCodeSessionGet answers `api session.get` with getPayload and any
@@ -75,6 +78,47 @@ func TestQueryOpenCodeSession_V2BoundLookupFailureKeepsBinding(t *testing.T) {
 			inst := &Instance{Tool: "opencode", ProjectPath: projectPath, OpenCodeSessionID: "ses_GONE"}
 			if got := inst.queryOpenCodeSession(); got != "" {
 				t.Fatalf("session ID = %q, want empty (no rebind, no sibling adopted)", got)
+			}
+		})
+	}
+}
+
+// A rebind that lands while session.get runs outlives the lookup's result.
+func TestQueryOpenCodeSession_V2BoundLookupKeepsRebindDuringLookup(t *testing.T) {
+	for name, lookup := range map[string]func(*Instance){
+		"rotation scan": func(i *Instance) { i.updateOpenCodeSession(true) },
+		"detection":     func(i *Instance) { i.detectOpenCodeSessionAsync() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pinOpenCodeMajorVersion(t, 2, true)
+			projectPath := t.TempDir()
+			gate := t.TempDir()
+			script := fmt.Sprintf("#!/bin/sh\n"+
+				"echo 1 > %[1]s/started\n"+
+				"while [ ! -e %[1]s/release ]; do sleep 0.05; done\n"+
+				"printf '{\"data\":{\"id\":\"%%s\",\"location\":{\"directory\":\"%%s\"}}}\\n' \"${4#sessionID=}\" %[2]s\n",
+				shellescape.Quote(gate), shellescape.Quote(projectPath))
+			setFakeOpenCodePath(t, script, true)
+			configureFakeOpenCode(t)
+
+			inst := &Instance{Tool: "opencode", ProjectPath: projectPath, OpenCodeSessionID: "ses_OLD"}
+			done := make(chan struct{})
+			go func() { defer close(done); lookup(inst) }()
+			waitForFileContent(t, filepath.Join(gate, "started"), 10*time.Second)
+			inst.setOpenCodeSession("ses_NEW")
+			if err := os.WriteFile(filepath.Join(gate, "release"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("lookup did not finish")
+			}
+			inst.mu.RLock()
+			got := inst.OpenCodeSessionID
+			inst.mu.RUnlock()
+			if got != "ses_NEW" {
+				t.Fatalf("session ID = %q, want ses_NEW (the lookup result for ses_OLD reverted the rebind)", got)
 			}
 		})
 	}

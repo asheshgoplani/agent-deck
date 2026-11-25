@@ -75,8 +75,8 @@ func (i *Instance) detectOpenCodeSessionAsync() {
 			time.Sleep(delay)
 		}
 
-		if sessionID := i.queryOpenCodeSession(); sessionID != "" {
-			i.setOpenCodeSession(sessionID)
+		lookedUpFrom := i.boundOpenCodeSessionID()
+		if sessionID := i.queryOpenCodeSession(); sessionID != "" && i.adoptOpenCodeSessionLookup(lookedUpFrom, sessionID) {
 			sessionLog.Debug(
 				"opencode_session_detected",
 				slog.String("session_id", sessionID),
@@ -121,8 +121,7 @@ func (i *Instance) watchForOpenCodeSession() {
 			return
 		}
 
-		if sessionID := i.queryOpenCodeSession(); sessionID != "" {
-			i.setOpenCodeSession(sessionID)
+		if sessionID := i.queryOpenCodeSession(); sessionID != "" && i.adoptOpenCodeSessionLookup("", sessionID) {
 			sessionLog.Debug(
 				"opencode_watcher_detected",
 				slog.String("session_id", sessionID),
@@ -144,6 +143,34 @@ func (i *Instance) setOpenCodeSession(sessionID string) {
 	tmuxSession := i.tmuxSession
 	i.mu.Unlock()
 	i.syncOpenCodeSessionEnvironment(tmuxSession, sessionID)
+}
+
+func (i *Instance) boundOpenCodeSessionID() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.OpenCodeSessionID
+}
+
+// adoptOpenCodeSessionLookup applies a lookup result only while the binding
+// still holds lookedUpFrom, so a rebind during the lookup is never reverted.
+func (i *Instance) adoptOpenCodeSessionLookup(lookedUpFrom, sessionID string) bool {
+	i.mu.Lock()
+	if i.OpenCodeSessionID != lookedUpFrom {
+		i.mu.Unlock()
+		logStaleOpenCodeLookup(lookedUpFrom, sessionID)
+		return false
+	}
+	i.setOpenCodeSessionLocked(sessionID)
+	tmuxSession := i.tmuxSession
+	i.mu.Unlock()
+	i.syncOpenCodeSessionEnvironment(tmuxSession, sessionID)
+	return true
+}
+
+func logStaleOpenCodeLookup(lookedUpFrom, sessionID string) {
+	sessionLog.Debug("opencode_session_lookup_stale",
+		slog.String("looked_up_from", lookedUpFrom),
+		slog.String("session_id", sessionID))
 }
 
 // setOpenCodeSessionLocked updates in-memory binding state. The caller must

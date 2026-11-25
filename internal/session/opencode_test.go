@@ -205,7 +205,7 @@ func findSubstring(s, substr string) bool {
 func TestApplyOpenCodeSessionCandidate_BindsWhenEmpty(t *testing.T) {
 	inst := &Instance{Tool: "opencode"}
 
-	changed := inst.applyOpenCodeSessionCandidate("ses_NEW001")
+	changed := inst.applyOpenCodeSessionCandidate("", "ses_NEW001")
 
 	if !changed {
 		t.Fatal("expected change when binding first OpenCode session ID")
@@ -227,7 +227,7 @@ func TestApplyOpenCodeSessionCandidate_RebindsWhenDifferent(t *testing.T) {
 		),
 	}
 
-	changed := inst.applyOpenCodeSessionCandidate("ses_NEW001")
+	changed := inst.applyOpenCodeSessionCandidate("ses_OLD001", "ses_NEW001")
 
 	if !changed {
 		t.Fatal("expected change when OpenCode session rotates")
@@ -245,7 +245,7 @@ func TestApplyOpenCodeSessionCandidate_NoChangeWhenSame(t *testing.T) {
 		OpenCodeDetectedAt: detectedAt,
 	}
 
-	changed := inst.applyOpenCodeSessionCandidate("ses_SAME001")
+	changed := inst.applyOpenCodeSessionCandidate("ses_SAME001", "ses_SAME001")
 
 	if changed {
 		t.Fatal("expected no change when candidate matches current OpenCode session ID")
@@ -261,7 +261,7 @@ func TestApplyOpenCodeSessionCandidate_NoChangeWhenSame(t *testing.T) {
 func TestApplyOpenCodeSessionCandidate_IgnoresEmptyCandidate(t *testing.T) {
 	inst := &Instance{Tool: "opencode", OpenCodeSessionID: "ses_EXISTING001"}
 
-	changed := inst.applyOpenCodeSessionCandidate("")
+	changed := inst.applyOpenCodeSessionCandidate("ses_EXISTING001", "")
 
 	if changed {
 		t.Fatal("expected no change when OpenCode candidate is empty")
