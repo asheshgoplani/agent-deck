@@ -1160,11 +1160,12 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 			Branch:       wt.Branch,
 		})
 	}
+	openCodeSessionID, openCodeDetectedAt, openCodeSessionDir := inst.openCodeBindingSnapshot()
 	toolData := statedb.MarshalToolData(
 		inst.ClaudeSessionID, inst.ClaudeDetectedAt,
 		inst.GeminiSessionID, inst.GeminiDetectedAt,
 		inst.GeminiYoloMode, inst.GeminiModel,
-		inst.OpenCodeSessionID, inst.OpenCodeDetectedAt,
+		openCodeSessionID, openCodeDetectedAt,
 		inst.CodexSessionID, inst.CodexDetectedAt,
 		inst.LatestPrompt, inst.Notes, inst.LoadedMCPNames,
 		inst.ToolOptionsJSON,
@@ -1234,7 +1235,6 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// `status --stale` (and ShouldSkipRestart's freshness guard) see a real
 	// value from a fresh CLI process instead of always-zero.
 	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
-	openCodeSessionID, openCodeSessionDir := inst.openCodeSessionLocation()
 	toolData = WriteOpenCodeSessionDirToToolData(toolData, openCodeSessionID, openCodeSessionDir)
 	// Custom [tools.*] conversation id — reboot-safe resume when resume_flag set.
 	// intentionalClear makes sticky MergeToolDataExtras honor operator clears

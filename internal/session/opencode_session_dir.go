@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"al.essio.dev/pkg/shellescape"
 
@@ -60,10 +61,22 @@ func (i *Instance) queryBoundOpenCodeServiceSession(projectPath, currentID strin
 func (i *Instance) openCodeSessionLocation() (sessionID, dir string) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
+	return i.openCodeSessionLocationLocked()
+}
+
+func (i *Instance) openCodeSessionLocationLocked() (sessionID, dir string) {
 	if i.OpenCodeSessionID == "" || i.openCodeSessionDirID != i.OpenCodeSessionID {
 		return i.OpenCodeSessionID, ""
 	}
 	return i.OpenCodeSessionID, i.OpenCodeSessionDir
+}
+
+// openCodeBindingSnapshot is openCodeSessionLocation plus the detection time.
+func (i *Instance) openCodeBindingSnapshot() (sessionID string, detectedAt time.Time, dir string) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	sessionID, dir = i.openCodeSessionLocationLocked()
+	return sessionID, i.OpenCodeDetectedAt, dir
 }
 
 // openCodeResumeDirArg returns the positional directory argument that starts

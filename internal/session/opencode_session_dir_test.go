@@ -161,6 +161,20 @@ func TestBuildOpenCodeV2Command_ReadsBindingUnderLock(t *testing.T) {
 	}
 }
 
+// Under -race: a save during a rebind reads the whole binding in one snapshot.
+func TestInstanceToRow_ReadsOpenCodeBindingInOneSnapshot(t *testing.T) {
+	inst := &Instance{ID: "opencode-rebind-save", Tool: "opencode", GroupPath: DefaultGroupPath,
+		ProjectPath: t.TempDir(), OpenCodeSessionID: "ses_OLD"}
+	done := make(chan struct{})
+	go func() { defer close(done); inst.setOpenCodeSession("ses_NEW") }()
+	time.Sleep(100 * time.Millisecond)
+	_, err := instanceToRow(inst)
+	<-done
+	if err != nil {
+		t.Fatalf("instanceToRow: %v", err)
+	}
+}
+
 // A moved session relaunches where it lives: the lookup by id records the
 // directory, and the resume command starts the TUI there.
 func TestBuildOpenCodeCommand_V2ResumesInSessionDirectory(t *testing.T) {
