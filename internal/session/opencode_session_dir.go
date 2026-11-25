@@ -54,20 +54,22 @@ func (i *Instance) queryBoundOpenCodeServiceSession(projectPath, currentID strin
 	return currentID
 }
 
-// openCodeSessionDir returns the recorded directory while it still belongs to
-// the bound session id, and "" after any rebind or clear.
-func (i *Instance) openCodeSessionDir() string {
+// openCodeSessionLocation returns the bound session id and its recorded
+// directory from one snapshot, with "" for a directory recorded for another id.
+// The caller must not hold i.mu.
+func (i *Instance) openCodeSessionLocation() (sessionID, dir string) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	if i.OpenCodeSessionID == "" || i.openCodeSessionDirID != i.OpenCodeSessionID {
-		return ""
+		return i.OpenCodeSessionID, ""
 	}
-	return i.OpenCodeSessionDir
+	return i.OpenCodeSessionID, i.OpenCodeSessionDir
 }
 
 // openCodeResumeDirArg returns the positional directory argument that starts
 // a resumed TUI where its session lives, or "" when that is ProjectPath or
 // the directory is gone (a removed worktree falls back to ProjectPath).
-func (i *Instance) openCodeResumeDirArg() string {
-	dir := i.openCodeSessionDir()
+func (i *Instance) openCodeResumeDirArg(dir string) string {
 	if dir == "" || normalizePath(dir) == normalizePath(i.ProjectPath) {
 		return ""
 	}

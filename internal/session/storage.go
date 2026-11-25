@@ -1234,7 +1234,8 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// `status --stale` (and ShouldSkipRestart's freshness guard) see a real
 	// value from a fresh CLI process instead of always-zero.
 	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
-	toolData = WriteOpenCodeSessionDirToToolData(toolData, inst.OpenCodeSessionID, inst.openCodeSessionDir())
+	openCodeSessionID, openCodeSessionDir := inst.openCodeSessionLocation()
+	toolData = WriteOpenCodeSessionDirToToolData(toolData, openCodeSessionID, openCodeSessionDir)
 	// Custom [tools.*] conversation id — reboot-safe resume when resume_flag set.
 	// intentionalClear makes sticky MergeToolDataExtras honor operator clears
 	// without breaking stale-empty full-table saves (see generic_session_persist.go).

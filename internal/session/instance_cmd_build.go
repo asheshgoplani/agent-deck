@@ -890,9 +890,9 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 
 		// If we already have a session ID, use resume with -s flag.
 		// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-		if i.OpenCodeSessionID != "" {
+		if sessionID, sessionDir := i.openCodeSessionLocation(); sessionID != "" {
 			return envPrefix + fmt.Sprintf("%s -s %s%s%s",
-				cmd, shellescape.Quote(i.OpenCodeSessionID), extraFlags, i.openCodeResumeDirArg())
+				cmd, shellescape.Quote(sessionID), extraFlags, i.openCodeResumeDirArg(sessionDir))
 		}
 
 		// Start OpenCode fresh - session ID will be captured async after startup

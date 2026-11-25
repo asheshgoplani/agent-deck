@@ -43,7 +43,7 @@ func TestQueryOpenCodeSession_V2BoundSessionMovedToOtherDirectory(t *testing.T) 
 	if got := inst.queryOpenCodeSession(); got != "ses_BOUND" {
 		t.Fatalf("session ID = %q, want ses_BOUND", got)
 	}
-	if got := inst.openCodeSessionDir(); got != movedTo {
+	if _, got := inst.openCodeSessionLocation(); got != movedTo {
 		t.Fatalf("session dir = %q, want %q", got, movedTo)
 	}
 	if got := fakeOpenCodeCallCount(t, dir); got != 1 {
@@ -124,6 +124,43 @@ func TestQueryOpenCodeSession_V2BoundLookupKeepsRebindDuringLookup(t *testing.T)
 	}
 }
 
+// Under -race: a save after a background lookup recorded the directory must
+// read the directory under the instance lock.
+func TestInstanceToRow_ReadsOpenCodeSessionDirUnderLock(t *testing.T) {
+	pinOpenCodeMajorVersion(t, 2, true)
+	projectPath := t.TempDir()
+	dir := setFakeOpenCodeSessionGet(t, `{"data":[]}`, movedSessionPayload("ses_BOUND", t.TempDir()))
+
+	inst := &Instance{ID: "opencode-save", Tool: "opencode", GroupPath: DefaultGroupPath,
+		ProjectPath: projectPath, OpenCodeSessionID: "ses_BOUND"}
+	done := make(chan struct{})
+	go func() { defer close(done); inst.queryOpenCodeSession() }()
+	// Polling the file and sleeping add no happens-before edge, so the race
+	// detector sees the lookup's locked write and this save's read as concurrent.
+	waitForFileContent(t, filepath.Join(dir, "count"), 10*time.Second)
+	time.Sleep(250 * time.Millisecond)
+	if _, err := instanceToRow(inst); err != nil {
+		t.Fatalf("instanceToRow: %v", err)
+	}
+	<-done
+}
+
+// Under -race: the resume command must read the bound id and its directory
+// under the instance lock, from one snapshot.
+func TestBuildOpenCodeV2Command_ReadsBindingUnderLock(t *testing.T) {
+	pinOpenCodeMajorVersion(t, 2, true)
+	isolateOpenCodeConfig(t, "opencode")
+	inst := &Instance{Tool: "opencode", ProjectPath: t.TempDir(), OpenCodeSessionID: "ses_OLD"}
+	done := make(chan struct{})
+	go func() { defer close(done); inst.setOpenCodeSession("ses_NEW") }()
+	time.Sleep(100 * time.Millisecond)
+	got := inst.buildOpenCodeV2Command("opencode")
+	<-done
+	if !strings.Contains(got, "opencode -s ses_") {
+		t.Fatalf("resume command = %q, want a bound session", got)
+	}
+}
+
 // A moved session relaunches where it lives: the lookup by id records the
 // directory, and the resume command starts the TUI there.
 func TestBuildOpenCodeCommand_V2ResumesInSessionDirectory(t *testing.T) {
@@ -200,7 +237,7 @@ func TestOpenCodeSessionDir_SQLiteRoundTrip(t *testing.T) {
 	if len(loaded) != 1 {
 		t.Fatalf("expected 1 instance, got %d", len(loaded))
 	}
-	if got := loaded[0].openCodeSessionDir(); got != "/work/wt-feature" {
+	if _, got := loaded[0].openCodeSessionLocation(); got != "/work/wt-feature" {
 		t.Fatalf("session dir after reload = %q, want /work/wt-feature", got)
 	}
 }

@@ -108,14 +108,14 @@ func (i *Instance) buildOpenCodeV2Command(command string) string {
 		cfg, _ := LoadUserConfig()
 		opts = NewOpenCodeOptions(cfg)
 	}
-	sessionID := i.OpenCodeSessionID
+	sessionID, sessionDir := i.openCodeSessionLocation()
 	if sessionID == "" && opts.SessionMode == "resume" {
 		sessionID = opts.ResumeSessionID
 	}
 	if sessionID != "" {
 		quotedID := shellescape.Quote(sessionID)
 		steps := openCodeV2OptionCommands(bin, quotedID, opts)
-		steps = append(steps, fmt.Sprintf("%s -s %s%s", bin, quotedID, i.openCodeResumeDirArg()))
+		steps = append(steps, fmt.Sprintf("%s -s %s%s", bin, quotedID, i.openCodeResumeDirArg(sessionDir)))
 		return strings.Join(steps, " && ")
 	}
 	if opts.SessionMode == "continue" && opts.Model == "" && opts.Agent == "" {
