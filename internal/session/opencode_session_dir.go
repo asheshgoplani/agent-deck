@@ -27,6 +27,10 @@ func (i *Instance) queryBoundOpenCodeServiceSession(projectPath, currentID strin
 		logBoundOpenCodeLookupFailed(currentID, "no opencode binary")
 		return ""
 	}
+	i.mu.Lock()
+	i.openCodeDirLookupsStarted++
+	lookup := i.openCodeDirLookupsStarted
+	i.mu.Unlock()
 	output, err := runOpenCodeServiceCall(binary, projectPath, "session.get", currentID, "")
 	if err != nil {
 		logBoundOpenCodeLookupFailed(currentID, err.Error())
@@ -44,9 +48,10 @@ func (i *Instance) queryBoundOpenCodeServiceSession(projectPath, currentID strin
 	directory := got.Data.flatten().Directory
 
 	i.mu.Lock()
-	if i.OpenCodeSessionID == currentID {
+	if i.OpenCodeSessionID == currentID && lookup > i.openCodeSessionDirLookup {
 		i.OpenCodeSessionDir = directory
 		i.openCodeSessionDirID = currentID
+		i.openCodeSessionDirLookup = lookup
 	}
 	i.mu.Unlock()
 	sessionLog.Debug("opencode_bound_session_found",

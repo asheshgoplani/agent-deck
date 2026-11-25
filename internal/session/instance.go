@@ -323,6 +323,9 @@ type Instance struct {
 	// it through openCodeSessionDir, which drops it after any rebind.
 	OpenCodeSessionDir   string `json:"opencode_session_dir,omitempty"`
 	openCodeSessionDirID string
+	// Lookups can overlap; only a later-started one may replace the directory.
+	openCodeDirLookupsStarted uint64
+	openCodeSessionDirLookup  uint64
 
 	// Codex CLI integration
 	CodexSessionID  string    `json:"codex_session_id,omitempty"`

@@ -161,6 +161,44 @@ func TestBuildOpenCodeV2Command_ReadsBindingUnderLock(t *testing.T) {
 	}
 }
 
+// The lookup that started last decides the directory, even if it answers first.
+func TestQueryOpenCodeSession_V2OverlappingLookupsKeepNewestDirectory(t *testing.T) {
+	pinOpenCodeMajorVersion(t, 2, true)
+	projectPath, olderDir, newerDir, gate := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\n"+
+		"if mkdir %[1]s/first 2>/dev/null; then\n"+
+		"  echo 1 > %[1]s/started\n"+
+		"  while [ ! -e %[1]s/release ]; do sleep 0.05; done\n"+
+		"  printf '%%s\\n' %[2]s\n"+
+		"else\n"+
+		"  printf '%%s\\n' %[3]s\n"+
+		"fi\n",
+		shellescape.Quote(gate),
+		shellescape.Quote(movedSessionPayload("ses_BOUND", olderDir)),
+		shellescape.Quote(movedSessionPayload("ses_BOUND", newerDir)))
+	setFakeOpenCodePath(t, script, true)
+	configureFakeOpenCode(t)
+
+	inst := &Instance{Tool: "opencode", ProjectPath: projectPath, OpenCodeSessionID: "ses_BOUND"}
+	done := make(chan struct{})
+	go func() { defer close(done); inst.queryOpenCodeSession() }()
+	waitForFileContent(t, filepath.Join(gate, "started"), 10*time.Second)
+	if got := inst.queryOpenCodeSession(); got != "ses_BOUND" {
+		t.Fatalf("newer lookup = %q, want ses_BOUND", got)
+	}
+	if err := os.WriteFile(filepath.Join(gate, "release"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("older lookup did not finish")
+	}
+	if _, got := inst.openCodeSessionLocation(); got != newerDir {
+		t.Fatalf("session dir = %q, want %q from the lookup that started last", got, newerDir)
+	}
+}
+
 // Under -race: a save during a rebind reads the whole binding in one snapshot.
 func TestInstanceToRow_ReadsOpenCodeBindingInOneSnapshot(t *testing.T) {
 	inst := &Instance{ID: "opencode-rebind-save", Tool: "opencode", GroupPath: DefaultGroupPath,
