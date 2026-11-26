@@ -3,6 +3,7 @@ package git
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 var consecutiveDashesRe = regexp.MustCompile(`-+`)
@@ -959,13 +961,23 @@ func SanitizeBranchName(name string) string {
 	return sanitized
 }
 
+// defaultBranchFetchTimeout bounds freshOriginDefaultBranchRef's fetch. A
+// variable so tests can shorten it.
+var defaultBranchFetchTimeout = 2 * time.Minute
+
 // freshOriginDefaultBranchRef fetches the default branch from the default
 // remote and returns the remote-tracking ref (e.g. "origin/main") that callers
 // should base a new branch on. Returns ok=false when there is no remote, no
 // resolvable default branch, or the fetch fails (e.g. offline) — in which
 // case callers must fall back to a HEAD-based branch.
 //
-// Pinned by TestCreateWorktree_NewBranch_BranchesFromFreshOriginMain_RegressionFor973.
+// The fetch is bounded by defaultBranchFetchTimeout. A transport that stops
+// answering without closing (an ssh connection orphaned by laptop sleep or a
+// network change) would otherwise block worktree creation forever; a timeout
+// is treated like any other failed fetch.
+//
+// Pinned by TestCreateWorktree_NewBranch_BranchesFromFreshOriginMain_RegressionFor973
+// and TestFreshOriginDefaultBranchRef_HungFetchTimesOut.
 func freshOriginDefaultBranchRef(repoDir string) (string, bool) {
 	remote, err := getDefaultRemote(repoDir)
 	if err != nil || remote == "" {
@@ -975,7 +987,12 @@ func freshOriginDefaultBranchRef(repoDir string) (string, bool) {
 	if err != nil || defaultBranch == "" {
 		return "", false
 	}
-	fetch := exec.Command("git", "-C", repoDir, "fetch", "--quiet", remote, defaultBranch)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultBranchFetchTimeout)
+	defer cancel()
+	fetch := exec.CommandContext(ctx, "git", "-C", repoDir, "fetch", "--quiet", remote, defaultBranch)
+	// Killing git can leave its transport child (ssh) holding inherited
+	// descriptors; WaitDelay keeps Run from waiting on that orphan.
+	fetch.WaitDelay = 5 * time.Second
 	if err := fetch.Run(); err != nil {
 		return "", false
 	}
