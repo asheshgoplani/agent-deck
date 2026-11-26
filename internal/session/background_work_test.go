@@ -185,9 +185,11 @@ func TestMergeBackgroundWork(t *testing.T) {
 		// pane sighting is not stamped (paneShown false).
 		{"footer counter named from transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, shells, true, time.Time{}, tmux.BackgroundKindBash, "Sleep for 50 seconds in background", false},
 		// A sub-agent's own shells are on the session's footer: while the
-		// agent awaits its own work the counter is that agent running, and
-		// the sighting extends its hold.
-		{"footer counter, agent awaiting its own shell", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, staleAwaiting, true, time.Time{}, tmux.BackgroundKindAgent, "probe sleeper agent", true},
+		// agent awaits its own work the counter is that agent running, within
+		// background_shell_hold of the interim notification (A5). The
+		// sighting never extends it (paneShown false).
+		{"footer counter, agent awaiting its own shell", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, awaitingOwn, true, time.Time{}, tmux.BackgroundKindAgent, "probe sleeper agent", false},
+		{"footer counter, agent awaiting its own shell, past the shell hold", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, staleAwaiting, true, time.Time{}, "", "", false},
 		{"agent awaiting its own shell, fresh notification holds", tmux.BackgroundWork{}, awaitingOwn, true, time.Time{}, tmux.BackgroundKindAgent, "probe sleeper agent", false},
 		{"agent awaiting its own shell, past the hold", tmux.BackgroundWork{}, staleAwaiting, true, time.Time{}, "", "", false},
 		{"footer counter, no transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, transcriptBackgroundScan{}, false, time.Time{}, "", "", false},
@@ -596,5 +598,51 @@ func TestBackgroundWork2473_WorkflowEndRecordFollowsUrgentRule(t *testing.T) {
 				t.Fatalf("record trigger/tier = %q/%q, want %q/%q (%+v)", got[0].Trigger, got[0].Tier, TurnTriggerTask, c.tier, got[0])
 			}
 		})
+	}
+}
+
+// A background agent that starts a server nobody reaps and stops gets the
+// interim notification, never the final one, and the footer counter stays up.
+// The counter keeps that agent running only within background_shell_hold of
+// the interim notification (A5), and its sightings never extend that.
+func TestMergeBackgroundWork_AwaitingAgentCounterBoundedByShellHold(t *testing.T) {
+	t.Cleanup(func() { setBackgroundShellHold(DefaultBackgroundShellHold) })
+	setBackgroundShellHold(DefaultBackgroundShellHold)
+	now := time.Now()
+	lines := loadProbeTranscript(t)
+	counter := tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}
+	sc := scanTranscriptBackground(restamp(lines[:34], now.Add(-6*time.Hour)))
+	if _, ok := sc.awaitingAgent(); !ok {
+		t.Fatal("fixture: agent not awaiting its own work")
+	}
+	seen := time.Time{}
+	for step := 0; step < 360; step++ { // a poll every 10s for an hour
+		at := now.Add(time.Duration(step) * 10 * time.Second)
+		w, shown := mergeBackgroundWork(counter, sc, true, seen, at)
+		if shown {
+			seen = at
+		}
+		if w.Running() {
+			t.Fatalf("poll %d: 6h-old interim notification + footer counter = %+v shown=%v, want not running (bounded by background_shell_hold)", step, w, shown)
+		}
+	}
+
+	// Inside the hold: the counter is the agent, the sighting is not stamped.
+	fresh := scanTranscriptBackground(restamp(lines[:34], now.Add(-2*time.Minute)))
+	if w, shown := mergeBackgroundWork(counter, fresh, true, time.Time{}, now); w.Kind != tmux.BackgroundKindAgent || shown {
+		t.Fatalf("2m-old interim notification + footer counter = %+v shown=%v, want agent, not stamped", w, shown)
+	}
+
+	// The user's hold applies: 30m keeps a 10m-old interim notification.
+	stale := scanTranscriptBackground(restamp(lines[:34], now.Add(-10*time.Minute)))
+	setBackgroundShellHold(30 * time.Minute)
+	if w, shown := mergeBackgroundWork(counter, stale, true, time.Time{}, now); w.Kind != tmux.BackgroundKindAgent || shown {
+		t.Fatalf("hold 30m, 10m-old interim notification + counter = %+v shown=%v, want agent, not stamped", w, shown)
+	}
+
+	// Hold 0 (the rule before A5): the counter alone is work, named as the agent.
+	setBackgroundShellHold(0)
+	if w, _ := mergeBackgroundWork(counter, sc, true, time.Time{}, now); w.Kind != tmux.BackgroundKindAgent {
+		t.Fatalf("hold 0, 6h-old interim notification + counter = %+v, want agent", w)
 	}
 }

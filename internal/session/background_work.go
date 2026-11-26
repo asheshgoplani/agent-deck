@@ -464,9 +464,12 @@ func mergeBackgroundWork(pane tmux.BackgroundWork, sc transcriptBackgroundScan, 
 	if pane.Kind == tmux.BackgroundKindBash && scOK {
 		// A sub-agent's own background shells are counted on the session's
 		// footer. While an agent awaits its own work, a live shell counter is
-		// that agent running, and the sighting extends its hold.
-		if agent, ok := sc.awaitingAgent(); ok {
-			return tmux.BackgroundWork{Kind: tmux.BackgroundKindAgent, Task: agent.Name, Source: "pane+transcript"}, true
+		// that agent running, but only within hold of its interim
+		// notification (A5): an agent that started a server nobody reaps
+		// never notifies again, and the counter must not pin the light. The
+		// sighting never extends it. With hold 0 the counter alone is work.
+		if agent, ok := sc.freshAwaitingAgent(now, hold); ok {
+			return tmux.BackgroundWork{Kind: tmux.BackgroundKindAgent, Task: agent.Name, Source: "pane+transcript"}, hold == 0
 		}
 	}
 	if pane.Kind == tmux.BackgroundKindBash {
@@ -560,6 +563,22 @@ func (sc transcriptBackgroundScan) freshShell(now time.Time, hold time.Duration)
 func (sc transcriptBackgroundScan) awaitingAgent() (transcriptBackgroundTask, bool) {
 	for idx := len(sc.Pending) - 1; idx >= 0; idx-- {
 		if task := sc.Pending[idx]; task.Kind == tmux.BackgroundKindAgent && task.Awaiting {
+			return task, true
+		}
+	}
+	return transcriptBackgroundTask{}, false
+}
+
+// freshAwaitingAgent returns the newest awaiting agent whose interim
+// notification is inside hold, like freshShell for a shell's launch. With
+// hold 0 (the rule before A5) any awaiting agent counts.
+func (sc transcriptBackgroundScan) freshAwaitingAgent(now time.Time, hold time.Duration) (transcriptBackgroundTask, bool) {
+	for idx := len(sc.Pending) - 1; idx >= 0; idx-- {
+		task := sc.Pending[idx]
+		if task.Kind != tmux.BackgroundKindAgent || !task.Awaiting {
+			continue
+		}
+		if hold == 0 || (!task.At.IsZero() && now.Sub(task.At) <= hold) {
 			return task, true
 		}
 	}
