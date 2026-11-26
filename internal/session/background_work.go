@@ -201,9 +201,29 @@ var (
 	taskStatusRe       = regexp.MustCompile(`<status>([^<]+)</status>`)
 	// interimAgentRe is the interim agent notification: <status>completed
 	// while the agent waits on background work it launched itself. Claude
-	// Code 2.1.288 says so in <note>, 2.1.307 also in <summary>.
+	// Code 2.1.288 says so in <note>, 2.1.307 also in <summary>. It is
+	// matched outside <result> (interimOutsideResult).
 	interimAgentRe = regexp.MustCompile(`background work of its own still running|waiting on its own background work`)
 )
+
+// interimOutsideResult reports whether block carries the interim wording
+// outside its <result>, the agent's own free text: an agent that writes about
+// the wording must not read as interim. A result cut off by a truncated record
+// runs to the block's end. It matches the pieces in place, with no copy.
+func interimOutsideResult(block string) bool {
+	start := strings.Index(block, "<result>")
+	if start < 0 {
+		return interimAgentRe.MatchString(block)
+	}
+	if interimAgentRe.MatchString(block[:start]) {
+		return true
+	}
+	rest := block[start:]
+	if end := strings.Index(rest, "</result>"); end >= 0 {
+		return interimAgentRe.MatchString(rest[end+len("</result>"):])
+	}
+	return false
+}
 
 // taskNotificationBlocks splits a raw transcript line into the bodies of the
 // <task-notification> blocks it carries (one line can hold several, and a
@@ -300,7 +320,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 				continue
 			}
 			id := strings.TrimSpace(idm[1])
-			if task, ok := launchedAgents[id]; ok && interimAgentRe.MatchString(block) {
+			if task, ok := launchedAgents[id]; ok && interimOutsideResult(block) {
 				// Not terminal: the agent resumes when its own work reports,
 				// and the same task id notifies again then. It revives an
 				// agent a copy of this notification without the note (a

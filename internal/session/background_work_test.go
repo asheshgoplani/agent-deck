@@ -646,3 +646,24 @@ func TestMergeBackgroundWork_AwaitingAgentCounterBoundedByShellHold(t *testing.T
 		t.Fatalf("hold 0, 6h-old interim notification + counter = %+v, want agent", w)
 	}
 }
+
+// The interim wording is matched outside the agent's own <result> text: a
+// final notification whose result quotes it still ends the agent.
+func TestScanTranscriptBackground_InterimWordingInResultIsFinal(t *testing.T) {
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"Review status code"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"Review status code"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	for name, final := range map[string]string{
+		"closed result":    `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Review status code\" finished</summary>\n<result>Done. The scan keeps an agent pending when its note says it is waiting on its own background work, or stopped with background work of its own still running.</result>\n</task-notification>"}}`,
+		"truncated result": `{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Review status code\" finished</summary>\n<result>Done. It is waiting on its own background work wh"}`,
+	} {
+		sc := scanTranscriptBackground(append(append([]string{}, launch...), final))
+		if a, ok := sc.awaitingAgent(); ok {
+			t.Errorf("%s: final notification quoting the interim wording in <result> left the agent awaiting: %+v", name, a)
+		}
+		if got, _ := sc.inFlight(); got.InFlight() {
+			t.Errorf("%s: in flight = %+v after the final notification, want nothing", name, got)
+		}
+	}
+}
