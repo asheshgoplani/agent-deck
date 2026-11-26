@@ -668,6 +668,44 @@ func TestScanTranscriptBackground_InterimWordingInResultIsFinal(t *testing.T) {
 	}
 }
 
+// The interim wording is matched only in Claude Code's own text: the <note>
+// and the summary after the agent's quoted description. An agent whose
+// description happens to hold the wording still ends on its final
+// notification, and still awaits on a real interim one.
+func TestScanTranscriptBackground_InterimWordingInDescriptionIsFinal(t *testing.T) {
+	const desc = `check waiting on its own background work`
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"` + desc + `"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"` + desc + `"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	notify := func(body string) string {
+		return `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n` + body + `\n</task-notification>"}}`
+	}
+	finalNote := `<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>`
+	for name, final := range map[string]string{
+		"final summary":           notify(`<summary>Agent \"` + desc + `\" finished</summary>\n<result>done</result>`),
+		"final summary and note":  notify(`<summary>Agent \"` + desc + `\" finished</summary>\n` + finalNote + `\n<result>done</result>`),
+		"truncated final summary": `{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"` + desc + `\" fini"}`,
+	} {
+		sc := scanTranscriptBackground(append(append([]string{}, launch...), final))
+		if a, ok := sc.awaitingAgent(); ok {
+			t.Errorf("%s: final notification of an agent described %q left it awaiting: %+v", name, desc, a)
+		}
+		if got, _ := sc.inFlight(); got.InFlight() {
+			t.Errorf("%s: in flight = %+v after the final notification, want nothing", name, got)
+		}
+	}
+	for name, interim := range map[string]string{
+		"interim summary (2.1.307)": notify(`<summary>Agent \"` + desc + `\" is waiting on its own background work</summary>\n<result>still sleeping</result>`),
+		"interim note (2.1.288)":    notify(`<summary>Agent \"` + desc + `\" finished</summary>\n<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>\n<result>still sleeping</result>`),
+	} {
+		sc := scanTranscriptBackground(append(append([]string{}, launch...), interim))
+		if _, ok := sc.awaitingAgent(); !ok {
+			t.Errorf("%s: interim notification of an agent described %q did not leave it awaiting", name, desc)
+		}
+	}
+}
+
 // A new Claude process starts with no background agents: an interim
 // notification for an agent the old process launched does not revive it.
 func TestScanTranscriptBackground_InterimAfterNewProcessDoesNotRevive(t *testing.T) {

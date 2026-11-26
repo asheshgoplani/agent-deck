@@ -202,25 +202,58 @@ var (
 	// interimAgentRe is the interim agent notification: <status>completed
 	// while the agent waits on background work it launched itself. Claude
 	// Code 2.1.288 says so in <note>, 2.1.307 also in <summary>. It is
-	// matched outside <result> (interimOutsideResult).
+	// matched only in that text of Claude Code's own (interimOutsideResult).
 	interimAgentRe = regexp.MustCompile(`background work of its own still running|waiting on its own background work`)
 )
 
-// interimOutsideResult reports whether block carries the interim wording
-// outside its <result>, the agent's own free text: an agent that writes about
-// the wording must not read as interim. A result cut off by a truncated record
-// runs to the block's end. It matches the pieces in place, with no copy.
+// interimOutsideResult reports whether block carries the interim wording in
+// Claude Code's own text: a <note> body, or a <summary> body after the quoted
+// description (`Agent "desc" is waiting ...`). The <result> and the
+// description are the agent's free text: an agent that writes about the
+// wording, or is described with it, must not read as interim. A result cut off
+// by a truncated record runs to the block's end. It matches the pieces in
+// place, with no copy.
 func interimOutsideResult(block string) bool {
 	start := strings.Index(block, "<result>")
 	if start < 0 {
-		return interimAgentRe.MatchString(block)
+		return interimInOwnText(block)
 	}
-	if interimAgentRe.MatchString(block[:start]) {
+	if interimInOwnText(block[:start]) {
 		return true
 	}
 	rest := block[start:]
 	if end := strings.Index(rest, "</result>"); end >= 0 {
-		return interimAgentRe.MatchString(rest[end+len("</result>"):])
+		return interimInOwnText(rest[end+len("</result>"):])
+	}
+	return false
+}
+
+// interimInOwnText matches the interim wording in each <note> body and in each
+// <summary> body past its last quote (the end of the agent's description). A
+// body with no closing tag (a truncated record) runs to the next tag or the
+// end of seg.
+func interimInOwnText(seg string) bool {
+	for _, tag := range [...]string{"note", "summary"} {
+		open := "<" + tag + ">"
+		for s := seg; ; {
+			i := strings.Index(s, open)
+			if i < 0 {
+				break
+			}
+			s = s[i+len(open):]
+			body := s
+			if j := strings.IndexByte(s, '<'); j >= 0 {
+				body = s[:j]
+			}
+			if tag == "summary" {
+				if q := strings.LastIndexByte(body, '"'); q >= 0 {
+					body = body[q+1:]
+				}
+			}
+			if interimAgentRe.MatchString(body) {
+				return true
+			}
+		}
 	}
 	return false
 }

@@ -101,7 +101,8 @@ background_shell_hold`), counted from the interim notification. Seeing the
 counter never refreshes it, as for shells: an agent that started a server
 nobody reaps never notifies again and must not pin the light. With a hold of
 `0` the counter alone keeps it running, as before A5. The wording is matched
-in the note and summary, not in the agent's own `<result>` text. The agent's
+only in Claude Code's own text (the note, and the summary after the agent's
+quoted description), not in the agent's `<result>` or description. The agent's
 later notification without the interim note ends it, and a new Claude
 process (SessionStart startup / resume) ends it too.
 
