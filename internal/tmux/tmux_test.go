@@ -3560,3 +3560,28 @@ func TestGatedTmuxKeyOptionArgs(t *testing.T) {
 		t.Errorf("expected no forced args when all keys overridden, got: %s", joined(all))
 	}
 }
+
+// The duplicate sweep must not kill a session stamped with another profile
+// even when it shares the tool-session or instance id (#3270). A duplicate in
+// the keeper's own profile (or an unstamped legacy one) still dies.
+func TestKillSessionsWithEnvValue_KeepsOtherProfiles(t *testing.T) {
+	keep := createTestSessionStrict(t, "prof-keep")
+	foreign := createTestSessionStrict(t, "prof-foreign")
+	same := createTestSessionStrict(t, "prof-same")
+	legacy := createTestSessionStrict(t, "prof-legacy")
+
+	id := "test-prof-" + generateShortID()
+	for name, profile := range map[string]string{keep: "personal", foreign: "work", same: "personal", legacy: ""} {
+		require.NoError(t, exec.Command("tmux", "set-environment", "-t", name, "CLAUDE_SESSION_ID", id).Run())
+		if profile != "" {
+			require.NoError(t, exec.Command("tmux", "set-environment", "-t", name, "AGENTDECK_PROFILE", profile).Run())
+		}
+	}
+
+	KillSessionsWithEnvValue("CLAUDE_SESSION_ID", id, keep)
+
+	assert.NoError(t, exec.Command("tmux", "has-session", "-t", foreign).Run(), "another profile's session must survive")
+	assert.NoError(t, exec.Command("tmux", "has-session", "-t", keep).Run(), "kept session must survive")
+	assert.Error(t, exec.Command("tmux", "has-session", "-t", same).Run(), "same-profile duplicate should be killed")
+	assert.Error(t, exec.Command("tmux", "has-session", "-t", legacy).Run(), "unstamped duplicate should be killed")
+}
