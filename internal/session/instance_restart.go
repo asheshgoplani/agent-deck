@@ -486,6 +486,11 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 // restartRecorded restarts and records session.end(restart) from surface sf
 // on success.
 func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) error {
+	// An old recovered copy must not respawn, recreate or restamp another
+	// profile's live tmux session (#3270).
+	if err := i.checkRecoveredTmuxOwnership(); err != nil {
+		return fmt.Errorf("refusing to restart %q: %w", i.Title, err)
+	}
 	// The old process's exit and the resumed one's boot are not turns: leave
 	// a token first, so the parent gets no false completion (#2792,
 	// restart_resume.go).
@@ -1240,6 +1245,11 @@ var restartFreshBindingCleared = func(*Instance) {}
 // This recreates the tmux session and clears the stored tool session binding first,
 // so the next start gets a brand-new tool session ID.
 func (i *Instance) RestartFresh() error {
+	// RestartFresh kills the old tmux session outright; same guard as
+	// restartRecorded (#3270).
+	if err := i.checkRecoveredTmuxOwnership(); err != nil {
+		return fmt.Errorf("refusing to restart %q: %w", i.Title, err)
+	}
 	i.prepareRestartMCPConfig()
 	i.spawnGen.Add(1)
 
