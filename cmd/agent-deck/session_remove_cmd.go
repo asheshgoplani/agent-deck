@@ -300,8 +300,8 @@ func bulkRemoveSessions(
 
 	removed := make([]removedSessionRow, 0, len(doomed))
 	removedIDs := make([]string, 0, len(doomed))
-	// Sessions not removed yet: a worktree shared only with sessions this
-	// sweep already removed goes with the last of them.
+	// Keep sessions whose stop failed in the sharing check even after their
+	// registry rows are removed. A later session may use the same worktree.
 	live := append([]*session.Instance(nil), instances...)
 	for _, inst := range doomed {
 		saveStoppedBeforeRemoval(storage, inst)
@@ -311,7 +311,9 @@ func bulkRemoveSessions(
 		if pruneWorktree {
 			worktreeKept, profilesUnchecked = pruneSessionWorktree(inst, live, guard, stopErr, force, out.jsonMode)
 		}
-		live = dropInstance(live, inst.ID)
+		if stopErr == nil {
+			live = dropInstance(live, inst.ID)
+		}
 		if err := storage.DeleteInstance(inst.ID); err != nil {
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			exitBulkRemove(1)
