@@ -290,6 +290,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 			if hook := rec.Attachment.HookName; hook == "SessionStart:startup" || hook == "SessionStart:resume" {
 				pending = map[string]transcriptBackgroundTask{}
 				order = nil
+				clear(launchedAgents)
 				sc.TurnWorkflows, sc.TurnAgents = 0, 0
 				sc.TurnWorkflowsKnown, sc.TurnAgentsKnown = true, true
 			}

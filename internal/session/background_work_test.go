@@ -667,3 +667,21 @@ func TestScanTranscriptBackground_InterimWordingInResultIsFinal(t *testing.T) {
 		}
 	}
 }
+
+// A new Claude process starts with no background agents: an interim
+// notification for an agent the old process launched does not revive it.
+func TestScanTranscriptBackground_InterimAfterNewProcessDoesNotRevive(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"Background sleep probe"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"Background sleep probe"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+		"",
+		`{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:26:10Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Background sleep probe\" is waiting on its own background work</summary>\n<result>still sleeping</result>\n</task-notification>"}}`,
+	}
+	for _, hook := range []string{"SessionStart:startup", "SessionStart:resume"} {
+		lines[2] = `{"type":"attachment","isSidechain":false,"attachment":{"type":"hook_success","hookName":"` + hook + `"}}`
+		sc := scanTranscriptBackground(lines)
+		if got, _ := sc.inFlight(); got.InFlight() {
+			t.Errorf("%s: interim notification revived an agent of the previous process: %+v", hook, got)
+		}
+	}
+}
