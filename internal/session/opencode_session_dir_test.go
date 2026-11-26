@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -199,17 +200,65 @@ func TestQueryOpenCodeSession_V2OverlappingLookupsKeepNewestDirectory(t *testing
 	}
 }
 
-// Under -race: a save during a rebind reads the whole binding in one snapshot.
+// Every row saved during repeated rebinds carries one binding's id, detection
+// time and directory, never a mix of two.
 func TestInstanceToRow_ReadsOpenCodeBindingInOneSnapshot(t *testing.T) {
-	inst := &Instance{ID: "opencode-rebind-save", Tool: "opencode", GroupPath: DefaultGroupPath,
-		ProjectPath: t.TempDir(), OpenCodeSessionID: "ses_OLD"}
-	done := make(chan struct{})
-	go func() { defer close(done); inst.setOpenCodeSession("ses_NEW") }()
-	time.Sleep(100 * time.Millisecond)
-	_, err := instanceToRow(inst)
-	<-done
-	if err != nil {
-		t.Fatalf("instanceToRow: %v", err)
+	type binding struct {
+		id         string
+		detectedAt time.Time
+		dir        string
+	}
+	bindings := make([]binding, 8)
+	byID := make(map[string]binding, len(bindings))
+	for k := range bindings {
+		b := binding{fmt.Sprintf("ses_%d", k), time.Unix(1_700_000_000+int64(k), 0), fmt.Sprintf("/work/wt-%d", k)}
+		bindings[k], byID[b.id] = b, b
+	}
+	rebind := func(b binding, inst *Instance) {
+		inst.mu.Lock()
+		inst.OpenCodeSessionID, inst.OpenCodeDetectedAt = b.id, b.detectedAt
+		inst.OpenCodeSessionDir, inst.openCodeSessionDirID = b.dir, b.id
+		inst.mu.Unlock()
+	}
+	inst := &Instance{ID: "opencode-rebind-save", Tool: "opencode", GroupPath: DefaultGroupPath, ProjectPath: t.TempDir()}
+	rebind(bindings[0], inst)
+
+	start, stop, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		<-start
+		for k := 1; ; k++ {
+			select {
+			case <-stop:
+				return
+			default:
+				rebind(bindings[k%len(bindings)], inst)
+			}
+		}
+	}()
+	close(start)
+	defer func() { close(stop); <-done }()
+
+	for n := 0; n < 500; n++ {
+		row, err := instanceToRow(inst)
+		if err != nil {
+			t.Fatalf("instanceToRow: %v", err)
+		}
+		var saved struct {
+			ID         string `json:"opencode_session_id"`
+			DetectedAt int64  `json:"opencode_detected_at"`
+		}
+		if err := json.Unmarshal(row.ToolData, &saved); err != nil {
+			t.Fatalf("decode tool data: %v", err)
+		}
+		want, ok := byID[saved.ID]
+		if !ok {
+			t.Fatalf("save %d: id %q is not a seeded binding", n, saved.ID)
+		}
+		if dir := ReadOpenCodeSessionDirFromToolData(row.ToolData, saved.ID); saved.DetectedAt != want.detectedAt.Unix() || dir != want.dir {
+			t.Fatalf("save %d: id %s with detected_at %d and dir %q, want %d and %q",
+				n, saved.ID, saved.DetectedAt, dir, want.detectedAt.Unix(), want.dir)
+		}
 	}
 }
 
