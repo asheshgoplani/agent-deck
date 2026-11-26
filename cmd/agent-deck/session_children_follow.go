@@ -83,10 +83,17 @@ const (
 // With cachedChildStatus nothing is captured: UpdateStatus alone, which on a
 // fresh hook is the hook fast path (no tmux call) and otherwise the cached
 // status pass every CLI surface makes. Hook handlers use this.
+//
+// Like the other listings (`list --json`, the web session list), every child
+// shares one StatusUpdatePass and skips native session-ID discovery, which
+// belongs to the poller. A fresh CLI process otherwise ran discovery for every
+// running child, starting ps per child and again per pane process, on a
+// parent's every prompt.
 func buildChildRows(kids []*session.Instance, sampling childRowsSampling) []childRow {
 	rows := make([]childRow, 0, len(kids))
+	var pass session.StatusUpdatePass
 	for _, k := range kids {
-		_ = k.UpdateStatus()
+		_ = pass.UpdateStatusOnly(k)
 		if sampling == sampleChildPanes {
 			_ = k.Substate() // before Status: see buildListJSON
 		}
