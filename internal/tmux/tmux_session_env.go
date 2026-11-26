@@ -188,12 +188,23 @@ func (s *Session) IsConfigured() bool {
 // environment variable set to the given value, excluding the session named
 // `excludeName`. This prevents duplicate tmux sessions running the same Claude
 // conversation (#596).
+//
+// Profiles can share one tmux server, so a session stamped with a different
+// AGENTDECK_PROFILE than the kept session is never killed, whatever id it
+// carries (#3270). An unstamped (legacy) duplicate is still killed.
 func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 	if envValue == "" {
 		return
 	}
 
 	socket := DefaultSocketName()
+	keeperProfile := ""
+	if excludeName != "" {
+		// Reading the whole table tells a missing key from a failed probe.
+		if v, err := runBoundedOutput(socket, "show-environment", "-t", "="+excludeName); err == nil {
+			keeperProfile = sessionEnvironmentValue(string(v), "AGENTDECK_PROFILE")
+		}
+	}
 	// Bounded — see tmuxPollTimeout.
 	out, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
@@ -215,6 +226,9 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 		line := strings.TrimSpace(string(val))
 		if idx := strings.IndexByte(line, '='); idx >= 0 {
 			if line[idx+1:] == envValue {
+				if owner := candidateProfile(socket, name); owner != "" && owner != keeperProfile {
+					continue
+				}
 				statusLog.Warn("killing_duplicate_session",
 					slog.String("session", logging.SanitizeValue(name)),
 					slog.String("env_key", logging.SanitizeValue(envKey)),
@@ -226,6 +240,17 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 			}
 		}
 	}
+}
+
+// candidateProfile returns the AGENTDECK_PROFILE stamped on a session, or ""
+// when it has none. A failed read returns a sentinel no profile can equal, so
+// an unverifiable session is kept rather than killed.
+func candidateProfile(socket, name string) string {
+	out, err := runBoundedOutput(socket, "show-environment", "-t", "="+name)
+	if err != nil {
+		return "\x00unverified"
+	}
+	return sessionEnvironmentValue(string(out), "AGENTDECK_PROFILE")
 }
 
 // SetEnvironment sets an environment variable for this tmux session
