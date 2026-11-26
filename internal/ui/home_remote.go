@@ -175,6 +175,15 @@ func (h *Home) setRemotePending(sessionID, verb string) {
 	// Read at draw time by renderRemoteSessionItem; no row rebuild needed.
 }
 
+// rebuildFlatItemsKeepingSelection rebuilds the rows after a change to the
+// remote caches and keeps the cursor on the row it was on. A plain rebuild
+// only clamps the cursor's index, so a remote row added or removed above it
+// would slide the cursor onto a neighbouring row. When the selected row
+// itself is gone the cursor stays at its position.
+func (h *Home) rebuildFlatItemsKeepingSelection() {
+	h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
+}
+
 // patchRemoteSession applies fn to the cached copy of one remote session and
 // redraws, so the screen reflects a confirmed action now rather than at the
 // next poll; the next fetch reconciles from the remote's truth.
@@ -190,7 +199,7 @@ func (h *Home) patchRemoteSession(remoteName, sessionID string, fn func(*session
 	}
 	h.remoteSessionsMu.Unlock()
 	h.cachedStatusCounts.valid.Store(false)
-	h.rebuildFlatItems()
+	h.rebuildFlatItemsKeepingSelection()
 }
 
 // insertRemoteSession adds (or replaces by id) one session in the cache and
@@ -219,7 +228,7 @@ func (h *Home) insertRemoteSession(info session.RemoteSessionInfo) {
 	h.remoteSessions[info.RemoteName] = sessions
 	h.remoteSessionsMu.Unlock()
 	h.cachedStatusCounts.valid.Store(false)
-	h.rebuildFlatItems()
+	h.rebuildFlatItemsKeepingSelection()
 }
 
 // seedRemotePreview stores content as the preview for a remote session so
@@ -247,7 +256,7 @@ func (h *Home) dropRemoteSession(remoteName, sessionID string) {
 	h.remoteSessionsMu.Unlock()
 	h.noteRemoteSessionRemoved(remoteName, sessionID)
 	h.cachedStatusCounts.valid.Store(false)
-	h.rebuildFlatItems()
+	h.rebuildFlatItemsKeepingSelection()
 }
 
 // remoteActionKey identifies one in-flight remote action for timing.
@@ -381,7 +390,7 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 	// directly), but the pill froze on the previous fetch's totals.
 	// Invalidate so the next View() recomputes.
 	h.cachedStatusCounts.valid.Store(false)
-	h.rebuildFlatItems()
+	h.rebuildFlatItemsKeepingSelection()
 	// #2704: a focus request that arrived before its session did.
 	focusCmd := h.retryPendingRemoteFocus(time.Now())
 	if !roundDone {
