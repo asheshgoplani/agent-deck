@@ -7638,7 +7638,13 @@ func (h *Home) buildForkCmd(
 		}
 		if !fallback {
 			if opts == nil {
-				opts = &session.ClaudeOptions{}
+				// Seed from [claude] config, as `session fork -w` does. A bare
+				// &ClaudeOptions{} reads downstream as "every launch option
+				// off" (only nil falls back to config) and is persisted on the
+				// fork, so the fork would lose --dangerously-skip-permissions,
+				// --chrome and --teammate-mode.
+				userConfig, _ := session.LoadUserConfig()
+				opts = session.NewClaudeOptions(userConfig)
 			}
 			opts.WorkDir = worktreePath
 			opts.WorktreePath = worktreePath
