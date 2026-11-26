@@ -27,10 +27,15 @@ func DiscoverExistingTmuxSessions(existingInstances []*Instance) ([]*Instance, e
 		existingMap[inst.Title] = true
 	}
 
+	profile := sessionProfileEnvValue()
 	var discovered []*Instance
 	for _, sess := range tmuxSessions {
 		// Skip if already tracked
 		if existingMap[sess.Name] || existingMap[sess.DisplayName] {
+			continue
+		}
+		foreign, err := tmuxOwnedByOtherProfile(sess, profile)
+		if err != nil || foreign {
 			continue
 		}
 

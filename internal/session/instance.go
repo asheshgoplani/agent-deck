@@ -3190,6 +3190,9 @@ func (i *Instance) GetTmuxSession() *tmux.Session {
 // SyncTmuxDisplayName updates tmux-rendered UI that reflects the current title.
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
+		if i.checkRecoveredTmuxOwnership() != nil {
+			return
+		}
 		tmuxSess.DisplayName = i.Title
 		tmuxSess.SetGroupPath(i.GroupPath)
 		tmuxSess.ConfigureStatusBar()

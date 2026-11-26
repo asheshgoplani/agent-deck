@@ -274,7 +274,7 @@ func (i *Instance) prepareRestartMCPConfig() {
 // Returns a zero value (which always skips the stop) when the instance has
 // no tmux session.
 func (i *Instance) ServiceUnitOwnership() tmux.ServiceUnitOwnership {
-	if i.tmuxSession == nil {
+	if i.tmuxSession == nil || i.checkRecoveredTmuxOwnership() != nil {
 		return tmux.ServiceUnitOwnership{}
 	}
 	return i.tmuxSession.ServiceUnitOwnership()
@@ -311,6 +311,10 @@ func (i *Instance) KillAndWait() error {
 }
 
 func (i *Instance) killInternal(sync bool) error {
+	if err := i.checkRecoveredTmuxOwnership(); err != nil {
+		return err
+	}
+
 	// #1580/#1775: supersede any in-flight fast-death watcher BEFORE the tmux
 	// kill (not after). watchForFastDeath only writes a SpawnFailureRecord /
 	// lifecycle event on an iteration whose gen check passes; bumping here

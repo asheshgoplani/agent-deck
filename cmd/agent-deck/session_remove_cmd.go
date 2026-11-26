@@ -15,8 +15,8 @@ import (
 //
 // By default only sessions in stopped/error state may be removed; --force
 // bypasses the gate. --all-errored removes every session in error state.
-// --prune-worktree additionally kills the tmux process and removes any git
-// worktree associated with the session (registry-only by default).
+// Removal stops the session. --prune-worktree also removes its git worktree
+// when no other session uses it.
 //
 // Claude transcripts under ~/.claude/projects/<slug>/ are never touched.
 func handleSessionRemove(profile string, args []string) {
@@ -26,7 +26,7 @@ func handleSessionRemove(profile string, args []string) {
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	force := fs.Bool("force", false, "Remove even when the session is running/waiting/idle; with --all-errored, also include pinned sessions; with --prune-worktree, also remove a worktree when other profiles that cannot be read might use it (reported as profiles_unchecked in --json) (destructive)")
 	allErrored := fs.Bool("all-errored", false, "Remove every unpinned session currently in the 'error' state (bulk); pinned sessions are skipped unless --force is given")
-	pruneWorktree := fs.Bool("prune-worktree", false, "Also kill the process and remove any git worktree (destructive; a worktree another session still uses is kept)")
+	pruneWorktree := fs.Bool("prune-worktree", false, "Also remove the git worktree if no other session uses it (destructive)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session remove <id|title> [options]")
@@ -37,9 +37,9 @@ func handleSessionRemove(profile string, args []string) {
 		fmt.Println("--force is given; a row with no live process is removed. 'remove'")
 		fmt.Println("uses the same guard.")
 		fmt.Println()
-		fmt.Println("This is registry-only by default: Claude transcripts under")
-		fmt.Println("~/.claude/projects/ are preserved. Pass --prune-worktree to also")
-		fmt.Println("kill the process and delete the git worktree (destructive).")
+		fmt.Println("Removal stops the session and preserves Claude transcripts under")
+		fmt.Println("~/.claude/projects/. Pass --prune-worktree to also delete an")
+		fmt.Println("unused git worktree (destructive).")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
