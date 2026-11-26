@@ -325,6 +325,55 @@ func newSandboxWorktree(t *testing.T, sb *harness.Sandbox, name string) (string,
 	return repo, wt
 }
 
+func TestRemoveKeepsForeignRecoveredWorktree(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"session remove", []string{"session", "remove", "recovered-copy", "--force", "--prune-worktree", "--json"}},
+		{"remove", []string{"remove", "recovered-copy", "--force", "--json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := removeSandbox(t)
+			const id = "recovered-copy"
+			repo, worktree := newSandboxWorktree(t, sb, id)
+			seedDeadSession(t, sb, id, worktree, repo)
+			db := sandboxStateDB(t, sb)
+			row, err := db.LoadInstanceByID(id)
+			if err != nil || row == nil {
+				t.Fatalf("load fixture: %+v %v", row, err)
+			}
+			row.CreatedAt = time.Time{}
+			if err := db.SaveInstance(row); err != nil {
+				t.Fatal(err)
+			}
+			_ = db.Close()
+			sb.Tmux("new-session", "-d", "-s", row.TmuxSession, "-c", worktree, "sleep 120")
+			sb.Tmux("set-environment", "-t", row.TmuxSession, "AGENTDECK_PROFILE", "work")
+
+			out, err := runRemoveCLI(t, sb, tc.args...)
+			if err != nil {
+				t.Fatalf("remove recovered row: %v\n%s", err, out)
+			}
+			if loadSandboxRow(t, sb, id) != nil {
+				t.Fatal("the recovered registry row remains")
+			}
+			if _, err := os.Stat(worktree); err != nil {
+				t.Errorf("the owner lost its worktree: %v", err)
+			}
+			if !tmuxSessionAlive(sb, row.TmuxSession) {
+				t.Error("the owner lost its live tmux session")
+			}
+			var result struct {
+				WorktreeKept bool `json:"worktree_kept"`
+			}
+			if err := json.Unmarshal([]byte(out), &result); err != nil || !result.WorktreeKept {
+				t.Errorf("worktree_kept must report the retained worktree: %v\n%s", err, out)
+			}
+		})
+	}
+}
+
 // `session cleanup` is registry-only: --yes alone must remove the dead row
 // but keep its git worktree directory (uncommitted work lives there). Only
 // an explicit --prune-worktree deletes it.

@@ -990,7 +990,12 @@ func handleConductorTeardown(_ string, args []string) {
 				if inst := session.FindConductorInstance(instances, meta.Name); inst != nil {
 					sessionTitle = inst.Title
 					if inst.Exists() {
-						_ = inst.Kill()
+						if err := inst.KillAndWait(); err != nil {
+							NewCLIOutput(*jsonOutput, false).Error(
+								fmt.Sprintf("failed to stop conductor %s: %v", meta.Name, err), ErrCodeInvalidOperation)
+							exitCLI(1)
+							return
+						}
 					}
 					if !*jsonOutput {
 						fmt.Printf("  [ok] %s stopped\n", sessionTitle)

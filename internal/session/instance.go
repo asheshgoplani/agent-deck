@@ -126,6 +126,7 @@ const (
 // Instance represents a single agent/shell session
 type Instance struct {
 	storageSnapshot *instanceStorageSnapshot
+	storageProfile  string // The profile that loaded this row.
 
 	ID          string `json:"id"`
 	Title       string `json:"title"`

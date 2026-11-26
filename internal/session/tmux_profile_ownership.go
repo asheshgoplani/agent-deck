@@ -19,8 +19,8 @@ func tmuxOwnedByOtherProfile(sess *tmux.Session, profile string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if owner != "" && owner != profile {
-		return true, nil
+	if owner != "" {
+		return owner != profile, nil
 	}
 	if id == "" {
 		return false, nil
@@ -61,7 +61,11 @@ func (i *Instance) checkRecoveredTmuxOwnership() error {
 	if !i.CreatedAt.IsZero() {
 		return nil
 	}
-	return checkRecoveredTmuxOwnership(i.tmuxSession, i.CreatedAt, sessionProfileEnvValue())
+	profile := i.storageProfile
+	if profile == "" {
+		profile = sessionProfileEnvValue()
+	}
+	return checkRecoveredTmuxOwnership(i.tmuxSession, i.CreatedAt, profile)
 }
 
 // checkRecoveredTmuxOwnership protects copies created by older imports.
