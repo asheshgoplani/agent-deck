@@ -25,6 +25,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -72,15 +73,20 @@ func DisableKittyKeyboard(w io.Writer) {
 // Takes a writer so tests can substitute a buffer for os.Stdout.
 func RestoreLegacyKeyboardCmd(w io.Writer) tea.Cmd {
 	return func() tea.Msg {
-		restoreLegacyKeyboard(w, false)
+		restoreLegacyKeyboard(w, session.GetTmuxSettings().ExtendedKeysOff())
 		return nil
 	}
 }
 
 // restoreLegacyKeyboard pops Kitty mode and, when extendedKeysOff, also resets
-// xterm modifyOtherKeys.
+// xterm modifyOtherKeys so a tmux (e.g. a remote one) that enabled it during
+// the attach cannot leave it on. With extended keys on (default) the output is
+// exactly the Kitty pop, byte-identical to before.
 func restoreLegacyKeyboard(w io.Writer, extendedKeysOff bool) {
 	DisableKittyKeyboard(w)
+	if extendedKeysOff {
+		DisableModifyOtherKeys(w)
+	}
 }
 
 // EnableKittyKeyboard writes the escape sequence that pushes Kitty keyboard

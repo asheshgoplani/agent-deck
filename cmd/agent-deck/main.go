@@ -411,7 +411,7 @@ func printCredsRefreshRemoved() {
 }
 
 func enableModifyOtherKeys(w io.Writer, settings session.TmuxSettings) {
-	if settings.Options["extended-keys"] == "off" {
+	if settings.ExtendedKeysOff() {
 		return
 	}
 	ui.EnableModifyOtherKeys(w)

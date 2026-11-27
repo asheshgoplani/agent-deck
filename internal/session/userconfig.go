@@ -5807,9 +5807,13 @@ func GetTmuxSettings() TmuxSettings {
 	return config.Tmux
 }
 
-// ExtendedKeysOff reports whether [tmux.options] extended-keys is "off".
+// ExtendedKeysOff reports whether [tmux.options] extended-keys is "off". The
+// value is compared case-insensitively with surrounding whitespace trimmed,
+// like the other TmuxSettings getters. It must be written as the quoted TOML
+// string "off": the table is map[string]string, so an unquoted false fails the
+// whole config.toml decode.
 func (s TmuxSettings) ExtendedKeysOff() bool {
-	return s.Options["extended-keys"] == "off"
+	return strings.ToLower(strings.TrimSpace(s.Options["extended-keys"])) == "off"
 }
 
 // SharedViewOverrides is the user's [tmux.options] map for the attach paths
