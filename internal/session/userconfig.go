@@ -5807,6 +5807,11 @@ func GetTmuxSettings() TmuxSettings {
 	return config.Tmux
 }
 
+// ExtendedKeysOff reports whether [tmux.options] extended-keys is "off".
+func (s TmuxSettings) ExtendedKeysOff() bool {
+	return s.Options["extended-keys"] == "off"
+}
+
 // SharedViewOverrides is the user's [tmux.options] map for the attach paths
 // that have no Instance at hand (the web bridge, the embedded terminal,
 // Shift+Enter): tmux.ApplySharedViewSize honours the same window-size and

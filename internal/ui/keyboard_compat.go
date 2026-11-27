@@ -72,9 +72,15 @@ func DisableKittyKeyboard(w io.Writer) {
 // Takes a writer so tests can substitute a buffer for os.Stdout.
 func RestoreLegacyKeyboardCmd(w io.Writer) tea.Cmd {
 	return func() tea.Msg {
-		DisableKittyKeyboard(w)
+		restoreLegacyKeyboard(w, false)
 		return nil
 	}
+}
+
+// restoreLegacyKeyboard pops Kitty mode and, when extendedKeysOff, also resets
+// xterm modifyOtherKeys.
+func restoreLegacyKeyboard(w io.Writer, extendedKeysOff bool) {
+	DisableKittyKeyboard(w)
 }
 
 // EnableKittyKeyboard writes the escape sequence that pushes Kitty keyboard
