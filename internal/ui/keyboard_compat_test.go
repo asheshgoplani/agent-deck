@@ -920,3 +920,17 @@ func TestCSIuReader_DoubleEsc_PollTimeout_BothFlushed(t *testing.T) {
 		t.Fatalf("second ESC: got %q (n=%d)", buf[:n], n)
 	}
 }
+
+// Default (extended-keys on/absent) must stay byte-identical to main; with it
+// off, the attach-return restore also resets xterm modifyOtherKeys (N3).
+func TestRestoreLegacyKeyboardExtendedKeysOff(t *testing.T) {
+	var on, off bytes.Buffer
+	restoreLegacyKeyboard(&on, false)
+	restoreLegacyKeyboard(&off, true)
+	if on.String() != "\x1b[<u" {
+		t.Errorf("default restore wrote %q, want exactly %q", on.String(), "\x1b[<u")
+	}
+	if want := "\x1b[<u\x1b[>4;0m"; off.String() != want {
+		t.Errorf("extended-keys=off restore wrote %q, want %q", off.String(), want)
+	}
+}
