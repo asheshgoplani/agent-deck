@@ -410,6 +410,13 @@ func printCredsRefreshRemoved() {
 	fmt.Printf("creds-refresh was removed in %s. Disable any old unit with: systemctl --user disable --now agent-deck-creds-refresh. For long-lived logins use: claude setup-token (see https://github.com/asheshgoplani/agent-deck/blob/main/docs/guide/tools.md#vendor-terms-and-logins).\n", credsRefreshRemovedIn)
 }
 
+func enableModifyOtherKeys(w io.Writer, options map[string]string) {
+	if options["extended-keys"] == "off" {
+		return
+	}
+	ui.EnableModifyOtherKeys(w)
+}
+
 func main() {
 	processStart := time.Now() // tui.first_frame start (optiming); one clock read
 	// Must run before the first config load (initUpdateSettings below).
@@ -1433,7 +1440,9 @@ func main() {
 	// v1.3.10 cannot distinguish Shift+Enter from Enter on a fresh launch,
 	// and the "open in new iTerm window" binding shipped in #1077 falls
 	// through to the in-pane attach handler. Plain Enter is unaffected.
-	ui.EnableModifyOtherKeys(os.Stdout)
+	// An explicit extended-keys=off also keeps the outer terminal in legacy
+	// mode; otherwise its modified Unicode keys can be dropped by tmux 3.4.
+	enableModifyOtherKeys(os.Stdout, session.GetTmuxSettings().Options)
 	defer ui.DisableModifyOtherKeys(os.Stdout)
 
 	// Check for atuin pty-proxy incompatibility (#1558).

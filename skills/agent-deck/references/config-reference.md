@@ -1523,7 +1523,7 @@ Setting a key here does more than add an option: for the keys agent-deck sets it
 | Key | agent-deck default | Why it exists |
 |-----|--------------------|---------------|
 | `escape-time` | `10` | tmux's 500ms default makes Vim and editors feel sluggish. |
-| `extended-keys` | `on` | Forwards Shift+Enter and other modified keys to the agent (tmux 3.2+). A deliberate `set -s extended-keys off` in your tmux config needs this opt-out to survive. |
+| `extended-keys` | `on` | Forwards Shift+Enter and other modified keys to the agent (tmux 3.2+). `off` also stops Agent Deck from requesting xterm `modifyOtherKeys` from the outer terminal, avoiding dropped modified Unicode keys with tmux 3.4. A deliberate `set -s extended-keys off` in your tmux config needs this opt-out to survive. |
 | `extended-keys-format` | `csi-u` | Delivers modified keys as `ESC[13;2u` (the kitty form Claude Code reads) rather than xterm's `ESC[27;2;13~`, which Claude Code ignores. |
 | `terminal-features` | `*:hyperlinks:extkeys` | OSC 8 hyperlink tracking plus extended key reporting. Server-wide — see the note below. |
 | `window-size` | `latest` (`largest` on tmux < 3.1) | The window follows the client that most recently attached, typed or resized, so two people on one session each see it full-size while using it; `smallest` boxed every larger terminal into a corner with dots, `largest` produced a size no client could show once geometries crossed. Accepted values: `largest`, `smallest`, `manual`, `latest`. |
