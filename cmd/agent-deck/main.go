@@ -417,6 +417,11 @@ func enableModifyOtherKeys(w io.Writer, options map[string]string) {
 	ui.EnableModifyOtherKeys(w)
 }
 
+func execSelfRestart(w io.Writer, exe string, handoff ui.RestartHandoff) error {
+	ui.DisableModifyOtherKeys(w)
+	return ui.ExecSelf(exe, handoff)
+}
+
 func main() {
 	processStart := time.Now() // tui.first_frame start (optiming); one clock read
 	// Must run before the first config load (initUpdateSettings below).
@@ -1538,7 +1543,7 @@ func main() {
 	// still does there is no TUI to go back to, so say so and exit non-zero.
 	if exe, ok := homeModel.RestartTarget(); ok {
 		maintenanceCancel()
-		if err := ui.ExecSelf(exe, homeModel.RestartHandoff()); err != nil {
+		if err := execSelfRestart(os.Stdout, exe, homeModel.RestartHandoff()); err != nil {
 			fmt.Fprintf(os.Stderr, "Could not restart in place (%v). Run `agent-deck` again.\n", err)
 			exitCLI(1)
 		}
