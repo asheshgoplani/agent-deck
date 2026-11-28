@@ -253,10 +253,14 @@ func (d *Desk) launch(ctx context.Context, req Request, r Result, p Parsed) (Res
 		refuse(&r, RefusedUnsafe, "That name looks like a secret; type it instead.")
 		return r, nil
 	}
-	group, profile, ok := d.launchGroup(spokenGroup, req.On, spec.Host, all)
+	// groups come only from this profile's sessions (and the remotes)
+	group, profile, ok := d.launchGroup(spokenGroup, req.On, spec.Host, profileOnly(all, req.Profile))
 	if !ok {
 		refuse(&r, RefusedNotFound, "I found no group of yours called "+spokenGroup+".")
 		return r, nil
+	}
+	if spec.Host == "" && req.Profile != "" {
+		profile = req.Profile // a local launch is in the profile voice runs in
 	}
 	spec.Group, spec.Profile = group, profile
 	for _, s := range d.Config.mine(all) {
@@ -653,6 +657,8 @@ func (d *Desk) lifecycle(ctx context.Context, req Request, r *Result, action str
 	}
 	switch {
 	case len(done) == 0 && never == len(failed):
+		why := RefusedUnsafe
+		r.Refused = &why
 		r.Say = "Nothing done: " + strings.Join(firstN(failed, maxSpokenItems), ", ") + " is a conductor or the session you are on now; do that on screen."
 		if len(failed) > 1 {
 			r.Say = "Nothing done: " + strings.Join(firstN(failed, maxSpokenItems), ", ") + " are conductors or the session you are on now; do that on screen."

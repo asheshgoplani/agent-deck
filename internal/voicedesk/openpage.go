@@ -91,9 +91,11 @@ func (d *Desk) openPageOn(ctx context.Context, req Request, r Result, p Parsed) 
 		return r, nil
 	}
 	all, _ := d.sessions(ctx)
-	for _, s := range d.Config.mine(all) {
-		if s.ID == req.On {
-			return d.openPage(ctx, req, r, p, s)
+	if idCount(all, req.On) == 1 { // --on is an id only: two hosts with it, ask for a name
+		for _, s := range d.Config.mine(profileOnly(all, req.Profile)) {
+			if s.ID == req.On {
+				return d.openPage(ctx, req, r, p, s)
+			}
 		}
 	}
 	refuse(&r, RefusedNotFound, "Which session's page? Say its name.")
@@ -117,6 +119,7 @@ func (d *Desk) openPageNamed(ctx context.Context, req Request, r Result, p Parse
 		return notMine(p.Lang), nil // decided before any listing
 	}
 	all, _ := d.sessions(ctx)
+	all = profileOnly(all, req.Profile) // never another profile's page
 	q := newNameQuery(p.Name, hostsOf(all))
 	res := resolve(q, all, d.Config)
 	switch res.Kind {
