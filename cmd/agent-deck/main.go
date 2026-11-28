@@ -417,8 +417,12 @@ func enableModifyOtherKeys(w io.Writer, settings session.TmuxSettings) {
 	ui.EnableModifyOtherKeys(w)
 }
 
-func execSelfRestart(w io.Writer, exe string, handoff ui.RestartHandoff) error {
-	ui.DisableModifyOtherKeys(w)
+func execSelfRestart(w io.Writer, settings session.TmuxSettings, exe string, handoff ui.RestartHandoff) error {
+	// Only extended-keys=off users need the reset (startup skipped enabling it
+	// for them); default users stay byte-identical to main.
+	if settings.ExtendedKeysOff() {
+		ui.DisableModifyOtherKeys(w)
+	}
 	return ui.ExecSelf(exe, handoff)
 }
 
@@ -1546,7 +1550,7 @@ func main() {
 	// still does there is no TUI to go back to, so say so and exit non-zero.
 	if exe, ok := homeModel.RestartTarget(); ok {
 		maintenanceCancel()
-		if err := execSelfRestart(os.Stdout, exe, homeModel.RestartHandoff()); err != nil {
+		if err := execSelfRestart(os.Stdout, session.GetTmuxSettings(), exe, homeModel.RestartHandoff()); err != nil {
 			fmt.Fprintf(os.Stderr, "Could not restart in place (%v). Run `agent-deck` again.\n", err)
 			exitCLI(1)
 		}
