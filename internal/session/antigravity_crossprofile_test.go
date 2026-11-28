@@ -189,3 +189,84 @@ func TestAntigravityFailClosedWarningLoggedOncePerCause(t *testing.T) {
 		t.Fatalf("sibling lookup warning logged %d times, want 1\n%s", got, buf.String())
 	}
 }
+
+// countAntigravityProfileScans counts all-profile scans for the test.
+func countAntigravityProfileScans(t *testing.T) *int {
+	t.Helper()
+	n := 0
+	antigravityProfileScanHook = func() { n++ }
+	t.Cleanup(func() { antigravityProfileScanHook = nil })
+	return &n
+}
+
+// A candidate that another profile's session owns stays owned, so repeated
+// checks within the recheck window must not reopen every profile DB.
+func TestAntigravityCrossProfileOwnedResultReused(t *testing.T) {
+	workDir := setupAntigravityCrossProfileHome(t, "conv-b")
+	storageB := newAntigravityProfileStorage(t, "profile-b")
+	saveAntigravityProfileSession(t, storageB, "agy-owner-profile-b", workDir, "conv-b")
+	storageA := newAntigravityProfileStorage(t, "profile-a")
+	statedb.SetGlobal(storageA.GetDB())
+	a := saveAntigravityProfileSession(t, storageA, "agy-profile-a", workDir, "")
+
+	scans := countAntigravityProfileScans(t)
+	for n := 0; n < 5; n++ {
+		if !a.antigravitySessionIDBoundElsewhere("conv-b") {
+			t.Fatal("conv-b is owned by profile B's session")
+		}
+	}
+	if *scans != 1 {
+		t.Fatalf("owned-elsewhere check scanned the profiles %d times, want 1", *scans)
+	}
+}
+
+// An unbound live sibling in another profile keeps the workspace ambiguous,
+// so repeated checks within the recheck window must not reopen every DB.
+func TestAntigravityCrossProfileAmbiguousResultReused(t *testing.T) {
+	workDir := setupAntigravityCrossProfileHome(t, "conv-new")
+	storageB := newAntigravityProfileStorage(t, "profile-b")
+	saveAntigravityProfileSession(t, storageB, "agy-profile-b", workDir, "")
+	storageA := newAntigravityProfileStorage(t, "profile-a")
+	statedb.SetGlobal(storageA.GetDB())
+	a := saveAntigravityProfileSession(t, storageA, "agy-profile-a", workDir, "")
+
+	scans := countAntigravityProfileScans(t)
+	for n := 0; n < 5; n++ {
+		if !a.antigravityUnboundSiblingSharesWorkspace() {
+			t.Fatal("profile B's unbound sibling makes the workspace ambiguous")
+		}
+	}
+	if *scans != 1 {
+		t.Fatalf("sibling check scanned the profiles %d times, want 1", *scans)
+	}
+}
+
+// A "free" answer is what allows a bind, so it is never reused: every check
+// that could bind reads the DBs again.
+func TestAntigravityCrossProfileFreeResultNotReused(t *testing.T) {
+	workDir := setupAntigravityCrossProfileHome(t, "conv-mine")
+	storageA := newAntigravityProfileStorage(t, "profile-a")
+	statedb.SetGlobal(storageA.GetDB())
+	a := saveAntigravityProfileSession(t, storageA, "agy-profile-a", workDir, "")
+	storageB := newAntigravityProfileStorage(t, "profile-b")
+
+	scans := countAntigravityProfileScans(t)
+	for n := 0; n < 3; n++ {
+		if a.antigravitySessionIDBoundElsewhere("conv-mine") {
+			t.Fatal("conv-mine is not owned")
+		}
+		if a.antigravityUnboundSiblingSharesWorkspace() {
+			t.Fatal("no sibling shares the workspace")
+		}
+	}
+	if *scans != 6 {
+		t.Fatalf("free answers scanned the profiles %d times, want 6 (never reused)", *scans)
+	}
+
+	// Once another profile's session takes conv-mine, the very next check
+	// must see it.
+	saveAntigravityProfileSession(t, storageB, "agy-owner-profile-b", workDir, "conv-mine")
+	if !a.antigravitySessionIDBoundElsewhere("conv-mine") {
+		t.Fatal("a free answer was reused after the conversation became owned")
+	}
+}

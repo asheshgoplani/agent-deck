@@ -996,6 +996,9 @@ func (i *Instance) antigravitySessionIDBoundElsewhere(candidate string) bool {
 // too. Other profiles are opened read-only. Any error means some sessions are
 // unknown, and callers must fail closed.
 func (i *Instance) antigravityAnyProfileRow(match func(*statedb.InstanceRow) bool) (bool, error) {
+	if antigravityProfileScanHook != nil {
+		antigravityProfileScanHook()
+	}
 	found := false
 	ownPath := ""
 	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
@@ -1020,6 +1023,10 @@ func (i *Instance) antigravityAnyProfileRow(match func(*statedb.InstanceRow) boo
 	}
 	return antigravityOtherProfilesRow(ownPath, match)
 }
+
+// antigravityProfileScanHook, when set by a test, is called once per
+// all-profile scan, so tests can count how often the state DBs are read.
+var antigravityProfileScanHook func()
 
 // antigravityOtherProfilesRow scans every local profile's state DB except the
 // one at ownPath, read-only.
