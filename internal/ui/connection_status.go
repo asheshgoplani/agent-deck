@@ -109,6 +109,18 @@ func remoteRowStatusGlyph(status, substate string, archived bool) (icon string, 
 	return rowStatusGlyph(session.Status(status), session.Substate(substate), archived)
 }
 
+// rowTitleStyle distinguishes status without relying on colour.
+func rowTitleStyle(status session.Status) lipgloss.Style {
+	switch status {
+	case session.StatusRunning, session.StatusWaiting:
+		return SessionTitleActive
+	case session.StatusError:
+		return SessionTitleError
+	default:
+		return SessionTitleDefault
+	}
+}
+
 // authHoldHintLines is the preview-pane hint for a session held out of automatic
 // restarts because its agent cannot authenticate.
 //
