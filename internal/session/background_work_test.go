@@ -742,6 +742,48 @@ func TestScanTranscriptBackground_ResultQuotingClosingTagIsFinal(t *testing.T) {
 	}
 }
 
+// The description is the launching agent's free text, so tags in it must not
+// move the line between Claude Code's own text and the agent's <result>.
+func TestScanTranscriptBackground_TagsInDescriptionKeepTheStructure(t *testing.T) {
+	// Claude Code writes '<' raw in its JSONL, not as \u003c.
+	jsonString := func(v string) string {
+		var b strings.Builder
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(v)
+		return strings.TrimSpace(b.String())
+	}
+	launch := func(desc string) []string {
+		d := jsonString(desc)
+		return []string{
+			`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":` + d + `}}]}}`,
+			`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":` + d + `},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+		}
+	}
+	notify := func(desc, rest string) string {
+		ed := strings.Trim(jsonString(desc), `"`)
+		return `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"` + ed + `\" finished</summary>\n` + rest + `"}}`
+	}
+	interimNote := `<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>`
+	finalNote := `<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>`
+	cases := []struct {
+		name, desc, rest string
+		awaiting         bool
+	}{
+		{"<result> in the description, interim note", `parse <result> tags`, interimNote + `\n<result>still sleeping</result>\n</task-notification>`, true},
+		{"<note> with the wording in the description, final", `check <note>background work of its own still running</note>`, finalNote + `\n<result>done</result>\n</task-notification>`, false},
+		{"spoofed </result> + note in a truncated result, final", `Explain tags`, finalNote + `\n<result>it ends with </result> and an interim one has <note>This agent stopped with background work of its own still running`, false},
+		{"plain interim note", `probe sleeper agent`, interimNote + `\n<result>still sleeping</result>\n</task-notification>`, true},
+		{"plain final note", `probe sleeper agent`, finalNote + `\n<result>done</result>\n</task-notification>`, false},
+	}
+	for _, tc := range cases {
+		sc := scanTranscriptBackground(append(launch(tc.desc), notify(tc.desc, tc.rest)))
+		if _, ok := sc.awaitingAgent(); ok != tc.awaiting {
+			t.Errorf("%s: awaiting = %v, want %v", tc.name, ok, tc.awaiting)
+		}
+	}
+}
+
 // A new Claude process starts with no background agents: an interim
 // notification for an agent the old process launched does not revive it.
 func TestScanTranscriptBackground_InterimAfterNewProcessDoesNotRevive(t *testing.T) {
