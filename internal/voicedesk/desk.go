@@ -820,14 +820,24 @@ func (d *Desk) tell(ctx context.Context, req Request, r Result, p Parsed, s Sess
 	onIt := req.On != "" && req.On == s.ID && !req.onShared
 	// after a choice the message was never read back: always ask
 	if onIt && !risky(msg) && !picked {
+		// no question, so check the session as it is now, as the yes path
+		// does: gone, not his, stopped, failed or at a menu gets nothing
+		fresh, why, say := d.recheckFresh(ctx, s, true)
+		if why == "" && !inProfile(fresh, req.Profile) {
+			why, say = RefusedNotFound, capitalize(name)+" is in another profile; nothing sent."
+		}
+		if why != "" {
+			refuse(&r, why, say)
+			return r, nil
+		}
 		var err error
 		if !req.DryRun {
 			err = d.Deck.Send(ctx, s, msg)
 		}
-		var why string
-		r.Say, why = sendLine(err, name)
-		if why != "" {
-			r.Refused = &why
+		var sent string
+		r.Say, sent = sendLine(err, name)
+		if sent != "" {
+			r.Refused = &sent
 		}
 		return r, nil
 	}

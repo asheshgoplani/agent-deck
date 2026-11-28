@@ -118,6 +118,10 @@ func (f FileStore) Put(p Pending) error {
 	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
 		return fmt.Errorf("creating voice pending dir: %w", err)
 	}
+	// MkdirAll keeps the rights of a dir that already exists
+	if err := os.Chmod(f.Dir, 0o700); err != nil {
+		return fmt.Errorf("securing voice pending dir: %w", err)
+	}
 	f.Sweep()
 	path, err := f.path(p.Token)
 	if err != nil {
