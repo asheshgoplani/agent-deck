@@ -50,7 +50,7 @@ func TestCountByStatusMatchesListTotal(t *testing.T) {
 		t.Fatalf("precondition: list --json set = %d, want 2 (source hidden)", len(listVisible))
 	}
 
-	counts := countByStatus(all)
+	counts, _ := countByStatus(all, nil)
 	if counts.total != len(listVisible) {
 		t.Fatalf("status --json total = %d, list --json total = %d; they must agree (source %q leaked into the count)", counts.total, len(listVisible), source.ID)
 	}
@@ -68,7 +68,7 @@ func TestCountByStatusExcludesArchived(t *testing.T) {
 	archivedWaiting := &session.Instance{ID: "archived-waiting", Status: session.StatusWaiting, ArchivedAt: time.Now()}
 	archivedIdle := &session.Instance{ID: "archived-idle", Status: session.StatusIdle, ArchivedAt: time.Now()}
 
-	counts := countByStatus([]*session.Instance{live, archivedWaiting, archivedIdle})
+	counts, _ := countByStatus([]*session.Instance{live, archivedWaiting, archivedIdle}, nil)
 	if counts.total != 1 || counts.waiting != 0 || counts.idle != 0 {
 		t.Fatalf("counts = %+v, want total=1 waiting=0 idle=0 (archived sessions excluded)", counts)
 	}
