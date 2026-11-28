@@ -140,7 +140,7 @@ yours called …"; it is never typed into the session as plain text.
 
 ## How it acts
 
-The desk lists sessions through the same sources as `agent-deck needs-me` (every local profile's `list --json`, every
+The desk lists sessions through the same sources as `agent-deck needs-me`, but only this profile's `list --json` (`-p`), and every
 configured remote's session list, in parallel with a per-host timeout; an unreachable host is said, not fatal). It
 acts through the commands a person would type: `session output --json` and `session send --message-file - --no-wait`
 for this machine, `remote <name> output` and `remote <name> send` for a remote. The message goes on stdin, never on

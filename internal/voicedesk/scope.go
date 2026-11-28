@@ -36,6 +36,19 @@ func switchable(s Session, profile string) bool {
 }
 
 // switchableOnly keeps the sessions voice may switch to.
+// profileOnly keeps the sessions of this profile (and the remotes): every
+// intent resolves only among them, so the rule does not rest on the deck
+// listing only this profile.
+func profileOnly(all []Session, profile string) []Session {
+	out := make([]Session, 0, len(all))
+	for _, s := range all {
+		if inProfile(s, profile) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func switchableOnly(all []Session, profile string) []Session {
 	out := make([]Session, 0, len(all))
 	for _, s := range all {

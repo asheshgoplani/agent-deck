@@ -136,7 +136,7 @@ func runVoiceDo(profile string, args []string, stdout, stderr io.Writer) int {
 	}
 	// Not mine: decided from the words alone, before any config, state or
 	// session listing, so the caller types the sentence on at once.
-	if a.pending == "" && voicedesk.Parse(a.sentence).Intent == voicedesk.IntentNone {
+	if a.pending == "" && voicedesk.ParseFrom(a.sentence, a.from).Intent == voicedesk.IntentNone {
 		code := writeVoiceDo(stdout, stderr, voicedesk.Result{Handled: false, Intent: voicedesk.IntentNone,
 			Lang: voicedesk.Parse(a.sentence).Lang, Show: voicedesk.Show{Kind: "none", Items: []voicedesk.ShowItem{}}, DryRun: a.dryRun}, a.jsonOut)
 		sweepVoicePending(profile) // after the answer is out: removes only questions older than 60 s

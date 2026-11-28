@@ -367,7 +367,7 @@ func TestDryRunNeverSendsOrStores(t *testing.T) {
 	find := h.do(Request{Sentence: "find the phone build session", DryRun: true})
 	real := h.say("find the phone build session")
 	yes := h.do(Request{Sentence: "yes", Pending: real.Confirm.Token, DryRun: true, AnswerDelayMs: 500, HasAnswerDelay: true})
-	if find.Confirm == nil || yes.Then == nil || len(h.deck.shown) != 0 || h.store.Len() != 1 {
+	if find.Confirm == nil || yes.Then != nil || len(h.deck.shown) != 0 || h.store.Len() != 1 {
 		t.Fatalf("dry run switched or consumed: find=%+v yes=%+v shown=%v store=%d", find, yes, h.deck.shown, h.store.Len())
 	}
 }

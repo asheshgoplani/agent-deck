@@ -242,12 +242,7 @@ func (d *Desk) do(ctx context.Context, req Request) (Result, error) {
 			return r, err
 		}
 	}
-	p := Parse(req.Sentence)
-	if p.Intent == IntentNone && switchCaller(req.From) {
-		// "switch to X", "go to X", "X pe jao" from the phone, glasses or
-		// typed text: the find path (a yes before the switch)
-		p = parseWith(req.Sentence, switchGrammar)
-	}
+	p := ParseFrom(req.Sentence, req.From)
 	if p.Intent == IntentNone {
 		return notMine(p.Lang), nil // decided before any session listing
 	}
@@ -437,6 +432,9 @@ func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Re
 	r.Target = &t
 	// the session may have changed in the seconds since the question
 	fresh, why, say := d.recheckFresh(ctx, s, p.Action == actionSend)
+	if why == "" && !inProfile(fresh, req.Profile) {
+		why, say = RefusedNotFound, capitalize(spokenTitle(fresh.Title, fresh.Host))+" is in another profile; nothing done."
+	}
 	if why != "" {
 		refuse(&r, why, say)
 		return r, nil
@@ -550,7 +548,9 @@ func (d *Desk) switchTo(ctx context.Context, req Request, r *Result, s Session) 
 	}
 	t := s.Ref()
 	r.Target = &t
-	r.Then = &Then{Action: "switch", Target: t}
+	if !req.DryRun {
+		r.Then = &Then{Action: "switch", Target: t} // a dry run never switches
+	}
 	r.Say = "Switching to " + spokenTitle(s.Title, s.Host) + "."
 }
 
@@ -561,7 +561,7 @@ func (d *Desk) chosen(ctx context.Context, req Request, p Pending, c Ref, lang s
 	all, _ := d.sessions(ctx)
 	found := false
 	for _, x := range all {
-		if x.ID == c.ID && x.Host == c.Host && !x.Archived {
+		if x.ID == c.ID && x.Host == c.Host && !x.Archived && inProfile(x, req.Profile) {
 			s, found = x, true
 			break
 		}
@@ -620,7 +620,15 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 		// find ends in a switch: only his own profile, never a conductor
 		res = findAll(q, switchableOnly(all, req.Profile), d.Config)
 	} else {
-		res = resolve(q, all, d.Config)
+		res = resolve(q, profileOnly(all, req.Profile), d.Config)
+		if res.Kind == resolvedNotFound {
+			// the name fits only a session of another profile: say so,
+			// never act on it, never type the sentence on as talk
+			if o := resolve(q, all, d.Config); o.Kind == resolvedOne && !inProfile(o.Session, req.Profile) {
+				refuse(&r, RefusedNotFound, capitalize(spokenTitle(o.Session.Title, o.Session.Host))+" is in another profile; nothing done.")
+				return r, nil
+			}
+		}
 	}
 	// "status of the build", "test ko bolo ki ...": a name of only coding
 	// nouns is talk unless it says a session's whole title

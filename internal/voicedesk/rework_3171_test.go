@@ -14,6 +14,9 @@ func TestRework3171OtherProfileNeverATarget(t *testing.T) {
 		if got.Confirm != nil || len(h.deck.sent) != 0 || targetID(got) == "e1000001-1700000031" {
 			t.Errorf("%q reached a session of another profile: say=%q target=%s", s, got.Say, targetID(got))
 		}
+		if !got.Handled || refusedOf(got) != RefusedNotFound || got.Say != "Otter notes is in another profile; nothing done." {
+			t.Errorf("%q: handled=%v refused=%q say=%q, want the other-profile refusal", s, got.Handled, refusedOf(got), got.Say)
+		}
 	}
 }
 

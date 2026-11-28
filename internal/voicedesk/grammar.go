@@ -311,6 +311,18 @@ var switchGrammar = func() []pattern {
 
 // switchCaller: callers whose switch words are the desk's. The Mac voice
 // daemon (--from mac) switches by itself.
+// ParseFrom is Parse plus, from the phone, glasses or typed text, the
+// switch words ("switch to X", "go to X", "X pe jao") as find forms (a yes
+// before the switch). The CLI's quick not-mine check and the desk both use
+// it, so the two never disagree on whose sentence it is.
+func ParseFrom(sentence, from string) Parsed {
+	p := Parse(sentence)
+	if p.Intent == IntentNone && switchCaller(from) {
+		p = parseWith(sentence, switchGrammar)
+	}
+	return p
+}
+
 func switchCaller(from string) bool {
 	return from == "phone" || from == "glasses" || from == "text"
 }

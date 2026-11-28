@@ -1,7 +1,10 @@
-// Package sessionmatch is the spoken-name session matcher shared by
-// `agent-deck switch` and the voice desk (`agent-deck voice do`). It is the
-// voice daemon's strict matchSession port: exact id, unique id prefix, exact
-// title, then a fuzzy score over the title with the group path as extra words.
+// Package sessionmatch is the spoken-name session matcher of the voice desk
+// (`agent-deck voice do`). It is a copy of the `agent-deck switch` matcher's
+// rules (cmd/agent-deck/switch_match.go, the voice daemon's strict
+// matchSession port: exact id, unique id prefix, exact title, then a fuzzy
+// score over the title with the group path as extra words). `switch` does
+// not use this package yet: unifying the two is a follow-up, and until then
+// a change to one must be made in the other.
 package sessionmatch
 
 import (
