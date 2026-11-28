@@ -728,6 +728,20 @@ func TestScanTranscriptBackground_InterimSummaryWithAngleInDescription(t *testin
 	}
 }
 
+// The agent's <result> is free text: a literal </result> inside it, followed
+// by text that looks like Claude Code's interim note, must not make a final
+// notification read as interim. The result ends at its last </result>.
+func TestScanTranscriptBackground_ResultQuotingClosingTagIsFinal(t *testing.T) {
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"Explain tags"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"Explain tags"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	final := `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Explain tags\" finished</summary>\n<result>The block ends with </result> and an interim one adds <note>This agent stopped with background work of its own still running.</note> before it.</result>\n</task-notification>"}}`
+	if a, ok := scanTranscriptBackground(append(append([]string{}, launch...), final)).awaitingAgent(); ok {
+		t.Errorf("final notification whose result quotes </result> and the interim note left the agent awaiting: %+v", a)
+	}
+}
+
 // A new Claude process starts with no background agents: an interim
 // notification for an agent the old process launched does not revive it.
 func TestScanTranscriptBackground_InterimAfterNewProcessDoesNotRevive(t *testing.T) {
