@@ -183,6 +183,10 @@ func (lk *rowsLookup) resolve(ref string) (*rowsTarget, error) {
 	if h, path := nativeTranscriptByID(ref); path != "" {
 		return &rowsTarget{direct: true, storage: storage, src: query.RowsSource{Harness: h, Path: path}, session: query.RowsSession{Harness: h, NativeID: ref, Path: path}}, nil
 	}
+	if lk.env == nil && lk.envErr == nil && (lk.inBatch || piErr != nil) && !recallEnabled() {
+		// A batch answers the ids that never needed the index; this one does.
+		lk.envErr = fmt.Errorf("%w: recall is off: set [recall] enabled = true in config.toml (docs/recall.md)", errRecallIndexUnavailable)
+	}
 	if lk.env == nil && lk.envErr == nil {
 		if !lk.inBatch && piErr == nil {
 			lk.env = openRecallEnv(lk.profile, NewCLIOutput(true, false))

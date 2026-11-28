@@ -110,10 +110,10 @@ func TestRecallRowsWithoutIndex(t *testing.T) {
 	if code != 0 || json.Unmarshal([]byte(stdout), &tl) != nil || len(tl.Turns) != 2 {
 		t.Fatalf("--tail 2: %d %s", code, stdout)
 	}
-	// Gate: with [recall] off nothing is served.
+	// Gate: the index-backed --v1 shape is refused with [recall] off.
 	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
-	if _, _, code := runAgentDeck(t, home, "recall", "timeline", id, "--json"); code != 2 {
-		t.Fatalf("timeline bypassed the recall gate: exit %d", code)
+	if _, _, code := runAgentDeck(t, home, "recall", "timeline", id, "--json", "--v1"); code != 2 {
+		t.Fatalf("--v1 timeline bypassed the recall gate: exit %d", code)
 	}
 }
 
@@ -273,6 +273,101 @@ func TestRecallRowsBeforeCLI(t *testing.T) {
 		args := append([]string{"recall", "timeline", id, "--json"}, flags...)
 		if _, _, code := runAgentDeck(t, home, args...); code != 2 {
 			t.Fatalf("invalid paging accepted: %v exit %d", flags, code)
+		}
+	}
+}
+
+// TestRecallRowsTimelineWorksWithRecallOff: the rows path reads the native
+// transcript directly and needs no index, so [recall] enabled = false must
+// not refuse it; --v1 reads the index and still exits 2 "recall is off".
+func TestRecallRowsTimelineWorksWithRecallOff(t *testing.T) {
+	home, id, _ := rowsTestSession(t)
+	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
+	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", id, "--json")
+	var tl rowsTimelineJSON
+	if code != 0 || json.Unmarshal([]byte(stdout), &tl) != nil || tl.Source != "native" || len(tl.Turns) == 0 {
+		t.Fatalf("rows timeline with recall off: exit %d %s %s", code, stdout, stderr)
+	}
+	stdout, stderr, code = runAgentDeck(t, home, "recall", "timeline", "--json", "--sessions", id)
+	if code != 0 || !strings.Contains(stdout, `"ok": true`) {
+		t.Fatalf("batch rows with recall off: exit %d %s %s", code, stdout, stderr)
+	}
+	stdout, _, code = runAgentDeck(t, home, "recall", "timeline", id, "--json", "--v1")
+	if code != 2 || !strings.Contains(stdout, "recall is off") {
+		t.Fatalf("--v1 with recall off: want exit 2 recall is off, got %d %s", code, stdout)
+	}
+	// An id only the index knows still needs it.
+	stdout, _, code = runAgentDeck(t, home, "recall", "timeline", "#1", "--json")
+	if code != 2 || !strings.Contains(stdout, "recall is off") {
+		t.Fatalf("index-only ref with recall off: want exit 2 recall is off, got %d %s", code, stdout)
+	}
+}
+
+// TestRecallRowsRelayServedRefusesWithRecallOff: [recall] enabled = false is a
+// transcript-egress switch. The relay marks the command it runs on the box
+// (AGENTDECK_FROM_REMOTE=1); then the rows timeline, follow and batch refuse
+// with the documented "recall is off" answer (exit 2, INVALID_OPERATION, which
+// the web maps to RECALL_DISABLED). The same local call, unmarked, works.
+func TestRecallRowsRelayServedRefusesWithRecallOff(t *testing.T) {
+	home, id, _ := rowsTestSession(t)
+	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
+	relay := []string{remoteServedEnv + "=1"}
+	for _, args := range [][]string{
+		{"recall", "timeline", id, "--json"},
+		{"recall", "timeline", "--json", "--sessions", id},
+		{"recall", "follow", id, "--after", "end", "--jsonl"},
+	} {
+		stdout, stderr, code := runAgentDeckEnv(t, home, "", relay, args...)
+		if code != 2 || !strings.Contains(stdout, "recall is off") || !strings.Contains(stdout, ErrCodeInvalidOperation) {
+			t.Fatalf("relay-served %v with recall off: want exit 2 recall is off, got %d %s %s", args, code, stdout, stderr)
+		}
+	}
+	// With recall on, the relay-served read is answered.
+	writeMacappConfig(t, home, "[recall]\nenabled = true\n")
+	stdout, stderr, code := runAgentDeckEnv(t, home, "", relay, "recall", "timeline", id, "--json")
+	if code != 0 || !strings.Contains(stdout, `"turns"`) {
+		t.Fatalf("relay-served with recall on: exit %d %s %s", code, stdout, stderr)
+	}
+}
+
+// TestRecallRowsFailClosedWithRecallOff: with [recall] enabled = false the box
+// decides for itself whether a rows read is egress, because a released relay
+// sends no mark. A non-interactive ssh exec (the older-relay shape: the test
+// helper gives a non-tty stdin) refuses; an explicit AGENTDECK_LOCAL_READ=1,
+// tmux, or no ssh at all is served; the relay mark beats the local-read mark.
+func TestRecallRowsFailClosedWithRecallOff(t *testing.T) {
+	home, id, _ := rowsTestSession(t)
+	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
+	ssh := []string{"SSH_CONNECTION=192.0.2.1 50000 192.0.2.2 22"}
+	cases := []struct {
+		name   string
+		env    []string
+		served bool
+	}{
+		{"older relay: ssh exec, no mark", ssh, false},
+		{"ssh exec with SSH_CLIENT only", []string{"SSH_CLIENT=192.0.2.1 50000 22"}, false},
+		{"ssh exec + AGENTDECK_LOCAL_READ", append(append([]string{}, ssh...), localReadEnv+"=1"), true},
+		{"ssh exec inside tmux", append(append([]string{}, ssh...), "TMUX=/tmp/tmux-1000/default,1,0"), true},
+		{"ssh exec with a pty (SSH_TTY)", append(append([]string{}, ssh...), "SSH_TTY=/dev/pts/9"), true},
+		{"relay mark + local-read mark", append(append([]string{}, ssh...), remoteServedEnv+"=1", localReadEnv+"=1"), false},
+		{"relay mark alone", []string{remoteServedEnv + "=1"}, false},
+		{"no ssh variables", nil, true},
+	}
+	for _, tc := range cases {
+		for _, args := range [][]string{
+			{"recall", "timeline", id, "--json"},
+			{"recall", "timeline", "--json", "--sessions", id},
+		} {
+			stdout, stderr, code := runAgentDeckEnv(t, home, "", tc.env, args...)
+			if tc.served {
+				if code != 0 || !strings.Contains(stdout, `"turns"`) && !strings.Contains(stdout, `"ok": true`) {
+					t.Fatalf("%s %v: want rows served, got %d %s %s", tc.name, args, code, stdout, stderr)
+				}
+				continue
+			}
+			if code != 2 || !strings.Contains(stdout, "recall is off") {
+				t.Fatalf("%s %v: want exit 2 recall is off, got %d %s %s", tc.name, args, code, stdout, stderr)
+			}
 		}
 	}
 }

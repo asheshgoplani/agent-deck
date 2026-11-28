@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/recall/enrich"
@@ -149,8 +151,12 @@ func (e *recallEnv) close() {
 	}
 }
 
-// openRecallEnv opens recall.db and the profile's state.db. It exits with
-// a clear message when the feature is off.
+// recallEnabled reports [recall] enabled = true without exiting.
+func recallEnabled() bool {
+	cfg, _ := session.LoadUserConfig()
+	return cfg != nil && cfg.Recall.GetEnabled()
+}
+
 // requireRecallEnabled exits 2 unless [recall] enabled = true.
 func requireRecallEnabled(out *CLIOutput) *session.UserConfig {
 	cfg, _ := session.LoadUserConfig()
@@ -164,6 +170,64 @@ func requireRecallEnabled(out *CLIOutput) *session.UserConfig {
 	return cfg
 }
 
+// remoteServedEnv is set by the SSH relay (`agent-deck remote <host> recall
+// timeline|follow`, and the web remote timeline route) on the command it runs
+// on the remote box. A local invocation never has it.
+const remoteServedEnv = session.RemoteServedEnv
+
+// localReadEnv is the explicit "I am a local reader" mark. A caller that
+// knowingly runs the local CLI over its own ssh link sets it (for example
+// `ssh box env AGENTDECK_LOCAL_READ=1 agent-deck recall timeline ...`). A
+// released relay never sends it.
+const localReadEnv = "AGENTDECK_LOCAL_READ"
+
+// remoteServed reports whether this invocation was forwarded by the relay.
+func remoteServed() bool { return os.Getenv(remoteServedEnv) == "1" }
+
+// nonInteractiveSSHExec reports the shape a relay from an older client
+// produces: an sshd exec (SSH_CONNECTION or SSH_CLIENT set) with no pty
+// (no SSH_TTY, stdin not a terminal) and not inside tmux (a tmux server
+// started over ssh leaks SSH_CONNECTION into its sessions).
+func nonInteractiveSSHExec() bool {
+	if os.Getenv("SSH_CONNECTION") == "" && os.Getenv("SSH_CLIENT") == "" {
+		return false
+	}
+	if os.Getenv("TMUX") != "" || os.Getenv("SSH_TTY") != "" {
+		return false
+	}
+	return !term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// rowsReadIsEgress decides, fail-closed, whether a rows read is egress.
+//  1. AGENTDECK_FROM_REMOTE=1 -> egress (refuse), whatever else is set.
+//  2. AGENTDECK_LOCAL_READ=1  -> local (allow).
+//  3. a non-interactive ssh exec -> egress (an older relay sends no mark).
+//  4. otherwise -> local (allow).
+//
+// This is not an access-control boundary: anyone with a shell on the box can
+// set the variable or read the transcript file. It keeps agent-deck's own
+// egress surfaces from shipping a transcript off a recall-off box by default.
+func rowsReadIsEgress() bool {
+	if remoteServed() {
+		return true
+	}
+	if os.Getenv(localReadEnv) == "1" {
+		return false
+	}
+	return nonInteractiveSSHExec()
+}
+
+// requireRecallForEgress keeps `[recall] enabled = false` a transcript-egress
+// switch: an egress rows read exits 2 "recall is off" (the web maps it to
+// RECALL_DISABLED), while a local rows read works without the index.
+func requireRecallForEgress(out *CLIOutput) {
+	if rowsReadIsEgress() {
+		requireRecallEnabled(out)
+	}
+}
+
+// openRecallEnv opens recall.db and the profile's state.db. It exits with
+// a clear message when the feature is off.
 func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 	env, err := openRecallEnvErr(profile, out)
 	if err != nil {

@@ -1185,6 +1185,10 @@ func (r *SSHRunner) FallbackUpdate(ctx context.Context) ([]byte, error) {
 // buildRemoteCommand safely quotes each argument for execution through the remote shell.
 func (r *SSHRunner) buildRemoteCommand(args ...string) string {
 	parts := []string{shellQuote(r.AgentDeckPath)}
+	if marksRemoteServed(args) {
+		// The box applies its own [recall] enabled to a relayed transcript read.
+		parts = append([]string{"env", RemoteServedEnv + "=1"}, parts...)
+	}
 	if r.Profile != "" && r.Profile != "default" {
 		parts = append(parts, "-p", shellQuote(r.Profile))
 	}
@@ -1192,6 +1196,15 @@ func (r *SSHRunner) buildRemoteCommand(args ...string) string {
 		parts = append(parts, shellQuote(arg))
 	}
 	return strings.Join(parts, " ")
+}
+
+// RemoteServedEnv marks a command the relay runs on a remote box for
+// `recall timeline|follow`; the box then refuses it when its own [recall]
+// enabled is false. An older box ignores the variable.
+const RemoteServedEnv = "AGENTDECK_FROM_REMOTE"
+
+func marksRemoteServed(args []string) bool {
+	return len(args) >= 2 && args[0] == "recall" && (args[1] == "timeline" || args[1] == "follow")
 }
 
 // remoteArgv is buildRemoteCommand's command as unquoted argv.

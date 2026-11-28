@@ -9,9 +9,9 @@ read-only transcript and pane reads named below.
 
 | Need | Command | Gate | Reference |
 | --- | --- | --- | --- |
-| Conversation rows for live and busy sessions | `recall timeline <session> --json [--since c] [--limit N] [--tail N] [--kinds a,b] [--skip-empty-body]`; older pages with `--before <before_cursor> --limit N`; a filtered answer resumes from `next_cursor` (probe `recall_timeline_kinds`) | `[recall] enabled` | docs/recall-timeline.md, "Rows" |
-| First screens of many sessions in one call | `recall timeline --json --tail N --sessions <id1>,<id2>,...` (at most 50); probe `version --json` for `recall_timeline_batch` in `features` | `[recall] enabled` | docs/recall-timeline.md, "First screens in one call" |
-| Live rows, status strip, send states | `recall follow <session> --after <cursor\|end> --jsonl [--status]` | `[recall] enabled` | same |
+| Conversation rows for live and busy sessions | `recall timeline <session> --json [--since c] [--limit N] [--tail N] [--kinds a,b] [--skip-empty-body]`; older pages with `--before <before_cursor> --limit N`; a filtered answer resumes from `next_cursor` (probe `recall_timeline_kinds`) | none locally; `[recall] enabled` for ssh exec/relay | docs/recall-timeline.md, "Rows" |
+| First screens of many sessions in one call | `recall timeline --json --tail N --sessions <id1>,<id2>,...` (at most 50); probe `version --json` for `recall_timeline_batch` in `features` | none locally; `[recall] enabled` for ssh exec/relay | docs/recall-timeline.md, "First screens in one call" |
+| Live rows, status strip, send states | `recall follow <session> --after <cursor\|end> --jsonl [--status]` | none locally; `[recall] enabled` for ssh exec/relay | same |
 | Status transitions without polling | `events follow --json --kind session.status,session.turn` | `[macapp] status_events` (status owners: TUI, notify daemon) | docs/events.md |
 | Transcript growth frames | `session.transcript` on the bus | `[macapp] transcript_events` (notify daemon) | docs/events.md |
 | Browser reports | `open <file\|url> [--session <id\|title>]`, `file bundle <dir\|file> --session <id>` | built-in | docs/macapp-open.md |
@@ -29,6 +29,8 @@ read-only transcript and pane reads named below.
 | Transcript location in listings | `transcript_path`, `claude_session_id` / `codex_session_id` in `list --json` and `remote sessions <name> --json` | none | docs/remote-recall.md |
 | Triggers: what wakes each session | `triggers --json [--session <id\|title>] [--host <remote>\|all]`, live updates with `events follow --json --kind session.trigger` (refetch the list on a frame, debounced); `triggers mute\|unmute <id> --json`, `triggers fires <id> --json`, `triggers run <id> --json`; remotes via `remote <name> triggers --json` (a host that cannot answer is `"unknown"` in `hosts`) | none | docs/triggers.md |
 | Remote conversations, status stream, send states | `remote <name> recall timeline\|follow …`, `remote <name> events follow --jsonl [--since c]`, `remote <name> session send-status <send-id> --json`; a forwarded follow ends (exit 0) when its stdin closes, so hold stdin open | the owner host's own gates | docs/remote-recall.md |
+
+The `[recall] enabled` gate on the rows reads is a transcript-egress default, not an access-control boundary: anyone with a shell on the box can read the transcript file or set `AGENTDECK_LOCAL_READ=1`. docs/recall-timeline.md, "Rows", has the full rule.
 
 ## Queued send
 

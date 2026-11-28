@@ -986,3 +986,20 @@ func TestSSHRunnerRemoveSession_UsesSessionRemove(t *testing.T) {
 		t.Fatalf("argv = %v, want %v (a bare 'remove' kills the session instead of dropping its row)", calls[0], want)
 	}
 }
+
+// TestBuildRemoteCommandMarksRecallReads: the relay marks a forwarded recall
+// timeline/follow so the box applies its own [recall] enabled; other commands
+// carry no mark.
+func TestBuildRemoteCommandMarksRecallReads(t *testing.T) {
+	r := &SSHRunner{AgentDeckPath: "agent-deck"}
+	for _, args := range [][]string{{"recall", "timeline", "--json", "x"}, {"recall", "follow", "x"}} {
+		if got := r.buildRemoteCommand(args...); !strings.HasPrefix(got, "env "+RemoteServedEnv+"=1 ") {
+			t.Fatalf("%v: want the relay mark, got %q", args, got)
+		}
+	}
+	for _, args := range [][]string{{"recall", "search", "x"}, {"list", "--json"}} {
+		if got := r.buildRemoteCommand(args...); strings.Contains(got, RemoteServedEnv) {
+			t.Fatalf("%v: unexpected relay mark in %q", args, got)
+		}
+	}
+}

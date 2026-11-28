@@ -30,7 +30,7 @@ func handleRecallTimeline(profile string, args []string) {
 		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline --json [--tail N] [--kinds a,b] [--skip-empty-body] --sessions <id1>,<id2>,...   (batch: one entry per id, at most 50)")
 		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline <session> --json --v1   (slice-6 turn shape)")
 		fmt.Fprintln(fs.Output(), "<session>: deck session id, title or id prefix; a Claude, Codex or Pi conversation id; or #n / any id the index knows.")
-		fmt.Fprintln(fs.Output(), "Rows are parsed from the native transcript directly, whatever the index or its deferral state. Needs [recall] enabled = true.")
+		fmt.Fprintln(fs.Output(), "Rows are parsed from the native transcript directly, whatever the index or its deferral state. Needs no [recall] index: a local run works with [recall] off, except for ids only the index knows and --v1 (those need [recall] enabled = true). Served for a remote caller (agent-deck remote <host> recall ..., the web remotes route) it always needs [recall] enabled = true on this box; so does any other non-interactive ssh exec, unless it sets AGENTDECK_LOCAL_READ=1. Not an access-control boundary.")
 		fmt.Fprintln(fs.Output(), "With --kinds or --skip-empty-body, --tail and --limit count kept rows. A native read then carries next_cursor: pass it to --since (never a cursor made from the last kept row). --agent sidechains and index-backed rows have no cursor.")
 		fs.PrintDefaults()
 	}
@@ -67,7 +67,7 @@ func handleRecallTimeline(profile string, args []string) {
 		exitCLI(2)
 	}
 	if !*rf.v1 {
-		requireRecallEnabled(out)
+		requireRecallForEgress(out)
 		handleRecallTimelineRows(profile, fs.Arg(0), rf, opts)
 		return
 	}
@@ -118,7 +118,7 @@ func handleRecallFollow(profile string, args []string) {
 	}
 	out := NewCLIOutput(true, false)
 	if !*rf.v1 {
-		requireRecallEnabled(out)
+		requireRecallForEgress(out)
 		handleRecallFollowRows(profile, fs.Arg(0), *after, rf, *status)
 		return
 	}
