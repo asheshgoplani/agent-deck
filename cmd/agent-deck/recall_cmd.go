@@ -151,6 +151,12 @@ func (e *recallEnv) close() {
 
 // openRecallEnv opens recall.db and the profile's state.db. It exits with
 // a clear message when the feature is off.
+// recallEnabled reports [recall] enabled = true without exiting.
+func recallEnabled() bool {
+	cfg, _ := session.LoadUserConfig()
+	return cfg != nil && cfg.Recall.GetEnabled()
+}
+
 // requireRecallEnabled exits 2 unless [recall] enabled = true.
 func requireRecallEnabled(out *CLIOutput) *session.UserConfig {
 	cfg, _ := session.LoadUserConfig()

@@ -110,10 +110,10 @@ func TestRecallRowsWithoutIndex(t *testing.T) {
 	if code != 0 || json.Unmarshal([]byte(stdout), &tl) != nil || len(tl.Turns) != 2 {
 		t.Fatalf("--tail 2: %d %s", code, stdout)
 	}
-	// Gate: with [recall] off nothing is served.
+	// Gate: the index-backed --v1 shape is refused with [recall] off.
 	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
-	if _, _, code := runAgentDeck(t, home, "recall", "timeline", id, "--json"); code != 2 {
-		t.Fatalf("timeline bypassed the recall gate: exit %d", code)
+	if _, _, code := runAgentDeck(t, home, "recall", "timeline", id, "--json", "--v1"); code != 2 {
+		t.Fatalf("--v1 timeline bypassed the recall gate: exit %d", code)
 	}
 }
 
@@ -274,5 +274,31 @@ func TestRecallRowsBeforeCLI(t *testing.T) {
 		if _, _, code := runAgentDeck(t, home, args...); code != 2 {
 			t.Fatalf("invalid paging accepted: %v exit %d", flags, code)
 		}
+	}
+}
+
+// TestRecallRowsTimelineWorksWithRecallOff: the rows path reads the native
+// transcript directly and needs no index, so [recall] enabled = false must
+// not refuse it; --v1 reads the index and still exits 2 "recall is off".
+func TestRecallRowsTimelineWorksWithRecallOff(t *testing.T) {
+	home, id, _ := rowsTestSession(t)
+	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
+	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", id, "--json")
+	var tl rowsTimelineJSON
+	if code != 0 || json.Unmarshal([]byte(stdout), &tl) != nil || tl.Source != "native" || len(tl.Turns) == 0 {
+		t.Fatalf("rows timeline with recall off: exit %d %s %s", code, stdout, stderr)
+	}
+	stdout, stderr, code = runAgentDeck(t, home, "recall", "timeline", "--json", "--sessions", id)
+	if code != 0 || !strings.Contains(stdout, `"ok": true`) {
+		t.Fatalf("batch rows with recall off: exit %d %s %s", code, stdout, stderr)
+	}
+	stdout, _, code = runAgentDeck(t, home, "recall", "timeline", id, "--json", "--v1")
+	if code != 2 || !strings.Contains(stdout, "recall is off") {
+		t.Fatalf("--v1 with recall off: want exit 2 recall is off, got %d %s", code, stdout)
+	}
+	// An id only the index knows still needs it.
+	stdout, _, code = runAgentDeck(t, home, "recall", "timeline", "#1", "--json")
+	if code != 2 || !strings.Contains(stdout, "recall is off") {
+		t.Fatalf("index-only ref with recall off: want exit 2 recall is off, got %d %s", code, stdout)
 	}
 }

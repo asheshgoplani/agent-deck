@@ -129,13 +129,14 @@ func TestRecallTimelineBatch_FiftyIDLimit(t *testing.T) {
 	}
 }
 
-// TestRecallTimelineBatch_RecallGate: the batch is served only with
-// [recall] enabled, like the single path.
+// TestRecallTimelineBatch_RecallGate: with [recall] off the batch still
+// answers native ids, and an id only the index knows fails in its own entry.
 func TestRecallTimelineBatch_RecallGate(t *testing.T) {
 	home, id, _ := rowsTestSession(t)
 	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
-	if stdout, _, code := runAgentDeck(t, home, "recall", "timeline", "--json", "--sessions", id); code != 2 || !strings.Contains(stdout, "enabled = true") {
-		t.Fatalf("batch bypassed the recall gate: exit %d %s", code, stdout)
+	if stdout, _, code := runAgentDeck(t, home, "recall", "timeline", "--json", "--sessions", id+",#1"); code != 0 ||
+		!strings.Contains(stdout, `"ok": true`) || !strings.Contains(stdout, "recall is off") {
+		t.Fatalf("batch with recall off: exit %d %s", code, stdout)
 	}
 }
 
