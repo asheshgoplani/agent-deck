@@ -706,6 +706,28 @@ func TestScanTranscriptBackground_InterimWordingInDescriptionIsFinal(t *testing.
 	}
 }
 
+// A '<' in the agent's description must not hide the 2.1.307 interim
+// wording in the summary: the summary body runs to </summary>, not to the
+// first '<'.
+func TestScanTranscriptBackground_InterimSummaryWithAngleInDescription(t *testing.T) {
+	const desc = `fix a<b check`
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"` + desc + `"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"` + desc + `"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	notify := func(body string) string {
+		return `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n` + body + `\n</task-notification>"}}`
+	}
+	interim := notify(`<summary>Agent \"` + desc + `\" is waiting on its own background work</summary>\n<result>still sleeping</result>`)
+	if _, ok := scanTranscriptBackground(append(append([]string{}, launch...), interim)).awaitingAgent(); !ok {
+		t.Errorf("interim summary of an agent described %q did not leave it awaiting", desc)
+	}
+	final := notify(`<summary>Agent \"` + desc + `\" finished</summary>\n<result>done</result>`)
+	if a, ok := scanTranscriptBackground(append(append([]string{}, launch...), final)).awaitingAgent(); ok {
+		t.Errorf("final summary of an agent described %q left it awaiting: %+v", desc, a)
+	}
+}
+
 // A new Claude process starts with no background agents: an interim
 // notification for an agent the old process launched does not revive it.
 func TestScanTranscriptBackground_InterimAfterNewProcessDoesNotRevive(t *testing.T) {
