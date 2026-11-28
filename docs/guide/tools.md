@@ -58,6 +58,11 @@ agent-deck codex-hooks status
 
 If you set `CODEX_HOME`, use the same environment here and when launching Codex. Without the hook, turn-level running/waiting status cannot converge reliably.
 
+Pass `--install-codex-hooks` to `agent-deck add` or `agent-deck launch` to
+install the hook when creating a local Codex session. Agent Deck preserves
+existing `notify` settings. For an alternate home selected with `--account`,
+use the printed `CODEX_HOME` commands to check or uninstall the hook.
+
 pi status detection works the same way, through a small agent-deck extension in pi's global extension directory:
 
 ```bash

@@ -52,6 +52,7 @@ agent-deck add [path] [options]
 | `--parent` | Parent session (creates child) |
 | `--no-parent` | Disable automatic parent linking |
 | `--mcp` | Attach MCP (repeatable) |
+| `--install-codex-hooks` | Install a missing notify hook in the local session’s Codex home |
 | `--attach` | Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with `--ssh`/`--json`) |
 | `--ssh <user@host>` | Run the session over SSH; this is a destination, not a registered remote name |
 | `--remote-path <absolute-path>` | Working directory on the SSH host; an absolute positional path with `--ssh` is equivalent |
@@ -103,6 +104,7 @@ Notes:
 - `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh|max|ultra` plus any level the installed Codex advertises; other tools refuse the flag. When the installed Codex describes the chosen `--model`, only that model's levels are accepted. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
 - `--model` accepts any ID: the model lists are suggestions, not an allowlist, and an ID the list lacks is passed to the tool as is.
 - `launch -capabilities --json` (and `add -capabilities --json`) prints what this host can create: per tool `models`, `default_model`, `reasoning_efforts` and, when the installed CLI was probed, `model_efforts` (model ID to accepted efforts). For Codex the lists come from `codex debug models` (models with `visibility: list`, by priority), for OpenCode from `opencode models` (about 3s timeout), and for Kimi from `kimi provider list --json` (configured model aliases), each merged in front of the built-in catalog; Claude Code, Gemini and the rest use the built-in catalog. `[models.<tool>] extra` IDs come first, and a `[models.<tool>] list` replaces the whole list. The probe never sends a prompt, times out after about 1s (Codex and Kimi) or 3s (OpenCode), runs with the `VAR=value` prefix of the configured command (plus `[kimi].config_dir` as `KIMI_CODE_HOME` unless the prefix sets it), and its result is cached per CLI binary (path, mtime, size) in the cache dir (`model-probe/<tool>.json`) for up to a day. A missing CLI, a timeout, a non-zero exit or unrecognized output falls back to the built-in catalog; a failed probe is remembered (also on disk) for about a minute and then retried. Remote hosts report their own lists through their own `-capabilities`. Turn the probe off with `[models] probe = false`.
+- `--install-codex-hooks` installs a missing notify hook in the local session’s Codex home before launch.
 - `--account` requires an explicit name. If the next token is another launch flag, launch stops with an error before resolving a fallback account or creating a session; use `--account=<name>` when a name intentionally begins with a dash.
 - `--hint/--tag/--ticket/--why` (also on `add`): durable recall hints written to state.db at creation (`docs/recall.md`). `launch` additionally derives `purpose` from the first line of `-m` and both commands derive `parent` for a child; an explicit `--hint purpose=` wins. Echoed in `--json` as `hints` and `tags`.
 - `--trust-folder` (also on `add`): add the session's folder to `[security] trusted_folders`, so agent-deck pre-trusts it for Claude, Codex and Cursor and sources a relative `env_file` from it. Needed on a new install (v1.16.34+, where `auto_trust_folders` is off) for a headless launch in a folder the tool has never been allowed to open; without it Claude shows its "trust the files in this folder?" prompt first and the launch prints a note on stderr and, with `--json`, adds `"warnings": [{"code": "FOLDER_NOT_TRUSTED", "folder": "<dir>", "hint": "..."}]` to the result (a queued start logs `queued_start_folder_not_trusted` with the same code). The flag edits config.toml in place, so comments and layout are kept. Installs from before v1.16.34 keep pre-trusting every folder (config-reference.md, `[security]`).
@@ -1480,7 +1482,17 @@ agent-deck codex-hooks status
 agent-deck codex-hooks uninstall
 ```
 
-Codex turn-level status uses its notify hook. Install it once per Codex home; if `CODEX_HOME` is set, use the same environment for installation and Codex sessions.
+Codex turn-level status uses its notify hook. Install it once per Codex home using
+the explicit creation flag or the manual command. CLI `add`
+and `launch` with `--install-codex-hooks` install it into the session's resolved Codex home only when `notify`
+is absent. For remote hosts, run the flagged command on the owning host. Existing notify
+settings are never replaced; SSH-wrapper and sandbox sessions are skipped. Explicit
+requests report skipped or already-installed outcomes on stderr.
+Installation errors warn on stderr without failing creation. For other creation
+paths and existing sessions, install it manually; if `CODEX_HOME` is set, use the
+same environment for installation and Codex sessions. Installation is explicit and persists independently of session creation, even if
+a later launch step fails. Ordinary creation does not reinstall a removed hook.
+Custom commands whose Codex home cannot be determined require manual installation.
 
 ## tmux Hook Commands
 
