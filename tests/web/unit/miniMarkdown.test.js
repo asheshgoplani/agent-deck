@@ -361,4 +361,21 @@ describe('miniMarkdown nesting limits', () => {
     expect(c.querySelector('li').textContent).not.toContain('Outside')
     expect(c.querySelector('p').textContent).toBe('Outside')
   })
+
+  it('closes a fence indented four or more spaces at the same depth as its opener', () => {
+    const top = mount('Intro:\n\n    ```js\n    code()\n    ```\n\nMore text after')
+    expect(top.querySelector('pre code').textContent).toBe('code()')
+    expect(top.querySelector('pre').textContent).not.toContain('```')
+    expect(top.querySelector('pre').textContent).not.toContain('More text after')
+    expect([...top.querySelectorAll('p')].map(p => p.textContent)).toContain('More text after')
+    render(null, container); container.remove()
+
+    const list = mount('- Step\n\n      ```\n      x\n      ```\n\n  still item\n\n- next')
+    const first = list.querySelector('li')
+    expect(first.querySelector('pre code').textContent).toBe('x')
+    expect(first.querySelector('pre').textContent).not.toContain('```')
+    expect(first.querySelector('pre').textContent).not.toContain('still item')
+    expect(first.textContent).toContain('still item')
+    expect(list.querySelectorAll('li')).toHaveLength(2)
+  })
 })

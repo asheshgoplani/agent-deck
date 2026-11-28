@@ -85,8 +85,9 @@ function parseFence(lines, index, marker, indent = 0, fenceIndent = 0) {
     if (line && !raw.startsWith(prefix)) break
     index++
     const closer = fenceMarker(line)
-    // A closing fence sits at most three spaces past the container's column.
-    if (closer && raw.search(/[^ ]/) - indent <= 3 && closer.delimiter[0] === delimiter[0] && closer.delimiter.length >= delimiter.length && !closer.info) break
+    // A closing fence sits at most three spaces past the container's column,
+    // or as deep as the opening fence when that sits deeper.
+    if (closer && raw.search(/[^ ]/) - indent <= Math.max(3, fenceIndent) && closer.delimiter[0] === delimiter[0] && closer.delimiter.length >= delimiter.length && !closer.info) break
     const rest = raw.slice(indent)
     code.push(rest.slice(Math.min(fenceIndent, rest.search(/[^ ]|$/))))
   }
