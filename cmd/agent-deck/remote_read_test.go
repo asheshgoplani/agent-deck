@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -77,5 +80,35 @@ func TestRemoteReadSingleRoundTripUnbuffered(t *testing.T) {
 		if json.Unmarshal(runner.unsupported, &obj) != nil || !strings.Contains(obj["error"], "unsupported remote command") {
 			t.Fatalf("unsupported response %s", runner.unsupported)
 		}
+	}
+}
+
+type exitFakeRemoteRead struct{ code int }
+
+func (r *exitFakeRemoteRead) RunReadIO(ctx context.Context, in io.Reader, out, diag io.Writer, unsupported []byte, follow bool, args ...string) error {
+	_, _ = io.WriteString(out, `{"error":"session not found"}`+"\n")
+	return exec.Command("sh", "-c", "exit "+strconv.Itoa(r.code)).Run()
+}
+
+type errRemoteRead struct{}
+
+func (errRemoteRead) RunReadIO(context.Context, io.Reader, io.Writer, io.Writer, []byte, bool, ...string) error {
+	return errors.New("negotiation timed out")
+}
+
+func TestRemoteReadPassesThroughRemoteErrorAndExitCode(t *testing.T) {
+	var out, diag bytes.Buffer
+	args := []string{"recall", "timeline", "nope", "--json"}
+	code, err := runRemoteReadIO(context.Background(), &exitFakeRemoteRead{code: 2}, "remote", nil, &out, &diag, args)
+	if code != 2 || err != nil {
+		t.Fatalf("code=%d err=%v, want remote exit code 2 and no local wrapper error", code, err)
+	}
+	if !strings.Contains(out.String(), `"error":"session not found"`) {
+		t.Fatalf("remote JSON error lost: %q", out.String())
+	}
+	// A failure that is not a remote exit (ssh could not run) stays a local error.
+	code, err = runRemoteReadIO(context.Background(), errRemoteRead{}, "remote", nil, &out, &diag, args)
+	if code != 1 || err == nil {
+		t.Fatalf("local failure: code=%d err=%v", code, err)
 	}
 }
