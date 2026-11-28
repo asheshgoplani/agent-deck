@@ -17,7 +17,10 @@ name: Fix PR regression gate
 # not that it tests the right thing; source-grep tests still need review.
 #
 # Trust: the checker is built from the BASE commit (the `trusted` checkout),
-# never from the PR, so a PR cannot edit the judge. The step that runs the PR's
+# never from the PR, so a PR cannot edit the checker's Go code. Under
+# pull_request this workflow file itself comes from the PR, so a PR can still
+# edit the job; code-owner review of .github/workflows/ (CODEOWNERS plus the
+# main-protection ruleset) is what guards that. The step that runs the PR's
 # tests has no token. A maintainer (admin or maintain permission) can add the
 # base-red-exempt label to skip the gate; the log names who added it.
 

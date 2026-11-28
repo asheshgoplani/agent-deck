@@ -30,6 +30,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/printer"
+	"go/scanner"
 	"go/token"
 	"io"
 	"os"
@@ -52,7 +53,8 @@ type Target struct {
 }
 
 // testFuncs returns the top-level TestXxx(t *testing.T) functions of a Go file,
-// name to printed body (comments and layout dropped, so such an edit is no change).
+// name to its body as a token stream (comments and layout dropped, so such an
+// edit is no change; whitespace inside a string literal is kept).
 // TestMain is the package entry hook, not a test: go test never reports it.
 func testFuncs(src []byte) (map[string]string, error) {
 	fset := token.NewFileSet()
@@ -70,10 +72,38 @@ func testFuncs(src []byte) (map[string]string, error) {
 		if err := printer.Fprint(&b, fset, fn.Body); err != nil {
 			return nil, err
 		}
-		// Layout is not behaviour: compare with all whitespace dropped.
-		out[fn.Name.Name] = strings.Join(strings.Fields(b.String()), "")
+		// Layout is not behaviour: compare tokens, not text. Whitespace between
+		// tokens is dropped, whitespace inside a literal ("a b" vs "ab") is kept.
+		out[fn.Name.Name] = tokenString(b.Bytes())
 	}
 	return out, nil
+}
+
+// tokenString joins the Go tokens of src, one separator between tokens, so
+// two sources compare equal exactly when they differ only in layout or
+// comments. Mode 0 drops comments; auto-inserted semicolons are skipped, as
+// a line break is layout.
+func tokenString(src []byte) string {
+	fset := token.NewFileSet()
+	var s scanner.Scanner
+	s.Init(fset.AddFile("", fset.Base(), len(src)), src, nil, 0)
+	var b strings.Builder
+	for {
+		_, tok, lit := s.Scan()
+		if tok == token.EOF {
+			break
+		}
+		if tok == token.SEMICOLON && lit == "\n" {
+			continue
+		}
+		if lit != "" {
+			b.WriteString(lit)
+		} else {
+			b.WriteString(tok.String())
+		}
+		b.WriteByte(0)
+	}
+	return b.String()
 }
 
 // isTestName is go test's rule: Test, then nothing or a non-lowercase rune.
