@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `agent-deck needs-me [--json]` lists the sessions waiting for you, longest first, across every local profile and every configured remote (a host that does not answer in 3 s is listed under `errors`). `agent-deck voice state [--json]` reports the voice daemon's phase (`listening`, `hearing`, `thinking`, `speaking`, `resting`, `off`) and the session the mic is on. Both are read-only; see `docs/voice.md`.
+
 ### Fixed
 
 - `session show --json` no longer inlines a whole large send queue (one conductor's was 14,929 entries, 4.2 MB). `queue` holds the newest 100, `queue_count` the total and `queue_truncated` whether it was cut; `--queue-full` returns everything, as `session queue list` always does.

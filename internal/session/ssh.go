@@ -1309,6 +1309,10 @@ func (r *SSHRunner) recordStatsSupport(supported bool) {
 
 // parseRemoteSessions decodes `list --json` output; empty or non-JSON output
 // (an older remote, or "No sessions found") is an empty list, not an error.
+// ErrRemoteSessionsParse marks a remote `list --json` reply that is not
+// valid JSON (callers test it with errors.Is, never by the message text).
+var ErrRemoteSessionsParse = errors.New("failed to parse remote sessions")
+
 func parseRemoteSessions(output []byte) ([]RemoteSessionInfo, error) {
 	trimmed := bytes.TrimSpace(output)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
@@ -1316,7 +1320,7 @@ func parseRemoteSessions(output []byte) ([]RemoteSessionInfo, error) {
 	}
 	var sessions []RemoteSessionInfo
 	if err := json.Unmarshal(trimmed, &sessions); err != nil {
-		return nil, fmt.Errorf("failed to parse remote sessions: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrRemoteSessionsParse, err)
 	}
 	// The remote's titles and groups are rendered in the TUI; an older or
 	// compromised remote may send them with control characters.
@@ -3231,6 +3235,11 @@ type RemoteSessionInfo struct {
 	// "" — see LastActivity below.
 	LastActivityAt string `json:"last_activity_at,omitempty"`
 
+	// WaitingSince is the remote's `list --json` waiting_since: when a
+	// waiting session's status changed to waiting (its state.db stamp).
+	// "" when not waiting, not recorded, or the remote is too old to send it.
+	WaitingSince string `json:"waiting_since,omitempty"`
+
 	// Viewers are the terminals attached to the session on the remote (its
 	// `list --json` viewers field): the "who else is viewing" indicator for
 	// a remote row. nil means the remote did not say (an agent-deck older
@@ -3245,6 +3254,11 @@ type RemoteSessionInfo struct {
 	// session, or a remote too old to send the key, decodes to "" and the
 	// row renders flat.
 	ParentSessionID string `json:"parent_session_id,omitempty"`
+
+	// ConductorName is the remote's `list --json` conductor_name: set for a
+	// conductor session (from its conductor flag, so it survives a rename).
+	// "" for other sessions and from a remote too old to send it.
+	ConductorName string `json:"conductor_name,omitempty"`
 
 	// Favorite is the remote session's favourite flag, as `list --json` on
 	// the remote reports it, so a remote favourite reaches the controller
