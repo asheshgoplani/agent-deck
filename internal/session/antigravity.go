@@ -973,6 +973,10 @@ func (i *Instance) antigravitySessionIDBoundElsewhere(candidate string) bool {
 	if candidate == "" {
 		return false
 	}
+	key := "owned\x00" + candidate
+	if i.antigravityBlockedRecently(key) {
+		return true
+	}
 	match := func(row *statedb.InstanceRow) bool {
 		return row.ID != i.ID &&
 			strings.TrimSpace(ReadAntigravitySessionIDFromToolData(row.ToolData)) == candidate
@@ -984,9 +988,46 @@ func (i *Instance) antigravitySessionIDBoundElsewhere(candidate string) bool {
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("error", err.Error()))
 		}
+		i.rememberAntigravityBlocked(key)
 		return true // fail closed: stay unbound rather than steal
 	}
+	if bound {
+		i.rememberAntigravityBlocked(key)
+	}
 	return bound
+}
+
+// antigravityBlockedRecheckInterval is how long a blocking answer from the
+// all-profile scan (owned elsewhere, ambiguous workspace, or a failed lookup)
+// is reused before the state DBs are read again. Reusing a blocking answer
+// can only delay a bind, never cause a wrong one. A "free" answer is never
+// reused: every check that could lead to a bind reads the DBs again.
+var antigravityBlockedRecheckInterval = 15 * time.Second
+
+// antigravityBlockedRecently reports whether key got a blocking answer within
+// antigravityBlockedRecheckInterval.
+func (i *Instance) antigravityBlockedRecently(key string) bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	at, ok := i.antigravityBlockedAt[key]
+	return ok && time.Since(at) < antigravityBlockedRecheckInterval
+}
+
+// rememberAntigravityBlocked records a blocking answer for key and drops
+// expired entries, so the map stays small.
+func (i *Instance) rememberAntigravityBlocked(key string) {
+	now := time.Now()
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for k, at := range i.antigravityBlockedAt {
+		if now.Sub(at) >= antigravityBlockedRecheckInterval {
+			delete(i.antigravityBlockedAt, k)
+		}
+	}
+	if i.antigravityBlockedAt == nil {
+		i.antigravityBlockedAt = map[string]time.Time{}
+	}
+	i.antigravityBlockedAt[key] = now
 }
 
 // antigravityAnyProfileRow reports whether match accepts a session row in this
@@ -1113,6 +1154,10 @@ func (i *Instance) antigravityUnboundSiblingSharesWorkspace() bool {
 	if len(wantDirs) == 0 {
 		return false
 	}
+	key := "sibling\x00" + strings.Join(wantDirs, "\x00")
+	if i.antigravityBlockedRecently(key) {
+		return true
+	}
 	match := func(row *statedb.InstanceRow) bool {
 		if row.ID == i.ID || row.Tool != "antigravity" || !row.ArchivedAt.IsZero() {
 			return false
@@ -1145,7 +1190,11 @@ func (i *Instance) antigravityUnboundSiblingSharesWorkspace() bool {
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("error", err.Error()))
 		}
+		i.rememberAntigravityBlocked(key)
 		return true // fail closed: ambiguity is safer than stealing
+	}
+	if ambiguous {
+		i.rememberAntigravityBlocked(key)
 	}
 	return ambiguous
 }

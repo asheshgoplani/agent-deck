@@ -328,6 +328,10 @@ type Instance struct {
 	antigravityBindingRetryAt   time.Time       // Earliest next retry for a failed binding write
 	antigravityOwnedLoggedID    string          // Sibling-owned candidate already logged (avoids per-scan noise)
 	antigravityFailClosedLogged map[string]bool // Fail-closed causes already warned about (once per cause)
+	// antigravityBlockedAt holds recent blocking answers of the all-profile
+	// scan (owned elsewhere / ambiguous / lookup failed), so a stuck unbound
+	// session does not reopen every profile DB on each scan. Never holds "free".
+	antigravityBlockedAt map[string]time.Time
 	// antigravityForkKnownIDs snapshots the workspace conversations that existed
 	// before /fork, so status polling cannot adopt a sibling while the child's
 	// own conversation is still being created.

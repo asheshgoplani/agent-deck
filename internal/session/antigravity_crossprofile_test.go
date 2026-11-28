@@ -270,3 +270,37 @@ func TestAntigravityCrossProfileFreeResultNotReused(t *testing.T) {
 		t.Fatal("a free answer was reused after the conversation became owned")
 	}
 }
+
+// A blocking answer is reused only for the recheck window. After it, the DBs
+// are read again, so a conversation its owner gave up becomes bindable.
+func TestAntigravityCrossProfileBlockedResultExpires(t *testing.T) {
+	prev := antigravityBlockedRecheckInterval
+	antigravityBlockedRecheckInterval = 50 * time.Millisecond
+	t.Cleanup(func() { antigravityBlockedRecheckInterval = prev })
+
+	workDir := setupAntigravityCrossProfileHome(t, "conv-b")
+	storageB := newAntigravityProfileStorage(t, "profile-b")
+	owner := saveAntigravityProfileSession(t, storageB, "agy-owner-profile-b", workDir, "conv-b")
+	storageA := newAntigravityProfileStorage(t, "profile-a")
+	statedb.SetGlobal(storageA.GetDB())
+	a := saveAntigravityProfileSession(t, storageA, "agy-profile-a", workDir, "")
+
+	scans := countAntigravityProfileScans(t)
+	if !a.antigravitySessionIDBoundElsewhere("conv-b") || !a.antigravitySessionIDBoundElsewhere("conv-b") {
+		t.Fatal("conv-b is owned by profile B's session")
+	}
+	if *scans != 1 {
+		t.Fatalf("scanned %d times within the window, want 1", *scans)
+	}
+
+	if err := storageB.GetDB().WriteAntigravitySessionBinding(owner.ID, "", time.Time{}); err != nil {
+		t.Fatalf("clear owner binding: %v", err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if a.antigravitySessionIDBoundElsewhere("conv-b") {
+		t.Fatal("blocking answer outlived the recheck window")
+	}
+	if *scans != 2 {
+		t.Fatalf("scanned %d times after the window, want 2", *scans)
+	}
+}
