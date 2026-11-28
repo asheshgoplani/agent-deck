@@ -50,6 +50,11 @@ type Request struct {
 	AnswerDelayMs  int64
 	HasAnswerDelay bool
 	DryRun         bool
+
+	// onShared: the On id is on more than one listed session (a local one
+	// and a remote one), so which one the mic is on is not known; set by
+	// the desk from its listing, never by a caller.
+	onShared bool
 }
 
 // Result is the one JSON object `voice do --json` prints (CONTRACT.md 2).
@@ -608,6 +613,7 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 		return notMine(p.Lang), nil
 	}
 	all, _ := d.sessions(ctx)
+	req.onShared = idCount(all, req.On) > 1
 	q := newNameQuery(p.Name, hostsOf(all))
 	var res resolution
 	if p.Intent == IntentFind {
@@ -802,7 +808,8 @@ func (d *Desk) tell(ctx context.Context, req Request, r Result, p Parsed, s Sess
 		refuse(&r, RefusedUnsafe, sayAtMenu(name))
 		return r, nil
 	}
-	onIt := req.On != "" && req.On == s.ID
+	// --on is an id only: when that id is on two hosts, ask
+	onIt := req.On != "" && req.On == s.ID && !req.onShared
 	// after a choice the message was never read back: always ask
 	if onIt && !risky(msg) && !picked {
 		var err error
@@ -822,6 +829,20 @@ func (d *Desk) tell(ctx context.Context, req Request, r Result, p Parsed, s Sess
 	t := s.Ref()
 	r.Show = Show{Kind: "confirm", Items: []ShowItem{{ID: s.ID, Title: s.Title, Host: s.Host, Status: s.Status, Line: msg}}}
 	return d.pend(req, r, Pending{Profile: req.Profile, Kind: "yes", Action: actionSend, Intent: IntentTell, Lang: p.Lang, Target: &t, Message: msg}, prompt)
+}
+
+// idCount: how many listed sessions carry this id (any host).
+func idCount(all []Session, id string) int {
+	if id == "" {
+		return 0
+	}
+	n := 0
+	for _, s := range all {
+		if s.ID == id {
+			n++
+		}
+	}
+	return n
 }
 
 func hostsOf(all []Session) []string {

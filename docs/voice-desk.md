@@ -20,7 +20,7 @@ Exit codes: 0 = a result was printed (handled or not, refused or not), 2 = usage
 | `--json` | Print one JSON object (below) and nothing else on stdout. |
 | `--dry-run` | Parse, resolve and apply the safety rules; never send, never switch, never store a question. `dryRun:true`. |
 | `--from` | Where the sentence came from (`text` by default). |
-| `--on` | The session the mic is on. Absent means none (the daemon's own id can be null): every `tell` then needs a yes. The desk never guesses it from the voice state. |
+| `--on` | The session the mic is on (its id). Absent means none (the daemon's own id can be null): every `tell` then needs a yes. When that id is on two listed sessions (this machine and a remote), a `tell` to either needs a yes too. The desk never guesses it from the voice state. |
 | `--pending` | The token of the question the desk asked last; the sentence is the answer. |
 | `--answer-delay-ms` | Silence between the end of speaking the question and the start of the answer. |
 
