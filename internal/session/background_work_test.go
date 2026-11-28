@@ -775,6 +775,8 @@ func TestScanTranscriptBackground_TagsInDescriptionKeepTheStructure(t *testing.T
 		{"spoofed </result> + note in a truncated result, final", `Explain tags`, finalNote + `\n<result>it ends with </result> and an interim one has <note>This agent stopped with background work of its own still running`, false},
 		{"plain interim note", `probe sleeper agent`, interimNote + `\n<result>still sleeping</result>\n</task-notification>`, true},
 		{"plain final note", `probe sleeper agent`, finalNote + `\n<result>done</result>\n</task-notification>`, false},
+		{"quoted wording in the description, final", `say "waiting on its own background work" back`, finalNote + `\n<result>done</result>\n</task-notification>`, false},
+		{"quotes and a backslash in the description, interim", `grep "a\\b" <result>`, interimNote + `\n<result>still sleeping</result>\n</task-notification>`, true},
 	}
 	for _, tc := range cases {
 		sc := scanTranscriptBackground(append(launch(tc.desc), notify(tc.desc, tc.rest)))

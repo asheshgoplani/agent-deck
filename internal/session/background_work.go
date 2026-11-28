@@ -206,6 +206,55 @@ var (
 	interimAgentRe = regexp.MustCompile(`background work of its own still running|waiting on its own background work`)
 )
 
+// interimNotification reports whether an agent's notification block is the
+// interim one. Claude Code writes its own text (task id, status, the summary's
+// status words, the note) before <result>; the agent's free text is the quoted
+// description in the summary and the result. With the description known from
+// the launch, it is cut out exactly and only the text before the real <result>
+// is matched, so no tag the agent writes in either can move that line. A block
+// whose description is not found (truncated inside it, or written in a form
+// this does not reproduce) falls back to interimOutsideResult.
+func interimNotification(block, desc string) bool {
+	if desc != "" {
+		marker := `Agent \"` + jsonEscapedText(desc) + `\"`
+		if i := strings.Index(block, marker); i >= 0 {
+			head, tail := block[:i], block[i+len(marker):]
+			if r := strings.Index(head, "<result>"); r >= 0 {
+				return interimInOwnText(head[:r])
+			}
+			if r := strings.Index(tail, "<result>"); r >= 0 {
+				tail = tail[:r]
+			}
+			return interimInOwnText(head) || interimAgentRe.MatchString(tail)
+		}
+	}
+	return interimOutsideResult(block)
+}
+
+// jsonEscapedText is s as it appears inside a JSON string in Claude Code's
+// JSONL: quotes, backslashes and control characters escaped, '<' and '>' raw.
+// Text with none of those is returned as is, with no allocation.
+func jsonEscapedText(s string) string {
+	plain := true
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c == '"' || c == '\\' || c < 0x20 {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return s
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return s
+	}
+	out := strings.TrimSpace(b.String())
+	return out[1 : len(out)-1]
+}
+
 // interimOutsideResult reports whether block carries the interim wording in
 // Claude Code's own text: a <note> body, or a <summary> body after the quoted
 // description (`Agent "desc" is waiting ...`). The <result> and the
@@ -358,7 +407,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 				continue
 			}
 			id := strings.TrimSpace(idm[1])
-			if task, ok := launchedAgents[id]; ok && interimOutsideResult(block) {
+			if task, ok := launchedAgents[id]; ok && interimNotification(block, task.Name) {
 				// Not terminal: the agent resumes when its own work reports,
 				// and the same task id notifies again then. It revives an
 				// agent a copy of this notification without the note (a
