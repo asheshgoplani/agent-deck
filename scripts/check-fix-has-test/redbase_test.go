@@ -273,3 +273,38 @@ func TestRedOnBase_AnotherTestRedOnHead(t *testing.T) {
 		t.Fatalf("ok=%v lines:\n%s\nwant a head failure", rep.OK, text)
 	}
 }
+
+// Whitespace inside a string literal is behaviour, not layout: "a b" -> "ab"
+// changes the test. Re-indenting or breaking lines outside literals does not.
+func TestChangedTestsSeesStringLiteralWhitespace(t *testing.T) {
+	const base = "package a\n\nfunc f() string { return \"\" }\n\n" +
+		"func TestA(t *testing.T) {\n\tif f() != \"a b\" {\n\t\tt.Fatal(\"x\")\n\t}\n}\n\n" +
+		"func TestB(t *testing.T) { _ = 1 }\n"
+	cases := []struct {
+		name, head string
+		want       []string
+	}{
+		{"literal whitespace edit", "package a\n\nfunc f() string { return \"\" }\n\n" +
+			"func TestA(t *testing.T) {\n\tif f() != \"ab\" {\n\t\tt.Fatal(\"x\")\n\t}\n}\n\n" +
+			"func TestB(t *testing.T) { _ = 2 }\n", []string{"TestA", "TestB"}},
+		{"re-indent and line breaks only", "package a\n\nfunc f() string { return \"\" }\n\n" +
+			"func TestA(t *testing.T) { if f() != \"a b\" { t.Fatal(\"x\") } }\n\n" +
+			"func TestB(t *testing.T) {\n\t_ = 2\n}\n", []string{"TestB"}},
+		{"comment edit only", "package a\n\nfunc f() string { return \"\" }\n\n" +
+			"func TestA(t *testing.T) {\n\t// new note\n\tif f() != \"a b\" { // why\n\t\tt.Fatal(\"x\")\n\t}\n}\n\n" +
+			"func TestB(t *testing.T) { _ = 2 }\n", []string{"TestB"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			head, basef := srcs(map[string]string{"base:a/a_test.go": base, "head:a/a_test.go": tc.head})
+			got, err := ChangedTests([]Change{{"M", "a/a_test.go"}}, head, basef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []Target{{Pkg: "./a", Tests: tc.want}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("ChangedTests:\n got %+v\nwant %+v", got, want)
+			}
+		})
+	}
+}
