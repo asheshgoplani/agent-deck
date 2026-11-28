@@ -119,6 +119,7 @@ const MirrorInLinger = 2 * time.Minute
 func MirrorIn(ctx context.Context, profile, dir string, in io.Reader, log io.Writer) error {
 	pctx, cancelProd := context.WithCancel(ctx)
 	prod := NewProducer(dir, profile)
+	prod.Log = log
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
