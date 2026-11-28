@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/creack/pty"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,24 +19,16 @@ func TestHumanClientAttached_IgnoresControlModeClients_Integration(t *testing.T)
 	require.NoError(t, err)
 	require.False(t, attached, "no client at all")
 
-	// A control-mode client, as PipeManager and KeySender hold. Its stdin
-	// is a pty kept open so tmux does not drop it at once.
+	// Control-mode client with a pipe stdin, as PipeManager and KeySender start it.
 	ctl := exec.Command("tmux", "-L", s.SocketName, "-C", "attach-session", "-t", s.Name)
-	ptmx, err := pty.Start(ctl)
+	stdin, err := ctl.StdinPipe()
 	require.NoError(t, err)
+	require.NoError(t, ctl.Start())
 	t.Cleanup(func() {
-		_ = ptmx.Close()
+		_ = stdin.Close()
 		_ = ctl.Process.Kill()
 		_, _ = ctl.Process.Wait()
 	})
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			if _, err := ptmx.Read(buf); err != nil {
-				return
-			}
-		}
-	}()
 	require.Eventually(t, func() bool {
 		out, err := s.tmuxCmd("display-message", "-p", "-t", s.Name, "#{session_attached}").Output()
 		return err == nil && string(out) == "1\n"
