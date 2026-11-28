@@ -177,3 +177,50 @@ func TestRework3176FileStoreRecentRestarts(t *testing.T) {
 		t.Errorf("restarts file mode: %v %v", info, err)
 	}
 }
+
+// A single stop asked while the mic is elsewhere does nothing when the mic
+// moved onto that session before the yes.
+func TestRework3176SingleYesAfterMicMoved(t *testing.T) {
+	for _, v := range []string{"stop", "restart", "archive"} {
+		h := phase2Harness(t)
+		q := h.say(v + " voice test")
+		if q.Confirm == nil {
+			t.Fatalf("%s: setup %q", v, q.Say)
+		}
+		r := h.do(Request{Sentence: "yes", Pending: q.Confirm.Token, On: idVoiceTest, AnswerDelayMs: 800, HasAnswerDelay: true})
+		if actedOn(h, idVoiceTest) {
+			t.Errorf("%s: the yes acted on the mic's session now: %v (%q)", v, h.deck.acts, r.Say)
+		}
+	}
+}
+
+// When the --on id is on two hosts, a group verb leaves both out: neither
+// one is asked about or acted on.
+func TestRework3176BulkSharedMicIDLeavesBothOut(t *testing.T) {
+	h := phase2Harness(t)
+	for i := range h.deck.sessions {
+		if h.deck.sessions[i].Title == "tailscale-fix" { // boxone
+			h.deck.sessions[i].ID = idPhone
+		}
+	}
+	q := h.do(Request{Sentence: "stop all workers", On: idPhone})
+	if q.Confirm != nil {
+		h.do(Request{Sentence: "yes", Pending: q.Confirm.Token, On: idPhone, AnswerDelayMs: 800, HasAnswerDelay: true})
+	}
+	if actedOn(h, idPhone) {
+		t.Errorf("a group stop acted on a session with the mic's id: %v", h.deck.acts)
+	}
+}
+
+// A group verb never lists a session of another profile, even when the
+// deck lists one.
+func TestRework3176BulkOtherProfileLeftOut(t *testing.T) {
+	h := phase2Harness(t)
+	h.addSession(Session{ID: "p9000002-1700000002", Title: "otter-worker", Group: "team/alex/workers", Profile: "otherprof", Status: "running", LastActivity: t0})
+	q := h.do(Request{Sentence: "stop all workers", Profile: "work"})
+	for _, it := range q.Show.Items {
+		if it.ID == "p9000002-1700000002" {
+			t.Errorf("a session of another profile is in the group question: %q", q.Say)
+		}
+	}
+}
