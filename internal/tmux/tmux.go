@@ -1639,8 +1639,8 @@ func (s *Session) ExistsCached() bool {
 
 // IsPaneDead returns true if the session's pane process has exited.
 // Uses the cached pane info (refreshed once per tick) for zero-cost lookups.
-// Falls back to a direct tmux query targeting pane 0.0 (the primary pane)
-// to avoid false positives in multi-pane layouts.
+// Falls back to a direct tmux query of the primary pane to avoid false
+// positives in multi-pane layouts.
 func (s *Session) IsPaneDead() bool {
 	if info, ok := GetCachedPaneInfo(s.TmuxName()); ok {
 		return info.Dead
@@ -1653,11 +1653,21 @@ func (s *Session) IsPaneDead() bool {
 	// live pane as dead would flip the session to an error state.
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	out, err := commandOutput(s.tmuxCmdContext(ctx, "list-panes", "-t", s.TmuxName()+":0.0", "-F", "#{pane_dead}"))
+	out, err := s.primaryPaneFormat(ctx, "#{pane_dead}")
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) == "1"
+	return out == "1"
+}
+
+// primaryPaneFormat expands format for the first pane of the exact-named session, whatever its base-index.
+func (s *Session) primaryPaneFormat(ctx context.Context, format string) (string, error) {
+	out, err := commandOutput(s.tmuxCmdContext(ctx, "list-panes", "-t", "="+s.primaryWindowTarget(), "-F", format))
+	if err != nil {
+		return "", err
+	}
+	first, _, _ := strings.Cut(string(out), "\n")
+	return strings.TrimSpace(first), nil
 }
 
 // AllPanesDead reports whether every pane of the session is dead
@@ -1728,11 +1738,11 @@ func (s *Session) PaneDeadExitStatus() (int, bool) {
 	// wedged tmux server must not stall it.
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	out, err := commandOutput(s.tmuxCmdContext(ctx, "list-panes", "-t", s.TmuxName()+":0.0", "-F", "#{pane_dead}|#{pane_dead_status}"))
+	out, err := s.primaryPaneFormat(ctx, "#{pane_dead}|#{pane_dead_status}")
 	if err != nil {
 		return 0, false
 	}
-	return parsePaneDeadStatus(string(out))
+	return parsePaneDeadStatus(out)
 }
 
 // parsePaneDeadStatus interprets the "#{pane_dead}|#{pane_dead_status}" line
