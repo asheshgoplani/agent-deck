@@ -28,7 +28,7 @@ import (
 var stateEventsHeartbeatInterval = 15 * time.Second
 
 // defaultStateKinds is what the stream carries without ?kind=.
-var defaultStateKinds = []string{"session.status", "voice."}
+var defaultStateKinds = []string{"session.status", "session.link", "voice."}
 
 // stateKindsAllowed bounds ?kind=: the stream is for status and voice, not
 // a door to every kind on the bus (tmux output, ask dialogs).
@@ -48,6 +48,9 @@ type stateHello struct {
 	Cursor uint64                 `json:"cursor"`
 	Host   string                 `json:"host"`
 	Voice  voicestream.StateEvent `json:"voice"`
+	// Remotes is the newest session.link of each followed remote
+	// (--stream-remotes), omitted when none is followed.
+	Remotes []SessionLinkEvent `json:"remotes,omitempty"`
 }
 
 func parseStateKinds(raw string) ([]string, error) {
@@ -186,7 +189,7 @@ func (s *Server) handleStateEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	hello := stateHello{Cursor: uint64(end), Voice: s.currentVoiceEvent()}
+	hello := stateHello{Cursor: uint64(end), Voice: s.currentVoiceEvent(), Remotes: s.remoteLinks()}
 	if err := writeSSEEvent(w, flusher, "hello", hello); err != nil {
 		return
 	}

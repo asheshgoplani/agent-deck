@@ -44,6 +44,7 @@ type webCommandOptions struct {
 	pushVAPIDSubject string
 	pushTestEvery    time.Duration
 	noTUI            bool
+	streamRemotes    string
 }
 
 type stringValues []string
@@ -67,6 +68,7 @@ func parseWebCommandOptions(args []string) (webCommandOptions, error) {
 	fs.StringVar(&options.pushVAPIDSubject, "push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
 	fs.DurationVar(&options.pushTestEvery, "push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
 	fs.BoolVar(&options.noTUI, "no-tui", false, "Run in headless mode (HTTP server only, no bubbletea TUI)")
+	fs.StringVar(&options.streamRemotes, "stream-remotes", "", "Comma-separated remotes whose session.status frames GET /events/state also carries, with data.host (followed over ssh)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck web [options]")
@@ -176,6 +178,11 @@ func buildWebServerFromOptions(profile string, options webCommandOptions, menuDa
 		PushVAPIDSubject:    resolvedPushSubject,
 		PushTestInterval:    options.pushTestEvery,
 	})
+	if names, err := streamRemoteNames(options.streamRemotes); err != nil {
+		return nil, err
+	} else if len(names) > 0 {
+		server.SetRemoteStatusStream(names, webRemoteStatusRunner)
+	}
 
 	if mutator != nil {
 		server.SetMutator(mutator)
@@ -336,4 +343,60 @@ func extractNoTuiFlag(args []string) (bool, []string) {
 		}
 	}
 	return noTui, remaining
+}
+
+// streamRemoteNames is --stream-remotes, else [web] stream_remotes, each
+// checked against the configured remotes.
+func streamRemoteNames(raw string) ([]string, error) {
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading config for stream remotes: %w", err)
+	}
+	return resolveStreamRemotes(raw, cfg)
+}
+
+// resolveStreamRemotes: the flag wins over the config key; an unknown
+// remote name is an error naming where it came from.
+func resolveStreamRemotes(flagValue string, cfg *session.UserConfig) ([]string, error) {
+	source := "--stream-remotes"
+	var raw []string
+	if strings.TrimSpace(flagValue) != "" {
+		raw = strings.Split(flagValue, ",")
+	} else if cfg != nil {
+		raw, source = cfg.Web.StreamRemotes, "[web] stream_remotes"
+	}
+	var names []string
+	for _, n := range raw {
+		if n = strings.TrimSpace(n); n == "" {
+			continue
+		}
+		if cfg == nil {
+			return nil, fmt.Errorf("%s: remote %q not found", source, n)
+		}
+		if _, ok := cfg.Remotes[n]; !ok {
+			return nil, fmt.Errorf("%s: remote %q not found", source, n)
+		}
+		names = append(names, n)
+	}
+	return names, nil
+}
+
+// webRemoteStatusRunner is the ssh runner for one --stream-remotes name.
+func webRemoteStatusRunner(name string) web.RemoteStatusRunner {
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		return nil
+	}
+	rc, ok := cfg.Remotes[name]
+	if !ok {
+		return nil
+	}
+	return streamRemoteRunner(name, rc)
+}
+
+// streamRemoteRunner is the runner of one --stream-remotes follow: the
+// relay's fast keepalive, so a dead link is said (session.link down) in
+// seconds rather than after ~60 s.
+func streamRemoteRunner(name string, rc session.RemoteConfig) *session.SSHRunner {
+	return session.NewSSHRunner(name, rc).WithFastKeepalive()
 }

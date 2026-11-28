@@ -126,7 +126,7 @@ nothing).
 
 Server-sent events on `agent-deck web`, owner auth as `/events/menu`
 (`?token=` accepted), served in read-only mode too. Query `kind=` (prefix
-list of `session.*` and `voice.*` kinds; default `session.status,voice.`) and
+list of `session.*` and `voice.*` kinds; default `session.status,session.link,voice.`) and
 `after=<cursor>` or the `Last-Event-ID` header. First event `hello`
 `{cursor, host, voice}` (the newest cursor and the voice state now); then one
 event per matching frame: `id: <cursor>`, `event: <kind>`, `data: <the
@@ -136,6 +136,37 @@ after it are older. A cursor older than the retained log, or newer than
 the log ever reached, gets `event: reset` `{reason: "cursor-too-old" |
 "cursor-ahead", cursor, voice}` and the stream continues from the newest
 frame. `: keepalive` every 15 s.
+
+`agent-deck web --stream-remotes <remote>[,<remote>]` also puts those
+remotes' own `session.status` frames on this host's bus, followed over ssh
+(`remote <name> events follow --read-only --kind session.status`, an
+observer that starts nothing on the remote, resumed by cursor after a drop), with `data.host` = the remote's name and `data.remote_cursor`
+= its cursor there. So one `/events/state` stream carries local and remote
+status in one cursor order. It starts at the remote's own newest cursor
+(`events stats`, no clock comparison) and resumes from the last one after a
+drop, retrying within a second (a follow that fails before it delivers a
+bus frame (an older remote's "unsupported" line does not count) or stays up for 3 s backs off, doubling to a second, so a broken
+remote bus does not flap the link). Each connect publishes `session.link`
+`{host, up: true, sessions: [{id, status, title}]}` with the remote's
+current statuses (a resync: a change made while this server or the link
+was down is not lost), and each drop publishes `session.link {host, up:
+false}` (until the next up, that host's status may be stale). The follow
+uses 2 s keepalives (3 missed = gone), so a dead link is said within about
+10 s. The SSE `hello` carries `remotes`, the newest link per remote with
+every status forwarded since applied, so a client connecting late gets the
+current statuses. A resume
+cursor the remote no longer has starts over from its newest cursor with a
+resync. A remote's history before the server started is not replayed; frames that already carry a host are not forwarded again (two
+hosts that stream each other never loop); a remote's `voice.state` is not
+forwarded (each host has its own, from the relay). Only the status fields
+cross (`from, to, tool, tmux_session, substate, changed_at`, plus `host` and
+`remote_cursor`); anything else in a remote's frame is dropped. The
+`session_id` stays the remote's own id: ids are unique only per host, so a
+client keys a forwarded frame by (`data.host`, id), and `events follow
+--session <id>` here can match a remote's session with the same id (check
+`data.host` before acting). A remote named in `--stream-remotes` that cannot
+be set up (its config is gone) is published as `session.link {host, up:
+false}` and logged.
 
 ## On-disk layout
 
