@@ -2,6 +2,7 @@
 
 ```
 agent-deck voice state [--json]
+agent-deck voice do [--json] [--dry-run] [--from …] [--on <id>] [--pending <token>] [--answer-delay-ms <n>] "<sentence>"
 agent-deck needs-me [--json] [--timeout 3s]
 ```
 
@@ -63,3 +64,6 @@ Followers: `agent-deck events follow --kind voice.`, `agent-deck remote <name> e
 and `GET /events/state` on `agent-deck web` (server-sent events with resume by cursor). Frame fields, the `host`
 rule and the web route: [events.md](events.md).
 
+## voice do
+
+The voice desk: one heard sentence in, one deck action and the short line to speak out. See [voice-desk.md](voice-desk.md).

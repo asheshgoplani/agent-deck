@@ -34,6 +34,9 @@ type Row struct {
 	// flag, so a renamed conductor keeps it); "" for every other session
 	// and from a host too old to send it.
 	ConductorName string `json:"conductor_name,omitempty"`
+	// Tool is the session's harness (claude, codex, shell ...): the voice
+	// desk guards sends into agent tools against open menus.
+	Tool string `json:"tool,omitempty"`
 }
 
 // Source is one place to ask: a local profile or a remote host.

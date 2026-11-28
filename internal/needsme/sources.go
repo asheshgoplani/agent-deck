@@ -141,7 +141,7 @@ func remoteRows(infos []session.RemoteSessionInfo, profile string) []Row {
 		rows = append(rows, Row{ID: i.ID, Title: i.Title, Group: i.Group, Profile: profile,
 			Status: i.Status, Substate: i.Substate, SubstateDetail: i.SubstateDetail,
 			LastActivityAt: i.LastActivityAt, WaitingSince: i.WaitingSince, CreatedAt: i.CreatedAt, Archived: i.Archived,
-			ConductorName: i.ConductorName})
+			ConductorName: i.ConductorName, Tool: i.Tool})
 	}
 	return rows
 }
