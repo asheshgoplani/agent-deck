@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -615,9 +616,10 @@ type StoppedSocketWake struct {
 }
 
 // PiSocketWakesStopped lists the enrolled pi parents whose records have used up
-// their wake tries and whose last socket wake was recorded as failed, so
-// `pi-hooks status` can say why no doorbell rings for them (the records still
-// arrive with the parent's next run start).
+// their wake tries and for which a failed socket wake carried one of those
+// records (the newest such wake gives the reason), so `pi-hooks status` can say
+// why no doorbell rings for them (the records still arrive with the parent's
+// next run start).
 func PiSocketWakesStopped() []StoppedSocketWake {
 	entries, err := os.ReadDir(commsEnrollmentDir())
 	if err != nil {
@@ -634,14 +636,16 @@ func PiSocketWakesStopped() []StoppedSocketWake {
 		if err != nil || !found {
 			continue
 		}
-		stopped := false
-		for _, tries := range f.WakeTries {
-			stopped = stopped || tries >= commsMaxWakeTries
+		stopped := map[string]bool{}
+		for c, tries := range f.WakeTries {
+			if tries >= commsMaxWakeTries {
+				stopped[c] = true
+			}
 		}
-		if !stopped {
+		if len(stopped) == 0 {
 			continue
 		}
-		if reason := lastFailedSocketWake(en.Dir, id); reason != "" {
+		if reason := lastFailedSocketWake(en.Dir, id, stopped); reason != "" {
 			out = append(out, StoppedSocketWake{Parent: id, Reason: reason})
 		}
 	}
@@ -649,14 +653,17 @@ func PiSocketWakesStopped() []StoppedSocketWake {
 }
 
 // lastFailedSocketWake is the reason on the newest failed socket wake record
-// addressed to parent, "" when there is none.
-func lastFailedSocketWake(dir, parent string) string {
+// addressed to parent that carried one of the stopped records (the cursors
+// whose wake tries are used up), "" when there is none. A failed record that
+// carried none of them belongs to an earlier episode: tries used up by wakes
+// that went unanswered have no failed record, and must not show its reason.
+func lastFailedSocketWake(dir, parent string, stopped map[string]bool) string {
 	bus, err := comms.OpenReaderDir(dir)
 	if err != nil {
 		return ""
 	}
 	defer func() { _ = bus.Close() }()
-	reason := ""
+	m := newStoppedWakeMatch(parent, stopped)
 	var after events.Cursor
 	for {
 		page, last, err := comms.Export(bus, after, 500)
@@ -664,15 +671,46 @@ func lastFailedSocketWake(dir, parent string) string {
 			break
 		}
 		for _, e := range page {
-			r := e.Record
-			if r.Kind == comms.KindWake && r.Via == "socket" && r.State == comms.StateFailed && r.Err != "" && len(r.To) > 0 && r.To[0] == parent {
-				reason = r.Err
-			}
+			m.see(e)
 		}
 		if last <= after {
 			break
 		}
 		after = last
 	}
-	return reason
+	return m.reason
+}
+
+// stoppedWakeMatch finds, oldest first, the failed socket wakes that carried a
+// stopped record. A record is committed before any wake that carries it, so
+// one pass learns each stopped record's id before it meets the wake. A stopped
+// record already compacted out of the log is not listed: its id cannot be
+// learned, and it will not arrive with the next run start either.
+type stoppedWakeMatch struct {
+	parent  string
+	cursors map[string]bool // the stopped records' cursors
+	ids     map[string]bool // their record ids, as wakes name them in Refs
+	reason  string
+}
+
+func newStoppedWakeMatch(parent string, cursors map[string]bool) *stoppedWakeMatch {
+	return &stoppedWakeMatch{parent: parent, cursors: cursors, ids: map[string]bool{}}
+}
+
+func (m *stoppedWakeMatch) see(e comms.Exported) {
+	r := e.Record
+	if m.cursors[strconv.FormatUint(uint64(e.Cursor), 10)] {
+		m.ids[r.ID] = true
+		return
+	}
+	if r.Kind != comms.KindWake || r.Via != "socket" || r.State != comms.StateFailed || r.Err == "" ||
+		len(r.To) == 0 || r.To[0] != m.parent {
+		return
+	}
+	for _, id := range r.Refs {
+		if m.ids[id] {
+			m.reason = r.Err
+			return
+		}
+	}
 }
