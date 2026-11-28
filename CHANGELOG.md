@@ -7,13 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [1.16.41] - 2026-11-28
 
-- `agent-deck needs-me [--json]` lists the sessions waiting for you, longest first, across every local profile and every configured remote (a host that does not answer in 3 s is listed under `errors`). `agent-deck voice state [--json]` reports the voice daemon's phase (`listening`, `hearing`, `thinking`, `speaking`, `resting`, `off`) and the session the mic is on. Both are read-only; see `docs/voice.md`.
+### Highlights
 
-### Fixed
+- Kimi Code is a built-in tool (thanks @astepanov83), and the web UI has a read-only Chat view next to Terminal (thanks @ckjeter) (see New features).
+- `agent-deck needs-me` lists every session waiting for you, across profiles and remotes; Antigravity sessions are bound to their conversation and can be forked (thanks @dtvillafana) (see New features).
+- Self-update installs are now serialized with a lock and replace the binary atomically, so two updates at once can no longer fail or leave the binary missing (see Fixes).
+- Security: gorilla/websocket is bumped for GO-2026-6278 (see Security).
 
-- `session show --json` no longer inlines a whole large send queue (one conductor's was 14,929 entries, 4.2 MB). `queue` holds the newest 100, `queue_count` the total and `queue_truncated` whether it was cut; `--queue-full` returns everything, as `session queue list` always does.
+### New features
+
+- Kimi Code (`kimi`) is a built-in tool, with hook-based status and resume by its own session id (#3156, @astepanov83).
+- Web: a read-only Chat view next to Terminal, fed by the recall timeline (#3250, @ckjeter).
+- `agent-deck worktree checkpoint` saves a task's tracked edits and a note, and restores them into a new worktree (#3222, @ntmspavan).
+- TUI: Shift+H opens a shell in a remote session's worktree too (#3275, @dtvillafana).
+- `agent-deck needs-me [--json]` lists the sessions waiting for you, longest first, across every local profile and configured remote; `agent-deck voice state [--json]` reports the voice daemon's phase and which session the mic is on. Both are read-only (#3170).
+- Antigravity: conversation binding and session forking (#3234, @dtvillafana); `--model` for agy, and other profiles are checked before binding (#3290).
+- `add` and `launch` accept `--install-codex-hooks` to set up the Codex notify hook while creating the session (#3126, @ntmspavan).
+
+### Fixes
+
+- Status: a session stays running while a background agent waits for its own background work (#3280, @c2keesey); the waiting footer counter is bounded and interim wording is matched only in Claude Code's own text (#3291).
+- Update: self-update installs take a lock and replace the binary atomically; a second install waits or says an update is already in progress (#3248).
+- Send: `send --wait` stays inside one `--timeout`, and a bridge send that was killed is reported as unconfirmed, not failed (#3254).
+- `session show --json` caps the inlined send queue at the newest 100 entries (`queue_count`, `queue_truncated`, `--queue-full`) (#3260).
+- Notify: a headless `web --no-tui` no longer counts as a live TUI, so child status changes reach the parent (#3269, @AndreIntelas).
+- Remote: the poll ssh transport is compressed (much faster on slow links); a remote's error and exit code pass through for read commands (#3287, #3261).
+- Children: child rows use one read-only status pass, so a parent with many children no longer waits seconds per prompt (#3283, @c2keesey).
+- Worktrees: the default-branch fetch is bounded, so a dead transport cannot hang worktree creation (#3284, @c2keesey); a quick worktree fork keeps the `[claude]` launch options (#3281, @c2keesey).
+- TUI: the cursor stays on its row when remote rows change above it (#3282, @c2keesey); remote session titles keep their emphasis (#3267, @XSY-28).
+- Keys: Cyrillic input is preserved with extended keys off, and modifyOtherKeys is reset only when extended keys are off (#3286, @astepanov83; #3293).
+- Profiles: importing tmux sessions keeps their profile owner; restart, the duplicate sweep and old created_at values follow the same rule (#3285, @Oscar-Williams; #3292).
+- tmux: dead panes are probed without assuming base-index 0 (#3277, @3rwww1).
+- OpenCode 2.x sessions are looked up and resumed by id (#3276, @3rwww1).
+- CLI: `status` counts with the read-only update path (#3278, @3rwww1).
+- Pi: small follow-ups from earlier reviews (#3263, @fpmx3bp).
+- Web: fenced code inside list items stays in the list, ordered lists keep their start number, and fences opened four or more spaces deep are closed (#3249, @ckjeter; #3289).
+- Recall: the rows timeline is served with `[recall]` off (#3259).
+
+### Security
+
+- gorilla/websocket bumped to d67f41855da4 for GO-2026-6278 (mask keys from crypto/rand). Only the opt-in OpenClaw gateway client was affected (#3288).
+
+### Dependencies
+
+- Go minor and patch group bump (#3265).
+
+### Tests and CI
+
+- Flaky tests fixed: tmux pane cwd poll, web lazy-load race, TempDir cleanup in settle tests, kill probe uses tmux, control-mode attach through a pipe (#3257, #3251, #3256, #3279 and #3272 by @3rwww1); visualcheck goldens no longer depend on toast timing or the host (#3258).
+- CI: the red-on-base / green-on-head test check for fix PRs is fixed (#3214); ci-stalled-notify skips same-repo runs and serializes per PR (#3255).
+
+Thanks to everyone who contributed to this release: @astepanov83, @ckjeter, @ntmspavan, @dtvillafana, @c2keesey, @3rwww1, @AndreIntelas, @Oscar-Williams, @XSY-28, @fpmx3bp.
 
 ## [1.16.40] - 2026-11-22
 
