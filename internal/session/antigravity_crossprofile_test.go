@@ -286,8 +286,10 @@ func TestAntigravityCrossProfileBlockedResultExpires(t *testing.T) {
 	a := saveAntigravityProfileSession(t, storageA, "agy-profile-a", workDir, "")
 
 	scans := countAntigravityProfileScans(t)
-	if !a.antigravitySessionIDBoundElsewhere("conv-b") || !a.antigravitySessionIDBoundElsewhere("conv-b") {
-		t.Fatal("conv-b is owned by profile B's session")
+	for i := 0; i < 2; i++ {
+		if !a.antigravitySessionIDBoundElsewhere("conv-b") {
+			t.Fatalf("check %d: conv-b is owned by profile B's session", i+1)
+		}
 	}
 	if *scans != 1 {
 		t.Fatalf("scanned %d times within the window, want 1", *scans)
