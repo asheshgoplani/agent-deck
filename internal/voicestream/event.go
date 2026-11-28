@@ -72,6 +72,17 @@ func (e StateEvent) SessionID() string {
 	return ""
 }
 
+// SessionIDFor is SessionID on profile's bus: "" when the mic is on a
+// session of another profile. The voice state is per machine and every
+// profile's producer publishes it, so profile A's bus must not name
+// profile B's session as its session_id (followers check target.profile).
+func (e StateEvent) SessionIDFor(profile string) string {
+	if e.Target != nil && e.Target.Profile != "" && profile != "" && e.Target.Profile != profile {
+		return ""
+	}
+	return e.SessionID()
+}
+
 // key is what a screen draws; a frame is published when it changes.
 func (e StateEvent) key() string {
 	var b strings.Builder

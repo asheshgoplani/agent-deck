@@ -89,7 +89,7 @@ func ResultFromDesk(raw []byte, from string) (ResultEvent, error) {
 	if !d.Handled || d.DryRun {
 		return ResultEvent{}, ErrNotPublishable
 	}
-	r := ResultEvent{Intent: d.Intent, Target: d.Target, Show: showWithoutText(d.Show), Then: d.Then, Refused: d.Refused, From: from}
+	r := ResultEvent{Intent: closedWord(d.Intent, "none"), Target: d.Target, Show: showWithoutText(d.Show), Then: d.Then, Refused: refusedWord(d.Refused), From: from}
 	if d.Confirm != nil {
 		// The desk's prompt is the read-back of his dictated message ("Send
 		// to alpha: <message>. Yes?"): it stays with the brain. The card
@@ -110,6 +110,46 @@ func (r ResultEvent) SessionID() string {
 	return ""
 }
 
+// SessionIDFor is SessionID on profile's bus: "" when the target is a
+// session of another profile (a frame on one profile's bus never names
+// another profile's session as its session_id).
+func (r ResultEvent) SessionIDFor(profile string) string {
+	if r.Target != nil && r.Target.Profile != "" && profile != "" && r.Target.Profile != profile {
+		return ""
+	}
+	return r.SessionID()
+}
+
+// refusals are the desk's refusal words (voicedesk Refused*). Any other
+// text is not copied: it reads as "unsafe", still a refusal.
+var refusals = map[string]bool{"other-person": true, "not-found": true, "ambiguous": true, "unsafe": true, "expired": true}
+
+func refusedWord(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	w := *in
+	if !refusals[w] {
+		w = "unsafe"
+	}
+	return &w
+}
+
+// closedWord keeps a label that is one short lower-case word ("tell",
+// "todo_list", "waiting", "not-found"); anything else becomes alt. Labels
+// are never his words.
+func closedWord(in, alt string) string {
+	if in == "" || len(in) > 24 {
+		return alt
+	}
+	for _, c := range in {
+		if (c < 'a' || c > 'z') && c != '_' && c != '-' {
+			return alt
+		}
+	}
+	return in
+}
+
 // PublishResult puts the desk's result on the profile's bus (never blocks;
 // the bus may drop under load, see docs/events.md).
 func PublishResult(profile string, r ResultEvent) {
@@ -122,7 +162,7 @@ func PublishResult(profile string, r ResultEvent) {
 	if r.Show.Kind == "" {
 		r.Show.Kind = "none"
 	}
-	events.PublishProfile(profile, KindResult, r.SessionID(), r)
+	events.PublishProfile(profile, KindResult, r.SessionIDFor(profile), r)
 }
 
 // confirmPrompt is the card's question without any of his words.
@@ -145,21 +185,25 @@ func confirmPrompt(kind, intent string, target *Target) string {
 }
 
 // showWithoutText rebuilds the desk's show from id, title, host and status
-// per item and a known kind: no free text reaches the frame. For to-dos
-// (title is his text) only id and status are kept.
+// per item and a known kind: no free text reaches the frame. Only the
+// session kinds (sessions, confirm, search: a title is a session's title)
+// keep title and host; to-dos (the title is his text) and any other kind
+// keep id and status only, so a new or misspelt kind can never leak.
 func showWithoutText(in ResultShow) ResultShow {
 	out := ResultShow{Kind: "none", Items: make([]ResultItem, 0, len(in.Items))}
+	sessionKind := false
 	switch in.Kind {
-	case "sessions", "confirm", "search", "todos":
+	case "sessions", "confirm", "search":
+		out.Kind, sessionKind = in.Kind, true
+	case "todos":
 		out.Kind = in.Kind
 	}
 	for _, it := range in.Items {
-		if in.Kind == "todos" {
-			// a to-do's title is his dictated text: id and status only.
-			out.Items = append(out.Items, ResultItem{ID: it.ID, Status: it.Status})
-			continue
+		item := ResultItem{ID: it.ID, Status: closedWord(it.Status, "")}
+		if sessionKind {
+			item.Title, item.Host = it.Title, it.Host
 		}
-		out.Items = append(out.Items, ResultItem{ID: it.ID, Title: it.Title, Host: it.Host, Status: it.Status})
+		out.Items = append(out.Items, item)
 	}
 	return out
 }

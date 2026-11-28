@@ -29,7 +29,10 @@ type Producer struct {
 	// Publish puts a frame on the bus and reports whether the bus took it.
 	Publish func(kind, sessionID string, data any) bool
 	// Origin names this machine in frames from its own current.json.
-	Origin   string
+	Origin string
+	// Profile is the bus profile: session_id is "" when the mic is on a
+	// session of another profile ("" = not known, kept as before).
+	Profile  string
 	Interval time.Duration
 	Now      func() time.Time
 
@@ -53,6 +56,7 @@ func NewProducer(dir, profile string) *Producer {
 		Reader:  voicestate.NewReader(dir),
 		Publish: func(kind, sid string, data any) bool { return events.TryPublishProfile(profile, kind, sid, data) },
 		Origin:  LocalOrigin(),
+		Profile: profile,
 	}
 }
 
@@ -88,7 +92,7 @@ func (p *Producer) Step() (StateEvent, bool) {
 	// A frame the bus did not take is not recorded: the next Step offers
 	// it again, so a dropped "off" cannot leave "listening" as the newest
 	// frame.
-	if p.Publish != nil && !p.Publish(KindState, ev.SessionID(), ev) {
+	if p.Publish != nil && !p.Publish(KindState, ev.SessionIDFor(p.Profile), ev) {
 		return ev, false
 	}
 	p.started, p.lastKey, p.last = true, key, ev
