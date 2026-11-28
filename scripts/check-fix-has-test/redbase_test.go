@@ -323,4 +323,12 @@ func TestTestFuncsKeepsStatementBoundaries(t *testing.T) {
 	if two["TestA"] == one["TestA"] {
 		t.Fatalf("two statements and one compare equal: %q", one["TestA"])
 	}
+	// A block comment holding a line break ends the statement like the break.
+	viaComment, err := testFuncs([]byte("package a\nfunc TestA(t *testing.T) {\n\tdefer f() /*\n*/ (x)()\n}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viaComment["TestA"] != two["TestA"] {
+		t.Fatalf("comment with a line break: got %q, want the two-statement form %q", viaComment["TestA"], two["TestA"])
+	}
 }
