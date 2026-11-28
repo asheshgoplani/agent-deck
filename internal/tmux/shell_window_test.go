@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSession_NewShellWindow verifies that NewShellWindow adds a second
@@ -34,16 +35,24 @@ func TestSession_NewShellWindow(t *testing.T) {
 	}
 
 	// new-window selects the new window, so the session's active pane must
-	// be in workdir.
-	out, err = exec.Command("tmux", "-L", socket, "display-message", "-p", "-t", target, "#{pane_current_path}").CombinedOutput()
-	if err != nil {
-		t.Fatalf("display-message: %v: %s", err, out)
-	}
-	got, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
-	if err != nil {
-		t.Fatalf("EvalSymlinks(pane_current_path): %v", err)
-	}
-	if got != workdir {
-		t.Errorf("active pane path = %q, want %q", got, workdir)
+	// end up in workdir. new-window returns once tmux has forked the pane
+	// process, before that child has chdir'd, so pane_current_path can still
+	// report the tmux server's cwd for a moment (seen on the release
+	// integration job under -race). Poll until it settles or a deadline hits.
+	var got string
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		out, err = exec.Command("tmux", "-L", socket, "display-message", "-p", "-t", target, "#{pane_current_path}").CombinedOutput()
+		if err != nil {
+			t.Fatalf("display-message: %v: %s", err, out)
+		}
+		got, err = filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+		if err == nil && got == workdir {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("active pane path = %q (err %v), want %q after 10s", got, err, workdir)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
