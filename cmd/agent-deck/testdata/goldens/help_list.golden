@@ -8,14 +8,26 @@ JSON always includes the raw "account" string, including "" when no slot is stor
 Options:
   -all
     	List sessions from all profiles
+  -cursor string
+    	With --sync: the cursor of the previous reply (none: a full listing)
+  -focus string
+    	With --sync: refresh only these comma-separated ids plus running, waiting, starting, conductor and favourite sessions
   -include-superseded
     	Include archived source rows retained for cross-harness recovery
   -json
     	Output as JSON
+  -limit int
+    	With --sync: most rows and removed ids per reply (0: no limit)
   -no-archived
     	Skip archived sessions (no status work or output for them); for pollers that only need live sessions
+  -page string
+    	With --sync: the next token of a paged full listing
+  -scope string
+    	With --sync: active, archived or all (default "all")
   -stats
     	
+  -sync
+    	With --json: one-line sync envelope of what changed since --cursor, for remote pollers
 
 Examples:
   agent-deck list                    # List from default profile

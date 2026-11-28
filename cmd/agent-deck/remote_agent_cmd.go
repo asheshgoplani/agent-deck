@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/core"
@@ -89,6 +90,17 @@ import (
 // Both are acknowledged with {"id":N,"code":0}.
 // The local TUI uses this for the preview pane of the focused remote row
 // instead of polling `session output --pane` over ssh.
+//
+// Bare feed: {"id":N,"feed":"bare"} (acknowledged with {"id":N,"code":0})
+// makes every later "changed" event on this connection go out without the
+// sessions and groups listings (probe_ms and stamp are kept): a client that
+// syncs with `list --json --sync` answers the event with a delta poll, whose
+// bytes are what changed, instead of receiving the whole listing (up to
+// remoteAgentMaxPushBytes) on every change. An agent older than this field
+// ignores it, reads the line as a request with no args and answers
+// {"id":N,"code":2,"error":"verb not allowed over the channel"}, so a
+// non-zero code tells the client to keep applying pushed listings. Any
+// other feed value is refused with code 2 and the feed stays as it was.
 
 type remoteAgentRequest struct {
 	ID      int64    `json:"id"`
@@ -100,7 +112,13 @@ type remoteAgentRequest struct {
 	Cancel bool `json:"cancel,omitempty"`
 	// Ping is a liveness line from the peer; it resets the idle deadline.
 	Ping bool `json:"ping,omitempty"`
+	// Feed "bare" stops "changed" events on this connection from carrying
+	// the listings (see the bare feed above).
+	Feed string `json:"feed,omitempty"`
 }
+
+// remoteAgentFeedBare is the only Feed value.
+const remoteAgentFeedBare = "bare"
 
 type remoteAgentReply struct {
 	ID     int64  `json:"id,omitempty"`
@@ -257,6 +275,7 @@ func handleRemoteAgent(profile string, args []string) {
 			fmt.Println("channel per remote) and push {\"event\":\"changed\"} when the profile's state changes.")
 			fmt.Println("{\"id\":N,\"watch\":\"<session>\",\"lines\":200} follows one session's pane ({\"event\":\"pane\"} on change);")
 			fmt.Println("{\"id\":N,\"unwatch\":true} stops it. {\"id\":N,\"cancel\":true} kills request N;")
+			fmt.Println("{\"id\":N,\"feed\":\"bare\"} sends later {\"event\":\"changed\"} events without the listings.")
 			fmt.Println("{\"id\":N,\"ping\":true} keeps the channel alive. The agent pushes {\"event\":\"ping\"} itself")
 			fmt.Println("and exits when stdout fails or stdin stays silent for 10 minutes.")
 			fmt.Println()
@@ -552,12 +571,14 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, cfg remo
 
 	write(remoteAgentReply{Event: "ready"})
 
+	// bareFeed is set by {"feed":"bare"}; the change feed reads it per event.
+	var bareFeed atomic.Bool
 	var wg sync.WaitGroup
 	if cfg.WatchPath != "" && cfg.WatchEvery > 0 && cfg.Probe != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			watchRemoteState(ctx, cfg, write)
+			watchRemoteState(ctx, cfg, &bareFeed, write)
 		}()
 	}
 	wg.Add(1)
@@ -719,6 +740,14 @@ loop:
 				write(remoteAgentReply{ID: req.ID})
 			}
 			continue
+		case req.Feed != "":
+			if req.Feed != remoteAgentFeedBare {
+				write(remoteAgentReply{ID: req.ID, Code: 2, Error: fmt.Sprintf("unknown feed %q", req.Feed)})
+				continue
+			}
+			bareFeed.Store(true)
+			write(remoteAgentReply{ID: req.ID})
+			continue
 		case req.Watch != "" || req.Unwatch:
 			switch {
 			case cfg.Capture == nil:
@@ -771,7 +800,8 @@ loop:
 // With a Fingerprint, a stamp move that left the instances and groups rows
 // unchanged (a status line or cost event write, several a second on a busy
 // host) is probed at most every ActivityEvery instead of every ProbeQuiet.
-func watchRemoteState(ctx context.Context, cfg remoteAgentConfig, write func(remoteAgentReply)) {
+// While bare is set, a "changed" event carries no listings.
+func watchRemoteState(ctx context.Context, cfg remoteAgentConfig, bare *atomic.Bool, write func(remoteAgentReply)) {
 	last := remoteAgentStamp(cfg.WatchPath)
 	// Seed with the current content so the first stamp change is judged
 	// against what the TUI already fetched at startup.
@@ -836,6 +866,10 @@ func watchRemoteState(ctx context.Context, cfg remoteAgentConfig, write func(rem
 		default:
 			if h := remoteAgentContentHash(l, g); h != lastHash {
 				lastHash = h
+				if bare.Load() {
+					write(remoteAgentReply{Event: "changed", ProbeMS: elapsed, Stamp: stamp})
+					break
+				}
 				cl, cg, fits := remoteAgentCompactListings(l, g, cfg.MaxPushBytes)
 				if fits {
 					write(remoteAgentReply{Event: "changed", Sessions: cl, Groups: cg, ProbeMS: elapsed, Stamp: stamp})
