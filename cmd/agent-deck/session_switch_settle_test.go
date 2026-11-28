@@ -203,10 +203,13 @@ func TestSettleFakeClaudeScript_ExitsWhenInputCloses(t *testing.T) {
 	cmd := exec.CommandContext(ctx, "bash", script, "ready", dir, log, filepath.Join(dir, "launches"))
 	cmd.Stdin = strings.NewReader("")
 	cmd.Stdout = io.Discard
-	_ = cmd.Run()
+	err := cmd.Run()
 	if ctx.Err() != nil {
 		logged, _ := os.ReadFile(log)
 		t.Fatalf("fake claude still running 5s after its input closed (keys.log %d bytes)", len(logged))
+	}
+	if err != nil {
+		t.Fatalf("fake claude did not exit cleanly after its input closed: %v", err)
 	}
 }
 
