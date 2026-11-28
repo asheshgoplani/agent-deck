@@ -90,11 +90,21 @@ for job in selftest stalled; do
   fi
 done
 
-# (5) Merge-day surge control: the stalled job must serialize per head sha
-# without cancelling in-progress jobs, so a burst of workflow_run events queues
-# at most one running and one pending job per commit. Keying on the sha keeps
-# an old commit's events from displacing the alert for the new commit, and
-# cancel-in-progress stays false so label and ntfy are never split.
+# (5) Merge-day surge control. A run is only ever held for "Approve and run"
+# when it comes from a fork, so the stalled job must skip runs whose head repo
+# is this repo before it takes a runner: on landing days every gating run is a
+# same-repo branch, and each completion used to queue a notifier job.
+if grep -Fq "github.event.workflow_run.head_repository.full_name != github.repository" <<<"$STALLED_IF"; then
+  pass "stalled job skips same-repo runs (they are never held) without taking a runner"
+else
+  fail "stalled job if must require github.event.workflow_run.head_repository.full_name != github.repository"
+fi
+
+# (6) The remaining (fork) jobs serialize per PR, keyed on head repo + head
+# branch, without cancelling in-progress jobs: a burst of workflow_run events
+# queues at most one running and one pending job per PR, and a newer event
+# replaces the pending one. cancel-in-progress stays false so label and ntfy
+# are never split.
 CONC=$(awk '
   /^    concurrency:/ {f=1; print; next}
   f && /^      / {print; next}
@@ -110,6 +120,15 @@ if grep -Eq 'cancel-in-progress:[[:space:]]*false' <<<"$CONC"; then
   pass "stalled job never cancels in-progress runs"
 else
   fail "stalled job concurrency must set cancel-in-progress: false"
+fi
+
+# (7) The surviving job may carry an event for a head the PR force-pushed
+# away, so the PR lookup must go through matchesRun() (sha OR head repo +
+# head branch), which is unit tested in tests/ci/ci-stalled-notify.test.cjs.
+if grep -Fq 'matchesRun(' <<<"$STALLED" && grep -Fq 'matchesRun' <<<"$(grep -F "require(" <<<"$STALLED")"; then
+  pass "stalled job finds the PR through matchesRun()"
+else
+  fail "stalled job must import and call matchesRun() for the open-PR lookup"
 fi
 
 if [[ "$ERRORS" -ne 0 ]]; then
