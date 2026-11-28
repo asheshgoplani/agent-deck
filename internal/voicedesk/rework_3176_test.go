@@ -105,6 +105,9 @@ func TestRework3176BulkRestartReachesTheRest(t *testing.T) {
 	if len(seen) != 7 {
 		t.Errorf("restart all workers: %d of 7 asked after 3 rounds (acts=%v)", len(seen), h.deck.acts)
 	}
+	if q := h.say("restart all workers"); q.Confirm != nil || q.Say != "Nothing done: all seven were restarted a moment ago." {
+		t.Errorf("right after: %q", q.Say)
+	}
 	// a minute later the whole list is back
 	h.now = h.now.Add(2 * time.Minute)
 	q := h.say("restart all workers")

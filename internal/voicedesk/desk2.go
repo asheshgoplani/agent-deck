@@ -500,8 +500,11 @@ func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q name
 		name := strings.TrimSpace(q.raw)
 		switch {
 		case len(fresh) > 0:
-			r.Say = "Nothing done: " + strings.Join(firstN(spokenNames(fresh), maxSpokenItems), ", ") +
+			r.Say = "Nothing done: " + strings.Join(spokenNames(fresh), ", ") +
 				plural2(len(fresh), " was", " were") + " restarted a moment ago."
+			if len(fresh) > maxSpokenItems {
+				r.Say = "Nothing done: all " + lowerCount(len(fresh)) + " were restarted a moment ago."
+			}
 			return r, nil
 		case len(left) > 0:
 			refuse(&r, RefusedUnsafe, "Nothing done: I never "+strings.ToLower(present)+" a conductor or the session you are on by voice ("+
