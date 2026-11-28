@@ -29,7 +29,7 @@ type fakeDeck struct {
 	fresh map[string]Session
 }
 
-type sentMsg struct{ id, host, msg string }
+type sentMsg struct{ id, host, msg, tool string }
 
 func loadFixture(t *testing.T) *fakeDeck {
 	t.Helper()
@@ -98,7 +98,7 @@ func (d *fakeDeck) Send(_ context.Context, s Session, msg string) error {
 	if s.ID == "" {
 		return errors.New("no id")
 	}
-	d.sent = append(d.sent, sentMsg{id: s.ID, host: s.Host, msg: msg})
+	d.sent = append(d.sent, sentMsg{id: s.ID, host: s.Host, msg: msg, tool: s.Tool})
 	return nil
 }
 

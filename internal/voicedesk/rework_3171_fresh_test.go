@@ -53,3 +53,22 @@ func TestRework3171PendingDirTightened(t *testing.T) {
 		t.Errorf("pending dir mode %v (%v), want 0700", info.Mode().Perm(), err)
 	}
 }
+
+// The no-yes send goes to the session as re-read, not as listed: its tool
+// decides the send guard (an agent gets --require-input-prompt).
+func TestRework3171DirectSendUsesTheFreshSession(t *testing.T) {
+	h := newHarness(t)
+	var fresh Session
+	for i, s := range h.deck.sessions {
+		if s.ID == idPhone {
+			h.deck.sessions[i].Tool = "shell"
+			fresh = s
+		}
+	}
+	fresh.Tool = "claude"
+	h.deck.fresh = map[string]Session{idPhone: fresh}
+	h.do(Request{Sentence: "tell phone build to check the logs", On: idPhone})
+	if len(h.deck.sent) != 1 || h.deck.sent[0].tool != "claude" {
+		t.Errorf("sent %+v, want one send with the re-read tool claude", h.deck.sent)
+	}
+}
