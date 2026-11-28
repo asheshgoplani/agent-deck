@@ -224,9 +224,12 @@ func agentDeckTestEnv(home string, extraEnv []string) []string {
 		}
 		// Strip what trigger source inference reads (#2702): a test run
 		// inside a launchd job, a systemd unit or an ssh session must not
-		// attribute the binary's sends to that host unit.
+		// attribute the binary's sends to that host unit. The ssh variables
+		// also decide whether a recall-off rows read is egress
+		// (rowsReadIsEgress); a test sets them itself through extraEnv.
 		if strings.HasPrefix(kv, "INVOCATION_ID=") || strings.HasPrefix(kv, "XPC_SERVICE_NAME=") ||
-			strings.HasPrefix(kv, "SSH_CONNECTION=") {
+			strings.HasPrefix(kv, "SSH_CONNECTION=") || strings.HasPrefix(kv, "SSH_CLIENT=") ||
+			strings.HasPrefix(kv, "SSH_TTY=") {
 			continue
 		}
 		// Strip CLAUDE_CONFIG_DIR so the test's isolated HOME/.claude is the
