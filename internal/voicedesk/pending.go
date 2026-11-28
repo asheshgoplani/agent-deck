@@ -56,13 +56,13 @@ func (p Pending) binding() string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00", p.Token, p.Profile, p.Kind, p.Action, p.Intent)
 	if p.Target != nil {
-		fmt.Fprintf(h, "%s\x00%s\x00", p.Target.ID, p.Target.Host)
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00", p.Target.ID, p.Target.Host, p.Target.Profile)
 	}
 	for _, c := range p.Choices {
-		fmt.Fprintf(h, "%s\x00%s\x00", c.ID, c.Host)
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00", c.ID, c.Host, c.Profile)
 	}
 	for _, c := range p.Targets {
-		fmt.Fprintf(h, "t%s\x00%s\x00", c.ID, c.Host)
+		fmt.Fprintf(h, "t%s\x00%s\x00%s\x00", c.ID, c.Host, c.Profile)
 	}
 	if p.Launch != nil {
 		fmt.Fprintf(h, "l%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00", p.Launch.Title, p.Launch.Group, p.Launch.Host, p.Launch.Profile, p.Launch.Path, p.Launch.Tool)
