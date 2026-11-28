@@ -13,14 +13,27 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 )
 
-func TestExecSelfRestartDisablesModifyOtherKeys(t *testing.T) {
-	var out bytes.Buffer
-	err := execSelfRestart(&out, filepath.Join(t.TempDir(), "missing"), ui.RestartHandoff{})
-	if err == nil {
-		t.Fatal("expected exec to fail for a missing executable")
+func TestExecSelfRestartModifyOtherKeysReset(t *testing.T) {
+	tests := []struct {
+		name    string
+		options map[string]string
+		want    string
+	}{
+		{name: "default"},
+		{name: "explicit on", options: map[string]string{"extended-keys": "on"}},
+		{name: "explicit off", options: map[string]string{"extended-keys": "off"}, want: "\x1b[>4;0m"},
 	}
-	if got, want := out.String(), "\x1b[>4;0m"; got != want {
-		t.Fatalf("wrote %q before exec, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := execSelfRestart(&out, session.TmuxSettings{Options: tt.options}, filepath.Join(t.TempDir(), "missing"), ui.RestartHandoff{})
+			if err == nil {
+				t.Fatal("expected exec to fail for a missing executable")
+			}
+			if got := out.String(); got != tt.want {
+				t.Fatalf("wrote %q before exec, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
