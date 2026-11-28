@@ -1,4 +1,4 @@
-Usage: agent-deck session attach <id|title>
+Usage: agent-deck session attach [--shell tmux|window] <id|title>
 
 Attach to a session interactively.
 Press Ctrl+Q to detach.

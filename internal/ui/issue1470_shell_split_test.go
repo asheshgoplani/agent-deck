@@ -1,9 +1,12 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/terminal"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestResolveShellSplitMode_AutoDetect verifies that resolveShellSplitMode
@@ -47,17 +50,37 @@ func TestResolveShellSplitMode_ConfigWindow(t *testing.T) {
 	}
 }
 
-// TestResolveShellSplitMode_RemoteSessionNotApplicable documents that
-// shell_split — including the "window" mode — is intentionally local-only.
-// The open_shell_here hotkey handler acts solely on ItemTypeSession rows
-// (item.Type == session.ItemTypeSession in the hotkeyOpenShellHere case), so
-// ItemTypeRemoteSession rows never reach openShellHere or
-// resolveShellSplitMode: the shell pane/window must land in the session's
-// local worktree, which a remote SSH session does not have on this machine.
-// If open_shell_here ever gains remote support, this skip should be replaced
-// with real RemoteSession coverage.
-func TestResolveShellSplitMode_RemoteSessionNotApplicable(t *testing.T) {
-	t.Skip("shell_split is local-only by design: open_shell_here ignores RemoteSession rows (no local worktree to open a shell in)")
+func TestOpenShellHereRemote(t *testing.T) {
+	for _, mode := range []string{"tmux", "window", "iterm"} {
+		t.Run(mode, func(t *testing.T) {
+			home := setXDGTestHome(t)
+			writeXDGTestConfig(t, home, "[ui]\nshell_split = \""+mode+"\"\n[remotes.lab]\nhost = \"alice@lab\"\n")
+
+			h := &Home{
+				profile:   "work",
+				groupTree: session.NewGroupTree(nil),
+				flatItems: []session.Item{{
+					Type:          session.ItemTypeRemoteSession,
+					RemoteName:    "lab",
+					RemoteSession: &session.RemoteSessionInfo{ID: "remote-id"},
+				}},
+			}
+			h.setHotkeys(resolveHotkeys(nil))
+			var splitCommand string
+			h.openInSplitPaneSink = func(req terminal.AttachRequest) error {
+				splitCommand = terminal.BuildAttachCommand(req)
+				return nil
+			}
+			_, cmd := h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'H'}})
+			if mode == "iterm" {
+				if cmd != nil || !strings.Contains(splitCommand, "-p 'work' remote attach --shell='tmux' 'lab' 'remote-id'") {
+					t.Fatalf("iTerm2 split command = %q; want remote attach that opens a tmux split", splitCommand)
+				}
+			} else if cmd == nil || !h.isAttaching.Load() || splitCommand != "" {
+				t.Fatalf("expected inline remote attach for %s", mode)
+			}
+		})
+	}
 }
 
 // TestResolveShellSplitMode_DefaultIsTmux verifies that the safe default (tmux)

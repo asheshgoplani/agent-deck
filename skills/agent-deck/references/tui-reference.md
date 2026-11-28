@@ -112,13 +112,15 @@ the setup wizard. It shows once; `Esc` skips it and it does not come back.
 | `x` | Send output to another session (**rebindable**) |
 | `alt+l` | Hand a reference to another session: pick this one, move to the target, `Enter` (or `alt+l`) drops, `Esc` cancels. Types a one-line pointer to the picked session (title, id, path, status, `agent-deck session output <id> -q`) into the target's composer and never presses Enter. Group rows, the same session and remote sessions are refused in place; nothing moves (**rebindable**: `[hotkeys].session_ref`) |
 | `E` | Exec shell in sandbox container (**rebindable**) |
-| `H` | Open shell in session's worktree, split pane / window (**rebindable**) |
+| `H` | Open a shell in a local or remote session's worktree (or project directory), split pane / window (**rebindable**) |
 | `p` | Edit multi-repo paths (**rebindable**) |
 | `P` | Edit session settings — title / color / ... (**rebindable**) |
 | `e` | Edit notes; hidden when notes are disabled (**rebindable**) |
 | `b` | Re-run worktree setup script `.agent-deck/worktree-setup.sh` (**rebindable**) |
 | `W` | Finish worktree — merge + cleanup (**rebindable**) |
 | `w` | Watcher panel (**rebindable**) |
+
+On a running remote session, `H` opens the shell on that host and attaches using the configured SSH or mosh transport. The controller's `[ui].shell_split` setting still applies: `tmux` and `window` attach inline, while `iterm` opens the attach in a local iTerm2 split. The remote must also run an agent-deck version that supports `session attach --shell`.
 
 For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. A remote host header shows `v1.15.0 ↑` after its count when the remote runs an older agent-deck than this controller (the version is asked once per hour per remote on the session poll); `u` on that header opens "Update remote <name> from v<old> to v<new>?" and runs the same verified deploy as `agent-deck remote update <name>`. A remote session whose parent (for example its conductor) is in the same remote group is shown one level under it, as local sub-sessions are; with the parent absent it is shown flat. Remote-session reorder keys move only within the current remote group (a child only among its parent's children); the order is saved on the viewing machine, while remote group headers remain name-sorted.
 

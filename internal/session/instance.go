@@ -3196,6 +3196,26 @@ func (i *Instance) GetTmuxSession() *tmux.Session {
 	return i.tmuxSession
 }
 
+// OpenShellHere opens a tmux split or window in the session's working directory.
+func (i *Instance) OpenShellHere(mode string) error {
+	ts := i.GetTmuxSession()
+	if ts == nil {
+		return fmt.Errorf("no tmux session for %q", i.Title)
+	}
+	workdir := i.WorktreePath
+	if workdir == "" {
+		workdir = i.ProjectPath
+	}
+	switch mode {
+	case ShellSplitTmux:
+		return ts.SplitShellPane(workdir)
+	case ShellSplitWindow:
+		return ts.NewShellWindow(workdir)
+	default:
+		return fmt.Errorf("invalid shell mode %q: expected tmux or window", mode)
+	}
+}
+
 // SyncTmuxDisplayName updates tmux-rendered UI that reflects the current title.
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
