@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -13,6 +14,19 @@ import (
 // deletes, pushes or pays: "delete X session" is refused by name.
 
 const maxPerYes = 5 // "stop all workers": at most five sessions per yes
+
+// maxSearchHits: a search speaks or shows at most five of his hits. The
+// deck asks recall for more (SearchAsk) and the owner filter runs first.
+const maxSearchHits = 5
+
+// SearchAsk is how many hits the deck asks recall for: recall indexes
+// every conversation on the machine, so other people's hits must not
+// crowd out his five.
+const SearchAsk = 20
+
+// RecentRestartWindow: a bulk restart leaves out the sessions restarted
+// this recently, so "say it again for them" reaches the rest.
+const RecentRestartWindow = time.Minute
 
 func verbOf(intent string) (action, present, past string) {
 	switch intent {
@@ -95,10 +109,17 @@ func (d *Desk) search(ctx context.Context, req Request, r Result, p Parsed) (Res
 		r.Say = "Nothing found about " + query + "."
 		return r, nil
 	}
-	hits = d.hisHits(ctx, hits, req.Profile)
-	if len(hits) == 0 {
+	hits, listFailed := d.hisHits(ctx, hits, req.Profile)
+	switch {
+	case len(hits) == 0 && listFailed:
+		r.Say = "I could not search right now."
+		return r, nil
+	case len(hits) == 0:
 		r.Say = "Nothing found about " + query + "."
 		return r, nil
+	}
+	if len(hits) > maxSearchHits {
+		hits = hits[:maxSearchHits] // cut after the owner filter, never before
 	}
 	names := make([]string, 0, len(hits))
 	r.Show = Show{Kind: "search", Items: []ShowItem{}}
@@ -125,25 +146,36 @@ func (d *Desk) search(ctx context.Context, req Request, r Result, p Parsed) (Res
 // deck id the session list does not know, could be anyone's: it is dropped.
 // When no hit is left the answer is "nothing found", which says nothing
 // about other people's conversations. A hit of another local profile is
-// dropped too: voice keeps to the profile it runs in.
-func (d *Desk) hisHits(ctx context.Context, hits []SearchHit, profile string) []SearchHit {
-	all, _ := d.sessions(ctx)
-	var out []SearchHit
+// dropped too: voice keeps to the profile it runs in. The session list is
+// the live one (list --json --no-archived), so a hit in an archived
+// session is dropped as well. listFailed: a hit was dropped because the
+// list of its host could not be read, so "nothing found" would be a guess.
+func (d *Desk) hisHits(ctx context.Context, hits []SearchHit, profile string) (out []SearchHit, listFailed bool) {
+	all, errs := d.sessions(ctx)
+	down := map[string]bool{}
+	for _, e := range errs {
+		down[e.Host] = true
+	}
 	for _, h := range hits {
 		if h.DeckID == "" {
 			continue
 		}
+		known := false
 		for _, s := range all {
 			if s.ID != h.DeckID || s.Host != h.Host {
 				continue
 			}
+			known = true
 			if k, _ := d.Config.ownerOf(s); k == ownerMine && inProfile(s, profile) {
 				out = append(out, h)
 			}
 			break
 		}
+		if !known && down[h.Host] {
+			listFailed = true
+		}
 	}
-	return out
+	return out, listFailed
 }
 
 // hisKids keeps the workers that are his sessions. A child carries no
@@ -419,14 +451,23 @@ func plural2(n int, one, many string) string {
 // many: "stop all workers" lists every session of his the name fits, and
 // asks once for at most five of them. Every session the yes acts on is
 // named in the question (on glasses there is no screen). A conductor and
-// the session the mic is on are left out of a bulk list unless the words
-// name them ("stop all conductors", or the session's whole title).
+// the session the mic is on are never in a bulk list, whatever the words
+// say: the single form refuses both, so the plural form refuses them too
+// ("stop all conductors" asks nothing and does nothing). A bulk restart
+// leaves out the sessions restarted in the last minute, so saying it again
+// reaches the sixth and later (a restart does not change their state).
 func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q nameQuery, all []Session) (Result, error) {
 	action, present, _ := verbOf(p.Intent)
 	if action == "" || len(q.words) == 0 {
 		return notMine(p.Lang), nil
 	}
-	var hits, matched, archived, left []Session
+	var recent map[string]bool
+	if p.Intent == IntentRestart {
+		if rr, ok := d.Store.(recentRestarts); ok {
+			recent = rr.RestartedSince(d.now().Add(-RecentRestartWindow))
+		}
+	}
+	var hits, matched, archived, left, fresh []Session
 	for _, s := range all {
 		if k, _ := d.Config.ownerOf(s); k != ownerMine {
 			continue
@@ -445,8 +486,12 @@ func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q name
 		if p.Intent == IntentStop && s.Status == "stopped" {
 			continue
 		}
-		if (isConductor(s) && !namesConductor(q, s)) || (req.On != "" && s.ID == req.On && !namesWhole(q, s)) {
+		if isConductor(s) || (req.On != "" && s.ID == req.On) {
 			left = append(left, s)
+			continue
+		}
+		if recent[restartKey(s.Host, s.ID)] {
+			fresh = append(fresh, s)
 			continue
 		}
 		hits = append(hits, s)
@@ -454,13 +499,13 @@ func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q name
 	if len(hits) == 0 {
 		name := strings.TrimSpace(q.raw)
 		switch {
+		case len(fresh) > 0:
+			r.Say = "Nothing done: " + strings.Join(firstN(spokenNames(fresh), maxSpokenItems), ", ") +
+				plural2(len(fresh), " was", " were") + " restarted a moment ago."
+			return r, nil
 		case len(left) > 0:
-			names := make([]string, len(left))
-			for i, s := range left {
-				names[i] = spokenTitle(s.Title, s.Host)
-			}
-			refuse(&r, RefusedUnsafe, "Nothing done: I leave "+strings.Join(firstN(names, maxSpokenItems), ", ")+
-				" out of a group "+strings.ToLower(present)+"; name it on its own.")
+			refuse(&r, RefusedUnsafe, "Nothing done: I never "+strings.ToLower(present)+" a conductor or the session you are on by voice ("+
+				strings.Join(firstN(spokenNames(left), maxSpokenItems), ", ")+"); do that on screen.")
 			return r, nil
 		case len(matched) > 0 && p.Intent == IntentStop:
 			r.Say = "No " + name + " are running."
@@ -505,14 +550,12 @@ func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q name
 		Targets: refs, Left: len(hits) - len(asked)}, prompt)
 }
 
-// namesConductor: the words say "conductor(s)" or the whole title.
-func namesConductor(q nameQuery, s Session) bool {
-	for _, w := range q.words {
-		if w == foldPhrase("conductor") || w == foldPhrase("conductors") {
-			return true
-		}
+func spokenNames(ss []Session) []string {
+	names := make([]string, len(ss))
+	for i, s := range ss {
+		names[i] = spokenTitle(s.Title, s.Host)
 	}
-	return namesWhole(q, s)
+	return names
 }
 
 // namesWhole: every word of the session's title is said.
@@ -547,7 +590,12 @@ func (d *Desk) actPhase2(ctx context.Context, req Request, p Pending, lang strin
 	for _, t := range p.Targets {
 		ss = append(ss, Session{ID: t.ID, Title: t.Title, Host: t.Host, Profile: t.Profile})
 	}
-	d.lifecycle(ctx, req, &r, p.Action, ss)
+	done := d.lifecycle(ctx, req, &r, p.Action, ss)
+	if p.Action == actionRestart && !req.DryRun && len(done) > 0 {
+		if rr, ok := d.Store.(recentRestarts); ok {
+			rr.MarkRestarted(done, d.now())
+		}
+	}
 	if p.Left > 0 {
 		r.Say += fmt.Sprintf(" %s more are left; say it again for them.", capitalize(lowerCount(p.Left)))
 	}
@@ -555,8 +603,11 @@ func (d *Desk) actPhase2(ctx context.Context, req Request, p Pending, lang strin
 }
 
 // lifecycle runs stop / restart / archive on sessions that are still his,
-// after looking each one up again.
-func (d *Desk) lifecycle(ctx context.Context, req Request, r *Result, action string, ss []Session) {
+// after looking each one up again. A row that is a conductor now, or the
+// session the mic is on now (the mic moved after the question), is left
+// alone, as the question itself would have refused it. It returns the
+// sessions it acted on.
+func (d *Desk) lifecycle(ctx context.Context, req Request, r *Result, action string, ss []Session) []Session {
 	verb, past := action, ""
 	switch action {
 	case actionStop:
@@ -567,11 +618,18 @@ func (d *Desk) lifecycle(ctx context.Context, req Request, r *Result, action str
 		past = "Archived"
 	}
 	var done, failed []string
+	var acted []Session
+	never := 0
 	for _, s := range ss {
 		name := spokenTitle(s.Title, s.Host)
 		fresh, why, _ := d.recheckFresh(ctx, s, false)
 		if why != "" || !inProfile(fresh, req.Profile) {
 			failed = append(failed, name) // gone, not his, or another profile
+			continue
+		}
+		if isConductor(fresh) || (req.On != "" && fresh.ID == req.On) {
+			failed = append(failed, name) // never by voice
+			never++
 			continue
 		}
 		if !req.DryRun {
@@ -581,12 +639,18 @@ func (d *Desk) lifecycle(ctx context.Context, req Request, r *Result, action str
 			}
 		}
 		done = append(done, name)
+		acted = append(acted, s)
 	}
 	if len(ss) == 1 && r.Target == nil {
 		t := ss[0].Ref()
 		r.Target = &t
 	}
 	switch {
+	case len(done) == 0 && never == len(failed):
+		r.Say = "Nothing done: " + strings.Join(firstN(failed, maxSpokenItems), ", ") + " is a conductor or the session you are on now; do that on screen."
+		if len(failed) > 1 {
+			r.Say = "Nothing done: " + strings.Join(firstN(failed, maxSpokenItems), ", ") + " are conductors or the session you are on now; do that on screen."
+		}
 	case len(done) == 0:
 		r.Say = "Nothing done: " + strings.Join(firstN(failed, maxSpokenItems), ", ") + " could not be reached."
 	case len(ss) == 1:
@@ -597,4 +661,5 @@ func (d *Desk) lifecycle(ctx context.Context, req Request, r *Result, action str
 			r.Say += " Not done: " + strings.Join(firstN(failed, maxSpokenItems), ", ") + "."
 		}
 	}
+	return acted
 }

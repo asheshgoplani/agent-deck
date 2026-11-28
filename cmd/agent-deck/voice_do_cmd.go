@@ -565,11 +565,13 @@ func (d *cliVoiceDeck) Launch(ctx context.Context, spec voicedesk.LaunchSpec) (v
 	return voicedesk.Session{ID: v.ID, Title: v.Title, Group: v.Group, Host: spec.Host, Profile: spec.Profile}, nil
 }
 
-// Search is `recall search --json --limit 5` (plus --all-remotes when
+// Search is `recall search --json --limit 20` (plus --all-remotes when
 // remotes are configured; a remote that does not answer leaves the local
-// hits).
+// hits). recall indexes every conversation on the machine, so it is asked
+// for more than the desk speaks: the desk's owner filter runs first and
+// then it cuts to five.
 func (d *cliVoiceDeck) Search(ctx context.Context, query string) ([]voicedesk.SearchHit, error) {
-	args := []string{"-p", d.profile, "recall", "search", "--json", "--limit", "5"}
+	args := []string{"-p", d.profile, "recall", "search", "--json", "--limit", strconv.Itoa(voicedesk.SearchAsk)}
 	if uc, err := session.LoadUserConfig(); err == nil && uc != nil && len(uc.Remotes) > 0 {
 		args = append(args, "--all-remotes")
 	}

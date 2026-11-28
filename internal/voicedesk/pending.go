@@ -226,8 +226,9 @@ func (f FileStore) Sweep() {
 
 // MemStore is a Store in memory (tests).
 type MemStore struct {
-	m    map[string]Pending
-	used map[string]string
+	m         map[string]Pending
+	used      map[string]string
+	restarted map[string]time.Time
 }
 
 func NewMemStore() *MemStore { return &MemStore{m: map[string]Pending{}, used: map[string]string{}} }
@@ -281,4 +282,116 @@ func (f FileStore) UsedAction(token string) string {
 // usedActions is a Store that remembers the action of a taken token.
 type usedActions interface {
 	UsedAction(token string) string
+}
+
+// recentRestarts is a Store that remembers which sessions a bulk restart
+// restarted a moment ago. A restart does not change a session's state, so
+// without it "say it again for them" would ask about the same first five.
+// Only the host and id are kept, with the time, never a title or message.
+type recentRestarts interface {
+	MarkRestarted(ss []Session, at time.Time)
+	RestartedSince(since time.Time) map[string]bool // key: restartKey(host, id)
+}
+
+func restartKey(host, id string) string { return host + "\x00" + id }
+
+const restartsFile = "recent-restarts"
+
+// MarkRestarted: see recentRestarts. Entries older than RecentRestartWindow
+// are dropped on every write.
+func (f FileStore) MarkRestarted(ss []Session, at time.Time) {
+	keep := f.readRestarts(at.Add(-RecentRestartWindow))
+	for _, s := range ss {
+		if s.ID == "" || strings.ContainsAny(s.ID+s.Host, " \n") {
+			continue
+		}
+		keep = append(keep, restartEntry{at: at, host: s.Host, id: s.ID})
+	}
+	var b strings.Builder
+	for _, e := range keep {
+		host := e.host
+		if host == "" {
+			host = "-"
+		}
+		fmt.Fprintf(&b, "%d %s %s\n", e.at.UnixNano(), host, e.id)
+	}
+	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(f.Dir, ".restarts-*")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.WriteString(b.String())
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil || os.Chmod(tmp.Name(), 0o600) != nil {
+		os.Remove(tmp.Name())
+		return
+	}
+	if os.Rename(tmp.Name(), filepath.Join(f.Dir, restartsFile)) != nil {
+		os.Remove(tmp.Name())
+	}
+}
+
+// RestartedSince: see recentRestarts.
+func (f FileStore) RestartedSince(since time.Time) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range f.readRestarts(since) {
+		out[restartKey(e.host, e.id)] = true
+	}
+	return out
+}
+
+type restartEntry struct {
+	at       time.Time
+	host, id string
+}
+
+func (f FileStore) readRestarts(since time.Time) []restartEntry {
+	b, err := os.ReadFile(filepath.Join(f.Dir, restartsFile))
+	if err != nil {
+		return nil
+	}
+	var out []restartEntry
+	for _, line := range strings.Split(string(b), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) != 3 {
+			continue
+		}
+		var ns int64
+		if _, err := fmt.Sscanf(parts[0], "%d", &ns); err != nil {
+			continue
+		}
+		at := time.Unix(0, ns)
+		if at.Before(since) {
+			continue
+		}
+		host := parts[1]
+		if host == "-" {
+			host = ""
+		}
+		out = append(out, restartEntry{at: at, host: host, id: parts[2]})
+	}
+	return out
+}
+
+// MarkRestarted: see FileStore.MarkRestarted.
+func (s *MemStore) MarkRestarted(ss []Session, at time.Time) {
+	if s.restarted == nil {
+		s.restarted = map[string]time.Time{}
+	}
+	for _, x := range ss {
+		s.restarted[restartKey(x.Host, x.ID)] = at
+	}
+}
+
+// RestartedSince: see FileStore.RestartedSince.
+func (s *MemStore) RestartedSince(since time.Time) map[string]bool {
+	out := map[string]bool{}
+	for k, at := range s.restarted {
+		if !at.Before(since) {
+			out[k] = true
+		}
+	}
+	return out
 }
