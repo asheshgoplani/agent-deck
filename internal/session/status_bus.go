@@ -21,6 +21,10 @@ type StatusBusEvent struct {
 	TmuxSession string `json:"tmux_session,omitempty"`
 	Substate    string `json:"substate"`
 	ChangedAt   string `json:"changed_at"`
+	// Host is "" on the host's own bus: the session is a session of the
+	// host being followed. A stream that forwards another host's frames
+	// sets the remote's name (docs/events.md, "host").
+	Host string `json:"host"`
 }
 
 // TurnBusEvent is the data of a `session.turn` frame: a turn started (the

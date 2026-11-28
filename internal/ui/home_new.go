@@ -215,6 +215,8 @@ func NewHomeWithProfileAndMode(profile string, headless bool) *Home {
 		todosPanel:                NewTodosPanel(actualProfile),
 		triggersFeed:              stateDBTriggersFeed{},
 		voiceReader:               voicestate.NewReader(voicestate.DefaultDir()),
+		hookChanged:               make(chan struct{}, 1),
+		statusRepaint:             make(chan struct{}, 1),
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
@@ -495,7 +497,7 @@ func NewHomeWithProfileAndMode(profile string, headless bool) *Home {
 			logUsageFeedResults(session.HealUsageFeeds(userConfig))
 		}
 		if decision.watch {
-			hookWatcher, err := session.NewStatusFileWatcher(nil)
+			hookWatcher, err := session.NewStatusFileWatcher(h.hookChangedNotify)
 			if err != nil {
 				uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
 			} else {
@@ -531,7 +533,7 @@ func NewHomeWithProfileAndMode(profile string, headless bool) *Home {
 					h.pendingHermesHooksPrompt = true
 				}
 				if installed && h.hookWatcher == nil {
-					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
+					if hookWatcher, err := session.NewStatusFileWatcher(h.hookChangedNotify); err == nil {
 						h.hookWatcher = hookWatcher
 						go hookWatcher.Start()
 					}
@@ -583,7 +585,7 @@ func NewHomeWithProfileAndMode(profile string, headless bool) *Home {
 					uiLog.Info("cursor_hooks_installed", slog.String("config_dir", cursorConfigDir))
 				}
 				if h.hookWatcher == nil {
-					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
+					if hookWatcher, err := session.NewStatusFileWatcher(h.hookChangedNotify); err == nil {
 						h.hookWatcher = hookWatcher
 						go hookWatcher.Start()
 					}

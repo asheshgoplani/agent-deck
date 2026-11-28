@@ -686,6 +686,8 @@ func (h *Home) statusWorkerLoop(base time.Duration, sweep func(), process func(s
 			case <-h.statusTrigger:
 			default:
 			}
+			// After the drain: a hook pass the drain swallowed still runs.
+			h.runPendingHookPass()
 
 		case req := <-h.statusTrigger:
 			// Explicit trigger from TUI (for immediate updates)
@@ -697,6 +699,7 @@ func (h *Home) statusWorkerLoop(base time.Duration, sweep func(), process func(s
 					}
 				}()
 				process(req)
+				h.runPendingHookPass()
 			}()
 		}
 	}
@@ -1177,6 +1180,10 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	// keeps a screenful fresh within a few passes while bounding the worst case
 	// (large group expanded => visible ≈ fleet) to a constant per pass.
 	const visibleStatusBatchSize = 4
+	if req.hookPass {
+		h.processHookPass()
+		return
+	}
 	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
 		return
 	}

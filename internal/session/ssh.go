@@ -2689,6 +2689,8 @@ func remoteVerbReadOnly(args []string) bool {
 		return len(args) == 3 && args[1] == "--capabilities" && args[2] == "--json"
 	case "list", "ls", "accounts", "version", "status":
 		return true
+	case "voice":
+		return second == "state"
 	case "triggers":
 		// The list only; mute, unmute, run and scan write.
 		return second == "" || second == "list" || strings.HasPrefix(second, "-")

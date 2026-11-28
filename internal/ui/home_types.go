@@ -317,4 +317,7 @@ type statusUpdateRequest struct {
 	viewOffset    int      // Current scroll position
 	visibleHeight int      // How many items fit on screen
 	flatItemIDs   []string // IDs of sessions in current flatItems order (for visible detection)
+	// hookPass asks only for the sessions whose hook status changed
+	// (live_watch.go): no round robin; only those rows are probed.
+	hookPass bool
 }

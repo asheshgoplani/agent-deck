@@ -252,3 +252,38 @@ func ownedSSHInput(input io.Reader) (*os.File, func(), error) {
 	}()
 	return reader, func() { _ = reader.Close(); _ = writer.Close() }, nil
 }
+
+// RunStdinStreamIO owns one dedicated connection for a long-lived command
+// that reads its input from stdin (the voice relay's `voice mirror-in`).
+// Unlike RunFollowIO (whose wrapper starts the command with </dev/null) the
+// remote command keeps the real stdin. Keepalives (sshServerAliveOpts) bound
+// a dead link; ownedSSHInput's copier ends when the caller closes stdin. No
+// retries: the caller reconnects.
+func (r *SSHRunner) RunStdinStreamIO(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return err
+	}
+	sshArgs := r.stdinStreamSSHArgs(r.buildRemoteCommand(args...))
+	// Literal ssh; validated host and individually quoted remote argv.
+	cmd := newSSHCommand(ctx, sshArgs...)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if stdin != nil {
+		owned, closeOwned, err := ownedSSHInput(stdin)
+		if err != nil {
+			return err
+		}
+		defer closeOwned()
+		cmd.Stdin = owned
+	}
+	cmd.WaitDelay = 3 * time.Second
+	return runSSHCommand(cmd)
+}
+
+// stdinStreamSSHArgs is the argv of RunStdinStreamIO: its own connection,
+// and keepalives that notice a dead route in about 6 s (ssh takes the
+// first value of an option, so these win over the shared 15 s ones) and
+// give up a blackholed connect after 3 s.
+func (r *SSHRunner) stdinStreamSSHArgs(remoteCmd string) []string {
+	return append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no",
+		"-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=3"}, r.sshChannelArgs(remoteCmd)...)
+}
