@@ -689,6 +689,14 @@ func stepFork(w *widthRun) error {
 	}, 30*time.Second); err != nil {
 		return fmt.Errorf("forked client did not settle: %w", err)
 	}
+	// The "restarted into" footer toast from stepUpdateBanner dismisses itself
+	// 5s after the restart. 13-detach-shell's golden is captured with it up and
+	// this one without; on a fast run the fork settles inside that window and
+	// the frame picks the toast up, on a slow one it does not. Wait for it to
+	// clear so the frame never depends on how long the steps took.
+	if err := waitRestartToastGone(w, 15*time.Second); err != nil {
+		return err
+	}
 	w.capture("14-fork")
 	return nil
 }
@@ -738,4 +746,19 @@ var shellPromptRe = regexp.MustCompile(`[$#]\s*$`)
 func shellPromptReady(pane string) bool {
 	lines := strings.Split(strings.TrimRight(pane, " \t\r\n"), "\n")
 	return shellPromptRe.MatchString(lines[len(lines)-1])
+}
+
+// waitRestartToastGone blocks until the footer's "restarted into vNEW" toast
+// is off screen. It fails, rather than passing, if the toast never clears.
+func waitRestartToastGone(w *widthRun, timeout time.Duration) error {
+	if err := w.waitFor(func() (bool, error) {
+		pane, err := w.pane()
+		if err != nil {
+			return false, err
+		}
+		return !strings.Contains(pane, "restarted into"), nil
+	}, timeout); err != nil {
+		return fmt.Errorf("restart toast never dismissed: %w", err)
+	}
+	return nil
 }
