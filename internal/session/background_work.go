@@ -210,8 +210,9 @@ var (
 // Claude Code's own text: a <note> body, or a <summary> body after the quoted
 // description (`Agent "desc" is waiting ...`). The <result> and the
 // description are the agent's free text: an agent that writes about the
-// wording, or is described with it, must not read as interim. A result cut off
-// by a truncated record runs to the block's end. It matches the pieces in
+// wording, or is described with it, must not read as interim. The result runs
+// to its last </result>, since the agent may write the tag itself; a result
+// cut off by a truncated record runs to the block's end. It matches the pieces in
 // place, with no copy.
 func interimOutsideResult(block string) bool {
 	start := strings.Index(block, "<result>")
@@ -222,7 +223,7 @@ func interimOutsideResult(block string) bool {
 		return true
 	}
 	rest := block[start:]
-	if end := strings.Index(rest, "</result>"); end >= 0 {
+	if end := strings.LastIndex(rest, "</result>"); end >= 0 {
 		return interimInOwnText(rest[end+len("</result>"):])
 	}
 	return false
