@@ -1347,7 +1347,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
 	tool = CanonicalToolName(tool)
-	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || tool == "kimi" || IsCodexCompatible(tool)
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || tool == "kimi" || tool == "antigravity" || IsCodexCompatible(tool)
 }
 
 // ApplyLaunchModel stores a per-session model override in the tool-specific
@@ -1370,6 +1370,8 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 	case i.Tool == "gemini":
 		i.GeminiModel = model
 		return nil
+	case i.Tool == "antigravity":
+		return i.applyAntigravityModel(model)
 	case i.Tool == "opencode":
 		opts := i.GetOpenCodeOptions()
 		if opts == nil {
@@ -1426,6 +1428,8 @@ func (i *Instance) ClearLaunchModel() error {
 	case i.Tool == "gemini":
 		i.GeminiModel = ""
 		return nil
+	case i.Tool == "antigravity":
+		return i.clearAntigravityModel()
 	case i.Tool == "opencode":
 		opts := i.GetOpenCodeOptions()
 		if opts == nil {

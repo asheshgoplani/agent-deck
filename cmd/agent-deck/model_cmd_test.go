@@ -242,3 +242,52 @@ func TestSessionSetModelPersists(t *testing.T) {
 		t.Errorf("clear via \"\" did not reset model; model_id = %q", showResp.ModelID)
 	}
 }
+
+// `agent-deck add -c agy --model X` puts the model on agy's command line and
+// reports it, like the other tools' --model.
+func TestAddAntigravityModelFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runAgentDeck(t, home,
+		"add", "-t", "agy-model-test", "-c", "agy",
+		"--model", "gemini-pro-orchestrator-neon",
+		"--no-parent", "--json", projectDir,
+	)
+	if code != 0 {
+		t.Fatalf("agent-deck add -c agy --model failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var addResp struct {
+		ID      string `json:"id"`
+		ModelID string `json:"model_id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &addResp); err != nil {
+		t.Fatalf("parse add response: %v\nstdout: %s", err, stdout)
+	}
+	if addResp.ModelID != "gemini-pro-orchestrator-neon" {
+		t.Fatalf("add model_id = %q, want %q", addResp.ModelID, "gemini-pro-orchestrator-neon")
+	}
+	stdout, stderr, code = runAgentDeck(t, home, "session", "show", addResp.ID, "--json")
+	if code != 0 {
+		t.Fatalf("session show failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var showResp struct {
+		Tool    string `json:"tool"`
+		Command string `json:"command"`
+		ModelID string `json:"model_id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &showResp); err != nil {
+		t.Fatalf("parse show response: %v\nstdout: %s", err, stdout)
+	}
+	if showResp.Tool != "antigravity" || showResp.ModelID != "gemini-pro-orchestrator-neon" {
+		t.Fatalf("show tool/model = %q/%q, want antigravity/gemini-pro-orchestrator-neon; stdout: %s", showResp.Tool, showResp.ModelID, stdout)
+	}
+	if showResp.Command != "" && showResp.Command != "agy --model gemini-pro-orchestrator-neon" {
+		t.Fatalf("show command = %q", showResp.Command)
+	}
+}

@@ -56,7 +56,7 @@ Options:
   -mcp value
     	MCP to attach (can specify multiple times; Codex writes $CODEX_HOME/config.toml)
   -model string
-    	Model ID/version to use for this session (claude, codex, gemini, opencode, kimi)
+    	Model ID/version to use for this session (claude, codex, gemini, opencode, kimi, antigravity)
   -new-branch
     	Create new branch
   -no-channel-link

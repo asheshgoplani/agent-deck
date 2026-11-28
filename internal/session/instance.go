@@ -315,18 +315,23 @@ type Instance struct {
 	// Antigravity CLI integration. Persisted in the tool_data extras zone
 	// (antigravity.go), so no schema change is needed and older binaries
 	// carry it forward untouched.
-	AntigravitySessionID      string    `json:"-"`
-	AntigravityDetectedAt     time.Time `json:"-"`
-	AntigravityStartedAt      int64     `json:"-"` // Unix millis when Antigravity started (for session matching, not persisted)
-	lastAntigravityScanAt     time.Time // Rate-limits ~/.gemini/antigravity-cli metadata scans
-	antigravitySessionCleared bool      // Set on explicit SetField clear so sticky merge clears it
-	antigravityForkParentID   string    // Source conversation of a fork whose child has not bound its own ID
-	antigravityPendingID      string    // Workspace candidate awaiting a second observation
-	antigravityPendingAt      time.Time // When antigravityPendingID was first seen
-	antigravityBindingPending bool      // Bound in memory but not yet written to SQLite
-	antigravityBindingRetries int       // Failed SQLite writes, for retry backoff
-	antigravityBindingRetryAt time.Time // Earliest next retry for a failed binding write
-	antigravityOwnedLoggedID  string    // Sibling-owned candidate already logged (avoids per-scan noise)
+	AntigravitySessionID        string          `json:"-"`
+	AntigravityDetectedAt       time.Time       `json:"-"`
+	AntigravityStartedAt        int64           `json:"-"` // Unix millis when Antigravity started (for session matching, not persisted)
+	lastAntigravityScanAt       time.Time       // Rate-limits ~/.gemini/antigravity-cli metadata scans
+	antigravitySessionCleared   bool            // Set on explicit SetField clear so sticky merge clears it
+	antigravityForkParentID     string          // Source conversation of a fork whose child has not bound its own ID
+	antigravityPendingID        string          // Workspace candidate awaiting a second observation
+	antigravityPendingAt        time.Time       // When antigravityPendingID was first seen
+	antigravityBindingPending   bool            // Bound in memory but not yet written to SQLite
+	antigravityBindingRetries   int             // Failed SQLite writes, for retry backoff
+	antigravityBindingRetryAt   time.Time       // Earliest next retry for a failed binding write
+	antigravityOwnedLoggedID    string          // Sibling-owned candidate already logged (avoids per-scan noise)
+	antigravityFailClosedLogged map[string]bool // Fail-closed causes already warned about (once per cause)
+	// antigravityBlockedAt holds recent blocking answers of the all-profile
+	// scan (owned elsewhere / ambiguous / lookup failed), so a stuck unbound
+	// session does not reopen every profile DB on each scan. Never holds "free".
+	antigravityBlockedAt map[string]time.Time
 	// antigravityForkKnownIDs snapshots the workspace conversations that existed
 	// before /fork, so status polling cannot adopt a sibling while the child's
 	// own conversation is still being created.

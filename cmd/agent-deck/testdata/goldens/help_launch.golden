@@ -68,7 +68,7 @@ Options:
   -message-file string
     	Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts
   -model string
-    	Model ID/version to use for this session (claude, codex, gemini, opencode, kimi)
+    	Model ID/version to use for this session (claude, codex, gemini, opencode, kimi, antigravity)
   -new-branch
     	Create new branch
   -no-assert-done
