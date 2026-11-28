@@ -27,20 +27,28 @@ func (inst *Instance) ReportTargetID() string {
 }
 
 // reportTargetIDIn is ReportTargetID against a registry: a launcher that is no
-// longer registered (removed, archived away) falls back to the tree parent,
-// so a nested worker whose coordinator is gone still reaches the root, as it
-// did before issue #3165. A top-level worker with a gone launcher keeps the
-// launcher id and lands in the unowned ledger as parent_removed, like a
-// child of a removed parent.
+// longer registered (removed) or is archived falls back to the tree parent
+// when that parent is registered and not archived, so a nested worker whose
+// coordinator is gone still reaches the root, as it did before issue #3165.
+// Otherwise the launcher id is kept: a top-level worker whose launcher was
+// removed lands in the unowned ledger as parent_removed, and one whose
+// launcher is archived waits in that inbox, like a child of a removed or
+// archived tree parent. A plain tree parent (no ReportsTo) is never replaced.
 func (inst *Instance) reportTargetIDIn(byID map[string]*Instance) string {
 	target := inst.ReportTargetID()
-	if inst == nil || byID == nil || target == "" || byID[target] != nil {
+	if inst == nil || byID == nil || target == "" || liveInRegistry(byID, target) {
 		return target
 	}
-	if parent := strings.TrimSpace(inst.ParentSessionID); parent != "" && parent != target && byID[parent] != nil {
+	if parent := strings.TrimSpace(inst.ParentSessionID); parent != "" && parent != target && liveInRegistry(byID, parent) {
 		return parent
 	}
 	return target
+}
+
+// liveInRegistry reports whether id is registered and not archived.
+func liveInRegistry(byID map[string]*Instance, id string) bool {
+	inst := byID[id]
+	return inst != nil && !inst.IsArchived()
 }
 
 // SetReportsTo records the launcher a new session reports to.

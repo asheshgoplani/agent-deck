@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -259,6 +260,11 @@ func (s *StateDB) CommitCrossHarnessSupersession(source, target NativeHarnessSwi
 		for _, row := range rows {
 			if row != nil && row.ID != source.ID && row.ParentSessionID == source.ID {
 				return fmt.Errorf("cross-harness source ownership conflict for instance %s: dependent child %s was added", source.ID, row.ID)
+			}
+			// A worker launched by the source reports to it (tool_data
+			// reports_to, issue #3165) and depends on it like a child.
+			if row != nil && row.ID != source.ID && strings.TrimSpace(crossHarnessLineage(row.ToolData, "reports_to")) == source.ID {
+				return fmt.Errorf("cross-harness source ownership conflict for instance %s: dependent worker %s reports to it", source.ID, row.ID)
 			}
 		}
 		claudeID, codexID, identityErr := nativeSessionIDs(currentSource.ToolData)

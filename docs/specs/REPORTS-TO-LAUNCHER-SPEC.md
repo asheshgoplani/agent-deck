@@ -71,13 +71,23 @@ only, debounced, never over composer text, never into a non-Claude pane, and
 With `nest_under_parent` on, the root gets no copy: it launched the
 coordinator, not the worker, and cannot act on the result (the reporter's
 lean, and the brief's "no duplicate" rule). If the launcher is no longer
-registered, a nested worker's records fall back to its tree parent
-(`reportTargetIDIn`), as before this change; a top-level worker's records go
-to the unowned ledger as `parent_removed`, like any child of a removed parent.
+registered or is archived, a nested worker's records fall back to its tree
+parent when that parent is registered and not archived (`reportTargetIDIn`),
+as before this change. Otherwise the launcher id is kept: a top-level worker
+whose launcher was removed goes to the unowned ledger as `parent_removed`,
+like any child of a removed parent, and one whose launcher is archived waits
+in the archived launcher's inbox, like any child of an archived parent.
 Where the daemon has the registry in scope, the comms ledger and the stats
 bucket use the same fallback (`statsParentForIn`, `parentOf`): the turn and
 status records' recipient and a send's observers name the tree parent, not
-the removed launcher.
+the removed or archived launcher.
+
+A launcher with workers that report to it cannot be switched to another
+harness: the switch archives the source and the replacement gets a new id,
+which would strand the workers' records. Both switch guards
+(`SnapshotSwitchSource` and the commit-time check in
+`CommitCrossHarnessSupersession`) count a `reports_to` worker as a dependent,
+like a tree child.
 
 ### 3. Kickoff tag
 
