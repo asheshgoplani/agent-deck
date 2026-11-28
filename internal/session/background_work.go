@@ -116,6 +116,10 @@ type transcriptBackgroundTask struct {
 	Kind string
 	Name string
 	At   time.Time
+	// Awaiting marks a background agent whose interim notification said it
+	// stopped with background work of its own still running: it resumes when
+	// that work reports, so it is still in flight.
+	Awaiting bool
 }
 
 // transcriptBackgroundScan is what the transcript tail says about background
@@ -195,6 +199,10 @@ var (
 	passiveUntilWaitRe = regexp.MustCompile(`^\s*until\s+\[\s+-(?:e|f|d)\s+[a-zA-Z0-9_./-]+\s+\]\s*;\s*do\s+sleep\s+[0-9]+(?:\.[0-9]+)?\s*;\s*done\s*;?\s*$`)
 	taskIDRe           = regexp.MustCompile(`<task-id>([^<]+)</task-id>`)
 	taskStatusRe       = regexp.MustCompile(`<status>([^<]+)</status>`)
+	// interimAgentRe is the interim agent notification: <status>completed
+	// while the agent waits on background work it launched itself. Claude
+	// Code 2.1.288 says so in <note>, 2.1.307 also in <summary>.
+	interimAgentRe = regexp.MustCompile(`background work of its own still running|waiting on its own background work`)
 )
 
 // taskNotificationBlocks splits a raw transcript line into the bodies of the
@@ -224,6 +232,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 	terminated := map[string]bool{}     // ids already counted against the turn counts
 	var workflowsSeen, agentsSeen bool  // a turn_duration carried that count field
 	launchedKind := map[string]string{} // id -> kind, for notifications
+	launchedAgents := map[string]transcriptBackgroundTask{}
 
 	for _, line := range lines {
 		var rec bgTranscriptRecord
@@ -269,6 +278,9 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 				pending[task.ID] = task
 				order = append(order, task.ID)
 				launchedKind[task.ID] = task.Kind
+				if task.Kind == tmux.BackgroundKindAgent {
+					launchedAgents[task.ID] = task
+				}
 				switch task.Kind {
 				case tmux.BackgroundKindWorkflow:
 					sc.LastWorkflow = task.Name
@@ -288,6 +300,23 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 				continue
 			}
 			id := strings.TrimSpace(idm[1])
+			if task, ok := launchedAgents[id]; ok && interimAgentRe.MatchString(block) {
+				// Not terminal: the agent resumes when its own work reports,
+				// and the same task id notifies again then. It revives an
+				// agent a copy of this notification without the note (a
+				// truncated record) already ended.
+				if p, ok := pending[id]; ok {
+					task = p
+				} else {
+					order = append(order, id)
+				}
+				task.Awaiting = true
+				if !at.IsZero() {
+					task.At = at
+				}
+				pending[id] = task
+				continue
+			}
 			terminal := taskStatusRe.MatchString(block) || strings.Contains(block, "[Monitor expired")
 			if !terminal {
 				continue
@@ -432,6 +461,14 @@ func mergeBackgroundWork(pane tmux.BackgroundWork, sc transcriptBackgroundScan, 
 		pane = tmux.BackgroundWork{}
 	}
 	hold := backgroundShellHold()
+	if pane.Kind == tmux.BackgroundKindBash && scOK {
+		// A sub-agent's own background shells are counted on the session's
+		// footer. While an agent awaits its own work, a live shell counter is
+		// that agent running, and the sighting extends its hold.
+		if agent, ok := sc.awaitingAgent(); ok {
+			return tmux.BackgroundWork{Kind: tmux.BackgroundKindAgent, Task: agent.Name, Source: "pane+transcript"}, true
+		}
+	}
 	if pane.Kind == tmux.BackgroundKindBash {
 		pane = settleShellCounter(pane, sc, scOK, now, hold)
 		if pane.Kind == tmux.BackgroundKindBash && hold > 0 {
@@ -512,6 +549,17 @@ func (sc transcriptBackgroundScan) freshShell(now time.Time, hold time.Duration)
 	for idx := len(sc.Pending) - 1; idx >= 0; idx-- {
 		task := sc.Pending[idx]
 		if task.Kind == tmux.BackgroundKindBash && !task.At.IsZero() && now.Sub(task.At) <= hold {
+			return task, true
+		}
+	}
+	return transcriptBackgroundTask{}, false
+}
+
+// awaitingAgent returns the newest pending agent that is waiting on
+// background work of its own.
+func (sc transcriptBackgroundScan) awaitingAgent() (transcriptBackgroundTask, bool) {
+	for idx := len(sc.Pending) - 1; idx >= 0; idx-- {
+		if task := sc.Pending[idx]; task.Kind == tmux.BackgroundKindAgent && task.Awaiting {
 			return task, true
 		}
 	}

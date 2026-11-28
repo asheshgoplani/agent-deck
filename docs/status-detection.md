@@ -90,6 +90,15 @@ holds for 3 minutes after its newest sighting (redraws, resizes, a capture
 that missed the footer); a workflow row whose task already reported back is
 vetoed.
 
+A background agent that stops while background work of its own still runs
+gets an interim `<task-notification>` (`<status>completed</status>` with the
+note "stopped with background work of its own still running", or the summary
+"is waiting on its own background work"). That notification is not terminal:
+the agent stays pending, its hold restarts at the notification, and a footer
+shell counter (which counts the sub-agent's shells too) is that agent
+running and refreshes the hold. The agent's later notification without the
+interim note ends it.
+
 Shell rule (A5, 1.16.30; partly reverses #2473 for shells only): a footer
 shell counter with no workflow or agent evidence keeps a Claude session
 `running` / `background-work` only while the transcript shows a pending

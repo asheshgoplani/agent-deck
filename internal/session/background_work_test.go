@@ -22,7 +22,7 @@ import (
 //	lines 11-14  notifications for the workflow's OWN sub-agent tasks (not launched on the main chain)
 //	line  15     the workflow's terminal <task-notification> (enqueued), 17 the notification turn
 //	lines 21-28  a background Agent + a run_in_background Bash (pendingBackgroundAgentCount=1)
-//	line  29     the agent's first "completed" notification; it resumes later
+//	line  29     the agent's interim "completed" notification (it waits on its own sleep)
 //	line  35     the Bash task's terminal notification
 //	line  43     turn_duration pendingBackgroundAgentCount=1 again (the resumed agent)
 //	line  45     the agent's final notification; 50 the last turn_duration (nothing pending)
@@ -67,10 +67,11 @@ func TestScanTranscriptBackground_LiveProbeTimeline(t *testing.T) {
 		{15, "", ""},
 		{20, "", ""},
 		{28, tmux.BackgroundKindAgent, "probe sleeper agent"},
-		{34, tmux.BackgroundKindBash, "Sleep for 50 seconds in background"},
-		{37, "", ""},
-		// The agent resumed after its first notification; only Claude Code's
-		// own pending count knows.
+		// The interim notification says the agent is waiting on background
+		// work of its own: it is still in flight, although the turn_duration
+		// that follows (line 34) counts no pending agent.
+		{34, tmux.BackgroundKindAgent, "probe sleeper agent"},
+		{37, tmux.BackgroundKindAgent, "probe sleeper agent"},
 		{43, tmux.BackgroundKindAgent, "probe sleeper agent"},
 		{50, "", ""},
 	}
@@ -118,13 +119,40 @@ func TestScanTranscriptBackground_NewProcessAndMonitorExpiry(t *testing.T) {
 	}
 }
 
+// Claude Code 2.1.307 names the interim state in the summary as well.
+func TestScanTranscriptBackground_InterimAgentNotification(t *testing.T) {
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"Background sleep probe"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"Background sleep probe"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	interim := `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:26:10Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Background sleep probe\" is waiting on its own background work</summary>\n<result>still sleeping</result>\n</task-notification>"}}`
+	final := `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Background sleep probe\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own.</note>\n<result>done</result>\n</task-notification>"}}`
+
+	sc := scanTranscriptBackground(append(append([]string{}, launch...), interim))
+	got, at := sc.inFlight()
+	if got.Kind != tmux.BackgroundKindAgent || got.Task != "Background sleep probe" {
+		t.Fatalf("after the interim notification: in flight = %+v, want the agent", got)
+	}
+	if want, _ := time.Parse(time.RFC3339, "2026-10-21T23:26:10Z"); !at.Equal(want) {
+		t.Fatalf("hold anchored at %v, want the interim notification %v", at, want)
+	}
+	if _, ok := sc.awaitingAgent(); !ok {
+		t.Fatal("agent not marked as awaiting its own work")
+	}
+	if got, _ := scanTranscriptBackground(append(append([]string{}, launch...), interim, final)).inFlight(); got.InFlight() {
+		t.Fatalf("after the final notification: in flight = %+v, want nothing", got)
+	}
+}
+
 func TestMergeBackgroundWork(t *testing.T) {
 	now := time.Now()
 	lines := loadProbeTranscript(t)
 	pendingWF := scanTranscriptBackground(restamp(lines[:10], now.Add(-30*time.Second)))
 	staleWF := scanTranscriptBackground(restamp(lines[:10], now.Add(-10*time.Minute)))
 	finished := scanTranscriptBackground(lines)
-	shells := scanTranscriptBackground(restamp(lines[:34], now.Add(-20*time.Second)))
+	shells := scanTranscriptBackground(restamp(lines[:26], now.Add(-20*time.Second)))
+	awaitingOwn := scanTranscriptBackground(restamp(lines[:34], now.Add(-20*time.Second)))
+	staleAwaiting := scanTranscriptBackground(restamp(lines[:34], now.Add(-10*time.Minute)))
 	row := tmux.BackgroundWork{Kind: tmux.BackgroundKindWorkflow, Task: "probe-two-agents", Step: 1, Steps: 2, Elapsed: "22s", Source: "pane"}
 	awaiting := tmux.BackgroundWork{Kind: tmux.BackgroundKindAgent, Task: "1 background agent", Source: "pane"}
 	agentPending := transcriptBackgroundScan{Pending: []transcriptBackgroundTask{{ID: "a1", Kind: tmux.BackgroundKindAgent, Name: "probe agent", At: now.Add(-time.Hour)}}}
@@ -156,6 +184,12 @@ func TestMergeBackgroundWork(t *testing.T) {
 		// A5: the shell counter holds only through its fresh launch, so the
 		// pane sighting is not stamped (paneShown false).
 		{"footer counter named from transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, shells, true, time.Time{}, tmux.BackgroundKindBash, "Sleep for 50 seconds in background", false},
+		// A sub-agent's own shells are on the session's footer: while the
+		// agent awaits its own work the counter is that agent running, and
+		// the sighting extends its hold.
+		{"footer counter, agent awaiting its own shell", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, staleAwaiting, true, time.Time{}, tmux.BackgroundKindAgent, "probe sleeper agent", true},
+		{"agent awaiting its own shell, fresh notification holds", tmux.BackgroundWork{}, awaitingOwn, true, time.Time{}, tmux.BackgroundKindAgent, "probe sleeper agent", false},
+		{"agent awaiting its own shell, past the hold", tmux.BackgroundWork{}, staleAwaiting, true, time.Time{}, "", "", false},
 		{"footer counter, no transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, transcriptBackgroundScan{}, false, time.Time{}, "", "", false},
 		{"nothing anywhere", tmux.BackgroundWork{}, finished, true, time.Time{}, "", "", false},
 		{"Waiting line alone", awaiting, transcriptBackgroundScan{}, false, time.Time{}, tmux.BackgroundKindAgent, "1 background agent", true},
