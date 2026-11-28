@@ -58,7 +58,7 @@ func tmuxOwnedByOtherProfile(sess *tmux.Session, profile string) (bool, error) {
 }
 
 func (i *Instance) checkRecoveredTmuxOwnership() error {
-	if !i.CreatedAt.IsZero() {
+	if !createdAtUnset(i.CreatedAt) {
 		return nil
 	}
 	profile := i.storageProfile
@@ -68,11 +68,17 @@ func (i *Instance) checkRecoveredTmuxOwnership() error {
 	return checkRecoveredTmuxOwnership(i.tmuxSession, i.CreatedAt, profile)
 }
 
+// createdAtUnset reports a creation time that was never really set: the zero
+// time, or the Unix epoch a row stored with created_at 0 reads back as.
+func createdAtUnset(t time.Time) bool {
+	return t.IsZero() || t.Unix() <= 0
+}
+
 // checkRecoveredTmuxOwnership protects copies created by older imports.
 // Imported rows have no creation timestamp and may refer to a live session
 // registered in another profile, even after the local row changes groups.
 func checkRecoveredTmuxOwnership(sess *tmux.Session, createdAt time.Time, profile string) error {
-	if sess == nil || !createdAt.IsZero() || !strings.HasPrefix(sess.TmuxName(), tmux.SessionPrefix) {
+	if sess == nil || !createdAtUnset(createdAt) || !strings.HasPrefix(sess.TmuxName(), tmux.SessionPrefix) {
 		return nil
 	}
 	foreign, err := tmuxOwnedByOtherProfile(sess, profile)
