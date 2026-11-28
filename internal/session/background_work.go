@@ -230,7 +230,8 @@ func interimOutsideResult(block string) bool {
 
 // interimInOwnText matches the interim wording in each <note> body and in each
 // <summary> body past its last quote (the end of the agent's description). A
-// body with no closing tag (a truncated record) runs to the next tag or the
+// body runs to its closing tag, so a '<' in the description does not cut it;
+// a body with no closing tag (a truncated record) runs to the next tag or the
 // end of seg.
 func interimInOwnText(seg string) bool {
 	for _, tag := range [...]string{"note", "summary"} {
@@ -242,7 +243,9 @@ func interimInOwnText(seg string) bool {
 			}
 			s = s[i+len(open):]
 			body := s
-			if j := strings.IndexByte(s, '<'); j >= 0 {
+			if j := strings.Index(s, "</"+tag+">"); j >= 0 {
+				body = s[:j]
+			} else if j := strings.IndexByte(s, '<'); j >= 0 {
 				body = s[:j]
 			}
 			if tag == "summary" {
