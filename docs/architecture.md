@@ -88,10 +88,11 @@ registry and the event bus on a 0600 unix socket; the CLI only uses it when
 local TUI keeps one ssh session per remote to `agent-deck remote-agent`
 (`cmd/agent-deck/remote_agent_cmd.go`), which answers JSON-line requests by
 running the same binary and pushes `{"event":"changed"}` when the remote's
-state.db changes. Local side: `internal/session/ssh.go` and
-`internal/session/remote_*.go` (`remote_channel.go` is the channel). When
-the channel is down, each command falls back to one `ssh host agent-deck
-...` exec. See docs/REMOTE-COMMANDS.md and docs/remote-cli-contract.md.
+state.db changes (without the listings once the client sends
+`{"feed":"bare"}`; it then polls `list --json --sync` for the delta).
+Local side: `internal/session/ssh.go` and `internal/session/remote_*.go`
+(`remote_channel.go` is the channel). When the channel is down, each
+command falls back to one `ssh host agent-deck ...` exec. See docs/REMOTE-COMMANDS.md and docs/remote-cli-contract.md.
 
 **Mac app.** Lives outside this repo. It drives the CLI with `--json` and
 follows the per-profile event bus (`agent-deck events follow`).

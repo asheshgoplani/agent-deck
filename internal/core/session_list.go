@@ -183,6 +183,14 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 	}
 }
 
+// LiveSessionRows is liveSessionRows for a listing outside the registry
+// (`list --json --sync`), so its rows have exactly the values `list --json`
+// prints: the rows of instances, with the status pass for every one cached
+// does not mark and the transcript paths looked up here.
+func LiveSessionRows(ctx context.Context, profile string, instances, all []*session.Instance, cached map[*session.Instance]bool, stamps map[string]statedb.StatusStamp) []SessionRow {
+	return liveSessionRows(ctx, profile, instances, all, cached, session.ListedTranscriptPaths(instances), stamps)
+}
+
 // liveSessionRows refreshes each session's status and fills every field.
 // Callers warm the status caches first. all is the full row set parent paths
 // are recovered from; instances may be a subset of it.

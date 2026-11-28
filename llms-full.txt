@@ -717,6 +717,8 @@ agent-deck ls  # Alias
 
 `--no-archived` leaves archived sessions out before any status work (for pollers that only need live sessions). The single-profile table shows the live status in a `STATUS` column, `archived` for an archived session. When the batched pane capture of a live `list --json` times out, the listing does not capture each pane on its own: those rows carry `status_source: "stale"` (status is the last observation or the default, substate may be absent), and `--stats` reports `captures_skipped`.
 
+`list --json --sync` is the remote poller's form (wire contract v1): one line of compact JSON, `{"sync":1,"epoch","cursor","full","more","next","scope","sessions","removed","counts":{"active","archived"}}`. `sessions` rows carry the fields a remote client decodes (`RemoteSessionInfo`) plus `order`. `--scope active|archived|all` (default `all`) picks the rows, `--cursor <epoch>.<seq>` from the previous reply asks only for what changed since (rows to upsert, ids in `removed`), and a missing or unusable cursor (another epoch, a lost journal) gets a full listing (`"full": true`). `--limit N` pages a reply: a delta page has `"more": true` and its own cursor, a full page a `next` token for `--page`. `--focus id,id` refreshes only those sessions plus running, waiting, starting, conductor and favourite ones and echoes the cursor. The server keeps its change journal in `list-sync.json` beside the profile's `state.db`. A build without `--sync` rejects it with `flag provided but not defined: -sync` (exit 2), and plain `list --json` output is unchanged.
+
 ### remove - Remove session
 
 ```bash

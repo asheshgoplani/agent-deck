@@ -3241,6 +3241,8 @@ func handleList(profile string, args []string) {
 	// (#2331) so a slow `list --json` names its own status-pass duration
 	// instead of leaving the caller with one opaque round-trip number.
 	statsFlag := fs.Bool(strings.TrimLeft(session.ListStatsFlag, "-"), false, "")
+	// `list --json --sync` (remote pollers): see list_sync_cmd.go.
+	syncFlags := registerListSyncFlags(fs)
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck list [options]")
@@ -3262,6 +3264,13 @@ func handleList(profile string, args []string) {
 
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
+	}
+	if opts, ok, err := syncFlags.options(fs, *jsonOutput, *allProfiles, *noArchived, *statsFlag); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		exitCLI(1)
+	} else if ok {
+		handleListSync(profile, *includeSuperseded, opts)
+		return
 	}
 
 	if *allProfiles {
