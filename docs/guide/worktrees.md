@@ -20,6 +20,36 @@ default_location = "subdirectory"  # "sibling" (default), "subdirectory", or a c
 
 `sibling` creates worktrees next to the repo (`repo-branch`). `subdirectory` creates them inside it (`repo/.worktrees/branch`). A custom path like `~/worktrees` or `/tmp/worktrees` creates repo-namespaced worktrees at `<path>/<repo_name>/<branch>`. The `--location` flag overrides the config per session.
 
+### Save and restore a task checkpoint
+
+Pause edits in the source checkout before saving. From that checkout:
+
+```bash
+agent-deck worktree checkpoint save --output /tmp/task.json --note /tmp/handoff.txt
+agent-deck worktree checkpoint preview /tmp/task.json
+```
+
+Move the checkpoint file to the other machine or checkout. From a trusted clone
+that already has the base commit:
+
+```bash
+agent-deck worktree checkpoint restore /tmp/task.json --path ../restored-task
+```
+
+The target must be new and outside the repository's existing worktrees. Add
+`--expect SHA256` using the value printed by preview if you want restore to require
+the same file you inspected. After restore, choose the agent you want to start
+and give it the handoff. Restored edits are unstaged.
+
+The checkpoint contains a net Git patch for supported tracked text files and
+the optional note. It omits untracked files and session transcripts. Review it
+before sharing because even tracked changes and notes can contain sensitive
+content. Save rejects unsupported changes such as binary files, symlink changes,
+submodule changes, mode or attribute changes, and filters that apply to
+tracked files.
+Restore requires the base locally and does not run worktree setup scripts or
+fetch objects. Keep the source and destination stable while the command runs.
+
 ### Sparse Checkout (large monorepos)
 
 If the session you create the worktree from uses [sparse checkout](https://git-scm.com/docs/git-sparse-checkout), a new worktree normally checks out the *whole* repository first — minutes of I/O on a monorepo with hundreds of thousands of files. Opt into inheriting the sparse configuration instead:
