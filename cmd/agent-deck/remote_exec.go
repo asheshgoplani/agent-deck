@@ -85,7 +85,9 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		case "group":
 			if len(args) > 1 {
 				switch args[1] {
-				case "list", "reorder":
+				// show is read-only: voice reads a remote group's
+				// default folder before it asks to launch there.
+				case "list", "reorder", "show":
 					return append([]string(nil), args...), nil
 				}
 			}

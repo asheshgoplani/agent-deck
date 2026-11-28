@@ -93,12 +93,47 @@ two or more of his sessions asks which one ("tell conductor to …", "status of 
 name ("tell phone walk to continue", "tell zephyr to stop", a name with a number) answers "I found no session of
 yours called …"; it is never typed into the session as plain text.
 
+## Phase 2: acting on sessions
+
+| Intent | English | Roman Hindi | Does (after a yes where marked) |
+|---|---|---|---|
+| `launch` | "start a new session called X in G", "launch a new session named X" | "ek nayi session shuru karo naam X", "G mein nayi session shuru karo naam X" | yes: `launch -t x -c <tool> -g G <folder>` (or on a remote) |
+| `stop` / `restart` / `archive` | "stop X", "restart X", "archive X" | "X band karo", "X restart karo", "X archive karo" | yes: `session stop|restart|archive`; a conductor (renamed too), the session the mic is on, or a session of another profile is refused at once, no question: "X is a conductor; do that on screen." |
+| plural | "stop all workers" | "sab workers band karo" | names every session it will act on, at most five per yes; never conductors, never the session the mic is on ("stop all conductors" is refused, no question), and a yes checks both again; a bulk restart leaves out the sessions restarted in the last minute, so saying it again reaches the rest; "No workers are running." when none is |
+| `search` | "where did we talk about X", "search what was said about X" | "X ki baat kahan hui thi" | `recall search` (read-only; needs `[recall] enabled`); only hits from his own sessions of this profile (and the remotes) are spoken or shown |
+| `workers` | "what are X's workers doing" | "X ke workers kya kar rahe hain" | `session children` (this machine); only his own sessions are listed |
+| `next` | "take me to the next one", "next waiting", "next one", "next session", "go to next waiting" | "agla wala kholo", "agla waiting" | switch to the longest-waiting session he is not on, of this profile (or a remote), never a conductor: "Switching to X, it is waiting for you." |
+| `refuse` | "delete X", "remove the X session", "delete all workers", "delete everything", "stop X and delete it", "I want to delete X", "purge X", "throw away X" | "X hata do", "X ko mita do", "sab workers hata do", "sab hata do", "X band karo aur hata do", "mujhe X delete karna hai" | nothing: "I never delete a session by voice; do it on screen." |
+| `todo_add` | "add a to-do: X", "put X on my list", "remind me to X" | "to-do mein daalo: X", "X list mein daal do" | `todo add`; "add this to my list" and "add a todo comment" are talk |
+| `todo_list` | "what is on my list", "read my to-dos" | "meri list sunao", "mere to-do batao" | `todo list`; "what is left to do" is talk |
+| `todo_done` | "tick off X", "mark X done", "X is done", "the X one is done" | "X wala ho gaya", "X ho gaya" | the whole item ticks at once; part of it after "tick off" / "wala" / "the X one" asks "Tick off fix the build?" (several: "Did you mean A or B?"); a plural is the same word ("test"/"tests"; "es" only after s, x, z, ch, sh, as `todo done`: "jon" is not "jones"); a close word ("plan" for "plane", "rent" for "rental", "jon" for "jones") changes nothing: "No to-do is called plan; say its whole name."; a bare "the build is done" / "build ho gaya" is talk |
+
+Every launch, stop, restart and archive is read back and needs a yes within 10 s; the yes re-checks each session.
+A launch starts only in the group's own default folder (`group update G --default-path ...`) and says it with the
+tool: "Start a new session x in G, in folder alpha, with claude? Yes?". A group without one is refused; the folder is
+never taken from what was heard. A name is plain words only: every word starts with a letter or a digit (no
+"-p", "--cmd", dash or fullwidth look-alikes); anything else is "A session name can only use plain words; type it
+instead.". The tool is `default_tool` from config.toml when it is a plain name, else claude.
+An unknown name after stop/restart/archive is not the desk's ("stop listening" belongs to the voice daemon).
+A sentence with a delete verb (delete, remove, erase, wipe, drop, purge, scrap, discard, throw away, get rid of,
+hata, hatwa, mita, mitwa, nikal, uda, khatam, saaf, phenk, their inflected forms such as "deleted", "deleting",
+"hataiye", and their Devanagari and misheard forms) is refused when what is left names a session (his, someone
+else's, or one of nobody's said by its own words), a group of his, everything ("delete everything", "delete all
+sessions", "sab hata do"), or a short name with a number ("delete test 1", "delete worker one"); polite and
+who-does-it words ("please", "I want you to", "go ahead and", "now", "for me", "from the deck", "mujhe ... hai") are
+dropped first. It never reaches the session the mic is on. A delete that names
+no session is talk ("delete the session cookie", "remove the unused import", "hata do ye function").
+"Open the page from X" opens a page only when X is one of his sessions word for word; anything else
+("open the coverage report", "open the test report") is talk.
+
 ## Safety
 
 1. **Only the owner's sessions** (`[voice]` in config.toml, see the config reference). Another person's session is
    refused by name ("That is Sam's session.") and never acted on. Every spoken name word must be in the title or
    group (two spoken words may make one title word: "mac app" → `macapp`); the switch matcher's number rule holds
-   ("audit 0956" is not `audit-0955`). A name that only looks like a title (edit distance) is never silently the
+   ("audit 0956" is not `audit-0955`). A number word after a name word is its digits: "worker one" is `worker-1`,
+   never `worker-11`; one to twenty, and the Hindi ek to das ("worker do" is `worker-2` unless a session has the
+   word "do" in its name). A name that only looks like a title (edit distance) is never silently the
    target: the desk asks "Did you mean voice test?". Several equal hits: "Did you mean A or B?". Archived sessions
    are never targets.
 2. **Never another profile, never a conductor.** The desk lists only the profile it runs in (`-p`), plus the

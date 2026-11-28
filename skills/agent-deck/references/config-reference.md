@@ -1433,6 +1433,7 @@ whose sessions a spoken command may reach. Read on every `voice do` call; no res
 [voice]
 owner_groups   = ["team/alex"]   # his groups, each with its subgroups
 owner_profiles = ["work"]        # every session of these profiles is his
+home           = "conductor-ops" # the session voice talks to by default (id or title)
 
 [voice.people.sam]               # someone else whose sessions the deck can see
 groups   = ["team/sam"]
@@ -1444,6 +1445,7 @@ names    = ["samuel"]            # other spoken names; the key "sam" is always o
 |-----|------|---------|-------------|
 | `owner_groups` | list of group paths | `[]` | The owner's groups. A group covers its subgroups. |
 | `owner_profiles` | list of profiles | `[]` | Profiles whose every session is the owner's. |
+| `home` | session id or title | `""` | The session voice talks to by default and "go home" returns to. Empty, or the session is gone: his conductor session by the owner rules (`error` says when the configured one is gone). `agent-deck voice home --json` and the `home` field of `voice state --json` report it (`source`: `config`, `default` or `none`). |
 | `people.<name>.groups` | list of group paths | `[]` | Another person's groups. Their sessions are refused by name ("That is Sam's session."), never acted on. |
 | `people.<name>.profiles` | list of profiles | `[]` | Profiles that are wholly that person's. |
 | `people.<name>.names` | list of strings | `[]` | Other spoken names of that person; a spoken name holding one is refused even when no session matches. |

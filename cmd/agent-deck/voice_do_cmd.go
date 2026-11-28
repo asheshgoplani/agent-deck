@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -192,7 +193,12 @@ func runVoiceDo(profile string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "voice do: %v\n", err) // never the sentence
 		return 1
 	}
-	return writeVoiceDo(stdout, stderr, res, a.jsonOut)
+	code := writeVoiceDo(stdout, stderr, res, a.jsonOut)
+	if f, ok := stdout.(*os.File); ok {
+		_ = f.Sync()
+	}
+	publishVoiceResult(self, resolved, a.from, res)
+	return code
 }
 
 func writeVoiceDo(stdout, stderr io.Writer, res voicedesk.Result, asJSON bool) int {
@@ -438,4 +444,369 @@ func sweepVoicePending(profile string) {
 		return
 	}
 	voicedesk.FileStore{Dir: pending}.Sweep()
+}
+
+// Act runs stop / restart / archive through `session <verb>` (local) or
+// `remote <name> session <verb>` (forwarded by the remote allowlist).
+func (d *cliVoiceDeck) Act(ctx context.Context, s voicedesk.Session, verb string) error {
+	switch verb {
+	case "stop", "restart", "archive":
+	default:
+		return fmt.Errorf("voice never runs %q", verb)
+	}
+	var out []byte
+	var err error
+	if s.Host != "" {
+		out, err = d.run(ctx, "", "remote", s.Host, "session", verb, s.ID, "--json")
+	} else {
+		out, err = d.run(ctx, "", "-p", d.profileOf(s), "session", verb, s.ID, "--json")
+	}
+	if err != nil {
+		return err
+	}
+	var v struct {
+		Success *bool `json:"success"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(out), &v) == nil && v.Success != nil && !*v.Success {
+		return fmt.Errorf("session %s did not succeed", verb)
+	}
+	return nil
+}
+
+// voiceToolRe is a plain tool name (claude, codex, gemini...): a
+// configured default_tool that is a whole command line is not used.
+var voiceToolRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+// voiceLaunchTool is the agent a voice launch runs: [default_tool] when it
+// is a plain tool name, else claude.
+func voiceLaunchTool() string {
+	if t := strings.TrimSpace(session.GetDefaultTool()); voiceToolRe.MatchString(t) {
+		return t
+	}
+	return "claude"
+}
+
+// PlanLaunch fills the folder and tool of a voice launch before the
+// question is asked. The folder is only the group's own default_path
+// (`group show --json`, explicit_default_path), read on the host the
+// session will run on; never the folder of the group's latest session and
+// never a word that was heard. ErrNoFolder when there is none.
+func (d *cliVoiceDeck) PlanLaunch(ctx context.Context, spec voicedesk.LaunchSpec) (voicedesk.LaunchSpec, error) {
+	if strings.TrimSpace(spec.Group) == "" {
+		return spec, voicedesk.ErrNoFolder
+	}
+	args := []string{"group", "show", spec.Group, "--json"}
+	if spec.Host != "" {
+		args = append([]string{"remote", spec.Host}, args...)
+	} else {
+		profile := spec.Profile
+		if profile == "" {
+			profile = d.profile
+		}
+		args = append([]string{"-p", profile}, args...)
+	}
+	out, err := d.run(ctx, "", args...)
+	var v struct {
+		Success  bool   `json:"success"`
+		Explicit string `json:"explicit_default_path"`
+	}
+	if jerr := json.Unmarshal(bytes.TrimSpace(out), &v); jerr != nil || !v.Success {
+		if err == nil {
+			err = errors.New("group show did not succeed")
+		}
+		return spec, err
+	}
+	folder := strings.TrimSpace(v.Explicit)
+	// Absolute on the host it runs on; a relative or "-" value could be
+	// read as a flag by launch.
+	if folder == "" || !strings.HasPrefix(folder, "/") || strings.ContainsAny(folder, "\x00\n") {
+		return spec, voicedesk.ErrNoFolder
+	}
+	spec.Path, spec.Tool = filepath.Clean(folder), voiceLaunchTool()
+	return spec, nil
+}
+
+// Launch starts a session with
+// `launch -t <title> -c <tool> -g <group> --json <folder>`. The folder and
+// tool come from PlanLaunch and were read back before the yes; without
+// them nothing is started (no guessed folder, no bare shell).
+func (d *cliVoiceDeck) Launch(ctx context.Context, spec voicedesk.LaunchSpec) (voicedesk.Session, error) {
+	if !strings.HasPrefix(spec.Path, "/") || !voiceToolRe.MatchString(spec.Tool) {
+		return voicedesk.Session{}, errors.New("voice launch has no folder or tool")
+	}
+	args := []string{"launch", "-t", spec.Title, "-c", spec.Tool}
+	if spec.Group != "" {
+		args = append(args, "-g", spec.Group)
+	}
+	args = append(args, "--json", spec.Path)
+	if spec.Host != "" {
+		args = append([]string{"remote", spec.Host}, args...)
+	} else {
+		profile := spec.Profile
+		if profile == "" {
+			profile = d.profile
+		}
+		args = append([]string{"-p", profile}, args...)
+	}
+	out, err := d.run(ctx, "", args...)
+	var v struct {
+		Success bool   `json:"success"`
+		ID      string `json:"id"`
+		Title   string `json:"title"`
+		Group   string `json:"group"`
+		Error   string `json:"error"`
+	}
+	if jerr := json.Unmarshal(bytes.TrimSpace(out), &v); jerr != nil || !v.Success {
+		if err == nil {
+			err = errors.New("launch did not succeed")
+		}
+		return voicedesk.Session{}, err
+	}
+	return voicedesk.Session{ID: v.ID, Title: v.Title, Group: v.Group, Host: spec.Host, Profile: spec.Profile}, nil
+}
+
+// Search is `recall search --json --limit 20` (plus --all-remotes when
+// remotes are configured; a remote that does not answer leaves the local
+// hits). recall indexes every conversation on the machine, so it is asked
+// for more than the desk speaks: the desk's owner filter runs first and
+// then it cuts to five.
+func (d *cliVoiceDeck) Search(ctx context.Context, query string) ([]voicedesk.SearchHit, error) {
+	args := []string{"-p", d.profile, "recall", "search", "--json", "--limit", strconv.Itoa(voicedesk.SearchAsk)}
+	if uc, err := session.LoadUserConfig(); err == nil && uc != nil && len(uc.Remotes) > 0 {
+		args = append(args, "--all-remotes")
+	}
+	args = append(args, "--", query)
+	out, err := d.run(ctx, "", args...)
+	// The real shape (handleRecallSearch): local hits under result.hits,
+	// each remote's under remotes[].hits. deck_id is the deck session the
+	// conversation belongs to (empty when recall could not map it); the
+	// desk's owner rules filter on it.
+	type recallHit struct {
+		Title   string `json:"title"`
+		DeckID  string `json:"deck_id"`
+		Snippet string `json:"snippet"`
+	}
+	var v struct {
+		Success *bool  `json:"success"`
+		Error   string `json:"error"`
+		Result  *struct {
+			Hits []recallHit `json:"hits"`
+		} `json:"result"`
+		Remotes []struct {
+			Remote string      `json:"remote"`
+			Hits   []recallHit `json:"hits"`
+			Error  string      `json:"error"`
+		} `json:"remotes"`
+	}
+	if jerr := json.Unmarshal(bytes.TrimSpace(out), &v); jerr != nil {
+		if err == nil {
+			err = jerr
+		}
+		return nil, err
+	}
+	// success=false with a result means a remote did not answer (recall
+	// exits 1 then): the local hits and the other remotes' hits stand.
+	if v.Success != nil && !*v.Success && v.Result == nil {
+		if strings.Contains(v.Error, "recall is off") {
+			return nil, voicedesk.ErrSearchOff
+		}
+		return nil, errors.New("recall search failed")
+	}
+	var hits []voicedesk.SearchHit
+	if v.Result != nil {
+		for _, h := range v.Result.Hits {
+			hits = append(hits, voicedesk.SearchHit{Title: h.Title, DeckID: h.DeckID, Snippet: h.Snippet})
+		}
+	}
+	for _, r := range v.Remotes {
+		if r.Remote == "" {
+			continue
+		}
+		for _, h := range r.Hits {
+			hits = append(hits, voicedesk.SearchHit{Title: h.Title, DeckID: h.DeckID, Host: r.Remote, Snippet: h.Snippet})
+		}
+	}
+	return hits, nil
+}
+
+// Children is `session children <id> --json` (this machine only: the
+// remote allowlist does not forward children).
+func (d *cliVoiceDeck) Children(ctx context.Context, s voicedesk.Session) ([]voicedesk.Session, error) {
+	if s.Host != "" {
+		return nil, voicedesk.ErrUnsupported
+	}
+	out, err := d.run(ctx, "", "-p", d.profileOf(s), "session", "children", s.ID, "--json")
+	if err != nil {
+		return nil, err
+	}
+	var v struct {
+		Children []struct {
+			ID     string `json:"id"`
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		} `json:"children"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &v); err != nil {
+		return nil, err
+	}
+	kids := make([]voicedesk.Session, 0, len(v.Children))
+	for _, c := range v.Children {
+		kids = append(kids, voicedesk.Session{ID: c.ID, Title: c.Title, Status: c.Status, Profile: d.profileOf(s)})
+	}
+	return kids, nil
+}
+
+// To-dos go through `agent-deck todo` (branch feat/todos). A binary without
+// it answers with no JSON: the desk then says to-dos are not available.
+type voiceTodoItem struct {
+	ID     string  `json:"id"`
+	Text   string  `json:"text"`
+	DoneAt *string `json:"done_at"`
+}
+
+func (it voiceTodoItem) desk() voicedesk.Todo {
+	return voicedesk.Todo{ID: it.ID, Text: it.Text, Done: it.DoneAt != nil && *it.DoneAt != ""}
+}
+
+func (d *cliVoiceDeck) todoRun(ctx context.Context, v any, args ...string) error {
+	out, err := d.run(ctx, "", append([]string{"todo"}, args...)...)
+	if jerr := json.Unmarshal(bytes.TrimSpace(out), v); jerr != nil {
+		if err != nil || len(bytes.TrimSpace(out)) == 0 || !bytes.HasPrefix(bytes.TrimSpace(out), []byte("{")) {
+			return voicedesk.ErrUnsupported
+		}
+		return jerr
+	}
+	return nil
+}
+
+func (d *cliVoiceDeck) TodoAdd(ctx context.Context, text string) (voicedesk.Todo, error) {
+	var v struct {
+		Status string         `json:"status"`
+		Todo   *voiceTodoItem `json:"todo"`
+	}
+	if err := d.todoRun(ctx, &v, "add", "--source", "voice", "--json", "--", text); err != nil {
+		return voicedesk.Todo{}, err
+	}
+	if v.Todo == nil {
+		return voicedesk.Todo{}, errors.New("todo add: " + v.Status)
+	}
+	return v.Todo.desk(), nil
+}
+
+func (d *cliVoiceDeck) TodoList(ctx context.Context) ([]voicedesk.Todo, error) {
+	var v struct {
+		Todos []voiceTodoItem `json:"todos"`
+	}
+	if err := d.todoRun(ctx, &v, "list", "--json"); err != nil {
+		return nil, err
+	}
+	out := make([]voicedesk.Todo, 0, len(v.Todos))
+	for _, it := range v.Todos {
+		out = append(out, it.desk())
+	}
+	return out, nil
+}
+
+func (d *cliVoiceDeck) TodoDone(ctx context.Context, id string) (voicedesk.Todo, error) {
+	var v struct {
+		Status string         `json:"status"`
+		Todo   *voiceTodoItem `json:"todo"`
+	}
+	if err := d.todoRun(ctx, &v, "done", "--json", "--", id); err != nil {
+		return voicedesk.Todo{}, err
+	}
+	if v.Todo == nil {
+		return voicedesk.Todo{}, errors.New("todo done: " + v.Status)
+	}
+	return v.Todo.desk(), nil
+}
+
+// OpenPage opens the newest page a session made on his phone and Mac app:
+// `open --last --session <id> --json` (branch feat/open-phone, planned
+// interface: {status: opened|queued, where, session, title, path}; exit 2 =
+// the session has no page). A binary without --last answers ErrPageUnavailable.
+func (d *cliVoiceDeck) OpenPage(ctx context.Context, s voicedesk.Session) (voicedesk.Page, error) {
+	if s.Host != "" {
+		return voicedesk.Page{}, voicedesk.ErrUnsupported
+	}
+	cmd := exec.CommandContext(ctx, d.self, "-p", d.profileOf(s), "open", "--last", "--session", s.ID, "--json", "--wait", "500ms") //nolint:gosec // G204: re-exec of this binary with fixed verbs
+	cmd.Env = childenv.ForSelfReexec("AGENTDECK_INSTANCE_ID")
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	var v struct {
+		Status    string `json:"status"`
+		Where     string `json:"where"`
+		Path      string `json:"path"`
+		PageID    string `json:"page_id"`
+		PageTitle string `json:"page_title"`
+	}
+	jerr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &v)
+	var ee *exec.ExitError
+	switch {
+	case jerr == nil && (v.Status == "opened" || v.Status == "queued"):
+		where := v.Where
+		if v.Status == "queued" {
+			where = "queued"
+		}
+		title := strings.TrimSpace(v.PageTitle)
+		if title == "" {
+			title = d.pageTitle(ctx, s, v.PageID, v.Path)
+		}
+		return voicedesk.Page{Title: title, Path: v.Path, Where: where}, nil
+	case errors.As(err, &ee) && strings.Contains(errb.String()+out.String(), "flag provided but not defined"):
+		// a build without `open --last` (runOpen exits 1 on a flag error)
+		return voicedesk.Page{}, voicedesk.ErrPageUnavailable
+	case errors.As(err, &ee) && ee.ExitCode() == 2:
+		return voicedesk.Page{}, voicedesk.ErrNoPage
+	case err != nil:
+		return voicedesk.Page{}, err
+	}
+	return voicedesk.Page{}, errors.New("open --last: unexpected answer")
+}
+
+// publishVoiceResult hands a handled, real (not dry-run) result to the
+// event stream as voice.result through `voice result-publish` (branch
+// feat/voice-state-stream), so every screen shows the same answer. Best
+// effort, bounded: a binary without it, or a slow bus, never changes the
+// result. The heard sentence is never in the result; say and the confirm
+// token are dropped by the publisher, and voicedesk.ForFrame drops every
+// to-do text first.
+func publishVoiceResult(self, profile, from string, res voicedesk.Result) {
+	if !res.Handled || res.DryRun {
+		return
+	}
+	b, err := json.Marshal(voicedesk.ForFrame(res)) // no to-do text in a frame
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, self, "-p", profile, "voice", "result-publish", "--from", from) //nolint:gosec // G204: re-exec of this binary with fixed verbs
+	cmd.Env = childenv.ForSelfReexec("AGENTDECK_INSTANCE_ID")
+	cmd.Stdin = bytes.NewReader(b)
+	_ = cmd.Run()
+}
+
+// pageTitle is the page's own title from `open --list` (the --last answer
+// carries the session's title), else its file name without the extension.
+func (d *cliVoiceDeck) pageTitle(ctx context.Context, s voicedesk.Session, pageID, path string) string {
+	out, err := d.run(ctx, "", "-p", d.profileOf(s), "open", "--list", "--session", s.ID, "--json")
+	if err == nil {
+		var v struct {
+			Pages []struct {
+				ID    string `json:"id"`
+				Title string `json:"title"`
+			} `json:"pages"`
+		}
+		if json.Unmarshal(bytes.TrimSpace(out), &v) == nil {
+			for _, p := range v.Pages {
+				if p.ID == pageID && strings.TrimSpace(p.Title) != "" {
+					return strings.TrimSpace(p.Title)
+				}
+			}
+		}
+	}
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }

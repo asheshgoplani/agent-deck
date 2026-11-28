@@ -67,3 +67,16 @@ rule and the web route: [events.md](events.md).
 ## voice do
 
 The voice desk: one heard sentence in, one deck action and the short line to speak out. See [voice-desk.md](voice-desk.md).
+
+## voice home
+
+```
+agent-deck voice home --json   {"id","title","host","source":"config|default|none"[,"error":"not found|ambiguous"]}
+```
+
+The session voice talks to by default and "go home" returns to: `[voice] home` (a session id, a title, or an id
+prefix of six or more), else his conductor session by the `[voice]` owner rules (named like the profile, else ending
+in `-<profile>`, else the first of his by name; never someone else's, never archived), else none. When the
+configured session is archived, renamed or missing, home is that conductor and `error` says why. `voice state --json`
+carries the same object as `home` (reused for up to 30 s, so polling stays cheap), so the voice daemon, the phone and
+the Mac app read one setting. The daemon keeps its own "go home" words; this only says where home is.

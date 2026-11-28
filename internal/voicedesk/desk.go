@@ -31,7 +31,52 @@ type Deck interface {
 	Send(ctx context.Context, s Session, message string) error
 	// Show asks the screen (the Mac app) to show the session.
 	Show(ctx context.Context, s Session) error
+
+	// Phase 2.
+	// Act runs a lifecycle verb (stop | restart | archive) on a session.
+	Act(ctx context.Context, s Session, verb string) error
+	// Launch starts a new session.
+	Launch(ctx context.Context, spec LaunchSpec) (Session, error)
+	// Search searches what was said (recall).
+	Search(ctx context.Context, query string) ([]SearchHit, error)
+	// Children lists a session's workers.
+	Children(ctx context.Context, s Session) ([]Session, error)
 }
+
+// LaunchSpec is a new session.
+type LaunchSpec struct {
+	Title   string `json:"title"`
+	Group   string `json:"group"`
+	Host    string `json:"host"`
+	Profile string `json:"profile"`
+	// Path is the folder the session starts in: the group's own default
+	// folder (never a word he said, never a guess). Tool is the agent it
+	// runs. Both are read back in the question and bound to the yes.
+	Path string `json:"path,omitempty"`
+	Tool string `json:"tool,omitempty"`
+}
+
+// LaunchPlanner is a Deck that fills a new session's folder and tool before
+// the question is asked, so the read-back can say them. ErrNoFolder: the
+// group has no default folder of its own, and the desk refuses.
+type LaunchPlanner interface {
+	PlanLaunch(ctx context.Context, spec LaunchSpec) (LaunchSpec, error)
+}
+
+// SearchHit is one conversation that mentions the words.
+type SearchHit struct {
+	Title   string `json:"title"`
+	DeckID  string `json:"deck_id"`
+	Host    string `json:"host"`
+	Snippet string `json:"snippet"`
+}
+
+// Errors a Deck returns for a capability that is not there.
+var (
+	ErrUnsupported = errors.New("not supported")
+	ErrSearchOff   = errors.New("search is off")
+	ErrNoFolder    = errors.New("group has no default folder")
+)
 
 // HostError is one host (or one local profile, Host "") that did not answer.
 type HostError struct {
@@ -125,6 +170,7 @@ const (
 // Spoken lines that are fixed.
 const (
 	sayTooLate     = "Too late, nothing sent."
+	sayTooLateDone = "Too late, nothing done."
 	sayCancelled   = "Cancelled."
 	saySecretReply = "There is a secret in this reply, read it on screen."                                 //nolint:gosec // G101: a spoken line, not a credential
 	saySecretTell  = "There is a secret in this message, so I will not send it by voice. Type it instead." //nolint:gosec // G101: a spoken line, not a credential
@@ -265,7 +311,20 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 		switch kind {
 		case AnswerYes, AnswerChoice:
 			r := d.base(answerIntent(kind), lang, req.DryRun)
-			refuse(&r, RefusedExpired, sayTooLate)
+			// a foreign token still names its action; a used one is
+			// remembered by the store; only a send says "nothing sent"
+			action := p.Action
+			if err != nil {
+				action = ""
+				if u, ok := d.Store.(usedActions); ok {
+					action = u.UsedAction(req.Pending)
+				}
+			}
+			say := sayTooLate
+			if action != "" && action != actionSend {
+				say = sayTooLateDone
+			}
+			refuse(&r, RefusedExpired, say)
 			return r, true, nil
 		case AnswerNo:
 			r := d.base(IntentConfirmNo, lang, req.DryRun)
@@ -311,7 +370,11 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 	// measured delay, else by the token's age
 	if d.isLate(req, p) { // a clock that went back is not trusted either
 		r := d.base(answerIntent(kind), lang, req.DryRun)
-		refuse(&r, RefusedExpired, sayTooLate)
+		say := sayTooLate
+		if p.Action != actionSend {
+			say = sayTooLateDone // stop, restart, archive, launch, switch
+		}
+		refuse(&r, RefusedExpired, say)
 		return r, true, nil
 	}
 	switch {
@@ -329,6 +392,17 @@ func (d *Desk) answer(ctx context.Context, req Request) (Result, bool, error) {
 			r := d.base(IntentChoice, lang, req.DryRun)
 			r.Say = sayCancelled
 			return r, true, nil
+		}
+		if p.Action == actionTodoDone {
+			r := d.base(IntentChoice, lang, req.DryRun)
+			td, ok := d.todos()
+			if !ok {
+				refuse(&r, RefusedExpired, sayTooLateDone)
+				return r, true, nil
+			}
+			c := p.Choices[idx]
+			r, err := d.tickOff(ctx, req, r, td, Todo{ID: c.ID, Text: c.Title})
+			return r, true, err
 		}
 		r, err := d.chosen(ctx, req, p, p.Choices[idx], lang)
 		return r, true, err
@@ -421,6 +495,9 @@ func choiceByName(sentence string, choices []Ref) int {
 
 // act carries out a confirmed action.
 func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Result, error) {
+	if p.Action == actionLaunch || len(p.Targets) > 0 {
+		return d.actPhase2(ctx, req, p, lang)
+	}
 	if p.Target == nil {
 		r := d.base(IntentConfirmYes, lang, req.DryRun)
 		refuse(&r, RefusedExpired, sayTooLate)
@@ -459,6 +536,8 @@ func (d *Desk) act(ctx context.Context, req Request, p Pending, lang string) (Re
 		}
 	case actionSwitch:
 		d.switchTo(ctx, req, &r, s)
+	case actionStop, actionRestart, actionArchive:
+		d.lifecycle(ctx, req, &r, p.Action, []Session{s})
 	default:
 		refuse(&r, RefusedExpired, sayTooLate)
 	}
@@ -606,15 +685,36 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 			d.list(&r, mine, errs)
 		}
 		return r, nil
+	case IntentNext, IntentSearch, IntentLaunch, IntentTodoAdd, IntentTodoList, IntentTodoDone:
+		return d.runPhase2(ctx, req, r, p)
+	}
+	if p.Intent == IntentOpenPage && p.Name == "" {
+		return d.openPageOn(ctx, req, r, p)
+	}
+	switch p.Intent {
+	case IntentOpenPage:
+		return d.openPageNamed(ctx, req, r, p)
+	case IntentRefuse:
+		return d.refuseDelete(ctx, r, p)
 	}
 	// talk in a soft desk form is decided from the words, before any
 	// listing (no ssh for "read the file and fix the bug")
+	// A number word at the end that is also an ordinary word ("worker do
+	// band karo": the verb do; "test ten" folds like "then") makes the
+	// name a session only when it resolves to exactly one.
+	onlyIfOne := false
 	if q0 := newNameQuery(p.Name, nil); p.Soft && talkLike(q0.words) {
-		return notMine(p.Lang), nil
+		if !numberLast(q0) {
+			return notMine(p.Lang), nil
+		}
+		onlyIfOne = true
 	}
 	all, _ := d.sessions(ctx)
 	req.onShared = idCount(all, req.On) > 1
 	q := newNameQuery(p.Name, hostsOf(all))
+	if p.All {
+		return d.many(ctx, req, r, p, q, all)
+	}
 	var res resolution
 	if p.Intent == IntentFind {
 		// find ends in a switch: only his own profile, never a conductor
@@ -629,6 +729,9 @@ func (d *Desk) run(ctx context.Context, req Request, p Parsed) (Result, error) {
 				return r, nil
 			}
 		}
+	}
+	if onlyIfOne && res.Kind != resolvedOne {
+		return notMine(p.Lang), nil
 	}
 	// "status of the build", "test ko bolo ki ...": a name of only coding
 	// nouns is talk unless it says a session's whole title
@@ -725,6 +828,9 @@ func (d *Desk) pend(req Request, r Result, p Pending, prompt string) (Result, er
 		}
 	}
 	r.Confirm = &Confirm{Token: tok, Kind: p.Kind, Prompt: prompt, ExpiresMs: AnswerWindow.Milliseconds()}
+	if req.DryRun {
+		r.Confirm.Token = "" // nothing was stored: there is no token to answer
+	}
 	return r, nil
 }
 
@@ -789,6 +895,10 @@ func (d *Desk) withTarget(ctx context.Context, req Request, p Parsed, s Session,
 		r.Say = prompt
 		r.Show = Show{Kind: "sessions", Items: items([]Session{s}, d.now())}
 		return d.pend(req, r, Pending{Profile: req.Profile, Kind: "yes", Action: actionSwitch, Intent: IntentFind, Lang: p.Lang, Target: &t}, prompt)
+	case IntentStop, IntentRestart, IntentArchive, IntentWorkers, IntentRefuse:
+		return d.withTargetPhase2(ctx, req, r, p, s)
+	case IntentOpenPage:
+		return d.openPage(ctx, req, r, p, s)
 	default:
 		return r, errors.New("intent without a target: " + p.Intent)
 	}
@@ -1030,7 +1140,11 @@ func saysWholeTitle(q nameQuery, res resolution) bool {
 	for _, s := range cands {
 		all := true
 		for _, tw := range splitWords(s.Title) {
-			if wordMeets(tw.folded, tw.roman, false, q.words, q.roman) != wordSure {
+			num := "" // a title's digits are said as a number word too ("test one" / test-1)
+			if strings.Trim(tw.folded, "0123456789") == "" {
+				num = tw.folded
+			}
+			if wordMeets(tw.folded, tw.roman, false, q.words, q.roman, num) != wordSure {
 				all = false
 				break
 			}

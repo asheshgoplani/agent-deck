@@ -59,12 +59,20 @@ func sessionWords(s Session) (folded, roman []string) {
 // same sound key ("kichan"/"kitchen", "vedar"/"weather"). Similar: the
 // switch matcher's edit-distance rule. A spoken word with a digit must be
 // equal (the switch number rule: "0956" is not "0955").
-func wordMeets(w, roman string, deva bool, sw, sr []string) int {
+//
+// num is the spoken word's number when it is one ("one" -> "1", see
+// spokenNumber): it is also sure on a title word with the same digits
+// ("worker one" / worker-1) or the same number word, and on nothing else
+// ("one" is never "11", "nine five five" never "0955").
+func wordMeets(w, roman string, deva bool, sw, sr []string, num string) int {
 	digit := strings.IndexFunc(w, func(r rune) bool { return r >= '0' && r <= '9' }) >= 0
 	best := wordNone
 	pk := phoneticKey(roman)
 	for i, x := range sw {
 		if w == x {
+			return wordSure
+		}
+		if num != "" && (x == num || englishNumbers[sr[i]] == num) {
 			return wordSure
 		}
 		if digit {
@@ -103,6 +111,11 @@ func coverage(q nameQuery, s Session) (ok bool, level int, exact int) {
 				i++
 				continue
 			}
+			if n := q.number(i + 1); n != "" && containsWord(sw, words[i]+n) {
+				exact += 2 // "redesign one" -> redesign1
+				i++
+				continue
+			}
 			if (q.deva[i] || q.deva[i+1]) && utf8.RuneCountInString(joined) >= 4 && vowelClassIn(sw, joined) {
 				i++
 				continue
@@ -113,11 +126,12 @@ func coverage(q nameQuery, s Session) (ok bool, level int, exact int) {
 				continue
 			}
 		}
-		switch m := wordMeets(words[i], q.roman[i], q.deva[i], sw, sr); m {
+		num := q.number(i)
+		switch m := wordMeets(words[i], q.roman[i], q.deva[i], sw, sr, num); m {
 		case wordNone:
 			return false, wordNone, 0
 		case wordSure:
-			if containsWord(sw, words[i]) {
+			if containsWord(sw, words[i]) || (num != "" && containsWord(sw, num)) {
 				exact++
 			}
 		default:
@@ -162,6 +176,7 @@ func resolve(p nameQuery, all []Session, cfg Config) resolution {
 	if len(p.words) == 0 {
 		return resolution{Kind: resolvedNotFound}
 	}
+	p = p.withHindiNumbers(all)
 	var mine, others []scored
 	spoken := strings.Join(p.roman, " ")
 	for _, s := range all {
@@ -252,6 +267,7 @@ func findAll(p nameQuery, all []Session, cfg Config) resolution {
 	if r.Kind != resolvedOne {
 		return r
 	}
+	p = p.withHindiNumbers(all)
 	// resolve picked one; find still lists close equals so he can choose.
 	var hits []scored
 	for _, s := range cfg.mine(all) {
@@ -312,7 +328,10 @@ type nameQuery struct {
 	words []string // folded
 	roman []string
 	deva  []bool
-	host  string // "on boxone" / "boxone wala": only sessions of that host ("local" = this machine)
+	// hindiNum: the Hindi number word at this index reads as a number
+	// (set by withHindiNumbers; off by default)
+	hindiNum []bool
+	host     string // "on boxone" / "boxone wala": only sessions of that host ("local" = this machine)
 }
 
 // hostWords are the ways a host is attached to a name.
@@ -368,4 +387,98 @@ func genericOnlyQ(q nameQuery) bool {
 		content++
 	}
 	return content > 0
+}
+
+// Spoken numbers. A listener writes "worker one" for worker-1; the
+// session's title has the digits. Only one to twenty, one word each: a
+// longer number is heard as digits, and digits are compared as they are
+// ("955" is never "0955").
+var englishNumbers = map[string]string{
+	"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8",
+	"nine": "9", "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
+	"fifteen": "15", "sixteen": "16", "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20",
+}
+
+// hindiNumbers are one to ten in Roman Hindi and in Devanagari (keyed by
+// the roman form). Several are ordinary words too ("do" is the verb in
+// "band kar do"), so they count as numbers only where withHindiNumbers
+// allows it.
+var hindiNumbers = func() map[string]string {
+	m := map[string]string{
+		"ek": "1", "do": "2", "teen": "3", "char": "4", "chaar": "4", "paanch": "5", "panch": "5",
+		"chhe": "6", "chhah": "6", "chah": "6", "saat": "7", "aath": "8", "nau": "9", "das": "10",
+	}
+	for deva, n := range map[string]string{
+		"एक": "1", "दो": "2", "तीन": "3", "चार": "4", "पांच": "5", "पाँच": "5",
+		"छह": "6", "छः": "6", "सात": "7", "आठ": "8", "नौ": "9", "दस": "10",
+	} {
+		m[toRoman(deva)] = n
+	}
+	return m
+}()
+
+// number is the digits a spoken word stands for, or "": a digit word is
+// itself; a number word counts only after another name word ("worker
+// one", never a lone "one"); a Hindi number word only where hindiNum
+// allows it.
+func (q nameQuery) number(i int) string {
+	if i < 0 || i >= len(q.words) {
+		return ""
+	}
+	w := q.words[i]
+	if w != "" && strings.Trim(w, "0123456789") == "" {
+		return w
+	}
+	if i == 0 {
+		return ""
+	}
+	if n, ok := englishNumbers[q.roman[i]]; ok {
+		return n
+	}
+	if i < len(q.hindiNum) && q.hindiNum[i] {
+		return hindiNumbers[q.roman[i]]
+	}
+	return ""
+}
+
+// withHindiNumbers lets a Hindi number word after a name word read as a
+// number, unless some session has that very word in its name ("plan do"
+// is plan-do when there is one).
+func (q nameQuery) withHindiNumbers(all []Session) nameQuery {
+	q.hindiNum = make([]bool, len(q.words))
+	for i := 1; i < len(q.words); i++ {
+		if _, ok := hindiNumbers[q.roman[i]]; !ok {
+			continue
+		}
+		literal := false
+		for _, s := range all {
+			if sw, _ := sessionWords(s); containsWord(sw, q.words[i]) {
+				literal = true
+				break
+			}
+		}
+		q.hindiNum[i] = !literal
+	}
+	return q
+}
+
+// numberLast: the last word of a name is a number word after a name word
+// that is also an ordinary word ("worker do": the verb do; "test ten":
+// folded like "then"). Such a name is not talk for that word alone.
+func numberLast(q nameQuery) bool {
+	n := len(q.words)
+	if n < 2 {
+		return false
+	}
+	_, hi := hindiNumbers[q.roman[n-1]]
+	_, en := englishNumbers[q.roman[n-1]]
+	if !hi && !en {
+		return false
+	}
+	for _, w := range q.words[:n-1] {
+		if clauseMarkers[w] {
+			return false
+		}
+	}
+	return true
 }

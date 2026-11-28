@@ -36,6 +36,13 @@ type Parsed struct {
 	Message string   // tell: the message, as heard
 	// Phonetic: the session was found by sound only (set by the desk)
 	Phonetic bool
+	Title    string // launch: the new session's spoken name
+	// TitleRaw is the name as typed or heard, with the signs before its
+	// first word ("-p other" keeps its "-"), for the plain-name check.
+	TitleRaw string
+	Group    string // launch: the spoken group ("" = default)
+	// All: "stop all workers": every session the name fits (max 5 per yes)
+	All bool
 	// Soft: an unknown name is not a refusal but "not mine" (read X,
 	// what is X doing): those forms overlap with the daemon's look phrases
 	// and with plain talk to the session.
@@ -53,12 +60,14 @@ const (
 type element struct {
 	kind  int
 	words []string // folded
+	key   string   // slot name: name, title, group (lazy) or msg (greedy)
 }
 
 type pattern struct {
 	intent string
 	lang   string
 	soft   bool
+	all    bool
 	els    []element
 }
 
@@ -69,8 +78,8 @@ func compile(intent, lang string, soft bool, spec string) pattern {
 	p := pattern{intent: intent, lang: lang, soft: soft}
 	for _, tok := range strings.Fields(spec) {
 		switch {
-		case tok == "{name}":
-			p.els = append(p.els, element{kind: elName})
+		case tok == "{name}" || tok == "{title}" || tok == "{group}":
+			p.els = append(p.els, element{kind: elName, key: strings.Trim(tok, "{}")})
 		case tok == "{msg}":
 			p.els = append(p.els, element{kind: elMsg})
 		case strings.HasPrefix(tok, "{msg:"):
@@ -109,9 +118,11 @@ func litMatch(w string, alts []string) bool {
 type span struct{ from, to int } // word indexes, to exclusive
 
 type capture struct {
-	name, msg span
-	hasName   bool
-	hasMsg    bool
+	name, msg          span
+	hasName            bool
+	hasMsg             bool
+	title, group       span
+	hasTitle, hasGroup bool
 }
 
 // match runs a pattern over the whole word list (anchored both ends).
@@ -133,7 +144,14 @@ func (p pattern) match(ws []string) (capture, bool) {
 			return rec(ei+1, wi)
 		case elName: // lazy
 			for end := wi + 1; end <= len(ws); end++ {
-				c.name, c.hasName = span{wi, end}, true
+				switch e.key {
+				case "title":
+					c.title, c.hasTitle = span{wi, end}, true
+				case "group":
+					c.group, c.hasGroup = span{wi, end}, true
+				default:
+					c.name, c.hasName = span{wi, end}, true
+				}
 				if rec(ei+1, end) {
 					return true
 				}
@@ -165,7 +183,9 @@ const questionWords = "what|whether|how|why|when|if|is|are|did|does|do|can|could
 // The grammar. Order matters: whole-sentence forms (overview, needs me,
 // list) before forms with a name slot, so "how is everything doing" is
 // never "status of everything".
-var grammar = func() []pattern {
+var grammar = append(append(grammarEarly(), grammarPhase1()...), grammarLate()...)
+
+func grammarPhase1() []pattern {
 	var ps []pattern
 	add := func(intent, lang string, soft bool, specs ...string) {
 		for _, s := range specs {
@@ -260,7 +280,7 @@ var grammar = func() []pattern {
 	)
 	add(IntentFind, LangHI, true, "{name} dhoondo|dhundo|dhundho|dhoondho|khojo")
 	return ps
-}()
+}
 
 // Words around a command that carry no meaning: the wake name and Hindi /
 // English filler. Stripped only at the two ends of the sentence.
@@ -290,9 +310,10 @@ func foldSet(ws ...string) map[string]bool {
 // nameNoise is dropped from a captured name before resolving it.
 var nameNoise = foldSet("the", "my", "a", "an", "session", "sessions", "seshan", "seshans", "sesan", "सेशन", "सेशन्स", "wali", "wala", "wale", "vali", "vala", "ka", "ki", "ke")
 
-// Parse finds the desk intent of a sentence. It touches nothing outside
+// parseForms finds the desk intent of a sentence by the forms (Parse adds
+// the delete check). It touches nothing outside
 // this package (no session list, no disk): "not mine" is decided here.
-func Parse(sentence string) Parsed { return parseWith(sentence, grammar) }
+func parseForms(sentence string) Parsed { return parseWith(sentence, grammar) }
 
 // switchGrammar: the switch words the Mac voice daemon handles itself
 // (testdata/daemon_phrases.json). From any other caller they are find
@@ -354,12 +375,28 @@ func parseWith(sentence string, grammar []pattern) Parsed {
 		if c.hasName {
 			nameWords := ws[c.name.from:c.name.to]
 			nameWords = trimNameNoise(nameWords)
-			if len(nameWords) == 0 || allIn(nameWords, deicticNames) {
+			if len(nameWords) == 0 || allIn(nameWords, deicticNames) || (lifecycleIntent(p.intent) && allIn(nameWords, daemonObjects)) {
 				continue // "read this", "what is he doing": not a session name
 			}
 			out.Name = cut(nameWords)
 			out.Words = foldedWords(nameWords)
 		}
+		if c.hasTitle {
+			out.Title = cut(ws[c.title.from:c.title.to])
+			start := 0
+			if c.title.from > 0 {
+				start = ws[c.title.from-1].end
+			}
+			out.TitleRaw = strings.TrimSpace(sentence[start:ws[c.title.to-1].end])
+		}
+		if c.hasGroup {
+			gw := trimNameNoise(ws[c.group.from:c.group.to])
+			if len(gw) == 0 {
+				continue
+			}
+			out.Group = cut(gw)
+		}
+		out.All = p.all
 		if c.hasMsg {
 			out.Message = cleanMessage(cut(ws[c.msg.from:c.msg.to]) + tailPunct(sentence, ws[c.msg.to-1].end))
 		}
