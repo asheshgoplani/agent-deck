@@ -1103,6 +1103,10 @@ func (s *Session) Start(command string) error {
 	//
 	// workDir was resolved and validated at the top of Start (#1713).
 	launcher, args := s.startCommandSpec(workDir, command)
+	// This spawn may start the socket's server: a no-server proof recorded
+	// before it must not answer for the session it creates.
+	forgetNoServerProof(s.SocketName)
+	defer forgetNoServerProof(s.SocketName)
 	// newSpawnCommand (not bare execCommand) so the spawn — and any tmux server
 	// it starts — runs from SpawnBaseDir and can never inherit a directory that
 	// is later deleted. See workdir_guard.go.
@@ -1467,6 +1471,7 @@ func ProbeSessionOnSocket(socketName, name string) (bool, error) {
 		return false, fmt.Errorf("tmux has-session probe for %q did not complete: %w", name, err)
 	}
 	stderr := strings.TrimSpace(string(exitErr.Stderr))
+	noteNoServerStderr(socketName, stderr)
 	if tmuxSessionMissing(stderr) {
 		return false, nil
 	}
@@ -1511,6 +1516,12 @@ func (s *Session) existsProbe() bool {
 	// busy server cannot hang the status path. What each probe outcome means
 	// for a "must not call a live session dead" caller — timeout, protocol
 	// mismatch, killed client — is owned by hasSessionProbeAssumesAlive.
+	//
+	// A socket another client just found serverless answers without the fork:
+	// this has-session would exit non-zero and read as gone (no_server_proof.go).
+	if hasSessionProvenGone(s.SocketName) {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
 	err := commandRun(s.tmuxCmdContext(ctx, "has-session", "-t", s.TmuxName()))
@@ -1731,7 +1742,7 @@ func allPanesDeadFromList(raw string) bool {
 func (s *Session) PaneDeadExitStatus() (int, bool) {
 	// A session the listing shows absent has no pane to report on; skip the
 	// fork that would only fail.
-	if s.AbsentFromCache() {
+	if s.AbsentFromCache() || hasSessionProvenGone(s.SocketName) {
 		return 0, false
 	}
 	// Bounded like IsPaneDead: this runs on the notify-daemon poll loop, so a

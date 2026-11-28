@@ -204,6 +204,7 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 	// Refuse, before the subprocess exists, to point a test binary at the
 	// user's live default server. See default_socket_guard.go.
 	assertTmuxSpawnIsolated(socketName, args)
+	forgetNoServerProofIfStarting(socketName, args)
 	// #nosec G204,G702 -- the binary is "tmux" or the user's configured
 	// [tmux.binaries] path for this socket, and every dynamic value is
 	// passed as a distinct argv element, never through a shell. Call sites may
@@ -221,6 +222,7 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 // the -L plumbing centralised for them too.
 func tmuxExecContext(ctx context.Context, socketName string, args ...string) *exec.Cmd {
 	assertTmuxSpawnIsolated(socketName, args)
+	forgetNoServerProofIfStarting(socketName, args)
 	cmd := exec.CommandContext(ctx, BinaryFor(socketName), tmuxArgs(socketName, args...)...)
 	cmd.WaitDelay = tmuxSubprocessWaitDelay
 	cmd.Env = withSocketBinaryPATH(socketName, childenv.WithoutClaudeJobDir()) // #2683; PATH: see withSocketBinaryPATH
@@ -332,7 +334,11 @@ var tmuxPollTimeout = 3 * time.Second
 func runBoundedOutput(socketName string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxPollTimeout)
 	defer cancel()
-	return commandOutput(tmuxExecContext(ctx, socketName, args...))
+	out, err := commandOutput(tmuxExecContext(ctx, socketName, args...))
+	if err != nil && ctx.Err() == nil {
+		noteNoServer(socketName, err)
+	}
+	return out, err
 }
 
 // runBoundedRun runs a short tmux command (typically a status set-option batch)

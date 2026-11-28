@@ -115,6 +115,12 @@ func PrimePaneCaptures(sessions []*Session) int {
 	primed := 0
 	for _, socket := range order {
 		group := bySocket[socket]
+		// A socket proven serverless has no pane to capture: every batch
+		// would fail on its first capture, and each retry costs one more
+		// client (no_server_proof.go).
+		if hasSessionProvenGone(socket) {
+			continue
+		}
 		for len(group) > 0 {
 			n := min(len(group), captureBatchMax)
 			got, timedOut := primeCaptureChunk(socket, group[:n])

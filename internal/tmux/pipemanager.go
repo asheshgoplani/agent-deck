@@ -2195,6 +2195,9 @@ func softKillProcessGroup(pgid int, grace time.Duration, stillOurs func() bool) 
 // makes the reconnect loop tear control pipes down for sessions that are
 // alive.
 func tmuxSessionExistsOnSocket(socketName, name string) bool {
+	if hasSessionProvenGone(socketName) {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
 	err := commandRun(tmuxExecContext(ctx, socketName, "has-session", "-t", name))

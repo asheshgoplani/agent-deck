@@ -338,6 +338,9 @@ func defaultProbeSocketProtocolMismatch(socketName string) bool {
 	if err != nil {
 		return false
 	}
+	if ctx.Err() == nil {
+		noteNoServerStderr(socketName, string(stderr))
+	}
 	return isTmuxProtocolMismatch(string(stderr))
 }
 
