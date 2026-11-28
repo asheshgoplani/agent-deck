@@ -830,6 +830,11 @@ func (d *Desk) tell(ctx context.Context, req Request, r Result, p Parsed, s Sess
 			refuse(&r, why, say)
 			return r, nil
 		}
+		// send to the session as it is now: its tool decides the guard
+		s.Title, s.Status, s.Substate, s.Tool = fresh.Title, fresh.Status, fresh.Substate, fresh.Tool
+		if fresh.Profile != "" {
+			s.Profile = fresh.Profile
+		}
 		var err error
 		if !req.DryRun {
 			err = d.Deck.Send(ctx, s, msg)
