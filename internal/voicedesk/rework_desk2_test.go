@@ -63,10 +63,15 @@ func TestReworkDesk2BulkLeavesConductorOut(t *testing.T) {
 			t.Fatalf("stopped the conductor: %v", h.deck.acts)
 		}
 	}
-	// named on purpose: "stop all conductors" may list them
+	// named on purpose or not, a group stop never takes a conductor:
+	// "stop all conductors" is refused with no question
+	before := len(h.deck.acts)
 	q := h.say("stop all conductors")
-	if !strings.Contains(sayAndShow(q), idConductor) {
-		t.Errorf("'stop all conductors' does not list his conductor: %q", sayAndShow(q))
+	if q.Confirm != nil || refusedOf(q) != RefusedUnsafe {
+		t.Errorf("'stop all conductors' is not refused: %q", sayAndShow(q))
+	}
+	if len(h.deck.acts) != before {
+		t.Errorf("acted: %v", h.deck.acts[before:])
 	}
 }
 
