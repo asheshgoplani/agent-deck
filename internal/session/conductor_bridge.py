@@ -539,6 +539,10 @@ def select_heartbeat_conductors(conductors: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# stderr of the result run_cli returns after killing a CLI at its deadline.
+_CLI_DEADLINE_KILLED = "timeout"
+
+
 def run_cli(
     *args: str, profile: str | None = None, timeout: int = 120,
     input_text: str | None = None,
@@ -576,7 +580,7 @@ def run_cli(
             except (ProcessLookupError, PermissionError):
                 proc.kill()  # fallback: kill direct child only
             proc.communicate()
-            return subprocess.CompletedProcess(cmd, 1, "", "timeout")
+            return subprocess.CompletedProcess(cmd, 1, "", _CLI_DEADLINE_KILLED)
     except FileNotFoundError:
         log.error("agent-deck not found in PATH")
         return subprocess.CompletedProcess(cmd, 1, "", "not found")
@@ -936,6 +940,10 @@ def _heartbeat_skip_action(consecutive_skips: int, limit: int = HEARTBEAT_SKIP_L
 ReplyCallback = Callable[[str], Coroutine[Any, Any, None]]
 
 _WAIT_SEND_QUEUE_REQUIRED = "queue_required"
+# The CLI was killed at run_cli's deadline before it printed a result, so
+# nobody knows whether the message was submitted (#3252). Never resend it and
+# never attach a reply watcher: the user is told delivery is unconfirmed.
+_WAIT_SEND_UNCONFIRMED = "unconfirmed"
 _LEGACY_REPLY_CLAIM = "legacy"
 _reply_owner_lock = threading.Lock()
 _wait_send_reservations: dict[tuple[str | None, str], str | None] = {}
@@ -1104,6 +1112,15 @@ def _legacy_submitted_timeout(payload: dict) -> bool:
     )
 
 
+def _unconfirmed_send_notice(name: str) -> str:
+    """Chat text for a send whose outcome is unknown (#3252)."""
+    return (
+        f"[Delivery to conductor {name} is unconfirmed: it may already be "
+        "working on it. The message was not resent; check the conductor "
+        "before sending it again.]"
+    )
+
+
 def send_to_conductor(
     session: str,
     message: str,
@@ -1198,6 +1215,13 @@ def send_to_conductor(
             timeout=max(response_timeout + 30, 60),
         )
         if result.returncode != 0:
+            if not result.stdout.strip() and result.stderr == _CLI_DEADLINE_KILLED:
+                log.warning(
+                    "Conductor %s: send outlived the CLI deadline; delivery "
+                    "unconfirmed, not resending",
+                    session,
+                )
+                return False, "", _WAIT_SEND_UNCONFIRMED
             payload = _cli_json(result.stdout)
             receipt = _accepted_turn_from_timeout(payload)
             if receipt is not None:
@@ -3009,6 +3033,9 @@ def create_telegram_bot(config: dict):
             ),
         )
         if not ok:
+            if still_running == _WAIT_SEND_UNCONFIRMED:
+                await message.answer(_unconfirmed_send_notice(f"[{target_profile}]"))
+                return
             if still_running:
                 # The message WAS delivered; the single turn just outran the
                 # blocking wait. Don't report a false failure and don't re-send
@@ -3460,6 +3487,11 @@ def create_slack_app(config: dict):
             ),
         )
         if not ok:
+            if still_running == _WAIT_SEND_UNCONFIRMED:
+                await _safe_say(
+                    say, text=_unconfirmed_send_notice(target["name"]), thread_ts=thread_ts,
+                )
+                return
             if still_running:
                 # The message WAS delivered; the single turn just outran the
                 # blocking wait. Don't report a false failure and don't re-send
@@ -4093,6 +4125,9 @@ def create_discord_bot(config: dict):
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
         if not ok:
+            if still_running == _WAIT_SEND_UNCONFIRMED:
+                await message.channel.send(_unconfirmed_send_notice(target["name"]))
+                return
             if still_running:
                 # The message WAS delivered; the single turn just outran the
                 # blocking wait. Don't report a false failure and don't re-send
@@ -4784,6 +4819,9 @@ class MattermostBridge:
             return
         if not still_running:
             await reply(f"[Failed to send message to conductor {target['name']}.]")
+            return
+        if still_running == _WAIT_SEND_UNCONFIRMED:
+            await reply(_unconfirmed_send_notice(target["name"]))
             return
         # The message WAS delivered; the turn just outran the blocking wait.
         # Don't re-send (that would double-process): watch for the reply.

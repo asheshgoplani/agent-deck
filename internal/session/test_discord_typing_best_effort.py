@@ -221,5 +221,46 @@ class TestDiscordTypingBestEffort(unittest.TestCase):
         self.assertEqual(channel.sent, [bridge.NO_OUTPUT_REPLY])
 
 
+    def test_send_killed_at_the_cli_deadline_reports_unconfirmed_issue3252(self):
+        """#3252: the bridge killed `session send --wait` before it printed a
+        result (Codex had in fact accepted the message). Discord must hear
+        that delivery is unconfirmed, not "Failed to send", and the message
+        must not be resent."""
+
+        class _OkTyping:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        channel = _Channel()
+        channel.typing = lambda: _OkTyping()
+        cli_calls = []
+
+        def killed(*args, **kwargs):
+            cli_calls.append(args)
+            return bridge.subprocess.CompletedProcess(["agent-deck"], 1, "", "timeout")
+
+        async def running(name, profile):
+            return True
+
+        bot, _ = bridge.create_discord_bot(_CONFIG)
+        with mock.patch.object(bridge, "discover_conductors", return_value=[_CONDUCTOR]), \
+                mock.patch.object(bridge, "get_conductor_names", return_value=["main"]), \
+                mock.patch.object(bridge, "get_default_conductor", return_value=_CONDUCTOR), \
+                mock.patch.object(bridge, "ensure_conductor_running", running), \
+                mock.patch.object(bridge, "get_session_status", return_value="idle"), \
+                mock.patch.object(bridge, "run_cli", side_effect=killed), \
+                mock.patch.object(bridge, "_register_pending_reply") as register:
+            asyncio.run(bot.events["on_message"](_message(channel)))
+
+        self.assertEqual(len(channel.sent), 1, channel.sent)
+        self.assertNotIn("Failed to send", channel.sent[0])
+        self.assertIn("unconfirmed", channel.sent[0].lower())
+        self.assertEqual(len([c for c in cli_calls if c[:2] == ("session", "send")]), 1)
+        register.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

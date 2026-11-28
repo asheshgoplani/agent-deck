@@ -93,7 +93,7 @@ func handleSessionSend(profile string, args []string) {
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
 	deferIfBusy := fs.Bool("defer-if-busy", false, "Hold delivery until the target is idle (turn-finished, hook-driven) instead of interrupting a mid-generation turn (incompatible with --no-wait)")
 	deferTimeout := fs.Duration("defer-timeout", 30*time.Minute, "Max time --defer-if-busy holds a busy target before dropping the message with a non-zero exit")
-	timeout := fs.Duration("timeout", sessionSendDefaultTimeout, "Max time to wait for the agent to become ready, and separately (with --wait/--stream) one shared budget for the message's turn to start, finish, and its reply to be read")
+	timeout := fs.Duration("timeout", sessionSendDefaultTimeout, "Max time to wait for the agent to become ready; with --wait/--stream, one budget for the whole call: readiness, the message's turn starting and finishing, and its reply being read")
 	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
@@ -162,6 +162,7 @@ func handleSessionSend(profile string, args []string) {
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
+	budget := newSendWaitBudget(*timeout, *wait || *stream, time.Now)
 	remaining := fs.Args()
 
 	out := NewCLIOutput(*jsonOutput, *quiet)
@@ -444,6 +445,9 @@ func handleSessionSend(profile string, args []string) {
 				}
 			}
 			readyBudget := *timeout
+			if waitReady != nil {
+				readyBudget = budget.readyTimeout()
+			}
 			if readyBudget <= 0 {
 				readyBudget = send.DefaultAgentReadyTimeout
 			}
@@ -470,7 +474,7 @@ func handleSessionSend(profile string, args []string) {
 
 	if needsReady {
 		if !readyWaited {
-			if err := waitAgentReady(*timeout); err != nil {
+			if err := waitAgentReady(budget.readyTimeout()); err != nil {
 				failReady(err)
 			}
 		}
@@ -827,7 +831,7 @@ func handleSessionSend(profile string, args []string) {
 	// One --timeout budget for everything after delivery: establishing turn
 	// identity, observing completion, and reading the reply. Each phase gets
 	// what is left, never a fresh copy (PR #2043 round 2).
-	waitDeadline := time.Now().Add(*timeout)
+	waitDeadline := budget.completionDeadline()
 
 	if skippedOutcome != "" {
 		// Refuse attribution before waiting for any transcript path or turn.
