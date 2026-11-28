@@ -75,8 +75,8 @@ func (i *Instance) detectOpenCodeSessionAsync() {
 			time.Sleep(delay)
 		}
 
-		if sessionID := i.queryOpenCodeSession(); sessionID != "" {
-			i.setOpenCodeSession(sessionID)
+		lookedUpFrom := i.boundOpenCodeSessionID()
+		if sessionID := i.queryOpenCodeSession(); sessionID != "" && i.adoptOpenCodeSessionLookup(lookedUpFrom, sessionID) {
 			sessionLog.Debug(
 				"opencode_session_detected",
 				slog.String("session_id", sessionID),
@@ -121,8 +121,7 @@ func (i *Instance) watchForOpenCodeSession() {
 			return
 		}
 
-		if sessionID := i.queryOpenCodeSession(); sessionID != "" {
-			i.setOpenCodeSession(sessionID)
+		if sessionID := i.queryOpenCodeSession(); sessionID != "" && i.adoptOpenCodeSessionLookup("", sessionID) {
 			sessionLog.Debug(
 				"opencode_watcher_detected",
 				slog.String("session_id", sessionID),
@@ -144,6 +143,34 @@ func (i *Instance) setOpenCodeSession(sessionID string) {
 	tmuxSession := i.tmuxSession
 	i.mu.Unlock()
 	i.syncOpenCodeSessionEnvironment(tmuxSession, sessionID)
+}
+
+func (i *Instance) boundOpenCodeSessionID() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.OpenCodeSessionID
+}
+
+// adoptOpenCodeSessionLookup applies a lookup result only while the binding
+// still holds lookedUpFrom, so a rebind during the lookup is never reverted.
+func (i *Instance) adoptOpenCodeSessionLookup(lookedUpFrom, sessionID string) bool {
+	i.mu.Lock()
+	if i.OpenCodeSessionID != lookedUpFrom {
+		i.mu.Unlock()
+		logStaleOpenCodeLookup(lookedUpFrom, sessionID)
+		return false
+	}
+	i.setOpenCodeSessionLocked(sessionID)
+	tmuxSession := i.tmuxSession
+	i.mu.Unlock()
+	i.syncOpenCodeSessionEnvironment(tmuxSession, sessionID)
+	return true
+}
+
+func logStaleOpenCodeLookup(lookedUpFrom, sessionID string) {
+	sessionLog.Debug("opencode_session_lookup_stale",
+		slog.String("looked_up_from", lookedUpFrom),
+		slog.String("session_id", sessionID))
 }
 
 // setOpenCodeSessionLocked updates in-memory binding state. The caller must
@@ -338,6 +365,11 @@ func (i *Instance) queryOpenCodeSession() string {
 	i.mu.RUnlock()
 
 	sharedService := port == 0 && i.openCodeRejectsV1LaunchFlags()
+	if sharedService && currentID != "" {
+		// A bound 2.x instance never rotates to a sibling, so the only question
+		// is whether its session still exists, wherever session_move put it.
+		return i.queryBoundOpenCodeServiceSession(projectPath, currentID)
+	}
 	var minCreated int64
 	if sharedService && currentID == "" {
 		// The V2 launch command records the ID returned by session.create

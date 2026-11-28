@@ -134,6 +134,8 @@ type InstanceData struct {
 	// OpenCode session (persisted for resume after app restart)
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
 	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
+	// OpenCodeSessionDir rides the tool_data extras zone, keyed to the id.
+	OpenCodeSessionDir string `json:"opencode_session_dir,omitempty"`
 
 	// Codex session (persisted for resume after app restart)
 	CodexSessionID  string    `json:"codex_session_id,omitempty"`
@@ -1158,11 +1160,12 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 			Branch:       wt.Branch,
 		})
 	}
+	openCodeSessionID, openCodeDetectedAt, openCodeSessionDir := inst.openCodeBindingSnapshot()
 	toolData := statedb.MarshalToolData(
 		inst.ClaudeSessionID, inst.ClaudeDetectedAt,
 		inst.GeminiSessionID, inst.GeminiDetectedAt,
 		inst.GeminiYoloMode, inst.GeminiModel,
-		inst.OpenCodeSessionID, inst.OpenCodeDetectedAt,
+		openCodeSessionID, openCodeDetectedAt,
 		inst.CodexSessionID, inst.CodexDetectedAt,
 		inst.LatestPrompt, inst.Notes, inst.LoadedMCPNames,
 		inst.ToolOptionsJSON,
@@ -1232,6 +1235,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// `status --stale` (and ShouldSkipRestart's freshness guard) see a real
 	// value from a fresh CLI process instead of always-zero.
 	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
+	toolData = WriteOpenCodeSessionDirToToolData(toolData, openCodeSessionID, openCodeSessionDir)
 	// Custom [tools.*] conversation id — reboot-safe resume when resume_flag set.
 	// intentionalClear makes sticky MergeToolDataExtras honor operator clears
 	// without breaking stale-empty full-table saves (see generic_session_persist.go).
@@ -1396,6 +1400,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			GeminiModel:               geminiModel,
 			OpenCodeSessionID:         opencodeSID,
 			OpenCodeDetectedAt:        opencodeAt,
+			OpenCodeSessionDir:        ReadOpenCodeSessionDirFromToolData(r.ToolData, opencodeSID),
 			CodexSessionID:            codexSID,
 			CodexDetectedAt:           codexAt,
 			LatestPrompt:              latestPrompt,
@@ -1549,6 +1554,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			GeminiModel:               geminiModel,
 			OpenCodeSessionID:         opencodeSID,
 			OpenCodeDetectedAt:        opencodeAt,
+			OpenCodeSessionDir:        ReadOpenCodeSessionDirFromToolData(r.ToolData, opencodeSID),
 			CodexSessionID:            codexSID,
 			CodexDetectedAt:           codexAt,
 			LatestPrompt:              latestPrompt,
@@ -1907,6 +1913,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			GeminiModel:                  instData.GeminiModel,
 			OpenCodeSessionID:            instData.OpenCodeSessionID,
 			OpenCodeDetectedAt:           instData.OpenCodeDetectedAt,
+			OpenCodeSessionDir:           instData.OpenCodeSessionDir,
+			openCodeSessionDirID:         instData.OpenCodeSessionID,
 			CodexSessionID:               instData.CodexSessionID,
 			CodexDetectedAt:              instData.CodexDetectedAt,
 			ToolOptionsJSON:              instData.ToolOptionsJSON,
