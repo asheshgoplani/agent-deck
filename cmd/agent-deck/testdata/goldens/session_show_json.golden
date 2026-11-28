@@ -18,6 +18,8 @@
   "pin": "",
   "profile": "goldens",
   "queue": [],
+  "queue_count": 0,
+  "queue_truncated": false,
   "status": "error",
   "substate": "unknown-exit",
   "title": "claude idle",

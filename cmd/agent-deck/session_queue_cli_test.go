@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 )
 
 // CLI contract of `session queue` (CORE-CHANGES 22). These tests drive the
@@ -201,5 +204,66 @@ func TestRemoteSessionQueueOlderRemoteRefuses(t *testing.T) {
 	}
 	if strings.Contains(stdout+stderr, "Usage:") || strings.Contains(stderr, "unknown session command") {
 		t.Fatalf("raw remote output leaked: %s %s", stdout, stderr)
+	}
+}
+
+// TestSessionShowJSONCapsLargeQueue: a session with thousands of queued
+// sends must not inline them all in `session show --json`.
+func TestSessionShowJSONCapsLargeQueue(t *testing.T) {
+	home := t.TempDir()
+	id := addSessionJSON(t, home, "queue-cap", "claude")
+	sent, stderr, code := runAgentDeck(t, home, "session", "send", id, "seed", "--queue", "--json")
+	if code != 1 {
+		t.Fatalf("seed queue: exit %d, stdout %s, stderr %s", code, sent, stderr)
+	}
+	var seed struct {
+		SendID string `json:"send_id"`
+	}
+	if err := json.Unmarshal([]byte(sent), &seed); err != nil || seed.SendID == "" {
+		t.Fatalf("seed receipt: %v %s", err, sent)
+	}
+	var dir string
+	_ = filepath.Walk(home, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() && info.Name() == "sendqueue" {
+			dir = p
+		}
+		return nil
+	})
+	if dir == "" {
+		t.Fatal("sendqueue dir not found")
+	}
+	tmpl, err := sendqueue.Load(dir, seed.SendID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const total = 300
+	base := time.Now().Add(time.Hour)
+	for i := 1; i < total; i++ {
+		rec := *tmpl
+		rec.SendID = sendqueue.NewID(base.Add(time.Duration(i) * time.Millisecond))
+		if err := sendqueue.Save(dir, &rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type showQ struct {
+		Queue          []map[string]any `json:"queue"`
+		QueueCount     int              `json:"queue_count"`
+		QueueTruncated bool             `json:"queue_truncated"`
+	}
+	var capped showQ
+	got, stderr, code := runAgentDeck(t, home, "session", "show", id, "--json")
+	if code != 0 || json.Unmarshal([]byte(got), &capped) != nil {
+		t.Fatalf("show: exit %d, %s, %s", code, got, stderr)
+	}
+	if len(capped.Queue) != 100 || capped.QueueCount != total || !capped.QueueTruncated {
+		t.Fatalf("default show: len(queue)=%d queue_count=%d truncated=%v, want 100/%d/true", len(capped.Queue), capped.QueueCount, capped.QueueTruncated, total)
+	}
+	var full showQ
+	got, stderr, code = runAgentDeck(t, home, "session", "show", id, "--json", "--queue-full")
+	if code != 0 || json.Unmarshal([]byte(got), &full) != nil {
+		t.Fatalf("show --queue-full: exit %d, %s, %s", code, got, stderr)
+	}
+	if len(full.Queue) != total || full.QueueCount != total || full.QueueTruncated {
+		t.Fatalf("--queue-full: len(queue)=%d queue_count=%d truncated=%v", len(full.Queue), full.QueueCount, full.QueueTruncated)
 	}
 }
