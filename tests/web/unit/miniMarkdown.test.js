@@ -69,6 +69,87 @@ describe('miniMarkdown conversation constructs', () => {
   })
 })
 
+describe('miniMarkdown list fences and numbering', () => {
+  it.each([
+    ['1.', '  ', '<ol><li>item more</li></ol>'],
+    ['-', ' ', '<ul><li>item more</li></ul>'],
+    ['10.', '   ', '<ol start="10"><li>item more</li></ol>'],
+  ])('keeps adjacent plain text below the content column in a %s item', (marker, indent, expected) => {
+    const c = mount(marker + ' item\n' + indent + 'more')
+    expect(c.firstChild.innerHTML).toBe(expected)
+  })
+
+  it('renders a language fence as a code block inside the item', () => {
+    const c = mount('- Run:\n  ```sh\n  make build\n    make ci\n  ```')
+    const code = c.querySelector('li > pre.markdown-code > code')
+    expect(code?.className).toBe('language-sh')
+    expect(code?.textContent).toBe('make build\n  make ci')
+  })
+
+  it('renders a tilde fence without a language', () => {
+    const c = mount('- Output:\n  ~~~\n  done\n  ~~~')
+    const code = c.querySelector('li > pre.markdown-code > code')
+    expect(code?.textContent).toBe('done')
+    expect(code?.className).toBe('')
+  })
+
+  it('keeps blank lines before and inside the item fence', () => {
+    const c = mount('- Run:\n\n  ```\n  first\n\n  second\n  ```')
+    expect(c.querySelector('li > pre > code')?.textContent).toBe('first\n\nsecond')
+  })
+
+  it('keeps a blank line before an indented text continuation in the item', () => {
+    const c = mount('10. Start\n\n    continued\n11. Finish')
+    expect([...c.querySelectorAll('ol > li')].map(li => li.textContent)).toEqual(['Start continued', 'Finish'])
+    expect(c.querySelectorAll('ol')).toHaveLength(1)
+  })
+
+  it('renders a fence inside a nested list item', () => {
+    const c = mount('- Parent\n  4. Child\n     ```\n     child output\n     ```\n- Sibling')
+    expect(c.querySelector('ul > li > ol > li > pre > code')?.textContent).toBe('child output')
+    expect(c.querySelector('ul > li > ol').start).toBe(4)
+  })
+
+  it('ends an unterminated item fence at the next sibling or at EOF', () => {
+    const c = mount('- Run:\n  ```\n  - code\n- Next:\n  ```\n  end')
+    expect([...c.querySelectorAll('ul > li > pre > code')].map(code => code.textContent)).toEqual(['- code', 'end'])
+  })
+
+  it('continues the same ordered list after a fence and keeps text in order', () => {
+    const c = mount('1. Run:\n\n   ```\n   make build\n   ```\n   Check the output\n2. Ship')
+    const list = c.querySelector('ol')
+    expect(c.querySelectorAll('ol')).toHaveLength(1)
+    expect(list.children).toHaveLength(2)
+    expect(list.firstElementChild.querySelector('pre').nextSibling.textContent).toBe('Check the output')
+    expect(list.lastElementChild.textContent).toBe('Ship')
+  })
+
+  it.each([3, 0, 999999999])('sets the ordered list start to %i', start => {
+    const c = mount(start + '. Step')
+    expect(c.querySelector('ol').getAttribute('start')).toBe(String(start))
+  })
+
+  it('restores the default start when a rendered list changes to 1', () => {
+    const c = mount('3. Third')
+    expect(c.querySelector('ol').start).toBe(3)
+    render(html`<div>${renderMarkdown('1. First')}</div>`, c)
+    expect(c.querySelector('ol').getAttribute('start')).toBeNull()
+    expect(c.querySelector('ol').start).toBe(1)
+  })
+
+  it('uses the first number of a new list after a top-level fence', () => {
+    const c = mount('1. First\n```\noutput\n```\n3. Third')
+    expect([...c.querySelectorAll('ol')].map(list => list.start)).toEqual([1, 3])
+  })
+
+  it('escapes source inside an item fence that opens on the marker line', () => {
+    const source = '<img src=x onerror=alert(1)>'
+    const c = mount('- ```html\n  ' + source + '\n  ```')
+    expect(c.querySelector('li > pre > code')?.textContent).toBe(source)
+    expect(c.querySelector('img')).toBeNull()
+  })
+})
+
 describe('miniMarkdown links', () => {
   it('links bare and angle-bracket URLs without swallowing trailing punctuation', () => {
     const c = mount('Open https://example.com/a?b=1. Or <https://example.org/x>, then done')
@@ -254,5 +335,30 @@ describe('miniMarkdown nesting limits', () => {
     expect(c.querySelectorAll('ul')).toHaveLength(16)
     expect(c.querySelectorAll('li')).toHaveLength(items.length)
     expect(c.textContent).toBe(items.join(''))
+  })
+
+  it('drops the fence indentation from code lines, as CommonMark does', () => {
+    const inList = mount('- a\n     ```\n     x\n       y\n     ```')
+    expect(inList.querySelector('li pre code').textContent).toBe('x\n  y')
+    const top = mount('  ```\n  x\n z\n    w\n  ```')
+    expect(top.querySelector('pre code').textContent).toBe('x\nz\n  w')
+  })
+
+  it('closes a list fence only at three spaces or fewer past the item column', () => {
+    const c = mount('- Run:\n  ```\n  before\n      ```\n  after\n  ```')
+    expect(c.querySelector('li pre code').textContent).toBe('before\n    ```\nafter')
+  })
+
+  it('keeps blank-separated sibling items in one list', () => {
+    const c = mount('1. Run:\n   ```\n   cmd\n   ```\n\n1. Ship\n\n- other')
+    expect(c.querySelectorAll('ol')).toHaveLength(1)
+    expect(c.querySelectorAll('ol > li')).toHaveLength(2)
+    expect(c.querySelectorAll('ul')).toHaveLength(1)
+  })
+
+  it('ends the item after a fence when the next line is not indented to its content', () => {
+    const c = mount('1. ```\n   cmd\n   ```\n Outside')
+    expect(c.querySelector('li').textContent).not.toContain('Outside')
+    expect(c.querySelector('p').textContent).toBe('Outside')
   })
 })
