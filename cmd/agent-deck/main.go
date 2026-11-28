@@ -410,15 +410,19 @@ func printCredsRefreshRemoved() {
 	fmt.Printf("creds-refresh was removed in %s. Disable any old unit with: systemctl --user disable --now agent-deck-creds-refresh. For long-lived logins use: claude setup-token (see https://github.com/asheshgoplani/agent-deck/blob/main/docs/guide/tools.md#vendor-terms-and-logins).\n", credsRefreshRemovedIn)
 }
 
-func enableModifyOtherKeys(w io.Writer, options map[string]string) {
-	if options["extended-keys"] == "off" {
+func enableModifyOtherKeys(w io.Writer, settings session.TmuxSettings) {
+	if settings.ExtendedKeysOff() {
 		return
 	}
 	ui.EnableModifyOtherKeys(w)
 }
 
-func execSelfRestart(w io.Writer, exe string, handoff ui.RestartHandoff) error {
-	ui.DisableModifyOtherKeys(w)
+func execSelfRestart(w io.Writer, settings session.TmuxSettings, exe string, handoff ui.RestartHandoff) error {
+	// Only extended-keys=off users need the reset (startup skipped enabling it
+	// for them); default users stay byte-identical to main.
+	if settings.ExtendedKeysOff() {
+		ui.DisableModifyOtherKeys(w)
+	}
 	return ui.ExecSelf(exe, handoff)
 }
 
@@ -1450,7 +1454,7 @@ func main() {
 	// through to the in-pane attach handler. Plain Enter is unaffected.
 	// An explicit extended-keys=off also keeps the outer terminal in legacy
 	// mode; otherwise its modified Unicode keys can be dropped by tmux 3.4.
-	enableModifyOtherKeys(os.Stdout, session.GetTmuxSettings().Options)
+	enableModifyOtherKeys(os.Stdout, session.GetTmuxSettings())
 	defer ui.DisableModifyOtherKeys(os.Stdout)
 
 	// Check for atuin pty-proxy incompatibility (#1558).
@@ -1546,7 +1550,7 @@ func main() {
 	// still does there is no TUI to go back to, so say so and exit non-zero.
 	if exe, ok := homeModel.RestartTarget(); ok {
 		maintenanceCancel()
-		if err := execSelfRestart(os.Stdout, exe, homeModel.RestartHandoff()); err != nil {
+		if err := execSelfRestart(os.Stdout, session.GetTmuxSettings(), exe, homeModel.RestartHandoff()); err != nil {
 			fmt.Fprintf(os.Stderr, "Could not restart in place (%v). Run `agent-deck` again.\n", err)
 			exitCLI(1)
 		}
