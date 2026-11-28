@@ -55,8 +55,6 @@ type noServerProof struct {
 var (
 	noServerProofMu sync.Mutex
 	noServerProofs  = map[string]noServerProof{}
-	// noServerProofNow is the clock; a variable so tests can age a proof.
-	noServerProofNow = time.Now
 )
 
 func noServerProofKey(socketName string) string {
@@ -135,7 +133,7 @@ func noteNoServerStderr(socketName, stderr string) {
 	}
 	key := noServerProofKey(socketName)
 	noServerProofMu.Lock()
-	proof.at = noServerProofNow()
+	proof.at = time.Now()
 	noServerProofs[key] = proof
 	noServerProofMu.Unlock()
 }
@@ -151,7 +149,7 @@ func socketProvenServerless(socketName string) bool {
 	if !ok {
 		return false
 	}
-	if noServerProofNow().Sub(proof.at) >= noServerProofTTL || !proof.stillHolds() {
+	if time.Now().Sub(proof.at) >= noServerProofTTL || !proof.stillHolds() {
 		delete(noServerProofs, key)
 		return false
 	}
@@ -205,11 +203,4 @@ func hasSessionProvenGone(socketName string) bool {
 		return false
 	}
 	return true
-}
-
-// resetNoServerProofsForTest clears every proof.
-func resetNoServerProofsForTest() {
-	noServerProofMu.Lock()
-	noServerProofs = map[string]noServerProof{}
-	noServerProofMu.Unlock()
 }

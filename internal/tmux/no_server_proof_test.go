@@ -1,21 +1,28 @@
 package tmux
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// These tests pin the rules of the no-server proof (no_server_proof.go)
+// through the probes that answer from it, counting tmux starts. They use only
+// APIs that also exist before the proof, so the package's tests still build
+// on the base (the fix-PR regression gate copies every changed test file
+// there).
 
 // serverlessSocket points TMUX_TMPDIR at a fresh short directory and returns
 // a socket name on which no tmux server is listening: with stale=false there
 // is no socket file at all (tmux: "error connecting to ... (No such file or
 // directory)", the state after a reboot), with stale=true a socket file is
 // left behind by a server that died (tmux: "no server running on ...").
+// The proof is keyed by TMUX_TMPDIR, so each call starts with none.
 func serverlessSocket(t *testing.T, stale bool) (socket, path string) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
@@ -33,23 +40,28 @@ func serverlessSocket(t *testing.T, stale bool) (socket, path string) {
 	socket = "nsp"
 	path = filepath.Join(dir, socket)
 	if stale {
-		l, err := net.Listen("unix", path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		l.(*net.UnixListener).SetUnlinkOnClose(false)
-		_ = l.Close()
+		leaveStaleSocketFile(t, path)
 	}
-	resetNoServerProofsForTest()
 	resetSocketMismatchCacheForTest()
 	t.Cleanup(func() {
 		// Only this test's private server, if one was started.
 		_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
-		resetNoServerProofsForTest()
 		resetSocketMismatchCacheForTest()
 		_ = os.RemoveAll(tmp)
 	})
 	return socket, path
+}
+
+// leaveStaleSocketFile creates a unix socket file at path that nothing
+// accepts on, as a dead tmux server leaves behind.
+func leaveStaleSocketFile(t *testing.T, path string) {
+	t.Helper()
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	_ = l.Close()
 }
 
 func serverlessKinds() []struct {
@@ -62,50 +74,12 @@ func serverlessKinds() []struct {
 	}{{"socket file missing", false}, {"stale socket file", true}}
 }
 
-// With no tmux server on a socket, one listing of it proves every session
-// there absent. Before the proof, each stored session paid its own
-// has-session per status read (twice per row in `list --json`: the status
-// pass and the substate read), so 200 stopped sessions cost 400 forks.
-func TestNoServerProof_OneListingAnswersEverySessionOnTheSocket(t *testing.T) {
-	for _, kind := range serverlessKinds() {
-		t.Run(kind.name, func(t *testing.T) {
-			socket, _ := serverlessSocket(t, kind.stale)
-
-			names, err := ListSessionNamesOnSocket(socket)
-			if kind.stale && (err != nil || len(names) != 0) {
-				t.Fatalf("ListSessionNamesOnSocket on a stale socket = (%v, %v), want an empty listing", names, err)
-			}
-			if !kind.stale && err == nil {
-				t.Fatalf("ListSessionNamesOnSocket with no socket file = (%v, nil), want an error (unknown, not empty)", names)
-			}
-
-			sessions := make([]*Session, 20)
-			for i := range sessions {
-				sessions[i] = &Session{Name: fmt.Sprintf("agentdeck_row%d_0123abcd", i), SocketName: socket}
-			}
-			before := SnapshotStarts()
-			for _, s := range sessions {
-				if s.Exists() {
-					t.Fatalf("Exists(%s) = true on a socket with no server", s.Name)
-				}
-				if exists, listedAbsent := s.ExistsListed(func() map[string]struct{} { return nil }); exists || listedAbsent {
-					t.Fatalf("ExistsListed(%s) = (%v, %v), want (false, false): a proof is not a listing", s.Name, exists, listedAbsent)
-				}
-				if code, ok := s.PaneDeadExitStatus(); ok {
-					t.Fatalf("PaneDeadExitStatus(%s) = (%d, true) with no server", s.Name, code)
-				}
-				if HasSessionOnSocket(socket, s.TmuxName()) {
-					t.Fatalf("HasSessionOnSocket(%s) = true with no server", s.Name)
-				}
-			}
-			if primed := PrimePaneCaptures(sessions); primed != 0 {
-				t.Fatalf("PrimePaneCaptures primed %d panes with no server", primed)
-			}
-			if n := before.Charged(); n != 0 {
-				t.Errorf("status reads of %d sessions on a serverless socket started %d tmux clients after the listing, want 0", len(sessions), n)
-			}
-		})
-	}
+// existsStarts runs s.Exists and returns its result and how many tmux
+// processes it started. Zero starts means a no-server proof answered.
+func existsStarts(s *Session) (bool, int64) {
+	before := SubprocessStarts()
+	ok := s.Exists()
+	return ok, SubprocessStarts() - before
 }
 
 // A server started after the proof, by any process, must be seen: the proof
@@ -116,8 +90,8 @@ func TestNoServerProof_ServerStartedAfterProofIsSeen(t *testing.T) {
 		t.Run(kind.name, func(t *testing.T) {
 			socket, _ := serverlessSocket(t, kind.stale)
 			_, _ = ListSessionNamesOnSocket(socket)
-			if !socketProvenServerless(socket) {
-				t.Fatal("no proof recorded from a serverless listing")
+			if ok, n := existsStarts(&Session{Name: "agentdeck_nspprobe_0123abcd", SocketName: socket}); ok || n != 0 {
+				t.Fatalf("after a serverless listing Exists() = %v with %d tmux starts, want false with 0", ok, n)
 			}
 
 			// Another process starts the server: nothing in this process
@@ -125,12 +99,11 @@ func TestNoServerProof_ServerStartedAfterProofIsSeen(t *testing.T) {
 			if out, err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", "late", "sleep 300").CombinedOutput(); err != nil {
 				t.Fatalf("start tmux server: %v: %s", err, out)
 			}
-			s := &Session{Name: "late", SocketName: socket}
-			if !s.Exists() {
+			if !(&Session{Name: "late", SocketName: socket}).Exists() {
 				t.Fatal("Exists() = false for a session on a server started after the no-server proof")
 			}
-			if socketProvenServerless(socket) {
-				t.Fatal("proof still holds after a server came up on the socket")
+			if _, n := existsStarts(&Session{Name: "agentdeck_nspprobe_0123abcd", SocketName: socket}); n == 0 {
+				t.Fatal("a session on a now-live server was answered from the old no-server proof")
 			}
 		})
 	}
@@ -140,17 +113,18 @@ func TestNoServerProof_ServerStartedAfterProofIsSeen(t *testing.T) {
 // before they run.
 func TestNoServerProof_StartingCommandsInvalidate(t *testing.T) {
 	socket, _ := serverlessSocket(t, false)
+	probe := &Session{Name: "agentdeck_nspinval_0123abcd", SocketName: socket}
 	for _, args := range [][]string{
 		{"new-session", "-d", "-s", "x"},
 		{"-u", "new", "-d"},
 		{"start-server"},
 	} {
 		_, _ = ListSessionNamesOnSocket(socket)
-		if !socketProvenServerless(socket) {
-			t.Fatal("no proof recorded from a serverless listing")
+		if _, n := existsStarts(probe); n != 0 {
+			t.Fatalf("no proof recorded from a serverless listing: Exists() started %d tmux clients", n)
 		}
 		_ = tmuxExec(socket, args...) // built, not run
-		if socketProvenServerless(socket) {
+		if _, n := existsStarts(probe); n == 0 {
 			t.Errorf("proof survived building tmux %v", args)
 		}
 	}
@@ -166,29 +140,18 @@ func TestNoServerProof_StartingCommandsInvalidate(t *testing.T) {
 	}
 }
 
-// The proof is bounded in time: past noServerProofTTL the probe runs again.
+// The proof is bounded in time: past its TTL (250ms, the age a status pass
+// trusts one socket listing for) the probe runs again.
 func TestNoServerProof_Expires(t *testing.T) {
 	socket, _ := serverlessSocket(t, false)
-	now := time.Now()
-	noServerProofNow = func() time.Time { return now }
-	t.Cleanup(func() { noServerProofNow = time.Now })
-
 	_, _ = ListSessionNamesOnSocket(socket)
-	s := &Session{Name: "agentdeck_aged_0123abcd", SocketName: socket}
-	before := SubprocessStarts()
-	if s.Exists() {
-		t.Fatal("Exists() = true with no server")
+	s := &Session{Name: "agentdeck_nspaged_0123abcd", SocketName: socket}
+	if ok, n := existsStarts(s); ok || n != 0 {
+		t.Fatalf("fresh proof: Exists() = %v with %d tmux starts, want false with 0", ok, n)
 	}
-	if n := SubprocessStarts() - before; n != 0 {
-		t.Fatalf("fresh proof: %d tmux starts, want 0", n)
-	}
-	now = now.Add(noServerProofTTL)
-	before = SubprocessStarts()
-	if s.Exists() {
-		t.Fatal("Exists() = true with no server")
-	}
-	if n := SubprocessStarts() - before; n == 0 {
-		t.Fatal("an expired proof still answered Exists() without a probe")
+	time.Sleep(300 * time.Millisecond)
+	if ok, n := existsStarts(s); ok || n == 0 {
+		t.Fatalf("expired proof: Exists() = %v with %d tmux starts, want false with a probe", ok, n)
 	}
 }
 
@@ -197,11 +160,12 @@ func TestNoServerProof_Expires(t *testing.T) {
 func TestNoServerProof_KeyedByTmuxTmpdir(t *testing.T) {
 	socket, _ := serverlessSocket(t, false)
 	_, _ = ListSessionNamesOnSocket(socket)
-	if !socketProvenServerless(socket) {
-		t.Fatal("no proof recorded from a serverless listing")
+	s := &Session{Name: "agentdeck_nspkey_0123abcd", SocketName: socket}
+	if _, n := existsStarts(s); n != 0 {
+		t.Fatalf("no proof recorded from a serverless listing: Exists() started %d tmux clients", n)
 	}
 	t.Setenv("TMUX_TMPDIR", t.TempDir())
-	if socketProvenServerless(socket) {
+	if _, n := existsStarts(s); n == 0 {
 		t.Fatal("a proof taken under another TMUX_TMPDIR answered for this one")
 	}
 }
@@ -214,54 +178,78 @@ func TestNoServerProof_MismatchVerdictStandsAside(t *testing.T) {
 	socketMismatchMu.Lock()
 	socketMismatchCache[socket] = socketMismatchVerdict{mismatched: true, checkedAt: time.Now()}
 	socketMismatchMu.Unlock()
-	if hasSessionProvenGone(socket) {
-		t.Fatal("hasSessionProvenGone = true while the socket's mismatch verdict is fresh")
-	}
-	s := &Session{Name: "agentdeck_mm_0123abcd", SocketName: socket}
+	s := &Session{Name: "agentdeck_nspmm_0123abcd", SocketName: socket}
 	if !s.Exists() {
 		t.Fatal("Exists() = false on a socket with a fresh protocol-mismatch verdict")
 	}
 }
 
-// Only tmux's exact no-server diagnostics are a proof. A timeout, a killed
-// client, a mismatch, a missing session on a live server or any other
-// connection error stays indeterminate and records nothing.
+// Only tmux's exact no-server diagnostics, from a client that ran to an exit,
+// are a proof. A fake tmux prints each stderr for every command; after one
+// listing, Exists answers without a client only for the two proving cases.
+// A timeout, a killed client, a mismatch, a missing session on a live server
+// or any other connection error stays indeterminate and records nothing.
 func TestNoServerProof_OnlyNoServerDiagnosticsRecord(t *testing.T) {
-	for _, tc := range []struct {
-		stderr, path string
-		missing, ok  bool
-	}{
-		{"no server running on /tmp/tmux-1/default\n", "/tmp/tmux-1/default", false, true},
-		{"error connecting to /tmp/tmux-1/x (No such file or directory)", "/tmp/tmux-1/x", true, true},
-		{"error connecting to /tmp/tmux-1/x (Permission denied)", "", false, false},
-		{"error connecting to /tmp/tmux-1/x (Connection refused)", "", false, false},
-		{"can't find session: foo", "", false, false},
-		{"protocol version mismatch (client 8, server 7)", "", false, false},
-		{"no server running on relative/path", "", false, false},
-		{"no server running on /a\nno server running on /b", "", false, false},
-		{"", "", false, false},
-	} {
-		path, missing, ok := parseNoServerStderr(tc.stderr)
-		if path != tc.path || missing != tc.missing || ok != tc.ok {
-			t.Errorf("parseNoServerStderr(%q) = (%q, %v, %v), want (%q, %v, %v)", tc.stderr, path, missing, ok, tc.path, tc.missing, tc.ok)
-		}
-	}
+	restoreTimeout := hasSessionProbeTimeout
+	hasSessionProbeTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { hasSessionProbeTimeout = restoreTimeout })
 
-	socket, path := serverlessSocket(t, false)
-	// Not a completed client: a deadline or a signal never records.
-	noteNoServer(socket, context.DeadlineExceeded)
-	noteNoServer(socket, &exec.ExitError{})
-	// The diagnostic names a socket file that exists now: a server may have
-	// come up since the client looked, so nothing is recorded.
-	stalePath := filepath.Join(t.TempDir(), "s")
-	if l, err := net.Listen("unix", stalePath); err == nil {
-		defer l.Close()
-		noteNoServerStderr(socket, "error connecting to "+stalePath+" (No such file or directory)")
-	}
-	// "no server running" with no socket file left is inconsistent: nothing.
-	noteNoServerStderr(socket, "no server running on "+path)
-	if socketProvenServerless(socket) {
-		t.Fatal("a proof was recorded from a non-proving outcome")
+	for _, tc := range []struct {
+		name string
+		// stderr is printed by the fake; MISSING and STALE are replaced by an
+		// absolute path with no file and one with a stale socket file.
+		stderr string
+		// tail ends the fake: "exit 1" by default.
+		tail   string
+		proves bool
+	}{
+		{name: "no server running, stale file", stderr: "no server running on STALE", proves: true},
+		{name: "no socket file", stderr: "error connecting to MISSING (No such file or directory)", proves: true},
+		{name: "permission denied", stderr: "error connecting to MISSING (Permission denied)"},
+		{name: "connection refused text", stderr: "error connecting to STALE (Connection refused)"},
+		{name: "missing session on a live server", stderr: "can't find session: foo"},
+		{name: "protocol mismatch", stderr: "protocol version mismatch (client 8, server 7)"},
+		{name: "relative path", stderr: "no server running on relative/path"},
+		{name: "two lines", stderr: "no server running on STALE\nno server running on STALE"},
+		{name: "empty stderr", stderr: ""},
+		{name: "ENOENT text but the file exists", stderr: "error connecting to STALE (No such file or directory)"},
+		{name: "no server running but no file", stderr: "no server running on MISSING"},
+		{name: "killed client", stderr: "error connecting to MISSING (No such file or directory)", tail: "kill -9 $$"},
+		{name: "deadline", stderr: "error connecting to MISSING (No such file or directory)", tail: "exec sleep 5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Setenv("TMUX_TMPDIR", tmp) // fresh proof key per case
+			resetSocketMismatchCacheForTest()
+			t.Cleanup(resetSocketMismatchCacheForTest)
+			stale := filepath.Join(tmp, "stale")
+			leaveStaleSocketFile(t, stale)
+			missing := filepath.Join(tmp, "missing")
+			stderr := tc.stderr
+			for _, r := range [][2]string{{"STALE", stale}, {"MISSING", missing}} {
+				stderr = strings.ReplaceAll(stderr, r[0], r[1])
+			}
+			tail := tc.tail
+			if tail == "" {
+				tail = "exit 1"
+			}
+			bin := filepath.Join(tmp, "bin")
+			if err := os.Mkdir(bin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFakeTmux(t, bin, "for a in \"$@\"; do [ \"$a\" = -V ] && { echo 'tmux 3.6a'; exit 0; }; done\n"+
+				"printf '%s\\n' "+shellQuote(stderr)+" >&2\n"+tail+"\n")
+
+			const socket = "nspfake"
+			_, _ = ListSessionNamesOnSocket(socket)
+			_, n := existsStarts(&Session{Name: "agentdeck_nspdiag_0123abcd", SocketName: socket})
+			if tc.proves && n != 0 {
+				t.Fatalf("stderr %q: Exists() started %d tmux clients after the listing, want 0 (a no-server proof)", stderr, n)
+			}
+			if !tc.proves && n == 0 {
+				t.Fatalf("stderr %q (%s) was taken as a no-server proof: Exists() started no tmux client", stderr, tail)
+			}
+		})
 	}
 }
 
@@ -276,15 +264,11 @@ func TestNoServerProof_LiveServerRecordsNothing(t *testing.T) {
 	if _, err := ListSessionNamesOnSocket(socket); err != nil {
 		t.Fatalf("ListSessionNamesOnSocket: %v", err)
 	}
-	if socketProvenServerless(socket) {
-		t.Fatal("a live server's listing recorded a no-server proof")
-	}
-	s := &Session{Name: "other", SocketName: socket}
-	before := SubprocessStarts()
-	if s.Exists() {
+	ok, n := existsStarts(&Session{Name: "other", SocketName: socket})
+	if ok {
 		t.Fatal("Exists() = true for a session the live server does not have")
 	}
-	if n := SubprocessStarts() - before; n == 0 {
+	if n == 0 {
 		t.Fatal("a session missing from a live server's listing was answered without its own probe")
 	}
 }
