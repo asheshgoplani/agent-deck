@@ -64,7 +64,9 @@ phase2:
 	require.NotEmpty(t, tmuxName)
 	require.NoError(t, inst.Kill())
 	assert.Equal(t, StatusStopped, inst.GetStatusThreadSafe(), "Kill should set stopped")
-	assert.False(t, inst.Exists(), "tmux session should be gone after Kill")
+	exists, probeErr := inst.GetTmuxSession().ProbeExists()
+	require.NoError(t, probeErr)
+	assert.False(t, exists, "tmux session should be gone after Kill")
 
 	// Phase 4: stopped -> waiting (Restart)
 	// Restart with command sets StatusWaiting (not StatusStarting like Start).

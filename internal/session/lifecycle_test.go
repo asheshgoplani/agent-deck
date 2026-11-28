@@ -76,7 +76,9 @@ func TestSessionStop_KillsAndSetsStopped(t *testing.T) {
 		"Status should be StatusStopped after Kill()")
 
 	// Verify Exists() returns false
-	assert.False(t, inst.Exists(), "Exists() should return false after Kill()")
+	exists, probeErr := inst.GetTmuxSession().ProbeExists()
+	require.NoError(t, probeErr)
+	assert.False(t, exists, "Exists() should return false after Kill()")
 
 	// Verify via raw tmux has-session (session should be gone)
 	err = exec.Command("tmux", "has-session", "-t", tmuxName).Run()
@@ -198,7 +200,9 @@ func TestSessionFork_IndependentTmuxSession(t *testing.T) {
 	err = parent.Kill()
 	require.NoError(t, err, "parent Kill() should succeed")
 
-	assert.False(t, parent.Exists(), "parent should not exist after Kill()")
+	exists, probeErr := parent.GetTmuxSession().ProbeExists()
+	require.NoError(t, probeErr)
+	assert.False(t, exists, "parent should not exist after Kill()")
 	assert.True(t, child.Exists(), "child should still exist after parent Kill()")
 }
 
