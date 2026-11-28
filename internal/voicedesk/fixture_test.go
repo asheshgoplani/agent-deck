@@ -24,6 +24,9 @@ type fakeDeck struct {
 	shown    []string
 	lists    int  // Sessions / NeedsMe calls
 	noList   bool // fail the test when the desk lists sessions
+	// fresh: what Lookup returns for an id (the session changed after the
+	// listing); absent ids are looked up in sessions
+	fresh map[string]Session
 }
 
 type sentMsg struct{ id, host, msg string }
@@ -164,6 +167,9 @@ func targetID(r Result) string {
 }
 
 func (d *fakeDeck) Lookup(_ context.Context, s Session) (Session, bool, error) {
+	if x, ok := d.fresh[s.ID]; ok {
+		return x, true, nil
+	}
 	for _, x := range d.sessions {
 		if x.ID == s.ID && x.Host == s.Host {
 			return x, true, nil
