@@ -149,8 +149,6 @@ func (e *recallEnv) close() {
 	}
 }
 
-// openRecallEnv opens recall.db and the profile's state.db. It exits with
-// a clear message when the feature is off.
 // recallEnabled reports [recall] enabled = true without exiting.
 func recallEnabled() bool {
 	cfg, _ := session.LoadUserConfig()
@@ -170,6 +168,25 @@ func requireRecallEnabled(out *CLIOutput) *session.UserConfig {
 	return cfg
 }
 
+// remoteServedEnv is set by the SSH relay (`agent-deck remote <host> recall
+// timeline|follow`, and the web remote timeline route) on the command it runs
+// on the remote box. A local invocation never has it.
+const remoteServedEnv = session.RemoteServedEnv
+
+// remoteServed reports whether this invocation was forwarded by the relay.
+func remoteServed() bool { return os.Getenv(remoteServedEnv) == "1" }
+
+// requireRecallForEgress keeps `[recall] enabled = false` a transcript-egress
+// switch: a relay-served rows read exits 2 "recall is off" (the web maps it to
+// RECALL_DISABLED), while a local rows read works without the index.
+func requireRecallForEgress(out *CLIOutput) {
+	if remoteServed() {
+		requireRecallEnabled(out)
+	}
+}
+
+// openRecallEnv opens recall.db and the profile's state.db. It exits with
+// a clear message when the feature is off.
 func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 	env, err := openRecallEnvErr(profile, out)
 	if err != nil {

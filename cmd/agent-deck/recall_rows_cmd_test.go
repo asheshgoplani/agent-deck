@@ -302,3 +302,30 @@ func TestRecallRowsTimelineWorksWithRecallOff(t *testing.T) {
 		t.Fatalf("index-only ref with recall off: want exit 2 recall is off, got %d %s", code, stdout)
 	}
 }
+
+// TestRecallRowsRelayServedRefusesWithRecallOff: [recall] enabled = false is a
+// transcript-egress switch. The relay marks the command it runs on the box
+// (AGENTDECK_FROM_REMOTE=1); then the rows timeline, follow and batch refuse
+// with the documented "recall is off" answer (exit 2, INVALID_OPERATION, which
+// the web maps to RECALL_DISABLED). The same local call, unmarked, works.
+func TestRecallRowsRelayServedRefusesWithRecallOff(t *testing.T) {
+	home, id, _ := rowsTestSession(t)
+	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
+	relay := []string{remoteServedEnv + "=1"}
+	for _, args := range [][]string{
+		{"recall", "timeline", id, "--json"},
+		{"recall", "timeline", "--json", "--sessions", id},
+		{"recall", "follow", id, "--after", "end", "--jsonl"},
+	} {
+		stdout, stderr, code := runAgentDeckEnv(t, home, "", relay, args...)
+		if code != 2 || !strings.Contains(stdout, "recall is off") || !strings.Contains(stdout, ErrCodeInvalidOperation) {
+			t.Fatalf("relay-served %v with recall off: want exit 2 recall is off, got %d %s %s", args, code, stdout, stderr)
+		}
+	}
+	// With recall on, the relay-served read is answered.
+	writeMacappConfig(t, home, "[recall]\nenabled = true\n")
+	stdout, stderr, code := runAgentDeckEnv(t, home, "", relay, "recall", "timeline", id, "--json")
+	if code != 0 || !strings.Contains(stdout, `"turns"`) {
+		t.Fatalf("relay-served with recall on: exit %d %s %s", code, stdout, stderr)
+	}
+}

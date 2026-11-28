@@ -102,6 +102,7 @@ func handleRecallTimelineBatch(profile string, fs *flag.FlagSet, list string, js
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
+	requireRecallForEgress(out)
 	lk, err := newRowsLookup(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)

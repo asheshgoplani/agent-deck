@@ -10,7 +10,7 @@ The slice-6 shape described in this first part stays available with `--v1`.
 has its own cursor. If the source changes before the cursor, follow emits
 `resync_required`; call timeline again and resume from its new cursor.
 
-Both commands require `[recall] enabled = true`. The source transcript must
+`--v1` requires `[recall] enabled = true`; the rows commands do not when run locally (see Rows). The source transcript must
 exist on the box where the command runs. Recall cards imported from another
 host contain no transcript.
 
@@ -53,8 +53,16 @@ agent-deck recall timeline --json --transcript <file> --harness claude|codex|pi
 agent-deck recall timeline --json [--tail N] [--kinds a,b] [--skip-empty-body] --sessions <id1>,<id2>,...
 ```
 
-Both need `[recall] enabled = true` (exit 2 otherwise) but never need the
-index: `<session>` resolves, without touching recall.db, as a deck session id,
+Run on the box itself, both work with `[recall] enabled = false`: they never
+need the index, and whoever can run the local CLI can already read the
+transcript files. `[recall] enabled = false` stays a transcript-egress switch,
+so when the command is served for a remote caller (`agent-deck remote <host>
+recall timeline|follow`, which marks the command it runs on the box with
+`AGENTDECK_FROM_REMOTE=1`, and the web remote route that rides the same relay)
+it exits 2 "recall is off" (`INVALID_OPERATION`; the web maps it to
+`RECALL_DISABLED`). `--v1` and ids only the index knows (`#n`, card ids) need
+`[recall] enabled = true` everywhere (exit 2 otherwise). `<session>` resolves,
+without touching recall.db, as a deck session id,
 a Claude, Codex or Pi conversation id bound to a deck session, a deck title
 or id prefix, or a conversation id whose file exists under any Claude config
 dir or Codex home. Only then is the index asked (`#n`, card ids, other
@@ -201,7 +209,8 @@ empty `kinds` or an unknown kind is a 400 that lists the valid kinds.
 `since` next. It reads
 the session's live Claude Code, Codex or Pi transcript and never touches the
 index. The route follows the web server's token like every other `/api`
-route and needs `[recall] enabled = true` like the CLI.
+route and needs `[recall] enabled = true`: unlike the local CLI, the web is an
+egress surface, so it refuses (503 `RECALL_DISABLED`) with recall off.
 
 Without `tail` or `since` the route reads the whole transcript on every
 request, as the CLI does. A web client should always send one of them: `tail`
@@ -273,9 +282,11 @@ The session must be one the remote fleet scan (`GET /api/remotes`) lists.
 Cursors are passed through as they are, so `since` and `before` page the
 remote's transcript. Recall must be on at both ends: with `[recall] enabled`
 false on this machine the route answers 503 before any SSH, so turning recall
-off here means no transcript leaves through this server. What the remote can
-read decides the rest: its own `[recall] enabled`, its harnesses, and its
-version. Each request is one SSH
+off here means no transcript leaves through this server. The remote applies
+its own `[recall] enabled` to the relayed read (the relay marks the command
+with `AGENTDECK_FROM_REMOTE=1`) and answers "recall is off", which this route
+maps to 503 `RECALL_DISABLED`; its harnesses and version decide the rest.
+The same holds for `agent-deck remote <host> recall timeline|follow`. Each request is one SSH
 round trip, so poll it no faster than the remote list. A remote serves three
 of these reads at once; the next one gets 429 until one ends.
 

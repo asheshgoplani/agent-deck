@@ -314,7 +314,7 @@ func TestRemoteRecallTimelineKinds(t *testing.T) {
 	}
 	calls := sshCalls(t, callLog)
 	unquote := strings.NewReplacer(`'\''`, "", `'`, "")
-	if len(calls) != 1 || !strings.Contains(unquote.Replace(calls[0]), "exec "+filepath.Join(filepath.Dir(callLog), "remote-agent-deck")+" recall timeline sess --json --kinds user,assistant --skip-empty-body --tail 400") {
+	if len(calls) != 1 || !strings.Contains(unquote.Replace(calls[0]), "exec env "+remoteServedEnv+"=1 "+filepath.Join(filepath.Dir(callLog), "remote-agent-deck")+" recall timeline sess --json --kinds user,assistant --skip-empty-body --tail 400") {
 		t.Fatalf("filter not forwarded to the owner host in one call: %q", calls)
 	}
 
