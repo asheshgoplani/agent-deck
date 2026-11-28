@@ -1667,7 +1667,9 @@ func (h *Home) backgroundStatusUpdate() {
 	// tmux server down, no sessions): it is how other instances see this one
 	// as alive, and a primary whose heartbeat goes stale for 30s loses the
 	// allow_multiple=false gate to a second TUI. One UPDATE per tick.
-	if db := statedb.GetGlobal(); db != nil {
+	// A headless web server loads no sessions and polls no status, so it
+	// never heartbeats: the notifier would read it as a live TUI (#3268).
+	if db := statedb.GetGlobal(); db != nil && !h.headless {
 		_ = db.Heartbeat()
 	}
 
@@ -1676,11 +1678,17 @@ func (h *Home) backgroundStatusUpdate() {
 		return
 	}
 
-	// Get instances snapshot
-	h.instancesMu.RLock()
-	instances := make([]*session.Instance, len(h.instances))
-	copy(instances, h.instances)
-	h.instancesMu.RUnlock()
+	// Get instances snapshot. A headless web server polls nothing: its
+	// instances are only hydrated for web mutations (#1397), and with no live
+	// TUI notify-daemon owns status. Sweeping that stale subset would probe
+	// and persist it next to the daemon (#3268).
+	var instances []*session.Instance
+	if !h.headless {
+		h.instancesMu.RLock()
+		instances = make([]*session.Instance, len(h.instances))
+		copy(instances, h.instances)
+		h.instancesMu.RUnlock()
+	}
 
 	// Charged omits RunUncounted work: the detach reconciliation and the
 	// per-client status-bar refresh. Those scale with viewers (a web

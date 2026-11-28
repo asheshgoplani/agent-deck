@@ -132,6 +132,15 @@ func (e *deliveryEnv) mustRun(args ...string) string {
 // phase, starts it, fires SessionStart, and waits for its first frame.
 func (e *deliveryEnv) startFake(title, phase, parent string) *fakeTarget {
 	e.t.Helper()
+	f := e.startFakeNoHooks(title, phase, parent)
+	e.hook(f, "SessionStart")
+	return f
+}
+
+// startFakeNoHooks is startFake without the SessionStart hook: only the pane
+// tells agent-deck the fake's status.
+func (e *deliveryEnv) startFakeNoHooks(title, phase, parent string) *fakeTarget {
+	e.t.Helper()
 	f := &fakeTarget{project: filepath.Join(e.root, "p-"+title)}
 	if err := os.MkdirAll(f.project, 0o700); err != nil {
 		e.t.Fatal(err)
@@ -168,7 +177,6 @@ func (e *deliveryEnv) startFake(title, phase, parent string) *fakeTarget {
 		want = "Thundering"
 	}
 	e.waitPane(f, title+" first frame", func(p string) bool { return strings.Contains(p, want) && strings.Contains(p, "❯") })
-	e.hook(f, "SessionStart")
 	return f
 }
 
@@ -186,6 +194,18 @@ func (e *deliveryEnv) hook(f *fakeTarget, event string) {
 // hook Claude fires on that edge.
 func (e *deliveryEnv) setPhase(f *fakeTarget, phase string) {
 	e.t.Helper()
+	e.setPhaseNoHooks(f, phase)
+	if phase == "busy" {
+		e.hook(f, "UserPromptSubmit")
+	} else {
+		e.hook(f, "Stop")
+	}
+}
+
+// setPhaseNoHooks switches the fake's phase and fires no hook, so the edge
+// shows only in the pane.
+func (e *deliveryEnv) setPhaseNoHooks(f *fakeTarget, phase string) {
+	e.t.Helper()
 	f.phaseN++
 	id := fmt.Sprintf("%s-%d", phase, f.phaseN)
 	writeFile(e.t, f.transcript+".input-control.json", fmt.Sprintf(`{"id":%q,"phase":%q}`, id, phase), 0o600)
@@ -194,11 +214,6 @@ func (e *deliveryEnv) setPhase(f *fakeTarget, phase string) {
 		b, _ := os.ReadFile(f.transcript + ".input-state.json")
 		return json.Unmarshal(b, &st) == nil && st.ID == id
 	})
-	if phase == "busy" {
-		e.hook(f, "UserPromptSubmit")
-	} else {
-		e.hook(f, "Stop")
-	}
 }
 
 func (e *deliveryEnv) paneText(f *fakeTarget) string {

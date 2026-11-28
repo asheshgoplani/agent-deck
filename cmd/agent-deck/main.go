@@ -1033,12 +1033,17 @@ func main() {
 	stopHealth := startRuntimeHealth(profile, healthRole)
 	defer stopHealth()
 
-	// Create storage early to register instance via SQLite
+	// Create storage early to register instance via SQLite. A headless web
+	// server polls no session status, so it does not register: the
+	// notifier reads any fresh heartbeat as a live TUI, stops probing tmux
+	// and misses every child turn end while only the web server runs (#3268).
 	earlyStorage, err := session.NewStorageWithProfile(profile)
 	if err == nil {
 		if db := earlyStorage.GetDB(); db != nil {
 			statedb.SetGlobal(db)
-			_ = db.RegisterInstance(false)
+			if !webHeadless {
+				_ = db.RegisterInstance(false)
+			}
 		}
 	}
 
@@ -1210,7 +1215,7 @@ func main() {
 
 	// Start TUI with the specified profile
 	ui.SetProcessStart(processStart)
-	homeModel := ui.NewHomeWithProfileAndMode(profile)
+	homeModel := ui.NewHomeWithProfileAndMode(profile, webHeadless)
 	setTelemetrySignalClose(homeModel.CloseTelemetry)
 	setWatcherEngineSignalStop(homeModel.StopWatcherEngine)
 	setUndoableDeletesSignalFinalize(func() { homeModel.FinalizeUndoableDeletes(3 * time.Second) })
@@ -1339,12 +1344,10 @@ func main() {
 
 		// #1397: in headless mode no bubbletea loop ever populates the Home's
 		// in-memory registry, so the WebMutator must hydrate it from storage on
-		// each mutation. Flag the model so WebMutator.ensureHydrated activates;
-		// otherwise delete/restart/close/group-mutate on pre-existing sessions
-		// fail ("session not found" / empty-sweep guard).
-		if webHeadless {
-			homeModel.SetHeadless(true)
-		}
+		// each mutation. NewHomeWithProfileAndMode flagged the model headless
+		// so WebMutator.ensureHydrated activates; otherwise
+		// delete/restart/close/group-mutate on pre-existing sessions fail
+		// ("session not found" / empty-sweep guard).
 
 		webMutator := ui.NewWebMutator(homeModel)
 		setUndoableDeletesSignalFinalize(func() {

@@ -119,8 +119,14 @@ func (e *issue2530Env) createWebhookWatcher() {
 // Cleanup stops it if the test has not.
 func (e *issue2530Env) startWeb(name string) *exec.Cmd {
 	e.t.Helper()
+	return e.startWebForProfile(issue2530Profile, name)
+}
+
+// startWebForProfile is startWeb for another profile of the env.
+func (e *issue2530Env) startWebForProfile(profile, name string) *exec.Cmd {
+	e.t.Helper()
 	webPort := issue2530FreePort(e.t)
-	cmd := exec.Command(e.bin, "-p", issue2530Profile, "web", "--no-tui", "--listen", "127.0.0.1:"+webPort)
+	cmd := exec.Command(e.bin, "-p", profile, "web", "--no-tui", "--listen", "127.0.0.1:"+webPort)
 	cmd.Env = e.env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	logFile, err := os.Create(filepath.Join(e.root, name+".log"))
