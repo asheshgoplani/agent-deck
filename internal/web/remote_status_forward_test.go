@@ -93,7 +93,7 @@ func TestRemoteStatusForwarder_RepublishesWithHost(t *testing.T) {
 	}}
 	var mu sync.Mutex
 	var got []string
-	f := &remoteStatusForwarder{name: "box", runner: fake, startTS: start,
+	f := &remoteStatusForwarder{name: "box", runner: fake,
 		publish: func(kind, sid string, data any) {
 			if kind != "session.status" {
 				return // session.link frames: TestRemoteStatusForwarder_LinkFramesResync

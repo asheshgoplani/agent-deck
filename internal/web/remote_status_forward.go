@@ -77,10 +77,16 @@ type remoteStatusForwarder struct {
 	// snapCursor is the remote cursor the last listing covers: a frame at
 	// or before it (a replay after a reconnect) is older than that listing.
 	snapCursor uint64
-	// startTS is kept for older callers; liveness never compares clocks.
-	startTS int64
-	up      bool
+	up         bool
+	// healthy: the last follow delivered a line or stayed up for
+	// remoteForwardHealthyAfter; only then does the next retry start fast.
+	healthy bool
 }
+
+// remoteForwardHealthyAfter: a follow that stayed up this long (or that
+// delivered a line) counts as a working link; one that failed sooner keeps
+// the backoff doubling, so a broken remote bus does not flap the link.
+const remoteForwardHealthyAfter = 3 * time.Second
 
 // run follows until ctx ends, reconnecting within a second and resuming
 // from the last cursor (no frame lost or doubled across a reconnect). Each
@@ -90,11 +96,14 @@ func (f *remoteStatusForwarder) run(ctx context.Context) {
 	log := logging.ForComponent(logging.CompWeb)
 	backoff := 250 * time.Millisecond
 	for ctx.Err() == nil {
+		f.healthy = false
 		err := f.once(ctx)
 		if f.up {
 			f.up = false
 			f.publish(KindSessionLink, "", SessionLinkEvent{Host: f.name, Up: false})
-			backoff = 250 * time.Millisecond // it was up: retry fast
+		}
+		if f.healthy {
+			backoff = 250 * time.Millisecond // it was really up: retry fast
 		}
 		if ctx.Err() != nil {
 			return
@@ -197,7 +206,10 @@ func (f *remoteStatusForwarder) once(ctx context.Context) error {
 	defer stdinW.Close()
 	outR, outW := io.Pipe()
 	var stderr capWriter
-	args := []string{"events", "follow", "--jsonl", "--kind", "session.status", "--since", strconv.FormatUint(f.since, 10)}
+	// --read-only: a status mirror is an observer; it must not start the
+	// remote's send-worker recovery or open a writer there. A remote too old
+	// for the flag fails the follow, which backs off like any failure.
+	args := []string{"events", "follow", "--jsonl", "--read-only", "--kind", "session.status", "--since", strconv.FormatUint(f.since, 10)}
 	done := make(chan error, 1)
 	go func() {
 		err := f.runner.RunReadIO(cctx, stdinR, outW, &stderr, []byte("unsupported\n"), true, args...)
@@ -206,8 +218,13 @@ func (f *remoteStatusForwarder) once(ctx context.Context) error {
 	}()
 	sc := bufio.NewScanner(outR)
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
+	followStart := time.Now()
 	for sc.Scan() {
+		f.healthy = true
 		f.forward(sc.Bytes())
+	}
+	if time.Since(followStart) >= remoteForwardHealthyAfter {
+		f.healthy = true
 	}
 	cancel()
 	_ = outR.Close()
@@ -253,16 +270,24 @@ func (f *remoteStatusForwarder) forward(line []byte) {
 	if fr.Kind != "session.status" || uint64(fr.Cursor) <= f.snapCursor {
 		return // a replay the session.link up already covers
 	}
-	var data map[string]any
+	var data session.StatusBusEvent
 	if len(fr.Data) == 0 || json.Unmarshal(fr.Data, &data) != nil {
 		return
 	}
-	if h, _ := data["host"].(string); h != "" {
+	if data.Host != "" {
 		return // already a forward on that host: never loop
 	}
-	data["host"] = f.name
-	data["remote_cursor"] = uint64(fr.Cursor)
-	f.publish("session.status", fr.SessionID, data)
+	// Only the session.status fields cross (an allowlist): whatever else a
+	// remote puts in the frame is dropped.
+	f.publish("session.status", fr.SessionID, forwardedStatus{StatusBusEvent: data, Host: f.name, RemoteCursor: uint64(fr.Cursor)})
+}
+
+// forwardedStatus is a remote's session.status republished here: the
+// status fields, host = the remote's name, and the remote's cursor.
+type forwardedStatus struct {
+	session.StatusBusEvent
+	Host         string `json:"host"`
+	RemoteCursor uint64 `json:"remote_cursor"`
 }
 
 // SetRemoteStatusStream names the remotes Start will follow.
@@ -279,21 +304,24 @@ func (s *Server) startRemoteStatusForward(names []string, runnerFor RemoteStatus
 	ctx, cancel := context.WithCancel(context.Background())
 	s.remoteFwdCancel = cancel
 	profile := s.stateProfile()
-	now := time.Now().UnixMilli()
 	for _, name := range names {
 		r := runnerFor(name)
 		if r == nil {
+			// the config reload failed or the remote is gone: say so
+			logging.ForComponent(logging.CompWeb).Warn("remote_status_no_runner", slog.String("remote", name))
+			down := SessionLinkEvent{Host: name, Up: false}
+			s.noteRemoteLink(down)
+			events.PublishProfile(profile, KindSessionLink, "", down)
 			continue
 		}
-		f := &remoteStatusForwarder{name: name, runner: r, startTS: now,
+		f := &remoteStatusForwarder{name: name, runner: r,
 			publish: func(kind, sid string, data any) {
 				switch d := data.(type) {
 				case SessionLinkEvent:
 					s.noteRemoteLink(d)
-				case map[string]any:
-					if to, _ := d["to"].(string); kind == "session.status" && to != "" {
-						rc, _ := d["remote_cursor"].(uint64)
-						s.noteRemoteStatus(name, sid, to, rc)
+				case forwardedStatus:
+					if kind == "session.status" && d.To != "" {
+						s.noteRemoteStatus(name, sid, d.To, d.RemoteCursor)
 					}
 				}
 				events.PublishProfile(profile, kind, sid, data)

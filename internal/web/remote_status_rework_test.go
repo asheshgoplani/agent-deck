@@ -113,7 +113,7 @@ func (p *pubRec) wait(t *testing.T, n int, d time.Duration) []string {
 // the link returns (it was 8-11 s with backoff growing to 30 s).
 func TestRemoteStatusForwarder_RetriesWithinASecond(t *testing.T) {
 	r := &scriptedRemote{failAll: true}
-	f := &remoteStatusForwarder{name: "box", runner: r, publish: func(string, string, any) {}, startTS: time.Now().UnixMilli()}
+	f := &remoteStatusForwarder{name: "box", runner: r, publish: func(string, string, any) {}}
 	ctx, cancel := context.WithTimeout(context.Background(), 4500*time.Millisecond)
 	defer cancel()
 	f.run(ctx)
@@ -140,7 +140,7 @@ func TestRemoteStatusForwarder_LinkFramesResync(t *testing.T) {
 		follows:  [][]string{{statusLine(6, now+10, "b1", "running", "")}},
 	}
 	rec := &pubRec{}
-	f := &remoteStatusForwarder{name: "box", runner: r, publish: rec.publish, startTS: now}
+	f := &remoteStatusForwarder{name: "box", runner: r, publish: rec.publish}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { f.run(ctx); close(done) }()
@@ -171,7 +171,7 @@ func TestRemoteStatusForwarder_StartsAtTheRemoteCursor(t *testing.T) {
 	behind := time.Now().Add(-10 * time.Minute).UnixMilli() // the remote's clock is 10 min behind
 	r := &scriptedRemote{cursor: 41, follows: [][]string{{statusLine(42, behind, "b1", "waiting", "")}}}
 	rec := &pubRec{}
-	f := &remoteStatusForwarder{name: "box", runner: r, publish: rec.publish, startTS: time.Now().UnixMilli()}
+	f := &remoteStatusForwarder{name: "box", runner: r, publish: rec.publish}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { f.run(ctx); close(done) }()
@@ -210,7 +210,7 @@ func TestRemoteStatusForwarder_TooOldCursorResyncs(t *testing.T) {
 		followErr: []string{"events: cursor older than the retained log\n"},
 	}
 	rec := &pubRec{}
-	f := &remoteStatusForwarder{name: "box", runner: r, publish: rec.publish, since: 3, startTS: time.Now().UnixMilli()}
+	f := &remoteStatusForwarder{name: "box", runner: r, publish: rec.publish, since: 3}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { f.run(ctx); close(done) }()

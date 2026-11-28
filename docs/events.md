@@ -139,12 +139,14 @@ frame. `: keepalive` every 15 s.
 
 `agent-deck web --stream-remotes <remote>[,<remote>]` also puts those
 remotes' own `session.status` frames on this host's bus, followed over ssh
-(`remote <name> events follow --kind session.status`, resumed by cursor
-after a drop), with `data.host` = the remote's name and `data.remote_cursor`
+(`remote <name> events follow --read-only --kind session.status`, an
+observer that starts nothing on the remote, resumed by cursor after a drop), with `data.host` = the remote's name and `data.remote_cursor`
 = its cursor there. So one `/events/state` stream carries local and remote
 status in one cursor order. It starts at the remote's own newest cursor
 (`events stats`, no clock comparison) and resumes from the last one after a
-drop, retrying within a second. Each connect publishes `session.link`
+drop, retrying within a second (a follow that fails before it delivers a
+line or stays up for 3 s backs off, doubling to a second, so a broken
+remote bus does not flap the link). Each connect publishes `session.link`
 `{host, up: true, sessions: [{id, status, title}]}` with the remote's
 current statuses (a resync: a change made while this server or the link
 was down is not lost), and each drop publishes `session.link {host, up:
@@ -156,7 +158,15 @@ current statuses. A resume
 cursor the remote no longer has starts over from its newest cursor with a
 resync. A remote's history before the server started is not replayed; frames that already carry a host are not forwarded again (two
 hosts that stream each other never loop); a remote's `voice.state` is not
-forwarded (each host has its own, from the relay).
+forwarded (each host has its own, from the relay). Only the status fields
+cross (`from, to, tool, tmux_session, substate, changed_at`, plus `host` and
+`remote_cursor`); anything else in a remote's frame is dropped. The
+`session_id` stays the remote's own id: ids are unique only per host, so a
+client keys a forwarded frame by (`data.host`, id), and `events follow
+--session <id>` here can match a remote's session with the same id (check
+`data.host` before acting). A remote named in `--stream-remotes` that cannot
+be set up (its config is gone) is published as `session.link {host, up:
+false}` and logged.
 
 ## On-disk layout
 
