@@ -16,20 +16,21 @@ import (
 // Field names accepted by SetField. Kept as raw strings to match the
 // `agent-deck session set <field>` CLI surface verbatim.
 const (
-	FieldTitle             = "title"
-	FieldPath              = "path"
-	FieldCommand           = "command"
-	FieldTool              = "tool"
-	FieldWrapper           = "wrapper"
-	FieldChannels          = "channels"
-	FieldPlugins           = "plugins"
-	FieldExtraArgs         = "extra-args"
-	FieldColor             = "color"
-	FieldNotes             = "notes"
-	FieldClaudeSessionID   = "claude-session-id"
-	FieldGeminiSessionID   = "gemini-session-id"
-	FieldOpenCodeSessionID = "opencode-session-id"
-	FieldCodexSessionID    = "codex-session-id"
+	FieldTitle                = "title"
+	FieldPath                 = "path"
+	FieldCommand              = "command"
+	FieldTool                 = "tool"
+	FieldWrapper              = "wrapper"
+	FieldChannels             = "channels"
+	FieldPlugins              = "plugins"
+	FieldExtraArgs            = "extra-args"
+	FieldColor                = "color"
+	FieldNotes                = "notes"
+	FieldClaudeSessionID      = "claude-session-id"
+	FieldGeminiSessionID      = "gemini-session-id"
+	FieldAntigravitySessionID = "antigravity-session-id"
+	FieldOpenCodeSessionID    = "opencode-session-id"
+	FieldCodexSessionID       = "codex-session-id"
 	// FieldToolSessionID binds a custom [tools.*] conversation id so restart
 	// after reboot can pass resume_flag <id>. Alias of the tool_data key
 	// generic_session_id.
@@ -94,6 +95,7 @@ var ValidMutableFields = []string{
 	FieldNotes,
 	FieldClaudeSessionID,
 	FieldGeminiSessionID,
+	FieldAntigravitySessionID,
 	FieldOpenCodeSessionID,
 	FieldCodexSessionID,
 	FieldToolSessionID,
@@ -171,6 +173,13 @@ func normalizeToolSessionID(field, value string) (string, error) {
 			return "", &MutationError{
 				Field: field,
 				Msg:   fmt.Sprintf("invalid codex session id %q — expected UUID format", trimmed),
+			}
+		}
+	case FieldAntigravitySessionID:
+		if !antigravitySessionIDPattern.MatchString(trimmed) {
+			return "", &MutationError{
+				Field: field,
+				Msg:   fmt.Sprintf("invalid antigravity session id %q — expected a shell-safe identifier", trimmed),
 			}
 		}
 	}
@@ -391,6 +400,23 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.GeminiSessionID = value
 		inst.GeminiDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "GEMINI_SESSION_ID", value)
+
+	case FieldAntigravitySessionID:
+		oldValue = inst.AntigravitySessionID
+		normalized, err := normalizeToolSessionID(field, value)
+		if err != nil {
+			return oldValue, nil, err
+		}
+		inst.AntigravitySessionID = normalized
+		if normalized == "" {
+			inst.AntigravityDetectedAt = time.Time{}
+			inst.antigravitySessionCleared = true
+		} else {
+			inst.AntigravityDetectedAt = time.Now()
+			inst.antigravitySessionCleared = false
+		}
+		inst.persistAntigravitySessionBinding(normalized, inst.AntigravityDetectedAt)
+		postCommit = makeSessionEnvPostCommit(inst, "ANTIGRAVITY_SESSION_ID", normalized)
 
 	case FieldOpenCodeSessionID:
 		oldValue = inst.OpenCodeSessionID

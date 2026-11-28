@@ -1325,7 +1325,9 @@ func (i *Instance) antigravityCommand() string {
 }
 
 func (i *Instance) buildAntigravityCommandWithPrompt(prompt string) (string, bool) {
-	command := i.antigravityCommand()
+	// Start from the resume command: an initial message must continue the
+	// bound conversation instead of opening a fresh one beside it.
+	command := i.buildAntigravityResumeCommand()
 	if i.Wrapper != "" || strings.TrimSpace(prompt) == "" {
 		// A wrapper's argv shape is the user's, so the shared post-start
 		// delivery path types the prompt at the composer instead.

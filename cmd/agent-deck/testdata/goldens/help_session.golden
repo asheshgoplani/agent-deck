@@ -11,7 +11,7 @@ Commands:
   unarchive <id|title>    Restore an archived session (does not restart it)
   restart [id] [--all] [--env KEY=VALUE]  Restart session (Claude: reload MCPs)
   revive [--all|--name]   Rebuild dead control pipes for errored sessions
-  fork <id>               Fork Claude, OpenCode, Pi, Codex, or Oh My Pi session with context
+  fork <id>               Fork Claude, OpenCode, Pi, Codex, Oh My Pi, or Antigravity session with context
   handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)
   switch-preview <id>     Preview switch capability, fidelity and refusals (read-only, no mutation)
   attach <id>             Attach to session interactively
@@ -93,6 +93,7 @@ Set command fields:
   claude-session-id  Claude conversation ID (for fork/resume)
   favorite           Favourite flag: true or false (favorite in list/show --json)
   gemini-session-id  Gemini conversation ID (for resume)
+  antigravity-session-id  Antigravity CLI conversation ID (empty starts fresh)
   tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)
 
 Set examples:

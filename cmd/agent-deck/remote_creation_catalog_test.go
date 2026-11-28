@@ -351,3 +351,29 @@ func TestCreationRegistryReadsLiveWAL(t *testing.T) {
 		t.Fatal("catalog/capacity modified registry rows")
 	}
 }
+
+// Antigravity is a first-party creation target: the remote catalog must offer
+// it with its own kind, and `agy` must dispatch to it, not to Gemini.
+func TestAntigravityRemoteCreationCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+	catalog, err := buildCreationCatalog("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range catalog.Tools {
+		if tool.Name == "antigravity" {
+			if tool.Kind != "antigravity" {
+				t.Fatalf("antigravity catalog kind = %q, want antigravity", tool.Kind)
+			}
+			if detectTool("agy --model gemini-flash") != "antigravity" {
+				t.Fatal("agy did not dispatch to the Antigravity tool")
+			}
+			return
+		}
+	}
+	t.Fatal("remote catalog has no antigravity launcher")
+}

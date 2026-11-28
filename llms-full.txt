@@ -153,7 +153,7 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
-| **Antigravity CLI** (`agy`) | Launch, terminal status detection, organization |
+| **Antigravity CLI** (`agy`) | Launch, terminal status detection, organization, resume, fork |
 | **OpenCode** | Status detection, organization |
 | **Codex** | Status detection, organization |
 | **Cursor** (terminal) | Status detection, organization |
@@ -216,7 +216,7 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 ```bash
 agent-deck                        # Launch TUI
 agent-deck add . -c claude        # Add current dir with Claude
-agent-deck session fork my-proj   # Fork a Claude/Pi session
+agent-deck session fork my-proj   # Fork a supported session (Claude, OpenCode, Pi, Codex, Oh My Pi, Antigravity)
 agent-deck mcp attach my-proj exa # Attach MCP to session
 ```
 
@@ -374,7 +374,7 @@ agent-deck session output "Project"
 | `agent-deck session output <name>` | Get last response |
 | `agent-deck session ref <source> <target>` | Hand `<target>` a short reference to `<source>` in its composer (not sent; `--print` only prints) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
-| `agent-deck session fork <name>` | Fork Claude/Pi conversation |
+| `agent-deck session fork <name>` | Fork a Claude/OpenCode/Pi/Codex/Oh My Pi/Antigravity conversation |
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |
@@ -767,7 +767,7 @@ agent-deck session restart <id|title>
 
 Reloads MCPs without losing conversation (Claude/Gemini).
 
-### session fork (Claude and Pi)
+### session fork (Claude, OpenCode, Pi, Codex, Oh My Pi, Antigravity)
 
 ```bash
 agent-deck session fork <id|title> [-t "title"] [-g "group"]
@@ -778,6 +778,13 @@ Creates a new session with the same conversation context for supported tools.
 **Requirements:**
 - Claude sessions must have a valid Claude session ID
 - Pi sessions use Agent Deck's per-instance Pi session directory and Pi's native `pi --fork`
+- Antigravity sessions need a bound conversation ID. Agent Deck discovers it from an
+  explicit `--conversation`, the launch's tmux environment, or `~/.gemini/antigravity-cli/cache/`
+  (a workspace match is confirmed by a second scan and never adopts an ID another session
+  already bound). A fork opens the parent conversation and sends `/fork` through the
+  ready composer, then waits for the child conversation before sending an initial
+  message. SSH and sandboxed Antigravity sessions cannot fork: the child would run on
+  the controller against a conversation that lives on the parent's host.
 
 ### session attach
 
@@ -1544,8 +1551,8 @@ Complete reference for agent-deck Terminal UI features.
 | `s` | Open Skills Manager (Claude) |
 | `d` | Delete session or group |
 | `u` | Mark unread (idle -> waiting) |
-| `f` | Quick fork (Claude/Pi) |
-| `F` | Fork with options (Claude/Pi) |
+| `f` | Quick fork (Claude/OpenCode/Pi/Codex/Oh My Pi/Antigravity) |
+| `F` | Fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi/Antigravity) |
 
 ### Group Actions
 

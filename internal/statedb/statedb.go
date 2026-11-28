@@ -1655,6 +1655,15 @@ func (s *StateDB) writeHarnessSessionBinding(id, sessionID, harness string, dete
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
+		// A clear writes 0, not time.Time{}.Unix(): the -62135596800 sentinel
+		// is rejected by the save-path merge as a stale concurrent write.
+		detectedUnix := detectedAt.Unix()
+		if sessionID == "" {
+			detectedUnix = 0
+		} else if detectedAt.IsZero() {
+			detectedAt = time.Now()
+			detectedUnix = detectedAt.Unix()
+		}
 		if _, err := tx.Exec(
 			`UPDATE instances
 			   SET tool_data = json_set(
@@ -1663,7 +1672,7 @@ func (s *StateDB) writeHarnessSessionBinding(id, sessionID, harness string, dete
 			         ?, ?)
 			 WHERE id = ?`,
 			"$."+harness+"_session_id", sessionID,
-			"$."+harness+"_detected_at", detectedAt.Unix(),
+			"$."+harness+"_detected_at", detectedUnix,
 			id,
 		); err != nil {
 			return err
@@ -1672,6 +1681,11 @@ func (s *StateDB) writeHarnessSessionBinding(id, sessionID, harness string, dete
 			if err := upsertSessionLink(tx, id, harness, sessionID, "", true, detectedAt); err != nil {
 				return err
 			}
+		} else if _, err := tx.Exec(
+			`UPDATE session_links SET authoritative = 0 WHERE session_id = ? AND harness = ?`,
+			id, harness,
+		); err != nil {
+			return err
 		}
 		return tx.Commit()
 	})
@@ -1708,6 +1722,13 @@ func (s *StateDB) WriteHermesSessionBinding(id, sessionID string, detectedAt tim
 // WriteKimiSessionBinding records the native id from this instance's SessionStart hook.
 func (s *StateDB) WriteKimiSessionBinding(id, sessionID string, detectedAt time.Time) error {
 	return s.writeHarnessSessionBinding(id, sessionID, "kimi", detectedAt)
+}
+
+// WriteAntigravitySessionBinding records the Antigravity CLI conversation id
+// for an instance inside tool_data and session_links without overwriting
+// unrelated keys. Empty sessionID clears the stored binding.
+func (s *StateDB) WriteAntigravitySessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return s.writeHarnessSessionBinding(id, sessionID, "antigravity", detectedAt)
 }
 
 // WriteGenericSessionBinding persists a custom-tool conversation id

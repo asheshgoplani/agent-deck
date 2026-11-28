@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -111,4 +112,31 @@ func TestCompleteFork_SandboxedPiFork_RemoteSession(t *testing.T) {
 		"`session fork --json <id>` (SSHRunner.ForkSession), which takes no sandbox option, and F on a remote row " +
 		"opens no fork dialog (TestRemoteFork_ShiftFExplainsInsteadOfDialog). The remote host's agent-deck builds and " +
 		"records that launch, covered there by TestSessionFork_SandboxedPiForkNeverExportsTheSocket's CLI path.")
+}
+
+// An Antigravity fork resumes a conversation on the parent's host; a Docker
+// sandbox on the child would run agy against a conversation it cannot see.
+func TestCompleteFork_AntigravitySandboxRejected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := session.NewInstanceWithGroupAndTool("agy-parent", project, "agy-group", "antigravity")
+	source.Command = "agy"
+	source.AntigravitySessionID = "conv-a"
+	source.AntigravityDetectedAt = time.Now()
+
+	deps := defaultForkInstanceDeps()
+	deps.startInstance = func(*session.Instance) error {
+		t.Fatal("a rejected sandboxed Antigravity fork must not start")
+		return nil
+	}
+	_, err := completeFork(source, "child", "agy-group", forkToggles{Sandbox: true}, nil, "", "", false, deps)
+	if err == nil || !strings.Contains(err.Error(), "Docker sandbox") {
+		t.Fatalf("completeFork() error = %v, want a Docker sandbox refusal", err)
+	}
 }

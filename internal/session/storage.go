@@ -131,6 +131,13 @@ type InstanceData struct {
 	GeminiYoloMode   *bool     `json:"gemini_yolo_mode,omitempty"`
 	GeminiModel      string    `json:"gemini_model,omitempty"`
 
+	// Antigravity CLI conversation binding (persisted in tool_data extras zone)
+	AntigravitySessionID  string    `json:"antigravity_session_id,omitempty"`
+	AntigravityDetectedAt time.Time `json:"antigravity_detected_at,omitempty"`
+	// AntigravityForkParentID is the parent conversation a fork child excludes
+	// until it binds its own (persisted in tool_data extras zone).
+	AntigravityForkParentID string `json:"antigravity_fork_parent_id,omitempty"`
+
 	// OpenCode session (persisted for resume after app restart)
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
 	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
@@ -492,6 +499,7 @@ func (s *Storage) saveWithGroups(instances []*Instance, groupTree *GroupTree) ([
 	UpdateClaudeSessionsWithDedup(instances)
 	updates := make([]statedb.InstanceSnapshot, len(instances))
 	clearIntents := make([]bool, len(instances))
+	antigravityClearIntents := make([]bool, len(instances))
 	launchesWritten := make([]bool, len(instances))
 	for i, inst := range instances {
 		if inst == nil {
@@ -504,6 +512,9 @@ func (s *Storage) saveWithGroups(instances []*Instance, groupTree *GroupTree) ([
 		}
 		updates[i].Desired = row
 		clearIntents[i] = inst.genericSessionIDCleared
+		inst.mu.RLock()
+		antigravityClearIntents[i] = inst.antigravitySessionCleared
+		inst.mu.RUnlock()
 		if snapshot := inst.storageSnapshot; snapshot != nil && snapshot.dbPath == s.dbPath {
 			updates[i].Original = snapshot.original
 			updates[i].Stored = snapshot.stored
@@ -528,6 +539,12 @@ func (s *Storage) saveWithGroups(instances []*Instance, groupTree *GroupTree) ([
 			inst.genericSessionIDCleared = false
 			original.ToolData = WriteGenericSessionIDToToolData(original.ToolData, "", time.Time{}, false)
 			original.ToolData = WriteGenericSessionScopeToToolData(original.ToolData, "", "", "", false)
+		}
+		if antigravityClearIntents[i] {
+			inst.mu.Lock()
+			inst.antigravitySessionCleared = false
+			inst.mu.Unlock()
+			original.ToolData = stripAntigravityClearFromToolData(original.ToolData)
 		}
 		s.rememberInstanceSnapshot(inst, original, result.Instances[i])
 	}
@@ -1257,6 +1274,18 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	toolData = WriteDeepSeekTaskToToolData(toolData, inst.DeepSeekTask)
 	toolData = WriteHermesSessionIDToToolData(toolData, inst.HermesSessionID)
 	toolData = WriteKimiSessionIDToToolData(toolData, inst.KimiSessionID)
+	// Discovery writes the Antigravity binding under inst.mu; capture the
+	// three fields from one snapshot so a row never mixes two observations.
+	// No caller of instanceToRow holds inst.mu (a nested RLock could deadlock
+	// behind a waiting writer).
+	inst.mu.RLock()
+	antigravityID := inst.AntigravitySessionID
+	antigravityDetectedAt := inst.AntigravityDetectedAt
+	antigravityCleared := inst.antigravitySessionCleared
+	antigravityForkParent := inst.antigravityForkParentID
+	inst.mu.RUnlock()
+	toolData = WriteAntigravitySessionIDToToolData(toolData, antigravityID, antigravityDetectedAt, antigravityCleared)
+	toolData = WriteAntigravityForkParentToToolData(toolData, antigravityForkParent)
 	toolData = WriteCrossHarnessLineageToToolData(toolData, inst.SupersededBy, inst.Supersedes)
 
 	return &statedb.InstanceRow{
@@ -1450,6 +1479,9 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
 			KimiSessionID:             ReadKimiSessionIDFromToolData(r.ToolData),
 			KimiDetectedAt:            ReadKimiDetectedAtFromToolData(r.ToolData),
+			AntigravitySessionID:      ReadAntigravitySessionIDFromToolData(r.ToolData),
+			AntigravityDetectedAt:     ReadAntigravityDetectedAtFromToolData(r.ToolData),
+			AntigravityForkParentID:   ReadAntigravityForkParentFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1604,6 +1636,9 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
 			KimiSessionID:             ReadKimiSessionIDFromToolData(r.ToolData),
 			KimiDetectedAt:            ReadKimiDetectedAtFromToolData(r.ToolData),
+			AntigravitySessionID:      ReadAntigravitySessionIDFromToolData(r.ToolData),
+			AntigravityDetectedAt:     ReadAntigravityDetectedAtFromToolData(r.ToolData),
+			AntigravityForkParentID:   ReadAntigravityForkParentFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1912,6 +1947,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			GeminiDetectedAt:             instData.GeminiDetectedAt,
 			GeminiYoloMode:               instData.GeminiYoloMode,
 			GeminiModel:                  instData.GeminiModel,
+			AntigravitySessionID:         instData.AntigravitySessionID,
+			AntigravityDetectedAt:        instData.AntigravityDetectedAt,
+			antigravityForkParentID:      antigravityForkParentForLoad(instData.AntigravitySessionID, instData.AntigravityForkParentID),
 			OpenCodeSessionID:            instData.OpenCodeSessionID,
 			OpenCodeDetectedAt:           instData.OpenCodeDetectedAt,
 			OpenCodeSessionDir:           instData.OpenCodeSessionDir,

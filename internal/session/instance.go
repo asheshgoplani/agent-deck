@@ -312,6 +312,30 @@ type Instance struct {
 	GeminiModel      string                  `json:"gemini_model,omitempty"`     // Active model for this session
 	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"` // Per-session analytics
 
+	// Antigravity CLI integration. Persisted in the tool_data extras zone
+	// (antigravity.go), so no schema change is needed and older binaries
+	// carry it forward untouched.
+	AntigravitySessionID      string    `json:"-"`
+	AntigravityDetectedAt     time.Time `json:"-"`
+	AntigravityStartedAt      int64     `json:"-"` // Unix millis when Antigravity started (for session matching, not persisted)
+	lastAntigravityScanAt     time.Time // Rate-limits ~/.gemini/antigravity-cli metadata scans
+	antigravitySessionCleared bool      // Set on explicit SetField clear so sticky merge clears it
+	antigravityForkParentID   string    // Source conversation of a fork whose child has not bound its own ID
+	antigravityPendingID      string    // Workspace candidate awaiting a second observation
+	antigravityPendingAt      time.Time // When antigravityPendingID was first seen
+	antigravityBindingPending bool      // Bound in memory but not yet written to SQLite
+	antigravityBindingRetries int       // Failed SQLite writes, for retry backoff
+	antigravityBindingRetryAt time.Time // Earliest next retry for a failed binding write
+	antigravityOwnedLoggedID  string    // Sibling-owned candidate already logged (avoids per-scan noise)
+	// antigravityForkKnownIDs snapshots the workspace conversations that existed
+	// before /fork, so status polling cannot adopt a sibling while the child's
+	// own conversation is still being created.
+	antigravityForkKnownIDs map[string]bool
+	antigravityForkSentAt   time.Time // When /fork was sent; only newer conversations can be the child
+	// antigravitySyncMu serializes discovery and its tmux/SQLite writes, so a
+	// slower scan cannot publish an older binding after a newer one.
+	antigravitySyncMu sync.Mutex
+
 	// OpenCode CLI integration
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
 	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
@@ -1654,6 +1678,7 @@ func (i *Instance) Start() (startErr error) {
 	// Build command based on tool type
 	// Priority: claude-compatible (built-in + custom wrapping claude) → built-in tools → custom tools → raw command
 	var command string
+	var antigravityTmuxFork bool
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: a fork target arrives here with a pre-built
@@ -1700,7 +1725,17 @@ func (i *Instance) Start() (startErr error) {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "antigravity":
-		command = i.buildEnvSourceCommand() + i.antigravityCommand()
+		i.AntigravityStartedAt = time.Now().UnixMilli()
+		if i.IsForkAwaitingStart {
+			command = i.buildEnvSourceCommand() + i.consumeForkStartCommand()
+			antigravityTmuxFork = true
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
+		command = i.buildEnvSourceCommand() + i.buildAntigravityResumeCommand()
 	case i.Tool == "copilot":
 		command = buildCopilotCommand(i)
 		// Record start time for session ID detection (Unix millis)
@@ -1839,6 +1874,9 @@ func (i *Instance) Start() (startErr error) {
 	}
 	i.retireFastDeathWatchers() // #2805
 	i.setInteractiveShellLaunchEnv()
+	if antigravityTmuxFork {
+		i.captureAntigravityForkKnownConversations()
+	}
 	noteFreshStart(i, time.Now()) // #2954: before the spawn, so the daemon judges its boot
 	if err := i.tmuxSession.Start(command); err != nil {
 		clearFreshStartToken(i.ID)
@@ -1919,6 +1957,9 @@ func (i *Instance) Start() (startErr error) {
 	if i.GeminiSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
 	}
+	if i.AntigravitySessionID != "" {
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_SESSION_ID", i.AntigravitySessionID)
+	}
 	if i.Tool == "gemini" {
 		yoloVal := "false"
 		if i.GeminiYoloMode != nil && *i.GeminiYoloMode {
@@ -1978,6 +2019,15 @@ func (i *Instance) Start() (startErr error) {
 	}
 
 	i.recoverConductorAfterSpawn()
+	if antigravityTmuxFork {
+		forkSentAt := time.Now()
+		i.mu.Lock()
+		i.antigravityForkSentAt = forkSentAt
+		i.mu.Unlock()
+		if err := i.forkAntigravityInPane(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2069,6 +2119,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	// DeepSeek headless profile is the same shape — `dsh --profile headless
 	// "<task>"` IS the whole invocation — so the flag is tool-neutral.
 	promptEmbeddedInCommand := false
+	antigravityTmuxFork := false
 	switch {
 	case i.crossHarnessLaunch != nil:
 		var launchErr error
@@ -2118,6 +2169,16 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "antigravity":
+		if i.IsForkAwaitingStart {
+			command = i.buildEnvSourceCommand() + i.consumeForkStartCommand()
+			antigravityTmuxFork = true
+			i.AntigravityStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command, promptEmbeddedInCommand = i.buildAntigravityCommandWithPrompt(message)
 		command = i.buildEnvSourceCommand() + command
 	case i.Tool == "opencode":
@@ -2253,6 +2314,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	}
 	i.retireFastDeathWatchers() // #2805
 	i.setInteractiveShellLaunchEnv()
+	if antigravityTmuxFork {
+		i.captureAntigravityForkKnownConversations()
+	}
 	noteFreshStart(i, time.Now()) // #2954, sister path to Start()
 	if err := i.tmuxSession.Start(command); err != nil {
 		clearFreshStartToken(i.ID)
@@ -2307,6 +2371,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	if i.GeminiSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
 	}
+	if i.AntigravitySessionID != "" {
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_SESSION_ID", i.AntigravitySessionID)
+	}
 	if i.Tool == "gemini" {
 		yoloVal := "false"
 		if i.GeminiYoloMode != nil && *i.GeminiYoloMode {
@@ -2342,6 +2409,28 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
+	if antigravityTmuxFork {
+		var knownBefore map[string]bool
+		if message != "" && !promptEmbeddedInCommand {
+			i.mu.RLock()
+			knownBefore = i.antigravityForkKnownIDs
+			i.mu.RUnlock()
+		}
+		forkSentAt := time.Now()
+		i.mu.Lock()
+		i.antigravityForkSentAt = forkSentAt
+		i.mu.Unlock()
+		if err := i.forkAntigravityInPane(); err != nil {
+			return err
+		}
+		// The ready prompt can return while the parent's composer is still on
+		// screen. Hold the initial message until /fork has produced a child
+		// conversation, or the message lands in the parent.
+		if message != "" && !promptEmbeddedInCommand &&
+			!i.waitForAntigravityForkChild(forkSentAt, knownBefore, antigravityForkChildTimeout) {
+			return i.stopAntigravityForkPane(fmt.Errorf("waiting for the forked Antigravity conversation: /fork did not create a child conversation"))
+		}
+	}
 	if message != "" && !promptEmbeddedInCommand {
 		return i.sendMessageWhenReady(message)
 	}
@@ -3013,6 +3102,10 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			if i.GeminiSessionID == "" {
 				interval = 500 * time.Millisecond
 			}
+		case i.Tool == "antigravity":
+			if i.AntigravitySessionID == "" {
+				interval = 500 * time.Millisecond
+			}
 		case IsCodexCompatible(i.Tool):
 			if i.CodexSessionID == "" {
 				interval = 500 * time.Millisecond
@@ -3042,6 +3135,14 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			if i.Tool == "opencode" {
 				i.mu.Unlock()
 				i.UpdateOpenCodeSession()
+				i.mu.Lock()
+			}
+
+			// Update Antigravity conversation ID tracking outside i.mu so disk
+			// and tmux reads do not stall render-path RLocks.
+			if i.Tool == "antigravity" {
+				i.mu.Unlock()
+				i.UpdateAntigravitySession()
 				i.mu.Lock()
 			}
 		}

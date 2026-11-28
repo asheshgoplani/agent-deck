@@ -123,6 +123,28 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.CopilotStartedAt = 0
 	}
 
+	if i.Tool == "antigravity" {
+		// Drop the binding, its timestamp and the launch-recorded tmux env so
+		// a fresh restart opens a new conversation instead of resuming the old.
+		i.mu.Lock()
+		hadBinding := i.AntigravitySessionID != ""
+		i.AntigravitySessionID = ""
+		i.AntigravityDetectedAt = time.Time{}
+		i.antigravityForkParentID = ""
+		i.antigravityPendingID = ""
+		i.antigravityPendingAt = time.Time{}
+		i.antigravityBindingPending = false
+		i.antigravitySessionCleared = true
+		tmuxSess := i.tmuxSession
+		i.mu.Unlock()
+		if tmuxSess != nil {
+			_ = tmuxSess.UnsetEnvironment("ANTIGRAVITY_SESSION_ID")
+		}
+		if hadBinding {
+			i.persistAntigravitySessionBinding("", time.Time{})
+		}
+	}
+
 	if i.Tool == "hermes" {
 		// Drop the recorded resume ID so the next launch starts a new session;
 		// its first hook event records the new id.
@@ -1087,7 +1109,8 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		case i.Tool == "gemini":
 			command = i.buildGeminiCommand(i.Command)
 		case i.Tool == "antigravity":
-			command = i.buildEnvSourceCommand() + i.antigravityCommand()
+			command = i.buildEnvSourceCommand() + i.buildAntigravityResumeCommand()
+			i.AntigravityStartedAt = time.Now().UnixMilli()
 		case i.Tool == "opencode":
 			command = i.buildOpenCodeCommand(i.Command)
 			// Record start time for async session ID detection
@@ -1568,6 +1591,11 @@ func (i *Instance) CanRestartFresh() bool {
 	// Hermes and Kimi fresh-restart discard the resume binding and start a new session.
 	if i.Tool == "hermes" || i.Tool == "kimi" {
 		return true
+	}
+	// Antigravity fresh-restart is only meaningful when a binding exists to
+	// discard; otherwise every restart already starts a new conversation.
+	if i.Tool == "antigravity" {
+		return i.effectiveAntigravitySessionID() != ""
 	}
 	// DeepSeek fresh-restart is only meaningful when there is a resume binding
 	// to discard. With [deepseek].resume_flag unset (the default) every restart

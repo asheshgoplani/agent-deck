@@ -97,14 +97,16 @@ func MergeToolDataExtras(oldToolData, newToolData json.RawMessage) json.RawMessa
 // empty present in the new blob, still wins — only outright omission preserves.
 func stickyToolDataKeys() map[string]bool {
 	return map[string]bool{
-		"claude_session_id":    true,
-		"claude_detected_at":   true,
-		"gemini_session_id":    true,
-		"gemini_detected_at":   true,
-		"opencode_session_id":  true,
-		"opencode_detected_at": true,
-		"codex_session_id":     true,
-		"codex_detected_at":    true,
+		"claude_session_id":       true,
+		"claude_detected_at":      true,
+		"gemini_session_id":       true,
+		"gemini_detected_at":      true,
+		"opencode_session_id":     true,
+		"opencode_detected_at":    true,
+		"codex_session_id":        true,
+		"codex_detected_at":       true,
+		"antigravity_session_id":  true,
+		"antigravity_detected_at": true,
 		// Custom [tools.*] conversation id (survives reboot when resume_flag set)
 		// and the tool/location scope it is only resumable under.
 		"generic_session_id":       true,

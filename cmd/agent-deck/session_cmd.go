@@ -159,7 +159,7 @@ func printSessionHelp() {
 	fmt.Println("  unarchive <id|title>    Restore an archived session (does not restart it)")
 	fmt.Println("  restart [id] [--all] [--env KEY=VALUE]  Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
-	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, Codex, or Oh My Pi session with context")
+	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, Codex, Oh My Pi, or Antigravity session with context")
 	fmt.Println("  handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)")
 	fmt.Println("  switch-preview <id>     Preview switch capability, fidelity and refusals (read-only, no mutation)")
 	fmt.Println("  attach <id>             Attach to session interactively")
@@ -241,6 +241,7 @@ func printSessionHelp() {
 	fmt.Println("  claude-session-id  Claude conversation ID (for fork/resume)")
 	fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 	fmt.Println("  gemini-session-id  Gemini conversation ID (for resume)")
+	fmt.Println("  antigravity-session-id  Antigravity CLI conversation ID (empty starts fresh)")
 	fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)")
 	fmt.Println()
 	fmt.Println("Set examples:")
@@ -287,7 +288,7 @@ func handleSessionFork(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
 		fmt.Println()
-		fmt.Println("Fork a Claude, OpenCode, Pi, Codex, or Oh My Pi session with conversation context.")
+		fmt.Println("Fork a Claude, OpenCode, Pi, Codex, Oh My Pi, or Antigravity session with conversation context.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -351,6 +352,10 @@ func handleSessionFork(profile string, args []string) {
 
 	// Verify this tool has a session-fork implementation.
 	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
+	if *sandbox && inst.Tool == "antigravity" {
+		out.Error("cannot fork an Antigravity session into a Docker sandbox: the fork runs agy --conversation on the parent's host", ErrCodeInvalidOperation)
+		exitCLI(1)
+	}
 	if !session.SupportsNativeFork(inst.Tool) {
 		out.Error(
 			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
@@ -370,6 +375,12 @@ func handleSessionFork(profile string, args []string) {
 	// owning host rather than against a local pane.
 	if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" && inst.Exists() {
 		inst.SyncOpenCodeLaunchID()
+	}
+	// Sync an Antigravity conversation ID from tmux env or local cache if
+	// background status polling has not persisted it yet. A workspace binding
+	// needs two sightings, so poll briefly instead of giving up after one scan.
+	if inst.Tool == "antigravity" && inst.AntigravitySessionID == "" && inst.Exists() {
+		inst.WaitForAntigravitySession(session.AntigravityConfirmWait)
 	}
 
 	// Verify it can be forked.
