@@ -79,10 +79,11 @@ func testFuncs(src []byte) (map[string]string, error) {
 	return out, nil
 }
 
-// tokenString joins the Go tokens of src, one separator between tokens, so
-// two sources compare equal exactly when they differ only in layout or
-// comments. Mode 0 drops comments; auto-inserted semicolons are skipped, as
-// a line break is layout.
+// tokenString joins the Go tokens of src, one separator between tokens.
+// Mode 0 drops comments. Every semicolon, written or inserted at a line
+// break, is the same ";" token, so equal strings mean an equal parse (a real
+// edit never compares equal); a layout edit that go/printer keeps and that
+// moves a statement boundary only makes a test count as changed.
 func tokenString(src []byte) string {
 	fset := token.NewFileSet()
 	var s scanner.Scanner
@@ -93,8 +94,8 @@ func tokenString(src []byte) string {
 		if tok == token.EOF {
 			break
 		}
-		if tok == token.SEMICOLON && lit == "\n" {
-			continue
+		if tok == token.SEMICOLON {
+			lit = ";"
 		}
 		if lit != "" {
 			b.WriteString(lit)
