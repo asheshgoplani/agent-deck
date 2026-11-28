@@ -111,3 +111,39 @@ func TestRemoteStatusForward_NoRunnerIsLinkDown(t *testing.T) {
 		t.Errorf("links %+v, want one link down for gone", links)
 	}
 }
+
+// markerFollow: a remote too old for a follow flag prints its
+// "unsupported" marker on stdout and exits 1 (the ssh layer passes the
+// line through). That line is not a frame: the link is not healthy.
+type markerFollow struct{ failingFollow }
+
+func (f *markerFollow) RunReadIO(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, m []byte, follow bool, args ...string) error {
+	if len(args) >= 2 && args[0] == "events" && args[1] == "follow" {
+		_, _ = io.WriteString(stdout, "unsupported\n")
+	}
+	return f.failingFollow.RunReadIO(ctx, stdin, stdout, stderr, m, follow, args...)
+}
+
+// 3174 review round 2 R2-F1: only a parsed frame (or 3 s up) makes the
+// follow healthy, so an older remote that prints its marker backs off.
+func TestRemoteStatusForwarder_UnsupportedMarkerBacksOff(t *testing.T) {
+	fake := &markerFollow{}
+	var mu sync.Mutex
+	ups := 0
+	f := &remoteStatusForwarder{name: "box", runner: fake,
+		publish: func(kind, _ string, data any) {
+			if l, ok := data.(SessionLinkEvent); ok && kind == KindSessionLink && l.Up {
+				mu.Lock()
+				ups++
+				mu.Unlock()
+			}
+		}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	f.run(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	if ups > 5 {
+		t.Errorf("%d link-up rounds in 2 s with a remote that prints its unsupported marker; want backoff (at most 5)", ups)
+	}
+}
