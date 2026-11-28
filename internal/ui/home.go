@@ -3922,7 +3922,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.remoteSessionsMu.Unlock()
 		// Show the new (empty) group's row now instead of after the next poll.
-		h.rebuildFlatItems()
+		h.rebuildFlatItemsKeepingSelection()
 		h.setNotice("created group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "create-group", remoteGroupBaseName(msg.groupPath)))
 		return h, nil
 
@@ -3947,7 +3947,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.remoteGroups[msg.remoteName] = kept
 		h.remoteSessionsMu.Unlock()
-		h.rebuildFlatItems()
+		h.rebuildFlatItemsKeepingSelection()
 		h.setNotice("deleted group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete-group", msg.groupPath))
 		return h, h.fetchRemoteSessions
 
