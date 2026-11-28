@@ -308,3 +308,19 @@ func TestChangedTestsSeesStringLiteralWhitespace(t *testing.T) {
 		})
 	}
 }
+
+// A statement boundary is behaviour: "defer f()" then "(x)()" is not
+// "defer f()(x)()", although the tokens without semicolons are the same.
+func TestTestFuncsKeepsStatementBoundaries(t *testing.T) {
+	two, err := testFuncs([]byte("package a\nfunc TestA(t *testing.T) {\n\tdefer f()\n\t(x)()\n}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, err := testFuncs([]byte("package a\nfunc TestA(t *testing.T) {\n\tdefer f()(x)()\n}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if two["TestA"] == one["TestA"] {
+		t.Fatalf("two statements and one compare equal: %q", one["TestA"])
+	}
+}
