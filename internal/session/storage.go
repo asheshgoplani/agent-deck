@@ -1878,6 +1878,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		projectPath := ExpandPath(fixMalformedTildePath(instData.ProjectPath))
 
 		inst := &Instance{
+			storageProfile:               s.profile,
 			ID:                           instData.ID,
 			Title:                        termtext.Clean(instData.Title),
 			ProjectPath:                  projectPath,

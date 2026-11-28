@@ -15,8 +15,9 @@ import (
 //
 // By default only sessions in stopped/error state may be removed; --force
 // bypasses the gate. --all-errored removes every session in error state.
-// --prune-worktree additionally kills the tmux process and removes any git
-// worktree associated with the session (registry-only by default).
+// Removal stops a session owned by this profile. For a recovered copy of
+// another profile's session, only the local registry row is removed.
+// --prune-worktree removes the worktree after a successful stop if unused.
 //
 // Claude transcripts under ~/.claude/projects/<slug>/ are never touched.
 func handleSessionRemove(profile string, args []string) {
@@ -26,7 +27,7 @@ func handleSessionRemove(profile string, args []string) {
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	force := fs.Bool("force", false, "Remove even when the session is running/waiting/idle; with --all-errored, also include pinned sessions; with --prune-worktree, also remove a worktree when other profiles that cannot be read might use it (reported as profiles_unchecked in --json) (destructive)")
 	allErrored := fs.Bool("all-errored", false, "Remove every unpinned session currently in the 'error' state (bulk); pinned sessions are skipped unless --force is given")
-	pruneWorktree := fs.Bool("prune-worktree", false, "Also kill the process and remove any git worktree (destructive; a worktree another session still uses is kept)")
+	pruneWorktree := fs.Bool("prune-worktree", false, "Also remove the git worktree if no other session uses it (destructive)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session remove <id|title> [options]")
@@ -37,9 +38,10 @@ func handleSessionRemove(profile string, args []string) {
 		fmt.Println("--force is given; a row with no live process is removed. 'remove'")
 		fmt.Println("uses the same guard.")
 		fmt.Println()
-		fmt.Println("This is registry-only by default: Claude transcripts under")
-		fmt.Println("~/.claude/projects/ are preserved. Pass --prune-worktree to also")
-		fmt.Println("kill the process and delete the git worktree (destructive).")
+		fmt.Println("Removal stops sessions this profile owns. For a recovered copy")
+		fmt.Println("owned by another profile, it only deletes the local registry row.")
+		fmt.Println("Claude transcripts under ~/.claude/projects/ are preserved.")
+		fmt.Println("--prune-worktree deletes an unused git worktree after a successful stop.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -115,13 +117,13 @@ func handleSessionRemove(profile string, args []string) {
 	// KillAndWait runs the SIGTERM→SIGKILL escalation synchronously so
 	// the kill completes before this short-lived CLI exits.
 	saveStoppedBeforeRemoval(storage, inst)
-	_ = inst.KillAndWait()
+	stopErr := inst.KillAndWait()
 	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
 	worktreeKept := false
 	var profilesUnchecked []string
 	if *pruneWorktree {
-		worktreeKept, profilesUnchecked = pruneSessionWorktree(inst, instances, newWorktreeRemovalGuard(profile), *force, *jsonOutput)
+		worktreeKept, profilesUnchecked = pruneSessionWorktree(inst, instances, newWorktreeRemovalGuard(profile), stopErr, *force, *jsonOutput)
 	}
 
 	// v1.9.1 (#909): RemoveSessionAndVerify replaces the
@@ -298,17 +300,20 @@ func bulkRemoveSessions(
 
 	removed := make([]removedSessionRow, 0, len(doomed))
 	removedIDs := make([]string, 0, len(doomed))
-	// Sessions not removed yet: a worktree shared only with sessions this
-	// sweep already removed goes with the last of them.
+	// Keep sessions whose stop failed in the sharing check even after their
+	// registry rows are removed. A later session may use the same worktree.
 	live := append([]*session.Instance(nil), instances...)
 	for _, inst := range doomed {
 		saveStoppedBeforeRemoval(storage, inst)
-		_ = inst.KillAndWait()
+		stopErr := inst.KillAndWait()
+		worktreeKept := false
 		var profilesUnchecked []string
 		if pruneWorktree {
-			_, profilesUnchecked = pruneSessionWorktree(inst, live, guard, force, out.jsonMode)
+			worktreeKept, profilesUnchecked = pruneSessionWorktree(inst, live, guard, stopErr, force, out.jsonMode)
 		}
-		live = dropInstance(live, inst.ID)
+		if stopErr == nil {
+			live = dropInstance(live, inst.ID)
+		}
 		if err := storage.DeleteInstance(inst.ID); err != nil {
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			exitBulkRemove(1)
@@ -318,6 +323,9 @@ func bulkRemoveSessions(
 		session.CleanupRemovedSession(storage.Profile(), inst.ID)
 		removedIDs = append(removedIDs, inst.ID)
 		row := map[string]interface{}{"id": inst.ID, "title": inst.Title}
+		if worktreeKept {
+			row["worktree_kept"] = true
+		}
 		if len(profilesUnchecked) > 0 {
 			// --force removed the worktree without reading these profiles.
 			row["profiles_unchecked"] = profilesUnchecked
@@ -385,20 +393,13 @@ func saveStoppedBeforeRemoval(storage *session.Storage, inst *session.Instance) 
 	}
 }
 
-// pruneSessionWorktree kills the session and removes its git worktree (if any)
-// unless another session, in this or any other local profile, still uses it;
-// kept reports that case. unchecked names the profiles that could not be read
-// when force removed the worktree anyway. Errors are logged to stderr but
-// never block the remove.
-//
-// Uses KillAndWait so the SIGTERM→SIGKILL escalation completes before
-// this short-lived CLI exits (issue #59, v1.7.68).
-func pruneSessionWorktree(inst *session.Instance, instances []*session.Instance, guard *worktreeRemovalGuard, force, jsonOutput bool) (kept bool, unchecked []string) {
-	_ = inst.KillAndWait()
+// pruneSessionWorktree removes a worktree only once the caller has stopped
+// the session and checked that no other session uses the worktree.
+func pruneSessionWorktree(inst *session.Instance, instances []*session.Instance, guard *worktreeRemovalGuard, stopErr error, force, jsonOutput bool) (kept bool, unchecked []string) {
 	if !inst.IsWorktree() {
 		return false, nil
 	}
-	keep, unchecked := keepSharedWorktree(inst, instances, guard, force, jsonOutput)
+	keep, unchecked := keepWorktreeAfterStop(inst, instances, guard, stopErr, force, jsonOutput)
 	if keep {
 		return true, nil
 	}
@@ -443,14 +444,18 @@ func (g *worktreeRemovalGuard) sharers(inst *session.Instance, current []*sessio
 	return session.SessionsSharingWorktree(inst, all), g.err
 }
 
-// keepSharedWorktree reports whether inst's worktree must survive its removal
-// because another session in this or another local profile still uses it
-// (#1449, the same rule as the TUI delete), or because another profile could
-// not be read and force is not set. It says so on stderr outside --json mode.
+// keepWorktreeAfterStop preserves the worktree when stopping the session
+// failed or another session may still use it (#1449).
 // When force removes it anyway, unchecked names the profiles that were not
 // read, so --json output can report them (the stderr warning is suppressed
 // there).
-func keepSharedWorktree(inst *session.Instance, instances []*session.Instance, guard *worktreeRemovalGuard, force, jsonOutput bool) (keep bool, unchecked []string) {
+func keepWorktreeAfterStop(inst *session.Instance, instances []*session.Instance, guard *worktreeRemovalGuard, stopErr error, force, jsonOutput bool) (keep bool, unchecked []string) {
+	if stopErr != nil {
+		if !jsonOutput {
+			fmt.Fprintf(os.Stderr, "Kept worktree %s: could not stop session: %v\n", FormatPath(inst.WorktreePath), stopErr)
+		}
+		return true, nil
+	}
 	sharers, err := guard.sharers(inst, instances)
 	if len(sharers) > 0 {
 		if !jsonOutput {

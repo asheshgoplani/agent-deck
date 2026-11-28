@@ -3,10 +3,14 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // `conductor setup` stamps the stable conductor name on the session it
@@ -151,6 +155,58 @@ func TestConductorTeardownRemove_RenamedAndDecorated(t *testing.T) {
 			}
 			if !keptBystander {
 				t.Error("teardown --remove deleted an unrelated session row")
+			}
+		})
+	}
+}
+
+func TestConductorTeardownUsesStoredProfile(t *testing.T) {
+	testutil.RequireTmux(t)
+	for _, tc := range []struct {
+		owner string
+		code  int
+	}{
+		{"work", 0},
+		{"personal", 1},
+	} {
+		t.Run(tc.owner, func(t *testing.T) {
+			sandboxConductorHome(t)
+			home := os.Getenv("HOME")
+			if err := session.SaveConductorMeta(&session.ConductorMeta{Name: "ops", Profile: "work"}); err != nil {
+				t.Fatal(err)
+			}
+			storage, err := session.NewStorageWithProfile("work")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = storage.Close() })
+
+			sess := &tmux.Session{Name: "agentdeck_recovered-conductor_" + tc.owner}
+			if out, err := exec.Command("tmux", "new-session", "-d", "-s", sess.Name, "sleep 120").CombinedOutput(); err != nil {
+				t.Fatalf("new tmux session: %v (%s)", err, out)
+			}
+			t.Cleanup(func() { _ = sess.KillAndWait() })
+			if err := sess.SetEnvironment("AGENTDECK_PROFILE", tc.owner); err != nil {
+				t.Fatal(err)
+			}
+			inst := session.NewInstanceWithGroupAndTool("conductor-ops", home, "conductor", "shell")
+			inst.IsConductor = true
+			inst.ConductorName = "ops"
+			inst.CreatedAt = time.Time{}
+			inst.SetTmuxSessionForTest(sess)
+			if err := storage.SaveWithGroups([]*session.Instance{inst}, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			out, stderr, code := runAgentDeck(t, home, "conductor", "teardown", "ops", "--json")
+			if code != tc.code {
+				t.Errorf("teardown exited %d, want %d: %s %s", code, tc.code, out, stderr)
+			}
+			if alive, err := sess.ProbeExists(); err != nil || alive != (tc.code != 0) {
+				t.Errorf("teardown left session alive=%v, err=%v", alive, err)
+			}
+			if tc.code != 0 && !strings.Contains(out+stderr, "belongs to another profile") {
+				t.Errorf("teardown did not report the failed stop: %s %s", out, stderr)
 			}
 		})
 	}

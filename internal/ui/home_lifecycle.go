@@ -90,6 +90,9 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		prev := captureUndoState(inst)
 		killErr := inst.Kill()
 		inst.RecordTelemetryEnd(telemetry.EndDelete)
+		if killErr != nil {
+			return sessionDeletedMsg{deletedID: id, killErr: killErr, prev: prev}
+		}
 		if isWorktree && !sharedWorktree {
 			// h.instances only holds this profile. A session in another local
 			// profile can use the same worktree; read them here, off the UI

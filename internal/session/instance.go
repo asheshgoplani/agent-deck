@@ -126,6 +126,7 @@ const (
 // Instance represents a single agent/shell session
 type Instance struct {
 	storageSnapshot *instanceStorageSnapshot
+	storageProfile  string // The profile that loaded this row.
 
 	ID          string `json:"id"`
 	Title       string `json:"title"`
@@ -3219,6 +3220,9 @@ func (i *Instance) OpenShellHere(mode string) error {
 // SyncTmuxDisplayName updates tmux-rendered UI that reflects the current title.
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
+		if i.checkRecoveredTmuxOwnership() != nil {
+			return
+		}
 		tmuxSess.DisplayName = i.Title
 		tmuxSess.SetGroupPath(i.GroupPath)
 		tmuxSess.ConfigureStatusBar()

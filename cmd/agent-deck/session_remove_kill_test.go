@@ -325,6 +325,112 @@ func newSandboxWorktree(t *testing.T, sb *harness.Sandbox, name string) (string,
 	return repo, wt
 }
 
+func seedForeignRecoveredWorktree(t *testing.T, sb *harness.Sandbox, id, worktree, repo string) string {
+	t.Helper()
+	seedDeadSession(t, sb, id, worktree, repo)
+	db := sandboxStateDB(t, sb)
+	defer db.Close()
+	row, err := db.LoadInstanceByID(id)
+	if err != nil || row == nil {
+		t.Fatalf("load fixture: %+v %v", row, err)
+	}
+	row.CreatedAt = time.Time{}
+	if err := db.SaveInstance(row); err != nil {
+		t.Fatal(err)
+	}
+	sb.Tmux("new-session", "-d", "-s", row.TmuxSession, "-c", worktree, "sleep 120")
+	sb.Tmux("set-environment", "-t", row.TmuxSession, "AGENTDECK_PROFILE", "work")
+	return row.TmuxSession
+}
+
+func TestRemoveKeepsForeignRecoveredWorktree(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"session remove", []string{"session", "remove", "recovered-copy", "--force", "--prune-worktree", "--json"}},
+		{"remove", []string{"remove", "recovered-copy", "--force", "--json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := removeSandbox(t)
+			const id = "recovered-copy"
+			repo, worktree := newSandboxWorktree(t, sb, id)
+			name := seedForeignRecoveredWorktree(t, sb, id, worktree, repo)
+
+			out, err := runRemoveCLI(t, sb, tc.args...)
+			if err != nil {
+				t.Fatalf("remove recovered row: %v\n%s", err, out)
+			}
+			if loadSandboxRow(t, sb, id) != nil {
+				t.Fatal("the recovered registry row remains")
+			}
+			if _, err := os.Stat(worktree); err != nil {
+				t.Errorf("the owner lost its worktree: %v", err)
+			}
+			if !tmuxSessionAlive(sb, name) {
+				t.Error("the owner lost its live tmux session")
+			}
+			var result struct {
+				WorktreeKept bool `json:"worktree_kept"`
+			}
+			if err := json.Unmarshal([]byte(out), &result); err != nil || !result.WorktreeKept {
+				t.Errorf("worktree_kept must report the retained worktree: %v\n%s", err, out)
+			}
+		})
+	}
+}
+
+func TestSessionRemove_AllErroredKeepsWorktreeSharedWithFailedStop(t *testing.T) {
+	sb := removeSandbox(t)
+	const foreignID, localID = "foreign-copy", "local-copy"
+	repo, worktree := newSandboxWorktree(t, sb, localID)
+	foreignName := seedForeignRecoveredWorktree(t, sb, foreignID, worktree, repo)
+	killPaneKeepScope(t, sb, foreignName)
+
+	seedDeadSession(t, sb, localID, worktree, repo)
+	db := sandboxStateDB(t, sb)
+	defer db.Close()
+	local, err := db.LoadInstanceByID(localID)
+	if err != nil || local == nil {
+		t.Fatalf("load local fixture: %+v %v", local, err)
+	}
+	local.Order = 1
+	if err := db.SaveInstance(local); err != nil {
+		t.Fatal(err)
+	}
+	sb.Tmux("new-session", "-d", "-s", local.TmuxSession, "-c", worktree, "sleep 120")
+	killPaneKeepScope(t, sb, local.TmuxSession)
+
+	out, err := runRemoveCLI(t, sb, "session", "remove", "--all-errored", "--prune-worktree", "--json")
+	if err != nil {
+		t.Fatalf("remove errored rows: %v\n%s", err, out)
+	}
+	var result struct {
+		Removed []struct {
+			ID           string `json:"id"`
+			WorktreeKept bool   `json:"worktree_kept"`
+		} `json:"removed"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil || len(result.Removed) != 2 ||
+		result.Removed[0].ID != foreignID || result.Removed[1].ID != localID {
+		t.Fatalf("expected the foreign row to be removed first: %v\n%s", err, out)
+	}
+	for _, row := range result.Removed {
+		if loadSandboxRow(t, sb, row.ID) != nil {
+			t.Errorf("registry row %s remains", row.ID)
+		}
+		if !row.WorktreeKept {
+			t.Errorf("removing %s did not retain the shared worktree", row.ID)
+		}
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Errorf("the foreign session lost its worktree: %v", err)
+	}
+	if !tmuxSessionAlive(sb, foreignName) || tmuxSessionAlive(sb, local.TmuxSession) {
+		t.Error("the foreign scope must survive and the local scope must stop")
+	}
+}
+
 // `session cleanup` is registry-only: --yes alone must remove the dead row
 // but keep its git worktree directory (uncommitted work lives there). Only
 // an explicit --prune-worktree deletes it.

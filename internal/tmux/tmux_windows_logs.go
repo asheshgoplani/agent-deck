@@ -571,7 +571,8 @@ func DiscoverAllTmuxSessions() ([]*Session, error) {
 	// one field that can legitimately contain a colon (a path component),
 	// and SplitN below relies on that so the path is never truncated at an
 	// embedded colon.
-	output, err := runBoundedOutput(DefaultSocketName(), "list-sessions", "-F",
+	socket := DefaultSocketName()
+	output, err := runBoundedOutput(socket, "list-sessions", "-F",
 		"#{session_name}:#{session_created}:#{pane_current_command}:#{pane_current_path}")
 	if err != nil {
 		// No sessions exist
@@ -610,6 +611,7 @@ func DiscoverAllTmuxSessions() ([]*Session, error) {
 		// Create session object
 		sess := &Session{
 			Name:        sessionName,
+			SocketName:  socket,
 			DisplayName: sessionName,
 			WorkDir:     workDir,
 			Created:     created,

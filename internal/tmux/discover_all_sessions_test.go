@@ -7,6 +7,37 @@ import (
 	"time"
 )
 
+func TestDiscoverAllTmuxSessionsKeepsNamedSocket(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	socket := "discover-profile-test"
+	previous := DefaultSocketName()
+	SetDefaultSocketName(socket)
+	t.Cleanup(func() { SetDefaultSocketName(previous) })
+
+	name := "agentdeck_named-socket_01234567"
+	sess := &Session{Name: name, SocketName: socket}
+	if out, err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", name, "sleep 120").CombinedOutput(); err != nil {
+		t.Fatalf("new tmux session: %v (%s)", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+	if err := sess.SetEnvironment("AGENTDECK_PROFILE", "work"); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := DiscoverAllTmuxSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, found := range sessions {
+		if found.Name == name {
+			if got, err := found.ReadEnvironment("AGENTDECK_PROFILE"); got != "work" || err != nil {
+				t.Fatalf("read named socket owner: got %q, err %v", got, err)
+			}
+			return
+		}
+	}
+	t.Fatalf("session %q not found", name)
+}
+
 // TestDiscoverAllTmuxSessions_WorkDirWithColonSurvives is a regression guard
 // for a bug introduced while adding Created/Command reporting (finding 1,
 // 2026-09-18 live UI audit's doctor/health diagnostic): the `-F` format grew

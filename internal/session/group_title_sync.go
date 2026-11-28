@@ -27,6 +27,9 @@ func (s *Storage) refreshCommittedGroupTitles(instances []*Instance, rows []*sta
 			return s.db.LoadInstanceByID(row.ID)
 		}, func(current *statedb.InstanceRow) error {
 			target := &tmux.Session{Name: current.TmuxSession, SocketName: current.TmuxSocketName}
+			if err := checkRecoveredTmuxOwnership(target, current.CreatedAt, s.Profile()); err != nil {
+				return err
+			}
 			return target.SetGroupTitleMetadata(current.GroupPath)
 		})
 		if err != nil {

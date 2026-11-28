@@ -3737,10 +3737,11 @@ func handleRemove(profile string, args []string) {
 	// before this short-lived CLI exits — otherwise SIGHUP-immune claude
 	// processes survive as orphans (issue #59, v1.7.68).
 	saveStoppedBeforeRemoval(storage, inst)
-	if err := inst.KillAndWait(); err != nil {
+	stopErr := inst.KillAndWait()
+	if stopErr != nil {
 		// Only warn if the session actually existed (ignore "not found" errors)
 		if inst.Exists() && !*jsonOutput {
-			fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
+			fmt.Printf("Warning: failed to kill tmux session: %v\n", stopErr)
 			fmt.Println("Session removed from Agent Deck but may still be running in tmux")
 		}
 	}
@@ -3758,13 +3759,11 @@ func handleRemove(profile string, args []string) {
 	// this removal was never allowed to touch.
 	_ = inst.RetireServiceUnit(serviceUnitOwnership)
 
-	// Clean up worktree directory if this is a worktree session, unless
-	// another session in this or another local profile still uses it (#1449,
-	// as the TUI delete does). remove has no --force, so an unreadable other
-	// profile keeps the worktree too.
+	// Preserve a worktree when its session may still be running or another
+	// profile may still use it (#1449).
 	worktreeKept := false
 	if inst.IsWorktree() {
-		worktreeKept, _ = keepSharedWorktree(inst, instances, newWorktreeRemovalGuard(profile), false, *jsonOutput)
+		worktreeKept, _ = keepWorktreeAfterStop(inst, instances, newWorktreeRemovalGuard(profile), stopErr, false, *jsonOutput)
 	}
 	if inst.IsWorktree() && !worktreeKept {
 		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {

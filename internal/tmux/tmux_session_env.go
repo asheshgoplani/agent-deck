@@ -285,19 +285,35 @@ func (s *Session) UnsetEnvironment(key string) error {
 // cache. Reading the whole environment distinguishes a missing key (empty,
 // nil) from a failed probe; ownership discovery must not guess after failure.
 func (s *Session) ReadEnvironment(key string) (string, error) {
+	output, err := s.readSessionEnvironment(s.TmuxName())
+	return sessionEnvironmentValue(output, key), err
+}
+
+// ReadAgentDeckIdentity reads the owner and instance ID from one live tmux
+// environment snapshot.
+func (s *Session) ReadAgentDeckIdentity() (profile, id string, err error) {
+	output, err := s.readSessionEnvironment("=" + s.TmuxName())
+	return sessionEnvironmentValue(output, "AGENTDECK_PROFILE"), sessionEnvironmentValue(output, "AGENTDECK_INSTANCE_ID"), err
+}
+
+func (s *Session) readSessionEnvironment(target string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	output, err := commandOutput(s.tmuxCmdContext(ctx, "show-environment", "-t", s.TmuxName()))
+	output, err := commandOutput(s.tmuxCmdContext(ctx, "show-environment", "-t", target))
 	if err != nil {
 		return "", err
 	}
+	return string(output), nil
+}
+
+func sessionEnvironmentValue(output, key string) string {
 	prefix := key + "="
-	for _, line := range strings.Split(string(output), "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		if strings.HasPrefix(line, prefix) {
-			return strings.TrimPrefix(line, prefix), nil
+			return strings.TrimPrefix(line, prefix)
 		}
 	}
-	return "", nil
+	return ""
 }
 
 // GetEnvironment gets an environment variable from this tmux session.
