@@ -71,7 +71,9 @@ agent-deck recall timeline ...`), and in every other case: a local shell, a
 service, cron, an interactive `ssh box` with a tty, an agent session in tmux.
 This is not an access-control boundary: anyone with a shell on the box can set
 the variable or read the transcript file. It only keeps agent-deck's own
-egress surfaces from sending a transcript off a recall-off box by default. `--v1` and ids only the index knows (`#n`, card ids) need
+egress surfaces from sending a transcript off a recall-off box by default.
+
+`--v1` and ids only the index knows (`#n`, card ids) need
 `[recall] enabled = true` everywhere (exit 2 otherwise). `<session>` resolves,
 without touching recall.db, as a deck session id,
 a Claude, Codex or Pi conversation id bound to a deck session, a deck title

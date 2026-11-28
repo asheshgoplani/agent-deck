@@ -30,6 +30,8 @@ read-only transcript and pane reads named below.
 | Triggers: what wakes each session | `triggers --json [--session <id\|title>] [--host <remote>\|all]`, live updates with `events follow --json --kind session.trigger` (refetch the list on a frame, debounced); `triggers mute\|unmute <id> --json`, `triggers fires <id> --json`, `triggers run <id> --json`; remotes via `remote <name> triggers --json` (a host that cannot answer is `"unknown"` in `hosts`) | none | docs/triggers.md |
 | Remote conversations, status stream, send states | `remote <name> recall timeline\|follow …`, `remote <name> events follow --jsonl [--since c]`, `remote <name> session send-status <send-id> --json`; a forwarded follow ends (exit 0) when its stdin closes, so hold stdin open | the owner host's own gates | docs/remote-recall.md |
 
+The `[recall] enabled` gate on the rows reads is a transcript-egress default, not an access-control boundary: anyone with a shell on the box can read the transcript file or set `AGENTDECK_LOCAL_READ=1`. docs/recall-timeline.md, "Rows", has the full rule.
+
 ## Queued send
 
 ```
