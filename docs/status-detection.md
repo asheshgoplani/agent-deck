@@ -94,10 +94,17 @@ A background agent that stops while background work of its own still runs
 gets an interim `<task-notification>` (`<status>completed</status>` with the
 note "stopped with background work of its own still running", or the summary
 "is waiting on its own background work"). That notification is not terminal:
-the agent stays pending, its hold restarts at the notification, and a footer
+the agent stays pending and its hold restarts at the notification. A footer
 shell counter (which counts the sub-agent's shells too) is that agent
-running and refreshes the hold. The agent's later notification without the
-interim note ends it.
+running, but only within the shell hold below (`[status]
+background_shell_hold`), counted from the interim notification. Seeing the
+counter never refreshes it, as for shells: an agent that started a server
+nobody reaps never notifies again and must not pin the light. With a hold of
+`0` the counter alone keeps it running, as before A5. The wording is matched
+only in Claude Code's own text (the note, and the summary after the agent's
+quoted description), not in the agent's `<result>` or description. The agent's
+later notification without the interim note ends it, and a new Claude
+process (SessionStart startup / resume) ends it too.
 
 Shell rule (A5, 1.16.30; partly reverses #2473 for shells only): a footer
 shell counter with no workflow or agent evidence keeps a Claude session

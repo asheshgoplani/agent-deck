@@ -201,9 +201,115 @@ var (
 	taskStatusRe       = regexp.MustCompile(`<status>([^<]+)</status>`)
 	// interimAgentRe is the interim agent notification: <status>completed
 	// while the agent waits on background work it launched itself. Claude
-	// Code 2.1.288 says so in <note>, 2.1.307 also in <summary>.
+	// Code 2.1.288 says so in <note>, 2.1.307 also in <summary>. It is
+	// matched only in that text of Claude Code's own (interimOutsideResult).
 	interimAgentRe = regexp.MustCompile(`background work of its own still running|waiting on its own background work`)
 )
+
+// interimNotification reports whether an agent's notification block is the
+// interim one. Claude Code writes its own text (task id, status, the summary's
+// status words, the note) before <result>; the agent's free text is the quoted
+// description in the summary and the result. With the description known from
+// the launch, it is cut out exactly and only the text before the real <result>
+// is matched, so no tag the agent writes in either can move that line. A block
+// whose description is not found (truncated inside it, or written in a form
+// this does not reproduce) falls back to interimOutsideResult.
+func interimNotification(block, desc string) bool {
+	if desc != "" {
+		marker := `Agent \"` + jsonEscapedText(desc) + `\"`
+		if i := strings.Index(block, marker); i >= 0 {
+			head, tail := block[:i], block[i+len(marker):]
+			if r := strings.Index(head, "<result>"); r >= 0 {
+				return interimInOwnText(head[:r])
+			}
+			if r := strings.Index(tail, "<result>"); r >= 0 {
+				tail = tail[:r]
+			}
+			return interimInOwnText(head) || interimAgentRe.MatchString(tail)
+		}
+	}
+	return interimOutsideResult(block)
+}
+
+// jsonEscapedText is s as it appears inside a JSON string in Claude Code's
+// JSONL: quotes, backslashes and control characters escaped, '<' and '>' raw.
+// Text with none of those is returned as is, with no allocation.
+func jsonEscapedText(s string) string {
+	plain := true
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c == '"' || c == '\\' || c < 0x20 {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return s
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return s
+	}
+	out := strings.TrimSpace(b.String())
+	return out[1 : len(out)-1]
+}
+
+// interimOutsideResult reports whether block carries the interim wording in
+// Claude Code's own text: a <note> body, or a <summary> body after the quoted
+// description (`Agent "desc" is waiting ...`). The <result> and the
+// description are the agent's free text: an agent that writes about the
+// wording, or is described with it, must not read as interim. The result runs
+// to its last </result>, since the agent may write the tag itself; a result
+// cut off by a truncated record runs to the block's end. It matches the pieces in
+// place, with no copy.
+func interimOutsideResult(block string) bool {
+	start := strings.Index(block, "<result>")
+	if start < 0 {
+		return interimInOwnText(block)
+	}
+	if interimInOwnText(block[:start]) {
+		return true
+	}
+	rest := block[start:]
+	if end := strings.LastIndex(rest, "</result>"); end >= 0 {
+		return interimInOwnText(rest[end+len("</result>"):])
+	}
+	return false
+}
+
+// interimInOwnText matches the interim wording in each <note> body and in each
+// <summary> body past its last quote (the end of the agent's description). A
+// body runs to its closing tag, so a '<' in the description does not cut it;
+// a body with no closing tag (a truncated record) runs to the next tag or the
+// end of seg.
+func interimInOwnText(seg string) bool {
+	for _, tag := range [...]string{"note", "summary"} {
+		open := "<" + tag + ">"
+		for s := seg; ; {
+			i := strings.Index(s, open)
+			if i < 0 {
+				break
+			}
+			s = s[i+len(open):]
+			body := s
+			if j := strings.Index(s, "</"+tag+">"); j >= 0 {
+				body = s[:j]
+			} else if j := strings.IndexByte(s, '<'); j >= 0 {
+				body = s[:j]
+			}
+			if tag == "summary" {
+				if q := strings.LastIndexByte(body, '"'); q >= 0 {
+					body = body[q+1:]
+				}
+			}
+			if interimAgentRe.MatchString(body) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // taskNotificationBlocks splits a raw transcript line into the bodies of the
 // <task-notification> blocks it carries (one line can hold several, and a
@@ -270,6 +376,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 			if hook := rec.Attachment.HookName; hook == "SessionStart:startup" || hook == "SessionStart:resume" {
 				pending = map[string]transcriptBackgroundTask{}
 				order = nil
+				clear(launchedAgents)
 				sc.TurnWorkflows, sc.TurnAgents = 0, 0
 				sc.TurnWorkflowsKnown, sc.TurnAgentsKnown = true, true
 			}
@@ -300,7 +407,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 				continue
 			}
 			id := strings.TrimSpace(idm[1])
-			if task, ok := launchedAgents[id]; ok && interimAgentRe.MatchString(block) {
+			if task, ok := launchedAgents[id]; ok && interimNotification(block, task.Name) {
 				// Not terminal: the agent resumes when its own work reports,
 				// and the same task id notifies again then. It revives an
 				// agent a copy of this notification without the note (a
@@ -464,9 +571,12 @@ func mergeBackgroundWork(pane tmux.BackgroundWork, sc transcriptBackgroundScan, 
 	if pane.Kind == tmux.BackgroundKindBash && scOK {
 		// A sub-agent's own background shells are counted on the session's
 		// footer. While an agent awaits its own work, a live shell counter is
-		// that agent running, and the sighting extends its hold.
-		if agent, ok := sc.awaitingAgent(); ok {
-			return tmux.BackgroundWork{Kind: tmux.BackgroundKindAgent, Task: agent.Name, Source: "pane+transcript"}, true
+		// that agent running, but only within hold of its interim
+		// notification (A5): an agent that started a server nobody reaps
+		// never notifies again, and the counter must not pin the light. The
+		// sighting never extends it. With hold 0 the counter alone is work.
+		if agent, ok := sc.freshAwaitingAgent(now, hold); ok {
+			return tmux.BackgroundWork{Kind: tmux.BackgroundKindAgent, Task: agent.Name, Source: "pane+transcript"}, hold == 0
 		}
 	}
 	if pane.Kind == tmux.BackgroundKindBash {
@@ -560,6 +670,22 @@ func (sc transcriptBackgroundScan) freshShell(now time.Time, hold time.Duration)
 func (sc transcriptBackgroundScan) awaitingAgent() (transcriptBackgroundTask, bool) {
 	for idx := len(sc.Pending) - 1; idx >= 0; idx-- {
 		if task := sc.Pending[idx]; task.Kind == tmux.BackgroundKindAgent && task.Awaiting {
+			return task, true
+		}
+	}
+	return transcriptBackgroundTask{}, false
+}
+
+// freshAwaitingAgent returns the newest awaiting agent whose interim
+// notification is inside hold, like freshShell for a shell's launch. With
+// hold 0 (the rule before A5) any awaiting agent counts.
+func (sc transcriptBackgroundScan) freshAwaitingAgent(now time.Time, hold time.Duration) (transcriptBackgroundTask, bool) {
+	for idx := len(sc.Pending) - 1; idx >= 0; idx-- {
+		task := sc.Pending[idx]
+		if task.Kind != tmux.BackgroundKindAgent || !task.Awaiting {
+			continue
+		}
+		if hold == 0 || (!task.At.IsZero() && now.Sub(task.At) <= hold) {
 			return task, true
 		}
 	}

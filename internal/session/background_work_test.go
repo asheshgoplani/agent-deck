@@ -185,9 +185,11 @@ func TestMergeBackgroundWork(t *testing.T) {
 		// pane sighting is not stamped (paneShown false).
 		{"footer counter named from transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, shells, true, time.Time{}, tmux.BackgroundKindBash, "Sleep for 50 seconds in background", false},
 		// A sub-agent's own shells are on the session's footer: while the
-		// agent awaits its own work the counter is that agent running, and
-		// the sighting extends its hold.
-		{"footer counter, agent awaiting its own shell", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, staleAwaiting, true, time.Time{}, tmux.BackgroundKindAgent, "probe sleeper agent", true},
+		// agent awaits its own work the counter is that agent running, within
+		// background_shell_hold of the interim notification (A5). The
+		// sighting never extends it (paneShown false).
+		{"footer counter, agent awaiting its own shell", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, awaitingOwn, true, time.Time{}, tmux.BackgroundKindAgent, "probe sleeper agent", false},
+		{"footer counter, agent awaiting its own shell, past the shell hold", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, staleAwaiting, true, time.Time{}, "", "", false},
 		{"agent awaiting its own shell, fresh notification holds", tmux.BackgroundWork{}, awaitingOwn, true, time.Time{}, tmux.BackgroundKindAgent, "probe sleeper agent", false},
 		{"agent awaiting its own shell, past the hold", tmux.BackgroundWork{}, staleAwaiting, true, time.Time{}, "", "", false},
 		{"footer counter, no transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, transcriptBackgroundScan{}, false, time.Time{}, "", "", false},
@@ -596,5 +598,208 @@ func TestBackgroundWork2473_WorkflowEndRecordFollowsUrgentRule(t *testing.T) {
 				t.Fatalf("record trigger/tier = %q/%q, want %q/%q (%+v)", got[0].Trigger, got[0].Tier, TurnTriggerTask, c.tier, got[0])
 			}
 		})
+	}
+}
+
+// A background agent that starts a server nobody reaps and stops gets the
+// interim notification, never the final one, and the footer counter stays up.
+// The counter keeps that agent running only within background_shell_hold of
+// the interim notification (A5), and its sightings never extend that.
+func TestMergeBackgroundWork_AwaitingAgentCounterBoundedByShellHold(t *testing.T) {
+	t.Cleanup(func() { setBackgroundShellHold(DefaultBackgroundShellHold) })
+	setBackgroundShellHold(DefaultBackgroundShellHold)
+	now := time.Now()
+	lines := loadProbeTranscript(t)
+	counter := tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}
+	sc := scanTranscriptBackground(restamp(lines[:34], now.Add(-6*time.Hour)))
+	if _, ok := sc.awaitingAgent(); !ok {
+		t.Fatal("fixture: agent not awaiting its own work")
+	}
+	seen := time.Time{}
+	for step := 0; step < 360; step++ { // a poll every 10s for an hour
+		at := now.Add(time.Duration(step) * 10 * time.Second)
+		w, shown := mergeBackgroundWork(counter, sc, true, seen, at)
+		if shown {
+			seen = at
+		}
+		if w.Running() {
+			t.Fatalf("poll %d: 6h-old interim notification + footer counter = %+v shown=%v, want not running (bounded by background_shell_hold)", step, w, shown)
+		}
+	}
+
+	// Inside the hold: the counter is the agent, the sighting is not stamped.
+	fresh := scanTranscriptBackground(restamp(lines[:34], now.Add(-2*time.Minute)))
+	if w, shown := mergeBackgroundWork(counter, fresh, true, time.Time{}, now); w.Kind != tmux.BackgroundKindAgent || shown {
+		t.Fatalf("2m-old interim notification + footer counter = %+v shown=%v, want agent, not stamped", w, shown)
+	}
+
+	// The user's hold applies: 30m keeps a 10m-old interim notification.
+	stale := scanTranscriptBackground(restamp(lines[:34], now.Add(-10*time.Minute)))
+	setBackgroundShellHold(30 * time.Minute)
+	if w, shown := mergeBackgroundWork(counter, stale, true, time.Time{}, now); w.Kind != tmux.BackgroundKindAgent || shown {
+		t.Fatalf("hold 30m, 10m-old interim notification + counter = %+v shown=%v, want agent, not stamped", w, shown)
+	}
+
+	// Hold 0 (the rule before A5): the counter alone is work, named as the agent.
+	setBackgroundShellHold(0)
+	if w, _ := mergeBackgroundWork(counter, sc, true, time.Time{}, now); w.Kind != tmux.BackgroundKindAgent {
+		t.Fatalf("hold 0, 6h-old interim notification + counter = %+v, want agent", w)
+	}
+}
+
+// The interim wording is matched outside the agent's own <result> text: a
+// final notification whose result quotes it still ends the agent.
+func TestScanTranscriptBackground_InterimWordingInResultIsFinal(t *testing.T) {
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"Review status code"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"Review status code"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	for name, final := range map[string]string{
+		"closed result":    `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Review status code\" finished</summary>\n<result>Done. The scan keeps an agent pending when its note says it is waiting on its own background work, or stopped with background work of its own still running.</result>\n</task-notification>"}}`,
+		"truncated result": `{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Review status code\" finished</summary>\n<result>Done. It is waiting on its own background work wh"}`,
+	} {
+		sc := scanTranscriptBackground(append(append([]string{}, launch...), final))
+		if a, ok := sc.awaitingAgent(); ok {
+			t.Errorf("%s: final notification quoting the interim wording in <result> left the agent awaiting: %+v", name, a)
+		}
+		if got, _ := sc.inFlight(); got.InFlight() {
+			t.Errorf("%s: in flight = %+v after the final notification, want nothing", name, got)
+		}
+	}
+}
+
+// The interim wording is matched only in Claude Code's own text: the <note>
+// and the summary after the agent's quoted description. An agent whose
+// description happens to hold the wording still ends on its final
+// notification, and still awaits on a real interim one.
+func TestScanTranscriptBackground_InterimWordingInDescriptionIsFinal(t *testing.T) {
+	const desc = `check waiting on its own background work`
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"` + desc + `"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"` + desc + `"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	notify := func(body string) string {
+		return `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n` + body + `\n</task-notification>"}}`
+	}
+	finalNote := `<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>`
+	for name, final := range map[string]string{
+		"final summary":           notify(`<summary>Agent \"` + desc + `\" finished</summary>\n<result>done</result>`),
+		"final summary and note":  notify(`<summary>Agent \"` + desc + `\" finished</summary>\n` + finalNote + `\n<result>done</result>`),
+		"truncated final summary": `{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"` + desc + `\" fini"}`,
+	} {
+		sc := scanTranscriptBackground(append(append([]string{}, launch...), final))
+		if a, ok := sc.awaitingAgent(); ok {
+			t.Errorf("%s: final notification of an agent described %q left it awaiting: %+v", name, desc, a)
+		}
+		if got, _ := sc.inFlight(); got.InFlight() {
+			t.Errorf("%s: in flight = %+v after the final notification, want nothing", name, got)
+		}
+	}
+	for name, interim := range map[string]string{
+		"interim summary (2.1.307)": notify(`<summary>Agent \"` + desc + `\" is waiting on its own background work</summary>\n<result>still sleeping</result>`),
+		"interim note (2.1.288)":    notify(`<summary>Agent \"` + desc + `\" finished</summary>\n<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>\n<result>still sleeping</result>`),
+	} {
+		sc := scanTranscriptBackground(append(append([]string{}, launch...), interim))
+		if _, ok := sc.awaitingAgent(); !ok {
+			t.Errorf("%s: interim notification of an agent described %q did not leave it awaiting", name, desc)
+		}
+	}
+}
+
+// A '<' in the agent's description must not hide the 2.1.307 interim
+// wording in the summary: the summary body runs to </summary>, not to the
+// first '<'.
+func TestScanTranscriptBackground_InterimSummaryWithAngleInDescription(t *testing.T) {
+	const desc = `fix a<b check`
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"` + desc + `"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"` + desc + `"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	notify := func(body string) string {
+		return `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n` + body + `\n</task-notification>"}}`
+	}
+	interim := notify(`<summary>Agent \"` + desc + `\" is waiting on its own background work</summary>\n<result>still sleeping</result>`)
+	if _, ok := scanTranscriptBackground(append(append([]string{}, launch...), interim)).awaitingAgent(); !ok {
+		t.Errorf("interim summary of an agent described %q did not leave it awaiting", desc)
+	}
+	final := notify(`<summary>Agent \"` + desc + `\" finished</summary>\n<result>done</result>`)
+	if a, ok := scanTranscriptBackground(append(append([]string{}, launch...), final)).awaitingAgent(); ok {
+		t.Errorf("final summary of an agent described %q left it awaiting: %+v", desc, a)
+	}
+}
+
+// The agent's <result> is free text: a literal </result> inside it, followed
+// by text that looks like Claude Code's interim note, must not make a final
+// notification read as interim. The result ends at its last </result>.
+func TestScanTranscriptBackground_ResultQuotingClosingTagIsFinal(t *testing.T) {
+	launch := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"Explain tags"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"Explain tags"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+	}
+	final := `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Explain tags\" finished</summary>\n<result>The block ends with </result> and an interim one adds <note>This agent stopped with background work of its own still running.</note> before it.</result>\n</task-notification>"}}`
+	if a, ok := scanTranscriptBackground(append(append([]string{}, launch...), final)).awaitingAgent(); ok {
+		t.Errorf("final notification whose result quotes </result> and the interim note left the agent awaiting: %+v", a)
+	}
+}
+
+// The description is the launching agent's free text, so tags in it must not
+// move the line between Claude Code's own text and the agent's <result>.
+func TestScanTranscriptBackground_TagsInDescriptionKeepTheStructure(t *testing.T) {
+	// Claude Code writes '<' raw in its JSONL, not as \u003c.
+	jsonString := func(v string) string {
+		var b strings.Builder
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(v)
+		return strings.TrimSpace(b.String())
+	}
+	launch := func(desc string) []string {
+		d := jsonString(desc)
+		return []string{
+			`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":` + d + `}}]}}`,
+			`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":` + d + `},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+		}
+	}
+	notify := func(desc, rest string) string {
+		ed := strings.Trim(jsonString(desc), `"`)
+		return `{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:29:42Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"` + ed + `\" finished</summary>\n` + rest + `"}}`
+	}
+	interimNote := `<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>`
+	finalNote := `<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>`
+	cases := []struct {
+		name, desc, rest string
+		awaiting         bool
+	}{
+		{"<result> in the description, interim note", `parse <result> tags`, interimNote + `\n<result>still sleeping</result>\n</task-notification>`, true},
+		{"<note> with the wording in the description, final", `check <note>background work of its own still running</note>`, finalNote + `\n<result>done</result>\n</task-notification>`, false},
+		{"spoofed </result> + note in a truncated result, final", `Explain tags`, finalNote + `\n<result>it ends with </result> and an interim one has <note>This agent stopped with background work of its own still running`, false},
+		{"plain interim note", `probe sleeper agent`, interimNote + `\n<result>still sleeping</result>\n</task-notification>`, true},
+		{"plain final note", `probe sleeper agent`, finalNote + `\n<result>done</result>\n</task-notification>`, false},
+		{"quoted wording in the description, final", `say "waiting on its own background work" back`, finalNote + `\n<result>done</result>\n</task-notification>`, false},
+		{"quotes and a backslash in the description, interim", `grep "a\\b" <result>`, interimNote + `\n<result>still sleeping</result>\n</task-notification>`, true},
+	}
+	for _, tc := range cases {
+		sc := scanTranscriptBackground(append(launch(tc.desc), notify(tc.desc, tc.rest)))
+		if _, ok := sc.awaitingAgent(); ok != tc.awaiting {
+			t.Errorf("%s: awaiting = %v, want %v", tc.name, ok, tc.awaiting)
+		}
+	}
+}
+
+// A new Claude process starts with no background agents: an interim
+// notification for an agent the old process launched does not revive it.
+func TestScanTranscriptBackground_InterimAfterNewProcessDoesNotRevive(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"ta1","name":"Agent","input":{"description":"Background sleep probe"}}]}}`,
+		`{"type":"user","isSidechain":false,"toolUseResult":{"status":"async_launched","agentId":"a433","description":"Background sleep probe"},"message":{"content":[{"type":"tool_result","tool_use_id":"ta1","content":"launched"}]}}`,
+		"",
+		`{"type":"user","isSidechain":false,"timestamp":"2026-10-21T23:26:10Z","message":{"content":"<task-notification>\n<task-id>a433</task-id>\n<status>completed</status>\n<summary>Agent \"Background sleep probe\" is waiting on its own background work</summary>\n<result>still sleeping</result>\n</task-notification>"}}`,
+	}
+	for _, hook := range []string{"SessionStart:startup", "SessionStart:resume"} {
+		lines[2] = `{"type":"attachment","isSidechain":false,"attachment":{"type":"hook_success","hookName":"` + hook + `"}}`
+		sc := scanTranscriptBackground(lines)
+		if got, _ := sc.inFlight(); got.InFlight() {
+			t.Errorf("%s: interim notification revived an agent of the previous process: %+v", hook, got)
+		}
 	}
 }
