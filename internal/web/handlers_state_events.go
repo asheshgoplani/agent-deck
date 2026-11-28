@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -297,6 +298,7 @@ func (s *Server) startVoiceProducer() {
 	go func() {
 		defer s.voiceProdWG.Done()
 		p := voicestream.NewProducer(voicestate.DefaultDir(), s.stateProfile())
+		p.Log = os.Stderr
 		if err := voicestream.RunExclusive(ctx, s.stateProfile(), p); err != nil {
 			logging.ForComponent(logging.CompWeb).Warn("voice_producer_disabled", slog.String("error", err.Error()))
 		}

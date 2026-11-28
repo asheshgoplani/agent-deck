@@ -94,6 +94,7 @@ func runVoiceRelay(profile string, args []string, stdout, stderr io.Writer) int 
 
 	// Local frames: one producer per host (lock), this one or the web server's.
 	prod := voicestream.NewProducer(vdir, profile)
+	prod.Log = stderr
 	prod.Origin = name
 	wg.Add(1)
 	go func() {

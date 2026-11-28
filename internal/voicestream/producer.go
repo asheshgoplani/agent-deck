@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,6 +36,9 @@ type Producer struct {
 	Profile  string
 	Interval time.Duration
 	Now      func() time.Time
+	// Log gets one line when the bus never takes the stop frame (nil: no
+	// log). Never the payload.
+	Log io.Writer
 
 	// quiet: stop without the "stopped" frame (a receiver handing over to
 	// a newer one, which publishes its own start frame at once).
@@ -138,13 +142,28 @@ func (p *Producer) stop() {
 	}
 	ev := Off(ReasonStopped, p.lastOrigin, p.now())
 	p.last, p.lastKey = ev, ev.key()
-	if p.Publish != nil {
-		// Last chance: offer it a few times if the queue is full.
-		for i := 0; i < 20 && !p.Publish(KindState, "", ev); i++ {
-			time.Sleep(10 * time.Millisecond)
+	if p.Publish == nil {
+		return
+	}
+	// Last chance: a full queue at shutdown is common, so offer it for up
+	// to stopFrameBudget with a growing wait, then say so if it never went.
+	wait, deadline := 10*time.Millisecond, time.Now().Add(stopFrameBudget)
+	for !p.Publish(KindState, "", ev) {
+		if time.Now().After(deadline) {
+			if p.Log != nil {
+				fmt.Fprintln(p.Log, "voice: the bus did not take the stop frame; followers show the last state until it expires")
+			}
+			return
+		}
+		time.Sleep(wait)
+		if wait < 200*time.Millisecond {
+			wait *= 2
 		}
 	}
 }
+
+// stopFrameBudget bounds how long stop offers the "off" frame.
+const stopFrameBudget = 2 * time.Second
 
 // Run steps every Interval until ctx ends, then publishes the stop frame
 // (see stop). It returns when ctx is done; the caller joins it.
