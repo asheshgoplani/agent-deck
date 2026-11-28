@@ -992,12 +992,16 @@ func matchInstanceDataByTmuxName(instances []*session.InstanceData, tmuxSessionN
 	return nil
 }
 
-// childrenOf returns the direct sub-sessions of parentID, preserving the input
-// order. Pure helper so the filtering is unit-testable without a live registry.
+// childrenOf returns parentID's direct sub-sessions plus the sessions that
+// report to it (launched from inside a sub-session, issue #3165,
+// Instance.ReportsTo), preserving the input order. A nested worker shows
+// under both its tree parent and its launcher; its row's reports_to says
+// which one receives its records. Pure helper so the filtering is
+// unit-testable without a live registry.
 func childrenOf(parentID string, instances []*session.Instance) []*session.Instance {
 	var out []*session.Instance
 	for _, inst := range instances {
-		if inst != nil && inst.ParentSessionID == parentID {
+		if inst != nil && parentID != "" && (inst.ParentSessionID == parentID || inst.ReportTargetID() == parentID) {
 			out = append(out, inst)
 		}
 	}

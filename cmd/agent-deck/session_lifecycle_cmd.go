@@ -544,7 +544,9 @@ func conditionalArchiveRequested(fs *flag.FlagSet) bool {
 }
 
 func validateConditionalArchive(inst *session.Instance, peers []*session.Instance, parent, version string) error {
-	if parent == "" || version == "" || inst.ParentSessionID != parent {
+	// The fence accepts the tree parent or the launcher the worker reports
+	// to (issue #3165): a coordinator under a root archives its own workers.
+	if parent == "" || version == "" || (inst.ParentSessionID != parent && inst.ReportTargetID() != parent) {
 		return fmt.Errorf("conditional archive requires matching parent and transcript version")
 	}
 	if !session.IsCodexCompatible(inst.Tool) && !session.IsClaudeCompatible(inst.Tool) {

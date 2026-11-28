@@ -5989,8 +5989,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "shift+left":
 		// Promote: outdent a sub-session to top-level peer in the same group.
-		// Top-level sessions and groups are unaffected. Cross-group moves
-		// stay on M.
+		// A top-level worker that reports to its launcher is detached from
+		// it; other top-level sessions and groups are unaffected.
+		// Cross-group moves stay on M.
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {

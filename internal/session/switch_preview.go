@@ -110,7 +110,10 @@ func SnapshotSwitchSource(inst *Instance, instances []*Instance, watcherBridgeTa
 	snapshot.HasParent = snapshot.ParentSessionID != ""
 	snapshot.IsConductor = inst.IsConductor
 	for _, candidate := range instances {
-		if candidate != nil && candidate.ID != inst.ID && candidate.ParentSessionID == inst.ID {
+		// A worker that reports to inst (issue #3165) depends on it like a
+		// tree child: the switch archives inst and the replacement gets a new
+		// id, which would strand the worker's records.
+		if candidate != nil && candidate.ID != inst.ID && (candidate.ParentSessionID == inst.ID || strings.TrimSpace(candidate.ReportsTo) == inst.ID) {
 			snapshot.HasChildren = true
 			break
 		}

@@ -344,6 +344,7 @@ func ExecuteCrossHarnessSwitch(ctx context.Context, cfg *UserConfig, source *Ins
 		target.Order = source.Order
 		target.ParentSessionID = source.ParentSessionID
 		target.ParentProjectPath = source.ParentProjectPath
+		target.ReportsTo = source.ReportsTo
 		target.NoTransitionNotify = source.NoTransitionNotify
 		// #3206: the session's standing instructions follow it to the new
 		// harness; its identity block carries them from the first spawn.

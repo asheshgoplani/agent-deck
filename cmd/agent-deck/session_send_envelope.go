@@ -117,7 +117,7 @@ func ledgerSendAllowed() bool {
 // launchKickoffTagInputs is what tagLaunchKickoff decides on.
 type launchKickoffTagInputs struct {
 	senderID  string            // the caller's AGENTDECK_INSTANCE_ID; "" for a human shell
-	parent    *session.Instance // the session launch links the child to; nil for top-level
+	parent    *session.Instance // the session the child reports to (launcher, else tree parent); nil for none
 	childTool string
 	enabled   bool // [send] tag_sends, minus launch --no-tag
 	// childReportsTurns is false for a child launched with
@@ -126,14 +126,15 @@ type launchKickoffTagInputs struct {
 }
 
 // tagLaunchKickoff prepends the send envelope to a launch's initial message
-// when the session running `launch` is the parent the child is linked to
-// (issue #3131). That kickoff is the parent asking its own child, exactly
+// when the session running `launch` is the session the child reports to: its
+// linked parent (issue #3131), or the sub-session that launched it (issue
+// #3165). That kickoff is the parent asking its own child, exactly
 // what a tagged `session send` from the parent is, so the child's first turn
 // (often its whole job) is classified as a send from the parent, and an
 // urgent result wakes an idle Claude parent under the existing rule for a
-// parent that asked. It is never tagged when the caller is not the linked
-// parent (a human shell, --parent naming another session, a nested launch
-// linked to the caller's own parent), the parent has no prompt-time drain,
+// parent that asked. It is never tagged when the caller is not that session
+// (a human shell, --parent naming another session), the parent has no
+// prompt-time drain,
 // or the child's turns are not reported to its parent (--no-transition-notify
 // or transition events off: its identity block tells it to answer an
 // enveloped message with `session send`, which would type its whole answer

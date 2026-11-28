@@ -602,6 +602,11 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if parentInstance != nil {
 		newInstance.SetParentWithPath(parentInstance.ID, parentInstance.ProjectPath)
 	}
+	// Issue #3165: launched from inside a sub-session, the new session
+	// reports to that launcher whether or not it is nested under the root.
+	if reportsTo := reportsToLauncher(launchedBy); reportsTo != nil {
+		newInstance.SetReportsTo(reportsTo.ID)
+	}
 
 	if *noTransitionNotify {
 		newInstance.NoTransitionNotify = true
@@ -829,7 +834,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// stay the message's own first line).
 	initialMessage, kickoffTagged := tagLaunchKickoff(initialMessage, launchKickoffTagInputs{
 		senderID:  sendSenderID(),
-		parent:    parentInstance,
+		parent:    launchReportTarget(parentInstance, launchedBy),
 		childTool: newInstance.Tool,
 		enabled:   !*noTag && sendTagsEnabled(),
 
@@ -1068,6 +1073,9 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	}
 	if parentInstance != nil {
 		jsonData["parent_id"] = parentInstance.ID
+	}
+	if newInstance.ReportsTo != "" {
+		jsonData["reports_to"] = newInstance.ReportsTo
 	}
 	if len(sessionHints) > 0 {
 		jsonData["hints"] = sessionHints
