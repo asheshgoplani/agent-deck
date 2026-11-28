@@ -831,35 +831,52 @@ func currentUserName() string {
 	return fmt.Sprintf("uid %d", os.Getuid())
 }
 
-func installSelfUpdateBinary(execPath string, binaryData []byte) error {
-	// Create temp file for new binary
-	newBinaryPath := execPath + ".new"
-	if err := os.WriteFile(newBinaryPath, binaryData, 0755); err != nil {
+func installSelfUpdateBinary(execPath string, binaryData []byte) (err error) {
+	// Serialize installers: a second caller waits for the first, then
+	// installs on top of it (or reports "update already in progress").
+	unlock, err := acquireInstallLock(execPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return &InstallPathNotWritableError{Path: execPath, User: currentUserName()}
+		}
+		return err
+	}
+	defer func() {
+		if cerr := unlock(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close install lock: %w", cerr))
+		}
+	}()
+
+	// Stage the new binary under a name unique to this process, then rename
+	// it over the target. rename(2) replaces atomically, so the binary is
+	// never missing and never half written.
+	tmp, err := os.CreateTemp(filepath.Dir(execPath), filepath.Base(execPath)+".new-*")
+	if err != nil {
 		if errors.Is(err, fs.ErrPermission) {
 			return &InstallPathNotWritableError{Path: execPath, User: currentUserName()}
 		}
 		return fmt.Errorf("failed to write new binary: %w", err)
 	}
+	newBinaryPath := tmp.Name()
+	_, werr := tmp.Write(binaryData)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(newBinaryPath, 0o755)
+	}
+	if werr != nil {
+		os.Remove(newBinaryPath)
+		return fmt.Errorf("failed to write new binary: %w", werr)
+	}
 
-	// Backup old binary
-	oldBinaryPath := execPath + ".old"
-	if err := os.Rename(execPath, oldBinaryPath); err != nil {
+	if err := os.Rename(newBinaryPath, execPath); err != nil {
 		os.Remove(newBinaryPath)
 		if errors.Is(err, fs.ErrPermission) {
 			return &InstallPathNotWritableError{Path: execPath, User: currentUserName()}
 		}
-		return fmt.Errorf("failed to backup old binary: %w", err)
-	}
-
-	// Move new binary into place
-	if err := os.Rename(newBinaryPath, execPath); err != nil {
-		// Try to restore old binary
-		_ = os.Rename(oldBinaryPath, execPath)
 		return fmt.Errorf("failed to install new binary: %w", err)
 	}
-
-	// Remove old binary
-	os.Remove(oldBinaryPath)
 
 	// Invalidate update cache so the banner dismisses in any running TUI
 	InvalidateCache()
@@ -906,10 +923,20 @@ func DetectHomebrewManagedInstall() (execPath string, upgradeCmd string, managed
 	if err != nil {
 		return "", "", false, err
 	}
-	execPath, err = filepath.EvalSymlinks(execPath)
+	resolved, err := filepath.EvalSymlinks(execPath)
 	if err != nil {
-		return "", "", false, err
+		// A concurrent install may have renamed the running binary to
+		// <path>.old and removed it; the install target is <path>.
+		base, ok := strings.CutSuffix(execPath, ".old")
+		if !ok {
+			return "", "", false, err
+		}
+		resolved, err = filepath.EvalSymlinks(base)
+		if err != nil {
+			return "", "", false, err
+		}
 	}
+	execPath = resolved
 	upgradeCmd, managed = HomebrewUpgradeHint(execPath)
 	return execPath, upgradeCmd, managed, nil
 }
