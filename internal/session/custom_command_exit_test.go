@@ -68,6 +68,11 @@ func TestTrackedCommandImmediateExitThree(t *testing.T) {
 	i := NewInstance("tracked-immediate-exit", t.TempDir())
 	i.Tool, i.Command, i.TrackCommandExit = "shell", "exit 3", true
 	t.Cleanup(func() {
+		// Start spawned a fast-death watcher that polls tmux for
+		// spawnFastDeathWindow. Join it before the test returns: a poll
+		// after this test lands in the next test's tmux start count
+		// (TestStatusUpdatePass_DeadRowsStartNoTmuxPerRow saw 3 for 2).
+		joinSpawnWatchers(t, i)
 		if pane := i.GetTmuxSession(); pane != nil {
 			_ = pane.Kill()
 		}
