@@ -475,6 +475,9 @@ func (d *Desk) many(ctx context.Context, req Request, r Result, p Parsed, q name
 		if q.host != "" && s.Host != q.host {
 			continue
 		}
+		if !inProfile(s, req.Profile) {
+			continue // never another profile, as in every other intent
+		}
 		if ok, level, _ := coverage(q, s); !ok || level < wordPhonetic {
 			continue
 		}
