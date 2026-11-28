@@ -78,13 +78,13 @@ type remoteStatusForwarder struct {
 	// or before it (a replay after a reconnect) is older than that listing.
 	snapCursor uint64
 	up         bool
-	// healthy: the last follow delivered a line or stayed up for
+	// healthy: the last follow delivered a bus frame or stayed up for
 	// remoteForwardHealthyAfter; only then does the next retry start fast.
 	healthy bool
 }
 
 // remoteForwardHealthyAfter: a follow that stayed up this long (or that
-// delivered a line) counts as a working link; one that failed sooner keeps
+// delivered a bus frame, not a marker) counts as a working link; one that failed sooner keeps
 // the backoff doubling, so a broken remote bus does not flap the link.
 const remoteForwardHealthyAfter = 3 * time.Second
 
@@ -220,8 +220,9 @@ func (f *remoteStatusForwarder) once(ctx context.Context) error {
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
 	followStart := time.Now()
 	for sc.Scan() {
-		f.healthy = true
-		f.forward(sc.Bytes())
+		if f.forward(sc.Bytes()) {
+			f.healthy = true // a real frame, not a marker or a stray line
+		}
 	}
 	if time.Since(followStart) >= remoteForwardHealthyAfter {
 		f.healthy = true
@@ -260,26 +261,33 @@ func (w *capWriter) String() string {
 }
 
 // forward republishes one remote frame line.
-func (f *remoteStatusForwarder) forward(line []byte) {
+// forward republishes one follow line; it reports whether the line was a
+// bus frame (any kind, forwarded or not), which is what makes a follow
+// count as working for the backoff.
+func (f *remoteStatusForwarder) forward(line []byte) bool {
 	fr, err := events.ParseFrameLine(line)
-	if err != nil || uint64(fr.Cursor) <= f.since {
-		return
+	if err != nil {
+		return false
+	}
+	if uint64(fr.Cursor) <= f.since {
+		return true
 	}
 	// Every frame read moves the resume point, whatever its kind.
 	f.since = uint64(fr.Cursor)
 	if fr.Kind != "session.status" || uint64(fr.Cursor) <= f.snapCursor {
-		return // a replay the session.link up already covers
+		return true // a replay the session.link up already covers
 	}
 	var data session.StatusBusEvent
 	if len(fr.Data) == 0 || json.Unmarshal(fr.Data, &data) != nil {
-		return
+		return true
 	}
 	if data.Host != "" {
-		return // already a forward on that host: never loop
+		return true // already a forward on that host: never loop
 	}
 	// Only the session.status fields cross (an allowlist): whatever else a
 	// remote puts in the frame is dropped.
 	f.publish("session.status", fr.SessionID, forwardedStatus{StatusBusEvent: data, Host: f.name, RemoteCursor: uint64(fr.Cursor)})
+	return true
 }
 
 // forwardedStatus is a remote's session.status republished here: the

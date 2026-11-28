@@ -145,7 +145,7 @@ observer that starts nothing on the remote, resumed by cursor after a drop), wit
 status in one cursor order. It starts at the remote's own newest cursor
 (`events stats`, no clock comparison) and resumes from the last one after a
 drop, retrying within a second (a follow that fails before it delivers a
-line or stays up for 3 s backs off, doubling to a second, so a broken
+bus frame (an older remote's "unsupported" line does not count) or stays up for 3 s backs off, doubling to a second, so a broken
 remote bus does not flap the link). Each connect publishes `session.link`
 `{host, up: true, sessions: [{id, status, title}]}` with the remote's
 current statuses (a resync: a change made while this server or the link
