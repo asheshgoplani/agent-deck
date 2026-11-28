@@ -2589,6 +2589,10 @@ func (r *SSHRunner) LastInstallReport() string { return r.installReport }
 // See the README "Remote Instances" section for the documented assumption.
 func (r *SSHRunner) sshConnOpts() []string {
 	opts := sessionSSHConnOpts()
+	// The poll listing of a large fleet is ~645KB of JSON that compresses
+	// ~10x (~60KB); on a slow link the raw transfer alone can exhaust the
+	// 30s poll bound. Compression is cheap on the text this runner moves.
+	opts = append(opts, "-o", "Compression=yes")
 	if r.sshConfig != "" {
 		// A provider sandbox's own ssh_config (HostName, Port, key,
 		// known_hosts), with its own mux socket so it never rides another
