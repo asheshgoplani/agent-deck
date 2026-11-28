@@ -31,6 +31,10 @@ func recoveryFixture(t *testing.T, conductor bool) (*Instance, string) {
 				pane, err := inst.tmuxSession.CapturePaneFresh()
 				t.Logf("pane=%q err=%v command=%s", pane, err, inst.Command)
 			}
+			// Join the fast-death watcher Start left polling tmux: run on,
+			// it lands in a later test's tmux start count and can write
+			// into this test's HOME after its TempDir cleanup begins.
+			joinSpawnWatchers(t, inst)
 			_ = inst.tmuxSession.Kill()
 		}
 	})
