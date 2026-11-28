@@ -329,3 +329,45 @@ func TestRecallRowsRelayServedRefusesWithRecallOff(t *testing.T) {
 		t.Fatalf("relay-served with recall on: exit %d %s %s", code, stdout, stderr)
 	}
 }
+
+// TestRecallRowsFailClosedWithRecallOff: with [recall] enabled = false the box
+// decides for itself whether a rows read is egress, because a released relay
+// sends no mark. A non-interactive ssh exec (the older-relay shape: the test
+// helper gives a non-tty stdin) refuses; an explicit AGENTDECK_LOCAL_READ=1,
+// tmux, or no ssh at all is served; the relay mark beats the local-read mark.
+func TestRecallRowsFailClosedWithRecallOff(t *testing.T) {
+	home, id, _ := rowsTestSession(t)
+	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
+	ssh := []string{"SSH_CONNECTION=192.0.2.1 50000 192.0.2.2 22"}
+	cases := []struct {
+		name   string
+		env    []string
+		served bool
+	}{
+		{"older relay: ssh exec, no mark", ssh, false},
+		{"ssh exec with SSH_CLIENT only", []string{"SSH_CLIENT=192.0.2.1 50000 22"}, false},
+		{"ssh exec + AGENTDECK_LOCAL_READ", append(append([]string{}, ssh...), localReadEnv+"=1"), true},
+		{"ssh exec inside tmux", append(append([]string{}, ssh...), "TMUX=/tmp/tmux-1000/default,1,0"), true},
+		{"ssh exec with a pty (SSH_TTY)", append(append([]string{}, ssh...), "SSH_TTY=/dev/pts/9"), true},
+		{"relay mark + local-read mark", append(append([]string{}, ssh...), remoteServedEnv+"=1", localReadEnv+"=1"), false},
+		{"relay mark alone", []string{remoteServedEnv + "=1"}, false},
+		{"no ssh variables", nil, true},
+	}
+	for _, tc := range cases {
+		for _, args := range [][]string{
+			{"recall", "timeline", id, "--json"},
+			{"recall", "timeline", "--json", "--sessions", id},
+		} {
+			stdout, stderr, code := runAgentDeckEnv(t, home, "", tc.env, args...)
+			if tc.served {
+				if code != 0 || !strings.Contains(stdout, `"turns"`) && !strings.Contains(stdout, `"ok": true`) {
+					t.Fatalf("%s %v: want rows served, got %d %s %s", tc.name, args, code, stdout, stderr)
+				}
+				continue
+			}
+			if code != 2 || !strings.Contains(stdout, "recall is off") {
+				t.Fatalf("%s %v: want exit 2 recall is off, got %d %s %s", tc.name, args, code, stdout, stderr)
+			}
+		}
+	}
+}
