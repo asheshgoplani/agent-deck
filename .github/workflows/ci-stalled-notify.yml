@@ -60,21 +60,29 @@ jobs:
     # conclusion; any other requested event is a normal run start. Completed
     # events still drive label removal. Only runs triggered by pull_request are
     # reconciled: push and schedule runs have no PR to label.
+    #
+    # Only fork runs are reconciled. GitHub holds a run for approval only when
+    # it comes from a fork, so a run whose head repo is this repo can never be
+    # held or carry the label. Skipping it in this `if` costs no runner. On
+    # landing days every gating run is a same-repo branch, and each completed
+    # event used to queue one notifier job: 25 queued on 28 Nov and 42 on
+    # 22 Nov, which starved the runners the gates themselves need. A fork whose
+    # repo was deleted has no head_repository; it still runs (null != repo).
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name != github.repository &&
       (github.event.action == 'completed' || github.event.workflow_run.conclusion == 'action_required')
-    # Serialize per PR, never cancel a running job. On merge days many PRs
-    # each finish three gates (Go tests / golangci-lint / CodeQL), and every
-    # completed event runs this job, which queued dozens of runners (42
-    # cancelled by hand on 22 Nov). (`requested` events that are not held runs
-    # are skipped by the `if` above and take no runner.) Per group GitHub keeps
-    # at most one running and one pending job, so a PR costs at most 2 jobs; a
-    # newer arrival replaces the pending one. That is safe because (a)
-    # reconcile() always decides from the PR's live head and trusts the
-    # trigger's conclusion only when it ran for that head, so a stale event
-    # that replaces a pending job still reaches the live head's decision, (b)
-    # one job per PR at a time means two jobs cannot race on the label, and (c)
+    # Serialize per PR, never cancel a running job. A fork PR can still emit
+    # several events at once (three gates, re-runs, force-pushes). Per group
+    # GitHub keeps at most one running and one pending job, so a PR costs at
+    # most 2 jobs; a newer arrival replaces the pending one. That is safe
+    # because (a) the surviving event finds its PR by head repo + head branch
+    # (matchesRun), even when its sha was force-pushed away, and reconcile()
+    # always decides from the PR's live head, trusting the trigger's
+    # conclusion only when it ran for that head, so a stale event that
+    # replaces a pending job still reaches the live head's decision, (b) one
+    # job per PR at a time means two jobs cannot race on the label, and (c)
     # cancel-in-progress is false, so a job is never killed between addLabels
     # and the ntfy step. The repo is part of the key so forks that reuse a
     # branch name (e.g. main) never share a queue.
@@ -93,7 +101,7 @@ jobs:
         with:
           script: |
             const path = require('path');
-            const { reconcile } = require(path.join(process.env.GITHUB_WORKSPACE, '.github/scripts/ci-stalled-notify.cjs'));
+            const { reconcile, matchesRun } = require(path.join(process.env.GITHUB_WORKSPACE, '.github/scripts/ci-stalled-notify.cjs'));
             const run = context.payload.workflow_run;
             const label = process.env.STALL_LABEL;
             const gatingWorkflows = JSON.parse(process.env.GATING_WORKFLOWS);
@@ -102,13 +110,15 @@ jobs:
 
             // Prefer the PRs GitHub attached to the run. That list is empty for
             // fork PRs, which is exactly the case this workflow exists for, so
-            // fall back to the open PRs whose head sha matches the run.
+            // fall back to the open PRs whose head sha matches the run, or
+            // whose head repo + head branch do (an event for a sha the PR has
+            // force-pushed away must still find the PR).
             let prs = (run.pull_requests || []).map(p => p.number);
             if (prs.length === 0) {
               const open = await github.paginate(github.rest.pulls.list, {
                 owner, repo, state: 'open', per_page: 100,
               });
-              prs = open.filter(p => p.head.sha === run.head_sha).map(p => p.number);
+              prs = open.filter(p => matchesRun(p, run)).map(p => p.number);
             }
             if (prs.length === 0) {
               const found = await github.rest.search.issuesAndPullRequests({

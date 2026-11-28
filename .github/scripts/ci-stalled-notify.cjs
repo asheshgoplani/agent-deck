@@ -53,8 +53,32 @@ function reconcile({ runHeadSha, runConclusion, prHeadSha, labeled, currentHeadR
   return { action: 'none', reason: 'not labeled and nothing waiting' }
 }
 
+/**
+ * Whether a workflow_run event belongs to an open PR, for runs GitHub
+ * attached no PR to (every fork PR). Matches when the PR's live head is the
+ * run's sha, or when the run came from the PR's head repo and head branch:
+ * the per-PR queue can hand the surviving job an event for a sha the PR has
+ * since force-pushed away, and that job must still find the PR so it reaches
+ * the live head's decision. Without a head repo on either side the branch
+ * name alone is not trusted (another fork can reuse it), so only the sha
+ * counts.
+ *
+ * @param {{head?: {sha?: string, ref?: string, repo?: {full_name?: string}|null}}} pr  from pulls.list
+ * @param {{head_sha?: string, head_branch?: string, head_repository?: {full_name?: string}|null}} run  workflow_run payload
+ * @returns {boolean}
+ */
+function matchesRun(pr, run) {
+  const head = pr && pr.head
+  if (!head || !run) return false
+  if (head.sha && head.sha === run.head_sha) return true
+  const prRepo = head.repo && head.repo.full_name
+  const runRepo = run.head_repository && run.head_repository.full_name
+  return Boolean(prRepo && runRepo && prRepo === runRepo &&
+    head.ref && head.ref === run.head_branch)
+}
+
 function short(sha) {
   return String(sha).slice(0, 8)
 }
 
-module.exports = { reconcile, STALLED }
+module.exports = { reconcile, matchesRun, STALLED }
